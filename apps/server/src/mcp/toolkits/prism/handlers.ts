@@ -139,7 +139,7 @@ export function parseRouterOutput(
 }
 
 /** The T3 planner thread a router `status` reply names as the job's owner. */
-export function plannerThreadOf(status: unknown): string | null {
+function plannerThreadOf(status: unknown): string | null {
   const job =
     status !== null && typeof status === "object" && "job" in status
       ? (status as { job: unknown }).job
@@ -152,7 +152,7 @@ export function plannerThreadOf(status: unknown): string | null {
 }
 
 /** The job's status from a router `status` reply. */
-export function jobStatusOf(status: unknown): string | null {
+function jobStatusOf(status: unknown): string | null {
   const job =
     status !== null && typeof status === "object" && "job" in status
       ? (status as { job: unknown }).job

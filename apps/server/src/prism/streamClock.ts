@@ -229,7 +229,7 @@ export const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(StreamClock, make);
+const layer = Layer.effect(StreamClock, make);
 
 /** A logger that also stamps the clock; logging off still keeps the clock. */
 function tapped(
@@ -264,7 +264,7 @@ export const providerEventLoggersLayer = Layer.effect(
   ProviderEventLoggers.ProviderEventLoggers,
   Effect.gen(function* () {
     const clock = yield* StreamClock;
-    const loggers = yield* ProviderEventLoggers.make;
+    const loggers = yield* ProviderEventLoggers.ProviderEventLoggers;
     return ProviderEventLoggers.ProviderEventLoggers.of(tapLoggers(loggers, clock));
   }),
-).pipe(Layer.provideMerge(layer));
+).pipe(Layer.provide(ProviderEventLoggers.layer), Layer.provideMerge(layer));
