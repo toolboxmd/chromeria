@@ -1,5 +1,10 @@
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
-import { type EnvironmentId, type PullRequestRef, parseIssueUrl } from "@t3tools/contracts";
+import {
+  type BrowserLinkTarget,
+  type EnvironmentId,
+  type PullRequestRef,
+  parseIssueUrl,
+} from "@t3tools/contracts";
 
 import {
   findProjectOnChangeRequestHost,
@@ -69,18 +74,22 @@ export function issueLinkCandidate({
 }
 
 /**
- * Whether a web browser would block a new tab opened now. Opening one needs the click's user
- * activation, which lapses while the link is read; the desktop shell opens links itself.
+ * Whether a web browser would block the fallback's new tab. Opening one needs the click's user
+ * activation, which lapses while the link is read; the desktop shell and the in-app browser
+ * open links without it.
  */
 export function browserMayBlockNewTab({
   desktop,
+  linkTarget,
   userActivationActive,
 }: {
   desktop: boolean;
+  /** Where the "Open links in" setting sends this link. */
+  linkTarget: BrowserLinkTarget;
   /** `navigator.userActivation.isActive`, undefined where the browser does not report it. */
   userActivationActive: boolean | undefined;
 }): boolean {
-  return !desktop && userActivationActive === false;
+  return !desktop && linkTarget === "system" && userActivationActive === false;
 }
 
 /**

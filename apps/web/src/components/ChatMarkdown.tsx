@@ -2418,6 +2418,7 @@ function useChatMarkdownState({
   const openIssueLink = useOpenIssueOrPullRequestLink(
     openChangeRequestLink,
     openDeferredMarkdownLink,
+    Boolean(threadRef),
   );
   // Subscribed rather than read at click time: the anchor has to decide
   // synchronously whether to intercept its `_blank`, and a subscription is what

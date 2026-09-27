@@ -3,6 +3,11 @@ import { parseIssueUrl } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useRef } from "react";
 
+import {
+  canOpenLinksInApp,
+  resolveBrowserLinkTargetPreference,
+  resolveLinkTarget,
+} from "~/browser/browserLinkTarget";
 import { issueDetail } from "~/state/issues";
 import { useProjects, useServerConfigs } from "~/state/entities";
 import { pullRequestEnvironment } from "~/state/pullRequests";
@@ -64,6 +69,8 @@ export function useOpenIssueOrPullRequestLink(
     environmentId: EnvironmentId | undefined,
   ) => boolean,
   openLink: (url: string) => Promise<void>,
+  /** `openLink` opens beside a thread, so the in-app browser can take the link. */
+  hasThread: boolean,
 ) {
   const projects = useProjects();
   const serverConfigs = useServerConfigs();
@@ -117,9 +124,17 @@ export function useOpenIssueOrPullRequestLink(
             : async () => (await readIssue({ environmentId, input: issue }))._tag === "Success",
         openIssue: () => environmentId !== null && openIssue(url, environmentId),
         openExternal: async () => {
+          const linkTarget = resolveLinkTarget({
+            url,
+            event: NO_MODIFIER,
+            // `openLink` reads the setting again and reports a failed read itself.
+            preference: await resolveBrowserLinkTargetPreference().catch(() => "system" as const),
+            canOpenInApp: canOpenLinksInApp(hasThread),
+          });
           if (
             !browserMayBlockNewTab({
               desktop: Boolean(window.desktopBridge),
+              linkTarget,
               userActivationActive: navigator.userActivation?.isActive,
             })
           ) {
@@ -145,6 +160,7 @@ export function useOpenIssueOrPullRequestLink(
       return opening;
     },
     [
+      hasThread,
       openChangeRequestLink,
       openIssue,
       openLink,

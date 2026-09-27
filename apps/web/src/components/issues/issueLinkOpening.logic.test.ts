@@ -147,13 +147,23 @@ describe("openIssueOrPullRequestLink", () => {
 });
 
 describe("browserMayBlockNewTab", () => {
-  it("asks for a fresh click only on the web once the click's activation lapsed", () => {
-    expect(browserMayBlockNewTab({ desktop: false, userActivationActive: false })).toBe(true);
-    expect(browserMayBlockNewTab({ desktop: false, userActivationActive: true })).toBe(false);
-    expect(browserMayBlockNewTab({ desktop: true, userActivationActive: false })).toBe(false);
+  const web = { desktop: false, linkTarget: "system" as const };
+
+  it("asks for a fresh click only for a new web tab once the click's activation lapsed", () => {
+    expect(browserMayBlockNewTab({ ...web, userActivationActive: false })).toBe(true);
+    expect(browserMayBlockNewTab({ ...web, userActivationActive: true })).toBe(false);
+  });
+
+  it("opens directly on desktop and in the in-app browser", () => {
+    expect(browserMayBlockNewTab({ ...web, desktop: true, userActivationActive: false })).toBe(
+      false,
+    );
+    expect(browserMayBlockNewTab({ ...web, linkTarget: "app", userActivationActive: false })).toBe(
+      false,
+    );
   });
 
   it("opens directly where the browser does not report activation", () => {
-    expect(browserMayBlockNewTab({ desktop: false, userActivationActive: undefined })).toBe(false);
+    expect(browserMayBlockNewTab({ ...web, userActivationActive: undefined })).toBe(false);
   });
 });
