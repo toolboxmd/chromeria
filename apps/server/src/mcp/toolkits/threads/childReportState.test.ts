@@ -39,7 +39,7 @@ import * as ProviderRegistry from "../../../provider/Services/ProviderRegistry.t
 import * as ProviderService from "../../../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import { childReportStateFrom } from "./childReportState.ts";
+import { childReportStatesFrom, unrecordedChildReportState } from "./childReportState.ts";
 import { ThreadsToolkitHandlersLive } from "./handlers.ts";
 import { ThreadsToolkit } from "./tools.ts";
 
@@ -53,33 +53,30 @@ const activity = (kind: string, payload: unknown): OrchestrationThreadActivity =
   createdAt: "2026-01-01T00:00:00.000Z",
 });
 
-describe("childReportStateFrom", () => {
-  it("restores reportBack and the last reported message for one child", () => {
-    const activities = [
+describe("childReportStatesFrom", () => {
+  it("restores each child from its newest row carrying report state", () => {
+    const states = childReportStatesFrom([
       activity("task.started", { taskId: "sub.p.a", reportBack: false }),
       activity("task.started", { taskId: "sub.p.b", reportBack: true }),
-      activity("task.progress", { taskId: "sub.p.b", reportedMessageId: "m1" }),
-      activity("task.progress", { taskId: "sub.p.b", status: "idle" }),
-      activity("task.progress", { taskId: "sub.p.b", reportedMessageId: "m2" }),
-    ];
-    expect(childReportStateFrom(activities, "sub.p.a")).toEqual({
-      reportBack: false,
-      lastReported: null,
-    });
-    expect(childReportStateFrom(activities, "sub.p.b")).toEqual({
-      reportBack: true,
-      lastReported: "m2",
+      activity("task.progress", { taskId: "sub.p.b", reportBack: true, reportedMessageId: "m1" }),
+      activity("task.updated", { taskId: "sub.p.b", status: "running" }),
+      activity("task.progress", { taskId: "sub.p.b", reportBack: true, reportedMessageId: "m2" }),
+      activity("task.progress", { taskId: "sub.p.c", reportBack: false }),
+    ]);
+    expect(Object.fromEntries(states)).toEqual({
+      "sub.p.a": { reportBack: false, lastReported: null },
+      "sub.p.b": { reportBack: true, lastReported: "m2" },
+      "sub.p.c": { reportBack: false, lastReported: null },
     });
   });
 
-  it("falls back to spawn_thread's default when the parent has no record", () => {
-    expect(
-      childReportStateFrom([activity("task.started", { taskId: "sub.p.old" })], "sub.p.old"),
-    ).toEqual({ reportBack: true, lastReported: null });
-    expect(childReportStateFrom([], "sub.p.gone")).toEqual({
-      reportBack: true,
-      lastReported: null,
-    });
+  it("omits children whose rows carry no report state", () => {
+    expect(childReportStatesFrom([activity("task.started", { taskId: "sub.p.old" })]).size).toBe(0);
+  });
+
+  it("treats an unrecorded child's existing reply as already reported", () => {
+    expect(unrecordedChildReportState("m9")).toEqual({ reportBack: true, lastReported: "m9" });
+    expect(unrecordedChildReportState(null)).toEqual({ reportBack: true, lastReported: null });
   });
 });
 
@@ -129,25 +126,26 @@ const serverLayer = (databasePath: string) => {
 const withServer = <A, E, R>(databasePath: string, body: Effect.Effect<A, E, R>) =>
   body.pipe(Effect.provide(serverLayer(databasePath)));
 
-const spawnChild = Effect.gen(function* () {
-  const toolkit = yield* ThreadsToolkit;
-  return yield* toolkit.handle("spawn_thread", { task: "Remember HERON." }).pipe(
-    Stream.unwrap,
-    Stream.runCollect,
-    Effect.map(
-      (chunk) =>
-        chunk.at(-1)!.result as Tool.Success<(typeof ThreadsToolkit.tools)["spawn_thread"]>,
-    ),
-    Effect.provideService(McpInvocationContext.McpInvocationContext, {
-      environmentId: EnvironmentId.make("environment-restart"),
-      threadId: PARENT_ID,
-      providerSessionId: "provider-session-restart",
-      providerInstanceId: ProviderInstanceId.make("codex"),
-      capabilities: new Set<McpInvocationContext.McpCapability>(),
-      issuedAt: 1,
-    }),
-  );
-});
+const spawnChild = (reportBack: boolean) =>
+  Effect.gen(function* () {
+    const toolkit = yield* ThreadsToolkit;
+    return yield* toolkit.handle("spawn_thread", { task: "Remember HERON.", reportBack }).pipe(
+      Stream.unwrap,
+      Stream.runCollect,
+      Effect.map(
+        (chunk) =>
+          chunk.at(-1)!.result as Tool.Success<(typeof ThreadsToolkit.tools)["spawn_thread"]>,
+      ),
+      Effect.provideService(McpInvocationContext.McpInvocationContext, {
+        environmentId: EnvironmentId.make("environment-restart"),
+        threadId: PARENT_ID,
+        providerSessionId: "provider-session-restart",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        capabilities: new Set<McpInvocationContext.McpCapability>(),
+        issuedAt: 1,
+      }),
+    );
+  });
 
 /** Runs `act`, then waits for the first domain event matching `until`. */
 const dispatchUntil = <A, E, R>(
@@ -241,8 +239,8 @@ describe("child report-back across a server restart", () => {
       );
       const databasePath = NodePath.join(directory, "state.sqlite");
 
-      // First process: the parent spawns a child with the default reportBack.
-      const childId = yield* withServer(
+      // First process: the parent spawns one child that reports back and one that does not.
+      const [childId, quietId] = yield* withServer(
         databasePath,
         Effect.gen(function* () {
           yield* dispatchAll([
@@ -268,36 +266,53 @@ describe("child report-back across a server restart", () => {
               createdAt: NOW,
             },
           ]);
-          const { result } = yield* dispatchUntil(
-            spawnChild,
-            (event) =>
-              event.type === "thread.activity-appended" &&
-              event.aggregateId === PARENT_ID &&
-              event.payload.activity.kind === "task.started",
-          );
-          return result.threadId;
+          const taskStarted = (event: OrchestrationEvent) =>
+            event.type === "thread.activity-appended" &&
+            event.aggregateId === PARENT_ID &&
+            event.payload.activity.kind === "task.started";
+          const loud = yield* dispatchUntil(spawnChild(true), taskStarted);
+          const quiet = yield* dispatchUntil(spawnChild(false), taskStarted);
+          return [loud.result.threadId, quiet.result.threadId] as const;
         }),
       );
       const child = ThreadId.make(childId);
+      const quietChild = ThreadId.make(quietId);
 
-      // Second process: the child finishes a turn after the restart.
-      const { event: report } = yield* withServer(
+      // Second process: both children finish a turn after the restart. The
+      // quiet child goes first; the bridge handles events in order, so a
+      // report from it would reach the parent before the loud child's.
+      const { quietIdle, report } = yield* withServer(
         databasePath,
-        dispatchUntil(
-          dispatchAll([
-            session(child, "running", "turn-1"),
-            ...assistantReply(child, "reply-1", "HERON"),
-            session(child, "ready", null),
-          ]),
-          (event) =>
-            event.type === "thread.message-sent" &&
-            event.aggregateId === PARENT_ID &&
-            event.payload.text.includes("finished a turn"),
-        ),
+        Effect.gen(function* () {
+          const { event: quietIdle } = yield* dispatchUntil(
+            dispatchAll([
+              session(quietChild, "running", "quiet-turn-1"),
+              ...assistantReply(quietChild, "quiet-reply-1", "QUIET"),
+              session(quietChild, "ready", null),
+            ]),
+            parentActivity(quietId, "task.progress", "idle"),
+          );
+          const { event: report } = yield* dispatchUntil(
+            dispatchAll([
+              session(child, "running", "turn-1"),
+              ...assistantReply(child, "reply-1", "HERON"),
+              session(child, "ready", null),
+            ]),
+            (event) =>
+              event.type === "thread.message-sent" &&
+              event.aggregateId === PARENT_ID &&
+              event.payload.text.includes("finished a turn"),
+          );
+          return { quietIdle, report };
+        }),
       );
+      expect(
+        quietIdle.type === "thread.activity-appended" && quietIdle.payload.activity.payload,
+      ).toMatchObject({ reportBack: false });
       expect(report.type === "thread.message-sent" && report.payload.text).toContain("HERON");
 
-      // Third process: an idle transition without a new reply is not reported again.
+      // Third process: an idle transition without a new reply is not reported
+      // again, and the quiet child was never reported.
       const messages = yield* withServer(
         databasePath,
         Effect.gen(function* () {

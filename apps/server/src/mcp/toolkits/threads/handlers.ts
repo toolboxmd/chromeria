@@ -37,7 +37,11 @@ import {
   threadToolRefusal,
   threadToolScopeOf,
 } from "./roles.ts";
-import { childReportStateFrom } from "./childReportState.ts";
+import {
+  type ChildReportState,
+  childReportStatesFrom,
+  unrecordedChildReportState,
+} from "./childReportState.ts";
 import { isSubagentThreadId, makeSubagentThreadId, parentThreadIdOf } from "./subagentThreadId.ts";
 import {
   type SubagentStatus,
@@ -205,21 +209,34 @@ const make = Effect.gen(function* () {
       Effect.catchCause(() => Effect.succeed(null)),
     );
 
-  /** Restores a child's report state from its parent after a restart. */
+  /** Parents whose children's report state this process already restored. */
+  const restoredParents = new Set<string>();
+  const remember = (childId: string, state: ChildReportState) => {
+    reportBack.set(childId, state.reportBack);
+    if (state.lastReported !== null && !lastReported.has(childId)) {
+      lastReported.set(childId, state.lastReported);
+    }
+  };
+
+  /**
+   * Restores report state after a restart: every child of the parent from
+   * one read of the parent, then this child alone if the parent kept no row
+   * for it.
+   */
   const restoreReportState = (parentId: string, childId: string) =>
     Effect.gen(function* () {
       if (reportBack.has(childId)) return;
-      const parent = yield* snapshots
-        .getThreadDetailById(ThreadId.make(parentId))
-        .pipe(Effect.catchCause(() => Effect.succeedNone));
-      const state = childReportStateFrom(
-        Option.isSome(parent) ? parent.value.activities : [],
-        childId,
-      );
-      reportBack.set(childId, state.reportBack);
-      if (state.lastReported !== null && !lastReported.has(childId)) {
-        lastReported.set(childId, state.lastReported);
+      if (!restoredParents.has(parentId)) {
+        restoredParents.add(parentId);
+        const parent = yield* snapshots
+          .getThreadDetailById(ThreadId.make(parentId))
+          .pipe(Effect.catchCause(() => Effect.succeedNone));
+        const states = childReportStatesFrom(Option.isSome(parent) ? parent.value.activities : []);
+        for (const [id, state] of states) if (!reportBack.has(id)) remember(id, state);
       }
+      if (reportBack.has(childId)) return;
+      const last = yield* lastAssistantMessage(childId);
+      remember(childId, unrecordedChildReportState(last?.id ?? null));
     });
 
   const summarize = (thread: OrchestrationThreadShell) =>
@@ -403,11 +420,15 @@ const make = Effect.gen(function* () {
         ? { id: last.id, text: last.text }
         : null;
     if (report) lastReported.set(childId, report.id);
+    const reportedMessageId = lastReported.get(childId);
+    // Every idle row carries the report state, so a restart restores it from
+    // the newest row even when older rows left the parent's activity window.
     yield* appendParentActivity(parentId, "task.progress", "Subagent idle", {
       taskId: childId,
       status: "idle",
       ...(last?.text ? { summary: last.text } : {}),
-      ...(report ? { reportedMessageId: report.id } : {}),
+      reportBack: reportBack.get(childId) === true,
+      ...(reportedMessageId ? { reportedMessageId } : {}),
     });
     if (!report) return;
     const parent = yield* threadShell(parentId);

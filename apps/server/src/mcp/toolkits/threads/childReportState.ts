@@ -5,10 +5,16 @@ import type { OrchestrationThreadActivity } from "@t3tools/contracts";
  * (toolboxmd/t3code#48): whether finished turns go back to the parent, and
  * the last assistant message already reported there.
  *
- * The bridge keeps this in memory and writes it into the parent's task.*
- * activities (`reportBack` on task.started, `reportedMessageId` on the
- * task.progress row that triggers a report), so a restarted server restores
- * it from the parent instead of silently dropping report-back.
+ * The bridge keeps this in memory and writes both values into the parent's
+ * task.* rows (task.started and every idle task.progress row), so a
+ * restarted server restores them from the newest row for the child.
+ *
+ * Remaining gap: the parent's thread detail holds only its newest activities
+ * (THREAD_DETAIL_ACTIVITY_LIMIT). A child with no row left in that window
+ * restores with spawn_thread's default `reportBack: true`, and its current
+ * last reply counts as already reported, so nothing old is re-sent. A child
+ * spawned with `reportBack: false` whose rows all fell out of the window
+ * therefore reports again after a restart.
  */
 export interface ChildReportState {
   readonly reportBack: boolean;
@@ -23,25 +29,31 @@ function payloadOf(activity: OrchestrationThreadActivity): Record<string, unknow
 }
 
 /**
- * Restores a child's report state from its parent's activities. A missing
- * `reportBack` (children spawned before #48, or a task.started row outside
- * the parent's activity window) falls back to spawn_thread's default, true.
+ * Report state per child id, from one read of the parent's activities.
+ * Children without a row carrying `reportBack` are absent.
  */
-export function childReportStateFrom(
+export function childReportStatesFrom(
   parentActivities: ReadonlyArray<OrchestrationThreadActivity>,
-  childId: string,
-): ChildReportState {
-  let reportBack = true;
-  let lastReported: string | null = null;
+): Map<string, ChildReportState> {
+  const states = new Map<string, ChildReportState>();
   for (const activity of parentActivities) {
     const payload = payloadOf(activity);
-    if (payload.taskId !== childId) continue;
-    if (activity.kind === "task.started" && typeof payload.reportBack === "boolean") {
-      reportBack = payload.reportBack;
-    }
-    if (typeof payload.reportedMessageId === "string") {
-      lastReported = payload.reportedMessageId;
-    }
+    if (typeof payload.taskId !== "string" || typeof payload.reportBack !== "boolean") continue;
+    const previous = states.get(payload.taskId);
+    states.set(payload.taskId, {
+      reportBack: payload.reportBack,
+      lastReported:
+        typeof payload.reportedMessageId === "string"
+          ? payload.reportedMessageId
+          : (previous?.lastReported ?? null),
+    });
   }
-  return { reportBack, lastReported };
+  return states;
+}
+
+/** The state for a child with no surviving row: report, but not what already exists. */
+export function unrecordedChildReportState(
+  lastAssistantMessageId: string | null,
+): ChildReportState {
+  return { reportBack: true, lastReported: lastAssistantMessageId };
 }
