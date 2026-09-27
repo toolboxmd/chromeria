@@ -30,6 +30,8 @@ const ROUTER_PLUGIN_DIR = [".codex", "plugins", "cache", "toolboxmd", "model-rou
 const ROUTER_TIMEOUT = "120 seconds";
 /** Jobs run for hours; the token must outlive the job, not the tool call. */
 const ROUTER_TOKEN_TTL = Duration.days(30);
+/** Cancel and recover finish within the call; the token only needs to outlive them. */
+const ROUTER_CANCEL_TOKEN_TTL = Duration.hours(1);
 
 const fail = (reason: string) => Effect.fail(new PrismToolError({ reason }));
 
@@ -135,6 +137,60 @@ export function parseRouterOutput(
   }
   return { ok: parsed };
 }
+
+/** The T3 planner thread a router `status` reply names as the job's owner. */
+export function plannerThreadOf(status: unknown): string | null {
+  const job =
+    status !== null && typeof status === "object" && "job" in status
+      ? (status as { job: unknown }).job
+      : null;
+  const thread =
+    job !== null && typeof job === "object" && "planner_t3_thread" in job
+      ? (job as { planner_t3_thread: unknown }).planner_t3_thread
+      : null;
+  return typeof thread === "string" && thread.length > 0 ? thread : null;
+}
+
+/** The job's status from a router `status` reply. */
+export function jobStatusOf(status: unknown): string | null {
+  const job =
+    status !== null && typeof status === "object" && "job" in status
+      ? (status as { job: unknown }).job
+      : null;
+  const value =
+    job !== null && typeof job === "object" && "status" in job
+      ? (job as { status: unknown }).status
+      : null;
+  return typeof value === "string" ? value : null;
+}
+
+/**
+ * Router `cancel` then `recover` for a job the caller started, then its final
+ * status. `cancel` persists the intent; `recover` stops the job's processes
+ * and T3 child threads and finalizes it, or leaves it `cancelling` when
+ * something is still alive.
+ */
+export const cancelOwnedJob = <E, R>(input: {
+  readonly requestId: string;
+  readonly callerThreadId: string;
+  readonly runRouter: (
+    args: ReadonlyArray<string>,
+    env?: NodeJS.ProcessEnv,
+  ) => Effect.Effect<unknown, PrismToolError | E, R>;
+  readonly issueToken: Effect.Effect<NodeJS.ProcessEnv, PrismToolError | E, R>;
+}) =>
+  Effect.gen(function* () {
+    const { requestId, runRouter } = input;
+    const owner = plannerThreadOf(yield* runRouter(["status", "--request-id", requestId]));
+    if (owner !== input.callerThreadId) {
+      return yield* fail(`Prism job ${requestId} was not started by this thread.`);
+    }
+    const env = yield* input.issueToken;
+    const cancel = yield* runRouter(["cancel", "--request-id", requestId], env);
+    const recover = yield* runRouter(["recover", "--request-id", requestId], env);
+    const status = jobStatusOf(yield* runRouter(["status", "--request-id", requestId]));
+    return { requestId, router: { status, cancel, recover } };
+  });
 
 /** A wildcard bind is reachable on loopback, where the router runs. */
 function serverBaseUrl(address: HttpServer.HttpServer["Service"]["address"]): string {
@@ -260,6 +316,28 @@ const make = Effect.gen(function* () {
         ),
         Effect.map((router) => ({ requestId, router })),
       ),
+    prism_cancel: ({ requestId }) =>
+      Effect.gen(function* () {
+        const caller = yield* plannerCaller;
+        // Cancelling interrupts the job's T3 child threads, which needs a
+        // server token like submit's.
+        const issueToken = auth
+          .issueSession({
+            scopes: [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
+            label: `Prism router cancel ${requestId}`,
+            ttl: ROUTER_CANCEL_TOKEN_TTL,
+          })
+          .pipe(
+            Effect.map((issued) => ({ T3_SERVER_URL: serverUrl, T3_SERVER_TOKEN: issued.token })),
+            Effect.catchCause(() => fail("Could not issue a server token for Prism.")),
+          );
+        return yield* cancelOwnedJob({
+          requestId,
+          callerThreadId: caller.id,
+          runRouter,
+          issueToken,
+        });
+      }),
   });
 });
 
