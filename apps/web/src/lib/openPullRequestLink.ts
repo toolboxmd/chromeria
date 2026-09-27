@@ -286,7 +286,8 @@ export function useOpenChangeRequestLink(
         if (!resolvedThreadRef) {
           void navigate({
             to: "/pull-requests",
-            search: (previous) => ({
+            // Leaving the Issues view, whose side panel would otherwise stay in front.
+            search: ({ view: _view, issue: _issue, ...previous }) => ({
               ...previous,
               involvement: previous.involvement ?? "all",
               state: previous.state ?? "all",
