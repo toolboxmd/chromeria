@@ -338,6 +338,8 @@ for per-match decisions and the absorption PR record.
     "apps/web/src/components/issues/issuePaletteItems.tsx",
     "apps/web/src/components/issues/issuePaletteStore.ts",
     "apps/web/src/components/issues/issuePresentation.tsx",
+    "apps/web/src/components/pullRequest/pullRequestFilterSearch.logic.test.ts",
+    "apps/web/src/components/pullRequest/pullRequestFilterSearch.logic.ts",
     "apps/web/src/state/issues.ts",
     "packages/contracts/src/issues.ts"
   ],

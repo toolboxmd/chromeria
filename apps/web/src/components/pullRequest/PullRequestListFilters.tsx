@@ -49,6 +49,7 @@ import {
   type PullRequestAuthorFacet,
   type PullRequestLabelFacet,
 } from "./pullRequestList.logic";
+import { searchFilterOptions, searchLabelOptions } from "./pullRequestFilterSearch.logic";
 import { PullRequestActorAvatar } from "./pullRequestPresentation";
 import { PullRequestGlyph } from "./pullRequestIcons";
 
@@ -242,10 +243,7 @@ function PullRequestFilterSearch({
   );
 }
 
-/**
- * A long list's row, searched like the author filter: the first ("all") option, the selection,
- * then the first ten matches.
- */
+/** A long list's row, searched like the author filter. */
 export function PullRequestSearchableFilterSubmenu<Value extends string>({
   searchLabel,
   ...props
@@ -257,22 +255,13 @@ export function PullRequestSearchableFilterSubmenu<Value extends string>({
   searchLabel: string;
 }) {
   const [query, setQuery] = useState("");
-  const needle = query.trim().toLowerCase();
-  const rest = props.options.slice(1);
-  const selected = rest.find((option) => option.value === props.value);
-  const matches = rest.filter(
-    (option) => option !== selected && option.label.toLowerCase().includes(needle),
-  );
+  const { shown, empty } = searchFilterOptions(props.options, props.value, query);
   return (
     <PullRequestFilterRadioSubmenu
       {...props}
-      shownOptions={[
-        ...props.options.slice(0, 1),
-        ...(selected ? [selected] : []),
-        ...matches.slice(0, 10),
-      ]}
+      shownOptions={shown}
       search={<PullRequestFilterSearch label={searchLabel} value={query} onChange={setQuery} />}
-      empty={needle && matches.length === 0 && !selected ? "No matches" : undefined}
+      empty={empty ? "No matches" : undefined}
     />
   );
 }
@@ -393,16 +382,18 @@ export function PullRequestLabelFilter({
   searchLabel?: string;
 }) {
   const [query, setQuery] = useState("");
-  const needle = query.trim().toLowerCase();
   const selected = new Set(value.map((name) => name.toLowerCase()));
-  const visible = [
-    ...value
-      .filter((name) => !options.some((option) => option.name.toLowerCase() === name.toLowerCase()))
-      .map((name) => ({ name, color: null, count: 0 })),
-    ...options,
-  ].filter(
-    (option) =>
-      selected.has(option.name.toLowerCase()) || option.name.toLowerCase().includes(needle),
+  const visible = searchLabelOptions(
+    [
+      ...value
+        .filter(
+          (name) => !options.some((option) => option.name.toLowerCase() === name.toLowerCase()),
+        )
+        .map((name) => ({ name, color: null, count: 0 })),
+      ...options,
+    ],
+    value,
+    query,
   );
   return (
     <MenuSub>
@@ -418,7 +409,7 @@ export function PullRequestLabelFilter({
           <PullRequestFilterSearch label={searchLabel} value={query} onChange={setQuery} />
         )}
         {visible.length === 0 ? (
-          <MenuItem disabled>{needle ? "No matches" : "No labels in this view"}</MenuItem>
+          <MenuItem disabled>{query.trim() ? "No matches" : "No labels in this view"}</MenuItem>
         ) : (
           visible.map((option) => {
             const key = option.name.toLowerCase();

@@ -81,6 +81,7 @@ export function IssueFiltersMenu({
   }>;
 }) {
   const filterCount =
+    (state === "open" ? 0 : 1) +
     (filters.repository ? 1 : 0) +
     (filters.labels?.length ?? 0) +
     (filters.milestone ? 1 : 0) +
@@ -100,11 +101,13 @@ export function IssueFiltersMenu({
   ];
   const milestoneOptions: ReadonlyArray<PullRequestFilterOption<string>> = [
     { value: ANY, label: "Any milestone", Icon: LayersIcon },
-    ...facets.milestones.map((milestone) => ({
-      value: milestone,
-      label: milestone,
-      Icon: MilestoneIcon,
-    })),
+    // An active milestone stays listed after the loaded rows stop carrying it.
+    ...[
+      ...facets.milestones,
+      ...(filters.milestone && !facets.milestones.includes(filters.milestone)
+        ? [filters.milestone]
+        : []),
+    ].map((milestone) => ({ value: milestone, label: milestone, Icon: MilestoneIcon })),
   ];
   const parentOptions: ReadonlyArray<PullRequestFilterOption<string>> = [
     { value: ANY, label: "Any parent", Icon: LayersIcon },
@@ -114,10 +117,22 @@ export function IssueFiltersMenu({
       label: `#${parent.number} ${parent.title}`,
       Icon: ISSUE_STATE_PRESENTATION[parent.state].Icon,
     })),
+    // Likewise an active parent, named by its number from the key.
+    ...(filters.parent &&
+    filters.parent !== "none" &&
+    !facets.parents.some((parent) => issueKey(parent) === filters.parent)
+      ? [
+          {
+            value: filters.parent,
+            label: `#${filters.parent.split("#").at(-1)}`,
+            Icon: ISSUE_STATE_PRESENTATION.open.Icon,
+          },
+        ]
+      : []),
   ];
   return (
     <Menu>
-      <PullRequestFiltersTrigger count={filterCount + (state === "open" ? 0 : 1)} />
+      <PullRequestFiltersTrigger count={filterCount} />
       <MenuPopup align="end" side="bottom">
         <PullRequestFilterRadioSubmenu
           label="State"
@@ -167,7 +182,14 @@ export function IssueFiltersMenu({
         {filterCount > 0 ? (
           <>
             <MenuSeparator />
-            <MenuItem onClick={() => onFilters(() => ({}))}>Clear filters</MenuItem>
+            <MenuItem
+              onClick={() => {
+                onFilters(() => ({}));
+                if (state !== "open") onState("open");
+              }}
+            >
+              Clear filters
+            </MenuItem>
           </>
         ) : null}
       </MenuPopup>
