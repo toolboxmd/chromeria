@@ -21,7 +21,7 @@ import {
   TagIcon,
   UserRoundIcon,
 } from "lucide-react";
-import { type ElementType, useState } from "react";
+import { type ElementType, type ReactNode, useState } from "react";
 
 import { getSourceControlPresentationForKind } from "~/sourceControlPresentation";
 import { ProjectFavicon, type ProjectFaviconProject } from "../ProjectFavicon";
@@ -161,7 +161,7 @@ const CHECKS_OPTIONS = [
   { value: "failing", label: "Failing", Icon: CircleXIcon },
 ] as const satisfies ReadonlyArray<PullRequestFilterOption<string>>;
 
-function PullRequestFilterRadioGroup<Value extends string>({
+export function PullRequestFilterRadioGroup<Value extends string>({
   label,
   value,
   options,
@@ -210,16 +210,90 @@ function PullRequestFilterRadioGroup<Value extends string>({
   );
 }
 
-function PullRequestFilterRadioSubmenu<Value extends string>({
+/** A long list's search box; arrows and Escape still reach the menu. */
+function PullRequestFilterSearch({
   label,
   value,
-  options,
   onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="p-1 pb-2">
+      <InputGroup>
+        <InputGroupAddon>
+          <SearchIcon aria-hidden />
+        </InputGroupAddon>
+        <InputGroupInput
+          autoFocus
+          size="compact"
+          value={value}
+          onChange={(event) => onChange(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowDown" && event.key !== "Escape") event.stopPropagation();
+          }}
+          placeholder={label}
+          aria-label={label}
+        />
+      </InputGroup>
+    </div>
+  );
+}
+
+/**
+ * A long list's row, searched like the author filter: the first ("all") option, the selection,
+ * then the first ten matches.
+ */
+export function PullRequestSearchableFilterSubmenu<Value extends string>({
+  searchLabel,
+  ...props
 }: {
   label: string;
   value: Value;
   options: ReadonlyArray<PullRequestFilterOption<Value>>;
   onChange: (value: Value) => void;
+  searchLabel: string;
+}) {
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+  const rest = props.options.slice(1);
+  const selected = rest.find((option) => option.value === props.value);
+  const matches = rest.filter(
+    (option) => option !== selected && option.label.toLowerCase().includes(needle),
+  );
+  return (
+    <PullRequestFilterRadioSubmenu
+      {...props}
+      shownOptions={[
+        ...props.options.slice(0, 1),
+        ...(selected ? [selected] : []),
+        ...matches.slice(0, 10),
+      ]}
+      search={<PullRequestFilterSearch label={searchLabel} value={query} onChange={setQuery} />}
+      empty={needle && matches.length === 0 && !selected ? "No matches" : undefined}
+    />
+  );
+}
+
+export function PullRequestFilterRadioSubmenu<Value extends string>({
+  label,
+  value,
+  options,
+  onChange,
+  shownOptions = options,
+  search,
+  empty,
+}: {
+  label: string;
+  value: Value;
+  options: ReadonlyArray<PullRequestFilterOption<Value>>;
+  onChange: (value: Value) => void;
+  /** A searched subset of `options`, headed by the `search` box. */
+  shownOptions?: ReadonlyArray<PullRequestFilterOption<Value>>;
+  search?: ReactNode;
+  empty?: string | undefined;
 }) {
   const current = options.find((option) => option.value === value) ?? options[0];
   if (!current) return null;
@@ -233,12 +307,14 @@ function PullRequestFilterRadioSubmenu<Value extends string>({
         </span>
       </MenuSubTrigger>
       <MenuSubPopup>
+        {search}
         <PullRequestFilterRadioGroup
           label={label}
           value={value}
-          options={options}
+          options={shownOptions}
           onChange={onChange}
         />
+        {empty ? <MenuItem disabled>{empty}</MenuItem> : null}
       </MenuSubPopup>
     </MenuSub>
   );
@@ -278,24 +354,7 @@ function PullRequestAuthorFilter({
         </span>
       </MenuSubTrigger>
       <MenuSubPopup>
-        <div className="p-1 pb-2">
-          <InputGroup>
-            <InputGroupAddon>
-              <SearchIcon aria-hidden />
-            </InputGroupAddon>
-            <InputGroupInput
-              autoFocus
-              size="compact"
-              value={query}
-              onChange={(event) => setQuery(event.currentTarget.value)}
-              onKeyDown={(event) => {
-                if (event.key !== "ArrowDown" && event.key !== "Escape") event.stopPropagation();
-              }}
-              placeholder="Search authors"
-              aria-label="Search authors"
-            />
-          </InputGroup>
-        </div>
+        <PullRequestFilterSearch label="Search authors" value={query} onChange={setQuery} />
         <MenuRadioGroup value={selected?.actor.login ?? value ?? ""} onValueChange={select}>
           <MenuRadioItem value="">
             <span className="flex min-w-0 items-center gap-2">
@@ -321,22 +380,30 @@ function PullRequestAuthorFilter({
   );
 }
 
-function PullRequestLabelFilter({
+/** With `searchLabel`, a long label list narrows by name; checked labels always stay. */
+export function PullRequestLabelFilter({
   value,
   options,
   onChange,
+  searchLabel,
 }: {
   value: ReadonlyArray<string>;
   options: ReadonlyArray<PullRequestLabelFacet>;
   onChange: (labels: ReadonlyArray<string>) => void;
+  searchLabel?: string;
 }) {
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
   const selected = new Set(value.map((name) => name.toLowerCase()));
   const visible = [
     ...value
       .filter((name) => !options.some((option) => option.name.toLowerCase() === name.toLowerCase()))
       .map((name) => ({ name, color: null, count: 0 })),
     ...options,
-  ];
+  ].filter(
+    (option) =>
+      selected.has(option.name.toLowerCase()) || option.name.toLowerCase().includes(needle),
+  );
   return (
     <MenuSub>
       <MenuSubTrigger>
@@ -347,8 +414,11 @@ function PullRequestLabelFilter({
         </span>
       </MenuSubTrigger>
       <MenuSubPopup>
+        {searchLabel === undefined ? null : (
+          <PullRequestFilterSearch label={searchLabel} value={query} onChange={setQuery} />
+        )}
         {visible.length === 0 ? (
-          <MenuItem disabled>No labels in this view</MenuItem>
+          <MenuItem disabled>{needle ? "No matches" : "No labels in this view"}</MenuItem>
         ) : (
           visible.map((option) => {
             const key = option.name.toLowerCase();
@@ -383,6 +453,21 @@ function PullRequestLabelFilter({
         )}
       </MenuSubPopup>
     </MenuSub>
+  );
+}
+
+/** The Filters button, counting the filters that are off their default. */
+export function PullRequestFiltersTrigger({ count }: { count: number }) {
+  return (
+    <MenuTrigger render={<Button variant="outline" />}>
+      <ListFilterIcon className="size-4" />
+      <span>Filters</span>
+      {count > 0 ? (
+        <span className="rounded-full bg-muted px-1.5 text-xs text-muted-foreground tabular-nums">
+          {count}
+        </span>
+      ) : null}
+    </MenuTrigger>
   );
 }
 
@@ -500,15 +585,7 @@ export function PullRequestFiltersMenu({
   ];
   return (
     <Menu onOpenChange={onOpenChange}>
-      <MenuTrigger render={<Button variant="outline" />}>
-        <ListFilterIcon className="size-4" />
-        <span>Filters</span>
-        {filterCount > 0 ? (
-          <span className="rounded-full bg-muted px-1.5 text-xs text-muted-foreground tabular-nums">
-            {filterCount}
-          </span>
-        ) : null}
-      </MenuTrigger>
+      <PullRequestFiltersTrigger count={filterCount} />
       <MenuPopup align="end" side="bottom">
         <PullRequestFilterRadioSubmenu
           label="State"
