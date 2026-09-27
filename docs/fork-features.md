@@ -552,7 +552,7 @@ for per-match decisions and the absorption PR record.
   "id": "prism-stream-clock",
   "purpose": "Stamp each thread's last provider stream event in memory for Model Router liveness, record per-turn stream statistics, and cancel Prism jobs.",
   "issues": ["https://github.com/toolboxmd/t3code/issues/55"],
-  "prs": [],
+  "prs": ["https://github.com/toolboxmd/t3code/pull/56"],
   "newFiles": [
     "apps/server/src/prism/livenessRoute.ts",
     "apps/server/src/prism/streamClock.test.ts",
