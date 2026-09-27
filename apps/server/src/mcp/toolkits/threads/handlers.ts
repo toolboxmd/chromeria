@@ -37,6 +37,7 @@ import {
   threadToolRefusal,
   threadToolScopeOf,
 } from "./roles.ts";
+import { childReportStateFrom } from "./childReportState.ts";
 import { isSubagentThreadId, makeSubagentThreadId, parentThreadIdOf } from "./subagentThreadId.ts";
 import {
   type SubagentStatus,
@@ -157,10 +158,8 @@ const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
 
   /** Child thread id -> whether its turn results go back to the parent.
-   * Process-local by design: a restart loses pending reportBack flags and
-   * the status/message dedupe below, so an already-idle child may re-report
-   * one turn after a restart. Children created after the restart are
-   * unaffected. */
+   * This and `lastReported` are also written to the parent's task.* rows and
+   * restored from there after a restart (see childReportState.ts). */
   const reportBack = new Map<string, boolean>();
   /** Child thread id -> last status the parent's Agents panel was told. */
   const lastStatus = new Map<string, SubagentStatus>();
@@ -205,6 +204,23 @@ const make = Effect.gen(function* () {
       }),
       Effect.catchCause(() => Effect.succeed(null)),
     );
+
+  /** Restores a child's report state from its parent after a restart. */
+  const restoreReportState = (parentId: string, childId: string) =>
+    Effect.gen(function* () {
+      if (reportBack.has(childId)) return;
+      const parent = yield* snapshots
+        .getThreadDetailById(ThreadId.make(parentId))
+        .pipe(Effect.catchCause(() => Effect.succeedNone));
+      const state = childReportStateFrom(
+        Option.isSome(parent) ? parent.value.activities : [],
+        childId,
+      );
+      reportBack.set(childId, state.reportBack);
+      if (state.lastReported !== null && !lastReported.has(childId)) {
+        lastReported.set(childId, state.lastReported);
+      }
+    });
 
   const summarize = (thread: OrchestrationThreadShell) =>
     Effect.gen(function* () {
@@ -341,6 +357,7 @@ const make = Effect.gen(function* () {
       yield* appendParentActivity(parentId, "task.started", `Started ${event.payload.title}`, {
         taskId: childId,
         title: event.payload.title,
+        reportBack: reportBack.get(childId) !== false,
         role: selection.instanceId,
         model: selection.model,
         ...(typeof effort === "string" ? { effort } : {}),
@@ -349,6 +366,7 @@ const make = Effect.gen(function* () {
       return;
     }
     if (event.type !== "thread.session-set") return;
+    yield* restoreReportState(parentId, childId);
     const status = subagentStatusOf(event.payload.session);
     const previous = lastStatus.get(childId);
     if (status === previous) return;
@@ -377,27 +395,28 @@ const make = Effect.gen(function* () {
     }
     if (status !== "idle") return;
     const last = yield* lastAssistantMessage(childId);
+    const report =
+      reportBack.get(childId) === true &&
+      last?.id &&
+      last.text &&
+      lastReported.get(childId) !== last.id
+        ? { id: last.id, text: last.text }
+        : null;
+    if (report) lastReported.set(childId, report.id);
     yield* appendParentActivity(parentId, "task.progress", "Subagent idle", {
       taskId: childId,
       status: "idle",
       ...(last?.text ? { summary: last.text } : {}),
+      ...(report ? { reportedMessageId: report.id } : {}),
     });
-    if (
-      reportBack.get(childId) !== true ||
-      !last?.id ||
-      !last.text ||
-      lastReported.get(childId) === last.id
-    ) {
-      return;
-    }
-    lastReported.set(childId, last.id);
+    if (!report) return;
     const parent = yield* threadShell(parentId);
     const child = yield* threadShell(childId);
     if (!parent) return;
     const text =
-      last.text.length > REPORT_TEXT_LIMIT
-        ? `${last.text.slice(0, REPORT_TEXT_LIMIT)}…`
-        : last.text;
+      report.text.length > REPORT_TEXT_LIMIT
+        ? `${report.text.slice(0, REPORT_TEXT_LIMIT)}…`
+        : report.text;
     yield* startTurn(
       parent,
       `[Subagent ${child?.title ?? childId} (thread ${childId}) finished a turn]\n\n${text}`,
