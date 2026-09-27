@@ -218,8 +218,8 @@ Select an Issue to read it, see its linked threads and pull requests, comment, c
 or start a thread from it: the new thread opens in the matching project with the Issue in the
 composer, already linked. Selecting an Issue in a thread's linked PRs and Issues panel opens it
 here. An Issue's pull requests and GitHub Issue links in chat open in the app: pull requests in
-the pull request panel, Issues here, and anything the app cannot read on GitHub. Cmd/Ctrl-click
-opens GitHub directly. While the list is open, the command palette searches it too. Anywhere,
+the pull request panel, Issues here, and anything else as a normal link, following the **Open
+links in** setting. Cmd/Ctrl-click opens GitHub directly. While the list is open, the command palette searches it too. Anywhere,
 typing `#12`, `owner/repo#12` or an Issue URL in the command palette finds the threads linked to
 that Issue.
 A bare `#12` for an Issue the list has not loaded finds only threads linked by hand, by an agent,

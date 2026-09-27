@@ -2,7 +2,11 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { issueLinkCandidate, openIssueOrPullRequestLink } from "./issueLinkOpening.logic";
+import {
+  browserMayBlockNewTab,
+  issueLinkCandidate,
+  openIssueOrPullRequestLink,
+} from "./issueLinkOpening.logic";
 
 const environmentId = EnvironmentId.make("env-1");
 
@@ -139,5 +143,17 @@ describe("openIssueOrPullRequestLink", () => {
         openPullRequest: () => false,
       }),
     ).toEqual({ kind: "external", opened: ["external"] });
+  });
+});
+
+describe("browserMayBlockNewTab", () => {
+  it("asks for a fresh click only on the web once the click's activation lapsed", () => {
+    expect(browserMayBlockNewTab({ desktop: false, userActivationActive: false })).toBe(true);
+    expect(browserMayBlockNewTab({ desktop: false, userActivationActive: true })).toBe(false);
+    expect(browserMayBlockNewTab({ desktop: true, userActivationActive: false })).toBe(false);
+  });
+
+  it("opens directly where the browser does not report activation", () => {
+    expect(browserMayBlockNewTab({ desktop: false, userActivationActive: undefined })).toBe(false);
   });
 });

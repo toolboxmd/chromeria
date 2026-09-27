@@ -69,6 +69,21 @@ export function issueLinkCandidate({
 }
 
 /**
+ * Whether a web browser would block a new tab opened now. Opening one needs the click's user
+ * activation, which lapses while the link is read; the desktop shell opens links itself.
+ */
+export function browserMayBlockNewTab({
+  desktop,
+  userActivationActive,
+}: {
+  desktop: boolean;
+  /** `navigator.userActivation.isActive`, undefined where the browser does not report it. */
+  userActivationActive: boolean | undefined;
+}): boolean {
+  return !desktop && userActivationActive === false;
+}
+
+/**
  * Opens a GitHub `/issues/N` link where it belongs, deciding on click: the pull request panel when
  * N reads as a pull request, the Issues side panel when it reads as an Issue, and the browser
  * otherwise. Every read that fails or is unavailable moves on to the next, so a click always

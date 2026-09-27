@@ -1,7 +1,7 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 import { parseIssueUrl } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 
 import { issueDetail } from "~/state/issues";
 import { useProjects, useServerConfigs } from "~/state/entities";
@@ -9,7 +9,11 @@ import { pullRequestEnvironment } from "~/state/pullRequests";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { readPullRequestListPreferences } from "../pullRequest/pullRequestListPreferences";
 import { stackedThreadToast, toastManager } from "../ui/toast";
-import { issueLinkCandidate, openIssueOrPullRequestLink } from "./issueLinkOpening.logic";
+import {
+  browserMayBlockNewTab,
+  issueLinkCandidate,
+  openIssueOrPullRequestLink,
+} from "./issueLinkOpening.logic";
 
 const NO_MODIFIER = {
   metaKey: false,
@@ -17,6 +21,17 @@ const NO_MODIFIER = {
   preventDefault: () => undefined,
   stopPropagation: () => undefined,
 };
+
+function reportFailure(error: unknown) {
+  console.error("[issue-link] failed to open link", error);
+  toastManager.add(
+    stackedThreadToast({
+      type: "error",
+      title: "Unable to open link",
+      description: error instanceof Error ? error.message : "An error occurred.",
+    }),
+  );
+}
 
 /** Opens the Issues page with an Issue's side panel, read through the given server. */
 export function useOpenIssueInIssuesView() {
@@ -59,6 +74,8 @@ export function useOpenIssueOrPullRequestLink(
   });
   // The same query the side panel renders, so an Issue read here is not read again there.
   const readIssue = useAtomQueryRunner(issueDetail, { reportFailure: false, reportDefect: false });
+  // A repeat click while a link is being read joins that read instead of opening it twice.
+  const pending = useRef(new Map<string, Promise<unknown>>());
   return useCallback(
     (
       url: string,
@@ -81,8 +98,10 @@ export function useOpenIssueOrPullRequestLink(
       });
       const issue = parseIssueUrl(url);
       if (candidate === null || issue === null) return null;
+      const inFlight = pending.current.get(url);
+      if (inFlight !== undefined) return inFlight;
       const pullRequestTarget = options?.pullRequestRead ? null : candidate.pullRequestTarget;
-      return openIssueOrPullRequestLink({
+      const opening = openIssueOrPullRequestLink({
         readPullRequest:
           pullRequestTarget === null
             ? null
@@ -97,17 +116,33 @@ export function useOpenIssueOrPullRequestLink(
             ? null
             : async () => (await readIssue({ environmentId, input: issue }))._tag === "Success",
         openIssue: () => environmentId !== null && openIssue(url, environmentId),
-        openExternal: () => openLink(url),
-      }).catch((error: unknown) => {
-        console.error("[issue-link] failed to open link", error);
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Unable to open link",
-            description: error instanceof Error ? error.message : "An error occurred.",
-          }),
-        );
-      });
+        openExternal: async () => {
+          if (
+            !browserMayBlockNewTab({
+              desktop: Boolean(window.desktopBridge),
+              userActivationActive: navigator.userActivation?.isActive,
+            })
+          ) {
+            return openLink(url);
+          }
+          // The browser would block the tab silently, so the user opens it with a fresh click.
+          toastManager.add(
+            stackedThreadToast({
+              type: "info",
+              title: "Open this link on GitHub?",
+              description: url,
+              actionProps: {
+                children: "Open on GitHub",
+                onClick: () => void openLink(url).catch(reportFailure),
+              },
+            }),
+          );
+        },
+      })
+        .catch(reportFailure)
+        .finally(() => pending.current.delete(url));
+      pending.current.set(url, opening);
+      return opening;
     },
     [
       openChangeRequestLink,
