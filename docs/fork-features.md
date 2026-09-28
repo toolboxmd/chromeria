@@ -117,7 +117,10 @@ for per-match decisions and the absorption PR record.
     "https://github.com/toolboxmd/t3code/issues/48",
     "https://github.com/toolboxmd/t3code/issues/59"
   ],
-  "prs": ["https://github.com/toolboxmd/t3code/pull/10"],
+  "prs": [
+    "https://github.com/toolboxmd/t3code/pull/10",
+    "https://github.com/toolboxmd/t3code/pull/60"
+  ],
   "newFiles": [
     "apps/server/src/mcp/toolkits/threads/childReportState.test.ts",
     "apps/server/src/mcp/toolkits/threads/childReportState.ts",
