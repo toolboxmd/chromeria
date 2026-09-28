@@ -31,6 +31,7 @@ apps/web/src/lib/bootError.ts
 
 # Child threads in the Agents panel and threads MCP toolkit (#8, #10)
 apps/server/src/entrypoint.test.ts
+# Shared registration seam: child threads, Prism routes and stale-turn monitor (#62).
 apps/server/src/mcp/McpHttpServer.ts
 apps/server/src/mcp/toolkits/threads/childThreads.test.ts
 apps/server/src/mcp/toolkits/threads/handlers.ts

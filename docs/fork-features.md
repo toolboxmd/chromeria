@@ -594,3 +594,38 @@ for per-match decisions and the absorption PR record.
   ]
 }
 ```
+
+## Stale-turn detector
+
+```json
+{
+  "id": "prism-stale-turn-detector",
+  "purpose": "Detect silent or dead worker turns from the stream clock and measured healthy gaps, exclude host sleep, and notify the spawning parent once.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/62"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/65"],
+  "newFiles": [
+    "apps/server/src/prism/livenessRoute.test.ts",
+    "apps/server/src/prism/staleTurnDetector.ts",
+    "apps/server/src/prism/staleTurnDetector.test.ts",
+    "apps/server/src/prism/staleTurnMonitor.ts",
+    "apps/server/src/prism/staleTurnMonitor.test.ts"
+  ],
+  "upstreamFiles": [],
+  "sharedFiles": [
+    "apps/server/src/mcp/McpHttpServer.ts",
+    "apps/server/src/prism/livenessRoute.ts",
+    "apps/server/src/prism/streamClock.ts",
+    "apps/server/src/prism/streamClock.test.ts",
+    "packages/contracts/src/prism.ts",
+    "packages/contracts/src/prism.test.ts"
+  ],
+  "keywords": [
+    "stale",
+    "liveness",
+    "stream clock",
+    "prism.stream-stats",
+    "spawn_thread",
+    "host sleep"
+  ]
+}
+```
