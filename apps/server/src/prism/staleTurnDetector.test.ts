@@ -141,6 +141,18 @@ it.effect("sleep restarts silence for monotonic clocks that exclude or include s
   ),
 );
 
+it.effect("does not call a newly started provider dead from an older session snapshot", () =>
+  test(
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      f.detector.state.tick(1_000, 1_000, [], 0);
+      expect(f.status().stale).toBe(false);
+      f.detector.state.tick(2_000, 2_000, [], 1_000);
+      expect(f.status()).toMatchObject({ stale: true, reason: "provider-dead" });
+    }),
+  ),
+);
+
 it.effect("missing or errored provider sessions flag immediately, including during a tool", () =>
   test(
     Effect.gen(function* () {

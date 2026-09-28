@@ -160,7 +160,12 @@ export function makeStaleTurnDetectorState(onStale: (turn: StaleTurn) => void) {
       state.reason = null;
       if (failure) flag(threadId, state, now, failure);
     },
-    tick: (now: number, monotonic: number, sessions: ReadonlyArray<ProviderSession>) => {
+    tick: (
+      now: number,
+      monotonic: number,
+      sessions: ReadonlyArray<ProviderSession>,
+      sessionsObservedAt = now,
+    ) => {
       // Some platforms' monotonic clocks include suspend. A delayed timer also
       // resets the window: time while this detector could not run is not proof
       // of provider silence. This conservatively covers event-loop suspension.
@@ -179,9 +184,12 @@ export function makeStaleTurnDetectorState(onStale: (turn: StaleTurn) => void) {
           state.reason = null;
         }
         const session = byThread.get(threadId);
-        if (!session || session.status === "closed") {
+        // listSessions is asynchronous. A turn starting during that read was
+        // not necessarily in its snapshot, and must be checked on the next tick.
+        const sessionIsCurrent = state.turn.startedAt < sessionsObservedAt;
+        if (sessionIsCurrent && (!session || session.status === "closed")) {
           flag(threadId, state, now, "provider-dead");
-        } else if (session.status === "error") {
+        } else if (sessionIsCurrent && session?.status === "error") {
           flag(threadId, state, now, "provider-error");
         } else if (
           !state.openTool &&

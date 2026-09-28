@@ -36,6 +36,7 @@ import { IssuesToolkitHandlersLive } from "./toolkits/issues/handlers.ts";
 import { IssuesToolkit } from "./toolkits/issues/tools.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { prismLivenessRouteLayer, streamStatsRecorderLayer } from "../prism/livenessRoute.ts";
+import { staleTurnMonitorLayer } from "../prism/staleTurnMonitor.ts";
 import { prismSnapshotRouteLayer } from "../prism/snapshotRoute.ts";
 import { PrismToolkitHandlersLive } from "./toolkits/prism/handlers.ts";
 import { PrismToolkit } from "./toolkits/prism/tools.ts";
@@ -701,4 +702,5 @@ export const layer = Layer.mergeAll(
   // Fork: Prism stream clock (toolboxmd/t3code#55).
   prismLivenessRouteLayer,
   streamStatsRecorderLayer,
+  staleTurnMonitorLayer,
 ).pipe(Layer.provideMerge(McpTransportLive));
