@@ -28,7 +28,7 @@ const decodeStatsRow = Schema.decodeUnknownOption(
   }),
 );
 
-export const notifyStaleParent = Effect.fn("Prism.notifyStaleParent")(function* (stale: StaleTurn) {
+const notifyStaleParent = Effect.fn("Prism.notifyStaleParent")(function* (stale: StaleTurn) {
   const parentId = parentThreadIdOf(stale.threadId);
   if (parentId === null) return;
   const snapshots = yield* ProjectionSnapshotQuery;
