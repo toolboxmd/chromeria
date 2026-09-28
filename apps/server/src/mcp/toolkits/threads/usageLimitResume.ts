@@ -13,7 +13,7 @@ import * as Effect from "effect/Effect";
 export const RESUME_TEXT = "Continue. (Sent automatically after the usage limit reset.)";
 
 /** Lets the provider's usage windows catch up with the rate-limit event that ended the turn. */
-export const SETTLE_DELAY_MS = 5_000;
+const SETTLE_DELAY_MS = 5_000;
 
 /** Margin after the reset so the first resumed request is not refused again. */
 export const RESUME_DELAY_MS = 60_000;
