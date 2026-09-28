@@ -14,6 +14,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { TestClock } from "effect/testing";
 
@@ -26,6 +27,7 @@ import { startStaleTurnMonitor } from "./staleTurnMonitor.ts";
 
 const PARENT = ThreadId.make("parent");
 const CHILD = ThreadId.make("sub.parent.child");
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 type Command = Parameters<OrchestrationEngineService["Service"]["dispatch"]>[0];
 const parent = {
   id: PARENT,
@@ -57,7 +59,7 @@ const fixture = (title = "worker") =>
     const sql = yield* SqlClient.SqlClient;
     yield* sql`CREATE TABLE projection_thread_activities (activity_id TEXT, kind TEXT, payload_json TEXT)`;
     for (const activity of history) {
-      yield* sql`INSERT INTO projection_thread_activities VALUES (${activity.id}, ${activity.kind}, ${JSON.stringify(activity.payload)})`;
+      yield* sql`INSERT INTO projection_thread_activities VALUES (${activity.id}, ${activity.kind}, ${encodeJson(activity.payload)})`;
     }
     const layers = Layer.mergeAll(
       Layer.mock(ProjectionSnapshotQuery)({
