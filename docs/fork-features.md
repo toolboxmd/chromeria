@@ -544,3 +544,37 @@ for per-match decisions and the absorption PR record.
   ]
 }
 ```
+
+## Prism stream clock and cancel
+
+```json
+{
+  "id": "prism-stream-clock",
+  "purpose": "Stamp each thread's last provider stream event in memory for Model Router liveness, record per-turn stream statistics, and cancel Prism jobs.",
+  "issues": ["https://github.com/toolboxmd/t3code/issues/55"],
+  "prs": ["https://github.com/toolboxmd/t3code/pull/56"],
+  "newFiles": [
+    "apps/server/src/prism/livenessRoute.ts",
+    "apps/server/src/prism/streamClock.test.ts",
+    "apps/server/src/prism/streamClock.ts"
+  ],
+  "upstreamFiles": ["apps/mobile/src/lib/threadActivity.ts", "apps/web/src/session-logic.ts"],
+  "sharedFiles": [
+    "apps/server/src/mcp/McpHttpServer.ts",
+    "apps/server/src/mcp/toolkits/prism/handlers.test.ts",
+    "apps/server/src/mcp/toolkits/prism/handlers.ts",
+    "apps/server/src/mcp/toolkits/prism/tools.ts",
+    "apps/server/src/server.ts",
+    "packages/contracts/src/prism.ts"
+  ],
+  "keywords": [
+    "stream clock",
+    "liveness",
+    "prism_cancel",
+    "ProviderEventLoggers",
+    "thinking_tokens",
+    "prism.stream-stats",
+    "context-window.updated"
+  ]
+}
+```

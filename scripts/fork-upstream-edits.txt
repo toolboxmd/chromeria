@@ -93,3 +93,7 @@ packages/client-runtime/src/state/runtime.ts
 
 # Tool instructions for agents (#46)
 apps/server/src/provider/RuntimeInstructions.ts
+
+# Prism stream clock: hide per-turn stream statistics from work logs (#55)
+apps/mobile/src/lib/threadActivity.ts
+apps/web/src/session-logic.ts

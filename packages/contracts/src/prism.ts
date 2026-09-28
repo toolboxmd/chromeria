@@ -210,3 +210,9 @@ export const PrismRoleKitsPatch = Schema.Struct({
   recovery: Schema.optionalKey(switchableKitPatch),
 });
 export type PrismRoleKitsPatch = typeof PrismRoleKitsPatch.Type;
+
+/**
+ * Thread activity recorded at each turn end with the turn's provider stream
+ * statistics (toolboxmd/t3code#55). Measurement only: clients hide it.
+ */
+export const PRISM_STREAM_STATS_ACTIVITY_KIND = "prism.stream-stats";

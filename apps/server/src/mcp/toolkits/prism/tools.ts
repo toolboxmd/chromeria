@@ -113,9 +113,24 @@ const PrismAnswerTool = Tool.make("prism_answer", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, true);
 
+const PrismCancelTool = Tool.make("prism_cancel", {
+  description:
+    "Cancel a Prism job this thread started: Prism records the cancellation, stops the job's workers and child threads, and returns the final state (cancelled, or still cancelling when something could not be stopped yet; call again to retry). Use it only when the user asks to stop the job or the job is clearly stuck.",
+  parameters: Schema.Struct({ requestId: RequestId }),
+  success: PrismResult,
+  failure: PrismToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Cancel Prism job")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, true);
+
 export const PrismToolkit = Toolkit.make(
   PrismSubmitTool,
   PrismStatusTool,
   PrismQuestionsTool,
   PrismAnswerTool,
+  PrismCancelTool,
 );

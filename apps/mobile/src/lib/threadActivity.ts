@@ -5,7 +5,11 @@ import {
   requestKindFromRequestType,
   type PendingApproval,
 } from "@t3tools/client-runtime/pending-requests";
-import { UserInputAttachmentAnswerPayload, isToolLifecycleItemType } from "@t3tools/contracts";
+import {
+  PRISM_STREAM_STATS_ACTIVITY_KIND,
+  UserInputAttachmentAnswerPayload,
+  isToolLifecycleItemType,
+} from "@t3tools/contracts";
 import type {
   OrchestrationLatestTurn,
   OrchestrationThread,
@@ -441,6 +445,7 @@ function deriveWorkLogEntries(
     if (activity.kind === "task.updated" && !isTerminalTaskUpdate(activity)) continue;
     if (activity.kind === "tool.progress") continue;
     if (activity.kind === "context-window.updated") continue;
+    if (activity.kind === PRISM_STREAM_STATS_ACTIVITY_KIND) continue;
     if (activity.summary === "Checkpoint captured") continue;
     if (isNoContentRuntimeWarning(activity)) continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
