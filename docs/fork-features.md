@@ -115,7 +115,8 @@ for per-match decisions and the absorption PR record.
   "issues": [
     "https://github.com/toolboxmd/t3code/issues/8",
     "https://github.com/toolboxmd/t3code/issues/48",
-    "https://github.com/toolboxmd/t3code/issues/59"
+    "https://github.com/toolboxmd/t3code/issues/59",
+    "https://github.com/toolboxmd/t3code/issues/61"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/10",
@@ -131,6 +132,8 @@ for per-match decisions and the absorption PR record.
     "apps/server/src/mcp/toolkits/threads/subagentThreadId.test.ts",
     "apps/server/src/mcp/toolkits/threads/subagentThreadId.ts",
     "apps/server/src/mcp/toolkits/threads/tools.ts",
+    "apps/server/src/mcp/toolkits/threads/usageLimitResume.test.ts",
+    "apps/server/src/mcp/toolkits/threads/usageLimitResume.ts",
     "apps/web/src/components/AgentThreadLink.tsx",
     "apps/web/src/components/subagentThreads.test.ts",
     "apps/web/src/components/subagentThreads.ts"
