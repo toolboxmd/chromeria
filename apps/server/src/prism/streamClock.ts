@@ -19,10 +19,12 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
 
 import type { EventNdjsonLogger } from "../provider/Layers/EventNdjsonLogger.ts";
 import * as ProviderEventLoggers from "../provider/Layers/ProviderEventLoggers.ts";
+import { StaleTurnDetector, staleTurnDetectorLayer } from "./staleTurnDetector.ts";
 
 export type StreamTurnOutcome = "completed" | "aborted" | "error";
 
@@ -79,6 +81,7 @@ export interface ThreadLiveness {
     readonly model: string | null;
     readonly startedAt: number;
     readonly eventCount: number;
+    readonly firstTokenAt: number | null;
   } | null;
 }
 
@@ -198,6 +201,7 @@ export function makeStreamClockState(turnEnds: (stats: TurnStreamStats) => void)
               model: turn.model,
               startedAt: turn.startedAt,
               eventCount: turn.eventCount,
+              firstTokenAt: turn.firstTokenAt,
             }
           : null,
       };
@@ -208,7 +212,7 @@ export function makeStreamClockState(turnEnds: (stats: TurnStreamStats) => void)
 export class StreamClock extends Context.Service<
   StreamClock,
   {
-    readonly native: (threadId: ThreadId | null) => Effect.Effect<void>;
+    readonly native: (threadId: ThreadId | null, kind?: string) => Effect.Effect<void>;
     readonly canonical: (event: ProviderRuntimeEvent) => Effect.Effect<void>;
     readonly liveness: (threadId: ThreadId) => Effect.Effect<ThreadLiveness>;
     readonly takeTurnEnd: Effect.Effect<TurnStreamStats>;
@@ -216,20 +220,47 @@ export class StreamClock extends Context.Service<
 >()("t3/prism/streamClock") {}
 
 export const make = Effect.gen(function* () {
+  const detector = yield* StaleTurnDetector;
   const turnEnds = yield* Queue.unbounded<TurnStreamStats>();
   const state = makeStreamClockState((stats) => Queue.offerUnsafe(turnEnds, stats));
   return StreamClock.of({
-    native: (threadId) =>
+    native: (threadId, kind = "native") =>
       threadId === null
         ? Effect.void
-        : Effect.map(Clock.currentTimeMillis, (now) => state.native(threadId, now)),
-    canonical: (event) => Effect.map(Clock.currentTimeMillis, (now) => state.canonical(event, now)),
+        : Effect.map(Clock.currentTimeMillis, (now) => {
+            state.native(threadId, now);
+            detector.state.observe(threadId, state.liveness(threadId), now, kind);
+          }),
+    canonical: (event) =>
+      Effect.map(Clock.currentTimeMillis, (now) => {
+        const before = state.liveness(event.threadId);
+        state.canonical(event, now);
+        const after = state.liveness(event.threadId);
+        const failure =
+          event.type === "runtime.error" ||
+          (event.type === "turn.completed" && event.payload.state === "failed") ||
+          (event.type === "session.state.changed" && event.payload.state === "error")
+            ? "provider-error"
+            : event.type === "session.exited"
+              ? "provider-dead"
+              : undefined;
+        detector.state.observe(
+          event.threadId,
+          failure && !after.turn ? before : after,
+          now,
+          event.type,
+          failure,
+          event.type === "turn.completed" ||
+            event.type === "turn.aborted" ||
+            event.type === "session.exited",
+        );
+      }),
     liveness: (threadId) => Effect.sync(() => state.liveness(threadId)),
     takeTurnEnd: Queue.take(turnEnds),
   });
 });
 
-const layer = Layer.effect(StreamClock, make);
+const layer = Layer.effect(StreamClock, make).pipe(Layer.provideMerge(staleTurnDetectorLayer));
 
 /** A logger that also stamps the clock; logging off still keeps the clock. */
 function tapped(
@@ -250,7 +281,10 @@ export function tapLoggers(
   clock: StreamClock["Service"],
 ): ProviderEventLoggers.ProviderEventLoggers["Service"] {
   return {
-    native: tapped(loggers.native, (_event, threadId) => clock.native(threadId)),
+    native: tapped(loggers.native, (event, threadId) => {
+      const kind = Predicate.isObject(event) ? (event.method ?? event.type) : undefined;
+      return clock.native(threadId, typeof kind === "string" ? `native:${kind}` : "native");
+    }),
     canonical: tapped(loggers.canonical, (event) => clock.canonical(event as ProviderRuntimeEvent)),
   };
 }

@@ -3,6 +3,7 @@ import {
   CommandId,
   EventId,
   PRISM_STREAM_STATS_ACTIVITY_KIND,
+  type PrismLiveness,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -18,6 +19,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
 import { StreamClock, type ThreadLiveness, type TurnStreamStats } from "./streamClock.ts";
+import { StaleTurnDetector, type StaleStatus } from "./staleTurnDetector.ts";
 
 const PRISM_LIVENESS_PATH = "/api/prism/liveness";
 
@@ -28,7 +30,13 @@ const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
  * the thread's last stream event, so the caller measures silence without
  * clock skew. `lastStreamAt` is null until the thread streams after startup.
  */
-export function livenessView(threadId: string, now: number, liveness: ThreadLiveness) {
+export function livenessView(
+  threadId: string,
+  now: number,
+  liveness: ThreadLiveness,
+  stale: StaleStatus,
+): PrismLiveness {
+  const turn = liveness.turn;
   return {
     threadId,
     now: iso(now),
@@ -37,7 +45,17 @@ export function livenessView(threadId: string, now: number, liveness: ThreadLive
     openTool: liveness.openTool
       ? { ...liveness.openTool, startedAt: iso(liveness.openTool.startedAt) }
       : null,
-    turn: liveness.turn ? { ...liveness.turn, startedAt: iso(liveness.turn.startedAt) } : null,
+    turn: turn
+      ? {
+          turnId: turn.turnId,
+          provider: turn.provider,
+          model: turn.model,
+          startedAt: iso(turn.startedAt),
+          eventCount: turn.eventCount,
+        }
+      : null,
+    ...stale,
+    staleSince: stale.staleSince === null ? null : iso(stale.staleSince),
   };
 }
 
@@ -87,9 +105,13 @@ export const prismLivenessRouteLayer = HttpRouter.add(
     // Optional so route harnesses without provider wiring still build.
     const clock = yield* Effect.serviceOption(StreamClock);
     if (Option.isNone(clock)) return jsonError(503, "stream clock unavailable");
+    const detector = yield* Effect.serviceOption(StaleTurnDetector);
+    if (Option.isNone(detector)) return jsonError(503, "stale detector unavailable");
     const liveness = yield* clock.value.liveness(ThreadId.make(threadId));
     const now = yield* Clock.currentTimeMillis;
-    return HttpServerResponse.jsonUnsafe(livenessView(threadId, now, liveness));
+    return HttpServerResponse.jsonUnsafe(
+      livenessView(threadId, now, liveness, detector.value.state.status(ThreadId.make(threadId))),
+    );
   }),
 );
 
@@ -99,6 +121,7 @@ export const streamStatsRecorderLayer = Layer.effectDiscard(
     const clock = yield* Effect.serviceOption(StreamClock);
     if (Option.isNone(clock)) return;
     const engine = yield* OrchestrationEngine.OrchestrationEngineService;
+    const detector = yield* Effect.serviceOption(StaleTurnDetector);
     const crypto = yield* Crypto.Crypto;
     const record = (stats: TurnStreamStats) =>
       Effect.gen(function* () {
@@ -117,6 +140,8 @@ export const streamStatsRecorderLayer = Layer.effectDiscard(
           },
           createdAt,
         });
+        if (Option.isSome(detector))
+          detector.value.state.record(id, streamStatsActivity(stats).payload);
       }).pipe(
         Effect.catchCause((cause) =>
           Cause.hasInterruptsOnly(cause)
