@@ -97,3 +97,7 @@ apps/server/src/provider/RuntimeInstructions.ts
 # Prism stream clock: hide per-turn stream statistics from work logs (#55)
 apps/mobile/src/lib/threadActivity.ts
 apps/web/src/session-logic.ts
+
+# Child threads hidden from mobile shells (#59)
+apps/server/src/orchestration/http.ts
+apps/server/src/server.test.ts

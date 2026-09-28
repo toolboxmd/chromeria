@@ -9041,6 +9041,53 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  // Fork: toolboxmd/chromeria#59
+  it.effect("hides child threads from mobile shell subscriptions only", () =>
+    Effect.gen(function* () {
+      const userThreadId = ThreadId.make("thread-user");
+      const childThreadId = ThreadId.make("sub.thread-user.child1");
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getShellSnapshot: () =>
+              Effect.succeed({
+                snapshotSequence: 1,
+                projects: [],
+                threads: [
+                  makeDefaultOrchestrationThreadShell({ id: userThreadId }),
+                  makeDefaultOrchestrationThreadShell({ id: childThreadId }),
+                ],
+                updatedAt: "2026-01-01T00:00:00.000Z",
+              }),
+          },
+        },
+      });
+
+      const snapshotThreadIds = (path: string) =>
+        Effect.gen(function* () {
+          const wsUrl = yield* getWsServerUrl(path);
+          const items = yield* Effect.scoped(
+            withWsRpcClient(wsUrl, (client) =>
+              client[ORCHESTRATION_WS_METHODS.subscribeShell]({}).pipe(
+                Stream.take(1),
+                Stream.runCollect,
+              ),
+            ),
+          );
+          const [first] = Array.from(items);
+          return first?.kind === "snapshot"
+            ? first.snapshot.threads.map((thread) => thread.id)
+            : [];
+        });
+
+      assert.deepEqual(yield* snapshotThreadIds("/ws?clientSurface=mobile"), [userThreadId]);
+      assert.deepEqual(yield* snapshotThreadIds("/ws?clientSurface=web"), [
+        userThreadId,
+        childThreadId,
+      ]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("marks an empty shell catch-up replay as synchronized when requested", () =>
     Effect.gen(function* () {
       yield* buildAppUnderTest({
