@@ -21,6 +21,7 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
@@ -43,6 +44,7 @@ import {
   unrecordedChildReportState,
 } from "./childReportState.ts";
 import { isSubagentThreadId, makeSubagentThreadId, parentThreadIdOf } from "./subagentThreadId.ts";
+import { RESUME_TEXT, resumeAfterUsageLimitReset } from "./usageLimitResume.ts";
 import {
   type SubagentStatus,
   type ThreadScope,
@@ -444,17 +446,63 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const scope = yield* Scope.Scope;
+  /** Top-level thread id -> the failed turn a usage-limit resume is pending for. */
+  const pendingResumes = new Map<string, string>();
+
+  /**
+   * Schedules one "continue" after the usage limit that failed a top-level
+   * thread's turn resets (see usageLimitResume.ts). Starting another turn
+   * first, or archiving the thread, cancels it.
+   */
+  const resumeAfterUsageLimit = Effect.fn("ThreadsToolkit.resumeAfterUsageLimit")(function* (
+    event: OrchestrationEvent,
+  ) {
+    if (event.type !== "thread.session-set" || event.payload.session.status !== "error") return;
+    const threadId = event.payload.threadId;
+    if (isSubagentThreadId(threadId)) return;
+    const failed = yield* threadShell(threadId);
+    const turnId = failed?.latestTurn?.turnId;
+    if (!failed || !turnId || pendingResumes.get(threadId) === turnId) return;
+    const instanceId = event.payload.session.providerInstanceId ?? failed.modelSelection.instanceId;
+    pendingResumes.set(threadId, turnId);
+    yield* resumeAfterUsageLimitReset(
+      {
+        thread: threadShell,
+        providers: registry.getProviders,
+        resume: (thread) => startTurn(thread, RESUME_TEXT),
+      },
+      { threadId, turnId, instanceId },
+    ).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("usage-limit resume failed", { threadId, cause: Cause.pretty(cause) }),
+      ),
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (pendingResumes.get(threadId) === turnId) pendingResumes.delete(threadId);
+        }),
+      ),
+      Effect.forkIn(scope),
+    );
+  });
+
+  const skipOnFailure = (name: string, event: OrchestrationEvent) =>
+    Effect.catchCause((cause: Cause.Cause<unknown>) =>
+      Effect.logWarning(`threads toolkit ${name} skipped an event`, {
+        eventType: event.type,
+        cause: Cause.pretty(cause),
+      }),
+    );
+
   // Consume the hot stream like the upstream reactors do. This layer builds
   // with the HTTP routes, so it must not acquire an engine subscription at
   // build time (`subscribeDomainEvents`).
   yield* Effect.forkScoped(
     Stream.runForEach(engine.streamDomainEvents, (event) =>
       bridge(event).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("threads toolkit bridge skipped an event", {
-            eventType: event.type,
-            cause: Cause.pretty(cause),
-          }),
+        skipOnFailure("bridge", event),
+        Effect.andThen(
+          resumeAfterUsageLimit(event).pipe(skipOnFailure("usage-limit resume", event)),
         ),
       ),
     ),

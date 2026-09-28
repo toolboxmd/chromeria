@@ -12,11 +12,9 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { isSubagentThreadId } from "./subagentThreadId.ts";
 
-export const hidesChildThreads = (surface: string | null | undefined) => surface === "mobile";
+const hidesChildThreads = (surface: string | null | undefined) => surface === "mobile";
 
-export const withoutChildThreads = (
-  snapshot: OrchestrationShellSnapshot,
-): OrchestrationShellSnapshot => ({
+const withoutChildThreads = (snapshot: OrchestrationShellSnapshot): OrchestrationShellSnapshot => ({
   ...snapshot,
   threads: snapshot.threads.filter((thread) => !isSubagentThreadId(thread.id)),
 });
@@ -25,7 +23,7 @@ const isChildThreadEvent = (item: OrchestrationShellStreamItem) =>
   (item.kind === "thread-upserted" && isSubagentThreadId(item.thread.id)) ||
   (item.kind === "thread-removed" && isSubagentThreadId(item.threadId));
 
-export const withoutChildThreadItems = <A extends OrchestrationShellStreamItem, E, R>(
+const withoutChildThreadItems = <A extends OrchestrationShellStreamItem, E, R>(
   stream: Stream.Stream<A, E, R>,
 ): Stream.Stream<A, E, R> =>
   stream.pipe(
