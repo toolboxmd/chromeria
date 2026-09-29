@@ -81,6 +81,7 @@ function queryConnectionState(
 
 const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness")(function* <A, E>(
   execute: Effect.Effect<A, E>,
+  options: { readonly refreshIntervalMs?: number } = {},
 ) {
   const supervisorState = yield* SubscriptionRef.make(queryConnectionState());
   const supervisorSession = yield* SubscriptionRef.make(Option.some(QUERY_RPC_SESSION));
@@ -110,6 +111,7 @@ const makeEnvironmentQueryHarness = Effect.fn("TestEnvironmentQuery.makeHarness"
   const family = createEnvironmentQueryAtomFamily(runtime, {
     label: "test.environment-query",
     staleTimeMs: 60_000,
+    ...options,
     execute: () => execute,
   });
 
@@ -412,6 +414,29 @@ describe("environment query lifecycle", () => {
         if (AsyncResult.isFailure(result) && expectedFailure !== null) {
           expect(Cause.squash(result.cause)).toBe(expectedFailure);
         }
+      }),
+    ),
+  );
+
+  it.effect("reads again on its refresh interval while mounted", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const reads = yield* Queue.unbounded<number>();
+        let executions = 0;
+        const execute = Effect.suspend(() => {
+          executions += 1;
+          return Queue.offer(reads, executions).pipe(Effect.as(executions));
+        });
+        const harness = yield* makeEnvironmentQueryHarness(execute, { refreshIntervalMs: 5 });
+        const registry = yield* mountEnvironmentQuery(harness.atom);
+
+        // The stale time is a minute, so only the interval can start the later reads.
+        expect(yield* Queue.take(reads)).toBe(1);
+        expect(yield* Queue.take(reads)).toBe(2);
+        expect(yield* Queue.take(reads)).toBe(3);
+        expect(
+          yield* AtomRegistry.getResult(registry, harness.atom, { suspendOnWaiting: true }),
+        ).toBeGreaterThanOrEqual(2);
       }),
     ),
   );

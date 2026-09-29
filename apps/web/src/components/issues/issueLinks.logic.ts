@@ -2,12 +2,15 @@ import {
   type EnvironmentId,
   type IssueKey,
   type IssueLinkChange,
+  type IssueState,
   type IssueTarget,
   type ThreadIssueLinkSource,
+  ISSUE_STATES_MAX,
   gitHubRepositoryOf,
   issueKeyString,
   parseIssueUrl,
 } from "@t3tools/contracts";
+import type { AsyncResult } from "effect/unstable/reactivity";
 
 export const ISSUE_LINK_SOURCE_LABELS: Record<ThreadIssueLinkSource, string> = {
   manual: "Linked by you",
@@ -141,4 +144,80 @@ export function issueLinkChangesMatch(
       change.threadId === target.threadId ||
       change.issues.some((issue) => wanted.has(issueKeyString(issue))),
   );
+}
+
+/**
+ * A linked Issue's state as the links panel shows it: GitHub's own, `pending` before the first
+ * read, or `unknown` when the read failed or GitHub returned none (deleted, not visible).
+ */
+export type LinkedIssueState = IssueState | "pending" | "unknown";
+
+/** The panel's latest read of its Issues' states. */
+export type LinkedIssueStatesRead =
+  | { readonly _tag: "pending" }
+  | { readonly _tag: "failed" }
+  | {
+      readonly _tag: "read";
+      readonly issues: ReadonlyArray<IssueKey & { readonly state: IssueState | null }>;
+    };
+
+/** The panel's read of one chunk, from its query's result. */
+export function linkedIssueStatesReadOf(
+  result: AsyncResult.AsyncResult<
+    { readonly issues: ReadonlyArray<IssueKey & { readonly state: IssueState | null }> },
+    unknown
+  >,
+): LinkedIssueStatesRead {
+  switch (result._tag) {
+    case "Initial":
+      return { _tag: "pending" };
+    case "Failure":
+      return { _tag: "failed" };
+    case "Success":
+      return { _tag: "read", issues: result.value.issues };
+  }
+}
+
+/** Linked Issues in chunks of at most `ISSUE_STATES_MAX`, the most one `issues.states` read takes. */
+export function issueStateChunks<K extends IssueKey>(
+  links: ReadonlyArray<K>,
+): Array<ReadonlyArray<K>> {
+  const chunks: Array<ReadonlyArray<K>> = [];
+  for (let start = 0; start < links.length; start += ISSUE_STATES_MAX) {
+    chunks.push(links.slice(start, start + ISSUE_STATES_MAX));
+  }
+  return chunks;
+}
+
+/**
+ * Each linked Issue's state from the latest read of GitHub, not from link time, so an Issue
+ * closed after linking reads closed. `reads[i]` is the read of `issueStateChunks(links)[i]`, so a
+ * failed chunk leaves only its own Issues unknown. Keyed by `issueKeyString`.
+ */
+export function linkedIssueStates(
+  links: ReadonlyArray<IssueKey>,
+  reads: ReadonlyArray<LinkedIssueStatesRead>,
+): ReadonlyMap<string, LinkedIssueState> {
+  return new Map(
+    issueStateChunks(links).flatMap((chunk, index) => {
+      const read = reads[index] ?? { _tag: "pending" };
+      const found =
+        read._tag === "read"
+          ? new Map(read.issues.map((issue) => [issueKeyString(issue), issue.state]))
+          : new Map<string, IssueState | null>();
+      return chunk.map((link): [string, LinkedIssueState] => {
+        const key = issueKeyString(link);
+        if (read._tag !== "read") return [key, read._tag === "failed" ? "unknown" : "pending"];
+        return [key, found.get(key) ?? "unknown"];
+      });
+    }),
+  );
+}
+
+/** Linked Issues GitHub reports open; pending and unknown ones are not counted. */
+export function openLinkedIssueCount(
+  links: ReadonlyArray<IssueKey>,
+  states: ReadonlyMap<string, LinkedIssueState>,
+): number {
+  return links.filter((link) => states.get(issueKeyString(link)) === "open").length;
 }

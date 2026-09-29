@@ -176,6 +176,7 @@ export const RPC_REQUIRED_SCOPES = {
   // Fork: GitHub Issues (toolboxmd/t3code#27).
   [ISSUE_WS_METHODS.issuesList]: AuthOrchestrationReadScope,
   [ISSUE_WS_METHODS.issuesDetail]: AuthOrchestrationReadScope,
+  [ISSUE_WS_METHODS.issuesStates]: AuthOrchestrationReadScope,
   [ISSUE_WS_METHODS.issuesComment]: AuthOrchestrationOperateScope,
   [ISSUE_WS_METHODS.issuesSetState]: AuthOrchestrationOperateScope,
   // Fork: Issue links (toolboxmd/t3code#28).

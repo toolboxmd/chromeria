@@ -53,7 +53,7 @@ export const PrismResult = Schema.Struct({
 
 const PrismSubmitTool = Tool.make("prism_submit", {
   description:
-    "Use when an authorized job should end in one pushed branch and one PR with proof and review. Use it instead of coordinating workers yourself or starting agent CLIs in the shell. Prism (Model Router) picks models, falls back when capacity fails and recovers stalled work; this thread becomes the planner, woken only for judgment, and receives the final state: ready with the PR URL, or blocked, failed or cancelled with the reason. For one bounded task, use spawn_thread.",
+    "Use when an authorized job should end in one pushed branch and one PR with proof and review. Use it instead of coordinating workers yourself or starting agent CLIs in the shell. Prism (Model Router) picks models, falls back when capacity fails and recovers stalled work; this thread becomes the planner, woken only for judgment, and receives the final state: ready with the PR URL, or blocked, failed or cancelled with the reason. workspace defaults to this thread's current directory; set it for work in another repository or worktree. For one bounded task, use spawn_thread.",
   parameters: PrismSubmitInput,
   success: PrismResult,
   failure: PrismToolError,

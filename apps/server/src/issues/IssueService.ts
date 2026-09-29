@@ -9,6 +9,8 @@ import {
   type IssuePullRequest,
   type IssueRef,
   type IssueSetStateInput,
+  type IssueStatesInput,
+  type IssueStatesResult,
   pullRequestHostOf,
   type SourceControlProviderKind,
 } from "@t3tools/contracts";
@@ -26,6 +28,7 @@ import * as GitHubCli from "../sourceControl/GitHubCli.ts";
 import * as GitHubGraphQlBudget from "../sourceControl/githubGraphQlBudget.ts";
 import {
   decodeIssueDetailJson,
+  decodeIssueStatesJson,
   issueDetailOf,
   decodeIssueSearchJson,
   decodeViewerJson,
@@ -35,6 +38,8 @@ import {
   issueLinkOf,
   issueSearchGraphQlQuery,
   issueSearchQuery,
+  issueStatesGraphQlQuery,
+  issueStatesOf,
   LINKED_PULL_REQUEST_MAX,
   linkedPullRequestsGraphQlQuery,
   linkedPullRequestsOf,
@@ -51,6 +56,10 @@ export class IssueService extends Context.Service<
   {
     readonly list: (input: IssueListInput) => Effect.Effect<IssueListResult, IssueOperationError>;
     readonly detail: (input: IssueRef) => Effect.Effect<IssueDetail, IssueOperationError>;
+    /** Only the current state of each Issue, one request per host; for the thread links panel. */
+    readonly states: (
+      input: IssueStatesInput,
+    ) => Effect.Effect<IssueStatesResult, IssueOperationError>;
     readonly comment: (input: IssueCommentInput) => Effect.Effect<void, IssueOperationError>;
     readonly setState: (input: IssueSetStateInput) => Effect.Effect<void, IssueOperationError>;
   }
@@ -380,6 +389,34 @@ const make = Effect.gen(function* () {
       return issueDetailOf(input.host, issue);
     });
 
+  const states: IssueService["Service"]["states"] = (input) =>
+    Effect.gen(function* () {
+      const byHost = new Map<string, Array<IssueRef>>();
+      for (const issue of input.issues) {
+        const host = issue.host.toLowerCase();
+        byHost.set(host, [...(byHost.get(host) ?? []), issue]);
+      }
+      const read = yield* Effect.forEach(
+        [...byHost],
+        ([host, issues]) =>
+          Effect.gen(function* () {
+            const query = issueStatesGraphQlQuery(issues, host);
+            if (query === null) return issueStatesOf(issues, {});
+            const answer = yield* graphqlRead({
+              cwd: yield* cwdFor(host, "issueStates"),
+              host,
+              operation: "issueStates",
+              query,
+              variables: {},
+              decode: decodeIssueStatesJson,
+            });
+            return issueStatesOf(issues, answer.data);
+          }),
+        { concurrency: SEARCH_CONCURRENCY },
+      );
+      return { issues: read.flat() };
+    });
+
   const issueCommand = (
     operation: string,
     input: IssueRef,
@@ -428,7 +465,7 @@ const make = Effect.gen(function* () {
           input.action === "close-completed" ? "completed" : "not planned",
         ]);
 
-  return IssueService.of({ list, detail, comment, setState });
+  return IssueService.of({ list, detail, states, comment, setState });
 });
 
 export const layer = Layer.effect(IssueService, make);

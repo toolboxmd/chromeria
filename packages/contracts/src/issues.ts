@@ -202,6 +202,24 @@ export const IssueSetStateInput = Schema.Struct({
 });
 export type IssueSetStateInput = typeof IssueSetStateInput.Type;
 
+/** Issues read per `issues.states` request; the thread panel asks for its linked ones. */
+export const ISSUE_STATES_MAX = 50;
+
+export const IssueStatesInput = Schema.Struct({
+  issues: Schema.Array(IssueRef).check(Schema.isMaxLength(ISSUE_STATES_MAX)),
+});
+export type IssueStatesInput = typeof IssueStatesInput.Type;
+
+/** An Issue's current state; null when GitHub did not return it (deleted or not visible). */
+export const IssueStateEntry = Schema.Struct({
+  ...IssueRef.fields,
+  state: Schema.NullOr(IssueState),
+});
+export type IssueStateEntry = typeof IssueStateEntry.Type;
+
+export const IssueStatesResult = Schema.Struct({ issues: Schema.Array(IssueStateEntry) });
+export type IssueStatesResult = typeof IssueStatesResult.Type;
+
 export class IssueOperationError extends Schema.TaggedError<IssueOperationError>()(
   "IssueOperationError",
   {
@@ -217,6 +235,7 @@ export class IssueOperationError extends Schema.TaggedError<IssueOperationError>
 export const ISSUE_WS_METHODS = {
   issuesList: "issues.list",
   issuesDetail: "issues.detail",
+  issuesStates: "issues.states",
   issuesComment: "issues.comment",
   issuesSetState: "issues.setState",
 } as const;
@@ -232,6 +251,11 @@ export const IssueRpcs = [
   Rpc.make(ISSUE_WS_METHODS.issuesDetail, {
     payload: IssueRef,
     success: IssueDetail,
+    error: IssueRpcError,
+  }),
+  Rpc.make(ISSUE_WS_METHODS.issuesStates, {
+    payload: IssueStatesInput,
+    success: IssueStatesResult,
     error: IssueRpcError,
   }),
   Rpc.make(ISSUE_WS_METHODS.issuesComment, {

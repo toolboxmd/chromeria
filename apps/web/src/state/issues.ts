@@ -3,12 +3,25 @@ import {
   createEnvironmentRpcCommand,
   createEnvironmentRpcQueryAtomFamily,
 } from "@t3tools/client-runtime/state/runtime";
-import { type EnvironmentId, type IssueRef, ISSUE_WS_METHODS } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  type IssueKey,
+  type IssueRef,
+  type IssueStatesInput,
+  ISSUE_WS_METHODS,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import { useMemo } from "react";
+import { Atom } from "effect/unstable/reactivity";
+import { useEffect, useMemo, useRef } from "react";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { mergeIssueLists } from "../components/issues/issueList.logic";
+import {
+  issueStateChunks,
+  linkedIssueStates,
+  linkedIssueStatesReadOf,
+} from "../components/issues/issueLinks.logic";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 import { createMergedEnvironmentQuery, type EnvironmentQueryTarget } from "./pullRequests";
 import type { IssueListInput } from "@t3tools/contracts";
 
@@ -71,4 +84,56 @@ export function useIssueList(targets: ReadonlyArray<EnvironmentQueryTarget<Issue
 
 export function useIssueDetail(environmentId: EnvironmentId, ref: IssueRef) {
   return useAtomValue(issueDetail({ environmentId, input: ref }));
+}
+
+/** How often an open links panel rereads its Issues' states when no pull request sync prompts it. */
+export const LINKED_ISSUE_STATES_REFRESH_MS = 60_000;
+
+const issueStates = createEnvironmentRpcQueryAtomFamily(connectionAtomRuntime, {
+  label: "environment-data:issues:states",
+  tag: ISSUE_WS_METHODS.issuesStates,
+  staleTimeMs: 15_000,
+  refreshIntervalMs: LINKED_ISSUE_STATES_REFRESH_MS,
+});
+
+/** Every chunk's states query for one panel, read together. */
+const linkedIssueStatesReads = Atom.family((key: string) => {
+  const targets = JSON.parse(key) as ReadonlyArray<EnvironmentQueryTarget<IssueStatesInput>>;
+  return Atom.make((get) => targets.map((target) => get(issueStates(target)))).pipe(
+    Atom.withLabel(`environment-data:issues:states-chunks:${key}`),
+  );
+});
+
+/**
+ * The current GitHub state of a thread's linked Issues, read through the thread's server: on
+ * mount, every `LINKED_ISSUE_STATES_REFRESH_MS` while shown, and whenever `syncKey` changes,
+ * e.g. on each sync of the thread's pull requests.
+ */
+export function useLinkedIssueStates(
+  environmentId: EnvironmentId | null,
+  links: ReadonlyArray<IssueKey>,
+  syncKey: string | null,
+) {
+  const key = JSON.stringify(
+    environmentId === null
+      ? []
+      : issueStateChunks(links).map((chunk) => ({
+          environmentId,
+          input: {
+            issues: chunk.map(({ host, repository, number }) => ({ host, repository, number })),
+          },
+        })),
+  );
+  const results = useAtomValue(linkedIssueStatesReads(key));
+  const lastSyncKey = useRef(syncKey);
+  useEffect(() => {
+    if (lastSyncKey.current === syncKey) return;
+    lastSyncKey.current = syncKey;
+    const targets = JSON.parse(key) as ReadonlyArray<EnvironmentQueryTarget<IssueStatesInput>>;
+    for (const target of targets) appAtomRegistry.refresh(issueStates(target));
+  }, [syncKey, key]);
+  return useMemo(
+    () => linkedIssueStates(links, results.map(linkedIssueStatesReadOf)),
+    [links, results],
+  );
 }
