@@ -18,6 +18,7 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -37,7 +38,12 @@ import {
   unrecordedChildReportState,
 } from "./childReportState.ts";
 import { isSubagentThreadId, makeSubagentThreadId, parentThreadIdOf } from "./subagentThreadId.ts";
-import { RESUME_TEXT, resumeAfterUsageLimitReset } from "./usageLimitResume.ts";
+import {
+  isRouterJobMessage,
+  RESUME_TEXT,
+  resumeAfterUsageLimitReset,
+  resumeNotice,
+} from "./usageLimitResume.ts";
 import {
   type SubagentStatus,
   type ThreadScope,
@@ -498,32 +504,83 @@ const make = Effect.gen(function* () {
   });
 
   const scope = yield* Scope.Scope;
-  /** Top-level thread id -> the failed turn a usage-limit resume is pending for. */
+  /** Thread id -> the failed turn a usage-limit resume is pending for. */
   const pendingResumes = new Map<string, string>();
+  /** Provider instance id -> resumes waiting for any thread's next reply from it. */
+  const replyWaiters = new Map<string, Deferred.Deferred<void>>();
+  /** Threads resumed early that have not had a reply since. */
+  const earlyResumeSpent = new Set<string>();
+
+  const nextReplyOn = (instanceId: string) =>
+    Effect.suspend(() => {
+      let waiter = replyWaiters.get(instanceId);
+      if (!waiter) {
+        waiter = Deferred.makeUnsafe<void>();
+        replyWaiters.set(instanceId, waiter);
+      }
+      return Deferred.await(waiter);
+    });
+
+  /** A finished assistant message proves its provider instance serves requests again. */
+  const releaseReplyWaiters = Effect.fn("ThreadsToolkit.releaseReplyWaiters")(function* (
+    event: OrchestrationEvent,
+  ) {
+    if (event.type !== "thread.message-sent") return;
+    if (event.payload.role !== "assistant" || event.payload.streaming) return;
+    earlyResumeSpent.delete(event.payload.threadId);
+    if (replyWaiters.size === 0) return;
+    const thread = yield* threadShell(event.payload.threadId);
+    if (!thread) return;
+    const instanceId = thread.session?.providerInstanceId ?? thread.modelSelection.instanceId;
+    const waiter = replyWaiters.get(instanceId);
+    if (!waiter) return;
+    replyWaiters.delete(instanceId);
+    yield* Deferred.succeed(waiter, undefined);
+  });
+
+  /** Prism job threads open with Model Router's job tag (see usageLimitResume.ts). */
+  const isRouterJobThread = (threadId: string) =>
+    snapshots.getThreadDetailById(ThreadId.make(threadId)).pipe(
+      Effect.map((thread) => {
+        if (Option.isNone(thread)) return false;
+        const first = thread.value.messages.find((message) => message.role === "user");
+        return first !== undefined && isRouterJobMessage(first.text);
+      }),
+      Effect.catchCause(() => Effect.succeed(false)),
+    );
 
   /**
-   * Schedules one "continue" after the usage limit that failed a top-level
-   * thread's turn resets (see usageLimitResume.ts). Starting another turn
-   * first, or archiving the thread, cancels it.
+   * Schedules one "continue" after the usage limit that failed a thread's
+   * turn lifts (see usageLimitResume.ts), and tells a child's parent when it
+   * is sent. Starting another turn first, or archiving the thread, cancels
+   * it. Prism job threads are skipped.
    */
   const resumeAfterUsageLimit = Effect.fn("ThreadsToolkit.resumeAfterUsageLimit")(function* (
     event: OrchestrationEvent,
   ) {
     if (event.type !== "thread.session-set" || event.payload.session.status !== "error") return;
     const threadId = event.payload.threadId;
-    if (isSubagentThreadId(threadId)) return;
     const failed = yield* threadShell(threadId);
     const turnId = failed?.latestTurn?.turnId;
     if (!failed || !turnId || pendingResumes.get(threadId) === turnId) return;
+    if (isSubagentThreadId(threadId) && (yield* isRouterJobThread(threadId))) return;
     const instanceId = event.payload.session.providerInstanceId ?? failed.modelSelection.instanceId;
     pendingResumes.set(threadId, turnId);
     yield* resumeAfterUsageLimitReset(
       {
         thread: threadShell,
         providers: registry.getProviders,
-        resume: (thread) => startTurn(thread, RESUME_TEXT),
+        nextReplyOn,
+        resume: (thread, trigger) =>
+          Effect.gen(function* () {
+            if (trigger === "lifted") earlyResumeSpent.add(thread.id);
+            yield* startTurn(thread, RESUME_TEXT);
+            const parentId = parentThreadIdOf(thread.id);
+            const parent = parentId === null ? undefined : yield* threadShell(parentId);
+            if (parent) yield* startTurn(parent, resumeNotice(thread, trigger));
+          }),
       },
-      { threadId, turnId, instanceId },
+      { threadId, turnId, instanceId, resumeEarly: !earlyResumeSpent.has(threadId) },
     ).pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning("usage-limit resume failed", { threadId, cause: Cause.pretty(cause) }),
@@ -567,6 +624,7 @@ const make = Effect.gen(function* () {
           Effect.andThen(
             resumeAfterUsageLimit(event).pipe(skipOnFailure("usage-limit resume", event)),
           ),
+          Effect.andThen(releaseReplyWaiters(event).pipe(skipOnFailure("reply waiters", event))),
         ),
       );
     }).pipe(Effect.scoped),
