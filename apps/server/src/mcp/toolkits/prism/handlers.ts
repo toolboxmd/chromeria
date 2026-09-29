@@ -23,7 +23,7 @@ import * as ProcessRunner from "../../../processRunner.ts";
 import { ServerSettingsService } from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { threadToolScopeOf } from "../threads/roles.ts";
-import { PrismToolError, PrismToolkit } from "./tools.ts";
+import { type PrismDispatcher, PrismToolError, PrismToolkit } from "./tools.ts";
 
 /** Where the Model Router plugin installs its versions, newest wins. */
 const ROUTER_PLUGIN_DIR = [".codex", "plugins", "cache", "toolboxmd", "model-router"];
@@ -88,6 +88,7 @@ export interface PrismSubmitArgs {
   readonly plannerThreadId: string;
   readonly serverUrl: string;
   readonly lane?: PrismLane | undefined;
+  readonly dispatcher?: PrismDispatcher | undefined;
   readonly handoffSummary?: string | undefined;
 }
 
@@ -110,6 +111,7 @@ export function submitArgs(input: PrismSubmitArgs): string[] {
     "--t3-server-url",
     input.serverUrl,
     ...(input.lane ? ["--lane", ROUTER_LANES[input.lane]] : []),
+    ...(input.dispatcher ? ["--dispatcher", input.dispatcher] : []),
     ...(input.handoffSummary ? ["--handoff-summary", input.handoffSummary] : []),
     "--start",
   ];
@@ -286,6 +288,7 @@ const make = Effect.gen(function* () {
             plannerThreadId: caller.id,
             serverUrl,
             lane: input.lane,
+            dispatcher: input.dispatcher,
             handoffSummary: input.handoffSummary,
           }),
           { T3_SERVER_URL: serverUrl, T3_SERVER_TOKEN: issued.token },
