@@ -26,14 +26,16 @@ export function ThreadLinksPanel({
       const at = link.snapshot?.syncedAt ?? null;
       return at !== null && (latest === null || at > latest) ? at : latest;
     }, null) ?? null;
-  const issueStates = useLinkedIssueStates(
+  const { states: issueStates, entries: issueEntries } = useLinkedIssueStates(
     issueLinks ? threadRef.environmentId : null,
     links,
     syncKey,
   );
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {issueLinks ? <ThreadIssueLinks threadRef={threadRef} states={issueStates} /> : null}
+      {issueLinks ? (
+        <ThreadIssueLinks threadRef={threadRef} states={issueStates} entries={issueEntries} />
+      ) : null}
       <div className="min-h-0 flex-1">
         <ThreadPullRequestsPanel
           threadRef={threadRef}

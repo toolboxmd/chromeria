@@ -1,11 +1,25 @@
-import { type ScopedThreadRef, type ThreadIssueLink, issueKeyString } from "@t3tools/contracts";
+import {
+  type IssueStateEntry,
+  type ScopedThreadRef,
+  type ThreadIssueLink,
+  issueKeyString,
+} from "@t3tools/contracts";
 import { CircleHelpIcon, CircleIcon, MessageSquarePlusIcon, PlusIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 
+import { cn } from "~/lib/utils";
 import { issueLinkEnvironment } from "~/state/issueLinks";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { formatRelativeTimeLabel } from "~/timestampFormat";
+import {
+  PULL_REQUEST_ROW_CLASS,
+  PULL_REQUEST_ROW_NUMBER_CLASS,
+  PullRequestRowAuthor,
+  PullRequestRowLines,
+} from "../pullRequest/PullRequestListRow";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { MiddleTruncate } from "../ui/middle-truncate";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   ISSUE_LINK_SOURCE_LABELS,
@@ -20,6 +34,7 @@ import { useThreadIssueLinks } from "./useThreadIssueLinks";
 function IssueRow({
   link,
   state,
+  entry,
   startDisabledReason,
   onOpen,
   onStart,
@@ -27,45 +42,74 @@ function IssueRow({
 }: {
   link: ThreadIssueLink;
   state: LinkedIssueState;
+  entry: IssueStateEntry | undefined;
   startDisabledReason: string | null;
   onOpen: (link: ThreadIssueLink) => void;
   onStart: (link: ThreadIssueLink) => void;
   onUnlink: (link: ThreadIssueLink) => void;
 }) {
   return (
-    <div className="group/issue-row flex h-7 items-center gap-2 rounded-md px-2 hover:bg-accent/60">
-      {state === "pending" ? (
-        <CircleIcon
-          aria-label="State not read yet"
-          className="size-3.5 shrink-0 text-muted-foreground"
-        />
-      ) : state === "unknown" ? (
-        <CircleHelpIcon
-          aria-label="State unknown: GitHub could not be read or did not return this Issue"
-          className="size-3.5 shrink-0 text-muted-foreground"
-        />
-      ) : (
-        <IssueStateGlyph state={state} className="size-3.5" />
-      )}
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <button
-              type="button"
-              aria-label={`Open ${link.repository}#${link.number} in Issues`}
-              className="flex min-w-0 flex-1 items-baseline gap-1.5 text-left text-xs"
-              onClick={() => onOpen(link)}
-            />
+    <div className={cn(PULL_REQUEST_ROW_CLASS, "group/issue-row relative pl-2 hover:bg-accent/60")}>
+      <span className="flex w-4 shrink-0 justify-center">
+        {state === "pending" ? (
+          <CircleIcon aria-label="State not read yet" className="size-4 text-muted-foreground" />
+        ) : state === "unknown" ? (
+          <CircleHelpIcon
+            aria-label="State unknown: GitHub could not be read or did not return this Issue"
+            className="size-4 text-muted-foreground"
+          />
+        ) : (
+          <IssueStateGlyph state={state} />
+        )}
+      </span>
+      <button
+        type="button"
+        aria-label={`Open ${link.repository}#${link.number} in Issues`}
+        className="flex min-w-0 flex-1 text-left"
+        onClick={() => onOpen(link)}
+      >
+        <PullRequestRowLines
+          number={
+            <Tooltip>
+              <TooltipTrigger render={<span className={PULL_REQUEST_ROW_NUMBER_CLASS} />}>
+                #{link.number}
+              </TooltipTrigger>
+              <TooltipPopup>
+                {[
+                  ...link.sources.map((source) => ISSUE_LINK_SOURCE_LABELS[source]),
+                  ...(link.linkedAt === null ? [] : [formatRelativeTimeLabel(link.linkedAt)]),
+                ].join(" · ")}
+              </TooltipPopup>
+            </Tooltip>
           }
-        >
-          <span className="font-mono">#{link.number}</span>
-          <span className="truncate text-muted-foreground">{link.repository}</span>
-        </TooltipTrigger>
-        <TooltipPopup>
-          {link.sources.map((source) => ISSUE_LINK_SOURCE_LABELS[source]).join(" · ")}
-        </TooltipPopup>
-      </Tooltip>
-      <span className="flex opacity-0 group-hover/issue-row:opacity-100 has-[:focus-visible]:opacity-100">
+          title={entry?.title ?? link.repository}
+          meta={
+            <>
+              {entry?.author !== undefined ? (
+                <PullRequestRowAuthor
+                  actor={entry.author}
+                  className="shrink-0"
+                  labelClassName="max-w-28"
+                />
+              ) : null}
+              <span className="flex min-w-0 max-w-40 font-mono">
+                <MiddleTruncate value={link.repository} />
+              </span>
+            </>
+          }
+          updatedAt={entry?.updatedAt}
+        />
+      </button>
+      {/* As on the pull request rows: over the right end of the second line, shown on hover. */}
+      <span
+        className={cn(
+          "absolute right-0 bottom-0.5 flex items-center rounded-r-md bg-background pr-1 pl-5",
+          "[mask-image:linear-gradient(to_right,transparent,black_1rem)]",
+          "pointer-events-none opacity-0 group-hover/issue-row:pointer-events-auto group-hover/issue-row:opacity-100",
+          "has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:opacity-100",
+        )}
+      >
+        <span aria-hidden className="absolute inset-0 bg-accent/60" />
         <Tooltip>
           <TooltipTrigger
             render={
@@ -73,6 +117,7 @@ function IssueRow({
                 variant="ghost"
                 size="icon-micro"
                 aria-label={`Start another thread from #${link.number}`}
+                className="relative"
                 disabled={startDisabledReason !== null}
                 onClick={() => onStart(link)}
               />
@@ -88,6 +133,7 @@ function IssueRow({
           variant="ghost"
           size="icon-micro"
           aria-label={`Unlink #${link.number} from thread`}
+          className="relative"
           onClick={() => onUnlink(link)}
         >
           <XIcon />
@@ -98,15 +144,18 @@ function IssueRow({
 }
 
 /**
- * The thread's linked GitHub Issues, above its pull requests, each removable. `states` holds each
- * Issue's current GitHub state by `issueKeyString`.
+ * The thread's linked GitHub Issues, above its pull requests and laid out like them, each
+ * removable. `states` holds each Issue's current GitHub state and `entries` what GitHub returned
+ * for it, both by `issueKeyString`.
  */
 export function ThreadIssueLinks({
   threadRef,
   states,
+  entries,
 }: {
   threadRef: ScopedThreadRef;
   states: ReadonlyMap<string, LinkedIssueState>;
+  entries: ReadonlyMap<string, IssueStateEntry>;
 }) {
   const { links, error } = useThreadIssueLinks(threadRef);
   const link = useAtomCommand(issueLinkEnvironment.link, { reportFailure: true });
@@ -156,6 +205,7 @@ export function ThreadIssueLinks({
           key={`${issue.host}/${issue.repository}#${issue.number}`}
           link={issue}
           state={states.get(issueKeyString(issue)) ?? "pending"}
+          entry={entries.get(issueKeyString(issue))}
           startDisabledReason={(() => {
             const target = startThread.resolve(issue);
             return "reason" in target ? target.reason : null;

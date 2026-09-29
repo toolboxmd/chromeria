@@ -7,6 +7,7 @@ import {
   issueLinkChangesMatch,
   issueStartPrompt,
   issueStateChunks,
+  linkedIssueEntries,
   linkedIssueStates,
   openLinkedIssueCount,
   parseIssueReferenceInput,
@@ -266,5 +267,15 @@ describe("linked Issue state", () => {
     expect(stateOf(states, many[50]!)).toBe("unknown");
     expect(stateOf(states, many[119]!)).toBe("done");
     expect(openLinkedIssueCount(many, states)).toBe(50);
+  });
+
+  it("keeps what GitHub returned for each read Issue, and nothing for missing or failed ones", () => {
+    const returned = { ...linked, state: "open" as const, title: "Fix it" };
+    const entries = linkedIssueEntries([
+      { _tag: "read", issues: [returned, { ...other, state: null }] },
+      { _tag: "failed" },
+    ]);
+    expect(entries.get(issueKeyString(linked))).toEqual(returned);
+    expect(entries.has(issueKeyString(other))).toBe(false);
   });
 });
