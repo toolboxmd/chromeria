@@ -118,7 +118,7 @@ export const ThreadSummary = Schema.Struct({
 
 const SpawnThreadTool = Tool.make("spawn_thread", {
   description:
-    "Use when another agent should do one bounded task, such as a review, a second opinion, a check or a small fix, or when a specific model and effort is wanted. Use it instead of starting codex exec, claude -p, opencode run or grok in the shell: the user cannot see those runs, while a child thread shows in this thread's Agents panel. Pass role (reviewer, worker) for that Prism role's model, or name instance, model and effort. For a job that should end in one PR, use prism_submit. Follow up with read_thread and message_thread.",
+    "Use when another agent should do one bounded task, such as a review, a second opinion, a check or a small fix, or when a specific model and effort is wanted. Use it instead of starting codex exec, claude -p, opencode run or grok in the shell: the user cannot see those runs, while a child thread shows in this thread's Agents panel. Pass role (reviewer, worker) to apply that Prism role's kit and model, or name instance, model and effort. For a job that should end in one PR, use prism_submit. Follow up with read_thread and message_thread.",
   parameters: SpawnThreadInput,
   success: SpawnThreadResult,
   failure: ThreadsToolError,
