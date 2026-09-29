@@ -144,6 +144,42 @@ describe("IssueLinks", () => {
     }).pipe(Effect.provide(services)),
   );
 
+  it.effect("rolls up the links child threads hold, at any depth, only when asked", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const child = ThreadId.make(`sub.${THREAD}.a`);
+      const grandchild = ThreadId.make(`sub.${child}.b`);
+      yield* insertThread({ id: child, projectId: "project-web" });
+      // A worker in another repository: its branch names that repository's Issue.
+      yield* insertThread({ id: grandchild, projectId: "project-api", branch: "feat/7-worker" });
+      // Not a descendant, though its id contains the thread's.
+      yield* insertThread({ id: `sub.other-${THREAD}.c`, projectId: "project-web" });
+      const links = yield* IssueLinks;
+      const link = (threadId: ThreadId, number: number, repository?: string) =>
+        links.link({ threadId, target: { number, repository }, source: "agent" });
+      yield* link(THREAD, 12);
+      yield* link(child, 12);
+      yield* link(child, 41);
+      yield* links.unlink({ threadId: THREAD, issue: issue(41) });
+      yield* link(grandchild, 40, "acme/web");
+      yield* link(ThreadId.make(`sub.other-${THREAD}.c`), 99);
+
+      expect(linksOf(yield* links.forThread(THREAD))).toEqual([
+        { issue: "acme/web#12", sources: ["agent"] },
+        { issue: "acme/web#28", sources: ["branch"] },
+      ]);
+      const rolledUp = yield* links.forThread(THREAD, { includeDescendants: true });
+      expect(
+        rolledUp.map((entry) => [`${entry.repository}#${entry.number}`, entry.linkedByThreadId]),
+      ).toEqual([
+        ["acme/web#12", undefined],
+        ["acme/web#28", undefined],
+        ["acme/web#40", grandchild],
+        ["acme/api#7", grandchild],
+      ]);
+    }).pipe(Effect.provide(services)),
+  );
+
   it.effect("reports an Issue its branch already links as linked, without storing it", () =>
     Effect.gen(function* () {
       yield* seed;

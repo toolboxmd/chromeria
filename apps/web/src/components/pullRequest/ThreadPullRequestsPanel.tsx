@@ -1,9 +1,6 @@
 import type { ScopedThreadRef, ThreadPullRequestLink } from "@t3tools/contracts";
-import {
-  resolveThreadPullRequestChains,
-  visibleThreadPullRequests,
-} from "@t3tools/shared/threadPullRequests";
-import { ArrowUpRightIcon, LinkIcon, MoreHorizontalIcon, PlusIcon } from "lucide-react";
+import { resolveThreadPullRequestChains } from "@t3tools/shared/threadPullRequests";
+import { ArrowUpRightIcon, BotIcon, LinkIcon, MoreHorizontalIcon, PlusIcon } from "lucide-react";
 import { useCallback, useMemo } from "react";
 
 import { writeTextToClipboard } from "~/hooks/useCopyToClipboard";
@@ -11,6 +8,7 @@ import { useOpenPrLink } from "~/lib/openPullRequestLink";
 import { cn } from "~/lib/utils";
 import { useServerConfigs, useThreadShell } from "~/state/entities";
 import { PullRequestsUnavailableState } from "./PullRequestsUnavailableState";
+import { useDescendantThreadShells } from "~/state/threadDescendants";
 import { threadEnvironment } from "~/state/threads";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
@@ -35,6 +33,11 @@ import {
   pullRequestChecksStatePresentation,
 } from "./pullRequestPresentation";
 import { PullRequestGlyph } from "./pullRequestIcons";
+import {
+  type DescendantShell,
+  linkedByOf,
+  rollUpThreadPullRequests,
+} from "../threadDescendants.logic";
 
 const SOURCE_LABELS: Record<ThreadPullRequestLink["source"], string> = {
   manual: "Linked by you",
@@ -67,11 +70,14 @@ function ChecksGlyph({
 function LinkRow({
   line,
   threadRef,
+  linkedBy,
   onUnlink,
 }: {
   line: PullRequestListLine;
   threadRef: ScopedThreadRef;
-  onUnlink: (link: ThreadPullRequestLink) => void;
+  /** The child thread holding the link, when this thread does not. */
+  linkedBy: DescendantShell | null;
+  onUnlink: (link: ThreadPullRequestLink, linkedBy: DescendantShell | null) => void;
 }) {
   const openPrLink = useOpenPrLink(threadRef);
   const { link, depth, stack } = line;
@@ -110,7 +116,8 @@ function LinkRow({
                 #{link.number}
               </TooltipTrigger>
               <TooltipPopup>
-                {SOURCE_LABELS[link.source]} · {formatRelativeTimeLabel(link.linkedAt)}
+                {linkedBy === null ? SOURCE_LABELS[link.source] : `Linked by ${linkedBy.title}`} ·{" "}
+                {formatRelativeTimeLabel(link.linkedAt)}
               </TooltipPopup>
             </Tooltip>
           }
@@ -137,6 +144,17 @@ function LinkRow({
           }
           meta={
             <>
+              {linkedBy !== null ? (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={<span className="inline-flex min-w-0 max-w-28 items-center gap-0.5" />}
+                  >
+                    <BotIcon aria-hidden className="size-3 shrink-0" />
+                    <span className="truncate">{linkedBy.title}</span>
+                  </TooltipTrigger>
+                  <TooltipPopup>Linked by child thread {linkedBy.title}</TooltipPopup>
+                </Tooltip>
+              ) : null}
               {stack ? (
                 <Tooltip>
                   <TooltipTrigger
@@ -220,9 +238,10 @@ function LinkRow({
               <ArrowUpRightIcon className="size-3.5" />
               Open
             </MenuItem>
-            <MenuItem onClick={() => onUnlink(link)}>
+            <MenuItem onClick={() => onUnlink(link, linkedBy)}>
               <PullRequestGlyph.unlink className="size-3.5" />
-              {link.source === "stack" ? "Dismiss from thread" : "Unlink from thread"}
+              {link.source === "stack" ? "Dismiss from " : "Unlink from "}
+              {linkedBy === null ? "thread" : "child thread"}
             </MenuItem>
           </MenuPopup>
         </Menu>
@@ -266,14 +285,19 @@ function EnabledThreadPullRequestsPanel({
   const thread = useThreadShell(threadRef);
   const openLinkDialog = useCallback(() => openLinkPullRequestDialog(threadRef), [threadRef]);
   const unlink = useAtomCommand(threadEnvironment.unlinkPullRequest, { reportFailure: true });
-  const links = useMemo(() => visibleThreadPullRequests(thread?.pullRequests ?? []), [thread]);
+  const descendants = useDescendantThreadShells(threadRef);
+  const rolledUp = useMemo(
+    () => rollUpThreadPullRequests(thread?.pullRequests ?? [], descendants),
+    [thread, descendants],
+  );
+  const links = rolledUp.links;
   const lines = useMemo(() => pullRequestListLines(resolveThreadPullRequestChains(links)), [links]);
   const handleUnlink = useCallback(
-    (link: ThreadPullRequestLink) => {
+    (link: ThreadPullRequestLink, linkedBy: DescendantShell | null) => {
       void unlink({
         environmentId: threadRef.environmentId,
         input: {
-          threadId: threadRef.threadId,
+          threadId: linkedBy?.id ?? threadRef.threadId,
           host: link.host,
           repository: link.repository,
           number: link.number,
@@ -321,6 +345,7 @@ function EnabledThreadPullRequestsPanel({
               key={`${line.link.host}/${line.link.repository}#${line.link.number}`}
               line={line}
               threadRef={threadRef}
+              linkedBy={linkedByOf(rolledUp, line.link)}
               onUnlink={handleUnlink}
             />
           ))}

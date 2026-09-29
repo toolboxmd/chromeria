@@ -159,6 +159,16 @@ describe("issueLinkChangesMatch", () => {
       issueLinkChangesMatch(batch, { threadId: "thread-c", issues: ["github.com/acme/web#3"] }),
     ).toBe(false);
   });
+  it("matches a grandchild thread's change only when asked for descendants", () => {
+    const batch = [change("sub.sub.thread-a.1.2", 1)];
+    expect(issueLinkChangesMatch(batch, { threadId: "thread-a", issues: [] })).toBe(false);
+    expect(
+      issueLinkChangesMatch(batch, { threadId: "thread-a", issues: [], descendants: true }),
+    ).toBe(true);
+    expect(
+      issueLinkChangesMatch(batch, { threadId: "thread-b", issues: [], descendants: true }),
+    ).toBe(false);
+  });
 });
 
 describe("resolveIssuePanelEnvironment", () => {

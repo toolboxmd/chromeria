@@ -24,3 +24,15 @@ export function parentThreadIdOf(threadId: string): string | null {
   if (!isSubagentThreadId(threadId)) return null;
   return threadId.slice(PREFIX.length, threadId.lastIndexOf("."));
 }
+
+/** Whether `threadId` was spawned by `ancestorId`, directly or through other child threads. */
+export function isDescendantThreadId(threadId: string, ancestorId: string): boolean {
+  for (
+    let parent = parentThreadIdOf(threadId);
+    parent !== null;
+    parent = parentThreadIdOf(parent)
+  ) {
+    if (parent === ancestorId) return true;
+  }
+  return false;
+}

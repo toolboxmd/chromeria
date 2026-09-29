@@ -4,11 +4,19 @@ import {
   type ThreadIssueLink,
   issueKeyString,
 } from "@t3tools/contracts";
-import { CircleHelpIcon, CircleIcon, MessageSquarePlusIcon, PlusIcon, XIcon } from "lucide-react";
+import {
+  BotIcon,
+  CircleHelpIcon,
+  CircleIcon,
+  MessageSquarePlusIcon,
+  PlusIcon,
+  XIcon,
+} from "lucide-react";
 import { useState } from "react";
 
 import { cn } from "~/lib/utils";
 import { issueLinkEnvironment } from "~/state/issueLinks";
+import { useDescendantThreadShells } from "~/state/threadDescendants";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
 import {
@@ -33,6 +41,7 @@ import { useThreadIssueLinks } from "./useThreadIssueLinks";
 
 function IssueRow({
   link,
+  linkedByTitle,
   state,
   entry,
   startDisabledReason,
@@ -41,6 +50,8 @@ function IssueRow({
   onUnlink,
 }: {
   link: ThreadIssueLink;
+  /** The title of the child thread holding the link, when this thread does not. */
+  linkedByTitle: string | null;
   state: LinkedIssueState;
   entry: IssueStateEntry | undefined;
   startDisabledReason: string | null;
@@ -76,6 +87,7 @@ function IssueRow({
               </TooltipTrigger>
               <TooltipPopup>
                 {[
+                  ...(linkedByTitle === null ? [] : [`Child thread ${linkedByTitle}`]),
                   ...link.sources.map((source) => ISSUE_LINK_SOURCE_LABELS[source]),
                   ...(link.linkedAt === null ? [] : [formatRelativeTimeLabel(link.linkedAt)]),
                 ].join(" · ")}
@@ -85,6 +97,12 @@ function IssueRow({
           title={entry?.title ?? link.repository}
           meta={
             <>
+              {linkedByTitle !== null ? (
+                <span className="inline-flex min-w-0 max-w-28 items-center gap-0.5">
+                  <BotIcon aria-hidden className="size-3 shrink-0" />
+                  <span className="truncate">{linkedByTitle}</span>
+                </span>
+              ) : null}
               {entry?.author !== undefined ? (
                 <PullRequestRowAuthor
                   actor={entry.author}
@@ -132,7 +150,7 @@ function IssueRow({
         <Button
           variant="ghost"
           size="icon-micro"
-          aria-label={`Unlink #${link.number} from thread`}
+          aria-label={`Unlink #${link.number} from ${linkedByTitle === null ? "thread" : "child thread"}`}
           className="relative"
           onClick={() => onUnlink(link)}
         >
@@ -158,6 +176,9 @@ export function ThreadIssueLinks({
   entries: ReadonlyMap<string, IssueStateEntry>;
 }) {
   const { links, error } = useThreadIssueLinks(threadRef);
+  const descendants = useDescendantThreadShells(threadRef);
+  const titleOf = (threadId: string) =>
+    descendants.find((descendant) => descendant.id === threadId)?.title ?? "Child thread";
   const link = useAtomCommand(issueLinkEnvironment.link, { reportFailure: true });
   const unlink = useAtomCommand(issueLinkEnvironment.unlink, { reportFailure: true });
   const startThread = useStartThreadFromIssue();
@@ -181,7 +202,7 @@ export function ThreadIssueLinks({
     void unlink({
       environmentId: threadRef.environmentId,
       input: {
-        threadId: threadRef.threadId,
+        threadId: issue.linkedByThreadId ?? threadRef.threadId,
         host: issue.host,
         repository: issue.repository,
         number: issue.number,
@@ -204,6 +225,9 @@ export function ThreadIssueLinks({
         <IssueRow
           key={`${issue.host}/${issue.repository}#${issue.number}`}
           link={issue}
+          linkedByTitle={
+            issue.linkedByThreadId === undefined ? null : titleOf(issue.linkedByThreadId)
+          }
           state={states.get(issueKeyString(issue)) ?? "pending"}
           entry={entries.get(issueKeyString(issue))}
           startDisabledReason={(() => {

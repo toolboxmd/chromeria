@@ -29,6 +29,7 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import { isDescendantThreadId } from "../mcp/toolkits/threads/subagentThreadId.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ClosingReferences from "./closingReferences.ts";
 import {
@@ -36,6 +37,7 @@ import {
   type StoredIssueLink,
   type StoredIssueLinkSource,
   combineThreadIssueLinks,
+  rollUpDescendantIssueLinks,
 } from "./threadIssueLinks.ts";
 
 export type IssueLinkWriteSource = Exclude<StoredIssueLinkSource, "dismissed">;
@@ -49,8 +51,10 @@ export type IssueLinkWriteSource = Exclude<StoredIssueLinkSource, "dismissed">;
 export class IssueLinks extends Context.Service<
   IssueLinks,
   {
+    /** With `includeDescendants`, also the links its child threads hold, marked with the holder. */
     readonly forThread: (
       threadId: ThreadId,
+      options?: { readonly includeDescendants?: boolean | undefined },
     ) => Effect.Effect<ReadonlyArray<ThreadIssueLink>, IssueLinkError>;
     /** Threads for a page of Issues; closing pull requests are the caller's, so no GitHub read. */
     readonly threadsForIssues: (
@@ -184,7 +188,56 @@ const make = Effect.gen(function* () {
     };
   });
 
-  const forThread = Effect.fn("IssueLinks.forThread")(function* (threadId: ThreadId) {
+  /**
+   * Stored and branch links of the thread's descendants, in spawn order. Closing references are
+   * left out: they need a GitHub read per pull request, and the panel lists those pull requests.
+   */
+  const descendantLinks = Effect.fn("IssueLinks.descendantLinks")(function* (threadId: ThreadId) {
+    const candidates = yield* sql<{
+      readonly threadId: ThreadId;
+      readonly projectId: string;
+      readonly branch: string | null;
+    }>`
+      SELECT thread_id AS "threadId", project_id AS "projectId", branch
+      FROM projection_threads
+      WHERE thread_id LIKE 'sub.%' AND instr(thread_id, ${`${threadId}.`}) > 0
+        AND deleted_at IS NULL
+      ORDER BY created_at, thread_id
+    `;
+    const descendants = candidates.filter((row) => isDescendantThreadId(row.threadId, threadId));
+    if (descendants.length === 0) return [];
+    const storedRows = yield* sql<StoredRow & { readonly threadId: string }>`
+      SELECT thread_id AS "threadId", host, repository, number, url, source,
+        linked_at AS "linkedAt"
+      FROM fork_thread_issue_links
+      WHERE ${sql.in(
+        "thread_id",
+        descendants.map((row) => row.threadId),
+      )}
+    `;
+    const storedByThread = groupBy(storedRows, (row) => row.threadId);
+    const repositories = new Map(
+      (yield* snapshots.getProjectShells()).map((project) => [
+        project.id as string,
+        gitHubRepositoryOf(project.repositoryIdentity),
+      ]),
+    );
+    return descendants.map((row) => {
+      const repository = repositories.get(row.projectId) ?? null;
+      const branchIssue = issueNumberFromBranch(row.branch);
+      const derived: DerivedIssueLink[] =
+        repository !== null && branchIssue !== null
+          ? [{ key: { ...repository, number: branchIssue }, source: "branch" }]
+          : [];
+      const stored = (storedByThread.get(row.threadId) ?? []).map(storedOf);
+      return { threadId: row.threadId, links: combineThreadIssueLinks(stored, derived) };
+    });
+  });
+
+  const forThread = Effect.fn("IssueLinks.forThread")(function* (
+    threadId: ThreadId,
+    options?: { readonly includeDescendants?: boolean | undefined },
+  ) {
     const context = yield* projectContext(threadId);
     if (context === null) {
       return yield* new IssueLinkError({ detail: `Thread ${threadId} was not found.` });
@@ -212,7 +265,13 @@ const make = Effect.gen(function* () {
       );
       for (const key of closed.flat()) derived.push({ key, source: "closing-reference" });
     }
-    return combineThreadIssueLinks(stored, derived);
+    const own = combineThreadIssueLinks(stored, derived);
+    if (options?.includeDescendants !== true) return own;
+    return rollUpDescendantIssueLinks(
+      own,
+      stored.filter((link) => link.source === "dismissed").map((link) => link.key),
+      yield* descendantLinks(threadId),
+    );
   }, failWith("Could not read the thread's Issue links."));
 
   // Pruned on read, at most every ten minutes: rows of threads deleted over a week ago, and of

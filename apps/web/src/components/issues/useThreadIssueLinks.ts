@@ -5,21 +5,23 @@ import { useEffect, useRef } from "react";
 import { useThreadShell } from "~/state/entities";
 import { issueLinkEnvironment } from "~/state/issueLinks";
 import { useEnvironmentQuery } from "~/state/query";
+import { useDescendantThreadShells } from "~/state/threadDescendants";
 
 /**
- * A server thread's Issue links. Only the links panel calls this, so a thread view that does not
- * show them reads nothing. Stored links refresh on the server's change push; derived ones
- * follow the thread's branch and pull requests, which the thread shell already streams, so a
- * change there rereads.
+ * A server thread's Issue links, with those its child threads hold. Only the links panel calls
+ * this, so a thread view that does not show them reads nothing. Stored links refresh on the
+ * server's change push; derived ones follow the thread's branch and pull requests and its
+ * descendants' branches, which the thread shells already stream, so a change there rereads.
  */
 export function useThreadIssueLinks(threadRef: ScopedThreadRef | null) {
   const thread = useThreadShell(threadRef);
+  const descendants = useDescendantThreadShells(threadRef);
   const query = useEnvironmentQuery(
     threadRef === null
       ? null
       : issueLinkEnvironment.forThread({
           environmentId: threadRef.environmentId,
-          input: { threadId: threadRef.threadId },
+          input: { threadId: threadRef.threadId, includeDescendants: true },
         }),
   );
   const derivationKey =
@@ -33,6 +35,7 @@ export function useThreadIssueLinks(threadRef: ScopedThreadRef | null) {
             link.number,
             link.snapshot?.updatedAt ?? null,
           ]),
+          descendants.map((descendant) => [descendant.id, descendant.branch]),
         ]);
   const lastDerivationKey = useRef(derivationKey);
   const { refresh } = query;
