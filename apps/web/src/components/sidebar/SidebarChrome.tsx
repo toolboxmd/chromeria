@@ -87,8 +87,8 @@ function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
       to="/"
     >
       {/* Center the visible capitals, without the font's ascender/descender space. */}
-      <span className="inline-flex min-w-0 items-baseline gap-1 text-sm font-medium tracking-tight">
-        <T3Wordmark aria-hidden className="h-[1cap] w-auto shrink-0" />
+      <span className="inline-flex min-w-0 items-center gap-1.5 text-sm font-medium tracking-tight">
+        <T3Wordmark aria-hidden className="size-5 shrink-0" />
         <span
           className={cn(
             "truncate [text-box:trim-both_cap_alphabetic]",

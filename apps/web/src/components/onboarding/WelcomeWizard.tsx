@@ -205,8 +205,8 @@ export function WelcomeWizard({
         <WizardHeader
           title={`Set up ${APP_BASE_NAME}`}
           identity={
-            <div className="flex items-baseline gap-1.5" role="img" aria-label={APP_BASE_NAME}>
-              <T3Wordmark className="h-4 w-auto shrink-0" aria-hidden />
+            <div className="flex items-center gap-2" role="img" aria-label={APP_BASE_NAME}>
+              <T3Wordmark className="size-8 shrink-0" aria-hidden />
               <span className="text-2xl font-medium tracking-tight text-muted-foreground">
                 {APP_BASE_NAME}
               </span>
