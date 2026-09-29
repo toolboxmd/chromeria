@@ -31,7 +31,7 @@ export function descendantThreads<T extends DescendantShell>(
 const pullRequestKey = (link: ThreadPullRequestLink) =>
   `${link.host.toLowerCase()}/${link.repository.toLowerCase()}#${link.number}`;
 
-export interface RolledUpPullRequests {
+interface RolledUpPullRequests {
   readonly links: ReadonlyArray<ThreadPullRequestLink>;
   /** The descendant holding each rolled-up link, by host, repository and number. */
   readonly linkedBy: ReadonlyMap<string, DescendantShell>;
