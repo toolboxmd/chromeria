@@ -28,6 +28,7 @@ apps/web/src/components/settings/IntegrationsSettings.tsx
 apps/web/src/components/settings/ThemePreviewCircles.tsx
 apps/web/src/components/sidebar/SidebarChrome.tsx
 apps/web/src/lib/bootError.ts
+t3.json
 
 # Child threads in the Agents panel and threads MCP toolkit (#8, #10)
 apps/server/src/entrypoint.test.ts
@@ -60,6 +61,9 @@ apps/web/src/routeTree.gen.ts
 # Fork maintenance script entry point (#20)
 knip.jsonc
 
+# Agent notes for working in the fork (#68)
+AGENTS.md
+
 # Parent threads working while child threads work (#31)
 apps/server/src/orchestration/ThreadSettlementReactor.test.ts
 apps/server/src/orchestration/ThreadSettlementReactor.ts
@@ -83,6 +87,7 @@ apps/web/src/components/ChatView.tsx
 apps/web/src/components/RightPanelTabs.tsx
 packages/client-runtime/src/rpc/client.ts
 packages/contracts/src/environment.ts
+apps/web/src/components/pullRequest/ThreadPullRequestsPanel.tsx
 
 # Issue and pull request links open in the app (#40)
 apps/web/src/components/ChatMarkdown.tsx

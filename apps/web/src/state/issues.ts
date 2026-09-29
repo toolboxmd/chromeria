@@ -88,7 +88,7 @@ export function useIssueDetail(environmentId: EnvironmentId, ref: IssueRef) {
 }
 
 /** How often an open links panel rereads its Issues' states when no pull request sync prompts it. */
-export const LINKED_ISSUE_STATES_REFRESH_MS = 60_000;
+const LINKED_ISSUE_STATES_REFRESH_MS = 60_000;
 
 const issueStates = createEnvironmentRpcQueryAtomFamily(connectionAtomRuntime, {
   label: "environment-data:issues:states",
