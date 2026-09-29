@@ -46,4 +46,21 @@ describe("t3-code tool loading", () => {
       "workspace defaults to this thread's current directory; set it for work in another repository or worktree.",
     );
   });
+
+  it("prism_status says how to report a router defect and what is not one", () => {
+    const tool = allTools.find((candidate) => candidate.name === "prism_status");
+    const description = tool ? (Tool.getDescription(tool) ?? "") : "";
+    expect(description.startsWith("Read a Prism job's state")).toBe(true);
+    expect(description).toContain(
+      "when a job blocks, loops or acts against Model Router's RUNNER.md",
+    );
+    expect(description).toContain("~/.local/share/durable-runner/outputs/<requestId>/");
+    expect(description).toContain(
+      "open or update a toolboxmd/model-router Issue with the request id, that evidence and the expected behavior",
+    );
+    expect(description).toContain(
+      "Fix your own packet mistakes, such as a missing proof or workspace, in the packet; they are not router defects.",
+    );
+    expect(description.length).toBeLessThan(600);
+  });
 });
