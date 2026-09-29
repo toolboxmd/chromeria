@@ -13,6 +13,9 @@ describe("t3-code tool instructions", () => {
       expect(instructions).toContain(
         "or when a specific model and effort is wanted, call spawn_thread",
       );
+      expect(instructions).toContain(
+        "never by starting codex exec, claude -p, opencode run or grok in the shell",
+      );
     },
   );
 

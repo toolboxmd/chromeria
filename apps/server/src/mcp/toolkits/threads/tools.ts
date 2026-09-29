@@ -10,6 +10,7 @@ import * as Schema from "effect/Schema";
 import * as Tool from "effect/unstable/ai/Tool";
 import * as Toolkit from "effect/unstable/ai/Toolkit";
 
+import { ALWAYS_LOAD_META } from "../../alwaysLoad.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 const dependencies = [McpInvocationContext.McpInvocationContext];
@@ -117,13 +118,14 @@ export const ThreadSummary = Schema.Struct({
 
 const SpawnThreadTool = Tool.make("spawn_thread", {
   description:
-    "Start a child thread in this project and send it a task: small direct work such as a quick review or a bounded fix. Pass role (for example reviewer or worker) to apply that Prism role's kit and preferred model, or name a provider instance, model and effort. For a full job that needs a dispatcher, fallback, recovery and one PR, use prism_submit instead. Returns immediately with the child's thread id; the child shows in this thread's Agents panel. Use read_thread to see its reply, message_thread to talk to it.",
+    "Use when another agent should do one bounded task, such as a review, a second opinion, a check or a small fix, or when a specific model and effort is wanted. Use it instead of starting codex exec, claude -p, opencode run or grok in the shell: the user cannot see those runs, while a child thread shows in this thread's Agents panel. Pass role (reviewer, worker) for that Prism role's model, or name instance, model and effort. For a job that should end in one PR, use prism_submit. Follow up with read_thread and message_thread.",
   parameters: SpawnThreadInput,
   success: SpawnThreadResult,
   failure: ThreadsToolError,
   dependencies,
 })
   .annotate(Tool.Title, "Spawn child thread")
+  .annotate(Tool.Meta, ALWAYS_LOAD_META)
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
@@ -138,6 +140,7 @@ const MessageThreadTool = Tool.make("message_thread", {
   dependencies,
 })
   .annotate(Tool.Title, "Message child thread")
+  .annotate(Tool.Meta, ALWAYS_LOAD_META)
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
@@ -152,6 +155,7 @@ const ReadThreadTool = Tool.make("read_thread", {
   dependencies,
 })
   .annotate(Tool.Title, "Read child thread")
+  .annotate(Tool.Meta, ALWAYS_LOAD_META)
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
