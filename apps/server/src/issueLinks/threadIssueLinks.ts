@@ -1,5 +1,6 @@
 import {
   type IssueKey,
+  type ThreadId,
   type ThreadIssueLink,
   type ThreadIssueLinkSource,
   issueKeyString,
@@ -59,6 +60,31 @@ export function combineThreadIssueLinks(
     }
   }
   return [...byKey.values()];
+}
+
+/**
+ * A thread's links followed by those its descendant threads hold, each Issue once: the thread's own
+ * link wins, then the earliest descendant's. An Issue the thread itself dismissed stays hidden.
+ */
+export function rollUpDescendantIssueLinks(
+  own: ReadonlyArray<ThreadIssueLink>,
+  dismissed: ReadonlyArray<IssueKey>,
+  descendants: ReadonlyArray<{
+    readonly threadId: ThreadId;
+    readonly links: ReadonlyArray<ThreadIssueLink>;
+  }>,
+): ReadonlyArray<ThreadIssueLink> {
+  const seen = new Set([...own, ...dismissed].map(issueKeyString));
+  const rolledUp: ThreadIssueLink[] = [];
+  for (const { threadId, links } of descendants) {
+    for (const link of links) {
+      const id = issueKeyString(link);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      rolledUp.push({ ...link, linkedByThreadId: threadId });
+    }
+  }
+  return [...own, ...rolledUp];
 }
 
 function normalizeKey(key: IssueKey): IssueKey {

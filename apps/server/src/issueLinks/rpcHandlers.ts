@@ -8,8 +8,10 @@ import { IssueLinks } from "./IssueLinks.ts";
 export const makeIssueLinkRpcHandlers = Effect.gen(function* () {
   const links = yield* IssueLinks;
   return IssueLinksRpcGroup.of({
-    [ISSUE_LINKS_WS_METHODS.forThread]: ({ threadId }) =>
-      links.forThread(threadId).pipe(Effect.map((result) => ({ links: result }))),
+    [ISSUE_LINKS_WS_METHODS.forThread]: ({ threadId, includeDescendants }) =>
+      links
+        .forThread(threadId, { includeDescendants })
+        .pipe(Effect.map((result) => ({ links: result }))),
     [ISSUE_LINKS_WS_METHODS.threadsForIssues]: (input) =>
       links.threadsForIssues(input).pipe(Effect.map((issues) => ({ issues }))),
     [ISSUE_LINKS_WS_METHODS.link]: (input) => links.link(input),

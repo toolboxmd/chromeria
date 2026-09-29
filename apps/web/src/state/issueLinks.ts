@@ -31,15 +31,17 @@ const changes = createEnvironmentRpcSubscriptionAtomFamily(connectionAtomRuntime
  * thread and Issue rows it names rather than every mounted query on the environment.
  */
 const changeSignal = Atom.family((key: string) => {
-  const { environmentId, threadId, issues } = JSON.parse(key) as {
+  const { environmentId, threadId, issues, descendants } = JSON.parse(key) as {
     readonly environmentId: EnvironmentId;
     readonly threadId: string | null;
     readonly issues: ReadonlyArray<string>;
+    readonly descendants: boolean;
   };
   return Atom.make((get) => {
     const previous = Option.getOrElse(get.self<number>(), () => 0);
     const batch = AsyncResult.value(get(changes({ environmentId, input: {} })));
-    return Option.isSome(batch) && issueLinkChangesMatch(batch.value, { threadId, issues })
+    return Option.isSome(batch) &&
+      issueLinkChangesMatch(batch.value, { threadId, issues, descendants })
       ? previous + 1
       : previous;
   }).pipe(Atom.withLabel(`issue-links:change-signal:${key}`));
@@ -49,9 +51,15 @@ const signalFor = (
   environmentId: EnvironmentId,
   threadId: string | null,
   issues: ReadonlyArray<IssueKey>,
+  descendants = false,
 ) =>
   changeSignal(
-    JSON.stringify({ environmentId, threadId, issues: issues.map(issueKeyString).toSorted() }),
+    JSON.stringify({
+      environmentId,
+      threadId,
+      issues: issues.map(issueKeyString).toSorted(),
+      descendants,
+    }),
   );
 
 export const issueLinkEnvironment = {
@@ -59,7 +67,8 @@ export const issueLinkEnvironment = {
     label: "environment-data:issue-links:for-thread",
     tag: ISSUE_LINKS_WS_METHODS.forThread,
     staleTimeMs: 0,
-    refreshTrigger: ({ environmentId, input }) => signalFor(environmentId, input.threadId, []),
+    refreshTrigger: ({ environmentId, input }) =>
+      signalFor(environmentId, input.threadId, [], input.includeDescendants === true),
   }),
   /** Threads for a page of Issues in one read; Issue rows and computed status use this. */
   threadsForIssues: createEnvironmentRpcQueryAtomFamily(connectionAtomRuntime, {

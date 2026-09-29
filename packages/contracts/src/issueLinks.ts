@@ -41,6 +41,8 @@ export const ThreadIssueLink = Schema.Struct({
   sources: Schema.Array(ThreadIssueLinkSource),
   /** When a stored link was made; null for purely derived links. */
   linkedAt: Schema.NullOr(IsoDateTime),
+  /** The child thread (at any depth) holding the link, when the thread itself does not. */
+  linkedByThreadId: Schema.optional(ThreadId),
 });
 export type ThreadIssueLink = typeof ThreadIssueLink.Type;
 
@@ -135,7 +137,11 @@ export const ISSUE_LINKS_WS_METHODS = {
 
 export const IssueLinksRpcGroup = RpcGroup.make(
   Rpc.make(ISSUE_LINKS_WS_METHODS.forThread, {
-    payload: Schema.Struct({ threadId: ThreadId }),
+    /** With `includeDescendants`, also the links its child threads hold, at any depth. */
+    payload: Schema.Struct({
+      threadId: ThreadId,
+      includeDescendants: Schema.optional(Schema.Boolean),
+    }),
     success: ThreadIssueLinksResult,
     error: IssueLinksRpcError,
   }),

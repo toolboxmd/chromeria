@@ -61,6 +61,7 @@ vi.mock("~/state/entities", () => ({
     new Map([["local", { environment: { capabilities: { threadPullRequests: true } } }]]),
   useProjects: () => [],
 }));
+vi.mock("~/state/threadDescendants", () => ({ useDescendantThreadShells: () => [] }));
 vi.mock("./useThreadIssueLinks", () => ({
   useThreadIssueLinks: () => ({ links: issues, error: null }),
 }));

@@ -13,6 +13,8 @@ import {
 } from "@t3tools/contracts";
 import type { AsyncResult } from "effect/unstable/reactivity";
 
+import { isDescendantThreadId } from "../subagentThreads";
+
 export const ISSUE_LINK_SOURCE_LABELS: Record<ThreadIssueLinkSource, string> = {
   manual: "Linked by you",
   agent: "Linked by the agent",
@@ -134,15 +136,26 @@ export async function startThreadFromIssue<
   return opened;
 }
 
-/** Whether any change in a delivered batch names the thread or one of the Issue keys. */
+/**
+ * Whether any change in a delivered batch names the thread (or, with `descendants`, one of its
+ * child threads) or one of the Issue keys.
+ */
 export function issueLinkChangesMatch(
   batch: ReadonlyArray<IssueLinkChange>,
-  target: { readonly threadId: string | null; readonly issues: ReadonlyArray<string> },
+  target: {
+    readonly threadId: string | null;
+    readonly issues: ReadonlyArray<string>;
+    readonly descendants?: boolean;
+  },
 ): boolean {
   const wanted = new Set(target.issues);
+  const { threadId } = target;
   return batch.some(
     (change) =>
-      change.threadId === target.threadId ||
+      change.threadId === threadId ||
+      (target.descendants === true &&
+        threadId !== null &&
+        isDescendantThreadId(change.threadId, threadId)) ||
       change.issues.some((issue) => wanted.has(issueKeyString(issue))),
   );
 }
