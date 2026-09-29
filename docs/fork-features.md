@@ -91,7 +91,8 @@ for per-match decisions and the absorption PR record.
     "apps/web/src/components/settings/IntegrationsSettings.tsx",
     "apps/web/src/components/settings/ThemePreviewCircles.tsx",
     "apps/web/src/components/sidebar/SidebarChrome.tsx",
-    "apps/web/src/lib/bootError.ts"
+    "apps/web/src/lib/bootError.ts",
+    "t3.json"
   ],
   "sharedFiles": [],
   "keywords": [
@@ -183,7 +184,8 @@ for per-match decisions and the absorption PR record.
   "upstreamFiles": [
     ".github/workflows/ci.yml",
     ".github/workflows/mobile-fingerprint-check.yml",
-    "knip.jsonc"
+    "knip.jsonc",
+    "AGENTS.md"
   ],
   "sharedFiles": ["scripts/build-desktop-artifact.ts", "apps/server/src/entrypoint.test.ts"],
   "keywords": ["fork", "rebase", "upstream", "blacksmith", "ELECTRON_RUN_AS_NODE", "TMPDIR"]
@@ -428,7 +430,8 @@ for per-match decisions and the absorption PR record.
     "apps/web/src/components/RightPanelTabs.tsx",
     "apps/web/src/components/pullRequest/ThreadPullRequestsPanel.tsx",
     "packages/client-runtime/src/rpc/client.ts",
-    "packages/contracts/src/environment.ts"
+    "packages/contracts/src/environment.ts",
+    "apps/web/src/components/pullRequest/ThreadPullRequestsPanel.tsx"
   ],
   "sharedFiles": [
     "apps/server/src/auth/RpcAuthorization.ts",
