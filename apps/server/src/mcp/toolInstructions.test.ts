@@ -16,6 +16,9 @@ describe("t3-code tool instructions", () => {
       expect(instructions).toContain(
         "never by starting codex exec, claude -p, opencode run or grok in the shell",
       );
+      expect(instructions).toContain(
+        "read prism_status and its evidence, then report it as a toolboxmd/model-router Issue instead of working around it",
+      );
     },
   );
 

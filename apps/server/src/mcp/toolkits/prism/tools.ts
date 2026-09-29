@@ -68,7 +68,7 @@ const PrismSubmitTool = Tool.make("prism_submit", {
 
 const PrismStatusTool = Tool.make("prism_status", {
   description:
-    "Read a Prism job's state: status, route, launches, open questions and recent events. Use it when the user asks how a job is going; the final state arrives in this thread by itself.",
+    "Read a Prism job's state: status, route, launches, open questions and recent events. Use it when the user asks how a job is going, or when a job blocks, loops or acts against Model Router's RUNNER.md; the final state arrives in this thread by itself. For such a defect, also read ~/.local/share/durable-runner/outputs/<requestId>/, then open or update a toolboxmd/model-router Issue with the request id, that evidence and the expected behavior; do not silently work around it. Fix your own packet mistakes, such as a missing proof or workspace, in the packet; they are not router defects.",
   parameters: Schema.Struct({ requestId: RequestId }),
   success: PrismResult,
   failure: PrismToolError,
