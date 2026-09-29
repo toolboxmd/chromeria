@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 import * as Tool from "effect/unstable/ai/Tool";
 import * as Toolkit from "effect/unstable/ai/Toolkit";
 
+import { ALWAYS_LOAD_META } from "../../alwaysLoad.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 const dependencies = [McpInvocationContext.McpInvocationContext];
@@ -52,13 +53,14 @@ export const PrismResult = Schema.Struct({
 
 const PrismSubmitTool = Tool.make("prism_submit", {
   description:
-    "Hand a full job to Prism (Model Router). Prism starts a dispatcher as a child of this thread, which runs workers, falls back to another model when capacity fails, recovers stalled work, and ends with one pushed branch and one open PR carrying proof and review. This thread becomes the job's planner automatically: it is woken only when the dispatcher needs judgment, and receives the final state (ready with the PR URL, or blocked, failed or cancelled with the reason). Use it for authorized work that should end in a PR; for small direct work (a quick review, a bounded fix) use spawn_thread with a role instead.",
+    "Use when an authorized job should end in one pushed branch and one PR with proof and review. Use it instead of coordinating workers yourself or starting agent CLIs in the shell. Prism (Model Router) picks models, falls back when capacity fails and recovers stalled work; this thread becomes the planner, woken only for judgment, and receives the final state: ready with the PR URL, or blocked, failed or cancelled with the reason. For one bounded task, use spawn_thread.",
   parameters: PrismSubmitInput,
   success: PrismResult,
   failure: PrismToolError,
   dependencies,
 })
   .annotate(Tool.Title, "Submit Prism job")
+  .annotate(Tool.Meta, ALWAYS_LOAD_META)
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
