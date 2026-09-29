@@ -428,7 +428,6 @@ for per-match decisions and the absorption PR record.
     "apps/server/src/environment/ServerEnvironment.ts",
     "apps/web/src/components/ChatView.tsx",
     "apps/web/src/components/RightPanelTabs.tsx",
-    "apps/web/src/components/pullRequest/ThreadPullRequestsPanel.tsx",
     "packages/client-runtime/src/rpc/client.ts",
     "packages/contracts/src/environment.ts",
     "apps/web/src/components/pullRequest/ThreadPullRequestsPanel.tsx"
@@ -631,23 +630,5 @@ for per-match decisions and the absorption PR record.
     "spawn_thread",
     "host sleep"
   ]
-}
-```
-
-## Fork agent instructions
-
-```json
-{
-  "id": "fork-agent-instructions",
-  "purpose": "Tell agents working in the fork how to run vp in worktrees and that a merged main may be built and staged on the maintainer's Mac without another prompt.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/68"],
-  "prs": [
-    "https://github.com/toolboxmd/chromeria/pull/70",
-    "https://github.com/toolboxmd/chromeria/pull/78"
-  ],
-  "newFiles": [],
-  "upstreamFiles": ["AGENTS.md"],
-  "sharedFiles": [],
-  "keywords": ["pnpm exec vp", "Installing on the maintainer's Mac"]
 }
 ```
