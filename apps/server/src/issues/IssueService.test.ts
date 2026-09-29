@@ -73,33 +73,51 @@ const closed13 = { host: "github.com", repository: "acme/web", number: 13 };
 const gone14 = { host: "github.com", repository: "acme/web", number: 14 };
 
 describe("IssueService.states", () => {
-  it.effect("reads only each Issue's state, in one request, and marks missing ones null", () => {
-    const { layer, sent } = serviceLayer(() =>
-      Effect.succeed(
-        JSON.stringify({
-          data: {
-            issue0: { state: "OPEN", stateReason: null },
-            issue1: { state: "CLOSED", stateReason: "COMPLETED" },
-            issue2: null,
+  it.effect(
+    "reads each Issue's state and row fields in one request, and marks missing ones null",
+    () => {
+      const { layer, sent } = serviceLayer(() =>
+        Effect.succeed(
+          JSON.stringify({
+            data: {
+              issue0: {
+                state: "OPEN",
+                stateReason: null,
+                title: "Rows read like pull requests",
+                updatedAt: "2026-09-29T09:00:00Z",
+                author: { login: "octo", avatarUrl: "https://avatars.example/octo" },
+              },
+              issue1: { state: "CLOSED", stateReason: "COMPLETED", author: null },
+              issue2: null,
+            },
+          }),
+        ),
+      );
+      return Effect.gen(function* () {
+        const issues = yield* IssueService.IssueService;
+        const result = yield* issues.states({ issues: [open12, closed13, gone14] });
+        expect(result.issues).toEqual([
+          {
+            ...open12,
+            state: "open",
+            title: "Rows read like pull requests",
+            updatedAt: "2026-09-29T09:00:00Z",
+            author: { login: "octo", name: null, avatarUrl: "https://avatars.example/octo" },
           },
-        }),
-      ),
-    );
-    return Effect.gen(function* () {
-      const issues = yield* IssueService.IssueService;
-      const result = yield* issues.states({ issues: [open12, closed13, gone14] });
-      expect(result.issues).toEqual([
-        { ...open12, state: "open" },
-        { ...closed13, state: "done" },
-        { ...gone14, state: null },
-      ]);
-      expect(sent).toHaveLength(1);
-      expect(sent[0]).toContain('resource(url: "https://github.com/acme/web/issues/13")');
-      expect(sent[0]).toContain("... on Issue { state stateReason }");
-      // No body, comments or closing references: the panel needs the state alone.
-      expect(sent[0]).not.toMatch(/body|comments|closedByPullRequestsReferences/);
-    }).pipe(Effect.provide(layer));
-  });
+          // A deleted author reads as no author, so the row shows GitHub's "ghost".
+          { ...closed13, state: "done", author: null },
+          { ...gone14, state: null },
+        ]);
+        expect(sent).toHaveLength(1);
+        expect(sent[0]).toContain('resource(url: "https://github.com/acme/web/issues/13")');
+        expect(sent[0]).toContain(
+          "... on Issue { state stateReason title updatedAt author { login avatarUrl } }",
+        );
+        // No body, comments or closing references: the panel's rows need none of them.
+        expect(sent[0]).not.toMatch(/body|comments|closedByPullRequestsReferences/);
+      }).pipe(Effect.provide(layer));
+    },
+  );
 
   it.effect("fails the read when GitHub cannot be reached", () => {
     const { layer } = serviceLayer(() =>

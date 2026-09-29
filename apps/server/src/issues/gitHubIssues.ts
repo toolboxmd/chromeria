@@ -5,7 +5,9 @@ import type {
   IssueListState,
   IssuePullRequest,
   IssueReviewStatus,
+  IssueRef,
   IssueState,
+  IssueStateEntry,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
@@ -101,7 +103,8 @@ function linkedAliases(
 const stateAlias = (index: number) => `issue${index}`;
 
 /**
- * Only the state of each Issue on `host`, one alias each, for the thread's links panel. Null when
+ * Each Issue on `host` as the thread's links panel shows it, one alias each: state, title, author
+ * and update time. Null when
  * none can be written into a document. `resource(url:)` answers null for a deleted or invisible
  * Issue instead of failing the request.
  */
@@ -113,16 +116,25 @@ export function issueStatesGraphQlQuery(
     const url = resourceUrl(host, repository, "issues", number);
     return url === null
       ? []
-      : [`  ${stateAlias(index)}: resource(url: "${url}") { ... on Issue { state stateReason } }`];
+      : [`  ${stateAlias(index)}: resource(url: "${url}") { ... on Issue { ${STATE_FIELDS} } }`];
   });
   return aliases.length === 0 ? null : `query {\n${aliases.join("\n")}\n}`;
 }
+
+const STATE_FIELDS = "state stateReason title updatedAt author { login avatarUrl }";
 
 // A resource that is not an Issue answers `{}`, which reads as no state.
 const StateNode = Schema.NullOr(
   Schema.Struct({
     state: Schema.optional(Schema.String),
     stateReason: Schema.optional(Schema.NullOr(Schema.String)),
+    title: Schema.optional(Schema.String),
+    updatedAt: Schema.optional(Schema.String),
+    author: Schema.optional(
+      Schema.NullOr(
+        Schema.Struct({ login: Schema.String, avatarUrl: Schema.optional(Schema.String) }),
+      ),
+    ),
   }),
 );
 
@@ -132,19 +144,22 @@ export const decodeIssueStatesJson = Schema.decodeUnknownResult(
   ),
 );
 
-/** Each asked Issue's state by its position, null where GitHub returned none. */
+/** Each asked Issue by its position, state null and nothing else where GitHub returned none. */
 export function issueStatesOf<I extends { readonly repository: string; readonly number: number }>(
   issues: ReadonlyArray<I>,
   data: Readonly<Record<string, typeof StateNode.Type | undefined>>,
-): Array<I & { readonly state: IssueState | null }> {
+): Array<I & Omit<IssueStateEntry, keyof IssueRef>> {
   return issues.map((issue, index) => {
     const node = data[stateAlias(index)];
+    if (node?.state === undefined) return { ...issue, state: null };
+    const login = node.author?.login;
     return {
       ...issue,
-      state:
-        node?.state === undefined
-          ? null
-          : issueStateOf({ state: node.state, stateReason: node.stateReason ?? null }),
+      state: issueStateOf({ state: node.state, stateReason: node.stateReason ?? null }),
+      ...(node.title === undefined ? {} : { title: node.title }),
+      ...(node.updatedAt === undefined ? {} : { updatedAt: node.updatedAt }),
+      // A deleted account answers a null author, shown as GitHub's own "ghost".
+      author: login ? { login, name: null, avatarUrl: node.author?.avatarUrl || null } : null,
     };
   });
 }

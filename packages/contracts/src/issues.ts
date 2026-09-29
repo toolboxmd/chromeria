@@ -9,6 +9,7 @@ import {
   ProjectId,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { PullRequestActor } from "./pullRequest.ts";
 
 /**
  * GitHub Issues from the repositories of an environment's projects, read live from GitHub and
@@ -210,10 +211,17 @@ export const IssueStatesInput = Schema.Struct({
 });
 export type IssueStatesInput = typeof IssueStatesInput.Type;
 
-/** An Issue's current state; null when GitHub did not return it (deleted or not visible). */
+/**
+ * An Issue's current state; null when GitHub did not return it (deleted or not visible). Title,
+ * author and update time come with a returned Issue so the panel's rows read like its pull
+ * requests; optional because older servers answer the state alone.
+ */
 export const IssueStateEntry = Schema.Struct({
   ...IssueRef.fields,
   state: Schema.NullOr(IssueState),
+  title: Schema.optional(Schema.String),
+  author: Schema.optional(Schema.NullOr(PullRequestActor)),
+  updatedAt: Schema.optional(IsoDateTime),
 });
 export type IssueStateEntry = typeof IssueStateEntry.Type;
 

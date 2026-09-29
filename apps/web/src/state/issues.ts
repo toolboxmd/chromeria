@@ -18,6 +18,7 @@ import { connectionAtomRuntime } from "../connection/runtime";
 import { mergeIssueLists } from "../components/issues/issueList.logic";
 import {
   issueStateChunks,
+  linkedIssueEntries,
   linkedIssueStates,
   linkedIssueStatesReadOf,
 } from "../components/issues/issueLinks.logic";
@@ -105,7 +106,8 @@ const linkedIssueStatesReads = Atom.family((key: string) => {
 });
 
 /**
- * The current GitHub state of a thread's linked Issues, read through the thread's server: on
+ * The current GitHub state of a thread's linked Issues, and each returned Issue's title, author
+ * and update time, read through the thread's server: on
  * mount, every `LINKED_ISSUE_STATES_REFRESH_MS` while shown, and whenever `syncKey` changes,
  * e.g. on each sync of the thread's pull requests.
  */
@@ -132,8 +134,8 @@ export function useLinkedIssueStates(
     const targets = JSON.parse(key) as ReadonlyArray<EnvironmentQueryTarget<IssueStatesInput>>;
     for (const target of targets) appAtomRegistry.refresh(issueStates(target));
   }, [syncKey, key]);
-  return useMemo(
-    () => linkedIssueStates(links, results.map(linkedIssueStatesReadOf)),
-    [links, results],
-  );
+  return useMemo(() => {
+    const reads = results.map(linkedIssueStatesReadOf);
+    return { states: linkedIssueStates(links, reads), entries: linkedIssueEntries(reads) };
+  }, [links, results]);
 }

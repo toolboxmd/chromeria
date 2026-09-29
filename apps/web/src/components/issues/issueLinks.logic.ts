@@ -3,6 +3,7 @@ import {
   type IssueKey,
   type IssueLinkChange,
   type IssueState,
+  type IssueStateEntry,
   type IssueTarget,
   type ThreadIssueLinkSource,
   ISSUE_STATES_MAX,
@@ -156,17 +157,11 @@ export type LinkedIssueState = IssueState | "pending" | "unknown";
 export type LinkedIssueStatesRead =
   | { readonly _tag: "pending" }
   | { readonly _tag: "failed" }
-  | {
-      readonly _tag: "read";
-      readonly issues: ReadonlyArray<IssueKey & { readonly state: IssueState | null }>;
-    };
+  | { readonly _tag: "read"; readonly issues: ReadonlyArray<IssueStateEntry> };
 
 /** The panel's read of one chunk, from its query's result. */
 export function linkedIssueStatesReadOf(
-  result: AsyncResult.AsyncResult<
-    { readonly issues: ReadonlyArray<IssueKey & { readonly state: IssueState | null }> },
-    unknown
-  >,
+  result: AsyncResult.AsyncResult<{ readonly issues: ReadonlyArray<IssueStateEntry> }, unknown>,
 ): LinkedIssueStatesRead {
   switch (result._tag) {
     case "Initial":
@@ -211,6 +206,24 @@ export function linkedIssueStates(
         return [key, found.get(key) ?? "unknown"];
       });
     }),
+  );
+}
+
+/**
+ * Each Issue GitHub returned in the latest reads, by `issueKeyString`, for the rows' title, author
+ * and update time. Issues not read yet, failed or missing are absent.
+ */
+export function linkedIssueEntries(
+  reads: ReadonlyArray<LinkedIssueStatesRead>,
+): ReadonlyMap<string, IssueStateEntry> {
+  return new Map(
+    reads.flatMap((read) =>
+      read._tag === "read"
+        ? read.issues.flatMap((issue) =>
+            issue.state === null ? [] : [[issueKeyString(issue), issue] as const],
+          )
+        : [],
+    ),
   );
 }
 
