@@ -20,6 +20,10 @@ const RequestId = TrimmedNonEmptyString.annotate({
   description: "The Prism job's request id, as prism_submit returned it.",
 });
 
+/** Who answers a Prism job's decision points; the router defaults to luna. */
+export const PrismDispatcher = Schema.Literals(["luna", "planner"]);
+export type PrismDispatcher = typeof PrismDispatcher.Type;
+
 export const PrismSubmitInput = Schema.Struct({
   task: TrimmedNonEmptyString.annotate({
     description:
@@ -35,6 +39,12 @@ export const PrismSubmitInput = Schema.Struct({
     PrismLane.annotate({
       description:
         "How difficult the job is: easy for mechanical work, hard for difficult work, medium (default) otherwise. Selects each role's model list for that lane.",
+    }),
+  ),
+  dispatcher: Schema.optional(
+    PrismDispatcher.annotate({
+      description:
+        "Who answers the job's decision points: luna (default) for a dispatcher child thread, or planner for this thread itself.",
     }),
   ),
   requestId: Schema.optional(

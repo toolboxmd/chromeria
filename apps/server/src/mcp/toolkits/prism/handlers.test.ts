@@ -42,6 +42,24 @@ it("submits with the calling thread as the T3 planner and starts the job", () =>
   ]);
 });
 
+it("passes the dispatcher mode to the router only when one is chosen", () => {
+  const base = {
+    requestId: "prism-1",
+    task: "Fix #84",
+    workspace: "/repo",
+    plannerThreadId: "thread-1",
+    serverUrl: "http://127.0.0.1:3999",
+  };
+  const dispatcherOf = (args: string[]) => {
+    const index = args.indexOf("--dispatcher");
+    return index === -1 ? undefined : args[index + 1];
+  };
+  assert.strictEqual(dispatcherOf(submitArgs({ ...base, dispatcher: "planner" })), "planner");
+  assert.strictEqual(dispatcherOf(submitArgs({ ...base, dispatcher: "luna" })), "luna");
+  assert.isFalse(submitArgs(base).includes("--dispatcher"));
+  assert.strictEqual(submitArgs({ ...base, dispatcher: "planner" }).at(-1), "--start");
+});
+
 it("passes router JSON through and turns its errors into refusals", () => {
   assert.deepStrictEqual(parseRouterOutput('{"status":"running"}', "", 0), {
     ok: { status: "running" },
