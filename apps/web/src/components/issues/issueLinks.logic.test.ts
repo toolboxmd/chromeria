@@ -6,6 +6,7 @@ import { ThreadId, issueKeyString } from "@t3tools/contracts";
 import {
   issueLinkChangesMatch,
   issueStartPrompt,
+  issueStateChunks,
   linkedIssueStates,
   openLinkedIssueCount,
   parseIssueReferenceInput,
@@ -197,46 +198,73 @@ describe("linked Issue state", () => {
 
   it("moves an Issue closed after linking from open to closed on the next read", () => {
     // Before the first read the rows are pending and nothing counts as open.
-    const pending = linkedIssueStates(links, { _tag: "pending" });
+    const pending = linkedIssueStates(links, []);
     expect(stateOf(pending, linked)).toBe("pending");
     expect(openLinkedIssueCount(links, pending)).toBe(0);
 
-    const atLink = linkedIssueStates(links, {
-      _tag: "read",
-      issues: [
-        { ...linked, state: "open" },
-        { ...other, state: "open" },
-      ],
-    });
+    const atLink = linkedIssueStates(links, [
+      {
+        _tag: "read",
+        issues: [
+          { ...linked, state: "open" },
+          { ...other, state: "open" },
+        ],
+      },
+    ]);
     expect(stateOf(atLink, linked)).toBe("open");
     expect(openLinkedIssueCount(links, atLink)).toBe(2);
 
     // The next read returns GitHub's current state, with the repository in its own case.
-    const afterClose = linkedIssueStates(links, {
-      _tag: "read",
-      issues: [
-        { ...linked, repository: "Acme/Web", state: "done" },
-        { ...other, state: "open" },
-      ],
-    });
+    const afterClose = linkedIssueStates(links, [
+      {
+        _tag: "read",
+        issues: [
+          { ...linked, repository: "Acme/Web", state: "done" },
+          { ...other, state: "open" },
+        ],
+      },
+    ]);
     expect(stateOf(afterClose, linked)).toBe("done");
     expect(openLinkedIssueCount(links, afterClose)).toBe(1);
   });
 
   it("shows a failed read as unknown and does not count it open", () => {
-    const failed = linkedIssueStates(links, { _tag: "failed" });
+    const failed = linkedIssueStates(links, [{ _tag: "failed" }]);
     expect(stateOf(failed, linked)).toBe("unknown");
     expect(stateOf(failed, other)).toBe("unknown");
     expect(openLinkedIssueCount(links, failed)).toBe(0);
   });
 
   it("shows an Issue GitHub did not return, or was not asked for, as unknown", () => {
-    const partial = linkedIssueStates(links, {
-      _tag: "read",
-      issues: [{ ...linked, state: null }],
-    });
+    const partial = linkedIssueStates(links, [
+      {
+        _tag: "read",
+        issues: [{ ...linked, state: null }],
+      },
+    ]);
     expect(stateOf(partial, linked)).toBe("unknown");
     expect(stateOf(partial, other)).toBe("unknown");
     expect(openLinkedIssueCount(links, partial)).toBe(0);
+  });
+
+  it("reads more than one request's worth of Issues in chunks, each on its own", () => {
+    const many = Array.from({ length: 120 }, (_, index) => ({
+      host: "github.com",
+      repository: "acme/web",
+      number: index + 1,
+    }));
+    const chunks = issueStateChunks(many);
+    expect(chunks.map((chunk) => chunk.length)).toEqual([50, 50, 20]);
+    expect(chunks.flat()).toEqual(many);
+
+    const states = linkedIssueStates(many, [
+      { _tag: "read", issues: chunks[0]!.map((issue) => ({ ...issue, state: "open" as const })) },
+      { _tag: "failed" },
+      { _tag: "read", issues: chunks[2]!.map((issue) => ({ ...issue, state: "done" as const })) },
+    ]);
+    expect(stateOf(states, many[0]!)).toBe("open");
+    expect(stateOf(states, many[50]!)).toBe("unknown");
+    expect(stateOf(states, many[119]!)).toBe("done");
+    expect(openLinkedIssueCount(many, states)).toBe(50);
   });
 });

@@ -7,19 +7,19 @@ import {
   type EnvironmentId,
   type IssueKey,
   type IssueRef,
-  type IssueStatesResult,
-  ISSUE_STATES_MAX,
+  type IssueStatesInput,
   ISSUE_WS_METHODS,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/unstable/reactivity";
 import { useEffect, useMemo, useRef } from "react";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { mergeIssueLists } from "../components/issues/issueList.logic";
 import {
-  type LinkedIssueStatesRead,
+  issueStateChunks,
   linkedIssueStates,
+  linkedIssueStatesReadOf,
 } from "../components/issues/issueLinks.logic";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { createMergedEnvironmentQuery, type EnvironmentQueryTarget } from "./pullRequests";
@@ -96,22 +96,13 @@ const issueStates = createEnvironmentRpcQueryAtomFamily(connectionAtomRuntime, {
   refreshIntervalMs: LINKED_ISSUE_STATES_REFRESH_MS,
 });
 
-const noIssueStates = Atom.make(
-  AsyncResult.success<IssueStatesResult, unknown>({ issues: [] }),
-).pipe(Atom.withLabel("environment-data:issues:states:none"));
-
-function statesReadOf(
-  result: AsyncResult.AsyncResult<IssueStatesResult, unknown>,
-): LinkedIssueStatesRead {
-  switch (result._tag) {
-    case "Initial":
-      return { _tag: "pending" };
-    case "Failure":
-      return { _tag: "failed" };
-    case "Success":
-      return { _tag: "read", issues: result.value.issues };
-  }
-}
+/** Every chunk's states query for one panel, read together. */
+const linkedIssueStatesReads = Atom.family((key: string) => {
+  const targets = JSON.parse(key) as ReadonlyArray<EnvironmentQueryTarget<IssueStatesInput>>;
+  return Atom.make((get) => targets.map((target) => get(issueStates(target)))).pipe(
+    Atom.withLabel(`environment-data:issues:states-chunks:${key}`),
+  );
+});
 
 /**
  * The current GitHub state of a thread's linked Issues, read through the thread's server: on
@@ -123,23 +114,26 @@ export function useLinkedIssueStates(
   links: ReadonlyArray<IssueKey>,
   syncKey: string | null,
 ) {
-  const atom: Atom.Atom<AsyncResult.AsyncResult<IssueStatesResult, unknown>> =
-    environmentId === null || links.length === 0
-      ? noIssueStates
-      : issueStates({
+  const key = JSON.stringify(
+    environmentId === null
+      ? []
+      : issueStateChunks(links).map((chunk) => ({
           environmentId,
           input: {
-            issues: links
-              .slice(0, ISSUE_STATES_MAX)
-              .map(({ host, repository, number }) => ({ host, repository, number })),
+            issues: chunk.map(({ host, repository, number }) => ({ host, repository, number })),
           },
-        });
-  const result = useAtomValue(atom);
+        })),
+  );
+  const results = useAtomValue(linkedIssueStatesReads(key));
   const lastSyncKey = useRef(syncKey);
   useEffect(() => {
     if (lastSyncKey.current === syncKey) return;
     lastSyncKey.current = syncKey;
-    appAtomRegistry.refresh(atom);
-  }, [syncKey, atom]);
-  return useMemo(() => linkedIssueStates(links, statesReadOf(result)), [links, result]);
+    const targets = JSON.parse(key) as ReadonlyArray<EnvironmentQueryTarget<IssueStatesInput>>;
+    for (const target of targets) appAtomRegistry.refresh(issueStates(target));
+  }, [syncKey, key]);
+  return useMemo(
+    () => linkedIssueStates(links, results.map(linkedIssueStatesReadOf)),
+    [links, results],
+  );
 }
