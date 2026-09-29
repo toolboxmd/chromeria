@@ -3,12 +3,18 @@ import {
   createEnvironmentRpcCommand,
   createEnvironmentRpcQueryAtomFamily,
 } from "@t3tools/client-runtime/state/runtime";
-import { type EnvironmentId, type IssueRef, ISSUE_WS_METHODS } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  type IssueKey,
+  type IssueRef,
+  ISSUE_WS_METHODS,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { mergeIssueLists } from "../components/issues/issueList.logic";
+import { linkedIssueStates } from "../components/issues/issueLinks.logic";
 import { createMergedEnvironmentQuery, type EnvironmentQueryTarget } from "./pullRequests";
 import type { IssueListInput } from "@t3tools/contracts";
 
@@ -71,4 +77,33 @@ export function useIssueList(targets: ReadonlyArray<EnvironmentQueryTarget<Issue
 
 export function useIssueDetail(environmentId: EnvironmentId, ref: IssueRef) {
   return useAtomValue(issueDetail({ environmentId, input: ref }));
+}
+
+const useIssueDetailsQuery = createMergedEnvironmentQuery("web-issues:linked-details", issueDetail);
+
+/**
+ * The current GitHub state of a thread's linked Issues, read through the thread's server. Read
+ * again whenever `syncKey` changes, e.g. on each sync of the thread's pull requests.
+ */
+export function useLinkedIssueStates(
+  environmentId: EnvironmentId | null,
+  links: ReadonlyArray<IssueKey>,
+  syncKey: string | null,
+) {
+  const query = useIssueDetailsQuery(
+    environmentId === null
+      ? []
+      : links.map(({ host, repository, number }) => ({
+          environmentId,
+          input: { host, repository, number },
+        })),
+  );
+  const lastSyncKey = useRef(syncKey);
+  const { refresh } = query;
+  useEffect(() => {
+    if (lastSyncKey.current === syncKey) return;
+    lastSyncKey.current = syncKey;
+    refresh();
+  }, [syncKey, refresh]);
+  return useMemo(() => linkedIssueStates(query.values.map(([, detail]) => detail)), [query.values]);
 }

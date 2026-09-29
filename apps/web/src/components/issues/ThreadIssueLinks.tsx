@@ -1,5 +1,10 @@
-import type { ScopedThreadRef, ThreadIssueLink } from "@t3tools/contracts";
-import { CircleDotIcon, MessageSquarePlusIcon, PlusIcon, XIcon } from "lucide-react";
+import {
+  type IssueState,
+  type ScopedThreadRef,
+  type ThreadIssueLink,
+  issueKeyString,
+} from "@t3tools/contracts";
+import { CircleIcon, MessageSquarePlusIcon, PlusIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 
 import { issueLinkEnvironment } from "~/state/issueLinks";
@@ -8,18 +13,21 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ISSUE_LINK_SOURCE_LABELS, parseIssueReferenceInput } from "./issueLinks.logic";
+import { IssueStateGlyph } from "./issuePresentation";
 import { useOpenIssueInIssuesView } from "./useOpenIssueOrPullRequestLink";
 import { useStartThreadFromIssue } from "./useStartThreadFromIssue";
 import { useThreadIssueLinks } from "./useThreadIssueLinks";
 
 function IssueRow({
   link,
+  state,
   startDisabledReason,
   onOpen,
   onStart,
   onUnlink,
 }: {
   link: ThreadIssueLink;
+  state: IssueState | undefined;
   startDisabledReason: string | null;
   onOpen: (link: ThreadIssueLink) => void;
   onStart: (link: ThreadIssueLink) => void;
@@ -27,7 +35,14 @@ function IssueRow({
 }) {
   return (
     <div className="group/issue-row flex h-7 items-center gap-2 rounded-md px-2 hover:bg-accent/60">
-      <CircleDotIcon aria-hidden className="size-3.5 shrink-0 text-success-foreground" />
+      {state === undefined ? (
+        <CircleIcon
+          aria-label="State not read yet"
+          className="size-3.5 shrink-0 text-muted-foreground"
+        />
+      ) : (
+        <IssueStateGlyph state={state} className="size-3.5" />
+      )}
       <Tooltip>
         <TooltipTrigger
           render={
@@ -78,8 +93,17 @@ function IssueRow({
   );
 }
 
-/** The thread's linked GitHub Issues, above its pull requests, each removable. */
-export function ThreadIssueLinks({ threadRef }: { threadRef: ScopedThreadRef }) {
+/**
+ * The thread's linked GitHub Issues, above its pull requests, each removable. `states` holds each
+ * Issue's current GitHub state by `issueKeyString`.
+ */
+export function ThreadIssueLinks({
+  threadRef,
+  states,
+}: {
+  threadRef: ScopedThreadRef;
+  states: ReadonlyMap<string, IssueState>;
+}) {
   const { links, error } = useThreadIssueLinks(threadRef);
   const link = useAtomCommand(issueLinkEnvironment.link, { reportFailure: true });
   const unlink = useAtomCommand(issueLinkEnvironment.unlink, { reportFailure: true });
@@ -127,6 +151,7 @@ export function ThreadIssueLinks({ threadRef }: { threadRef: ScopedThreadRef }) 
         <IssueRow
           key={`${issue.host}/${issue.repository}#${issue.number}`}
           link={issue}
+          state={states.get(issueKeyString(issue))}
           startDisabledReason={(() => {
             const target = startThread.resolve(issue);
             return "reason" in target ? target.reason : null;

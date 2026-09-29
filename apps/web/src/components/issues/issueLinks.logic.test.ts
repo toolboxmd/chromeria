@@ -1,11 +1,13 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ThreadId } from "@t3tools/contracts";
+import { ThreadId, issueKeyString } from "@t3tools/contracts";
 
 import {
   issueLinkChangesMatch,
   issueStartPrompt,
+  linkedIssueStates,
+  openLinkedIssueCount,
   parseIssueReferenceInput,
   resolveIssuePanelEnvironment,
   resolveIssueProject,
@@ -183,5 +185,34 @@ describe("resolveIssuePanelEnvironment", () => {
     expect(
       resolveIssuePanelEnvironment(issue, undefined, projects, { issues: [], issueLinks: [] }),
     ).toBeNull();
+  });
+});
+
+describe("linked Issue state", () => {
+  const linked = { host: "github.com", repository: "acme/web", number: 12 };
+  const other = { host: "github.com", repository: "acme/web", number: 13 };
+
+  it("shows an Issue closed after linking as closed and drops it from the open count", () => {
+    // At link time GitHub still read it open.
+    const atLink = linkedIssueStates([
+      { ...linked, state: "open" },
+      { ...other, state: "open" },
+    ]);
+    expect(openLinkedIssueCount([linked, other], atLink)).toBe(2);
+
+    // The next read returns GitHub's current state, with the repository in its own case.
+    const afterClose = linkedIssueStates([
+      { ...linked, repository: "Acme/Web", state: "done" },
+      { ...other, state: "open" },
+    ]);
+    expect(afterClose.get(issueKeyString(linked))).toBe("done");
+    expect(openLinkedIssueCount([linked, other], afterClose)).toBe(1);
+  });
+
+  it("counts an Issue not read yet as open", () => {
+    expect(openLinkedIssueCount([linked], linkedIssueStates([]))).toBe(1);
+    expect(
+      openLinkedIssueCount([linked], linkedIssueStates([{ ...linked, state: "not-planned" }])),
+    ).toBe(0);
   });
 });

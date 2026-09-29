@@ -231,7 +231,19 @@ function LinkRow({
   );
 }
 
-export function ThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThreadRef }) {
+/** Linked Issue counts the footer adds to the pull requests', where the panel shows Issues. */
+interface LinkedIssueCounts {
+  readonly open: number;
+  readonly linked: number;
+}
+
+export function ThreadPullRequestsPanel({
+  threadRef,
+  issues,
+}: {
+  threadRef: ScopedThreadRef;
+  issues?: LinkedIssueCounts | undefined;
+}) {
   const configs = useServerConfigs();
   if (configs.get(threadRef.environmentId)?.environment.capabilities.threadPullRequests !== true) {
     return (
@@ -241,10 +253,16 @@ export function ThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThread
       />
     );
   }
-  return <EnabledThreadPullRequestsPanel threadRef={threadRef} />;
+  return <EnabledThreadPullRequestsPanel threadRef={threadRef} issues={issues} />;
 }
 
-function EnabledThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThreadRef }) {
+function EnabledThreadPullRequestsPanel({
+  threadRef,
+  issues,
+}: {
+  threadRef: ScopedThreadRef;
+  issues: LinkedIssueCounts | undefined;
+}) {
   const thread = useThreadShell(threadRef);
   const openLinkDialog = useCallback(() => openLinkPullRequestDialog(threadRef), [threadRef]);
   const unlink = useAtomCommand(threadEnvironment.unlinkPullRequest, { reportFailure: true });
@@ -310,7 +328,7 @@ function EnabledThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThread
       </ScrollArea>
       <footer className="flex items-center justify-between border-t border-border/60 px-2 py-1.5 text-2xs text-muted-foreground">
         <span>
-          {openCount} open · {links.length} linked
+          {openCount + (issues?.open ?? 0)} open · {links.length + (issues?.linked ?? 0)} linked
           {lastSynced ? ` · synced ${formatRelativeTimeLabel(lastSynced)}` : ""}
         </span>
         <Button size="xs" variant="ghost" onClick={openLinkDialog}>

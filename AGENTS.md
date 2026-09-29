@@ -76,6 +76,7 @@ The most common defect in this repo is a change that works on the path you teste
 
 ## Dev servers
 
+- In a worktree or agent shell where `vp` is not on PATH, run it as `pnpm exec vp`.
 - `vp i` installs. Worktrees get this from the t3.json setup script; if module resolution looks broken, it probably did not run.
 - `vp run dev` starts server and web. In a worktree, state defaults to that worktree's gitignored `.t3`, which deliberately outranks an ambient `T3CODE_HOME` so you cannot land on shared state by accident. An explicit `--home-dir` still wins.
 - Ports derive from the worktree path and are stable across restarts, but read the real ones from the `[dev-runner]` line since occupied ports shift.

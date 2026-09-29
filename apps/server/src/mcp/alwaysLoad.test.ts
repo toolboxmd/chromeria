@@ -39,4 +39,11 @@ describe("t3-code tool loading", () => {
       expect(description.length).toBeLessThan(600);
     },
   );
+
+  it("prism_submit says workspace defaults to this thread's directory", () => {
+    const tool = allTools.find((candidate) => candidate.name === "prism_submit");
+    expect(tool ? Tool.getDescription(tool) : "").toContain(
+      "workspace defaults to this thread's current directory; set it for work in another repository or worktree.",
+    );
+  });
 });

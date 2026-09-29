@@ -2,6 +2,8 @@ import {
   type EnvironmentId,
   type IssueKey,
   type IssueLinkChange,
+  type IssueLink,
+  type IssueState,
   type IssueTarget,
   type ThreadIssueLinkSource,
   gitHubRepositoryOf,
@@ -141,4 +143,22 @@ export function issueLinkChangesMatch(
       change.threadId === target.threadId ||
       change.issues.some((issue) => wanted.has(issueKeyString(issue))),
   );
+}
+
+/**
+ * Each linked Issue's current GitHub state, read from GitHub rather than kept from link time, so
+ * an Issue closed after linking reads closed. Issues not read yet are absent.
+ */
+export function linkedIssueStates(
+  issues: ReadonlyArray<Pick<IssueLink, "host" | "repository" | "number" | "state">>,
+): ReadonlyMap<string, IssueState> {
+  return new Map(issues.map((issue) => [issueKeyString(issue), issue.state]));
+}
+
+/** Linked Issues still open; one whose state is unknown counts as open, as an unsynced PR does. */
+export function openLinkedIssueCount(
+  links: ReadonlyArray<IssueKey>,
+  states: ReadonlyMap<string, IssueState>,
+): number {
+  return links.filter((link) => (states.get(issueKeyString(link)) ?? "open") === "open").length;
 }
