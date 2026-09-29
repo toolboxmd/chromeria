@@ -84,6 +84,9 @@ apps/web/src/components/RightPanelTabs.tsx
 packages/client-runtime/src/rpc/client.ts
 packages/contracts/src/environment.ts
 
+# Linked Issue rows read like the pull request rows (#76)
+apps/web/src/components/pullRequest/ThreadPullRequestsPanel.tsx
+
 # Issue and pull request links open in the app (#40)
 apps/web/src/components/ChatMarkdown.tsx
 apps/web/src/lib/openPullRequestLink.ts
@@ -102,3 +105,6 @@ apps/web/src/session-logic.ts
 # Child threads hidden from mobile shells (#59)
 apps/server/src/orchestration/http.ts
 apps/server/src/server.test.ts
+
+# Fork agent instructions: pnpm exec vp, post-merge install on the maintainer's Mac (#70, #78)
+AGENTS.md

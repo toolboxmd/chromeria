@@ -141,6 +141,10 @@ Most code changes do not need an internal documentation change. Agents can read 
 - Track active maintainer work in the GitHub issue or project item that owns it. External proposals follow `CONTRIBUTING.md` and belong in Ideas discussions.
 - A merged PR is the implementation record. Close or update its tracking item when the work lands; do not preserve a second checklist in the repository.
 
+## Installing on the maintainer's Mac
+
+This fork (Chromeria) runs as the maintainer's daily app. After a PR merges to `main`, Delivery Authority includes installing it without another prompt: build `main` and stage it at `/Applications/Chromeria.app.new` with the one-shot swap-on-quit job, following `~/dev/runbook/cavallo/CHROMERIA.md`, then record it in that runbook. Never quit, restart or replace the running app; the staged build swaps in when the user quits Chromeria.
+
 ## How it works
 
 Clients send typed WebSocket requests. The server turns them into _commands_, a pure _decider_ turns commands into persisted _events_, and a _projector_ derives the read model the UI renders. Provider CLIs run as subprocesses; per-provider _adapters_ translate their native protocols into orchestration events. Side effects run in queue-backed _reactors_ that emit _receipts_ when milestones land. Each turn ends with a _checkpoint_, a hidden git ref, so the app can diff and restore.
