@@ -191,28 +191,52 @@ describe("resolveIssuePanelEnvironment", () => {
 describe("linked Issue state", () => {
   const linked = { host: "github.com", repository: "acme/web", number: 12 };
   const other = { host: "github.com", repository: "acme/web", number: 13 };
+  const links = [linked, other];
+  const stateOf = (states: ReadonlyMap<string, unknown>, key: typeof linked) =>
+    states.get(issueKeyString(key));
 
-  it("shows an Issue closed after linking as closed and drops it from the open count", () => {
-    // At link time GitHub still read it open.
-    const atLink = linkedIssueStates([
-      { ...linked, state: "open" },
-      { ...other, state: "open" },
-    ]);
-    expect(openLinkedIssueCount([linked, other], atLink)).toBe(2);
+  it("moves an Issue closed after linking from open to closed on the next read", () => {
+    // Before the first read the rows are pending and nothing counts as open.
+    const pending = linkedIssueStates(links, { _tag: "pending" });
+    expect(stateOf(pending, linked)).toBe("pending");
+    expect(openLinkedIssueCount(links, pending)).toBe(0);
+
+    const atLink = linkedIssueStates(links, {
+      _tag: "read",
+      issues: [
+        { ...linked, state: "open" },
+        { ...other, state: "open" },
+      ],
+    });
+    expect(stateOf(atLink, linked)).toBe("open");
+    expect(openLinkedIssueCount(links, atLink)).toBe(2);
 
     // The next read returns GitHub's current state, with the repository in its own case.
-    const afterClose = linkedIssueStates([
-      { ...linked, repository: "Acme/Web", state: "done" },
-      { ...other, state: "open" },
-    ]);
-    expect(afterClose.get(issueKeyString(linked))).toBe("done");
-    expect(openLinkedIssueCount([linked, other], afterClose)).toBe(1);
+    const afterClose = linkedIssueStates(links, {
+      _tag: "read",
+      issues: [
+        { ...linked, repository: "Acme/Web", state: "done" },
+        { ...other, state: "open" },
+      ],
+    });
+    expect(stateOf(afterClose, linked)).toBe("done");
+    expect(openLinkedIssueCount(links, afterClose)).toBe(1);
   });
 
-  it("counts an Issue not read yet as open", () => {
-    expect(openLinkedIssueCount([linked], linkedIssueStates([]))).toBe(1);
-    expect(
-      openLinkedIssueCount([linked], linkedIssueStates([{ ...linked, state: "not-planned" }])),
-    ).toBe(0);
+  it("shows a failed read as unknown and does not count it open", () => {
+    const failed = linkedIssueStates(links, { _tag: "failed" });
+    expect(stateOf(failed, linked)).toBe("unknown");
+    expect(stateOf(failed, other)).toBe("unknown");
+    expect(openLinkedIssueCount(links, failed)).toBe(0);
+  });
+
+  it("shows an Issue GitHub did not return, or was not asked for, as unknown", () => {
+    const partial = linkedIssueStates(links, {
+      _tag: "read",
+      issues: [{ ...linked, state: null }],
+    });
+    expect(stateOf(partial, linked)).toBe("unknown");
+    expect(stateOf(partial, other)).toBe("unknown");
+    expect(openLinkedIssueCount(links, partial)).toBe(0);
   });
 });

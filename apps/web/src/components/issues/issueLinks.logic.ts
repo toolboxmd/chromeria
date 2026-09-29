@@ -2,7 +2,6 @@ import {
   type EnvironmentId,
   type IssueKey,
   type IssueLinkChange,
-  type IssueLink,
   type IssueState,
   type IssueTarget,
   type ThreadIssueLinkSource,
@@ -146,19 +145,45 @@ export function issueLinkChangesMatch(
 }
 
 /**
- * Each linked Issue's current GitHub state, read from GitHub rather than kept from link time, so
- * an Issue closed after linking reads closed. Issues not read yet are absent.
+ * A linked Issue's state as the links panel shows it: GitHub's own, `pending` before the first
+ * read, or `unknown` when the read failed or GitHub returned none (deleted, not visible).
+ */
+export type LinkedIssueState = IssueState | "pending" | "unknown";
+
+/** The panel's latest read of its Issues' states. */
+export type LinkedIssueStatesRead =
+  | { readonly _tag: "pending" }
+  | { readonly _tag: "failed" }
+  | {
+      readonly _tag: "read";
+      readonly issues: ReadonlyArray<IssueKey & { readonly state: IssueState | null }>;
+    };
+
+/**
+ * Each linked Issue's state from the latest read of GitHub, not from link time, so an Issue
+ * closed after linking reads closed. Keyed by `issueKeyString`.
  */
 export function linkedIssueStates(
-  issues: ReadonlyArray<Pick<IssueLink, "host" | "repository" | "number" | "state">>,
-): ReadonlyMap<string, IssueState> {
-  return new Map(issues.map((issue) => [issueKeyString(issue), issue.state]));
+  links: ReadonlyArray<IssueKey>,
+  read: LinkedIssueStatesRead,
+): ReadonlyMap<string, LinkedIssueState> {
+  const found =
+    read._tag === "read"
+      ? new Map(read.issues.map((issue) => [issueKeyString(issue), issue.state]))
+      : new Map<string, IssueState | null>();
+  return new Map(
+    links.map((link): [string, LinkedIssueState] => {
+      const key = issueKeyString(link);
+      if (read._tag !== "read") return [key, read._tag === "failed" ? "unknown" : "pending"];
+      return [key, found.get(key) ?? "unknown"];
+    }),
+  );
 }
 
-/** Linked Issues still open; one whose state is unknown counts as open, as an unsynced PR does. */
+/** Linked Issues GitHub reports open; pending and unknown ones are not counted. */
 export function openLinkedIssueCount(
   links: ReadonlyArray<IssueKey>,
-  states: ReadonlyMap<string, IssueState>,
+  states: ReadonlyMap<string, LinkedIssueState>,
 ): number {
-  return links.filter((link) => (states.get(issueKeyString(link)) ?? "open") === "open").length;
+  return links.filter((link) => states.get(issueKeyString(link)) === "open").length;
 }

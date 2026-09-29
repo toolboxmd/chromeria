@@ -70,6 +70,16 @@ const PULL_REQUEST_FIELDS = `number url state isDraft headRefName headRefOid rep
 /** The alias a thread-linked pull request is read under, by its position in the request. */
 const linkedAlias = (index: number) => `linked${index}`;
 
+/** An Issue's or pull request's URL, or null when a part is unsafe to write into a document. */
+function resourceUrl(host: string, repository: string, kind: "issues" | "pull", number: number) {
+  return /^[a-z0-9.-]+(?::\d+)?$/iu.test(host) &&
+    SEARCH_REPOSITORY.test(repository) &&
+    Number.isSafeInteger(number) &&
+    number >= 1
+    ? `https://${host}/${repository}/${kind}/${number}`
+    : null;
+}
+
 function linkedAliases(
   linkedPullRequests: ReadonlyArray<{ readonly repository: string; readonly number: number }>,
   host: string,
@@ -77,20 +87,66 @@ function linkedAliases(
   return linkedPullRequests
     .slice(0, LINKED_PULL_REQUEST_MAX)
     .flatMap(({ repository, number }, index) => {
-      if (
-        !/^[a-z0-9.-]+(?::\d+)?$/iu.test(host) ||
-        !SEARCH_REPOSITORY.test(repository) ||
-        !Number.isSafeInteger(number) ||
-        number < 1
-      ) {
-        return [];
-      }
-      const url = `https://${host}/${repository}/pull/${number}`;
-      return [
-        `  ${linkedAlias(index)}: resource(url: "${url}") { ... on PullRequest { ${PULL_REQUEST_FIELDS} } }`,
-      ];
+      const url = resourceUrl(host, repository, "pull", number);
+      return url === null
+        ? []
+        : [
+            `  ${linkedAlias(index)}: resource(url: "${url}") { ... on PullRequest { ${PULL_REQUEST_FIELDS} } }`,
+          ];
     })
     .join("\n");
+}
+
+/** The alias an Issue's state is read under, by its position in the request. */
+const stateAlias = (index: number) => `issue${index}`;
+
+/**
+ * Only the state of each Issue on `host`, one alias each, for the thread's links panel. Null when
+ * none can be written into a document. `resource(url:)` answers null for a deleted or invisible
+ * Issue instead of failing the request.
+ */
+export function issueStatesGraphQlQuery(
+  issues: ReadonlyArray<{ readonly repository: string; readonly number: number }>,
+  host: string,
+): string | null {
+  const aliases = issues.flatMap(({ repository, number }, index) => {
+    const url = resourceUrl(host, repository, "issues", number);
+    return url === null
+      ? []
+      : [`  ${stateAlias(index)}: resource(url: "${url}") { ... on Issue { state stateReason } }`];
+  });
+  return aliases.length === 0 ? null : `query {\n${aliases.join("\n")}\n}`;
+}
+
+// A resource that is not an Issue answers `{}`, which reads as no state.
+const StateNode = Schema.NullOr(
+  Schema.Struct({
+    state: Schema.optional(Schema.String),
+    stateReason: Schema.optional(Schema.NullOr(Schema.String)),
+  }),
+);
+
+export const decodeIssueStatesJson = Schema.decodeUnknownResult(
+  Schema.fromJsonString(
+    Schema.Struct({ data: Schema.Record(Schema.String, Schema.optional(StateNode)) }),
+  ),
+);
+
+/** Each asked Issue's state by its position, null where GitHub returned none. */
+export function issueStatesOf<I extends { readonly repository: string; readonly number: number }>(
+  issues: ReadonlyArray<I>,
+  data: Readonly<Record<string, typeof StateNode.Type | undefined>>,
+): Array<I & { readonly state: IssueState | null }> {
+  return issues.map((issue, index) => {
+    const node = data[stateAlias(index)];
+    return {
+      ...issue,
+      state:
+        node?.state === undefined
+          ? null
+          : issueStateOf({ state: node.state, stateReason: node.stateReason ?? null }),
+    };
+  });
 }
 
 /**

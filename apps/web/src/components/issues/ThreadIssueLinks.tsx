@@ -1,10 +1,5 @@
-import {
-  type IssueState,
-  type ScopedThreadRef,
-  type ThreadIssueLink,
-  issueKeyString,
-} from "@t3tools/contracts";
-import { CircleIcon, MessageSquarePlusIcon, PlusIcon, XIcon } from "lucide-react";
+import { type ScopedThreadRef, type ThreadIssueLink, issueKeyString } from "@t3tools/contracts";
+import { CircleHelpIcon, CircleIcon, MessageSquarePlusIcon, PlusIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 
 import { issueLinkEnvironment } from "~/state/issueLinks";
@@ -12,7 +7,11 @@ import { useAtomCommand } from "~/state/use-atom-command";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { ISSUE_LINK_SOURCE_LABELS, parseIssueReferenceInput } from "./issueLinks.logic";
+import {
+  ISSUE_LINK_SOURCE_LABELS,
+  type LinkedIssueState,
+  parseIssueReferenceInput,
+} from "./issueLinks.logic";
 import { IssueStateGlyph } from "./issuePresentation";
 import { useOpenIssueInIssuesView } from "./useOpenIssueOrPullRequestLink";
 import { useStartThreadFromIssue } from "./useStartThreadFromIssue";
@@ -27,7 +26,7 @@ function IssueRow({
   onUnlink,
 }: {
   link: ThreadIssueLink;
-  state: IssueState | undefined;
+  state: LinkedIssueState;
   startDisabledReason: string | null;
   onOpen: (link: ThreadIssueLink) => void;
   onStart: (link: ThreadIssueLink) => void;
@@ -35,9 +34,14 @@ function IssueRow({
 }) {
   return (
     <div className="group/issue-row flex h-7 items-center gap-2 rounded-md px-2 hover:bg-accent/60">
-      {state === undefined ? (
+      {state === "pending" ? (
         <CircleIcon
           aria-label="State not read yet"
+          className="size-3.5 shrink-0 text-muted-foreground"
+        />
+      ) : state === "unknown" ? (
+        <CircleHelpIcon
+          aria-label="State unknown: GitHub could not be read or did not return this Issue"
           className="size-3.5 shrink-0 text-muted-foreground"
         />
       ) : (
@@ -102,7 +106,7 @@ export function ThreadIssueLinks({
   states,
 }: {
   threadRef: ScopedThreadRef;
-  states: ReadonlyMap<string, IssueState>;
+  states: ReadonlyMap<string, LinkedIssueState>;
 }) {
   const { links, error } = useThreadIssueLinks(threadRef);
   const link = useAtomCommand(issueLinkEnvironment.link, { reportFailure: true });
@@ -151,7 +155,7 @@ export function ThreadIssueLinks({
         <IssueRow
           key={`${issue.host}/${issue.repository}#${issue.number}`}
           link={issue}
-          state={states.get(issueKeyString(issue))}
+          state={states.get(issueKeyString(issue)) ?? "pending"}
           startDisabledReason={(() => {
             const target = startThread.resolve(issue);
             return "reason" in target ? target.reason : null;

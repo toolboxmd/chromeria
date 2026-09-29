@@ -4,6 +4,7 @@ import {
   type IssueListInput,
   type IssueRef,
   type IssueSetStateInput,
+  type IssueStatesInput,
   ISSUE_WS_METHODS,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
@@ -25,6 +26,8 @@ export function makeIssueRpcHandlers(issues: IssueService["Service"], observe: O
       observe(ISSUE_WS_METHODS.issuesList, issues.list(input), TRACE),
     [ISSUE_WS_METHODS.issuesDetail]: (input: IssueRef) =>
       observe(ISSUE_WS_METHODS.issuesDetail, issues.detail(input), TRACE),
+    [ISSUE_WS_METHODS.issuesStates]: (input: IssueStatesInput) =>
+      observe(ISSUE_WS_METHODS.issuesStates, issues.states(input), TRACE),
     [ISSUE_WS_METHODS.issuesComment]: (input: IssueCommentInput) =>
       observe(ISSUE_WS_METHODS.issuesComment, issues.comment(input), TRACE),
     [ISSUE_WS_METHODS.issuesSetState]: (input: IssueSetStateInput) =>
