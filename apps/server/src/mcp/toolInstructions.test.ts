@@ -16,8 +16,17 @@ describe("t3-code tool instructions", () => {
       expect(instructions).toContain(
         "never by starting codex exec, claude -p, opencode run or grok in the shell",
       );
+      const defectSteps = [
+        "have a spawn_thread child with role reviewer confirm the defect from prism_status and ~/.local/share/durable-runner/outputs/<requestId>/",
+        "then open or update the toolboxmd/model-router Issue with that confirmation",
+        "then start a spawn_thread child with role worker on the fix in its own worktree, with a normal PR and review",
+        "Meanwhile keep the job going or recover it.",
+      ];
+      const positions = defectSteps.map((step) => instructions.indexOf(step));
+      expect(positions.every((position) => position >= 0)).toBe(true);
+      expect(positions).toEqual([...positions].sort((a, b) => a - b));
       expect(instructions).toContain(
-        "read prism_status and its evidence, then report it as a toolboxmd/model-router Issue instead of working around it",
+        "Comment an unconfirmed suspicion on an existing Issue or drop it; never file it as a new Issue.",
       );
     },
   );
