@@ -47,7 +47,7 @@ describe("t3-code tool loading", () => {
     );
   });
 
-  it("prism_status says how to report a router defect and what is not one", () => {
+  it("prism_status says how to confirm, report and fix a router defect and what is not one", () => {
     const tool = allTools.find((candidate) => candidate.name === "prism_status");
     const description = tool ? (Tool.getDescription(tool) ?? "") : "";
     expect(description.startsWith("Read a Prism job's state")).toBe(true);
@@ -56,10 +56,10 @@ describe("t3-code tool loading", () => {
     );
     expect(description).toContain("~/.local/share/durable-runner/outputs/<requestId>/");
     expect(description).toContain(
-      "open or update a toolboxmd/model-router Issue with the request id, that evidence and the expected behavior",
+      "once a spawn_thread reviewer confirms it, open or update a toolboxmd/model-router Issue with the request id, that evidence and expected behavior, and start a fix worker.",
     );
     expect(description).toContain(
-      "Fix your own packet mistakes, such as a missing proof or workspace, in the packet; they are not router defects.",
+      "Fix your own packet mistakes, like a missing proof or workspace, in the packet; they are not router defects.",
     );
     expect(description.length).toBeLessThan(600);
   });
