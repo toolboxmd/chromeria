@@ -52,7 +52,6 @@ export const schedulerIdle = (thread: OrchestrationThreadShell, now: string) =>
   !thread.hasActionableProposedPlan &&
   thread.session?.status !== "running" &&
   thread.session?.status !== "starting" &&
-  thread.session?.status !== "stopped" &&
   thread.latestTurn?.state !== "running" &&
   !threadHasQueuedTurnStart(thread, now);
 export const CHECK_OUTPUT_BYTES = 16_384;
@@ -237,8 +236,7 @@ export const makeLiveScheduler = Effect.gen(function* () {
         idle: !blocked && schedulerIdle(thread, iso(now)),
         retired:
           thread.archivedAt !== null ||
-          (yield* engine.getThreadRetirement(thread.id))?.retired === true ||
-          thread.session?.status === "stopped",
+          (yield* engine.getThreadRetirement(thread.id))?.retired === true,
         hasWork,
         drafterIds,
         pendingDrafters,

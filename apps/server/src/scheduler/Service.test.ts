@@ -12,6 +12,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
   ClientOrchestrationCommand,
   SchedulerStateCommand,
   SchedulerError,
@@ -22,10 +23,13 @@ import {
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { McpServer } from "effect/unstable/ai";
 import * as Stream from "effect/Stream";
 import * as SessionStore from "../auth/SessionStore.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
@@ -39,13 +43,16 @@ import { iso } from "./Schedule.ts";
 import { RECOVERY_DELAYS } from "./Scheduler.ts";
 import { TestClock } from "effect/testing";
 import { OrchestrationLayerLive } from "../orchestration/runtimeLayer.ts";
+import { ProviderCommandReactor } from "../orchestration/Services/ProviderCommandReactor.ts";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { OrchestrationCommandReceiptRepository } from "../persistence/Services/OrchestrationCommandReceipts.ts";
 import { makeSqlitePersistenceLive } from "../persistence/Layers/Sqlite.ts";
 import { ServerConfig } from "../config.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as ThreadPlanProgress from "../orchestration/ThreadPlanProgress.ts";
-import { ServerSettingsService } from "../serverSettings.ts";
+import { ServerSettingsService, layer as liveSettingsLayer } from "../serverSettings.ts";
+import { ServerActivation } from "../serverActivation.ts";
+import { ServerRuntimeStartup, makeCommandGate } from "../serverRuntimeStartup.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { makeProviderRegistryLayer } from "../provider/testUtils/providerRegistryMock.ts";
@@ -207,6 +214,281 @@ const fakeProvider = (
 };
 
 describe("scheduler real SQLite and sender boundary", () => {
+  it.effect("keeps retained done-run evidence immutable while allowing old-run eviction", () =>
+    Effect.gen(function* () {
+      const directory = yield* temporaryDirectory("scheduler-done-evidence-");
+      yield* within(
+        directory,
+        Effect.gen(function* () {
+          yield* createParent(directory);
+          const scheduler = yield* makeLiveScheduler;
+          const engine = yield* OrchestrationEngineService;
+          const created = yield* scheduler.create(definition, "creator");
+          yield* scheduler.runNow(created.id);
+          yield* scheduler.reconcile();
+          yield* fakeProvider(engine).execute();
+          const unfinished = yield* currentTask(scheduler);
+          for (const verdict of [
+            null,
+            { version: 1, passed: false, output: "failed", checkedAt: NOW },
+            { version: 2, passed: true, output: "wrong judge", checkedAt: NOW },
+          ]) {
+            const invalid = yield* Effect.exit(
+              engine.dispatch({
+                type: "scheduler.state.set",
+                commandId: commandId(),
+                threadId: ThreadId.make(unfinished.id),
+                expectedRevision: unfinished.revision,
+                createdAt: NOW,
+                task: {
+                  ...unfinished,
+                  revision: unfinished.revision + 1,
+                  runs: unfinished.runs.map((run) => ({
+                    ...run,
+                    status: "done" as const,
+                    check: verdict,
+                  })),
+                },
+              }),
+            );
+            expect(Exit.isFailure(invalid)).toBe(true);
+            expect((yield* currentTask(scheduler)).runs[0]!.status).toBe("running");
+          }
+          yield* Effect.promise(() =>
+            NodeFSP.writeFile(NodePath.join(directory, "result.txt"), "done"),
+          );
+          yield* scheduler.reconcile();
+          const task = yield* currentTask(scheduler);
+          const run = task.runs[0]!;
+          expect(run.status).toBe("done");
+          for (const patch of [
+            { checkVersion: 2 },
+            { checkCwd: "/different" },
+            { definition: { ...run.definition, prompt: "replacement work" } },
+            { threadId: ThreadId.make("replacement-thread") },
+            { check: { ...run.check!, passed: false } },
+            { check: { ...run.check!, output: "replacement verdict evidence" } },
+            { status: "needs-you" as const },
+          ]) {
+            const outcome = yield* Effect.exit(
+              engine.dispatch({
+                type: "scheduler.state.set",
+                commandId: commandId(),
+                threadId: ThreadId.make(task.id),
+                expectedRevision: task.revision,
+                createdAt: NOW,
+                task: { ...task, revision: task.revision + 1, runs: [{ ...run, ...patch }] },
+              }),
+            );
+            expect(Exit.isFailure(outcome)).toBe(true);
+            expect((yield* currentTask(scheduler)).runs[0]).toEqual(run);
+          }
+          yield* engine.dispatch({
+            type: "scheduler.state.set",
+            commandId: commandId(),
+            threadId: ThreadId.make(task.id),
+            expectedRevision: task.revision,
+            createdAt: NOW,
+            task: { ...task, revision: task.revision + 1, runs: [] },
+          });
+          expect((yield* currentTask(scheduler)).runs).toEqual([]);
+        }),
+      );
+    }),
+  );
+  it.effect(
+    "continues the pinned run after a real provider stop acknowledgement without lifting retirement",
+    () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        const directory = yield* temporaryDirectory("scheduler-provider-stop-");
+        let starts = 0;
+        let stops = 0;
+        let sideEffects = 0;
+        const texts: string[] = [];
+        yield* Effect.scoped(
+          withServer(
+            NodePath.join(directory, "state.sqlite"),
+            Effect.gen(function* () {
+              yield* createParent(directory);
+              const scheduler = yield* makeLiveScheduler.pipe(Effect.provide(ProcessRunner.layer));
+              const engine = yield* OrchestrationEngineService;
+              const reactor = yield* ProviderCommandReactor;
+              yield* reactor.start();
+              const created = yield* scheduler.create(definition, "creator");
+              yield* scheduler.runNow(created.id);
+              yield* scheduler.reconcile();
+              yield* reactor.drain;
+              expect(texts).toHaveLength(1);
+              const original = (yield* currentTask(scheduler)).runs[0]!;
+              yield* engine.dispatch(session(PARENT_ID, "running", "provider-turn-1"));
+              yield* engine.dispatch({
+                type: "thread.session.stop",
+                commandId: commandId(),
+                threadId: PARENT_ID,
+                createdAt: NOW,
+              });
+              yield* reactor.drain;
+              const shell = Option.getOrThrow(
+                yield* (yield* ProjectionSnapshotQuery).getThreadShellById(PARENT_ID),
+              );
+              expect(shell.session?.status).toBe("stopped");
+              expect(stops).toBe(1);
+              expect((yield* engine.getThreadRetirement(PARENT_ID))?.retired ?? false).toBe(false);
+              const observation = yield* scheduler.inspectRun(
+                yield* currentTask(scheduler),
+                original,
+              );
+              expect(observation.retired).toBe(false);
+              expect(observation.idle).toBe(true);
+              yield* scheduler.reconcile();
+              yield* TestClock.adjust(30_000);
+              yield* scheduler.reconcile();
+              yield* reactor.drain;
+              expect(texts).toHaveLength(2);
+              expect(starts).toBe(2);
+              expect(sideEffects).toBe(1);
+              expect(texts[1]).toContain("Immutable outcome check version 1");
+              expect((yield* currentTask(scheduler)).runs[0]).toMatchObject({
+                id: original.id,
+                threadId: PARENT_ID,
+                checkVersion: 1,
+              });
+              yield* engine.dispatch(session(PARENT_ID, "running", "provider-turn-2"));
+              yield* engine.dispatch(session(PARENT_ID, "ready", "provider-turn-2"));
+              yield* callTool("interrupt_thread", {
+                threadId: PARENT_ID,
+                scope: "project",
+                retireSubtree: true,
+              });
+              yield* reactor.drain;
+              expect((yield* engine.getThreadRetirement(PARENT_ID))?.retired).toBe(true);
+              expect((yield* engine.getThreadRetirement(PARENT_ID))?.pendingStop).toBe(false);
+              yield* scheduler.reconcile();
+              expect((yield* currentTask(scheduler)).runs[0]!.status).toBe("needs-you");
+              expect(yield* scheduler.runNow(created.id).pipe(Effect.flip)).toBeInstanceOf(
+                SchedulerError,
+              );
+              expect(texts).toHaveLength(2);
+            }).pipe(
+              Effect.provide(makeSqlitePersistenceLive(NodePath.join(directory, "state.sqlite"))),
+            ),
+            undefined,
+            {
+              settings: preferences,
+              providers: [provider],
+              provider: {
+                listSessions: () => Effect.succeed([]),
+                getCapabilities: () =>
+                  Effect.succeed({
+                    sessionModelSwitch: "in-session",
+                    promptlessTurnContinuation: true,
+                  }),
+                startSession: (threadId, input) =>
+                  Effect.sync(() => {
+                    starts++;
+                    return {
+                      threadId,
+                      provider: ProviderDriverKind.make("codex"),
+                      providerInstanceId: provider.instanceId,
+                      status: "ready",
+                      runtimeMode: "full-access",
+                      cwd: input.cwd,
+                      model: "gpt-5",
+                      resumeCursor: null,
+                      createdAt: NOW,
+                      updatedAt: NOW,
+                    };
+                  }),
+                stopSession: () =>
+                  Effect.sync(() => {
+                    stops++;
+                  }),
+                sendTurn: (input) =>
+                  Effect.sync(() => {
+                    texts.push(input.input ?? "");
+                    if (input.input?.includes("EFFECT: create the deliverable once")) sideEffects++;
+                    return {
+                      threadId: input.threadId,
+                      turnId: TurnId.make(`provider-turn-${texts.length}`),
+                    };
+                  }),
+              },
+            },
+          ),
+        );
+      }),
+  );
+  it.effect("registers every scheduler tool with the actual MCP server", () =>
+    Effect.gen(function* () {
+      const directory = yield* temporaryDirectory("scheduler-registration-");
+      yield* within(
+        directory,
+        Effect.gen(function* () {
+          const scheduler = yield* makeLiveScheduler;
+          yield* McpServer.registerToolkit(SchedulerToolkit).pipe(
+            Effect.provide(SchedulerToolkitHandlersLive),
+            Effect.provideService(Scheduler, scheduler),
+            Effect.provide(McpServer.McpServer.layer),
+          );
+        }),
+      );
+    }),
+  );
+  it.effect("builds the actual Scheduler layer before activation and command readiness", () =>
+    Effect.gen(function* () {
+      const directory = yield* temporaryDirectory("scheduler-startup-");
+      yield* within(
+        directory,
+        Effect.gen(function* () {
+          const activation = yield* Deferred.make<void>();
+          const parked = yield* Deferred.make<void>();
+          const reconciled = yield* Deferred.make<void>();
+          const gate = yield* makeCommandGate;
+          const engine = yield* OrchestrationEngineService;
+          const settingsContext = yield* Layer.build(
+            liveSettingsLayer.pipe(Layer.provide(ServerSecretStore.layer)),
+          );
+          const settings = Context.get(settingsContext, ServerSettingsService);
+          // Real SQLite engine and live settings PubSub subscriptions, not empty-stream mocks.
+          const schedulerContext = yield* Layer.build(
+            Scheduler.layer.pipe(
+              Layer.provide(Layer.succeed(ServerActivation, Deferred.await(activation))),
+              Layer.provide(
+                Layer.succeed(ServerRuntimeStartup, {
+                  ...gate,
+                  awaitCommandReady: Deferred.succeed(parked, undefined).pipe(
+                    Effect.andThen(gate.awaitCommandReady),
+                  ),
+                  markHttpListening: Effect.void,
+                  markRunningProviderSessionsForContinuation: Effect.succeed([]),
+                  clearProviderSessionContinuationMarkers: () => Effect.void,
+                }),
+              ),
+              Layer.provide(Layer.succeed(ServerSettingsService, settings)),
+              Layer.provide(
+                Layer.succeed(OrchestrationEngineService, {
+                  ...engine,
+                  getScheduledTasks: engine.getScheduledTasks!.pipe(
+                    Effect.tap(() => Deferred.succeed(reconciled, undefined)),
+                  ),
+                }),
+              ),
+            ),
+          );
+          expect(Context.get(schedulerContext, Scheduler)).toBeDefined();
+          yield* Deferred.await(parked);
+          expect(yield* Deferred.isDone(activation)).toBe(false);
+          expect(yield* Deferred.isDone(reconciled)).toBe(false);
+          yield* Deferred.succeed(activation, undefined);
+          expect(yield* Deferred.isDone(reconciled)).toBe(false);
+          yield* gate.signalCommandReady;
+          yield* Deferred.await(reconciled);
+        }),
+      );
+    }),
+  );
+
   it.effect("RPC creator lookup failure is typed and creates no task", () =>
     Effect.gen(function* () {
       const directory = yield* temporaryDirectory("scheduler-auth-failure-");

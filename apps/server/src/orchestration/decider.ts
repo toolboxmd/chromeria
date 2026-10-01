@@ -2,6 +2,7 @@ import { isSpectrumThreadId } from "../mcp/toolkits/threads/spectrumIdentity.ts"
 import {
   TaskCheckVersion,
   TaskDefinition,
+  TaskRun,
   EventId,
   threadOwner,
   MAX_SCRIPT_ID_LENGTH,
@@ -250,6 +251,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           commandType: command.type,
           detail: "Every active run needs its pinned immutable check.",
         });
+      if (
+        command.task.runs.some(
+          (run) =>
+            run.status === "done" &&
+            (run.check?.passed !== true || run.check.version !== run.checkVersion),
+        )
+      )
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A done run requires a passing verdict from its pinned check version.",
+        });
       if (command.task.runs.some((run) => threadOwner(run) !== threadOwner(command.task)))
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -279,8 +291,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           return existing !== undefined && !Schema.toEquivalence(TaskCheckVersion)(existing, check);
         });
         const changedJudge = previous.runs.some((run) => {
-          if (run.status === "done") return false;
           const next = command.task.runs.find((entry) => entry.id === run.id);
+          // Settled evidence may leave the bounded view, but a retained verdict cannot be rewritten.
+          if (run.status === "done")
+            return next !== undefined && !Schema.toEquivalence(TaskRun)(run, next);
           return (
             !next ||
             next.checkVersion !== run.checkVersion ||
@@ -297,7 +311,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         if (changedCheck || changedJudge)
           return yield* new OrchestrationCommandInvariantError({
             commandType: command.type,
-            detail: "Existing check versions and active run judges are immutable.",
+            detail:
+              "Existing check versions, active run judges and retained settled runs are immutable.",
           });
       }
       return {

@@ -23,7 +23,8 @@ export const SchedulerToolkit = Toolkit.make(
   Tool.make("list_scheduled_tasks", {
     description:
       "List scheduled tasks with bounded recent runs, immutable check versions, authors, failure streak and error.",
-    parameters: Schema.Struct({}),
+    // An empty Struct emits a non-object JSON Schema in this Effect version. MCP requires an object root.
+    parameters: Schema.Record(Schema.String, Schema.Never),
     success: Schema.Array(ScheduledTask),
     failure: SchedulerError,
     dependencies,
@@ -45,7 +46,7 @@ export const SchedulerToolkit = Toolkit.make(
   }),
   Tool.make("delete_scheduled_task", {
     description:
-      "Delete a settled task, retaining its immutable audit history. Unfinished work must settle first.",
+      "Delete a settled task or tombstone quiescent needs-you work, retaining its audit and unfinished outcome. Active work, pending children, reports, questions or queued turns refuse deletion.",
     parameters: ScheduledTaskId,
     success: ScheduledTask,
     failure: SchedulerError,
@@ -53,7 +54,7 @@ export const SchedulerToolkit = Toolkit.make(
   }),
   Tool.make("run_scheduled_task_now", {
     description:
-      "Claim an immediate run. Refused while paused or while this task has unfinished work; other tasks run in parallel.",
+      "Claim an immediate run, or resume the same pinned needs-you run and thread. Refused while paused or during other unfinished work. A retired thread must be explicitly recovered first; other tasks run in parallel.",
     parameters: ScheduledTaskId,
     success: ScheduledTask,
     failure: SchedulerError,
