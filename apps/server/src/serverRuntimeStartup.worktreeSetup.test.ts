@@ -87,6 +87,7 @@ const run = (activities: ReadonlyArray<ReturnType<typeof recordedSetup>>) =>
           Effect.succeed(kind === WORKTREE_SETUP_ACTIVITY_KIND ? activities : []),
       } as unknown as ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]),
       Effect.provideService(OrchestrationEngine.OrchestrationEngineService, {
+        getThreadRetirement: () => Effect.succeed(undefined),
         readEvents: () => Stream.empty,
         readThreadEvents: () => Stream.empty,
         getThreadReplayStats: () => Effect.die("unused"),

@@ -96,6 +96,7 @@ export interface ProjectionSnapshotQueryShape {
    */
   readonly listActivitiesByKind: (
     kind: string,
+    options?: { readonly includeArchived?: boolean },
   ) => Effect.Effect<ReadonlyArray<OrchestrationThreadActivity>, ProjectionRepositoryError>;
 
   /**

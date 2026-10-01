@@ -202,6 +202,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
         searchThreads: () => Effect.succeed({ matches: [] }),
       }),
       Effect.provideService(OrchestrationEngine.OrchestrationEngineService, {
+        getThreadRetirement: () => Effect.succeed(undefined),
         readEvents: () => Stream.empty,
         readThreadEvents: () => Stream.empty,
         getThreadReplayStats: () => Effect.die("unused thread replay stats"),
@@ -333,6 +334,7 @@ it.effect.each([
         searchThreads: () => Effect.succeed({ matches: [] }),
       }),
       Effect.provideService(OrchestrationEngine.OrchestrationEngineService, {
+        getThreadRetirement: () => Effect.succeed(undefined),
         readEvents: () => Stream.empty,
         readThreadEvents: () => Stream.empty,
         getThreadReplayStats: () => Effect.die("unused thread replay stats"),
@@ -407,6 +409,7 @@ it.effect(
           searchThreads: () => Effect.succeed({ matches: [] }),
         }),
         Effect.provideService(OrchestrationEngine.OrchestrationEngineService, {
+          getThreadRetirement: () => Effect.succeed(undefined),
           readEvents: () => Stream.empty,
           readThreadEvents: () => Stream.empty,
           getThreadReplayStats: () => Effect.die("unused thread replay stats"),
@@ -473,6 +476,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets preserves typed UUID generation fa
         searchThreads: () => Effect.succeed({ matches: [] }),
       }),
       Effect.provideService(OrchestrationEngine.OrchestrationEngineService, {
+        getThreadRetirement: () => Effect.succeed(undefined),
         readEvents: () => Stream.empty,
         readThreadEvents: () => Stream.empty,
         getThreadReplayStats: () => Effect.die("unused thread replay stats"),

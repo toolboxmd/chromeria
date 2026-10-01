@@ -45,15 +45,20 @@ export function childThreadsByParent<T extends TreeShell>(
   return byParent;
 }
 
-/** Coarse Agents-panel status for a thread known only by its shell. */
+/**
+ * Coarse Agents-panel status for a thread known only by its shell. A live or
+ * stopped session outranks its last turn, which a stop can leave unfinished.
+ */
 export function threadShellStatus(
   shell: Pick<OrchestrationThreadShell, "session" | "latestTurn">,
 ): RuntimeSubagentStatus {
   const session = shell.session?.status;
   const turn = shell.latestTurn?.state;
-  if (session === "running" || session === "starting" || turn === "running") return "running";
+  if (session === "running" || session === "starting") return "running";
+  if (session === "interrupted") return "interrupted";
+  if (turn === "running") return "running";
   if (session === "error" || turn === "error") return "failed";
-  if (session === "interrupted" || turn === "interrupted") return "interrupted";
+  if (turn === "interrupted") return "interrupted";
   if (turn === "completed") return "idle";
   return "pending";
 }

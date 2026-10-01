@@ -547,6 +547,10 @@ export const reconcileProviderSessions = Effect.gen(function* () {
     if (session === null) {
       continue;
     }
+    if ((yield* orchestrationEngine.getThreadRetirement(thread.id))?.retired) {
+      yield* clearContinuationMarkers(directory, [thread.id]);
+      continue;
+    }
     const binding = yield* directory.getBinding(thread.id).pipe(
       Effect.catchCauseIf(
         (cause) => !Cause.hasInterrupts(cause),
@@ -700,6 +704,7 @@ export const reconcileProviderSessions = Effect.gen(function* () {
               });
             }
             const capabilities = yield* providerService.getCapabilities(providerInstanceId);
+            if ((yield* orchestrationEngine.getThreadRetirement(thread.id))?.retired) return;
             yield* providerService.sendTurn({
               threadId: thread.id,
               ...(capabilities.promptlessTurnContinuation === true

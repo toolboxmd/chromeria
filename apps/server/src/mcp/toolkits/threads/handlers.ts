@@ -27,6 +27,7 @@ import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
+import { retireSubtree } from "./retireSubtree.ts";
 import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ProviderRegistry from "../../../provider/Services/ProviderRegistry.ts";
@@ -445,6 +446,7 @@ const make = Effect.gen(function* () {
     options: { readonly recordIdle: boolean },
   ) =>
     Effect.gen(function* () {
+      if ((yield* engine.getThreadRetirement(childId))?.retired) return;
       const last = yield* lastAssistantMessage(childId);
       const report =
         reportBack.get(childId) === true &&
@@ -457,7 +459,7 @@ const make = Effect.gen(function* () {
       if (report) {
         const parent = yield* threadShell(parentId);
         const child = yield* threadShell(childId);
-        if (parent) {
+        if (parent && !(yield* engine.getThreadRetirement(parentId))?.retired) {
           const text =
             report.text.length > REPORT_TEXT_LIMIT
               ? `${report.text.slice(0, REPORT_TEXT_LIMIT)}…`
@@ -466,6 +468,13 @@ const make = Effect.gen(function* () {
             parent,
             `[Subagent ${child?.title ?? childId} (thread ${childId}) finished a turn]\n\n${text}`,
             CommandId.make(`server:mcp-threads-report:${childId}:${report.id}`),
+          ).pipe(
+            Effect.catch((error) =>
+              Effect.gen(function* () {
+                // Retirement may land between the snapshot and the report command.
+                if (!(yield* engine.getThreadRetirement(parentId))?.retired) return yield* error;
+              }),
+            ),
           );
         }
         lastReported.set(childId, report.id);
@@ -562,13 +571,27 @@ const make = Effect.gen(function* () {
   const resumeAfterUsageLimit = Effect.fn("ThreadsToolkit.resumeAfterUsageLimit")(function* (
     event: OrchestrationEvent,
   ) {
+    if (
+      event.type === "thread.activity-appended" &&
+      event.payload.activity.kind === "thread.retirement"
+    ) {
+      if ((yield* engine.getThreadRetirement(event.aggregateId))?.retired) {
+        const retired = yield* threadShell(event.aggregateId);
+        yield* cancelUsageLimitResume(event.aggregateId, retired?.latestTurn?.turnId ?? null);
+      }
+      return;
+    }
     if (event.type !== "thread.session-set" || event.payload.session.status !== "error") return;
     if (!isUsageLimitError(event.payload.session.lastError)) return;
     const threadId = event.payload.threadId;
     const failed = yield* threadShell(threadId);
     const turnId = failed?.latestTurn?.turnId;
     if (!failed || !turnId || pendingResumes.get(threadId) === turnId) return;
-    if (stoppedTurns.get(threadId) === turnId) return;
+    if (
+      stoppedTurns.get(threadId) === turnId ||
+      (yield* engine.getThreadRetirement(threadId))?.retired
+    )
+      return;
     const instanceId = event.payload.session.providerInstanceId ?? failed.modelSelection.instanceId;
     pendingResumes.set(threadId, turnId);
     const fiber = yield* resumeAfterUsageLimitReset(
@@ -676,6 +699,11 @@ const make = Effect.gen(function* () {
     spawn_thread: (input) =>
       Effect.gen(function* () {
         const parent = yield* callingThread;
+        const callerRetirement = yield* engine.getThreadRetirement(parent.id);
+        if (callerRetirement?.retired)
+          return yield* fail(
+            `Thread ${parent.id} is retired; send it an explicit message before spawning.`,
+          );
         const projectId = input.projectId ?? parent.projectId;
         const project = yield* snapshots
           .getProjectShellById(projectId)
@@ -736,7 +764,9 @@ const make = Effect.gen(function* () {
         const titlePrefix = role ? PRISM_ROLE_LABELS[role] : "Subagent";
         yield* dispatch({
           type: "thread.create",
-          commandId: yield* commandId("create"),
+          commandId: CommandId.make(
+            `server:mcp-threads-create:${parent.id}:${callerRetirement?.cutoffSequence ?? 0}:${yield* uuid}`,
+          ),
           threadId: childId,
           projectId,
           title: input.title ?? `${titlePrefix}: ${input.task.slice(0, 60)}`,
@@ -765,16 +795,42 @@ const make = Effect.gen(function* () {
     message_thread: ({ threadId, text, scope, projectId }) =>
       Effect.gen(function* () {
         const { caller, target } = yield* callerScopedThread(threadId, scope, projectId);
+        const callerRetirement = yield* engine.getThreadRetirement(caller.id);
+        if (callerRetirement?.retired) {
+          return yield* fail(`Thread ${caller.id} is retired and cannot message other threads.`);
+        }
         const statusBefore = subagentStatusOf(target.session);
         if (statusBefore === "starting") {
           return yield* fail(`Thread ${threadId} is still starting. Retry in a few seconds.`);
         }
-        yield* startTurn(target, attributedMessage(text, caller, target));
+        yield* startTurn(
+          target,
+          attributedMessage(text, caller, target),
+          CommandId.make(
+            `server:mcp-threads-message:${caller.id}:${callerRetirement?.cutoffSequence ?? 0}:${yield* uuid}`,
+          ),
+        );
         return { threadId, statusBefore, delivery: deliveryOf(statusBefore) };
       }),
-    interrupt_thread: ({ threadId, scope, projectId }) =>
+    interrupt_thread: ({ threadId, scope, projectId, retireSubtree: retire }) =>
       Effect.gen(function* () {
         const { target } = yield* callerScopedThread(threadId, scope, projectId);
+        if (retire === true) {
+          const result = yield* retireSubtree(
+            target.id,
+            yield* commandId("retire"),
+            EventId.make(yield* uuid),
+            yield* nowIso,
+          ).pipe(
+            Effect.provideService(OrchestrationEngine.OrchestrationEngineService, engine),
+            Effect.provideService(ProjectionSnapshotQuery.ProjectionSnapshotQuery, snapshots),
+            Effect.catchCause((cause) =>
+              fail(`Subtree retirement failed: ${Cause.pretty(cause).slice(0, 500)}`),
+            ),
+          );
+          const { session, ...reply } = result;
+          return { ...reply, statusAfter: subagentStatusOf(session) };
+        }
         yield* cancelUsageLimitResume(target.id, target.latestTurn?.turnId ?? null);
         if (!hasActiveTurn(target.session)) {
           return {

@@ -420,7 +420,11 @@ describe("OrchestrationEngine", () => {
       Layer.provide(
         Layer.succeed(ProjectionSnapshotQuery, {
           getUserInputActivity: () => Effect.die("unused"),
-          listActivitiesByKind: () => Effect.die("unused"),
+          listActivitiesByKind: (kind, options) => {
+            expect(kind).toBe("thread.retirement");
+            expect(options).toEqual({ includeArchived: true });
+            return Effect.succeed([]);
+          },
           getCommandReadModel: () => Effect.succeed(commandReadModel),
           getSnapshot: () =>
             Effect.sync(() => {

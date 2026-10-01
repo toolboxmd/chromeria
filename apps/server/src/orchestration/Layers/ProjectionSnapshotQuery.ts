@@ -1540,9 +1540,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     );
 
   const listActivityRowsByKind = SqlSchema.findAll({
-    Request: Schema.Struct({ kind: Schema.String }),
+    Request: Schema.Struct({ kind: Schema.String, includeArchived: Schema.Boolean }),
     Result: ProjectionThreadActivityDbRowSchema,
-    execute: ({ kind }) => sql`
+    execute: ({ kind, includeArchived }) => sql`
       SELECT
         a.activity_id AS "activityId",
         a.thread_id AS "threadId",
@@ -1557,13 +1557,16 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       JOIN projection_threads t ON t.thread_id = a.thread_id
       WHERE a.kind = ${kind}
         AND t.deleted_at IS NULL
-        AND t.archived_at IS NULL
+        AND (${includeArchived} OR t.archived_at IS NULL)
       ORDER BY a.created_at ASC, a.activity_id ASC
     `,
   });
 
-  const listActivitiesByKind: ProjectionSnapshotQueryShape["listActivitiesByKind"] = (kind) =>
-    listActivityRowsByKind({ kind }).pipe(
+  const listActivitiesByKind: ProjectionSnapshotQueryShape["listActivitiesByKind"] = (
+    kind,
+    options,
+  ) =>
+    listActivityRowsByKind({ kind, includeArchived: options?.includeArchived === true }).pipe(
       Effect.map((rows) => rows.map(mapThreadActivityRow)),
       Effect.mapError(
         toPersistenceSqlOrDecodeError(

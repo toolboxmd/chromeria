@@ -123,6 +123,12 @@ export const MessageThreadResult = Schema.Struct({
 });
 
 export const InterruptThreadInput = Schema.Struct({
+  retireSubtree: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Retire this thread and all descendants durably. Blocks automatic report-back and usage-limit resume until an explicit message resumes a named thread. Defaults to false.",
+    }),
+  ),
   threadId: TrimmedNonEmptyString.annotate({ description: "A thread in the selected scope." }),
   scope: threadScope,
   projectId: targetProjectId,
@@ -191,7 +197,7 @@ const MessageThreadTool = Tool.make("message_thread", {
 
 const InterruptThreadTool = Tool.make("interrupt_thread", {
   description:
-    "Stop the running turn of a child thread by default, or any thread in the selected project with scope: project and optional projectId, and wait until T3 reports it settled. Use it before replacing a stalled, failed or usage-limit-hit child with role retry, then escalation, so two threads never write to the same branch; it also cancels the automatic continue a usage-limit-hit thread would get. An idle, failed or stopped thread returns no_active_run unchanged, and so does a starting thread whose turn has not begun within 30 seconds (statusAfter: starting); interrupt_requested means the turn had not settled yet, so read_thread before replacing it.",
+    "With retireSubtree: true, stop and durably retire the named thread and all descendants, including across projects. Explicit messages resume only the named thread. Otherwise stop the running turn of a child thread by default, or any thread in the selected project with scope: project and optional projectId, and wait until T3 reports it settled. Use it before replacing a stalled, failed or usage-limit-hit child with role retry, then escalation, so two threads never write to the same branch; it also cancels the automatic continue a usage-limit-hit thread would get. An idle, failed or stopped thread returns no_active_run unchanged, and so does a starting thread whose turn has not begun within 30 seconds (statusAfter: starting); interrupt_requested means the turn had not settled yet, so read_thread before replacing it.",
   parameters: InterruptThreadInput,
   success: InterruptThreadResult,
   failure: ThreadsToolError,
