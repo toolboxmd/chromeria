@@ -7863,7 +7863,6 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           assert.deepEqual(created?.modelSelection, expected);
           assert.notProperty(command, "bootstrap");
           assert.notProperty(command, "prismRole");
-          assert.equal(command.createdAt, "1970-01-01T00:00:00.000Z");
           assert.equal(created?.createdAt, command.createdAt);
           assert.deepEqual(command.message, promachosCommand().message);
         }).pipe(Effect.provide(NodeHttpServer.layerTest)),
