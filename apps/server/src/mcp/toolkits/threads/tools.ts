@@ -161,7 +161,7 @@ export const ThreadSummary = Schema.Struct({
 
 const SpawnThreadTool = Tool.make("spawn_thread", {
   description:
-    "Use when another agent should do work: a bounded task, a review, or a whole job that ends in one PR (role: dispatcher). Use it instead of codex exec, claude -p, opencode run or grok in the shell: the user cannot see those runs. role applies that Prism role's kit and first eligible model, skipping providers at a usage limit: worker with a lane by difficulty, reviewer, and retry then escalation to replace a failed child. Or name instance, model and effort. Each finished turn of the child reports its final reply here unless reportBack is false. Pass projectId to run in another project under its workspace setting, and mode: top-level for an independent sidebar thread. Follow up with read_thread and message_thread using scope: project and projectId for top-level threads.",
+    "Use when another agent should do work: a bounded task, review, or one-PR job (role: dispatcher). Use instead of codex exec, claude -p, opencode run or grok in the shell so the user can see the work. Prism roles choose a kit and eligible model; worker takes a difficulty lane. Use retry then escalation for failed children, or name instance, model and effort. Optional projectId, mode and runtimeMode control placement and launch. Children report back by default. Follow up with read_thread and message_thread.",
   parameters: SpawnThreadInput,
   success: SpawnThreadResult,
   failure: ThreadsToolError,
