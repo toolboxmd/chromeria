@@ -112,7 +112,7 @@ for per-match decisions and the absorption PR record.
 ```json
 {
   "id": "child-threads",
-  "purpose": "Spawn and interrupt child threads, hide them from sidebars and mobile, and open them from their parent.",
+  "purpose": "Spawn child or top-level threads in any project in the environment, report child work to the parent, and read, message or interrupt threads in the selected scope.",
   "issues": [
     "https://github.com/toolboxmd/t3code/issues/8",
     "https://github.com/toolboxmd/t3code/issues/48",
@@ -120,7 +120,8 @@ for per-match decisions and the absorption PR record.
     "https://github.com/toolboxmd/t3code/issues/61",
     "https://github.com/toolboxmd/chromeria/issues/95",
     "https://github.com/toolboxmd/chromeria/issues/94",
-    "https://github.com/toolboxmd/chromeria/issues/71"
+    "https://github.com/toolboxmd/chromeria/issues/71",
+    "https://github.com/toolboxmd/chromeria/issues/114"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/10",
@@ -139,6 +140,9 @@ for per-match decisions and the absorption PR record.
     "apps/server/src/mcp/toolkits/threads/interruptThread.test.ts",
     "apps/server/src/mcp/toolkits/threads/mobileShell.test.ts",
     "apps/server/src/mcp/toolkits/threads/mobileShell.ts",
+    "apps/server/src/mcp/toolkits/threads/spawnIntoProject.test.ts",
+    "apps/server/src/mcp/toolkits/threads/spawnSetup.ts",
+    "apps/server/src/mcp/toolkits/threads/spawnWorkspace.ts",
     "apps/server/src/mcp/toolkits/threads/subagentThreadId.test.ts",
     "apps/server/src/mcp/toolkits/threads/subagentThreadId.ts",
     "apps/server/src/mcp/toolkits/threads/tools.ts",

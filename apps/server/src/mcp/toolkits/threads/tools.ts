@@ -1,4 +1,10 @@
-import { PrismLane, PrismRole, TrimmedNonEmptyString } from "@t3tools/contracts";
+import {
+  PrismLane,
+  PrismRole,
+  ProjectId,
+  RuntimeMode,
+  TrimmedNonEmptyString,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Tool from "effect/unstable/ai/Tool";
@@ -28,7 +34,26 @@ const threadScope = ThreadScope.pipe(
 );
 const includeSettled = Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false)));
 
+const targetProjectId = Schema.optional(
+  ProjectId.annotate({
+    description:
+      "Project ID in this environment. On spawn selects the destination. On follow-up tools requires scope: project; without a selector, project scope stays in the caller's project.",
+  }),
+);
+
 export const SpawnThreadInput = Schema.Struct({
+  projectId: targetProjectId,
+  mode: Schema.optional(
+    Schema.Literals(["child", "top-level"]).annotate({
+      description:
+        "Defaults to child: hidden and reports back. top-level appears in the target project's sidebar and does not report back.",
+    }),
+  ),
+  runtimeMode: Schema.optional(
+    RuntimeMode.annotate({
+      description: "Defaults to full-access. approval-required sends approvals to the user.",
+    }),
+  ),
   task: TrimmedNonEmptyString.annotate({
     description: "The first message the child thread receives: its whole task.",
   }),
@@ -75,7 +100,8 @@ export const SpawnThreadResult = Schema.Struct({
   threadId: Schema.String,
   role: Schema.optional(PrismRole),
   lane: Schema.optional(PrismLane),
-  parentThreadId: Schema.String,
+  parentThreadId: Schema.NullOr(Schema.String),
+  projectId: ProjectId,
   instanceId: Schema.String,
   model: Schema.String,
 });
@@ -84,6 +110,7 @@ export const MessageThreadInput = Schema.Struct({
   threadId: TrimmedNonEmptyString.annotate({ description: "A thread in the selected scope." }),
   text: TrimmedNonEmptyString,
   scope: threadScope,
+  projectId: targetProjectId,
 });
 
 export const MessageThreadResult = Schema.Struct({
@@ -98,6 +125,7 @@ export const MessageThreadResult = Schema.Struct({
 export const InterruptThreadInput = Schema.Struct({
   threadId: TrimmedNonEmptyString.annotate({ description: "A thread in the selected scope." }),
   scope: threadScope,
+  projectId: targetProjectId,
 });
 
 /**
@@ -133,13 +161,13 @@ export const ThreadSummary = Schema.Struct({
 
 const SpawnThreadTool = Tool.make("spawn_thread", {
   description:
-    "Use when another agent should do work: a bounded task, a review, or a whole job that ends in one PR (role: dispatcher). Use it instead of codex exec, claude -p, opencode run or grok in the shell: the user cannot see those runs. role applies that Prism role's kit and first eligible model, skipping providers at a usage limit: worker with a lane by difficulty, reviewer, and retry then escalation to replace a failed child. Or name instance, model and effort. Each finished turn of the child reports its final reply here unless reportBack is false. Follow up with read_thread and message_thread.",
+    "Use when another agent should do work: a bounded task, a review, or a whole job that ends in one PR (role: dispatcher). Use it instead of codex exec, claude -p, opencode run or grok in the shell: the user cannot see those runs. role applies that Prism role's kit and first eligible model, skipping providers at a usage limit: worker with a lane by difficulty, reviewer, and retry then escalation to replace a failed child. Or name instance, model and effort. Each finished turn of the child reports its final reply here unless reportBack is false. Pass projectId to run in another project under its workspace setting, and mode: top-level for an independent sidebar thread. Follow up with read_thread and message_thread using scope: project and projectId for top-level threads.",
   parameters: SpawnThreadInput,
   success: SpawnThreadResult,
   failure: ThreadsToolError,
   dependencies,
 })
-  .annotate(Tool.Title, "Spawn child thread")
+  .annotate(Tool.Title, "Spawn thread")
   .annotate(Tool.Meta, ALWAYS_LOAD_META)
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
@@ -148,7 +176,7 @@ const SpawnThreadTool = Tool.make("spawn_thread", {
 
 const MessageThreadTool = Tool.make("message_thread", {
   description:
-    "Send a message to a child thread by default, or any thread in this project with scope: project, once it has started working or gone idle. A thread that is still starting refuses with a retryable error; retry in a few seconds.",
+    "Send a message to a child thread by default, or any thread in the selected project with scope: project and optional projectId, once it has started working or gone idle. A thread that is still starting refuses with a retryable error; retry in a few seconds.",
   parameters: MessageThreadInput,
   success: MessageThreadResult,
   failure: ThreadsToolError,
@@ -163,7 +191,7 @@ const MessageThreadTool = Tool.make("message_thread", {
 
 const InterruptThreadTool = Tool.make("interrupt_thread", {
   description:
-    "Stop the running turn of a child thread by default, or any thread in this project with scope: project, and wait until T3 reports it settled. Use it before replacing a stalled, failed or usage-limit-hit child with role retry, then escalation, so two threads never write to the same branch; it also cancels the automatic continue a usage-limit-hit thread would get. An idle, failed or stopped thread returns no_active_run unchanged, and so does a starting thread whose turn has not begun within 30 seconds (statusAfter: starting); interrupt_requested means the turn had not settled yet, so read_thread before replacing it.",
+    "Stop the running turn of a child thread by default, or any thread in the selected project with scope: project and optional projectId, and wait until T3 reports it settled. Use it before replacing a stalled, failed or usage-limit-hit child with role retry, then escalation, so two threads never write to the same branch; it also cancels the automatic continue a usage-limit-hit thread would get. An idle, failed or stopped thread returns no_active_run unchanged, and so does a starting thread whose turn has not begun within 30 seconds (statusAfter: starting); interrupt_requested means the turn had not settled yet, so read_thread before replacing it.",
   parameters: InterruptThreadInput,
   success: InterruptThreadResult,
   failure: ThreadsToolError,
@@ -177,8 +205,12 @@ const InterruptThreadTool = Tool.make("interrupt_thread", {
 
 const ReadThreadTool = Tool.make("read_thread", {
   description:
-    "Read a thread's status and its latest assistant reply. The default scope is this thread's children; use scope: project for any thread in this project, including settled threads.",
-  parameters: Schema.Struct({ threadId: TrimmedNonEmptyString, scope: threadScope }),
+    "Read a thread's status and its latest assistant reply. The default scope is this thread's children; use scope: project and optional projectId for any thread in the selected project, including settled threads.",
+  parameters: Schema.Struct({
+    threadId: TrimmedNonEmptyString,
+    scope: threadScope,
+    projectId: targetProjectId,
+  }),
   success: ThreadSummary,
   failure: ThreadsToolError,
   dependencies,
@@ -204,8 +236,8 @@ const ListChildThreadsTool = Tool.make("list_child_threads", {
 
 const ListThreadsTool = Tool.make("list_threads", {
   description:
-    "List active threads in this thread's children by default, or all non-archived threads in this project with scope: project. Set includeSettled: true to include settled threads.",
-  parameters: Schema.Struct({ scope: threadScope, includeSettled }),
+    "List active threads in this thread's children by default, or all non-archived threads in the selected project with scope: project and optional projectId. Set includeSettled: true to include settled threads.",
+  parameters: Schema.Struct({ scope: threadScope, projectId: targetProjectId, includeSettled }),
   success: Schema.Struct({ threads: Schema.Array(ThreadSummary) }),
   failure: ThreadsToolError,
   dependencies,

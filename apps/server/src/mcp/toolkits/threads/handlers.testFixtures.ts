@@ -9,10 +9,12 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
+  ProviderDriverKind,
   ThreadId,
   TurnId,
   type OrchestrationEvent,
   type RuntimeMode,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
@@ -21,6 +23,14 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import type { Tool } from "effect/unstable/ai";
 
+import { ProviderCommandReactorLive } from "../../../orchestration/Layers/ProviderCommandReactor.ts";
+import { ProviderAuthService } from "../../../provider/Services/ProviderAuthService.ts";
+import { TerminalManager } from "../../../terminal/Manager.ts";
+import { TextGeneration } from "../../../textGeneration/TextGeneration.ts";
+import { VcsStatusBroadcaster } from "../../../vcs/VcsStatusBroadcaster.ts";
+import { makeProviderRegistryLayer } from "../../../provider/testUtils/providerRegistryMock.ts";
+import { ProjectSetupScriptRunner } from "../../../project/ProjectSetupScriptRunner.ts";
+import { GitWorkflowService } from "../../../git/GitWorkflowService.ts";
 import { ServerConfig } from "../../../config.ts";
 import { OrchestrationEngineLive } from "../../../orchestration/Layers/OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "../../../orchestration/Layers/ProjectionPipeline.ts";
@@ -33,7 +43,6 @@ import { OrchestrationCommandReceiptRepositoryLive } from "../../../persistence/
 import { OrchestrationEventStoreLive } from "../../../persistence/Layers/OrchestrationEventStore.ts";
 import { makeSqlitePersistenceLive } from "../../../persistence/Layers/Sqlite.ts";
 import * as RepositoryIdentityResolver from "../../../project/RepositoryIdentityResolver.ts";
-import * as ProviderRegistry from "../../../provider/Services/ProviderRegistry.ts";
 import * as ProviderService from "../../../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -54,7 +63,15 @@ let commandCount = 0;
 export const commandId = () => CommandId.make(`test-threads-${++commandCount}`);
 
 /** One server process: real engine and projections over a SQLite file, toolkit services faked. */
-const engineLayer = (databasePath: string) => {
+export interface SpawnTestOptions {
+  readonly settings?: Parameters<typeof ServerSettingsService.layerTest>[0];
+  readonly git?: Partial<GitWorkflowService["Service"]>;
+  readonly setup?: ProjectSetupScriptRunner["Service"]["runForThread"];
+  readonly provider?: Partial<ProviderService.ProviderService["Service"]>;
+  readonly providers?: ReadonlyArray<ServerProvider>;
+}
+
+const engineLayer = (databasePath: string, options: SpawnTestOptions = {}) => {
   const orchestration = Layer.mergeAll(
     OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
@@ -73,17 +90,26 @@ const engineLayer = (databasePath: string) => {
   );
   return Layer.mergeAll(
     orchestration,
-    ServerSettingsService.layerTest(),
+    ServerSettingsService.layerTest(options.settings),
+    Layer.mock(GitWorkflowService)(options.git ?? {}),
+    Layer.mock(ProjectSetupScriptRunner)({
+      runForThread: options.setup ?? (() => Effect.succeed({ status: "no-script" })),
+    }),
     Layer.mock(ProviderService.ProviderService)({
       getInstanceInfo: (instanceId) =>
         Effect.succeed({
           instanceId,
-          driverKind: "codex",
+          driverKind: ProviderDriverKind.make("codex"),
           displayName: undefined,
           enabled: true,
-        } as never),
+          continuationIdentity: {
+            driverKind: ProviderDriverKind.make("codex"),
+            continuationKey: "test-codex",
+          },
+        }),
+      ...options.provider,
     }),
-    Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+    makeProviderRegistryLayer(options.providers),
   );
 };
 
@@ -94,8 +120,12 @@ const engineLayer = (databasePath: string) => {
 type AfterShellRead = (threadId: string) => Effect.Effect<void, never, OrchestrationEngineService>;
 
 /** The same process with the threads toolkit running. */
-const serverLayer = (databasePath: string, afterShellRead?: AfterShellRead) => {
-  const dependencies = engineLayer(databasePath);
+const serverLayer = (
+  databasePath: string,
+  afterShellRead?: AfterShellRead,
+  options?: SpawnTestOptions,
+) => {
+  const dependencies = engineLayer(databasePath, options);
   const toolkitQuery = Layer.effect(
     ProjectionSnapshotQuery,
     Effect.gen(function* () {
@@ -119,6 +149,26 @@ const serverLayer = (databasePath: string, afterShellRead?: AfterShellRead) => {
   );
   return Layer.mergeAll(
     ThreadsToolkitHandlersLive.pipe(Layer.provide(toolkitQuery), Layer.provide(dependencies)),
+    ...(options?.provider
+      ? [
+          ProviderCommandReactorLive.pipe(
+            Layer.provide(dependencies),
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.mock(ProviderAuthService)({
+                  tryHandlePromptCommand: () => Effect.succeed(false),
+                }),
+                Layer.mock(TerminalManager)({ closeIdle: () => Effect.void }),
+                Layer.mock(TextGeneration)({
+                  generateBranchName: () => Effect.succeed({ branch: "test-spawn" }),
+                  generateThreadTitle: () => Effect.succeed({ title: "Target task" }),
+                }),
+                Layer.mock(VcsStatusBroadcaster)({}),
+              ),
+            ),
+          ),
+        ]
+      : []),
     dependencies,
   );
 };
@@ -128,7 +178,8 @@ export const withServer = <A, E, R>(
   databasePath: string,
   body: Effect.Effect<A, E, R>,
   afterShellRead?: AfterShellRead,
-) => body.pipe(Effect.provide(serverLayer(databasePath, afterShellRead)));
+  options?: SpawnTestOptions,
+) => body.pipe(Effect.provide(serverLayer(databasePath, afterShellRead, options)));
 
 /**
  * Runs `body` against the engine alone, with no threads toolkit listening:
