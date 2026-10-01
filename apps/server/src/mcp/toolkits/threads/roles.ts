@@ -1,23 +1,23 @@
 import {
+  LEGACY_PRISM_ROLE_KEYS,
   PRISM_ROLES,
   type PrismModelPreference,
   type PrismRole,
   type PrismRoleKit,
-  type PrismThreadToolScope,
   type ServerProvider,
 } from "@t3tools/contracts";
 
 import { isSubagentThreadId } from "./subagentThreadId.ts";
-import type { ThreadScope } from "./tools.ts";
 
 /**
  * Prism roles on T3 threads (toolboxmd/model-router#115).
  *
  * A thread the user starts (no parent) is the planner. A child started in a
  * role carries it at the front of its id suffix, `sub.<parent>.<role>-<rand>`,
- * so the role survives restarts like the parent link does. A child without a
- * role prefix (direct spawns, router threads before it names roles) keeps the
- * thread tools it always had and gets no Prism tools.
+ * so the role survives restarts like the parent link does; children spawned
+ * as `correction` or `recovery` read as Retry and Escalation. A child without
+ * a role prefix (direct spawns, router threads) is unassigned. Every thread
+ * may use every thread tool, whatever its role.
  */
 export function prismRoleSuffix(role: PrismRole, random: string): string {
   return `${role}-${random}`;
@@ -27,51 +27,8 @@ export function threadRoleOf(threadId: string): PrismRole | "unassigned" {
   if (!isSubagentThreadId(threadId)) return "planner";
   const suffix = threadId.slice(threadId.lastIndexOf(".") + 1);
   const prefix = suffix.slice(0, suffix.indexOf("-"));
-  return (PRISM_ROLES as readonly string[]).includes(prefix) ? (prefix as PrismRole) : "unassigned";
-}
-
-export type ThreadToolName =
-  | "spawn_thread"
-  | "message_thread"
-  | "read_thread"
-  | "list_child_threads"
-  | "list_threads";
-
-/**
- * Null when the caller may use `tool` with `scope`, else the refusal. An
- * unassigned child is treated like the planner for thread tools, which is
- * what every child could do before roles existed.
- */
-export function threadToolRefusal(
-  toolScope: PrismThreadToolScope | "unassigned",
-  tool: ThreadToolName,
-  scope: ThreadScope,
-): string | null {
-  switch (toolScope) {
-    case "planner":
-    case "unassigned":
-      return null;
-    case "children":
-      if (tool === "spawn_thread") return "This role may not spawn threads.";
-      return scope === "children"
-        ? null
-        : "This role may only reach its own child threads (scope: children).";
-    case "project-read":
-      return tool === "read_thread" || tool === "list_threads" || tool === "list_child_threads"
-        ? null
-        : "This role may only read threads.";
-    case "none":
-      return "This role has no thread tools.";
-  }
-}
-
-/** The caller's thread-tool scope: its role's kit, or `unassigned`. */
-export function threadToolScopeOf(
-  threadId: string,
-  kits: Readonly<Record<PrismRole, PrismRoleKit>>,
-): PrismThreadToolScope | "unassigned" {
-  const role = threadRoleOf(threadId);
-  return role === "unassigned" ? role : kits[role].threadTools;
+  if ((PRISM_ROLES as readonly string[]).includes(prefix)) return prefix as PrismRole;
+  return LEGACY_PRISM_ROLE_KEYS[prefix] ?? "unassigned";
 }
 
 /**

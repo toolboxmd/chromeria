@@ -32,8 +32,8 @@ function snapshotRoles(kits: PrismRoleKits): PrismSnapshotRoles {
     dispatcher: single(kits.dispatcher),
     reviewer: single(kits.reviewer),
     worker: kits.worker,
-    correction: single(kits.correction),
-    recovery: single(kits.recovery),
+    correction: single(kits.retry),
+    recovery: single(kits.escalation),
   };
 }
 

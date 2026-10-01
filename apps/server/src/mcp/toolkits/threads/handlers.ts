@@ -10,9 +10,7 @@ import {
   DEFAULT_RUNTIME_MODE,
   type OrchestrationThreadShell,
   PRISM_ROLE_LABELS,
-  prismRoleFromName,
   prismRoleModels,
-  type PrismRoleKits,
   type ProviderOptionSelection,
 } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -31,14 +29,7 @@ import * as ProviderRegistry from "../../../provider/Services/ProviderRegistry.t
 import * as ProviderService from "../../../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import {
-  pickRoleModel,
-  prismRoleSuffix,
-  roleTaskMessage,
-  type ThreadToolName,
-  threadToolRefusal,
-  threadToolScopeOf,
-} from "./roles.ts";
+import { pickRoleModel, prismRoleSuffix, roleTaskMessage } from "./roles.ts";
 import {
   type ChildReportState,
   childReportStatesFrom,
@@ -267,22 +258,18 @@ const make = Effect.gen(function* () {
       Effect.catchCause(() => fail("Could not read Prism role settings.")),
     );
 
-  /** The calling thread, once its role may use `tool` with `scope`. */
-  const authorizedCaller = (tool: ThreadToolName, scope: ThreadScope) =>
-    Effect.gen(function* () {
-      const invocation = yield* McpInvocationContext.McpInvocationContext;
-      const caller = yield* threadShell(invocation.threadId);
-      if (!caller) return yield* fail(`Thread ${invocation.threadId} was not found.`);
-      const kits: PrismRoleKits = yield* roleKits(caller.projectId);
-      const refusal = threadToolRefusal(threadToolScopeOf(caller.id, kits), tool, scope);
-      if (refusal) return yield* fail(refusal);
-      return { caller, kits };
-    });
+  /** The calling thread. Every role may use every thread tool. */
+  const callingThread = Effect.gen(function* () {
+    const invocation = yield* McpInvocationContext.McpInvocationContext;
+    const caller = yield* threadShell(invocation.threadId);
+    if (!caller) return yield* fail(`Thread ${invocation.threadId} was not found.`);
+    return caller;
+  });
 
   /** The calling thread, plus a guard that the target is in the requested scope. */
-  const callerScopedThread = (tool: ThreadToolName, threadId: string, scope: ThreadScope) =>
+  const callerScopedThread = (threadId: string, scope: ThreadScope) =>
     Effect.gen(function* () {
-      const { caller } = yield* authorizedCaller(tool, scope);
+      const caller = yield* callingThread;
       const target = yield* threadShell(threadId);
       if (!target) return yield* fail(`Thread ${threadId} was not found.`);
       if (!threadIsInScope(target, caller, scope))
@@ -292,7 +279,7 @@ const make = Effect.gen(function* () {
 
   const listThreads = (scope: ThreadScope, includeSettled: boolean) =>
     Effect.gen(function* () {
-      const { caller } = yield* authorizedCaller("list_threads", scope);
+      const caller = yield* callingThread;
       const shells = yield* snapshots.getShellSnapshot().pipe(
         Effect.map((snapshot) => snapshot.threads),
         Effect.catchCause(() => fail("Could not read threads.")),
@@ -305,7 +292,7 @@ const make = Effect.gen(function* () {
 
   const listChildThreads = () =>
     Effect.gen(function* () {
-      const { caller } = yield* authorizedCaller("list_child_threads", "children");
+      const caller = yield* callingThread;
       const shells = yield* snapshots.getShellSnapshot().pipe(
         Effect.map((snapshot) => snapshot.threads),
         Effect.catchCause(() => fail("Could not read threads.")),
@@ -512,8 +499,9 @@ const make = Effect.gen(function* () {
   return ThreadsToolkit.of({
     spawn_thread: (input) =>
       Effect.gen(function* () {
-        const { caller: parent, kits } = yield* authorizedCaller("spawn_thread", "children");
-        const role = input.role ? prismRoleFromName(input.role) : undefined;
+        const parent = yield* callingThread;
+        const role = input.role;
+        const kits = yield* roleKits(parent.projectId);
         const kit = role ? kits[role] : undefined;
         const lane = input.lane ?? DEFAULT_PRISM_LANE;
         const laneModels = role ? prismRoleModels(kits, role, lane) : [];
@@ -584,7 +572,7 @@ const make = Effect.gen(function* () {
       }),
     message_thread: ({ threadId, text, scope }) =>
       Effect.gen(function* () {
-        const { caller, target } = yield* callerScopedThread("message_thread", threadId, scope);
+        const { caller, target } = yield* callerScopedThread(threadId, scope);
         const statusBefore = subagentStatusOf(target.session);
         if (statusBefore === "starting") {
           return yield* fail(`Thread ${threadId} is still starting. Retry in a few seconds.`);
@@ -593,9 +581,7 @@ const make = Effect.gen(function* () {
         return { threadId, statusBefore, delivery: deliveryOf(statusBefore) };
       }),
     read_thread: ({ threadId, scope }) =>
-      callerScopedThread("read_thread", threadId, scope).pipe(
-        Effect.flatMap(({ target }) => summarize(target)),
-      ),
+      callerScopedThread(threadId, scope).pipe(Effect.flatMap(({ target }) => summarize(target))),
     list_child_threads: () => listChildThreads(),
     list_threads: ({ scope, includeSettled }) => listThreads(scope, includeSettled),
   });

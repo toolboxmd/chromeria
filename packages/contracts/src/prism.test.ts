@@ -5,9 +5,7 @@ import {
   DEFAULT_PRISM_ROLE_KITS,
   PrismRoleKits,
   PrismRoleKitsPatch,
-  PrismRoleName,
   PrismLiveness,
-  prismRoleFromName,
 } from "./prism.ts";
 import { ProjectSettingsOverrides, ServerSettings } from "./settings.ts";
 
@@ -15,7 +13,6 @@ const decodeServerSettings = Schema.decodeSync(ServerSettings);
 const decodeProjectOverrides = Schema.decodeSync(ProjectSettingsOverrides);
 const decodeKitsPatch = Schema.decodeSync(PrismRoleKitsPatch);
 const encodeKits = Schema.encodeSync(PrismRoleKits);
-const decodeName = Schema.decodeUnknownSync(PrismRoleName);
 
 const decodeLiveness = Schema.decodeUnknownSync(PrismLiveness);
 const encodeLiveness = Schema.encodeSync(PrismLiveness);
@@ -64,18 +61,59 @@ describe("Prism liveness", () => {
 });
 
 describe("Prism role kits", () => {
-  it("default each role to its thread-tool scope with no preferred models", () => {
-    expect(DEFAULT_PRISM_ROLE_KITS.planner.threadTools).toBe("planner");
-    expect(DEFAULT_PRISM_ROLE_KITS.dispatcher.threadTools).toBe("children");
-    expect(DEFAULT_PRISM_ROLE_KITS.reviewer.threadTools).toBe("project-read");
-    for (const role of ["worker", "correction", "recovery"] as const) {
-      expect(DEFAULT_PRISM_ROLE_KITS[role].threadTools).toBe("none");
-    }
+  it("default the six roles to no preferred models", () => {
+    expect(Object.keys(DEFAULT_PRISM_ROLE_KITS).toSorted()).toEqual([
+      "dispatcher",
+      "escalation",
+      "planner",
+      "retry",
+      "reviewer",
+      "worker",
+    ]);
     expect(DEFAULT_PRISM_ROLE_KITS.worker.lanes).toEqual({ easy: [], medium: [], hard: [] });
     expect(DEFAULT_PRISM_ROLE_KITS.dispatcher.models).toEqual([]);
-    expect(DEFAULT_PRISM_ROLE_KITS.correction.enabled).toBe(true);
-    expect(DEFAULT_PRISM_ROLE_KITS.recovery.enabled).toBe(true);
+    expect(DEFAULT_PRISM_ROLE_KITS.retry.enabled).toBe(true);
+    expect(DEFAULT_PRISM_ROLE_KITS.escalation.enabled).toBe(true);
     expect("enabled" in DEFAULT_PRISM_ROLE_KITS.reviewer).toBe(false);
+  });
+
+  it("load saved settings that still carry a thread-tool scope, dropping it", () => {
+    const settings = decodeServerSettings({
+      prismRoles: {
+        dispatcher: { instructions: "Lead.", threadTools: "children" },
+        worker: { threadTools: "none", lanes: { easy: [] } },
+        correction: { threadTools: "none" },
+      },
+    });
+    expect(settings.prismRoles.dispatcher.instructions).toBe("Lead.");
+    const encoded = encodeKits(settings.prismRoles) as Record<string, object>;
+    for (const role of ["dispatcher", "worker", "retry"] as const) {
+      expect("threadTools" in settings.prismRoles[role]).toBe(false);
+      expect("threadTools" in encoded[role]!).toBe(false);
+    }
+  });
+
+  it("load Retry and Escalation saved under their legacy keys", () => {
+    const luna = { instanceId: "codex", model: "gpt-5.6-luna" };
+    const settings = decodeServerSettings({
+      prismRoles: {
+        correction: { models: [luna], enabled: false },
+        recovery: { instructions: "Escalate." },
+      },
+    });
+    expect(settings.prismRoles.retry).toMatchObject({ models: [luna], enabled: false });
+    expect(settings.prismRoles.escalation).toMatchObject({
+      instructions: "Escalate.",
+      enabled: true,
+    });
+    expect(Object.keys(encodeKits(settings.prismRoles))).not.toContain("correction");
+    // A kit saved under the new key wins over one left under the legacy key.
+    const both = decodeServerSettings({
+      prismRoles: { retry: { enabled: true }, correction: { enabled: false } },
+    });
+    expect(both.prismRoles.retry.enabled).toBe(true);
+    const overrides = decodeProjectOverrides({ prismRoles: { recovery: { enabled: false } } });
+    expect(overrides.prismRoles?.escalation.enabled).toBe(false);
   });
 
   it("load saved settings that still name a role runtime mode, dropping it", () => {
@@ -93,27 +131,19 @@ describe("Prism role kits", () => {
       prismRoles: {
         dispatcher: { instructions: "Lead.", lanes: { easy: [luna], medium: [opus], hard: [] } },
         reviewer: { lanes: { hard: [opus] } },
-        correction: { models: [luna], lanes: { medium: [opus] }, enabled: false },
+        retry: { models: [luna], lanes: { medium: [opus] }, enabled: false },
       },
     });
     expect(settings.prismRoles.dispatcher.models).toEqual([opus]);
     expect(settings.prismRoles.dispatcher.instructions).toBe("Lead.");
     expect("lanes" in settings.prismRoles.dispatcher).toBe(false);
     expect(settings.prismRoles.reviewer.models).toEqual([]);
-    expect(settings.prismRoles.correction).toMatchObject({ models: [luna], enabled: false });
+    expect(settings.prismRoles.retry).toMatchObject({ models: [luna], enabled: false });
     expect(encodeKits(settings.prismRoles).dispatcher).toEqual({
       instructions: "Lead.",
       skills: [],
-      threadTools: "children",
       models: [opus],
     });
-  });
-
-  it("accept the shown names of renamed roles", () => {
-    expect(prismRoleFromName(decodeName("retry"))).toBe("correction");
-    expect(prismRoleFromName(decodeName("escalation"))).toBe("recovery");
-    expect(prismRoleFromName(decodeName("recovery"))).toBe("recovery");
-    expect(() => decodeName("fixer")).toThrow();
   });
 
   it("fill missing roles and fields when a settings file names one role", () => {
@@ -136,9 +166,8 @@ describe("Prism role kits", () => {
     ]);
     expect(settings.prismRoles.worker.lanes.hard[0]?.effort).toBe("xhigh");
     expect(settings.prismRoles.worker.lanes.easy).toEqual([]);
-    expect(settings.prismRoles.recovery.models).toEqual([]);
-    expect(settings.prismRoles.worker.threadTools).toBe("none");
-    expect(settings.prismRoles.reviewer.threadTools).toBe("project-read");
+    expect(settings.prismRoles.escalation.models).toEqual([]);
+    expect(settings.prismRoles.reviewer.instructions).toBe("");
   });
 
   it("accept a project override of the whole kit set", () => {
@@ -148,15 +177,15 @@ describe("Prism role kits", () => {
       },
     });
     expect(overrides.prismRoles?.reviewer.models[0]?.model).toBe("gpt-5.6-luna");
-    expect(overrides.prismRoles?.planner.threadTools).toBe("planner");
+    expect(overrides.prismRoles?.planner.models).toEqual([]);
   });
 
   it("patch one lane of the worker or one field of another role without defaults", () => {
     expect(decodeKitsPatch({ worker: { lanes: { hard: [] } } })).toEqual({
       worker: { lanes: { hard: [] } },
     });
-    expect(decodeKitsPatch({ recovery: { enabled: false } })).toEqual({
-      recovery: { enabled: false },
+    expect(decodeKitsPatch({ escalation: { enabled: false } })).toEqual({
+      escalation: { enabled: false },
     });
   });
 });

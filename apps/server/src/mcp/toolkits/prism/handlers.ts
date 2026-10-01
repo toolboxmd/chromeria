@@ -6,7 +6,6 @@ import {
   type PrismLane,
   ProjectId,
 } from "@t3tools/contracts";
-import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
@@ -20,9 +19,8 @@ import * as NetAddress from "effect/unstable/net/NetAddress";
 import * as EnvironmentAuth from "../../../auth/EnvironmentAuth.ts";
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ProcessRunner from "../../../processRunner.ts";
-import { ServerSettingsService } from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import { threadToolScopeOf } from "../threads/roles.ts";
+import { threadRoleOf } from "../threads/roles.ts";
 import { type PrismDispatcher, PrismToolError, PrismToolkit } from "./tools.ts";
 
 /** Where the Model Router plugin installs its versions, newest wins. */
@@ -205,7 +203,6 @@ function serverBaseUrl(address: HttpServer.HttpServer["Service"]["address"]): st
 
 const make = Effect.gen(function* () {
   const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
-  const serverSettings = yield* ServerSettingsService;
   const auth = yield* EnvironmentAuth.EnvironmentAuth;
   const runner = yield* ProcessRunner.ProcessRunner;
   const crypto = yield* Crypto.Crypto;
@@ -214,7 +211,7 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const serverUrl = serverBaseUrl(httpServer.address);
 
-  /** The calling thread, once its role carries the planner's tools. */
+  /** The calling thread, once it is a planner (a thread the user started). */
   const plannerCaller = Effect.gen(function* () {
     const invocation = yield* McpInvocationContext.McpInvocationContext;
     const caller = yield* snapshots.getThreadShellById(invocation.threadId).pipe(
@@ -222,12 +219,7 @@ const make = Effect.gen(function* () {
       Effect.catchCause(() => Effect.void),
     );
     if (!caller) return yield* fail(`Thread ${invocation.threadId} was not found.`);
-    const kits = yield* serverSettings.getSettings.pipe(
-      Effect.map((settings) => resolveProjectSettings(settings, caller.projectId).settings),
-      Effect.map((settings) => settings.prismRoles),
-      Effect.catchCause(() => fail("Could not read Prism role settings.")),
-    );
-    if (threadToolScopeOf(caller.id, kits) !== "planner") {
+    if (threadRoleOf(caller.id) !== "planner") {
       return yield* fail("Only a planner thread may use the Prism tools.");
     }
     return caller;
