@@ -632,3 +632,23 @@ for per-match decisions and the absorption PR record.
   ]
 }
 ```
+
+## Mermaid diagrams as images
+
+```json
+{
+  "id": "mermaid-diagram-images",
+  "purpose": "Render mermaid code fences in chat as diagram images, falling back to the code block when a diagram is invalid (upstream pingdotgg/t3code#13970).",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/90"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/91"],
+  "newFiles": ["apps/web/src/lib/mermaid.test.ts", "apps/web/src/lib/mermaid.ts"],
+  "upstreamFiles": [
+    "apps/web/package.json",
+    "apps/web/src/components/ChatMarkdown.test.tsx",
+    "pnpm-lock.yaml",
+    "third-party-licenses.config.json"
+  ],
+  "sharedFiles": ["apps/web/src/components/ChatMarkdown.tsx"],
+  "keywords": ["mermaid", "renderMermaidImage", "MermaidDiagram"]
+}
+```
