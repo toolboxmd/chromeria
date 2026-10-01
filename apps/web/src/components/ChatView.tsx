@@ -540,6 +540,7 @@ import {
   promachosPicksModel,
   withPromachosStart,
 } from "./promachos/promachosStart";
+import { isSpectrumThreadId } from "./subagentThreads";
 
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_QUEUED_MESSAGES: QueuedComposerMessage[] = [];
@@ -797,6 +798,8 @@ function useLocalDispatchState(input: {
       ? null
       : latestTurnStartFailureId(input.activeThread, latestUserMessageId);
 
+  const providerless = input.activeThread ? isSpectrumThreadId(input.activeThread.id) : false;
+
   const resetLocalDispatch = useCallback(() => {
     setLocalDispatch(null);
   }, []);
@@ -813,6 +816,7 @@ function useLocalDispatchState(input: {
         hasPendingUserInput: input.activePendingUserInput !== null,
         latestTurnStartFailureId: currentTurnStartFailureId,
         threadError: input.threadError,
+        providerless,
       }),
     [
       input.activeLatestTurn,
@@ -824,6 +828,7 @@ function useLocalDispatchState(input: {
       latestUserMessageId,
       currentTurnStartFailureId,
       localDispatch,
+      providerless,
     ],
   );
   const activeLocalDispatch = serverAcknowledgedLocalDispatch ? null : localDispatch;

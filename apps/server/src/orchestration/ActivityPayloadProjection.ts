@@ -426,6 +426,11 @@ export function projectActivityPayload(
   activity: OrchestrationThreadActivity,
 ): OrchestrationThreadActivity {
   const payload = asRecord(activity.payload);
+  if (activity.kind === "spectrum.state" && payload && Array.isArray(payload.outbox)) {
+    // Recovery reads raw persisted activities. Clients need pending turn metadata,
+    // not duplicate transcript text in queued provider prompts and relay commands.
+    return { ...activity, payload: { ...payload, outbox: [] } };
+  }
   const data = asRecord(payload?.data);
   if (!payload || !data) {
     return activity;

@@ -1,3 +1,7 @@
+import {
+  isSpectrumParticipantId,
+  isSpectrumThreadId,
+} from "../../mcp/toolkits/threads/spectrumIdentity.ts";
 import { withWorkspaceLease } from "../../workspace/workspaceLease.ts";
 import {
   type ChatAttachment,
@@ -47,7 +51,12 @@ import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderAuthService } from "../../provider/Services/ProviderAuthService.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
-import { blocksQueuedStart, RETIREMENT_KIND, retirementFrom } from "../ThreadRetirement.ts";
+import {
+  blocksQueuedStart,
+  RETIREMENT_KIND,
+  retirementFrom,
+  spectrumCommandSources,
+} from "../ThreadRetirement.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
@@ -1222,19 +1231,34 @@ const make = Effect.gen(function* () {
     processThreadTitleRegenerationSafely,
   );
 
-  const processTurnStartRequested = Effect.fn("processTurnStartRequested")(function* (
-    receivedEvent: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
+  const queuedStartBlocked = Effect.fnUntraced(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
   ) {
-    const resumed =
-      receivedEvent.commandId !== null ? resumedTurnStarts.get(receivedEvent.commandId) : undefined;
-    const event = resumed ? { ...receivedEvent, payload: resumed.event.payload } : receivedEvent;
     if (
       blocksQueuedStart(
         yield* orchestrationEngine.getThreadRetirement(event.payload.threadId),
         event.sequence,
       )
     )
-      return;
+      return true;
+    for (const { id, generation } of spectrumCommandSources(
+      event.commandId,
+      event.payload.threadId,
+    )) {
+      const state = yield* orchestrationEngine.getThreadRetirement(ThreadId.make(id));
+      if (state?.retired || (state?.cutoffSequence ?? 0) !== generation) return true;
+    }
+    return false;
+  });
+
+  const processTurnStartRequested = Effect.fn("processTurnStartRequested")(function* (
+    receivedEvent: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
+  ) {
+    if (isSpectrumThreadId(receivedEvent.payload.threadId)) return;
+    const resumed =
+      receivedEvent.commandId !== null ? resumedTurnStarts.get(receivedEvent.commandId) : undefined;
+    const event = resumed ? { ...receivedEvent, payload: resumed.event.payload } : receivedEvent;
+    if (yield* queuedStartBlocked(event)) return;
     const key = turnStartKeyForEvent(event);
     if (yield* hasHandledTurnStartRecently(key)) {
       return;
@@ -1530,16 +1554,30 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    if (
-      blocksQueuedStart(
-        yield* orchestrationEngine.getThreadRetirement(event.payload.threadId),
-        event.sequence,
-      )
-    )
-      return;
-    const send = providerService
-      .sendTurn(sendTurnRequest.value)
-      .pipe(Effect.asVoid, Effect.catchCause(recoverTurnStartFailure));
+    if (yield* queuedStartBlocked(event)) return;
+    const send = providerService.sendTurn(sendTurnRequest.value).pipe(
+      Effect.tap((result) =>
+        isSpectrumParticipantId(thread.id)
+          ? orchestrationEngine.dispatch({
+              type: "thread.activity.append",
+              commandId: CommandId.make(`spectrum:bound:${event.payload.messageId}`),
+              threadId: thread.id,
+              activity: {
+                id: EventId.make(`spectrum:bound:${event.payload.messageId}`),
+                kind: "spectrum.turn-bound",
+                summary: "Spectrum Drafter turn started",
+                tone: "info",
+                turnId: result.turnId,
+                payload: { messageId: event.payload.messageId, turnId: result.turnId },
+                createdAt: event.payload.createdAt,
+              },
+              createdAt: event.payload.createdAt,
+            })
+          : Effect.void,
+      ),
+      Effect.asVoid,
+      Effect.catchCause(recoverTurnStartFailure),
+    );
     // The forked send settles `sent` from here on, so drop the entry the post-processing hook uses.
     if (resumed && event.commandId !== null) resumedTurnStarts.delete(event.commandId);
     const sends = sendingTurns.get(event.payload.threadId) ?? new Set<Fiber.Fiber<void, never>>();

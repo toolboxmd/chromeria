@@ -827,6 +827,145 @@ describe("ProviderCommandReactor", () => {
     }),
   );
 
+  effectIt.effect.each(["caller", "spectrum"] as const)(
+    "drops a queued Spectrum turn when its %s retires before provider activation",
+    (source) =>
+      Effect.gen(function* () {
+        const activated = yield* Deferred.make<void>();
+        const harness = yield* Effect.promise(() =>
+          createHarness({ serverActivation: Deferred.await(activated) }),
+        );
+        const spectrumId = ThreadId.make("spectrum.queued");
+        const childId = ThreadId.make("sub.spectrum.queued.0");
+        const now = "2026-01-01T00:00:00.000Z";
+        for (const id of [spectrumId, childId])
+          yield* harness.engine.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`create:${id}`),
+            threadId: id,
+            projectId: asProjectId("project-1"),
+            title: "Spectrum",
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+          });
+        yield* harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`server:spectrum:${spectrumId}:0:thread-1:0:0:queued`),
+          threadId: source === "caller" ? childId : ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("queued-spectrum"),
+            role: "user",
+            text: "Scheduled work or report",
+            attachments: [],
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdAt: now,
+        });
+        yield* harness.engine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.make("server:mcp-threads-retire:queued-spectrum"),
+          threadId: source === "caller" ? ThreadId.make("thread-1") : spectrumId,
+          activity: {
+            id: EventId.make("retire-queued-source"),
+            kind: RETIRE_SUBTREE_KIND,
+            summary: "Retire",
+            tone: "info",
+            payload: {},
+            turnId: null,
+            createdAt: now,
+          },
+          createdAt: now,
+        });
+        yield* Deferred.succeed(activated, undefined);
+        yield* Effect.promise(() => harness.drain());
+        expect(harness.sendTurn).not.toHaveBeenCalled();
+      }),
+  );
+
+  effectIt.effect(
+    "Spectrum appends user input without provider intent and binds a Drafter's exact request to sendTurn's result",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() => createHarness());
+        const createdAt = "2026-01-01T00:00:00.000Z";
+        const spectrumId = ThreadId.make("spectrum.test");
+        const childId = ThreadId.make("sub.spectrum.test.0");
+        for (const id of [spectrumId, childId])
+          yield* harness.engine.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`create:${id}`),
+            threadId: id,
+            projectId: asProjectId("project-1"),
+            title: "Spectrum test",
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+          });
+        const received = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const events = yield* harness.engine.subscribeDomainEvents;
+            for (const id of [spectrumId, childId])
+              yield* harness.engine.dispatch({
+                type: "thread.turn.start",
+                commandId: CommandId.make(`start:${id}`),
+                threadId: id,
+                message: {
+                  messageId: MessageId.make(`request:${id}`),
+                  role: "user",
+                  text: "Input",
+                  attachments: [],
+                },
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                createdAt,
+              });
+            return yield* events.pipe(
+              Stream.filter(
+                (event) =>
+                  event.type === "thread.activity-appended" &&
+                  event.payload.activity.kind === "spectrum.turn-bound",
+              ),
+              Stream.runHead,
+            );
+          }),
+        );
+        const event = Option.getOrThrow(received);
+        expect(event.type).toBe("thread.activity-appended");
+        if (event.type !== "thread.activity-appended") throw new Error("Missing turn binding");
+        expect(event.aggregateId).toBe(childId);
+        expect(event.payload.activity.payload).toEqual({
+          messageId: `request:${childId}`,
+          turnId: "turn-1",
+        });
+        yield* Effect.promise(() => harness.drain());
+        expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+        const spectrum = (yield* Effect.promise(() => harness.readModel())).threads.find(
+          (thread) => thread.id === spectrumId,
+        )!;
+        expect(spectrum.session).toBeNull();
+        expect(spectrum.latestTurn).toBeNull();
+        expect(spectrum.messages[0]!.text).toBe("Input");
+        expect(
+          (yield* Effect.promise(() => harness.readPendingTurnStarts())).some(
+            (turn) => turn.threadId === spectrumId,
+          ),
+        ).toBe(false);
+        yield* harness.engine.dispatch({
+          type: "thread.settle",
+          commandId: CommandId.make("settle-spectrum"),
+          threadId: spectrumId,
+        });
+      }),
+  );
+
   effectIt.effect.each(["new", "ready", "stopped"] as const)(
     "handles sign-out for a %s thread before worktree repair, text helpers, or startup",
     (sessionStatus) =>

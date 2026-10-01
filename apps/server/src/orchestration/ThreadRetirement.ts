@@ -46,6 +46,19 @@ export function blocksQueuedStart(state: ThreadRetirement | undefined, sequence:
   return state !== undefined && (state.retired || sequence <= state.cutoffSequence);
 }
 
+/** Captured source and target generations survive a delayed scheduler command. */
+export function spectrumCommandSources(commandId: string | null, targetId: string) {
+  if (!commandId?.startsWith("server:spectrum:")) return [];
+  const [spectrumId, spectrumGeneration, callerId, callerGeneration, targetGeneration] = commandId
+    .slice("server:spectrum:".length)
+    .split(":");
+  return [
+    { id: spectrumId!, generation: Number(spectrumGeneration) },
+    { id: callerId!, generation: Number(callerGeneration) },
+    { id: targetId, generation: Number(targetGeneration) },
+  ];
+}
+
 /** Automatic toolkit turns and server continuations never count as explicit recovery. */
 function isAutomaticTurn(commandId: string) {
   return commandId.startsWith("server:") && !commandId.startsWith("server:mcp-threads-message:");
@@ -94,6 +107,19 @@ export const retirementCommands = (
           commandType: command.type,
           detail: `Calling thread ${callerId} is retired.`,
         });
+    }
+    if (command.type === "thread.turn.start" || command.type === "thread.create") {
+      for (const { id, generation } of spectrumCommandSources(
+        command.commandId,
+        command.threadId,
+      )) {
+        const source = retirementOf(states, id);
+        if (source?.retired || generation !== (source?.cutoffSequence ?? 0))
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Spectrum source ${id} is retired or its generation changed.`,
+          });
+      }
     }
     if (
       command.type === "thread.activity.append" &&

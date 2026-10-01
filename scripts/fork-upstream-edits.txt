@@ -150,3 +150,12 @@ docs/user/thread-sidebar.md
 packages/contracts/src/providerInstance.ts
 packages/shared/src/serverSettings.ts
 apps/server/src/orchestration/Services/OrchestrationEngine.ts
+# Spectrum user input has no relay-provider intent (#118)
+apps/server/src/orchestration/decider.ts
+# Spectrum composer sends settle once the user message is projected (#118)
+apps/web/src/components/ChatView.logic.ts
+apps/web/src/components/ChatView.logic.test.ts
+
+# Spectrum recovery outbox excluded from client transport (#118)
+apps/server/src/orchestration/ActivityPayloadProjection.ts
+apps/server/src/orchestration/ActivityPayloadProjection.test.ts

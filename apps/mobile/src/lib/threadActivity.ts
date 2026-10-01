@@ -446,6 +446,8 @@ function deriveWorkLogEntries(
     if (activity.kind === "tool.progress") continue;
     if (activity.kind === "context-window.updated") continue;
     if (activity.kind === PRISM_STREAM_STATS_ACTIVITY_KIND) continue;
+    // Spectrum scheduler bookkeeping; the transcript itself is the visible record.
+    if (activity.kind === "spectrum.state" || activity.kind === "spectrum.turn-bound") continue;
     if (activity.summary === "Checkpoint captured") continue;
     if (isNoContentRuntimeWarning(activity)) continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
