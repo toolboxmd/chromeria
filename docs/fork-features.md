@@ -128,6 +128,7 @@ for per-match decisions and the absorption PR record.
     "apps/server/src/mcp/toolkits/threads/childReportState.test.ts",
     "apps/server/src/mcp/toolkits/threads/childReportState.ts",
     "apps/server/src/mcp/toolkits/threads/childThreads.test.ts",
+    "apps/server/src/mcp/toolkits/threads/handlers.testFixtures.ts",
     "apps/server/src/mcp/toolkits/threads/handlers.ts",
     "apps/server/src/mcp/toolkits/threads/mobileShell.test.ts",
     "apps/server/src/mcp/toolkits/threads/mobileShell.ts",
@@ -247,9 +248,15 @@ for per-match decisions and the absorption PR record.
 ```json
 {
   "id": "prism-toolkit",
-  "purpose": "Expose provider capacity and assign scoped thread tools through Prism roles.",
-  "issues": ["https://github.com/toolboxmd/t3code/issues/19"],
-  "prs": ["https://github.com/toolboxmd/t3code/pull/22"],
+  "purpose": "Expose provider capacity and give Prism roles their kits and models; every role has every thread tool.",
+  "issues": [
+    "https://github.com/toolboxmd/t3code/issues/19",
+    "https://github.com/toolboxmd/chromeria/issues/93"
+  ],
+  "prs": [
+    "https://github.com/toolboxmd/t3code/pull/22",
+    "https://github.com/toolboxmd/chromeria/pull/101"
+  ],
   "newFiles": [
     "apps/server/src/mcp/toolkits/prism/handlers.test.ts",
     "apps/server/src/mcp/toolkits/prism/handlers.ts",

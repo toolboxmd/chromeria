@@ -81,7 +81,7 @@ describe("Prism provider snapshot", () => {
         prismRoles: {
           dispatcher: { models: luna },
           worker: { lanes: { hard: luna } },
-          correction: { enabled: false },
+          retry: { enabled: false },
         },
       }),
     });
@@ -91,6 +91,7 @@ describe("Prism provider snapshot", () => {
     });
     expect(snapshot.roles.worker).not.toHaveProperty("models");
     expect(snapshot.roles.worker.lanes).toEqual({ easy: [], medium: [], hard: luna });
+    // The router reads Retry and Escalation under their legacy keys.
     expect(snapshot.roles.correction.enabled).toBe(false);
     expect(snapshot.roles.recovery.enabled).toBe(true);
     for (const role of ["planner", "dispatcher", "reviewer", "worker"] as const) {

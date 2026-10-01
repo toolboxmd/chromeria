@@ -8,45 +8,30 @@ import { ProviderInstanceId } from "./providerInstance.ts";
 /**
  * Prism (Model Router) roles and their kits (toolboxmd/model-router#115).
  *
- * A role is a kit (instructions, permissions, skills, thread-tool scope)
- * plus an ordered list of models; only the worker keeps one list per lane. The kits live in server
- * settings under `prismRoles`, overridable per project like any key in
- * `PROJECT_SCOPED_SERVER_SETTING_KEYS`. The router reads them from the
- * provider snapshot endpoint; `spawn_thread(role)` applies them directly.
+ * A role is a kit (instructions, skills) plus an ordered list of models;
+ * only the worker keeps one list per lane. Every role may use every thread
+ * tool. The kits live in server settings under `prismRoles`, overridable per
+ * project like any key in `PROJECT_SCOPED_SERVER_SETTING_KEYS`;
+ * `spawn_thread(role)` applies them directly.
  */
 export const PRISM_ROLES = [
   "planner",
   "dispatcher",
   "reviewer",
   "worker",
-  "correction",
-  "recovery",
+  "retry",
+  "escalation",
 ] as const;
 export const PrismRole = Schema.Literals(PRISM_ROLES);
 export type PrismRole = typeof PrismRole.Type;
 
 /**
- * Which `threads` MCP tools a role's thread may use.
- * - `planner`: every thread tool with `project` scope, plus the Prism tools.
- * - `children`: read, list and message its own children only.
- * - `project-read`: read and list, with `project` scope; no spawn, no message.
- * - `none`: no thread tools.
+ * Keys Retry and Escalation had before they were renamed. Settings and
+ * child thread ids saved with them still read as the new roles.
  */
-export const PrismThreadToolScope = Schema.Literals([
-  "planner",
-  "children",
-  "project-read",
-  "none",
-]);
-export type PrismThreadToolScope = typeof PrismThreadToolScope.Type;
-
-const PRISM_DEFAULT_THREAD_TOOL_SCOPES: Record<PrismRole, PrismThreadToolScope> = {
-  planner: "planner",
-  dispatcher: "children",
-  reviewer: "project-read",
-  worker: "none",
-  correction: "none",
-  recovery: "none",
+export const LEGACY_PRISM_ROLE_KEYS: Readonly<Record<string, PrismRole>> = {
+  correction: "retry",
+  recovery: "escalation",
 };
 
 /** Work difficulty a job or spawn runs at; the worker keeps one model list per lane. */
@@ -79,43 +64,33 @@ export const PrismLaneModels = Schema.Struct({
 export type PrismLaneModels = typeof PrismLaneModels.Type;
 
 /** Roles the user may switch off in Prism; the router then skips that step. */
-export const PRISM_SWITCHABLE_ROLES = ["correction", "recovery"] as const;
+export const PRISM_SWITCHABLE_ROLES = ["retry", "escalation"] as const;
 export type PrismSwitchableRole = (typeof PRISM_SWITCHABLE_ROLES)[number];
 
-/** Names shown to people. Keys stay stable because the router snapshot uses them. */
+/** Names shown to people. */
 export const PRISM_ROLE_LABELS: Record<PrismRole, string> = {
   planner: "Planner",
   dispatcher: "Dispatcher",
   reviewer: "Reviewer",
   worker: "Worker",
-  correction: "Retry",
-  recovery: "Escalation",
+  retry: "Retry",
+  escalation: "Escalation",
 };
 
-/** Role names `spawn_thread` accepts: every key plus the shown names of renamed roles. */
-export const PrismRoleName = Schema.Literals([...PRISM_ROLES, "retry", "escalation"]);
-export type PrismRoleName = typeof PrismRoleName.Type;
-
-export function prismRoleFromName(name: PrismRoleName): PrismRole {
-  return name === "retry" ? "correction" : name === "escalation" ? "recovery" : name;
-}
-
-const kitFields = (role: PrismRole) => ({
+/** Saved kits may still carry `threadTools`; decoding drops it like any unknown key. */
+const kitFields = {
   /** Prepended to the first message of every thread started in this role. */
   instructions: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   /** Skill names the role is told to use. */
   skills: Schema.Array(TrimmedNonEmptyString).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
-  threadTools: PrismThreadToolScope.pipe(
-    Schema.withDecodingDefault(Effect.succeed(PRISM_DEFAULT_THREAD_TOOL_SCOPES[role])),
-  ),
-});
+};
 
 /**
  * The worker keeps one list per lane: the primary model first and fallbacks
  * after it. Eligible = these ∩ models enabled in Providers for the project
  * and environment.
  */
-const workerKit = Schema.Struct({ ...kitFields("worker"), lanes: PrismLaneModels }).pipe(
+const workerKit = Schema.Struct({ ...kitFields, lanes: PrismLaneModels }).pipe(
   Schema.withDecodingDefault(Effect.succeed({})),
 );
 
@@ -123,8 +98,8 @@ const workerKit = Schema.Struct({ ...kitFields("worker"), lanes: PrismLaneModels
  * Every other role keeps one ordered list. Settings saved before that kept
  * one list per lane; the medium list becomes the single list.
  */
-const singleListKit = <Fields extends Schema.Struct.Fields>(role: PrismRole, extra: Fields) => {
-  const kit = Schema.Struct({ ...kitFields(role), models: modelList, ...extra });
+const singleListKit = <Fields extends Schema.Struct.Fields>(extra: Fields) => {
+  const kit = Schema.Struct({ ...kitFields, models: modelList, ...extra });
   return Schema.Record(Schema.String, Schema.Unknown).pipe(
     Schema.decodeTo(
       kit,
@@ -149,14 +124,33 @@ const switchable = {
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 };
 
-export const PrismRoleKits = Schema.Struct({
-  planner: singleListKit("planner", {}),
-  dispatcher: singleListKit("dispatcher", {}),
-  reviewer: singleListKit("reviewer", {}),
+const roleKits = Schema.Struct({
+  planner: singleListKit({}),
+  dispatcher: singleListKit({}),
+  reviewer: singleListKit({}),
   worker: workerKit,
-  correction: singleListKit("correction", switchable),
-  recovery: singleListKit("recovery", switchable),
+  retry: singleListKit(switchable),
+  escalation: singleListKit(switchable),
 });
+
+/** All role kits; a role saved under its legacy key loads as the renamed role. */
+export const PrismRoleKits = Schema.Record(Schema.String, Schema.Unknown).pipe(
+  Schema.decodeTo(
+    roleKits,
+    SchemaTransformation.transform({
+      decode: (saved) => {
+        const kits: Record<string, unknown> = {};
+        for (const [key, kit] of Object.entries(saved)) {
+          const role = LEGACY_PRISM_ROLE_KEYS[key];
+          if (role === undefined) kits[key] = kit;
+          else if (saved[role] === undefined) kits[role] = kit;
+        }
+        return kits as typeof roleKits.Encoded;
+      },
+      encode: (kits) => kits as Record<string, unknown>,
+    }),
+  ),
+);
 export type PrismRoleKits = typeof PrismRoleKits.Type;
 export type PrismRoleKit = PrismRoleKits[PrismRole];
 
@@ -174,7 +168,6 @@ export function prismRoleModels(
 const kitPatchFields = {
   instructions: Schema.optionalKey(TrimmedString),
   skills: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
-  threadTools: Schema.optionalKey(PrismThreadToolScope),
 };
 const singleListKitPatch = Schema.Struct({
   ...kitPatchFields,
@@ -202,8 +195,8 @@ export const PrismRoleKitsPatch = Schema.Struct({
       ),
     }),
   ),
-  correction: Schema.optionalKey(switchableKitPatch),
-  recovery: Schema.optionalKey(switchableKitPatch),
+  retry: Schema.optionalKey(switchableKitPatch),
+  escalation: Schema.optionalKey(switchableKitPatch),
 });
 export type PrismRoleKitsPatch = typeof PrismRoleKitsPatch.Type;
 

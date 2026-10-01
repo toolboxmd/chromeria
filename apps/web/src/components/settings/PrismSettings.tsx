@@ -75,7 +75,7 @@ import {
 type ModelChoice = ReturnType<typeof prismModelChoices>[number];
 
 /** The planner is whoever submits the job; it is not configured here. */
-const PAGE_ROLES = ["dispatcher", "worker", "reviewer", "correction", "recovery"] as const;
+const PAGE_ROLES = ["dispatcher", "worker", "reviewer", "retry", "escalation"] as const;
 type PageRole = (typeof PAGE_ROLES)[number];
 
 const ROLE_DETAILS: Record<
@@ -97,11 +97,11 @@ const ROLE_DETAILS: Record<
     description: "Reviews the finished change before the PR is ready.",
     lockedReason: "Independent review is required.",
   },
-  correction: {
+  retry: {
     icon: <RotateCcwIcon />,
     description: "Takes over a failed worker turn on another model.",
   },
-  recovery: {
+  escalation: {
     icon: <ChevronsUpIcon />,
     description: "Moves stuck work to a stronger model before asking the planner.",
   },

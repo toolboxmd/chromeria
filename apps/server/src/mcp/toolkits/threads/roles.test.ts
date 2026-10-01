@@ -1,8 +1,9 @@
-import {
-  DEFAULT_PRISM_ROLE_KITS,
-  prismRoleFromName,
-  type ServerProvider,
-} from "@t3tools/contracts";
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodePath from "node:path";
+
+import { DEFAULT_PRISM_ROLE_KITS, type ServerProvider, ThreadId } from "@t3tools/contracts";
+import { it as effectIt } from "@effect/vitest";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Tool from "effect/unstable/ai/Tool";
 import { describe, expect, it } from "vite-plus/test";
@@ -13,10 +14,17 @@ import {
   prismRoleSuffix,
   roleTaskMessage,
   threadRoleOf,
-  threadToolRefusal,
-  threadToolScopeOf,
 } from "./roles.ts";
-import { makeSubagentThreadId } from "./subagentThreadId.ts";
+import {
+  callTool,
+  createParent,
+  dispatchAll,
+  PARENT_ID,
+  session,
+  temporaryDirectory,
+  withServer,
+} from "./handlers.testFixtures.ts";
+import { makeSubagentThreadId, parentThreadIdOf } from "./subagentThreadId.ts";
 import { SpawnThreadInput, ThreadsToolkit } from "./tools.ts";
 
 const decodeSpawnInput = Schema.decodeUnknownSync(SpawnThreadInput);
@@ -35,17 +43,16 @@ describe("thread roles", () => {
     expect(threadRoleOf(makeSubagentThreadId(child("dispatcher"), "worker-9f"))).toBe("worker");
   });
 
-  it("spawns Retry and Escalation under their stable keys, old names too", () => {
+  it("spawns Retry and Escalation under their names and reads legacy ids as them", () => {
     const spawnedRole = (role: string) => {
       const input = decodeSpawnInput({ task: "Fix it.", role });
-      return threadRoleOf(
-        makeSubagentThreadId("planner-1", prismRoleSuffix(prismRoleFromName(input.role!), "a1")),
-      );
+      return threadRoleOf(makeSubagentThreadId("planner-1", prismRoleSuffix(input.role!, "a1")));
     };
-    expect(spawnedRole("retry")).toBe("correction");
-    expect(spawnedRole("correction")).toBe("correction");
-    expect(spawnedRole("escalation")).toBe("recovery");
-    expect(spawnedRole("recovery")).toBe("recovery");
+    expect(spawnedRole("retry")).toBe("retry");
+    expect(spawnedRole("escalation")).toBe("escalation");
+    expect(() => decodeSpawnInput({ task: "Fix it.", role: "correction" })).toThrow();
+    expect(threadRoleOf(child("correction"))).toBe("retry");
+    expect(threadRoleOf(child("recovery"))).toBe("escalation");
   });
 
   it("leaves children without a role prefix unassigned", () => {
@@ -54,57 +61,66 @@ describe("thread roles", () => {
   });
 });
 
-describe("thread tool scope per role", () => {
-  const scopeOf = (threadId: string) => threadToolScopeOf(threadId, DEFAULT_PRISM_ROLE_KITS);
-  const tools = [
-    "spawn_thread",
-    "message_thread",
-    "read_thread",
-    "list_child_threads",
-    "list_threads",
-  ] as const;
-  const allowed = (threadId: string, scope: "children" | "project") =>
-    tools.filter((tool) => threadToolRefusal(scopeOf(threadId), tool, scope) === null);
-
-  it("gives the planner every tool with project scope", () => {
-    expect(allowed("planner-1", "project")).toEqual(tools);
-  });
-
-  it("limits a dispatcher to reading and messaging its own children", () => {
-    expect(allowed(child("dispatcher"), "children")).toEqual([
-      "message_thread",
-      "read_thread",
-      "list_child_threads",
-      "list_threads",
-    ]);
-    expect(allowed(child("dispatcher"), "project")).toEqual([]);
-  });
-
-  it("lets a reviewer read the project but not write", () => {
-    expect(allowed(child("reviewer"), "project")).toEqual([
-      "read_thread",
-      "list_child_threads",
-      "list_threads",
-    ]);
-  });
-
-  it("gives workers, corrections and recoveries no thread tools", () => {
-    for (const role of ["worker", "correction", "recovery"]) {
-      expect(allowed(child(role), "children")).toEqual([]);
-    }
-  });
-
-  it("keeps the old behavior for unassigned children", () => {
-    expect(allowed(makeSubagentThreadId("planner-1", "0123456789ab"), "project")).toEqual(tools);
-  });
-
-  it("follows a kit that changes a role's scope", () => {
-    const kits = {
-      ...DEFAULT_PRISM_ROLE_KITS,
-      worker: { ...DEFAULT_PRISM_ROLE_KITS.worker, threadTools: "project-read" as const },
-    };
-    expect(threadToolScopeOf(child("worker"), kits)).toBe("project-read");
-  });
+describe("thread tools per role", () => {
+  effectIt.effect("lets a thread in every role use every thread tool", () =>
+    Effect.gen(function* () {
+      const directory = yield* temporaryDirectory("t3-thread-roles-");
+      const reached = yield* withServer(
+        NodePath.join(directory, "state.sqlite"),
+        Effect.gen(function* () {
+          yield* createParent(directory);
+          const reached: Record<string, unknown> = {};
+          for (const role of ["dispatcher", "worker", "reviewer", "retry", "escalation"] as const) {
+            const spawned = yield* callTool("spawn_thread", {
+              task: `Act as ${role}.`,
+              role,
+              reportBack: false,
+            });
+            const caller = spawned.threadId;
+            expect(threadRoleOf(caller)).toBe(role);
+            const grandchild = yield* callTool(
+              "spawn_thread",
+              { task: "Check it.", reportBack: false },
+              caller,
+            );
+            yield* dispatchAll([session(ThreadId.make(grandchild.threadId), "ready", null)]);
+            const children = yield* callTool("list_child_threads", {} as never, caller);
+            const read = yield* callTool(
+              "read_thread",
+              { threadId: grandchild.threadId, scope: "children" },
+              caller,
+            );
+            const message = yield* callTool(
+              "message_thread",
+              { threadId: grandchild.threadId, text: "Continue.", scope: "children" },
+              caller,
+            );
+            const peers = yield* callTool(
+              "list_threads",
+              { scope: "project", includeSettled: false },
+              caller,
+            );
+            reached[role] = {
+              spawnedUnder: parentThreadIdOf(grandchild.threadId),
+              children: children.threads.map((thread) => thread.threadId),
+              read: read.threadId,
+              delivery: message.delivery,
+              seesPlanner: peers.threads.some((thread) => thread.threadId === PARENT_ID),
+            };
+            expect(reached[role]).toEqual({
+              spawnedUnder: caller,
+              children: [grandchild.threadId],
+              read: grandchild.threadId,
+              delivery: "new-turn",
+              seesPlanner: true,
+            });
+          }
+          return reached;
+        }),
+      );
+      expect(Object.keys(reached)).toHaveLength(5);
+    }).pipe(Effect.scoped),
+  );
 });
 
 const provider = (overrides: Partial<ServerProvider> = {}): ServerProvider =>

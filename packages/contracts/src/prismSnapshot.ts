@@ -2,7 +2,7 @@ import * as Schema from "effect/Schema";
 
 import { IsoDateTime, ProjectId, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
 import { RuntimeMode } from "./orchestration.ts";
-import { PrismModelPreference, PrismThreadToolScope } from "./prism.ts";
+import { PrismModelPreference } from "./prism.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { ServerProviderUsageLimits } from "./providerUsageLimits.ts";
 import { ServerProviderModel, ServerProviderState } from "./server.ts";
@@ -32,14 +32,13 @@ export type PrismProviderSnapshotEntry = typeof PrismProviderSnapshotEntry.Type;
  * A role kit as the router reads it. Every role still carries
  * `lanes.easy/medium/hard` until the router reads single lists
  * (toolboxmd/model-router#127): a role other than the worker repeats its
- * one list, `models`, in every lane. Only Retry (`correction`) and
- * Escalation (`recovery`) carry `enabled`.
+ * one list, `models`, in every lane. Only Retry and Escalation carry
+ * `enabled`.
  */
 const PrismSnapshotRoleKit = Schema.Struct({
   instructions: TrimmedString,
   runtimeMode: Schema.optionalKey(RuntimeMode),
   skills: Schema.Array(TrimmedNonEmptyString),
-  threadTools: PrismThreadToolScope,
   lanes: Schema.Struct({
     easy: Schema.Array(PrismModelPreference),
     medium: Schema.Array(PrismModelPreference),
@@ -49,6 +48,10 @@ const PrismSnapshotRoleKit = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
 });
 
+/**
+ * The router still reads Retry and Escalation under their legacy keys
+ * `correction` and `recovery`; this route retires with the runner (#92).
+ */
 export const PrismSnapshotRoles = Schema.Struct({
   planner: PrismSnapshotRoleKit,
   dispatcher: PrismSnapshotRoleKit,

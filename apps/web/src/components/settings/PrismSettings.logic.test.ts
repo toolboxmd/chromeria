@@ -248,19 +248,19 @@ it("switches Retry off and back on without touching its model list", () => {
   const scope = resolveSettingsScope({}, [], envs);
   const off = planPrismRolePatch(scope, envs, {
     kind: "enabled",
-    role: "correction",
+    role: "retry",
     enabled: false,
   });
   const next = applyServerSettingsPatch(envs[0]!.serverConfig.settings, off.serverWrites[0]!.patch);
-  expect(next.prismRoles.correction).toEqual({ ...roles.correction, enabled: false });
-  expect(next.prismRoles.recovery.enabled).toBe(true);
+  expect(next.prismRoles.retry).toEqual({ ...roles.retry, enabled: false });
+  expect(next.prismRoles.escalation.enabled).toBe(true);
   const on = planPrismRolePatch(scope, envs, {
     kind: "enabled",
-    role: "correction",
+    role: "retry",
     enabled: true,
   });
-  expect(applyServerSettingsPatch(next, on.serverWrites[0]!.patch).prismRoles.correction).toEqual(
-    roles.correction,
+  expect(applyServerSettingsPatch(next, on.serverWrites[0]!.patch).prismRoles.retry).toEqual(
+    roles.retry,
   );
 });
 

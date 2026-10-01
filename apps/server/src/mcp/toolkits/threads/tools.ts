@@ -1,4 +1,4 @@
-import { PrismLane, PrismRole, PrismRoleName, TrimmedNonEmptyString } from "@t3tools/contracts";
+import { PrismLane, PrismRole, TrimmedNonEmptyString } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Tool from "effect/unstable/ai/Tool";
@@ -33,9 +33,9 @@ export const SpawnThreadInput = Schema.Struct({
     description: "The first message the child thread receives: its whole task.",
   }),
   role: Schema.optional(
-    PrismRoleName.annotate({
+    PrismRole.annotate({
       description:
-        "Prism role for the child: dispatcher, reviewer, worker, retry, escalation (or planner); correction and recovery are the old names of retry and escalation. Applies that role's kit from Prism settings: its instructions, skills, thread-tool scope, and the first eligible model of its model list unless model is named.",
+        "Prism role for the child: planner, dispatcher, worker, reviewer, retry or escalation. Applies that role's kit from Prism settings: its instructions, skills, and the first eligible model of its model list unless model is named.",
     }),
   ),
   lane: Schema.optional(
