@@ -1317,6 +1317,13 @@ const ThreadTurnStartBootstrap = Schema.Struct({
 export type ThreadTurnStartBootstrap = typeof ThreadTurnStartBootstrap.Type;
 
 export const ThreadTurnStartCommand = Schema.Struct({
+  /** Server-only compare-and-start for automatic idle continuations. */
+  idleGuard: Schema.optional(
+    Schema.Struct({
+      latestTurnId: Schema.NullOr(TurnId),
+      updatedAt: IsoDateTime,
+    }),
+  ),
   type: Schema.Literal("thread.turn.start"),
   commandId: CommandId,
   threadId: ThreadId,

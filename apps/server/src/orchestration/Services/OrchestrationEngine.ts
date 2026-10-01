@@ -76,7 +76,11 @@ export interface OrchestrationEngineShape {
    */
   readonly dispatch: (
     command: OrchestrationCommand,
-    options?: { readonly origin?: OrchestrationClientOrigin },
+    options?: {
+      readonly origin?: OrchestrationClientOrigin;
+      /** Rechecked by the serialized worker for idleGuard starts. False cancels without a receipt. */
+      readonly idleAdmission?: Effect.Effect<boolean>;
+    },
   ) => Effect.Effect<{ sequence: number }, OrchestrationDispatchError, never>;
 
   /**

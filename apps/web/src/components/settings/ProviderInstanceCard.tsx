@@ -57,6 +57,8 @@ import {
   type ProviderStatusKey,
 } from "./providerStatus";
 
+import { WightLimitSetting } from "./WightLimitSetting";
+
 const ENVIRONMENT_VARIABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
 function ProviderStatusDiagnostic({
@@ -902,6 +904,15 @@ export function ProviderInstanceCard({
               />
             </div>
           }
+        />
+      </SettingsSection>
+
+      <SettingsSection title="Wight mode">
+        <WightLimitSetting
+          value={instance.wightLimitPercent}
+          provider={liveProvider}
+          disabled={readOnly}
+          onChange={(value) => onUpdate({ ...instance, wightLimitPercent: value })}
         />
       </SettingsSection>
 

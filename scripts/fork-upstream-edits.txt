@@ -142,3 +142,11 @@ apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts
 apps/web/src/components/AppSidebarLayout.tsx
 apps/web/src/components/chat/ChatComposer.tsx
 docs/README.md
+
+# Wight mode (#117)
+apps/server/src/orchestration/decider.ts
+apps/web/src/components/settings/ProviderInstanceCard.tsx
+docs/user/thread-sidebar.md
+packages/contracts/src/providerInstance.ts
+packages/shared/src/serverSettings.ts
+apps/server/src/orchestration/Services/OrchestrationEngine.ts

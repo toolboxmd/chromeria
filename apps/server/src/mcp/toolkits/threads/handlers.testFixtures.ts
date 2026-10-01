@@ -28,6 +28,7 @@ import { ProviderAuthService } from "../../../provider/Services/ProviderAuthServ
 import { TerminalManager } from "../../../terminal/Manager.ts";
 import { TextGeneration } from "../../../textGeneration/TextGeneration.ts";
 import { VcsStatusBroadcaster } from "../../../vcs/VcsStatusBroadcaster.ts";
+import type { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
 import { makeProviderRegistryLayer } from "../../../provider/testUtils/providerRegistryMock.ts";
 import { ProjectSetupScriptRunner } from "../../../project/ProjectSetupScriptRunner.ts";
 import { GitWorkflowService } from "../../../git/GitWorkflowService.ts";
@@ -64,6 +65,7 @@ export const commandId = () => CommandId.make(`test-threads-${++commandCount}`);
 
 /** One server process: real engine and projections over a SQLite file, toolkit services faked. */
 export interface SpawnTestOptions {
+  readonly services?: Layer.Layer<ServerSettingsService | ProviderRegistry>;
   readonly settings?: Parameters<typeof ServerSettingsService.layerTest>[0];
   readonly git?: Partial<GitWorkflowService["Service"]>;
   readonly setup?: ProjectSetupScriptRunner["Service"]["runForThread"];
@@ -120,12 +122,19 @@ const engineLayer = (databasePath: string, options: SpawnTestOptions = {}) => {
 type AfterShellRead = (threadId: string) => Effect.Effect<void, never, OrchestrationEngineService>;
 
 /** The same process with the threads toolkit running. */
+type BeforeToolkitDispatch = (
+  command: Parameters<OrchestrationEngineService["Service"]["dispatch"]>[0],
+) => Effect.Effect<void>;
 const serverLayer = (
   databasePath: string,
   afterShellRead?: AfterShellRead,
   options?: SpawnTestOptions,
+  beforeDispatch?: BeforeToolkitDispatch,
+  afterDispatch?: BeforeToolkitDispatch,
 ) => {
-  const dependencies = engineLayer(databasePath, options);
+  const dependencies = options?.services
+    ? Layer.mergeAll(engineLayer(databasePath, options), options.services)
+    : engineLayer(databasePath, options);
   const toolkitQuery = Layer.effect(
     ProjectionSnapshotQuery,
     Effect.gen(function* () {
@@ -147,8 +156,28 @@ const serverLayer = (
       });
     }),
   );
+  const toolkit =
+    beforeDispatch || afterDispatch
+      ? Layer.unwrap(
+          Effect.gen(function* () {
+            const engine = yield* OrchestrationEngineService;
+            const wrapped = OrchestrationEngineService.of({
+              ...engine,
+              dispatch: (command, options) =>
+                (beforeDispatch?.(command) ?? Effect.void).pipe(
+                  Effect.andThen(engine.dispatch(command, options)),
+                  Effect.ensuring(Effect.suspend(() => afterDispatch?.(command) ?? Effect.void)),
+                ),
+            });
+            return ThreadsToolkitHandlersLive.pipe(
+              Layer.provide(toolkitQuery),
+              Layer.provide(Layer.succeed(OrchestrationEngineService, wrapped)),
+            );
+          }),
+        ).pipe(Layer.provide(dependencies))
+      : ThreadsToolkitHandlersLive.pipe(Layer.provide(toolkitQuery), Layer.provide(dependencies));
   return Layer.mergeAll(
-    ThreadsToolkitHandlersLive.pipe(Layer.provide(toolkitQuery), Layer.provide(dependencies)),
+    toolkit,
     ...(options?.provider
       ? [
           ProviderCommandReactorLive.pipe(
@@ -179,7 +208,14 @@ export const withServer = <A, E, R>(
   body: Effect.Effect<A, E, R>,
   afterShellRead?: AfterShellRead,
   options?: SpawnTestOptions,
-) => body.pipe(Effect.provide(serverLayer(databasePath, afterShellRead, options)));
+  beforeDispatch?: BeforeToolkitDispatch,
+  afterDispatch?: BeforeToolkitDispatch,
+) =>
+  body.pipe(
+    Effect.provide(
+      serverLayer(databasePath, afterShellRead, options, beforeDispatch, afterDispatch),
+    ),
+  );
 
 /**
  * Runs `body` against the engine alone, with no threads toolkit listening:
@@ -300,8 +336,9 @@ export const parentMessages = Effect.gen(function* () {
 
 export const session = (
   threadId: ThreadId,
-  status: "starting" | "running" | "ready" | "interrupted",
+  status: "starting" | "running" | "ready" | "interrupted" | "error",
   turnId: string | null,
+  lastError: string | null = null,
 ) =>
   ({
     type: "thread.session.set",
@@ -314,7 +351,7 @@ export const session = (
       providerInstanceId: ProviderInstanceId.make("codex"),
       runtimeMode: "full-access",
       activeTurnId: turnId === null ? null : TurnId.make(turnId),
-      lastError: null,
+      lastError,
       updatedAt: NOW,
     },
     createdAt: NOW,

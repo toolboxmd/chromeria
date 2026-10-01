@@ -31,6 +31,8 @@ import {
 } from "../../observability/Metrics.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
+import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
+import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import {
   isOrchestrationCommandRejection,
@@ -65,6 +67,7 @@ const isOrchestrationCommandIdConflictError = Schema.is(OrchestrationCommandIdCo
 interface CommandEnvelope {
   command: OrchestrationCommand;
   origin: OrchestrationClientOrigin | undefined;
+  idleAdmission: Effect.Effect<boolean> | undefined;
   result: Deferred.Deferred<{ sequence: number }, OrchestrationDispatchError>;
   startedAtMs: number;
 }
@@ -93,6 +96,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const eventStore = yield* OrchestrationEventStore;
   const commandReceiptRepository = yield* OrchestrationCommandReceiptRepository;
+  const projectionTurns = yield* ProjectionTurnRepository;
   const projectionPipeline = yield* OrchestrationProjectionPipeline;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const threadBackgroundLiveness = yield* ThreadBackgroundLivenessService;
@@ -252,27 +256,46 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           envelope.command.type === "thread.user-input.dismiss"
             ? yield* projectionSnapshotQuery.getUserInputActivity(envelope.command)
             : Option.none();
+        const pendingAutomaticStart =
+          envelope.command.type === "thread.turn.start" &&
+          envelope.command.idleGuard !== undefined &&
+          Option.isSome(
+            yield* projectionTurns.getPendingTurnStartByThreadId({
+              threadId: envelope.command.threadId,
+            }),
+          );
         const commands = yield* retirementCommands(envelope.command, commandReadModel, retirements);
-        const eventGroups = yield* Effect.forEach(commands, (command) =>
-          decideOrchestrationCommand({
-            command,
-            readModel: commandReadModel,
-            ...(Option.isSome(userInputActivity)
-              ? { userInputActivity: userInputActivity.value }
-              : {}),
-          }).pipe(
-            Effect.provideService(Crypto.Crypto, crypto),
-            Effect.mapError((cause) =>
-              isOrchestrationCommandRejection(cause)
-                ? cause
-                : new OrchestrationCommandInvariantError({
-                    commandType: envelope.command.type,
-                    detail: "Failed to generate an event identifier.",
-                    cause,
-                  }),
-            ),
-          ),
-        );
+        if (
+          envelope.command.type === "thread.turn.start" &&
+          envelope.command.idleGuard !== undefined &&
+          envelope.idleAdmission !== undefined &&
+          !(yield* envelope.idleAdmission)
+        ) {
+          // External capacity/settings can change without a domain event. Do not burn the retry identity.
+          return { sequence: commandReadModel.snapshotSequence };
+        }
+        const eventGroups = pendingAutomaticStart
+          ? []
+          : yield* Effect.forEach(commands, (command) =>
+              decideOrchestrationCommand({
+                command,
+                readModel: commandReadModel,
+                ...(Option.isSome(userInputActivity)
+                  ? { userInputActivity: userInputActivity.value }
+                  : {}),
+              }).pipe(
+                Effect.provideService(Crypto.Crypto, crypto),
+                Effect.mapError((cause) =>
+                  isOrchestrationCommandRejection(cause)
+                    ? cause
+                    : new OrchestrationCommandInvariantError({
+                        commandType: envelope.command.type,
+                        detail: "Failed to generate an event identifier.",
+                        cause,
+                      }),
+                ),
+              ),
+            );
         const plannedEvents = eventGroups.flatMap((events) =>
           Array.isArray(events) ? events : [events],
         );
@@ -301,6 +324,28 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               }
 
               const lastSavedEvent = committedEvents.at(-1) ?? null;
+              if (
+                lastSavedEvent === null &&
+                envelope.command.type === "thread.turn.start" &&
+                envelope.command.idleGuard !== undefined
+              ) {
+                // Losing an idle race is an accepted no-op, not a provider failure.
+                yield* commandReceiptRepository.upsert({
+                  commandId: envelope.command.commandId,
+                  aggregateKind: aggregateRef.aggregateKind,
+                  aggregateId: aggregateRef.aggregateId,
+                  acceptedAt: yield* nowIso,
+                  resultSequence: commandReadModel.snapshotSequence,
+                  status: "accepted",
+                  error: null,
+                });
+                return {
+                  committedEvents,
+                  attachmentCleanups,
+                  lastSequence: commandReadModel.snapshotSequence,
+                  nextCommandReadModel,
+                };
+              }
               if (lastSavedEvent === null) {
                 return yield* new OrchestrationCommandInvariantError({
                   commandType: envelope.command.type,
@@ -464,6 +509,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       yield* Queue.offer(commandQueue, {
         command,
         origin: options?.origin,
+        idleAdmission: options?.idleAdmission,
         result,
         startedAtMs: yield* Clock.currentTimeMillis,
       });
@@ -494,4 +540,4 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 export const OrchestrationEngineLive = Layer.effect(
   OrchestrationEngineService,
   makeOrchestrationEngine,
-);
+).pipe(Layer.provide(ProjectionTurnRepositoryLive));

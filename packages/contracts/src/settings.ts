@@ -8,6 +8,7 @@ import {
   ForwardCompatibleOptional,
   OmittedWhenNull,
   ProjectId,
+  ThreadId,
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
@@ -41,6 +42,7 @@ import {
   type ProviderDriverKind,
 } from "./providerInstance.ts";
 import { PullRequestMergeMethod } from "./pullRequest.ts";
+import { WightMode } from "./wight.ts";
 import { PrismRoleKits, PrismRoleKitsPatch } from "./prism.ts";
 
 // ── Client Settings (local-only) ───────────────────────────────
@@ -1293,6 +1295,9 @@ export const ServerSettings = Schema.Struct({
   usagePriceOverrides: Schema.Record(TrimmedNonEmptyString, UsageModelPriceOverride).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  wightModes: Schema.Record(ThreadId, WightMode).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
   /** Prism (Model Router) role kits and model preferences; see prism.ts. */
   prismRoles: PrismRoleKits.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
 });
@@ -1569,6 +1574,7 @@ export const ServerSettingsPatch = Schema.Struct({
   usagePriceOverrides: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, Schema.NullOr(UsageModelPriceOverride)),
   ),
+  wightModes: Schema.optionalKey(Schema.Record(ThreadId, Schema.NullOr(WightMode))),
   prismRoles: Schema.optionalKey(PrismRoleKitsPatch),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
