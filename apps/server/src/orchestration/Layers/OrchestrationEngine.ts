@@ -40,6 +40,14 @@ import {
   type OrchestrationDispatchError,
   type OrchestrationProjectorDecodeError,
 } from "../Errors.ts";
+import {
+  RETIREMENT_KIND,
+  retirementCommands,
+  retirementFrom,
+  retirementOf,
+  rememberRetirement,
+  type ThreadRetirement,
+} from "../ThreadRetirement.ts";
 import { decideOrchestrationCommand } from "../decider.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
@@ -90,6 +98,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const threadBackgroundLiveness = yield* ThreadBackgroundLivenessService;
   const crypto = yield* Crypto.Crypto;
 
+  const retirements = new Map<string, ThreadRetirement>();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   let commandReadModel = createEmptyReadModel(yield* nowIso);
 
@@ -104,6 +113,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       let nextReadModel = baseReadModel;
       for (const event of events) {
         nextReadModel = yield* projectEvent(nextReadModel, event);
+        rememberRetirement(retirements, event);
       }
       return nextReadModel;
     });
@@ -242,25 +252,30 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           envelope.command.type === "thread.user-input.dismiss"
             ? yield* projectionSnapshotQuery.getUserInputActivity(envelope.command)
             : Option.none();
-        const eventBase = yield* decideOrchestrationCommand({
-          command: envelope.command,
-          readModel: commandReadModel,
-          ...(Option.isSome(userInputActivity)
-            ? { userInputActivity: userInputActivity.value }
-            : {}),
-        }).pipe(
-          Effect.provideService(Crypto.Crypto, crypto),
-          Effect.mapError((cause) =>
-            isOrchestrationCommandRejection(cause)
-              ? cause
-              : new OrchestrationCommandInvariantError({
-                  commandType: envelope.command.type,
-                  detail: "Failed to generate an event identifier.",
-                  cause,
-                }),
+        const commands = yield* retirementCommands(envelope.command, commandReadModel, retirements);
+        const eventGroups = yield* Effect.forEach(commands, (command) =>
+          decideOrchestrationCommand({
+            command,
+            readModel: commandReadModel,
+            ...(Option.isSome(userInputActivity)
+              ? { userInputActivity: userInputActivity.value }
+              : {}),
+          }).pipe(
+            Effect.provideService(Crypto.Crypto, crypto),
+            Effect.mapError((cause) =>
+              isOrchestrationCommandRejection(cause)
+                ? cause
+                : new OrchestrationCommandInvariantError({
+                    commandType: envelope.command.type,
+                    detail: "Failed to generate an event identifier.",
+                    cause,
+                  }),
+            ),
           ),
         );
-        const plannedEvents = Array.isArray(eventBase) ? eventBase : [eventBase];
+        const plannedEvents = eventGroups.flatMap((events) =>
+          Array.isArray(events) ? events : [events],
+        );
         // Stamp the dispatching client's origin onto every event the command
         // produced. The decider stays pure; attribution is an engine concern.
         const eventBases =
@@ -320,6 +335,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           );
 
         commandReadModel = committedCommand.nextCommandReadModel;
+        for (const event of committedCommand.committedEvents)
+          rememberRetirement(retirements, event);
         for (const cleanup of committedCommand.attachmentCleanups) {
           yield* cleanup;
         }
@@ -412,6 +429,12 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   yield* projectionPipeline.bootstrap;
   commandReadModel = yield* projectionSnapshotQuery.getCommandReadModel();
+  for (const activity of yield* projectionSnapshotQuery.listActivitiesByKind(RETIREMENT_KIND, {
+    includeArchived: true,
+  })) {
+    const state = retirementFrom(activity);
+    if (state && Option.isSome(state)) retirements.set(state.value.threadId, state.value);
+  }
 
   const worker = Effect.forever(Queue.take(commandQueue).pipe(Effect.flatMap(processEnvelope)));
   yield* Effect.forkScoped(worker);
@@ -452,6 +475,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     readThreadEvents,
     getThreadReplayStats,
     dispatch,
+    getThreadRetirement: (threadId) => Effect.sync(() => retirementOf(retirements, threadId)),
     subscribeDomainEvents: PubSub.subscribe(eventPubSub).pipe(Effect.map(Stream.fromSubscription)),
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (wsServer, ProviderRuntimeIngestion, CheckpointReactor, etc.)

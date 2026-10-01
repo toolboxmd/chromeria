@@ -552,6 +552,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
         } satisfies OrchestrationThreadShell;
 
         const orchestrationEngine = {
+          getThreadRetirement: () => Effect.succeed(undefined),
           readEvents: () => Stream.empty,
           readThreadEvents: () => Stream.empty,
           getThreadReplayStats: () => Effect.die("unused thread replay stats"),
@@ -778,6 +779,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
             getDescriptor: Effect.succeed(descriptor),
           }),
           Layer.succeed(OrchestrationEngineService, {
+            getThreadRetirement: () => Effect.succeed(undefined),
             readEvents: () => Stream.empty,
             readThreadEvents: () => Stream.empty,
             getThreadReplayStats: () => Effect.die("unused thread replay stats"),

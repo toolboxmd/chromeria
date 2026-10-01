@@ -221,6 +221,7 @@ it.layer(NodeServices.layer)("AgentSessionImporter", (it) => {
           },
         });
         const engine = OrchestrationEngine.OrchestrationEngineService.of({
+          getThreadRetirement: () => Effect.succeed(undefined),
           dispatch: (command) => Effect.sync(() => ({ sequence: commands.push(command) })),
           readEvents: () => Stream.empty,
           readThreadEvents: () => Stream.empty,
@@ -326,6 +327,7 @@ it.layer(NodeServices.layer)("AgentSessionImporter", (it) => {
           recentThreads: () => Stream.succeed({ _tag: "Skipped" }),
         });
         const engine = OrchestrationEngine.OrchestrationEngineService.of({
+          getThreadRetirement: () => Effect.succeed(undefined),
           dispatch: () => Effect.die("must not dispatch for a scanner skip"),
           readEvents: () => Stream.empty,
           readThreadEvents: () => Stream.empty,
@@ -367,6 +369,7 @@ it.layer(NodeServices.layer)("AgentSessionImporter", (it) => {
           recentThreads: () => Stream.fromIterable([makeThreadOutcome(makeThread("codex"))]),
         });
         const engine = OrchestrationEngine.OrchestrationEngineService.of({
+          getThreadRetirement: () => Effect.succeed(undefined),
           dispatch: (command) => {
             if (rejectedCommandIds.has(command.commandId)) {
               return Effect.fail(
@@ -462,6 +465,7 @@ it.layer(NodeServices.layer)("AgentSessionImporter", (it) => {
           listBindings: () => Effect.die("unused"),
         });
         const engine = OrchestrationEngine.OrchestrationEngineService.of({
+          getThreadRetirement: () => Effect.succeed(undefined),
           dispatch: () => Effect.die("must not replay history or settle active work"),
           readEvents: () => Stream.empty,
           readThreadEvents: () => Stream.empty,
@@ -500,6 +504,7 @@ it.layer(NodeServices.layer)("AgentSessionImporter", (it) => {
         });
         const commands: Array<OrchestrationCommand> = [];
         const engine = OrchestrationEngine.OrchestrationEngineService.of({
+          getThreadRetirement: () => Effect.succeed(undefined),
           dispatch: (command) => Effect.sync(() => ({ sequence: commands.push(command) })),
           readEvents: () => Stream.empty,
           readThreadEvents: () => Stream.empty,

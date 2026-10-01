@@ -18,6 +18,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
@@ -436,6 +437,58 @@ describe("usage-limit resume with interrupt_thread and report-back", () => {
         expect((yield* userMessages(PARENT_ID)).filter((text) => text.includes("resumed"))).toEqual(
           [],
         );
+      }).pipe(Effect.provide(serverLayer(NodePath.join(directory, "state.sqlite"))));
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("retirement cancels pending usage resume at both early reply and reset", () =>
+    Effect.gen(function* () {
+      const directory = yield* temporaryDirectory;
+      yield* Effect.gen(function* () {
+        yield* createParent(directory);
+        const child = ThreadId.make((yield* spawnDirectChild).threadId);
+        const marker = ThreadId.make((yield* spawnDirectChild).threadId);
+        yield* dispatchAll(failOnLimit(child, "retired-limit-turn"));
+        yield* dispatchUntil(
+          dispatchAll([session(marker, "running", "marker-turn")]),
+          parentRow(marker, "running"),
+        );
+        const engine = yield* OrchestrationEngineService;
+        const events = yield* engine.subscribeDomainEvents;
+        const stopped = yield* callTool("interrupt_thread", {
+          threadId: child,
+          scope: "children",
+          retireSubtree: true,
+        }).pipe(Effect.forkScoped);
+        yield* events.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "thread.activity-appended" &&
+              event.payload.activity.kind === "thread.subtree-retire-requested",
+          ),
+          Stream.runHead,
+        );
+        const retirement = yield* engine.getThreadRetirement(child);
+        yield* engine.dispatch({
+          ...session(child, "ready", null),
+          commandId: CommandId.make(retirement!.stopAckCommandId),
+        });
+        expect((yield* Fiber.join(stopped)).statusAfter).toBe("stopped");
+        const snapshots = yield* ProjectionSnapshotQuery;
+        expect(
+          Option.getOrThrow(yield* snapshots.getThreadShellById(child)).latestTurn?.state,
+        ).toBe("error");
+        yield* TestClock.adjust(MINUTE);
+        yield* dispatchAll(reply(PARENT_ID, "lifted-after-retire", "Available", MINUTE));
+        yield* TestClock.adjust(4 * HOUR);
+        yield* dispatchUntil(
+          dispatchAll([session(marker, "ready", null)]),
+          parentRow(marker, "idle"),
+        );
+        expect((yield* userMessages(child)).slice(1)).toEqual([]);
+        expect(
+          (yield* userMessages(PARENT_ID)).some((text) => text.includes("resumed automatically")),
+        ).toBe(false);
       }).pipe(Effect.provide(serverLayer(NodePath.join(directory, "state.sqlite"))));
     }).pipe(Effect.scoped),
   );

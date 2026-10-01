@@ -121,7 +121,8 @@ for per-match decisions and the absorption PR record.
     "https://github.com/toolboxmd/chromeria/issues/95",
     "https://github.com/toolboxmd/chromeria/issues/94",
     "https://github.com/toolboxmd/chromeria/issues/71",
-    "https://github.com/toolboxmd/chromeria/issues/114"
+    "https://github.com/toolboxmd/chromeria/issues/114",
+    "https://github.com/toolboxmd/chromeria/issues/122"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/10",
@@ -150,7 +151,10 @@ for per-match decisions and the absorption PR record.
     "apps/server/src/mcp/toolkits/threads/usageLimitResume.ts",
     "apps/web/src/components/AgentThreadLink.tsx",
     "apps/web/src/components/subagentThreads.test.ts",
-    "apps/web/src/components/subagentThreads.ts"
+    "apps/web/src/components/subagentThreads.ts",
+    "apps/server/src/mcp/toolkits/threads/retireSubtree.ts",
+    "apps/server/src/mcp/toolkits/threads/retireSubtree.test.ts",
+    "apps/server/src/orchestration/ThreadRetirement.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/entrypoint.test.ts",
@@ -160,7 +164,18 @@ for per-match decisions and the absorption PR record.
     "apps/server/src/orchestration/http.ts",
     "apps/server/src/server.test.ts",
     "apps/web/src/components/LegacySidebar.tsx",
-    "apps/web/src/components/Sidebar.tsx"
+    "apps/web/src/components/Sidebar.tsx",
+    "apps/server/src/orchestration/Layers/OrchestrationEngine.ts",
+    "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts",
+    "apps/server/src/orchestration/Services/OrchestrationEngine.ts",
+    "apps/server/src/orchestration/Services/ProjectionSnapshotQuery.ts",
+    "apps/server/src/project/AgentSessionImporter.test.ts",
+    "apps/server/src/relay/AgentAwarenessRelay.test.ts",
+    "apps/server/src/serverRuntimeStartup.reconcile.test.ts",
+    "apps/server/src/serverRuntimeStartup.test.ts",
+    "apps/server/src/serverRuntimeStartup.ts",
+    "apps/server/src/serverRuntimeStartup.worktreeSetup.test.ts",
+    "apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts"
   ],
   "sharedFiles": [
     "scripts/build-desktop-artifact.ts",

@@ -21,6 +21,7 @@ import type * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 
+import type { ThreadRetirement } from "../ThreadRetirement.ts";
 import type { OrchestrationDispatchError } from "../Errors.ts";
 import type { OrchestrationEventStoreError } from "../../persistence/Errors.ts";
 import type { OrchestrationAggregateReplayStats } from "../../persistence/Services/OrchestrationEventStore.ts";
@@ -35,6 +36,9 @@ export interface OrchestrationThreadReplayRange {
  * OrchestrationEngineShape - Service API for orchestration command and event flow.
  */
 export interface OrchestrationEngineShape {
+  /** Fork extension: durable retirement and queued-turn cutoff. */
+  readonly getThreadRetirement: (threadId: string) => Effect.Effect<ThreadRetirement | undefined>;
+
   /**
    * Replay persisted orchestration events from an exclusive sequence cursor.
    *

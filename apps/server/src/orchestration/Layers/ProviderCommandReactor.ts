@@ -23,6 +23,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -46,6 +47,7 @@ import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderAuthService } from "../../provider/Services/ProviderAuthService.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
+import { blocksQueuedStart, RETIREMENT_KIND, retirementFrom } from "../ThreadRetirement.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
@@ -266,6 +268,7 @@ const make = Effect.gen(function* () {
     }
   >();
   const stoppingThreadIds = new Set<ThreadId>();
+  const sendingTurns = new Map<ThreadId, Set<Fiber.Fiber<void, never>>>();
 
   const appendProviderFailureActivity = (input: {
     readonly threadId: ThreadId;
@@ -393,8 +396,12 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly session: OrchestrationSession;
     readonly createdAt: string;
+    readonly commandId?: CommandId;
   }) =>
-    serverCommandId("provider-session-set").pipe(
+    (input.commandId
+      ? Effect.succeed(input.commandId)
+      : serverCommandId("provider-session-set")
+    ).pipe(
       Effect.flatMap((commandId) =>
         orchestrationEngine.dispatch({
           type: "thread.session.set",
@@ -1221,6 +1228,13 @@ const make = Effect.gen(function* () {
     const resumed =
       receivedEvent.commandId !== null ? resumedTurnStarts.get(receivedEvent.commandId) : undefined;
     const event = resumed ? { ...receivedEvent, payload: resumed.event.payload } : receivedEvent;
+    if (
+      blocksQueuedStart(
+        yield* orchestrationEngine.getThreadRetirement(event.payload.threadId),
+        event.sequence,
+      )
+    )
+      return;
     const key = turnStartKeyForEvent(event);
     if (yield* hasHandledTurnStartRecently(key)) {
       return;
@@ -1516,14 +1530,35 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    if (
+      blocksQueuedStart(
+        yield* orchestrationEngine.getThreadRetirement(event.payload.threadId),
+        event.sequence,
+      )
+    )
+      return;
     const send = providerService
       .sendTurn(sendTurnRequest.value)
       .pipe(Effect.asVoid, Effect.catchCause(recoverTurnStartFailure));
     // The forked send settles `sent` from here on, so drop the entry the post-processing hook uses.
     if (resumed && event.commandId !== null) resumedTurnStarts.delete(event.commandId);
-    yield* send.pipe(
+    const sends = sendingTurns.get(event.payload.threadId) ?? new Set<Fiber.Fiber<void, never>>();
+    sendingTurns.set(event.payload.threadId, sends);
+    const sending = yield* send.pipe(
       Effect.ensuring(resumed ? Deferred.succeed(resumed.sent, undefined) : Effect.void),
       Effect.forkScoped,
+    );
+    sends.add(sending);
+    yield* Effect.forkScoped(
+      Fiber.await(sending).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            sends.delete(sending);
+            if (sends.size === 0 && sendingTurns.get(event.payload.threadId) === sends)
+              sendingTurns.delete(event.payload.threadId);
+          }),
+        ),
+      ),
     );
   });
 
@@ -1733,10 +1768,30 @@ const make = Effect.gen(function* () {
       return;
     }
 
+    const retirement = yield* orchestrationEngine.getThreadRetirement(thread.id);
+    const retiring =
+      event.commandId?.startsWith("server:mcp-threads-retire:") === true ||
+      event.commandId?.startsWith("server:retirement-recover-stop:") === true;
+    if (
+      retiring &&
+      (!retirement?.pendingStop ||
+        (event.commandId?.startsWith("server:retirement-recover-stop:")
+          ? !event.commandId.startsWith(
+              `server:retirement-recover-stop:${retirement.stopAckCommandId}:`,
+            )
+          : retirement.stopAckCommandId !==
+            `server:retirement-stopped:${event.commandId}:${thread.id}`))
+    )
+      return;
     const now = event.payload.createdAt;
     const wasCompacting = compactingThreadIds.has(thread.id);
     stoppingThreadIds.add(thread.id);
     const clearStopping = Effect.sync(() => void stoppingThreadIds.delete(thread.id));
+    // Join cancelled sends before stopping the CLI, so an in-flight send cannot restart it afterward.
+    if (retiring)
+      yield* Effect.forEach([...(sendingTurns.get(thread.id) ?? [])], Fiber.interrupt, {
+        discard: true,
+      });
     yield* cancelTurnsAfterCompaction(
       thread.id,
       "The session was stopped during context compaction. Send this message again to continue.",
@@ -1773,6 +1828,9 @@ const make = Effect.gen(function* () {
         },
         onSuccess: () =>
           setThreadSession({
+            ...(retiring && retirement
+              ? { commandId: CommandId.make(retirement.stopAckCommandId) }
+              : {}),
             threadId: thread.id,
             session: {
               threadId: thread.id,
@@ -1952,6 +2010,28 @@ const make = Effect.gen(function* () {
           },
         );
       }),
+    );
+    // A crash can commit retirement before the provider consumes its stop request.
+    yield* Effect.gen(function* () {
+      for (const activity of yield* projectionSnapshotQuery.listActivitiesByKind(RETIREMENT_KIND, {
+        includeArchived: true,
+      })) {
+        const state = retirementFrom(activity);
+        if (!state || Option.isNone(state) || !state.value.retired || !state.value.pendingStop)
+          continue;
+        yield* orchestrationEngine.dispatch({
+          type: "thread.session.stop",
+          commandId: CommandId.make(
+            `server:retirement-recover-stop:${state.value.stopAckCommandId}:${yield* serverCommandId("recover-stop")}`,
+          ),
+          threadId: ThreadId.make(state.value.threadId),
+          createdAt: DateTime.formatIso(yield* DateTime.now),
+        });
+      }
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("provider retirement recovery failed", { cause: Cause.pretty(cause) }),
+      ),
     );
     const activation = yield* ServerActivation;
     if (activation === undefined) {

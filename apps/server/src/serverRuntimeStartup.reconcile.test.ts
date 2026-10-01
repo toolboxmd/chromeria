@@ -81,6 +81,7 @@ const queryWithThreads = (threads: ReadonlyArray<ReturnType<typeof makeThread>>)
 const runReconciliation = (input: {
   readonly threads: ReadonlyArray<ReturnType<typeof makeThread>>;
   readonly continueAfterRestart?: boolean;
+  readonly retiredThreadIds?: ReadonlyArray<ThreadId>;
   readonly liveThreadIds?: ReadonlyArray<ThreadId>;
   readonly providerService?: ProviderService.ProviderService["Service"];
   readonly directory: ProviderSessionDirectory.ProviderSessionDirectory["Service"];
@@ -97,6 +98,20 @@ const runReconciliation = (input: {
     ),
     Effect.provideService(ProviderSessionDirectory.ProviderSessionDirectory, input.directory),
     Effect.provideService(OrchestrationEngine.OrchestrationEngineService, {
+      getThreadRetirement: (threadId) =>
+        Effect.succeed(
+          input.retiredThreadIds?.includes(ThreadId.make(threadId))
+            ? {
+                threadId,
+                retired: true,
+                pendingStop: true,
+                cutoffSequence: 1,
+                stopAckCommandId: "pending-stop",
+                activeTurnId: null,
+                hadActiveRun: true,
+              }
+            : undefined,
+        ),
       readEvents: () => Stream.empty,
       readThreadEvents: () => Stream.empty,
       getThreadReplayStats: () => Effect.die("unused thread replay stats"),
@@ -114,6 +129,57 @@ const runReconciliation = (input: {
       ),
     ),
   );
+
+it.effect("never auto-continues a retired thread whose stop was interrupted by restart", () =>
+  Effect.gen(function* () {
+    const thread = makeThread("retired-after-crash", "running", TurnId.make("old-turn"));
+    const sends: ProviderSendTurnInput[] = [];
+    const writes: ProviderSessionDirectory.ProviderRuntimeBinding[] = [];
+    const binding: ProviderSessionDirectory.ProviderRuntimeBinding = {
+      threadId: thread.id,
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId,
+      status: "running",
+      resumeCursor: { threadId: thread.id },
+      runtimePayload: { activeTurnId: "old-turn", continueAfterServerUpdate: "old-turn" },
+    };
+    yield* runReconciliation({
+      threads: [thread],
+      continueAfterRestart: true,
+      retiredThreadIds: [thread.id],
+      providerService: {
+        ...makeProviderService(),
+        sendTurn: (input) =>
+          Effect.sync(() => sends.push(input)).pipe(
+            Effect.as({ threadId: thread.id, turnId: TurnId.make("unexpected-turn") }),
+          ),
+      },
+      directory: {
+        getBinding: () => Effect.succeed(Option.some(binding)),
+        upsert: (value) =>
+          Effect.sync(() => {
+            writes.push(value);
+            return true;
+          }),
+        recordImportedTranscript: () => Effect.die("unused"),
+        getProvider: () => Effect.die("unused"),
+        listThreadIds: () => Effect.die("unused"),
+        listBindings: () => Effect.succeed([]),
+      },
+      dispatch: () => Effect.die("retired startup must not prepare a continuation"),
+    });
+    assert.deepStrictEqual(sends, []);
+    assert.isTrue(
+      writes.some(
+        (value) =>
+          value.runtimePayload !== null &&
+          typeof value.runtimePayload === "object" &&
+          "continueAfterServerUpdate" in value.runtimePayload &&
+          value.runtimePayload.continueAfterServerUpdate === null,
+      ),
+    );
+  }),
+);
 
 it.effect("marks active running sessions that have persisted resume state", () => {
   const active = makeThread("thread-mark-active", "running", TurnId.make("turn-mark-active"));
@@ -709,6 +775,7 @@ it.effect("does not fail startup when the live provider session inventory cannot
       listBindings: () => Effect.succeed([]),
     }),
     Effect.provideService(OrchestrationEngine.OrchestrationEngineService, {
+      getThreadRetirement: () => Effect.succeed(undefined),
       readEvents: () => Stream.empty,
       readThreadEvents: () => Stream.empty,
       getThreadReplayStats: () => Effect.die("unused thread replay stats"),
