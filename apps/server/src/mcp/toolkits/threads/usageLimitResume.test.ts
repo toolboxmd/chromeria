@@ -16,6 +16,8 @@ import * as TestClock from "effect/testing/TestClock";
 
 import {
   isRouterJobMessage,
+  isUsageLimitError,
+  RESET_RECHECK_MS,
   RESUME_DELAY_MS,
   resumeAfterUsageLimitReset,
   usageLimitResetAt,
@@ -239,6 +241,91 @@ describe("resumeAfterUsageLimitReset", () => {
       assert.deepEqual(resumedAt, [at("13:10:41.675")]);
     }),
   );
+});
+
+describe("resumeAfterUsageLimitReset with a reset time already past", () => {
+  /** A watcher whose exhausted window claims a reset 10 minutes before the failure. */
+  const watchStaleReset = (input: {
+    readonly repliesAt?: ReadonlyArray<number>;
+    readonly resumeEarly: boolean;
+  }) =>
+    Effect.gen(function* () {
+      const failedAt = yield* Clock.currentTimeMillis;
+      let windows = [window(100, failedAt - 10 * MINUTE)];
+      const resumed: Array<{ trigger: string; afterMs: number }> = [];
+      const fiber = yield* resumeAfterUsageLimitReset(
+        {
+          thread: () => Effect.succeed(thread("turn-failed")),
+          providers: Effect.sync(() => [provider(windows)]),
+          nextReplyOn: nextReplyAmong(
+            (input.repliesAt ?? []).map((minutes) => failedAt + minutes * MINUTE),
+          ),
+          resume: (_thread, trigger) =>
+            Effect.gen(function* () {
+              resumed.push({ trigger, afterMs: (yield* Clock.currentTimeMillis) - failedAt });
+            }),
+        },
+        {
+          threadId: "thread-user",
+          turnId: "turn-failed",
+          instanceId: "claudeAgent",
+          resumeEarly: input.resumeEarly,
+        },
+      ).pipe(Effect.forkChild);
+      const liftLimit = () => {
+        windows = [window(20, failedAt + 5 * 60 * MINUTE)];
+      };
+      return { fiber, resumed, liftLimit };
+    });
+
+  it.effect("keeps watching and resumes at the next reply on the instance", () =>
+    Effect.gen(function* () {
+      const { fiber, resumed } = yield* watchStaleReset({ repliesAt: [3], resumeEarly: true });
+      yield* TestClock.adjust(3 * MINUTE);
+      assert.equal(yield* Fiber.join(fiber), "lifted");
+      assert.deepEqual(resumed, [{ trigger: "lifted", afterMs: 3 * MINUTE }]);
+    }),
+  );
+
+  it.effect(
+    "sends nothing while the window still shows exhausted, then resumes once it lifts",
+    () =>
+      Effect.gen(function* () {
+        const { fiber, resumed, liftLimit } = yield* watchStaleReset({
+          repliesAt: [3, 30],
+          resumeEarly: false,
+        });
+        // An early resume is spent, so replies elsewhere do not count, and the
+        // stale reading never resumes on its own.
+        yield* TestClock.adjust(2 * 60 * MINUTE);
+        assert.deepEqual(resumed, []);
+        liftLimit();
+        yield* TestClock.adjust(RESET_RECHECK_MS);
+        assert.equal(yield* Fiber.join(fiber), "reset");
+        assert.equal(resumed.length, 1);
+      }),
+  );
+});
+
+describe("isUsageLimitError", () => {
+  it("accepts the adapters' usage-limit errors and nothing else", () => {
+    for (const message of [
+      "Claude usage limit reached. Send the message again once the limit resets.",
+      "Claude stopped: a usage limit blocked the request.",
+      "Codex usage limit reached. The session limit resets in 2h.",
+      "Grok usage limit reached. Try again later.",
+    ]) {
+      assert.isTrue(isUsageLimitError(message), message);
+    }
+    for (const message of [
+      "Provider process exited with code 1.",
+      "Claude could not start the turn.",
+      null,
+      undefined,
+    ]) {
+      assert.isFalse(isUsageLimitError(message), String(message));
+    }
+  });
 });
 
 describe("isRouterJobMessage", () => {

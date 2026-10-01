@@ -508,4 +508,40 @@ describe("usage-limit resume with interrupt_thread and report-back", () => {
       expect(messages.filter((text) => text.includes("resumed automatically"))).toHaveLength(1);
     }).pipe(Effect.scoped),
   );
+
+  it.effect(
+    "never continues a turn whose error is not a usage limit, even while a window is exhausted",
+    () =>
+      Effect.gen(function* () {
+        const directory = yield* temporaryDirectory;
+        yield* Effect.gen(function* () {
+          yield* createParent(directory);
+          const child = ThreadId.make((yield* spawnDirectChild).threadId);
+          const marker = ThreadId.make((yield* spawnDirectChild).threadId);
+          // The provider snapshot still shows the session window exhausted.
+          yield* dispatchAll([
+            session(child, "running", "child-turn-1"),
+            session(child, "error", "child-turn-1", "Provider process exited with code 1."),
+          ]);
+          yield* dispatchUntil(
+            dispatchAll([session(marker, "running", "marker-turn-1")]),
+            parentRow(marker, "running"),
+          );
+          yield* TestClock.adjust(MINUTE);
+          yield* dispatchAll([
+            session(PARENT_ID, "running", "parent-turn-1"),
+            ...reply(PARENT_ID, "parent-reply-1", "Still working.", MINUTE),
+          ]);
+          yield* TestClock.adjust(4 * HOUR);
+          yield* dispatchUntil(
+            dispatchAll([session(marker, "ready", null)]),
+            parentRow(marker, "idle"),
+          );
+          expect((yield* userMessages(child)).slice(1)).toEqual([]);
+          expect(
+            (yield* userMessages(PARENT_ID)).filter((text) => text.includes("resumed")),
+          ).toEqual([]);
+        }).pipe(Effect.provide(serverLayer(NodePath.join(directory, "state.sqlite"))));
+      }).pipe(Effect.scoped),
+  );
 });

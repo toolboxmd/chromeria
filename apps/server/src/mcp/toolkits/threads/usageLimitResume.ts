@@ -24,11 +24,29 @@ export function isRouterJobMessage(firstUserMessage: string): boolean {
   return firstUserMessage.trimStart().startsWith("[model-router job ");
 }
 
+/**
+ * Whether a turn's error is a usage limit, from the error itself. The
+ * adapters word it "Claude usage limit reached", "Claude stopped: a usage
+ * limit blocked the request", "Codex usage limit reached" or "Grok usage
+ * limit reached"; other runtime errors are never continued, even while a
+ * usage window is exhausted.
+ */
+export function isUsageLimitError(lastError: string | null | undefined): boolean {
+  return lastError != null && /\busage limit\b/i.test(lastError);
+}
+
 /** Lets the provider's usage windows catch up with the rate-limit event that ended the turn. */
 const SETTLE_DELAY_MS = 5_000;
 
 /** Margin after the reset so the first resumed request is not refused again. */
 export const RESUME_DELAY_MS = 60_000;
+
+/** How often a watcher re-reads usage windows whose reset time has already passed. */
+export const RESET_RECHECK_MS = 5 * 60_000;
+
+function isUsageExhausted(provider: Pick<ServerProvider, "usageLimits"> | undefined): boolean {
+  return (provider?.usageLimits?.windows ?? []).some((window) => window.usedPercent >= 100);
+}
 
 /**
  * The latest reset among the provider's exhausted usage windows, in epoch
@@ -79,6 +97,10 @@ export function resumeNotice(
 /**
  * Waits for the usage limit behind a failed turn to lift, then resumes the
  * thread once, unless someone started another turn or archived it first.
+ * An exhausted window whose reset time already passed is a stale reading:
+ * the watcher keeps waiting for a reply on the instance and re-reads the
+ * windows, resuming at a future reset or once none is exhausted, never
+ * while the limit still shows.
  */
 export const resumeAfterUsageLimitReset = <E, R>(
   deps: {
@@ -95,11 +117,20 @@ export const resumeAfterUsageLimitReset = <E, R>(
 ) =>
   Effect.gen(function* () {
     yield* Effect.sleep(SETTLE_DELAY_MS);
-    const providers = yield* deps.providers;
-    const provider = providers.find((candidate) => candidate.instanceId === input.instanceId);
-    const resetAt = usageLimitResetAt(provider, yield* Clock.currentTimeMillis);
-    if (resetAt === null) return "not-limited" as const;
-    const untilReset = Effect.sleep(resetAt + RESUME_DELAY_MS - (yield* Clock.currentTimeMillis));
+    const readProvider = Effect.map(deps.providers, (providers) =>
+      providers.find((candidate) => candidate.instanceId === input.instanceId),
+    );
+    if (!isUsageExhausted(yield* readProvider)) return "not-limited" as const;
+    const untilReset = Effect.gen(function* () {
+      for (;;) {
+        const provider = yield* readProvider;
+        const now = yield* Clock.currentTimeMillis;
+        const resetAt = usageLimitResetAt(provider, now);
+        if (resetAt !== null) return yield* Effect.sleep(resetAt + RESUME_DELAY_MS - now);
+        if (!isUsageExhausted(provider)) return;
+        yield* Effect.sleep(RESET_RECHECK_MS);
+      }
+    });
     const trigger: ResumeTrigger = input.resumeEarly
       ? yield* Effect.raceFirst(
           untilReset.pipe(Effect.as("reset" as const)),
