@@ -567,7 +567,7 @@ for per-match decisions and the absorption PR record.
 ```json
 {
   "id": "tool-instructions",
-  "purpose": "Tell agents when to reach for the t3-code tools, including prism_submit versus spawn_thread, even when harnesses defer tool schemas.",
+  "purpose": "Tell agents when to reach for the t3-code tools and how to route delegated work with spawn_thread roles, even when harnesses defer tool schemas.",
   "issues": ["https://github.com/toolboxmd/t3code/issues/46"],
   "prs": ["https://github.com/toolboxmd/t3code/pull/53"],
   "newFiles": [
