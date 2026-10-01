@@ -107,3 +107,8 @@ apps/web/src/session-logic.ts
 # Child threads hidden from mobile shells (#59)
 apps/server/src/orchestration/http.ts
 apps/server/src/server.test.ts
+
+# Mermaid diagrams as images (#90)
+apps/web/package.json
+apps/web/src/components/ChatMarkdown.test.tsx
+pnpm-lock.yaml
