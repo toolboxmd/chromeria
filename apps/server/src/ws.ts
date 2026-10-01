@@ -183,6 +183,8 @@ import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import * as VcsProjectConfig from "./vcs/VcsProjectConfig.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
+import { DEFAULT_PERSON } from "@t3tools/contracts";
+import { PersistenceSqlError } from "./persistence/Errors.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
@@ -534,10 +536,33 @@ const makeWsRpcLayer = (
       const dispatchFromClient: OrchestrationEngine.OrchestrationEngineShape["dispatch"] = (
         command,
       ) =>
-        orchestrationEngine.dispatch(
-          command,
-          hasClientOrigin ? { origin: clientOrigin } : undefined,
-        );
+        Effect.gen(function* () {
+          if (
+            command.type === "thread.create" ||
+            command.type === "thread.share" ||
+            command.type === "thread.unshare" ||
+            command.type === "thread.leave"
+          ) {
+            const person =
+              (yield* sessions.getPerson(currentSessionId).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new PersistenceSqlError({
+                      operation: "ws.dispatchFromClient:getPerson",
+                      cause,
+                    }),
+                ),
+              )) ?? DEFAULT_PERSON;
+            command =
+              command.type === "thread.create"
+                ? { ...command, owner: person }
+                : { ...command, actor: person };
+          }
+          return yield* orchestrationEngine.dispatch(
+            command,
+            hasClientOrigin ? { origin: clientOrigin } : undefined,
+          );
+        });
       const recordClientCommandAnalytics = (command: OrchestrationCommand) => {
         switch (command.type) {
           case "thread.create":

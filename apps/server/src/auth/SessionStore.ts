@@ -396,6 +396,13 @@ export class SessionStore extends Context.Service<
     readonly verifyWebSocketToken: (
       token: string,
     ) => Effect.Effect<VerifiedSession, SessionCredentialError>;
+    readonly getPerson: (
+      sessionId: AuthSessionId,
+    ) => Effect.Effect<string | null, SessionCredentialInternalError>;
+    readonly setPerson: (
+      sessionId: AuthSessionId,
+      person: string | null,
+    ) => Effect.Effect<boolean, SessionCredentialInternalError>;
     readonly listActive: () => Effect.Effect<
       ReadonlyArray<AuthClientSession>,
       SessionCredentialInternalError
@@ -552,6 +559,7 @@ export const make = Effect.gen(function* () {
         toAuthClientSession({
           sessionId: row.value.sessionId,
           subject: row.value.subject,
+          ...(row.value.person === null ? {} : { person: row.value.person }),
           scopes: row.value.scopes,
           method: row.value.method,
           client: toClientMetadata(row.value.client),
@@ -780,6 +788,7 @@ export const make = Effect.gen(function* () {
           client: toClientMetadata(row.value.client),
           expiresAt: row.value.expiresAt,
           subject: row.value.subject,
+          ...(row.value.person === null ? {} : { person: row.value.person }),
           scopes: row.value.scopes,
         } satisfies VerifiedSession;
       }
@@ -963,6 +972,7 @@ export const make = Effect.gen(function* () {
         toAuthClientSession({
           sessionId: row.sessionId,
           subject: row.subject,
+          ...(row.person === null ? {} : { person: row.person }),
           scopes: row.scopes,
           method: row.method,
           client: toClientMetadata(row.client),
@@ -1031,7 +1041,26 @@ export const make = Effect.gen(function* () {
     return revokedSessionIds.length;
   });
 
+  const getPerson: SessionStore["Service"]["getPerson"] = (sessionId) =>
+    authSessions.getById({ sessionId }).pipe(
+      Effect.map((row) => (Option.isSome(row) ? row.value.person : null)),
+      Effect.mapError((cause) => new ActiveSessionsListError({ cause })),
+    );
+  const setPerson: SessionStore["Service"]["setPerson"] = Effect.fn("SessionStore.setPerson")(
+    function* (sessionId, person) {
+      const current = yield* loadActiveSession(sessionId);
+      if (Option.isNone(current)) return false;
+      yield* authSessions.setPerson({ sessionId, person });
+      const updated = yield* loadActiveSession(sessionId);
+      if (Option.isSome(updated)) yield* emitUpsert(updated.value);
+      return true;
+    },
+    Effect.mapError((cause) => new ActiveSessionsListError({ cause })),
+  );
+
   return SessionStore.of({
+    getPerson,
+    setPerson,
     cookieName,
     legacyCookieName,
     issue,

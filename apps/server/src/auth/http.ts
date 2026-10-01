@@ -135,7 +135,9 @@ export function failEnvironmentScopeRequired(requiredScope: AuthEnvironmentScope
   );
 }
 
-function failEnvironmentOperationForbidden(reason: "current_session_revoke_not_allowed") {
+function failEnvironmentOperationForbidden(
+  reason: "current_session_revoke_not_allowed" | "unknown_person",
+) {
   return currentEnvironmentTraceId.pipe(
     Effect.flatMap((traceId) =>
       Effect.fail(
@@ -459,6 +461,27 @@ export const authHttpApiLayer = HttpApiBuilder.group(
           },
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
             failEnvironmentInternal("client_sessions_load_failed", error),
+          ),
+        ),
+      )
+      .handle(
+        "setClientPerson",
+        Effect.fn("environment.auth.setClientPerson")(
+          function* (args) {
+            yield* annotateEnvironmentRequest(args.endpoint.name);
+            yield* requireEnvironmentScope(AuthAccessWriteScope);
+            return {
+              updated: yield* serverAuth.setClientSessionPerson(
+                args.payload.sessionId,
+                args.payload.person,
+              ),
+            };
+          },
+          Effect.catchTag("ServerAuthForbiddenOperationError", () =>
+            failEnvironmentOperationForbidden("unknown_person"),
+          ),
+          Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
+            failEnvironmentInternal("client_session_person_update_failed", error),
           ),
         ),
       )

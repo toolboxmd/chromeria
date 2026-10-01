@@ -5,6 +5,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
+import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
@@ -78,6 +80,46 @@ const requestMetadata = {
 };
 
 it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
+  it.effect(
+    "persists device person, exposes it to non-admin sessions and publishes live changes",
+    () =>
+      Effect.gen(function* () {
+        const auth = yield* EnvironmentAuth.EnvironmentAuth;
+        const sessions = yield* SessionStore.SessionStore;
+        const issued = yield* sessions.issue({ scopes: ["orchestration:read"] });
+        const request = makeCookieRequest(sessions.cookieName, issued.token);
+        expect((yield* auth.getSessionState(request)).person).toBeUndefined();
+        const changes = yield* Queue.unbounded<SessionStore.SessionCredentialChange>();
+        yield* sessions.streamChanges.pipe(
+          Stream.runForEach((change) => Queue.offer(changes, change)),
+          Effect.forkScoped({ startImmediately: true }),
+        );
+        expect(yield* auth.setClientSessionPerson(issued.sessionId, "Pauli")).toBe(true);
+        const received = yield* Queue.take(changes);
+        expect(received).toMatchObject({
+          type: "clientUpserted",
+          clientSession: { person: "Pauli" },
+        });
+        const sql = yield* SqlClient.SqlClient;
+        expect(
+          yield* sql`SELECT person FROM auth_sessions WHERE session_id = ${issued.sessionId}`,
+        ).toEqual([{ person: "Pauli" }]);
+        expect((yield* auth.getSessionState(request)).person).toBe("Pauli");
+        expect(
+          (yield* auth.listClientSessions(issued.sessionId)).find(
+            (session) => session.sessionId === issued.sessionId,
+          )?.person,
+        ).toBe("Pauli");
+        expect(
+          (yield* auth.setClientSessionPerson(issued.sessionId, "Unknown").pipe(Effect.flip))._tag,
+        ).toBe("ServerAuthForbiddenOperationError");
+        expect(yield* sessions.getPerson(issued.sessionId)).toBe("Pauli");
+        expect(yield* auth.setClientSessionPerson(issued.sessionId, null)).toBe(true);
+        expect((yield* auth.getSessionState(request)).person).toBeUndefined();
+        expect(yield* sessions.getPerson(issued.sessionId)).toBeNull();
+      }).pipe(Effect.provide(makeEnvironmentAuthLayer()), Effect.scoped),
+  );
+
   it.effect("uses the reusable dev cookie without overriding a normal scoped cookie", () =>
     Effect.gen(function* () {
       const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;

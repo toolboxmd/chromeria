@@ -47,6 +47,7 @@ function makeReadModel(): OrchestrationReadModel {
         branch: null,
         pullRequests: [],
         worktreePath: null,
+        coOwners: [],
         latestTurn: null,
         createdAt: NOW,
         updatedAt: NOW,

@@ -30,6 +30,7 @@ const threadShell = (id: ThreadId): OrchestrationThreadShell => ({
   branch: null,
   worktreePath: null,
   pullRequests: [],
+  coOwners: [],
   latestTurn: null,
   createdAt: now,
   updatedAt: now,

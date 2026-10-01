@@ -86,6 +86,7 @@ function makeReadModel(pullRequests: ReadonlyArray<ThreadPullRequestLink>): Orch
         branch: null,
         worktreePath: null,
         pullRequests,
+        coOwners: [],
         latestTurn: null,
         createdAt: NOW,
         updatedAt: NOW,

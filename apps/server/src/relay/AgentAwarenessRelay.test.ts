@@ -286,8 +286,26 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
       id: threadId,
       projectId: "project-1" as ProjectId,
       title: "Deleted thread",
+      latestUserMessageAt: null,
+      createdAt: "2026-05-25T00:00:00.000Z",
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      archivedAt: null,
+      settledOverride: null,
+      settledAt: null,
+      unsettledAt: null,
+      activeOrderKey: null,
+      autoSettleDisabledAt: null,
+      snoozedUntil: null,
+      snoozedAt: null,
+      deletedAt: null,
+      hasActionableProposedPlan: false,
+      pullRequests: [],
       modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
       session: null,
+      coOwners: [],
       latestTurn: null,
       updatedAt: "2026-05-25T00:00:00.000Z",
       hasPendingApprovals: false,
@@ -340,6 +358,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
       branch: null,
       worktreePath: null,
       pullRequests: [],
+      coOwners: [],
       latestTurn: null,
       createdAt: now,
       updatedAt: now,
@@ -367,6 +386,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           {
             ...baseThread,
             id: activeThreadId,
+            coOwners: [],
             latestTurn: {
               turnId: "turn-1" as TurnId,
               state: "running",
@@ -383,6 +403,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           {
             ...baseThread,
             id: oldCompletedId,
+            coOwners: [],
             latestTurn: {
               turnId: "turn-old" as TurnId,
               state: "completed",
@@ -395,6 +416,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           {
             ...baseThread,
             id: newCompletedId,
+            coOwners: [],
             latestTurn: {
               turnId: "turn-new" as TurnId,
               state: "completed",
@@ -422,6 +444,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
             ...baseThread,
             id: "thread-missing-project" as ThreadId,
             projectId: "missing-project" as ProjectId,
+            coOwners: [],
             latestTurn: {
               turnId: "turn-2" as TurnId,
               state: "running",
@@ -523,6 +546,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           branch: null,
           worktreePath: null,
           pullRequests: [],
+          coOwners: [],
           latestTurn: {
             turnId: "turn-1" as TurnId,
             state: "running",
@@ -716,6 +740,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           branch: null,
           worktreePath: null,
           pullRequests: [],
+          coOwners: [],
           latestTurn: {
             turnId: "turn-1" as TurnId,
             state: "running",
@@ -881,6 +906,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           branch: null,
           worktreePath: null,
           pullRequests: [],
+          coOwners: [],
           latestTurn: completedTurn,
           createdAt: old,
           updatedAt: old,
@@ -929,6 +955,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
 
           currentThread = {
             ...completedThread,
+            coOwners: [],
             latestTurn: null,
             latestUserMessageAt: DateTime.formatIso(DateTime.add(now, { seconds: 1 })),
             session: {

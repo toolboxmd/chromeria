@@ -16,6 +16,7 @@ import { ModelSelection, ThreadLinkedPullRequest, ThreadTitleState } from "@t3to
 
 const ProjectionThreadDbRow = ProjectionThread.mapFields(
   Struct.assign({
+    coOwners: Schema.fromJsonString(Schema.Array(Schema.String)),
     modelSelection: Schema.fromJsonString(ModelSelection),
     titleState: Schema.NullOr(Schema.fromJsonString(ThreadTitleState)),
     linkedPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),
@@ -34,6 +35,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           thread_id,
           project_id,
           title,
+          owner,
+          co_owners_json,
           title_state_json,
           model_selection_json,
           runtime_mode,
@@ -67,6 +70,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           ${row.threadId},
           ${row.projectId},
           ${row.title},
+          ${row.owner ?? null},
+          ${JSON.stringify(row.coOwners ?? [])},
           ${row.titleState == null ? null : JSON.stringify(row.titleState)},
           ${JSON.stringify(row.modelSelection)},
           ${row.runtimeMode},
@@ -100,6 +105,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         DO UPDATE SET
           project_id = excluded.project_id,
           title = excluded.title,
+          owner = excluded.owner,
+          co_owners_json = excluded.co_owners_json,
           title_state_json = excluded.title_state_json,
           model_selection_json = excluded.model_selection_json,
           runtime_mode = excluded.runtime_mode,
@@ -140,6 +147,8 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
           thread_id AS "threadId",
           project_id AS "projectId",
           title,
+          owner,
+          co_owners_json AS "coOwners",
           title_state_json AS "titleState",
           model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",

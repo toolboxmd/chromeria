@@ -35,6 +35,7 @@ function makeReadModel(checkpoints: ReadonlyArray<OrchestrationCheckpointSummary
         branch: null,
         worktreePath: null,
         pullRequests: [],
+        coOwners: [],
         latestTurn: null,
         createdAt: NOW,
         updatedAt: NOW,

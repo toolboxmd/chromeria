@@ -289,7 +289,11 @@ export const dispatchAll = (
   });
 
 /** Creates the project and the parent (planner) thread every test spawns from. */
-export const createParent = (workspaceRoot: string, runtimeMode: RuntimeMode = "full-access") =>
+export const createParent = (
+  workspaceRoot: string,
+  runtimeMode: RuntimeMode = "full-access",
+  owner?: string,
+) =>
   dispatchAll([
     {
       type: "project.create",
@@ -305,6 +309,7 @@ export const createParent = (workspaceRoot: string, runtimeMode: RuntimeMode = "
       threadId: PARENT_ID,
       projectId: PROJECT_ID,
       title: "Parent",
+      ...(owner === undefined ? {} : { owner }),
       modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
       runtimeMode,
       interactionMode: "default",

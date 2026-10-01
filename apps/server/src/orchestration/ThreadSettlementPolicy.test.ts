@@ -22,6 +22,7 @@ const makeThread = (
   pullRequests: [],
   branch: "feature",
   worktreePath: "/repo",
+  coOwners: [],
   latestTurn: null,
   createdAt: "2026-08-01T00:00:00.000Z",
   updatedAt: "2026-08-20T00:00:00.000Z",
@@ -54,6 +55,7 @@ describe("resolveAutoSettlementAt", () => {
     expect(
       resolveAutoSettlementAt({
         thread: makeThread({
+          coOwners: [],
           latestTurn: {
             turnId: TurnId.make("turn-terminal"),
             state: "completed",
@@ -76,6 +78,7 @@ describe("resolveAutoSettlementAt", () => {
       resolveAutoSettlementAt({
         thread: makeThread({
           latestUserMessageAt: null,
+          coOwners: [],
           latestTurn: null,
           updatedAt: "2026-08-27T00:00:00.000Z",
         }),
@@ -157,6 +160,7 @@ describe("resolveAutoSettlementAt", () => {
 
   it("uses user request time instead of completion time as the PR anchor", () => {
     const thread = makeThread({
+      coOwners: [],
       latestTurn: {
         turnId: TurnId.make("turn-1"),
         state: "completed",
@@ -211,6 +215,7 @@ describe("resolveAutoSettlementAt", () => {
         makeThread({
           snoozedAt: "2026-08-19T00:00:00.000Z",
           snoozedUntil: "2026-08-29T00:00:00.000Z",
+          coOwners: [],
           latestTurn: {
             turnId: TurnId.make("turn-woke"),
             state: "completed",

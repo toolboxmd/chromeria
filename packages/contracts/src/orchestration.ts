@@ -791,6 +791,10 @@ export const ThreadPullRequestLink = Schema.Struct({
 export type ThreadPullRequestLink = typeof ThreadPullRequestLink.Type;
 
 export const OrchestrationThread = Schema.Struct({
+  owner: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  coOwners: Schema.Array(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   id: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -882,6 +886,10 @@ export const OrchestrationProjectShell = Schema.Struct({
 export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 
 export const OrchestrationThreadShell = Schema.Struct({
+  owner: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  coOwners: Schema.Array(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   id: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -1117,6 +1125,7 @@ const ProjectDeleteCommand = Schema.Struct({
 });
 
 const ThreadCreateCommand = Schema.Struct({
+  owner: Schema.optional(TrimmedNonEmptyString),
   type: Schema.Literal("thread.create"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -1131,6 +1140,29 @@ const ThreadCreateCommand = Schema.Struct({
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
   historyImport: Schema.optional(Schema.Literal(true)),
+});
+
+export const ThreadShareCommand = Schema.Struct({
+  type: Schema.Literal("thread.share"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  coOwner: TrimmedNonEmptyString,
+  actor: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+export const ThreadUnshareCommand = Schema.Struct({
+  type: Schema.Literal("thread.unshare"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  actor: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+export const ThreadLeaveCommand = Schema.Struct({
+  type: Schema.Literal("thread.leave"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  actor: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
 });
 
 const ThreadDeleteCommand = Schema.Struct({
@@ -1290,6 +1322,7 @@ const ThreadInteractionModeSetCommand = Schema.Struct({
 });
 
 const ThreadTurnStartBootstrapCreateThread = Schema.Struct({
+  owner: Schema.optional(TrimmedNonEmptyString),
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
@@ -1438,6 +1471,9 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ProjectMetaUpdateCommand,
   ProjectDeleteCommand,
   ThreadCreateCommand,
+  ThreadShareCommand,
+  ThreadUnshareCommand,
+  ThreadLeaveCommand,
   ThreadDeleteCommand,
   ThreadArchiveCommand,
   ThreadUnarchiveCommand,
@@ -1472,6 +1508,9 @@ export const ClientOrchestrationCommand = Schema.Union([
   ProjectMetaUpdateCommand,
   ProjectDeleteCommand,
   ThreadCreateCommand,
+  ThreadShareCommand,
+  ThreadUnshareCommand,
+  ThreadLeaveCommand,
   ThreadDeleteCommand,
   ThreadArchiveCommand,
   ThreadUnarchiveCommand,
@@ -1701,6 +1740,7 @@ export const OrchestrationEventType = Schema.Literals([
   "project.meta-updated",
   "project.deleted",
   "thread.created",
+  "thread.sharing-set",
   "thread.deleted",
   "thread.archived",
   "thread.unarchived",
@@ -1771,6 +1811,7 @@ export const ProjectDeletedPayload = Schema.Struct({
 });
 
 export const ThreadCreatedPayload = Schema.Struct({
+  owner: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   threadId: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -1782,6 +1823,14 @@ export const ThreadCreatedPayload = Schema.Struct({
   branch: Schema.NullOr(TrimmedNonEmptyString),
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadSharingSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  coOwners: Schema.Array(TrimmedNonEmptyString),
+  action: Schema.Literals(["shared", "unshared", "left"]),
+  actor: TrimmedNonEmptyString,
   updatedAt: IsoDateTime,
 });
 
@@ -2070,6 +2119,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.created"),
     payload: ThreadCreatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.sharing-set"),
+    payload: ThreadSharingSetPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

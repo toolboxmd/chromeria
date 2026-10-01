@@ -424,6 +424,7 @@ const makeDefaultOrchestrationReadModel = () => {
         archivedAt: null,
         settledOverride: null,
         settledAt: null,
+        coOwners: [],
         latestTurn: null,
         messages: [],
         session: null,
@@ -450,6 +451,7 @@ const makeDefaultOrchestrationThreadShell = (
     branch: null,
     worktreePath: null,
     pullRequests: [],
+    coOwners: [],
     latestTurn: null,
     createdAt: now,
     updatedAt: now,
@@ -8177,6 +8179,144 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect(
+    "stamps owners and sharing actors from the live device person without reconnecting",
+    () =>
+      Effect.gen(function* () {
+        const dispatched: OrchestrationCommand[] = [];
+        yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              dispatch: (command) =>
+                Effect.sync(() => {
+                  dispatched.push(command);
+                  return { sequence: dispatched.length };
+                }),
+            },
+          },
+        });
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const { cookie } = parseSessionCookieFromWsUrl(wsUrl);
+        const headers = { cookie: cookie!, "content-type": "application/json" };
+        const clientsResponse = yield* fetchEffect(yield* getHttpServerUrl("/api/auth/clients"), {
+          headers,
+        });
+        const clients =
+          yield* responseJsonEffect<ReadonlyArray<{ sessionId: string; current: boolean }>>(
+            clientsResponse,
+          );
+        const sessionId = clients.find((session) => session.current)!.sessionId;
+        const label = (person: string | null) =>
+          fetchEffect(getPersonUrl, {
+            method: "POST",
+            headers,
+            body: jsonRequestBody({ sessionId, person }),
+          });
+        const getPersonUrl = yield* getHttpServerUrl("/api/auth/clients/person");
+        const create = (suffix: string): ClientOrchestrationCommand => ({
+          type: "thread.create",
+          commandId: CommandId.make(`person-create-${suffix}`),
+          threadId: ThreadId.make(`person-thread-${suffix}`),
+          projectId: defaultProjectId,
+          title: "Person",
+          owner: "Forged",
+          modelSelection: defaultModelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+        yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            Effect.gen(function* () {
+              yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](create("default"));
+              assert.equal(dispatched.at(-1)?.type, "thread.create");
+              assert.equal(
+                (dispatched.at(-1) as Extract<OrchestrationCommand, { type: "thread.create" }>)
+                  .owner,
+                "Luke",
+              );
+              assert.equal((yield* label("Pauli")).status, 200);
+              yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](create("labelled"));
+              assert.equal(
+                (dispatched.at(-1) as Extract<OrchestrationCommand, { type: "thread.create" }>)
+                  .owner,
+                "Pauli",
+              );
+              yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+                type: "thread.turn.start",
+                commandId: CommandId.make("person-bootstrap"),
+                threadId: ThreadId.make("person-bootstrap"),
+                message: {
+                  messageId: MessageId.make("person-bootstrap-message"),
+                  role: "user",
+                  text: "hello",
+                  attachments: [],
+                },
+                modelSelection: defaultModelSelection,
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                createdAt: "2026-01-01T00:00:00.000Z",
+                bootstrap: {
+                  createThread: {
+                    owner: "Forged",
+                    projectId: defaultProjectId,
+                    title: "Bootstrap",
+                    modelSelection: defaultModelSelection,
+                    runtimeMode: "full-access",
+                    interactionMode: "default",
+                    branch: null,
+                    worktreePath: null,
+                    createdAt: "2026-01-01T00:00:00.000Z",
+                  },
+                },
+              });
+              const bootstrap = dispatched.find(
+                (command) =>
+                  command.type === "thread.create" && command.threadId === "person-bootstrap",
+              );
+              assert.equal(
+                (bootstrap as Extract<OrchestrationCommand, { type: "thread.create" }>).owner,
+                "Pauli",
+              );
+              const state = yield* responseJsonEffect<{ person?: string }>(
+                yield* fetchEffect(yield* getHttpServerUrl("/api/auth/session"), { headers }),
+              );
+              assert.equal(state.person, "Pauli");
+              for (const type of ["thread.share", "thread.unshare", "thread.leave"] as const) {
+                yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+                  type,
+                  commandId: CommandId.make(`person-${type}`),
+                  threadId: defaultThreadId,
+                  actor: "Forged",
+                  createdAt: "2026-01-01T00:00:00.000Z",
+                  ...(type === "thread.share" ? { coOwner: "Luke" } : {}),
+                } as ClientOrchestrationCommand);
+                assert.equal(
+                  (
+                    dispatched.at(-1) as Extract<
+                      OrchestrationCommand,
+                      { type: "thread.share" | "thread.unshare" | "thread.leave" }
+                    >
+                  ).actor,
+                  "Pauli",
+                );
+              }
+              assert.equal((yield* label("Unknown")).status, 403);
+              assert.equal((yield* label(null)).status, 200);
+              yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](create("cleared"));
+              assert.equal(
+                (dispatched.at(-1) as Extract<OrchestrationCommand, { type: "thread.create" }>)
+                  .owner,
+                "Luke",
+              );
+            }),
+          ),
+        );
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("records thread analytics only after a client command succeeds", () =>
     Effect.gen(function* () {
       const effects: string[] = [];
@@ -9220,6 +9360,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             archivedAt: null,
             settledOverride: null,
             settledAt: null,
+            coOwners: [],
             latestTurn: null,
             messages: [],
             session: null,
