@@ -45,7 +45,7 @@ import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurn
 
 const decodeCheck = Schema.decodeUnknownEffect(Schema.fromJsonString(TaskCheckVersion));
 const error = (cause: unknown) => new SchedulerError({ detail: String(cause) });
-export const schedulerIdle = (thread: OrchestrationThreadShell, now: string) =>
+const schedulerIdle = (thread: OrchestrationThreadShell, now: string) =>
   thread.archivedAt === null &&
   !thread.hasPendingApprovals &&
   !thread.hasPendingUserInput &&
