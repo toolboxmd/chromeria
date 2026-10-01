@@ -18,8 +18,10 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -37,7 +39,13 @@ import {
   unrecordedChildReportState,
 } from "./childReportState.ts";
 import { isSubagentThreadId, makeSubagentThreadId, parentThreadIdOf } from "./subagentThreadId.ts";
-import { RESUME_TEXT, resumeAfterUsageLimitReset } from "./usageLimitResume.ts";
+import {
+  isRouterJobMessage,
+  isUsageLimitError,
+  RESUME_TEXT,
+  resumeAfterUsageLimitReset,
+  resumeNotice,
+} from "./usageLimitResume.ts";
 import {
   type SubagentStatus,
   type ThreadScope,
@@ -498,32 +506,103 @@ const make = Effect.gen(function* () {
   });
 
   const scope = yield* Scope.Scope;
-  /** Top-level thread id -> the failed turn a usage-limit resume is pending for. */
+  /** Thread id -> the failed turn a usage-limit resume is pending for. */
   const pendingResumes = new Map<string, string>();
+  /** Thread id -> the fiber waiting to send that resume. */
+  const resumeFibers = new Map<string, Fiber.Fiber<unknown, unknown>>();
+  /** Thread id -> the turn interrupt_thread stopped; it is never continued automatically. */
+  const stoppedTurns = new Map<string, string>();
 
   /**
-   * Schedules one "continue" after the usage limit that failed a top-level
-   * thread's turn resets (see usageLimitResume.ts). Starting another turn
-   * first, or archiving the thread, cancels it.
+   * Called by interrupt_thread: a stopped thread must not continue on its
+   * own after a usage limit, or a replaced worker would write again.
+   */
+  const cancelUsageLimitResume = (threadId: string, turnId: string | null) =>
+    Effect.gen(function* () {
+      if (turnId !== null) stoppedTurns.set(threadId, turnId);
+      const fiber = resumeFibers.get(threadId);
+      if (!fiber) return;
+      resumeFibers.delete(threadId);
+      yield* Fiber.interrupt(fiber);
+    });
+  /** Provider instance id -> resumes waiting for any thread's next reply from it. */
+  const replyWaiters = new Map<string, Deferred.Deferred<void>>();
+  /** Threads resumed early that have not had a reply since. */
+  const earlyResumeSpent = new Set<string>();
+
+  const nextReplyOn = (instanceId: string) =>
+    Effect.suspend(() => {
+      let waiter = replyWaiters.get(instanceId);
+      if (!waiter) {
+        waiter = Deferred.makeUnsafe<void>();
+        replyWaiters.set(instanceId, waiter);
+      }
+      return Deferred.await(waiter);
+    });
+
+  /** A finished assistant message proves its provider instance serves requests again. */
+  const releaseReplyWaiters = Effect.fn("ThreadsToolkit.releaseReplyWaiters")(function* (
+    event: OrchestrationEvent,
+  ) {
+    if (event.type !== "thread.message-sent") return;
+    if (event.payload.role !== "assistant" || event.payload.streaming) return;
+    earlyResumeSpent.delete(event.payload.threadId);
+    if (replyWaiters.size === 0) return;
+    const thread = yield* threadShell(event.payload.threadId);
+    if (!thread) return;
+    const instanceId = thread.session?.providerInstanceId ?? thread.modelSelection.instanceId;
+    const waiter = replyWaiters.get(instanceId);
+    if (!waiter) return;
+    replyWaiters.delete(instanceId);
+    yield* Deferred.succeed(waiter, undefined);
+  });
+
+  /** Prism job threads open with Model Router's job tag (see usageLimitResume.ts). */
+  const isRouterJobThread = (threadId: string) =>
+    snapshots.getThreadDetailById(ThreadId.make(threadId)).pipe(
+      Effect.map((thread) => {
+        if (Option.isNone(thread)) return false;
+        const first = thread.value.messages.find((message) => message.role === "user");
+        return first !== undefined && isRouterJobMessage(first.text);
+      }),
+      Effect.catchCause(() => Effect.succeed(false)),
+    );
+
+  /**
+   * Schedules one "continue" after the usage limit that failed a thread's
+   * turn lifts (see usageLimitResume.ts), and tells a child's parent when it
+   * is sent. Only an error that itself reads as a usage limit qualifies.
+   * Starting another turn first, or archiving the thread, cancels it. Prism
+   * job threads are skipped.
    */
   const resumeAfterUsageLimit = Effect.fn("ThreadsToolkit.resumeAfterUsageLimit")(function* (
     event: OrchestrationEvent,
   ) {
     if (event.type !== "thread.session-set" || event.payload.session.status !== "error") return;
+    if (!isUsageLimitError(event.payload.session.lastError)) return;
     const threadId = event.payload.threadId;
-    if (isSubagentThreadId(threadId)) return;
     const failed = yield* threadShell(threadId);
     const turnId = failed?.latestTurn?.turnId;
     if (!failed || !turnId || pendingResumes.get(threadId) === turnId) return;
+    if (stoppedTurns.get(threadId) === turnId) return;
+    if (isSubagentThreadId(threadId) && (yield* isRouterJobThread(threadId))) return;
     const instanceId = event.payload.session.providerInstanceId ?? failed.modelSelection.instanceId;
     pendingResumes.set(threadId, turnId);
-    yield* resumeAfterUsageLimitReset(
+    const fiber = yield* resumeAfterUsageLimitReset(
       {
         thread: threadShell,
         providers: registry.getProviders,
-        resume: (thread) => startTurn(thread, RESUME_TEXT),
+        nextReplyOn,
+        resume: (thread, trigger) =>
+          Effect.gen(function* () {
+            if (trigger === "lifted") earlyResumeSpent.add(thread.id);
+            yield* startTurn(thread, RESUME_TEXT);
+            const parentId = parentThreadIdOf(thread.id);
+            const parent = parentId === null ? undefined : yield* threadShell(parentId);
+            if (parent) yield* startTurn(parent, resumeNotice(thread, trigger));
+          }),
       },
-      { threadId, turnId, instanceId },
+      { threadId, turnId, instanceId, resumeEarly: !earlyResumeSpent.has(threadId) },
     ).pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning("usage-limit resume failed", { threadId, cause: Cause.pretty(cause) }),
@@ -535,6 +614,7 @@ const make = Effect.gen(function* () {
       ),
       Effect.forkIn(scope),
     );
+    if (pendingResumes.get(threadId) === turnId) resumeFibers.set(threadId, fiber);
   });
 
   const skipOnFailure = (name: string, event: OrchestrationEvent) =>
@@ -567,6 +647,7 @@ const make = Effect.gen(function* () {
           Effect.andThen(
             resumeAfterUsageLimit(event).pipe(skipOnFailure("usage-limit resume", event)),
           ),
+          Effect.andThen(releaseReplyWaiters(event).pipe(skipOnFailure("reply waiters", event))),
         ),
       );
     }).pipe(Effect.scoped),
@@ -695,6 +776,7 @@ const make = Effect.gen(function* () {
     interrupt_thread: ({ threadId, scope }) =>
       Effect.gen(function* () {
         const { target } = yield* callerScopedThread(threadId, scope);
+        yield* cancelUsageLimitResume(target.id, target.latestTurn?.turnId ?? null);
         if (!hasActiveTurn(target.session)) {
           return {
             threadId,
@@ -709,6 +791,7 @@ const make = Effect.gen(function* () {
         const sampled = target.session?.activeTurnId ?? null;
         const started = sampled !== null ? null : yield* awaitTurnId(target.id);
         const turnId = sampled ?? started?.turnId ?? null;
+        if (started?.turnId) yield* cancelUsageLimitResume(target.id, started.turnId);
         if (turnId === null) {
           return {
             threadId,

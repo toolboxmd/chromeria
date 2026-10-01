@@ -119,7 +119,8 @@ for per-match decisions and the absorption PR record.
     "https://github.com/toolboxmd/t3code/issues/59",
     "https://github.com/toolboxmd/t3code/issues/61",
     "https://github.com/toolboxmd/chromeria/issues/95",
-    "https://github.com/toolboxmd/chromeria/issues/94"
+    "https://github.com/toolboxmd/chromeria/issues/94",
+    "https://github.com/toolboxmd/chromeria/issues/71"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/10",
@@ -132,6 +133,7 @@ for per-match decisions and the absorption PR record.
     "apps/server/src/mcp/toolkits/threads/childReportState.test.ts",
     "apps/server/src/mcp/toolkits/threads/childReportState.ts",
     "apps/server/src/mcp/toolkits/threads/childThreads.test.ts",
+    "apps/server/src/mcp/toolkits/threads/childUsageLimitResume.test.ts",
     "apps/server/src/mcp/toolkits/threads/handlers.testFixtures.ts",
     "apps/server/src/mcp/toolkits/threads/handlers.ts",
     "apps/server/src/mcp/toolkits/threads/interruptThread.test.ts",
