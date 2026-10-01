@@ -1,3 +1,4 @@
+import { Scheduler } from "./scheduler/Service.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
 
@@ -625,6 +626,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   Layer.provide(IssueServiceLive),
   // Fork: Issue links (toolboxmd/t3code#28).
   Layer.provide(IssueLinks.layerLive),
+  Layer.provide(Scheduler.layer.pipe(Layer.provide(ProcessRunner.layer))),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(DesktopAppUpdateLayerLive))),
   Layer.provide(commandReadinessLayer),

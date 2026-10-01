@@ -1,3 +1,5 @@
+import { SchedulerToolkit } from "./toolkits/scheduler/tools.ts";
+import { SchedulerToolkitHandlersLive } from "./toolkits/scheduler/handlers.ts";
 import * as NodeCrypto from "node:crypto";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -685,6 +687,7 @@ const McpTransportLive = McpServer.layerHttp({
 export const layer = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
   PullRequestsToolkitRegistrationLive,
+  McpServer.toolkit(SchedulerToolkit).pipe(Layer.provide(SchedulerToolkitHandlersLive)),
   IssuesToolkitRegistrationLive,
   ThreadsToolkitRegistrationLive,
   DeviceToolkitRegistrationLive,

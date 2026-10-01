@@ -1,5 +1,7 @@
 import { isSpectrumThreadId } from "../mcp/toolkits/threads/spectrumIdentity.ts";
 import {
+  TaskCheckVersion,
+  TaskDefinition,
   EventId,
   threadOwner,
   MAX_SCRIPT_ID_LENGTH,
@@ -225,6 +227,70 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
   Crypto.Crypto
 > {
   switch (command.type) {
+    case "scheduler.state.set": {
+      const previous = readModel.scheduledTasks?.find((task) => task.id === command.task.id);
+      if (
+        (previous?.revision ?? 0) !== command.expectedRevision ||
+        command.task.revision !== command.expectedRevision + 1 ||
+        command.threadId !== command.task.id
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Scheduled task changed before this command; retry from current state.",
+        });
+      }
+      if (
+        command.task.runs.some(
+          (run) =>
+            !command.task.checks.some((check) => check.version === run.checkVersion) &&
+            run.status !== "done" &&
+            run.status !== "needs-you",
+        )
+      )
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Every active run needs its pinned immutable check.",
+        });
+      if (previous) {
+        const lastVersion = previous.checks.at(-1)!.version;
+        const added = command.task.checks.filter((check) => check.version > lastVersion);
+        if (added.some((check, index) => check.version !== lastVersion + index + 1))
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "New check versions must append in order.",
+          });
+        const changedCheck = command.task.checks.some((check) => {
+          const existing = previous.checks.find((entry) => entry.version === check.version);
+          return existing !== undefined && !Schema.toEquivalence(TaskCheckVersion)(existing, check);
+        });
+        const changedJudge = previous.runs.some((run) => {
+          if (run.status === "done" || run.status === "needs-you") return false;
+          const next = command.task.runs.find((entry) => entry.id === run.id);
+          return (
+            !next ||
+            next.checkVersion !== run.checkVersion ||
+            next.checkCwd !== run.checkCwd ||
+            !Schema.toEquivalence(TaskDefinition)(next.definition, run.definition) ||
+            (run.threadId !== null && next.threadId !== run.threadId)
+          );
+        });
+        if (changedCheck || changedJudge)
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Existing check versions and active run judges are immutable.",
+          });
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          commandId: command.commandId,
+          occurredAt: command.createdAt,
+        })),
+        type: "scheduler.state-set",
+        payload: command.task,
+      };
+    }
     case "project.create": {
       yield* requireProjectAbsent({
         readModel,

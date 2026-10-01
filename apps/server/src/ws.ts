@@ -1,3 +1,5 @@
+import { Scheduler } from "./scheduler/Service.ts";
+import { makeSchedulerRpcHandlers } from "./scheduler/rpcHandlers.ts";
 import {
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
@@ -675,6 +677,7 @@ const makeWsRpcLayer = (
       const pullRequests = yield* PullRequestService.PullRequestService;
       const withPullRequestViewer = pullRequests.withRoutingCredential;
       const issues = yield* IssueService.IssueService;
+      const scheduler = yield* Scheduler;
       const pullRequestSync = yield* PullRequestSyncReactor.PullRequestSyncReactor;
       const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
       const sessions = yield* SessionStore.SessionStore;
@@ -1890,6 +1893,7 @@ const makeWsRpcLayer = (
       return WsRpcGroup.of({
         // Fork: GitHub Issues (toolboxmd/t3code#27).
         ...makeIssueRpcHandlers(issues, observeRpcEffect),
+        ...makeSchedulerRpcHandlers(scheduler, `user:${currentSession.subject}`, observeRpcEffect),
         // Fork: Issue links (toolboxmd/t3code#28).
         ...issueLinkHandlers,
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
@@ -3858,6 +3862,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     const issueService = yield* IssueService.IssueService;
     const sql = yield* SqlClient.SqlClient;
     const issueLinks = yield* IssueLinks;
+    const scheduler = yield* Scheduler;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -3900,6 +3905,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
               Layer.provide(Layer.succeed(IssueLinks, issueLinks)),
+              Layer.provide(Layer.succeed(Scheduler, scheduler)),
               Layer.provide(AgentSessionScanner.layer),
               Layer.provide(ProviderMaintenanceRunner.layer),
               Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, serverSelfUpdate)),

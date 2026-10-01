@@ -348,6 +348,14 @@ export function projectEvent(
   };
 
   switch (event.type) {
+    case "scheduler.state-set":
+      return Effect.succeed({
+        ...nextBase,
+        scheduledTasks: [
+          ...(model.scheduledTasks ?? []).filter((task) => task.id !== event.payload.id),
+          event.payload,
+        ],
+      });
     case "project.created":
       return decodeForEvent(ProjectCreatedPayload, event.payload, event.type, "payload").pipe(
         Effect.map((payload) => {

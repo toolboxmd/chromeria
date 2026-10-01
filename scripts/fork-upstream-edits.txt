@@ -229,3 +229,6 @@ packages/client-runtime/src/state/threads-pagination.test.ts
 packages/client-runtime/src/state/threads-sync.test.ts
 packages/contracts/src/auth.ts
 packages/contracts/src/environmentHttp.ts
+
+# Check-gated scheduled tasks (#123)
+apps/server/src/orchestration/projector.ts

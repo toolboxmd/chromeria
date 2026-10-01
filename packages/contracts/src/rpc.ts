@@ -1,3 +1,4 @@
+import { SchedulerRpcGroup } from "./scheduler.ts";
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
@@ -1541,4 +1542,6 @@ export const WsRpcGroup = RpcGroup.make(
   // Fork: GitHub Issues (toolboxmd/t3code#27).
   ...IssueRpcs,
   // Fork: Issue links (toolboxmd/t3code#28).
-).merge(IssueLinksRpcGroup);
+)
+  .merge(IssueLinksRpcGroup)
+  .merge(SchedulerRpcGroup);

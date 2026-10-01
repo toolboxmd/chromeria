@@ -902,3 +902,41 @@ for per-match decisions and the absorption PR record.
   "keywords": ["thread ownership", "coOwners", "person picker"]
 }
 ```
+
+## Check-gated scheduled tasks
+
+```json
+{
+  "id": "scheduled-tasks",
+  "purpose": "Run repeating and one-shot tasks until their pinned server outcome check passes, with durable same-thread recovery.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/123"],
+  "prs": ["Pending coordinator final PR for #123"],
+  "newFiles": [
+    "apps/server/src/mcp/toolkits/scheduler/handlers.ts",
+    "apps/server/src/mcp/toolkits/scheduler/tools.ts",
+    "apps/server/src/scheduler/Schedule.test.ts",
+    "apps/server/src/scheduler/Schedule.ts",
+    "apps/server/src/scheduler/Scheduler.test.ts",
+    "apps/server/src/scheduler/Scheduler.ts",
+    "apps/server/src/scheduler/Service.test.ts",
+    "apps/server/src/scheduler/Service.ts",
+    "apps/server/src/scheduler/rpcHandlers.ts",
+    "packages/contracts/src/scheduler.ts"
+  ],
+  "upstreamFiles": ["apps/server/src/orchestration/projector.ts"],
+  "sharedFiles": [
+    "apps/server/src/auth/RpcAuthorization.ts",
+    "apps/server/src/mcp/McpHttpServer.ts",
+    "apps/server/src/mcp/toolkits/threads/handlers.ts",
+    "apps/server/src/orchestration/Layers/OrchestrationEngine.ts",
+    "apps/server/src/orchestration/Services/OrchestrationEngine.ts",
+    "apps/server/src/orchestration/decider.ts",
+    "apps/server/src/server.ts",
+    "apps/server/src/ws.ts",
+    "packages/contracts/src/index.ts",
+    "packages/contracts/src/orchestration.ts",
+    "packages/contracts/src/rpc.ts"
+  ],
+  "keywords": ["scheduler", "scheduledTasks", "scheduler.state-set", "schedulerOwnsThread"]
+}
+```
