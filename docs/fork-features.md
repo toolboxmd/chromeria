@@ -752,7 +752,6 @@ for per-match decisions and the absorption PR record.
     "apps/server/src/orchestration/decider.ts",
     "apps/web/src/components/settings/ProviderInstanceCard.tsx",
     "docs/user/thread-sidebar.md",
-    "packages/contracts/src/orchestration.ts",
     "packages/contracts/src/providerInstance.ts",
     "packages/shared/src/serverSettings.ts"
   ],
