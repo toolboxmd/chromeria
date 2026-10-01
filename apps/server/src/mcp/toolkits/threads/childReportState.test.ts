@@ -228,6 +228,58 @@ const parentActivity =
 const reportsOf = (messages: ReadonlyArray<{ role: string; text: string }>) =>
   messages.filter((message) => message.role === "user" && message.text.includes("finished a turn"));
 
+describe("spawned child runtime mode", () => {
+  it.effect("starts every child in full access, whatever mode the parent runs in", () =>
+    Effect.gen(function* () {
+      const directory = yield* Effect.promise(() =>
+        NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-child-mode-")),
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(() => NodeFSP.rm(directory, { recursive: true, force: true })),
+      );
+      const childMode = yield* withServer(
+        NodePath.join(directory, "state.sqlite"),
+        Effect.gen(function* () {
+          yield* dispatchAll([
+            {
+              type: "project.create",
+              commandId: commandId(),
+              projectId: PROJECT_ID,
+              title: "Modes",
+              workspaceRoot: directory,
+              createdAt: NOW,
+            },
+            {
+              type: "thread.create",
+              commandId: commandId(),
+              threadId: PARENT_ID,
+              projectId: PROJECT_ID,
+              title: "Parent",
+              modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+              runtimeMode: "approval-required",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+              createdAt: NOW,
+            },
+          ]);
+          const { result } = yield* dispatchUntil(
+            spawnChild(false),
+            (event) =>
+              event.type === "thread.activity-appended" &&
+              event.aggregateId === PARENT_ID &&
+              event.payload.activity.kind === "task.started",
+          );
+          const snapshots = yield* ProjectionSnapshotQuery;
+          const child = yield* snapshots.getThreadDetailById(ThreadId.make(result.threadId));
+          return Option.getOrThrow(child).runtimeMode;
+        }),
+      );
+      expect(childMode).toBe("full-access");
+    }).pipe(Effect.scoped),
+  );
+});
+
 describe("child report-back across a server restart", () => {
   it.effect("keeps reporting a child's finished turns to its parent, once each", () =>
     Effect.gen(function* () {

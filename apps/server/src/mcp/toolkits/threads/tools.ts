@@ -35,7 +35,7 @@ export const SpawnThreadInput = Schema.Struct({
   role: Schema.optional(
     PrismRoleName.annotate({
       description:
-        "Prism role for the child: dispatcher, reviewer, worker, retry, escalation (or planner); correction and recovery are the old names of retry and escalation. Applies that role's kit from Prism settings: its instructions, skills, permissions, thread-tool scope, and the first eligible model of its model list unless model is named.",
+        "Prism role for the child: dispatcher, reviewer, worker, retry, escalation (or planner); correction and recovery are the old names of retry and escalation. Applies that role's kit from Prism settings: its instructions, skills, thread-tool scope, and the first eligible model of its model list unless model is named.",
     }),
   ),
   lane: Schema.optional(
