@@ -32,11 +32,22 @@ import { SidebarUpdateArchitectureWarning, SidebarUpdatePill } from "./SidebarUp
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { PromachosModeSwitch } from "../promachos/PromachosModeSwitch";
 
+// Fork: the Promachos mode switch sits on its own row under the titlebar
+// (toolboxmd/chromeria#116), so the titlebar keeps its space.
 export const SidebarChromeHeader = memo(function SidebarChromeHeader({
   isElectron,
 }: {
   isElectron: boolean;
 }) {
+  return (
+    <>
+      <SidebarTitlebar isElectron={isElectron} />
+      <PromachosModeSwitch />
+    </>
+  );
+});
+
+const SidebarTitlebar = memo(function SidebarTitlebar({ isElectron }: { isElectron: boolean }) {
   const stageLabel = useEnvironmentStageLabel();
   const environmentIdentificationMode = useEnvironmentIdentificationMode();
   const backdropVariant = resolveSidebarStageBackdropVariant(
@@ -73,8 +84,6 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
           {pillLabel}
         </Badge>
       ) : null}
-      {/* Fork: Promachos mode (toolboxmd/chromeria#116). */}
-      <PromachosModeSwitch />
     </div>
   );
 });
