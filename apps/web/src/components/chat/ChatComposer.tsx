@@ -252,6 +252,8 @@ import { ComposerImageThumbnail } from "./ComposerImageThumbnail";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
+// Fork: Promachos mode (toolboxmd/chromeria#116).
+import { PromachosInlineCard } from "../promachos/PromachosChat";
 import { ComposerPlanFollowUpBanner } from "./ComposerPlanFollowUpBanner";
 import {
   ComposerControl,
@@ -1361,6 +1363,9 @@ export interface ChatComposerProps {
     readonly connection: EnvironmentConnectionPresentation;
   } | null;
 
+  /** Promachos mode: where the question and approval cards render in the chat. */
+  inlineCardHost?: HTMLElement | null;
+
   // Pending approvals / inputs
   activePendingApproval: PendingApproval | null;
   pendingApprovals: PendingApproval[];
@@ -1511,6 +1516,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     sendDisabledReason: externalSendDisabledReason,
     isPreparingWorktree,
     environmentUnavailable,
+    inlineCardHost = null,
     activePendingApproval,
     pendingApprovals,
     pendingUserInputs,
@@ -2536,6 +2542,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isComposerApprovalState ||
     pendingUserInputs.length > 0 ||
     (!isComposerCollapsedMobile && showPlanFollowUpPrompt && activeProposedPlan !== null);
+  // The collapsed mobile composer keeps its compact question row in place.
+  const inlineTopDrawer =
+    inlineCardHost !== null &&
+    !isComposerCollapsedMobile &&
+    (isComposerApprovalState || pendingUserInputs.length > 0);
   const showCollapsedMobilePromptRow =
     isComposerCollapsedMobile && !isComposerApprovalState && pendingUserInputs.length === 0;
   const showComposerAttachAction =
@@ -6200,8 +6211,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             </ComposerBanner.Attachment>
           ) : null}
           {showComposerTopDrawer && (!isTasksDrawerOpen || hasBlockingComposerTopDrawer) ? (
-            <ComposerBanner.Attachment>
+            <PromachosInlineCard host={inlineTopDrawer ? inlineCardHost : null}>
               <ComposerBanner.Root
+                placement={inlineTopDrawer ? "floating" : "attached"}
                 data-chat-composer-top-drawer="true"
                 variant={activePendingApproval ? "warning" : "info"}
                 density={activePendingApproval ? "spacious" : "default"}
@@ -6323,7 +6335,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   </div>
                 ) : null}
               </ComposerBanner.Root>
-            </ComposerBanner.Attachment>
+            </PromachosInlineCard>
           ) : null}
           {!activityStackItem &&
           isTasksDrawerOpen &&

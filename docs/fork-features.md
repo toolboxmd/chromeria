@@ -688,3 +688,37 @@ for per-match decisions and the absorption PR record.
   "keywords": ["mermaid", "renderMermaidImage", "MermaidDiagram"]
 }
 ```
+
+## Promachos mode
+
+```json
+{
+  "id": "promachos-mode",
+  "purpose": "Switch web and desktop to a chat-first view of the Promachos home's conversations: paragraph bubbles, a working indicator and inline question and approval cards.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/116"],
+  "prs": [],
+  "newFiles": [
+    "apps/web/src/components/promachos/PromachosChat.tsx",
+    "apps/web/src/components/promachos/PromachosModeSwitch.tsx",
+    "apps/web/src/components/promachos/PromachosSidebar.tsx",
+    "apps/web/src/components/promachos/promachosBubbles.test.tsx",
+    "apps/web/src/components/promachos/promachosBubbles.ts",
+    "apps/web/src/components/promachos/promachosConversations.test.ts",
+    "apps/web/src/components/promachos/promachosConversations.ts",
+    "apps/web/src/components/promachos/promachosMode.ts",
+    "apps/web/src/components/promachos/promachosTimeline.ts",
+    "docs/user/promachos-mode.md"
+  ],
+  "upstreamFiles": [
+    "apps/web/src/components/AppSidebarLayout.tsx",
+    "apps/web/src/components/chat/ChatComposer.tsx",
+    "docs/README.md"
+  ],
+  "sharedFiles": [
+    "apps/web/src/components/ChatView.tsx",
+    "apps/web/src/components/chat/MessagesTimeline.tsx",
+    "apps/web/src/components/sidebar/SidebarChrome.tsx"
+  ],
+  "keywords": ["Promachos", "chat bubbles", "bubble", "chat-first", "inline approval"]
+}
+```
