@@ -20,9 +20,18 @@ function promachosTurnStartInput<T extends TurnStartInput>(
 ): T {
   const createsTopLevelThread =
     input.bootstrap?.createThread !== undefined && !isSubagentThreadId(input.threadId);
-  return createsTopLevelThread && promachosModels !== null && promachosModels.length > 0
+  return createsTopLevelThread && promachosPicksModel(promachosModels)
     ? { ...input, prismRole: "promachos" }
     : input;
+}
+
+/**
+ * Whether Prism picks the model for a new conversation. When it does, the
+ * composer offers no multiple-model start: each started thread would be a
+ * new Promachos conversation, and Prism, not the picker, chooses its model.
+ */
+export function promachosPicksModel(promachosModels: ReadonlyArray<unknown> | null): boolean {
+  return promachosModels !== null && promachosModels.length > 0;
 }
 
 /**

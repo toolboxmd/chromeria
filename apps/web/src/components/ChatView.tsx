@@ -535,7 +535,7 @@ import {
 } from "./chat/composerPromptHistory";
 import { usePromachosInlineCardHost } from "./promachos/PromachosChat";
 import { usePromachosChat } from "./promachos/promachosMode";
-import { withPromachosStart } from "./promachos/promachosStart";
+import { promachosPicksModel, withPromachosStart } from "./promachos/promachosStart";
 
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_QUEUED_MESSAGES: QueuedComposerMessage[] = [];
@@ -10019,10 +10019,12 @@ export default function ChatView(props: ChatViewProps) {
                         <div ref={attachDraftHeroComposerAnchorRef} className="relative z-10">
                           <ChatComposer
                             inlineCardHost={promachosCardHost.composerHost}
-                            multipleModelSelections={multipleModelSelections}
+                            multipleModelSelections={
+                              promachosPicksModel(promachosModels) ? null : multipleModelSelections
+                            }
                             supportsMultipleModels={
                               serverConfig?.environment.capabilities.requiredWorktreeBootstrap ===
-                              true
+                                true && !promachosPicksModel(promachosModels)
                             }
                             onMultipleModelSelectionsChange={setMultipleModelSelections}
                             composerRef={composerRef}
