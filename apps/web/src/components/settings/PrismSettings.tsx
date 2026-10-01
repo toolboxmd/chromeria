@@ -75,13 +75,18 @@ import {
 type ModelChoice = ReturnType<typeof prismModelChoices>[number];
 
 /** The planner is whoever submits the job; it is not configured here. */
-const PAGE_ROLES = ["dispatcher", "worker", "reviewer", "retry", "escalation"] as const;
+const PAGE_ROLES = ["promachos", "dispatcher", "worker", "reviewer", "retry", "escalation"] as const;
 type PageRole = (typeof PAGE_ROLES)[number];
 
 const ROLE_DETAILS: Record<
   PageRole,
   { icon: ReactNode; description: string; lockedReason?: string }
 > = {
+  promachos: {
+    icon: <RouteIcon />,
+    description: "Starts a new Promachos conversation on the first model with capacity.",
+    lockedReason: "Every new Promachos conversation starts from this list.",
+  },
   dispatcher: {
     icon: <RouteIcon />,
     description: "Owns a job: runs workers, handles problems and delivers one PR.",

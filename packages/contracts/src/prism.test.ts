@@ -10,20 +10,37 @@ const decodeKitsPatch = Schema.decodeSync(PrismRoleKitsPatch);
 const encodeKits = Schema.encodeSync(PrismRoleKits);
 
 describe("Prism role kits", () => {
-  it("default the six roles to no preferred models", () => {
-    expect(Object.keys(DEFAULT_PRISM_ROLE_KITS).toSorted()).toEqual([
-      "dispatcher",
-      "escalation",
-      "planner",
-      "retry",
-      "reviewer",
-      "worker",
-    ]);
+  it("defaults every role to no preferred models", () => {
+    for (const kit of Object.values(DEFAULT_PRISM_ROLE_KITS)) {
+      if ("models" in kit) expect(kit.models).toEqual([]);
+    }
+    expect(DEFAULT_PRISM_ROLE_KITS.promachos.models).toEqual([]);
     expect(DEFAULT_PRISM_ROLE_KITS.worker.lanes).toEqual({ easy: [], medium: [], hard: [] });
     expect(DEFAULT_PRISM_ROLE_KITS.dispatcher.models).toEqual([]);
     expect(DEFAULT_PRISM_ROLE_KITS.retry.enabled).toBe(true);
     expect(DEFAULT_PRISM_ROLE_KITS.escalation.enabled).toBe(true);
     expect("enabled" in DEFAULT_PRISM_ROLE_KITS.reviewer).toBe(false);
+  });
+
+  it("preserves the Promachos preference order and effort through saved settings", () => {
+    const models = [
+      { instanceId: "codex", model: "gpt-6.1-sol", effort: "high" },
+      { instanceId: "claudeAgent", model: "claude-opus-5-5" },
+    ];
+    const settings = decodeServerSettings({ prismRoles: { promachos: { models } } });
+    expect(encodeKits(settings.prismRoles).promachos).toMatchObject({ models });
+    expect(decodeKitsPatch({ promachos: { models } })).toEqual({ promachos: { models } });
+    expect(
+      decodeProjectOverrides({ prismRoles: { promachos: { models } } }).prismRoles?.promachos
+        .models,
+    ).toEqual(models);
+  });
+
+  it("loads older settings without a Promachos kit and permits clearing its preferences", () => {
+    const old = decodeServerSettings({ prismRoles: { dispatcher: { instructions: "Lead." } } });
+    expect(old.prismRoles.promachos.models).toEqual([]);
+    expect(old.prismRoles.dispatcher.instructions).toBe("Lead.");
+    expect(decodeKitsPatch({ promachos: { models: [] } })).toEqual({ promachos: { models: [] } });
   });
 
   it("ship no role instructions or skills by default", () => {

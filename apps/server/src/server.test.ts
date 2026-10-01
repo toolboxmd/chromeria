@@ -5,6 +5,10 @@ import * as NodeCrypto from "node:crypto";
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 
 import {
+  type ClientOrchestrationCommand,
+  type PrismModelPreference,
+  type ServerProvider,
+  type ServerSettings as ServerSettingsValue,
   type DeviceServiceState,
   AuthAccessTokenType,
   AuthStandardClientScopes,
@@ -234,6 +238,68 @@ const defaultModelSelection = {
   instanceId: ProviderInstanceId.make("codex"),
   model: "gpt-5-codex",
 } as const;
+
+// Fixture-only RPC proof: no provider runtime or subscription account is contacted.
+const promachosProvider = (driver: string, usedPercent = 0): ServerProvider => ({
+  instanceId: ProviderInstanceId.make(driver),
+  driver: ProviderDriverKind.make(driver),
+  enabled: true,
+  installed: true,
+  version: null,
+  status: "ready",
+  auth: { status: "authenticated" },
+  checkedAt: "2026-01-01T00:00:00.000Z",
+  models: [{ slug: `${driver}-model`, name: "Fixture model", isCustom: false, capabilities: null }],
+  slashCommands: [],
+  skills: [],
+  usageLimits: {
+    checkedAt: "2026-01-01T00:00:00.000Z",
+    windows: [{ id: "session", kind: "session", label: "Fixture limit", usedPercent }],
+  },
+});
+const promachosPreference = (driver: string, effort?: string): PrismModelPreference => ({
+  instanceId: ProviderInstanceId.make(driver),
+  model: `${driver}-model`,
+  ...(effort === undefined ? {} : { effort }),
+});
+const promachosSettings = (models: ReadonlyArray<PrismModelPreference>): ServerSettingsValue => ({
+  ...DEFAULT_SERVER_SETTINGS,
+  prismRoles: {
+    ...DEFAULT_SERVER_SETTINGS.prismRoles,
+    promachos: { ...DEFAULT_SERVER_SETTINGS.prismRoles.promachos, models },
+  },
+});
+const promachosCommand = (): Extract<
+  ClientOrchestrationCommand,
+  { type: "thread.turn.start" }
+> => ({
+  type: "thread.turn.start",
+  commandId: CommandId.make("cmd-promachos-start"),
+  threadId: ThreadId.make("promachos-conversation"),
+  prismRole: "promachos",
+  message: {
+    messageId: MessageId.make("msg-promachos-start"),
+    role: "user",
+    text: "Hello",
+    attachments: [],
+  },
+  modelSelection: defaultModelSelection,
+  runtimeMode: "full-access",
+  interactionMode: "default",
+  createdAt: "2026-01-01T00:00:00.000Z",
+  bootstrap: {
+    createThread: {
+      projectId: defaultProjectId,
+      title: "Promachos conversation",
+      modelSelection: defaultModelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    },
+  },
+});
 
 const providerSetupInstanceId = ProviderInstanceId.make("antigravity-custom-profile");
 const providerSetupDriver = ProviderDriverKind.make("antigravity");
@@ -7731,6 +7797,252 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(persisted, "written-by-rpc");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
+
+  for (const { exhausted, effort } of [
+    { exhausted: false, effort: "high" },
+    { exhausted: true, effort: "high" },
+    { exhausted: false, effort: undefined },
+  ]) {
+    it.effect(
+      `Promachos RPC selects ${exhausted ? "the next model when the first is exhausted" : "the first configured model"} ${effort ? "with effort" : "without effort"}`,
+      () =>
+        Effect.gen(function* () {
+          const dispatched: OrchestrationCommand[] = [];
+          yield* buildAppUnderTest({
+            layers: {
+              providerRegistry: {
+                getProviders: Effect.succeed([
+                  promachosProvider("codex", exhausted ? 100 : 0),
+                  promachosProvider("opencode"),
+                ]),
+              },
+              serverSettings: {
+                getSettings: Effect.succeed(
+                  promachosSettings([
+                    promachosPreference("codex", effort),
+                    promachosPreference("opencode", "medium"),
+                  ]),
+                ),
+              },
+              orchestrationEngine: {
+                dispatch: (command) =>
+                  Effect.sync(() => {
+                    dispatched.push(command);
+                    return { sequence: 1 };
+                  }),
+              },
+            },
+          });
+          const wsUrl = yield* getWsServerUrl("/ws");
+          const response = yield* Effect.scoped(
+            withWsRpcClient(wsUrl, (client) =>
+              client[ORCHESTRATION_WS_METHODS.dispatchCommand](promachosCommand()),
+            ),
+          );
+          assert.equal(response.sequence, 1);
+          assert.deepEqual(
+            dispatched.map((entry) => entry.type),
+            ["thread.create", "thread.message.user.append", "thread.turn.start"],
+          );
+          const command = dispatched.find((entry) => entry.type === "thread.turn.start");
+          if (command?.type !== "thread.turn.start")
+            return assert.fail("Expected normalized turn start");
+          const expected = exhausted
+            ? {
+                instanceId: ProviderInstanceId.make("opencode"),
+                model: "opencode-model",
+                options: [{ id: "variant", value: "medium" }],
+              }
+            : {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: "codex-model",
+                ...(effort ? { options: [{ id: "reasoningEffort", value: "high" }] } : {}),
+              };
+          assert.deepEqual(command.modelSelection, expected);
+          const created = dispatched.find((entry) => entry.type === "thread.create");
+          assert.deepEqual(created?.modelSelection, expected);
+          assert.notProperty(command, "bootstrap");
+          assert.notProperty(command, "prismRole");
+          assert.equal(command.createdAt, "1970-01-01T00:00:00.000Z");
+          assert.equal(created?.createdAt, command.createdAt);
+          assert.deepEqual(command.message, promachosCommand().message);
+        }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    );
+  }
+
+  for (const [driver, optionId] of [
+    ["codex", "reasoningEffort"],
+    ["grok", "reasoningEffort"],
+    ["opencode", "variant"],
+    ["claudeAgent", "effort"],
+    ["cursor", "effort"],
+    ["antigravity", "effort"],
+  ] as const) {
+    it.effect(
+      `Promachos RPC maps ${driver} effort to ${optionId} and honors project preferences`,
+      () =>
+        Effect.gen(function* () {
+          const dispatched: OrchestrationCommand[] = [];
+          const projectSettings = promachosSettings([promachosPreference(driver, "high")]);
+          yield* buildAppUnderTest({
+            layers: {
+              providerRegistry: { getProviders: Effect.succeed([promachosProvider(driver)]) },
+              serverSettings: {
+                getSettings: Effect.succeed({
+                  ...promachosSettings([]),
+                  projectSettingsOverrides: {
+                    [defaultProjectId]: { prismRoles: projectSettings.prismRoles },
+                  },
+                }),
+              },
+              orchestrationEngine: {
+                dispatch: (command) =>
+                  Effect.sync(() => {
+                    dispatched.push(command);
+                    return { sequence: 1 };
+                  }),
+              },
+            },
+          });
+          const wsUrl = yield* getWsServerUrl("/ws");
+          yield* Effect.scoped(
+            withWsRpcClient(wsUrl, (client) =>
+              client[ORCHESTRATION_WS_METHODS.dispatchCommand](promachosCommand()),
+            ),
+          );
+          const command = dispatched.find((entry) => entry.type === "thread.turn.start");
+          if (command?.type !== "thread.turn.start")
+            return assert.fail("Expected normalized turn start");
+          assert.deepEqual(command.modelSelection, {
+            instanceId: ProviderInstanceId.make(driver),
+            model: `${driver}-model`,
+            options: [{ id: optionId, value: "high" }],
+          });
+          assert.deepEqual(
+            dispatched.find((entry) => entry.type === "thread.create")?.modelSelection,
+            command.modelSelection,
+          );
+        }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    );
+  }
+
+  for (const invalid of [
+    "absent bootstrap",
+    "absent createThread",
+    "existing thread",
+    "child thread",
+    "empty preferences",
+    "all exhausted",
+  ] as const) {
+    it.effect(`Promachos RPC refuses ${invalid} before orchestration dispatch`, () =>
+      Effect.gen(function* () {
+        const dispatched: OrchestrationCommand[] = [];
+        const command = promachosCommand();
+        const input =
+          invalid === "absent bootstrap"
+            ? { ...command, bootstrap: undefined }
+            : invalid === "absent createThread"
+              ? { ...command, bootstrap: {} }
+              : invalid === "child thread"
+                ? { ...command, threadId: ThreadId.make("sub.parent.promachos-1") }
+                : command;
+        yield* buildAppUnderTest({
+          layers: {
+            providerRegistry: {
+              getProviders: Effect.succeed([
+                promachosProvider("codex", invalid === "all exhausted" ? 100 : 0),
+                promachosProvider("opencode", invalid === "all exhausted" ? 100 : 0),
+              ]),
+            },
+            serverSettings: {
+              getSettings: Effect.succeed(
+                promachosSettings(
+                  invalid === "empty preferences"
+                    ? []
+                    : [promachosPreference("codex"), promachosPreference("opencode")],
+                ),
+              ),
+            },
+            projectionSnapshotQuery: {
+              getThreadShellById: () =>
+                invalid === "existing thread"
+                  ? Effect.succeedSome(makeDefaultOrchestrationThreadShell())
+                  : Effect.succeedNone,
+            },
+            orchestrationEngine: {
+              dispatch: (command) =>
+                Effect.sync(() => {
+                  dispatched.push(command);
+                  return { sequence: 1 };
+                }),
+            },
+          },
+        });
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const result = yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.dispatchCommand](input).pipe(Effect.result),
+          ),
+        );
+        if (
+          result._tag !== "Failure" ||
+          result.failure._tag !== "OrchestrationDispatchCommandError"
+        )
+          return assert.fail("Expected a typed start refusal");
+        if (invalid === "empty preferences" || invalid === "all exhausted") {
+          assert.include(result.failure.message, "No eligible model");
+          if (invalid === "all exhausted")
+            assert.include(result.failure.message, "usage limit reached");
+        } else assert.include(result.failure.message, "new top-level conversation");
+        assert.deepEqual(dispatched, []);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    );
+  }
+
+  for (const bootstrap of [false, true]) {
+    it.effect(
+      `Promachos RPC preserves unflagged ${bootstrap ? "bootstrap" : "existing conversation"} starts`,
+      () =>
+        Effect.gen(function* () {
+          const dispatched: OrchestrationCommand[] = [];
+          const { prismRole: _role, bootstrap: initialBootstrap, ...turn } = promachosCommand();
+          const input = { ...turn, ...(bootstrap ? { bootstrap: initialBootstrap } : {}) };
+          yield* buildAppUnderTest({
+            layers: {
+              providerRegistry: {
+                getProviders: Effect.die("Unflagged starts must not resolve Prism providers"),
+              },
+              serverSettings: {
+                getSettings: Effect.die("Unflagged starts must not resolve Prism settings"),
+              },
+              orchestrationEngine: {
+                dispatch: (command) =>
+                  Effect.sync(() => {
+                    dispatched.push(command);
+                    return { sequence: 1 };
+                  }),
+              },
+            },
+          });
+          const wsUrl = yield* getWsServerUrl("/ws");
+          yield* Effect.scoped(
+            withWsRpcClient(wsUrl, (client) =>
+              client[ORCHESTRATION_WS_METHODS.dispatchCommand](input),
+            ),
+          );
+          const command = dispatched.find((entry) => entry.type === "thread.turn.start");
+          if (command?.type !== "thread.turn.start")
+            return assert.fail("Expected normalized turn start");
+          assert.deepEqual(command.modelSelection, defaultModelSelection);
+          assert.deepEqual(command.message, input.message);
+          assert.equal(
+            dispatched.find((entry) => entry.type === "thread.create")?.modelSelection.model,
+            bootstrap ? "gpt-5-codex" : undefined,
+          );
+          assert.notProperty(command, "prismRole");
+        }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    );
+  }
 
   it.effect("creates a missing workspace root during websocket project.create dispatch", () =>
     Effect.gen(function* () {

@@ -15,6 +15,7 @@ import { ProviderInstanceId } from "./providerInstance.ts";
  * `spawn_thread(role)` applies them directly.
  */
 export const PRISM_ROLES = [
+  "promachos",
   "planner",
   "dispatcher",
   "reviewer",
@@ -69,6 +70,7 @@ export type PrismSwitchableRole = (typeof PRISM_SWITCHABLE_ROLES)[number];
 
 /** Names shown to people. */
 export const PRISM_ROLE_LABELS: Record<PrismRole, string> = {
+  promachos: "Promachos",
   planner: "Planner",
   dispatcher: "Dispatcher",
   reviewer: "Reviewer",
@@ -125,6 +127,7 @@ const switchable = {
 };
 
 const roleKits = Schema.Struct({
+  promachos: singleListKit({}),
   planner: singleListKit({}),
   dispatcher: singleListKit({}),
   reviewer: singleListKit({}),
@@ -180,6 +183,7 @@ const switchableKitPatch = Schema.Struct({
 
 /** Per-role, per-field, per-lane update; arrays (skills, a model list) replace whole. */
 export const PrismRoleKitsPatch = Schema.Struct({
+  promachos: Schema.optionalKey(singleListKitPatch),
   planner: Schema.optionalKey(singleListKitPatch),
   dispatcher: Schema.optionalKey(singleListKitPatch),
   reviewer: Schema.optionalKey(singleListKitPatch),

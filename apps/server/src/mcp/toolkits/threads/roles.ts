@@ -86,3 +86,22 @@ export function roleTaskMessage(kit: PrismRoleKit, task: string): string {
   ];
   return parts.filter((part) => part.length > 0).join("\n\n");
 }
+
+/**
+ * Provider option id that carries reasoning effort, per driver. Codex and
+ * Grok advertise `reasoningEffort`, OpenCode advertises `variant`, and
+ * Claude, Cursor and Antigravity read `effort`. ModelSelection options are
+ * free-form id/value pairs that adapters ignore when unknown, so sending
+ * `effort` to Antigravity (which has no effort control) is a harmless no-op.
+ */
+export function effortOptionId(driverKind: string): string {
+  switch (driverKind) {
+    case "codex":
+    case "grok":
+      return "reasoningEffort";
+    case "opencode":
+      return "variant";
+    default:
+      return "effort";
+  }
+}

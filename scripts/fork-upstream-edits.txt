@@ -121,3 +121,6 @@ apps/server/src/orchestration/Layers/ProviderCommandReactor.ts
 # Issue detail in the thread right panel (#120)
 apps/web/src/rightPanelStore.ts
 apps/web/src/rightPanelStore.test.ts
+
+# Promachos initial Prism selection (#115)
+packages/contracts/src/orchestration.ts
