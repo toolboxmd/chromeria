@@ -725,3 +725,43 @@ for per-match decisions and the absorption PR record.
   "keywords": ["Promachos", "chat bubbles", "bubble", "chat-first", "inline approval"]
 }
 ```
+
+## Wight mode
+
+```json
+{
+  "id": "wight-mode",
+  "purpose": "Continue idle threads within a timer and provider-instance usage limit.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/117"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/127"],
+  "newFiles": [
+    "apps/server/src/mcp/toolkits/threads/wightAdmission.test.ts",
+    "apps/server/src/mcp/toolkits/threads/wightMode.test.ts",
+    "apps/server/src/mcp/toolkits/threads/wightToolkit.test.ts",
+    "apps/server/src/mcp/toolkits/threads/wightMode.ts",
+    "apps/web/src/components/chat/WightModeControl.tsx",
+    "apps/web/src/components/settings/WightLimitSetting.tsx",
+    "apps/web/src/wightMode.test.ts",
+    "apps/web/src/wightMode.ts",
+    "packages/contracts/src/wight.ts"
+  ],
+  "upstreamFiles": [
+    "apps/server/src/orchestration/Layers/OrchestrationEngine.ts",
+    "apps/server/src/orchestration/decider.ts",
+    "apps/web/src/components/settings/ProviderInstanceCard.tsx",
+    "docs/user/thread-sidebar.md",
+    "packages/contracts/src/orchestration.ts",
+    "packages/contracts/src/providerInstance.ts",
+    "packages/shared/src/serverSettings.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/mcp/toolkits/threads/childUsageLimitResume.test.ts",
+    "apps/server/src/mcp/toolkits/threads/handlers.testFixtures.ts",
+    "apps/server/src/mcp/toolkits/threads/handlers.ts",
+    "apps/web/src/components/chat/ChatHeader.tsx",
+    "packages/contracts/src/index.ts",
+    "packages/contracts/src/settings.ts"
+  ],
+  "keywords": ["Wight", "idle continuation", "wightLimitPercent", "wightModes"]
+}
+```
