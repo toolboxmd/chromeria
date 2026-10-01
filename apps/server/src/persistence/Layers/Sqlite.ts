@@ -6,6 +6,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { runMigrations } from "../Migrations.ts";
+import { ensureThreadPeopleSchema } from "../forkThreadPeopleSchema.ts";
 import { ServerConfig } from "../../config.ts";
 
 // Size the -wal file is cut back to on the first commit after a WAL reset.
@@ -22,6 +23,7 @@ const setup = Layer.effectDiscard(
     // largest size until the last connection closes.
     yield* sql.unsafe(`PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES};`);
     yield* runMigrations();
+    yield* ensureThreadPeopleSchema;
   }),
 );
 

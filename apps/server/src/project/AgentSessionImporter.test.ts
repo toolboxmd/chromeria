@@ -128,6 +128,7 @@ const makeProjectedThread = (input: {
     pullRequests: [],
     branch: null,
     worktreePath: null,
+    coOwners: [],
     latestTurn: null,
     createdAt: sourceThread.createdAt,
     updatedAt: sourceThread.updatedAt,

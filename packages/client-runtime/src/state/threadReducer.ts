@@ -114,6 +114,8 @@ export function applyThreadDetailEvent(
       return {
         kind: "updated",
         thread: {
+          owner: event.payload.owner ?? null,
+          coOwners: [],
           id: event.payload.threadId,
           projectId: event.payload.projectId,
           title: event.payload.title,
@@ -142,6 +144,13 @@ export function applyThreadDetailEvent(
           checkpoints: [],
           session: null,
         },
+      };
+
+    // Fork: thread sharing (toolboxmd/chromeria#121).
+    case "thread.sharing-set":
+      return {
+        kind: "updated",
+        thread: { ...thread, coOwners: event.payload.coOwners, updatedAt: event.payload.updatedAt },
       };
 
     case "thread.deleted":

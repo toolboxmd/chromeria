@@ -37,6 +37,7 @@ function makeReadModel(input: {
         branch: null,
         worktreePath: null,
         pullRequests: [],
+        coOwners: [],
         latestTurn: null,
         createdAt: NOW,
         updatedAt: NOW,

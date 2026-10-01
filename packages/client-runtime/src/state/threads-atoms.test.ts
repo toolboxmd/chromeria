@@ -58,6 +58,7 @@ const TARGET = new PrimaryConnectionTarget({
 });
 const THREAD_ID = ThreadId.make("thread-1");
 const THREAD: OrchestrationThread = {
+  coOwners: [],
   id: THREAD_ID,
   projectId: ProjectId.make("project-1"),
   title: "Cached thread",

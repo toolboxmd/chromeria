@@ -52,6 +52,7 @@ const thread = (
   branch: null,
   worktreePath: null,
   pullRequests: [],
+  coOwners: [],
   latestTurn: {
     turnId: TurnId.make(turnId),
     state: "error",

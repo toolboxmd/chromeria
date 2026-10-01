@@ -85,6 +85,7 @@ describe("scoped entity keys", () => {
 });
 
 const THREAD_SHELL = {
+  coOwners: [],
   id: THREAD_ID,
   projectId: PROJECT_ID,
   title: "Thread",

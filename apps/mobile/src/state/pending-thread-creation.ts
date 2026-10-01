@@ -137,6 +137,7 @@ export function pendingThreadCreationShell(
     return null;
   }
   return {
+    coOwners: [],
     environmentId: message.environmentId,
     id: message.threadId,
     projectId: creation.projectId,

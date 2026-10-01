@@ -1221,7 +1221,9 @@ export function deriveMessagesTimelineRows(input: {
       if (
         timelineEntry.entry.agentSpawn !== undefined ||
         timelineEntry.entry.questionAnswer !== undefined ||
-        timelineEntry.entry.tone === "error"
+        timelineEntry.entry.tone === "error" ||
+        // Fork: sharing changes are their own row, never folded into tool work (#121).
+        timelineEntry.entry.sourceActivityKind === "thread.sharing"
       ) {
         const spawn = timelineEntry.entry.agentSpawn;
         if (spawn && entryBelongsToActiveTurn(timelineEntry, index)) {
@@ -1248,6 +1250,7 @@ export function deriveMessagesTimelineRows(input: {
           nextEntry.entry.agentSpawn !== undefined ||
           nextEntry.entry.questionAnswer !== undefined ||
           nextEntry.entry.sourceActivityKind === "context-compaction" ||
+          nextEntry.entry.sourceActivityKind === "thread.sharing" ||
           nextEntry.entry.tone === "error" ||
           activeWorkEntryIds.has(nextEntry.id) ||
           collapsedEntryIds.has(nextEntry.id) ||

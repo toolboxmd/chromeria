@@ -153,6 +153,23 @@ const scenario = <E>(body: (directory: string, database: string) => Effect.Effec
   }).pipe(Effect.scoped);
 
 describe("Spectrum server orchestration", () => {
+  it.effect("inherits the caller's owner for the Spectrum and every participant", () =>
+    scenario((directory, database) =>
+      withServer(
+        database,
+        Effect.gen(function* () {
+          yield* createParent(directory, "full-access", "Pauli");
+          const started = yield* callTool("start_spectrum", input("council"));
+          expect((yield* detail(started.threadId)).owner).toBe("Pauli");
+          expect(started.participants).toHaveLength(2);
+          for (const participant of started.participants) {
+            expect((yield* detail(participant.threadId)).owner).toBe("Pauli");
+          }
+        }),
+      ),
+    ),
+  );
+
   it.effect(
     "relays every full message, waits for all Colors in two rounds, then synthesizes without a Spectrum provider",
     () =>

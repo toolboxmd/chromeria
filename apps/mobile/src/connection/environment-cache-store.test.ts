@@ -87,6 +87,7 @@ describe("mobile SQLite environment cache store", () => {
         const snapshot: OrchestrationThreadDetailSnapshot = {
           snapshotSequence: 2,
           thread: {
+            coOwners: [],
             id: ThreadId.make("thread-1"),
             projectId: ProjectId.make("project-1"),
             title: "Thread",

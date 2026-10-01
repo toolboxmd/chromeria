@@ -87,6 +87,7 @@ function checkpoint(turnId: string, turnCount: number): OrchestrationThread["che
 }
 
 const BASE_THREAD: OrchestrationThread = {
+  coOwners: [],
   id: THREAD_ID,
   projectId: ProjectId.make("project-1"),
   title: "Windowed thread",

@@ -386,6 +386,7 @@ describe("streaming row projection", () => {
     });
     const liveMessage = initial.messages.at(-1)!;
     let thread: OrchestrationThread = {
+      coOwners: [],
       id: ThreadId.make("streaming-thread"),
       projectId: ProjectId.make("project"),
       title: "Long thread",

@@ -28,6 +28,12 @@ export function promachosTimelineRows(rows: MessagesTimelineRow[]): MessagesTime
       case "worktree-setup":
         conversation.push(row);
         break;
+      case "work":
+        // Sharing changes stay in the chat (toolboxmd/chromeria#121).
+        if (row.groupedEntries.every((entry) => entry.sourceActivityKind === "thread.sharing")) {
+          conversation.push(row);
+        }
+        break;
       case "queued-message":
         queued.push(row);
         break;

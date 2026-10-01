@@ -88,7 +88,7 @@ describe("spawn into another project", () => {
             yield* withServer(
               NodePath.join(directory, "state.sqlite"),
               Effect.gen(function* () {
-                yield* createParent(directory);
+                yield* createParent(directory, "full-access", "Pauli");
                 yield* createTarget(targetRoot);
                 yield* setCallerWorkspace();
                 const reactor = yield* ProviderCommandReactor;
@@ -114,6 +114,7 @@ describe("spawn into another project", () => {
                 yield* reactor.drain;
                 const thread = yield* detail(result.threadId);
                 expect(thread.projectId).toBe(TARGET);
+                expect(thread.owner).toBe("Pauli");
                 expect(thread.branch).toBe(environment === "local" ? null : "target-only");
                 expect(thread.worktreePath).toBe(environment === "local" ? null : targetWorktree);
                 expect(launched).toHaveLength(1);

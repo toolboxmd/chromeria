@@ -77,6 +77,7 @@ const SHELL = {
 const THREAD = {
   snapshotSequence: 2,
   thread: {
+    coOwners: [],
     id: ThreadId.make("thread-1"),
     projectId: ProjectId.make("project-1"),
     title: "Thread",

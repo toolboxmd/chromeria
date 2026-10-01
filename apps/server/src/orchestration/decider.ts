@@ -1,6 +1,7 @@
 import { isSpectrumThreadId } from "../mcp/toolkits/threads/spectrumIdentity.ts";
 import {
   EventId,
+  threadOwner,
   MAX_SCRIPT_ID_LENGTH,
   SCRIPT_RUN_COMMAND_PATTERN,
   MessageId,
@@ -401,6 +402,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           projectId: command.projectId,
           title: command.title,
+          owner: command.owner ?? null,
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,
           interactionMode: command.interactionMode,
@@ -410,6 +412,92 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: command.createdAt,
         },
       };
+    }
+
+    case "thread.share":
+    case "thread.unshare":
+    case "thread.leave": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      const owner = threadOwner(thread);
+      const coOwners = thread.coOwners ?? [];
+      if (command.type === "thread.share" && command.coOwner === owner) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The owner cannot be a co-owner.",
+        });
+      }
+      if (command.type === "thread.unshare" && command.actor !== owner) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Only the owner can stop sharing a thread.",
+        });
+      }
+      if (command.type === "thread.leave" && !coOwners.includes(command.actor)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Only a current co-owner can leave a shared thread.",
+        });
+      }
+      const nextCoOwners =
+        command.type === "thread.share"
+          ? [...new Set([...coOwners, command.coOwner])]
+          : command.type === "thread.unshare"
+            ? []
+            : coOwners.filter((person) => person !== command.actor);
+      const action =
+        command.type === "thread.share"
+          ? "shared"
+          : command.type === "thread.unshare"
+            ? "unshared"
+            : "left";
+      const summary =
+        command.type === "thread.share"
+          ? `${command.actor} shared this thread with ${command.coOwner}`
+          : command.type === "thread.unshare"
+            ? `${command.actor} stopped sharing this thread`
+            : `${command.actor} left this shared thread`;
+      const sharing = {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.sharing-set" as const,
+        payload: {
+          threadId: command.threadId,
+          coOwners: nextCoOwners,
+          action,
+          actor: command.actor,
+          updatedAt: command.createdAt,
+        },
+      };
+      // A repeated share is a state no-op and does not append another activity.
+      if (command.type === "thread.share" && coOwners.includes(command.coOwner)) return sharing;
+      return [
+        sharing,
+        {
+          ...(yield* withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          })),
+          type: "thread.activity-appended" as const,
+          payload: {
+            threadId: command.threadId,
+            activity: {
+              id: EventId.make(`sharing:${command.commandId}`),
+              kind: "thread.sharing",
+              summary,
+              tone: "info" as const,
+              turnId: null,
+              createdAt: command.createdAt,
+              payload: { action, actor: command.actor, coOwners: nextCoOwners },
+            },
+          },
+        },
+      ];
     }
 
     case "thread.delete": {

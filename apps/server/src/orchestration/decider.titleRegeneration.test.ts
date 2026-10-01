@@ -27,6 +27,7 @@ const readModel: OrchestrationReadModel = {
       branch: null,
       worktreePath: null,
       pullRequests: [],
+      coOwners: [],
       latestTurn: null,
       createdAt: UPDATED_AT,
       updatedAt: UPDATED_AT,

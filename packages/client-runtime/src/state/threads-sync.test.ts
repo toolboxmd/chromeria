@@ -58,6 +58,7 @@ const PREPARED: PreparedConnection = {
   target: TARGET,
 };
 const BASE_THREAD: OrchestrationThread = {
+  coOwners: [],
   id: THREAD_ID,
   projectId: ProjectId.make("project-1"),
   title: "Cached thread",

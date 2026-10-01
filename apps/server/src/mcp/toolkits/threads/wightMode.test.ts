@@ -30,6 +30,7 @@ const thread = (id = ID): OrchestrationThreadShell => ({
   branch: null,
   worktreePath: null,
   pullRequests: [],
+  coOwners: [],
   latestTurn: null,
   createdAt: iso(0),
   updatedAt: iso(0),
@@ -80,6 +81,7 @@ const harness = (initial: ServerSettings, initialThreads = [thread()]) =>
           sends.push({ id: entry.id, text });
           threads.set(entry.id, {
             ...entry,
+            coOwners: [],
             latestTurn: {
               turnId: TurnId.make(`turn-${sends.length}`),
               state: "running",

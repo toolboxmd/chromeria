@@ -47,6 +47,7 @@ function detail(
 ) {
   const threadId = ThreadId.make(id);
   const thread: OrchestrationThread = {
+    coOwners: [],
     id: threadId,
     projectId: ProjectId.make("project"),
     title: id,

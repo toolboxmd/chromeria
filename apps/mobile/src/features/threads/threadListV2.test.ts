@@ -44,6 +44,7 @@ function makeThread(
   input: Partial<EnvironmentThreadShell> & Pick<EnvironmentThreadShell, "id" | "title">,
 ): EnvironmentThreadShell {
   return {
+    coOwners: [],
     environmentId,
     projectId: ProjectId.make("project-1"),
     modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },

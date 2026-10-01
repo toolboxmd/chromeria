@@ -22,6 +22,7 @@ import { applyThreadDetailEvent } from "./state/threadReducer.ts";
 
 const timestamp = "2026-09-01T00:00:00.000Z";
 const thread: OrchestrationThread = {
+  coOwners: [],
   id: ThreadId.make("thread-1"),
   projectId: ProjectId.make("project-1"),
   title: "Remote thread",

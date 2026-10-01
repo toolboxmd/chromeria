@@ -1,5 +1,6 @@
 import {
   CommandId,
+  threadOwner,
   EventId,
   MessageId,
   ProviderInstanceId,
@@ -842,6 +843,7 @@ const make = Effect.gen(function* () {
             `server:mcp-threads-create:${parent.id}:${callerRetirement?.cutoffSequence ?? 0}:${yield* uuid}`,
           ),
           threadId: childId,
+          owner: threadOwner(parent),
           projectId,
           title: input.title ?? `${titlePrefix}: ${input.task.slice(0, 60)}`,
           modelSelection,

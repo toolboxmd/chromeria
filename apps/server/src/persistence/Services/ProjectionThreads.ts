@@ -8,6 +8,7 @@
  */
 import {
   CommandId,
+  TrimmedNonEmptyString,
   IsoDateTime,
   ModelSelection,
   NonNegativeInt,
@@ -30,6 +31,8 @@ export const ProjectionThread = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
   title: Schema.String,
+  owner: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  coOwners: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   titleState: Schema.optional(Schema.NullOr(ThreadTitleState)),
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
