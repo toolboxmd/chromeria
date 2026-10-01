@@ -50,6 +50,34 @@ describe("child thread tree", () => {
       "failed",
     );
   });
+
+  it("shows a stopped thread as stopped even when its last turn never finished", () => {
+    for (const state of ["running", "error"]) {
+      expect(
+        threadShellStatus({
+          session: { status: "interrupted" },
+          latestTurn: { state },
+        } as never),
+      ).toBe("interrupted");
+    }
+  });
+
+  it("shows a restarted thread by its current session, not its stopped turn", () => {
+    for (const status of ["running", "starting"]) {
+      expect(
+        threadShellStatus({
+          session: { status },
+          latestTurn: { state: "interrupted" },
+        } as never),
+      ).toBe("running");
+    }
+    expect(
+      threadShellStatus({
+        session: { status: "ready" },
+        latestTurn: { state: "completed" },
+      } as never),
+    ).toBe("idle");
+  });
 });
 
 describe("breadcrumb links", () => {
