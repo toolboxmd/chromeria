@@ -253,7 +253,10 @@ for per-match decisions and the absorption PR record.
     "https://github.com/toolboxmd/t3code/issues/19",
     "https://github.com/toolboxmd/chromeria/issues/93"
   ],
-  "prs": ["https://github.com/toolboxmd/t3code/pull/22"],
+  "prs": [
+    "https://github.com/toolboxmd/t3code/pull/22",
+    "https://github.com/toolboxmd/chromeria/pull/101"
+  ],
   "newFiles": [
     "apps/server/src/mcp/toolkits/prism/handlers.test.ts",
     "apps/server/src/mcp/toolkits/prism/handlers.ts",
