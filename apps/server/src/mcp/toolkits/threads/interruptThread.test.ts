@@ -10,7 +10,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
-import { INTERRUPT_SETTLE_TIMEOUT } from "./handlers.ts";
+import { INTERRUPT_SETTLE_TIMEOUT, INTERRUPT_TURN_START_TIMEOUT } from "./handlers.ts";
 import {
   callTool,
   createParent,
@@ -27,7 +27,7 @@ const interruptRequested = (threadId: string) => (event: OrchestrationEvent) =>
 /** A parent with one child whose session is in `status`, then `body` with the child id. */
 const withChild = <A, E, R>(
   prefix: string,
-  status: "running" | "ready",
+  status: "starting" | "running" | "ready",
   body: (child: ThreadId) => Effect.Effect<A, E, R>,
 ) =>
   Effect.gen(function* () {
@@ -96,6 +96,85 @@ describe("interrupt_thread", () => {
           turnId: "turn-1",
           status: "interrupted",
           statusAfter: "running",
+        });
+      }).pipe(Effect.scoped),
+    ),
+  );
+
+  it.effect("waits for a starting child's turn id and interrupts only that turn", () =>
+    withChild("t3-interrupt-starting-", "starting", (child) =>
+      Effect.gen(function* () {
+        const engine = yield* OrchestrationEngineService;
+        const events = yield* engine.subscribeDomainEvents;
+        const call = yield* callTool("interrupt_thread", {
+          threadId: child,
+          scope: "children",
+        }).pipe(Effect.forkScoped);
+        // The turn becomes active only now; the interrupt must name it.
+        yield* dispatchAll([session(child, "running", "turn-1")]);
+        const requested = yield* events.pipe(
+          Stream.filter(interruptRequested(child)),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        expect(
+          requested.type === "thread.turn-interrupt-requested" && requested.payload.turnId,
+        ).toBe("turn-1");
+        yield* dispatchAll([session(child, "interrupted", null)]);
+        expect(yield* Fiber.join(call)).toEqual({
+          threadId: child,
+          turnId: "turn-1",
+          status: "interrupted",
+          statusAfter: "stopped",
+        });
+      }).pipe(Effect.scoped),
+    ),
+  );
+
+  it.effect("sends nothing when a starting child reports no turn within the wait", () =>
+    withChild("t3-interrupt-no-turn-", "starting", (child) =>
+      Effect.gen(function* () {
+        const engine = yield* OrchestrationEngineService;
+        const events = yield* engine.subscribeDomainEvents;
+        const call = yield* callTool("interrupt_thread", {
+          threadId: child,
+          scope: "children",
+        }).pipe(Effect.forkScoped);
+        yield* TestClock.adjust(INTERRUPT_TURN_START_TIMEOUT);
+        expect(yield* Fiber.join(call)).toEqual({
+          threadId: child,
+          turnId: null,
+          status: "no_active_run",
+          statusAfter: "starting",
+        });
+        // The marker lands after anything the call dispatched, in order.
+        yield* dispatchAll([session(child, "running", "marker")]);
+        const seen = yield* events.pipe(
+          Stream.takeUntil(
+            (event) =>
+              event.type === "thread.session-set" &&
+              event.payload.session.activeTurnId === "marker",
+          ),
+          Stream.runCollect,
+        );
+        expect(seen.some(interruptRequested(child))).toBe(false);
+      }).pipe(Effect.scoped),
+    ),
+  );
+
+  it.effect("returns no_active_run when a starting child goes idle without a turn", () =>
+    withChild("t3-interrupt-start-idle-", "starting", (child) =>
+      Effect.gen(function* () {
+        const call = yield* callTool("interrupt_thread", {
+          threadId: child,
+          scope: "children",
+        }).pipe(Effect.forkScoped);
+        yield* dispatchAll([session(child, "ready", null)]);
+        expect(yield* Fiber.join(call)).toEqual({
+          threadId: child,
+          turnId: null,
+          status: "no_active_run",
+          statusAfter: "idle",
         });
       }).pipe(Effect.scoped),
     ),
