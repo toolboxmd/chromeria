@@ -533,6 +533,13 @@ import {
   ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
   recallableComposerPrompt,
 } from "./chat/composerPromptHistory";
+import { usePromachosInlineCardHost } from "./promachos/PromachosChat";
+import { usePromachosChat } from "./promachos/promachosMode";
+import {
+  promachosMultipleModelSelections,
+  promachosPicksModel,
+  withPromachosStart,
+} from "./promachos/promachosStart";
 
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_QUEUED_MESSAGES: QueuedComposerMessage[] = [];
@@ -2157,10 +2164,22 @@ export default function ChatView(props: ChatViewProps) {
     [activeThread?.environmentId, activeThread?.projectId],
   );
   const activeProject = useProject(activeProjectRef);
+  // Fork: threads in the Promachos home render as a chat in Promachos mode
+  // (toolboxmd/chromeria#116), with the composer's cards inline.
+  const promachosChat = usePromachosChat(activeProjectRef);
   // Environment settings with the active project's overrides applied.
   const activeProjectSettings = useMemo(
     () => resolveProjectSettings(settings, activeProject?.id ?? null, activeProject ?? undefined),
     [activeProject, settings],
+  );
+  // Fork: a new Promachos conversation starts on his Prism role's list (#115).
+  const promachosModels = promachosChat
+    ? activeProjectSettings.settings.prismRoles.promachos.models
+    : null;
+  // The saved fan-out stays in its atom for the standard view.
+  const viewMultipleModelSelections = promachosMultipleModelSelections(
+    multipleModelSelections,
+    promachosModels,
   );
   const activeProjectScripts = useMemo(
     () => (activeProject ? resolveProjectScripts(settings, activeProject) : []),
@@ -3535,6 +3554,11 @@ export default function ChatView(props: ChatViewProps) {
     activeThreadKey,
   );
   const displayedThreadRef = parseScopedThreadKey(displayedTimelineKey);
+  const promachosCardHost = usePromachosInlineCardHost({
+    enabled: promachosChat,
+    activeThreadKey,
+    displayedThreadKey: displayedTimeline.displayThreadKey,
+  });
   // Live stages of a bootstrap worktree setup. A worktree send creates the
   // server thread under the route's thread id before anything else, so the
   // stream is keyed by that id alone: no owner bookkeeping, and a remount,
@@ -8376,7 +8400,10 @@ export default function ChatView(props: ChatViewProps) {
       if (backgroundThreadRef) {
         beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
       }
-      const startPromise = startThreadTurn({
+      const startPromise = withPromachosStart(
+        startThreadTurn,
+        promachosModels,
+      )({
         environmentId,
         input: {
           threadId: threadIdForSend,
@@ -9304,7 +9331,7 @@ export default function ChatView(props: ChatViewProps) {
   );
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
-      if (multipleModelSelections !== null) return;
+      if (viewMultipleModelSelections !== null) return;
       if (canOverrideServerThreadEnvMode) {
         setPendingServerThreadEnvMode(mode);
         scheduleComposerFocus();
@@ -9327,7 +9354,7 @@ export default function ChatView(props: ChatViewProps) {
       composerDraftTarget,
       draftThread?.worktreePath,
       isLocalDraftThread,
-      multipleModelSelections,
+      viewMultipleModelSelections,
       activeProjectSettings.settings.newWorktreesStartFromOrigin,
       setPendingServerThreadEnvMode,
       scheduleComposerFocus,
@@ -9834,6 +9861,12 @@ export default function ChatView(props: ChatViewProps) {
             <div className="relative flex min-h-0 flex-1 flex-col bg-background">
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
+                {...(promachosChat
+                  ? {
+                      presentation: "promachos" as const,
+                      onInlineCardHost: promachosCardHost.timelineHostRef,
+                    }
+                  : {})}
                 citationRequest={paintOnlyDisplayedTimeline ? null : citationRequest}
                 citationHistoryLoading={threadDetailLoading}
                 {...(!paintOnlyDisplayedTimeline
@@ -9994,10 +10027,11 @@ export default function ChatView(props: ChatViewProps) {
                       <ComposerSurface.Host>
                         <div ref={attachDraftHeroComposerAnchorRef} className="relative z-10">
                           <ChatComposer
-                            multipleModelSelections={multipleModelSelections}
+                            inlineCardHost={promachosCardHost.composerHost}
+                            multipleModelSelections={viewMultipleModelSelections}
                             supportsMultipleModels={
                               serverConfig?.environment.capabilities.requiredWorktreeBootstrap ===
-                              true
+                                true && !promachosPicksModel(promachosModels)
                             }
                             onMultipleModelSelectionsChange={setMultipleModelSelections}
                             composerRef={composerRef}
@@ -10137,7 +10171,7 @@ export default function ChatView(props: ChatViewProps) {
                           {mountComposerContextStrip && (
                             <div className="pointer-events-auto">
                               <BranchToolbar
-                                forceNewWorktree={multipleModelSelections !== null}
+                                forceNewWorktree={viewMultipleModelSelections !== null}
                                 ref={branchToolbarRef}
                                 environmentId={activeThread.environmentId}
                                 threadId={activeThread.id}

@@ -137,3 +137,8 @@ apps/server/src/serverRuntimeStartup.test.ts
 apps/server/src/serverRuntimeStartup.ts
 apps/server/src/serverRuntimeStartup.worktreeSetup.test.ts
 apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts
+
+# Promachos mode (#116)
+apps/web/src/components/AppSidebarLayout.tsx
+apps/web/src/components/chat/ChatComposer.tsx
+docs/README.md
