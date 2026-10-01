@@ -533,6 +533,7 @@ import {
   ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
   recallableComposerPrompt,
 } from "./chat/composerPromptHistory";
+import { usePromachosInlineCardHost } from "./promachos/PromachosChat";
 import { usePromachosChat } from "./promachos/promachosMode";
 
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
@@ -2161,7 +2162,6 @@ export default function ChatView(props: ChatViewProps) {
   // Fork: threads in the Promachos home render as a chat in Promachos mode
   // (toolboxmd/chromeria#116), with the composer's cards inline.
   const promachosChat = usePromachosChat(activeProjectRef);
-  const [promachosCardHost, setPromachosCardHost] = useState<HTMLDivElement | null>(null);
   // Environment settings with the active project's overrides applied.
   const activeProjectSettings = useMemo(
     () => resolveProjectSettings(settings, activeProject?.id ?? null, activeProject ?? undefined),
@@ -3540,6 +3540,11 @@ export default function ChatView(props: ChatViewProps) {
     activeThreadKey,
   );
   const displayedThreadRef = parseScopedThreadKey(displayedTimelineKey);
+  const promachosCardHost = usePromachosInlineCardHost({
+    enabled: promachosChat,
+    activeThreadKey,
+    displayedThreadKey: displayedTimeline.displayThreadKey,
+  });
   // Live stages of a bootstrap worktree setup. A worktree send creates the
   // server thread under the route's thread id before anything else, so the
   // stream is keyed by that id alone: no owner bookkeeping, and a remount,
@@ -9840,7 +9845,10 @@ export default function ChatView(props: ChatViewProps) {
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
                 {...(promachosChat
-                  ? { presentation: "promachos" as const, onInlineCardHost: setPromachosCardHost }
+                  ? {
+                      presentation: "promachos" as const,
+                      onInlineCardHost: promachosCardHost.timelineHostRef,
+                    }
                   : {})}
                 citationRequest={paintOnlyDisplayedTimeline ? null : citationRequest}
                 citationHistoryLoading={threadDetailLoading}
@@ -10002,7 +10010,7 @@ export default function ChatView(props: ChatViewProps) {
                       <ComposerSurface.Host>
                         <div ref={attachDraftHeroComposerAnchorRef} className="relative z-10">
                           <ChatComposer
-                            inlineCardHost={promachosChat ? promachosCardHost : null}
+                            inlineCardHost={promachosCardHost.composerHost}
                             multipleModelSelections={multipleModelSelections}
                             supportsMultipleModels={
                               serverConfig?.environment.capabilities.requiredWorktreeBootstrap ===

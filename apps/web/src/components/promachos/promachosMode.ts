@@ -29,7 +29,7 @@ export function usePromachosHome(): [
   return [home, setHome];
 }
 
-export function isPromachosHome(
+function isPromachosHome(
   projectRef: ScopedProjectRef | null,
   home: ScopedProjectRef | null,
 ): boolean {

@@ -698,6 +698,7 @@ for per-match decisions and the absorption PR record.
   "issues": ["https://github.com/toolboxmd/chromeria/issues/116"],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/128"],
   "newFiles": [
+    "apps/web/src/components/promachos/PromachosChat.test.tsx",
     "apps/web/src/components/promachos/PromachosChat.tsx",
     "apps/web/src/components/promachos/PromachosModeSwitch.tsx",
     "apps/web/src/components/promachos/PromachosSidebar.tsx",

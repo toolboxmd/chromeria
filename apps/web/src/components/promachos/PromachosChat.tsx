@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import { ComposerBanner } from "../chat/ComposerBanner";
@@ -55,4 +55,30 @@ export function PromachosInlineCard({
 }) {
   if (host === null) return <ComposerBanner.Attachment>{children}</ComposerBanner.Attachment>;
   return createPortal(<div className="w-full max-w-lg pb-4">{children}</div>, host);
+}
+
+/**
+ * The inline card host, owned by the thread whose timeline renders it. While
+ * a thread switch still paints the previous thread's timeline, the active
+ * thread's composer gets no host and keeps its cards attached to itself.
+ */
+export function usePromachosInlineCardHost(input: {
+  enabled: boolean;
+  activeThreadKey: string | null;
+  displayedThreadKey: string | null;
+}) {
+  const { enabled, activeThreadKey, displayedThreadKey } = input;
+  const [host, setHost] = useState<{ threadKey: string | null; element: HTMLDivElement } | null>(
+    null,
+  );
+  const timelineHostRef = useCallback(
+    (element: HTMLDivElement | null) =>
+      setHost(element === null ? null : { threadKey: displayedThreadKey, element }),
+    [displayedThreadKey],
+  );
+  const composerHost =
+    enabled && host !== null && host.threadKey !== null && host.threadKey === activeThreadKey
+      ? host.element
+      : null;
+  return { timelineHostRef, composerHost };
 }
