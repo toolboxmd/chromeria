@@ -41,6 +41,8 @@ import * as ProviderRegistry from "../../../provider/Services/ProviderRegistry.t
 import * as ProviderService from "../../../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import { GitWorkflowService } from "../../../git/GitWorkflowService.ts";
+import { ProjectSetupScriptRunner } from "../../../project/ProjectSetupScriptRunner.ts";
 import { ThreadsToolkitHandlersLive } from "./handlers.ts";
 import { ThreadsToolkit } from "./tools.ts";
 import { RESUME_TEXT } from "./usageLimitResume.ts";
@@ -111,6 +113,10 @@ const serverLayer = (databasePath: string) => {
   );
   const dependencies = Layer.mergeAll(
     orchestration,
+    Layer.mock(GitWorkflowService)({}),
+    Layer.mock(ProjectSetupScriptRunner)({
+      runForThread: () => Effect.succeed({ status: "no-script" }),
+    }),
     ServerSettingsService.layerTest(),
     Layer.mock(ProviderService.ProviderService)({
       getInstanceInfo: (instanceId) =>

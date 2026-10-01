@@ -241,11 +241,13 @@ describe("role task message", () => {
 });
 
 describe("spawn_thread runtime mode", () => {
-  it("is not an agent choice: the schema omits it and a passed value is dropped", () => {
+  it("exposes explicit runtime mode while leaving the default to the handler", () => {
     const schema = JSON.stringify(Tool.getJsonSchema(ThreadsToolkit.tools.spawn_thread));
-    expect(schema).not.toContain("runtimeMode");
-    expect(decodeSpawnInput({ task: "x", runtimeMode: "approval-required" })).not.toHaveProperty(
+    expect(schema).toContain("runtimeMode");
+    expect(decodeSpawnInput({ task: "x", runtimeMode: "approval-required" })).toHaveProperty(
       "runtimeMode",
+      "approval-required",
     );
+    expect(decodeSpawnInput({ task: "x" })).not.toHaveProperty("runtimeMode");
   });
 });

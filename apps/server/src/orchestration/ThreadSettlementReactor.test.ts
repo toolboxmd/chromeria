@@ -508,7 +508,7 @@ describe("ThreadSettlementReactor", () => {
         }),
       ),
   );
-  it.effect("a settled child thread's background work keeps its parent active", () =>
+  it.effect("a settled cross-project child thread's background work keeps its parent active", () =>
     Effect.scoped(
       Effect.gen(function* () {
         // Fork (#31): sweep reads skip settled threads and a one-thread read holds no
@@ -528,6 +528,7 @@ describe("ThreadSettlementReactor", () => {
           snapshot: makeSnapshot([
             makeThread("parent", { branch: "parent-feature", session: parentSession }),
             makeThread("sub.parent.watcher", {
+              projectId: LINKED_PROJECT_ID,
               branch: "child-feature",
               settledOverride: "settled",
               settledAt: "2026-08-21T00:00:00.000Z",

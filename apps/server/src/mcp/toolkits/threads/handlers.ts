@@ -3,6 +3,7 @@ import {
   EventId,
   MessageId,
   ProviderInstanceId,
+  type ProjectId,
   ThreadId,
   type OrchestrationEvent,
   type OrchestrationSession,
@@ -32,6 +33,8 @@ import * as ProviderRegistry from "../../../provider/Services/ProviderRegistry.t
 import * as ProviderService from "../../../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import { makeSpawnSetup } from "./spawnSetup.ts";
+import { makeSpawnWorkspace } from "./spawnWorkspace.ts";
 import { pickRoleModel, prismRoleSuffix, roleTaskMessage } from "./roles.ts";
 import {
   type ChildReportState,
@@ -171,6 +174,8 @@ const make = Effect.gen(function* () {
   const registry = yield* ProviderRegistry.ProviderRegistry;
   const serverSettings = yield* ServerSettingsService;
   const crypto = yield* Crypto.Crypto;
+  const prepareSpawnWorkspace = yield* makeSpawnWorkspace;
+  const runSpawnSetup = yield* makeSpawnSetup;
 
   /** Child thread id -> whether its turn results go back to the parent.
    * This and `lastReported` are also written to the parent's task.* rows and
@@ -299,25 +304,34 @@ const make = Effect.gen(function* () {
   });
 
   /** The calling thread, plus a guard that the target is in the requested scope. */
-  const callerScopedThread = (threadId: string, scope: ThreadScope) =>
+  const callerScopedThread = (threadId: string, scope: ThreadScope, projectId?: ProjectId) =>
     Effect.gen(function* () {
       const caller = yield* callingThread;
       const target = yield* threadShell(threadId);
       if (!target) return yield* fail(`Thread ${threadId} was not found.`);
-      if (!threadIsInScope(target, caller, scope))
+      if (projectId && scope !== "project")
+        return yield* fail("projectId requires scope: project.");
+      if (!threadIsInScope(target, projectId ? { ...caller, projectId } : caller, scope))
         return yield* fail(scopeRefusal(threadId, scope));
       return { caller, target };
     });
 
-  const listThreads = (scope: ThreadScope, includeSettled: boolean) =>
+  const listThreads = (scope: ThreadScope, includeSettled: boolean, projectId?: ProjectId) =>
     Effect.gen(function* () {
       const caller = yield* callingThread;
+      if (projectId && scope !== "project")
+        return yield* fail("projectId requires scope: project.");
       const shells = yield* snapshots.getShellSnapshot().pipe(
         Effect.map((snapshot) => snapshot.threads),
         Effect.catchCause(() => fail("Could not read threads.")),
       );
       const threads = shells.filter((thread) =>
-        threadShouldBeListed(thread, caller, scope, includeSettled),
+        threadShouldBeListed(
+          thread,
+          projectId ? { ...caller, projectId } : caller,
+          scope,
+          includeSettled,
+        ),
       );
       return { threads: yield* Effect.forEach(threads, summarize) };
     });
@@ -679,6 +693,14 @@ const make = Effect.gen(function* () {
     spawn_thread: (input) =>
       Effect.gen(function* () {
         const parent = yield* callingThread;
+        const projectId = input.projectId ?? parent.projectId;
+        const project = yield* snapshots
+          .getProjectShellById(projectId)
+          .pipe(Effect.catchCause(() => fail(`Could not read project ${projectId}.`)));
+        if (Option.isNone(project)) return yield* fail(`Project ${projectId} was not found.`);
+        const topLevel = input.mode === "top-level";
+        if (topLevel && input.reportBack === true)
+          return yield* fail("Top-level threads do not report back. Use mode: child.");
         const role = input.role;
         const kits = yield* roleKits(parent.projectId);
         const kit = role ? kits[role] : undefined;
@@ -718,40 +740,48 @@ const make = Effect.gen(function* () {
         };
         const random = (yield* uuid).replaceAll("-", "").slice(0, 12);
         const childId = ThreadId.make(
-          makeSubagentThreadId(parent.id, role ? prismRoleSuffix(role, random) : random),
+          topLevel
+            ? `thread-${random}`
+            : makeSubagentThreadId(parent.id, role ? prismRoleSuffix(role, random) : random),
         );
-        reportBack.set(childId, input.reportBack !== false);
+        const workspace =
+          input.projectId !== undefined || topLevel
+            ? yield* prepareSpawnWorkspace(project.value, random)
+            : { branch: parent.branch, worktreePath: parent.worktreePath };
+        if (!topLevel) reportBack.set(childId, input.reportBack !== false);
         const createdAt = yield* nowIso;
         const titlePrefix = role ? PRISM_ROLE_LABELS[role] : "Subagent";
         yield* dispatch({
           type: "thread.create",
           commandId: yield* commandId("create"),
           threadId: childId,
-          projectId: parent.projectId,
+          projectId,
           title: input.title ?? `${titlePrefix}: ${input.task.slice(0, 60)}`,
           modelSelection,
-          // Children never inherit a restricted mode: their approvals would go to the
-          // user, not the planner, and stall the child unseen.
-          runtimeMode: DEFAULT_RUNTIME_MODE,
+          // Preserve the full-access default; an explicit runtimeMode is caller intent.
+          runtimeMode: input.runtimeMode ?? DEFAULT_RUNTIME_MODE,
           interactionMode: "default",
-          branch: parent.branch,
-          worktreePath: parent.worktreePath,
+          ...workspace,
           createdAt,
         });
         const child = yield* threadShell(childId);
         if (!child) return yield* fail(`Child thread ${childId} was not created.`);
+        if (workspace.worktreePath && (input.projectId !== undefined || topLevel)) {
+          yield* runSpawnSetup(childId, project.value, workspace.worktreePath);
+        }
         yield* startTurn(child, kit ? roleTaskMessage(kit, input.task) : input.task);
         return {
           threadId: childId,
           ...(role ? { role, lane } : {}),
-          parentThreadId: parent.id,
+          parentThreadId: topLevel ? null : parent.id,
+          projectId,
           instanceId,
           model,
         };
       }),
-    message_thread: ({ threadId, text, scope }) =>
+    message_thread: ({ threadId, text, scope, projectId }) =>
       Effect.gen(function* () {
-        const { caller, target } = yield* callerScopedThread(threadId, scope);
+        const { caller, target } = yield* callerScopedThread(threadId, scope, projectId);
         const statusBefore = subagentStatusOf(target.session);
         if (statusBefore === "starting") {
           return yield* fail(`Thread ${threadId} is still starting. Retry in a few seconds.`);
@@ -759,9 +789,9 @@ const make = Effect.gen(function* () {
         yield* startTurn(target, attributedMessage(text, caller, target));
         return { threadId, statusBefore, delivery: deliveryOf(statusBefore) };
       }),
-    interrupt_thread: ({ threadId, scope }) =>
+    interrupt_thread: ({ threadId, scope, projectId }) =>
       Effect.gen(function* () {
-        const { target } = yield* callerScopedThread(threadId, scope);
+        const { target } = yield* callerScopedThread(threadId, scope, projectId);
         yield* cancelUsageLimitResume(target.id, target.latestTurn?.turnId ?? null);
         if (!hasActiveTurn(target.session)) {
           return {
@@ -836,10 +866,13 @@ const make = Effect.gen(function* () {
           statusAfter: subagentStatusOf(latest?.session ?? target.session),
         };
       }),
-    read_thread: ({ threadId, scope }) =>
-      callerScopedThread(threadId, scope).pipe(Effect.flatMap(({ target }) => summarize(target))),
+    read_thread: ({ threadId, scope, projectId }) =>
+      callerScopedThread(threadId, scope, projectId).pipe(
+        Effect.flatMap(({ target }) => summarize(target)),
+      ),
     list_child_threads: () => listChildThreads(),
-    list_threads: ({ scope, includeSettled }) => listThreads(scope, includeSettled),
+    list_threads: ({ scope, includeSettled, projectId }) =>
+      listThreads(scope, includeSettled, projectId),
   });
 });
 
