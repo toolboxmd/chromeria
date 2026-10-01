@@ -77,6 +77,13 @@ describe("Prism role kits", () => {
     expect("enabled" in DEFAULT_PRISM_ROLE_KITS.reviewer).toBe(false);
   });
 
+  it("ship no role instructions or skills by default", () => {
+    for (const kit of Object.values(DEFAULT_PRISM_ROLE_KITS)) {
+      expect(kit.instructions).toBe("");
+      expect(kit.skills).toEqual([]);
+    }
+  });
+
   it("load saved settings that still carry a thread-tool scope, dropping it", () => {
     const settings = decodeServerSettings({
       prismRoles: {

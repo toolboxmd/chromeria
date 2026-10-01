@@ -133,7 +133,7 @@ export const ThreadSummary = Schema.Struct({
 
 const SpawnThreadTool = Tool.make("spawn_thread", {
   description:
-    "Use when another agent should do one bounded task, such as a review, a second opinion, a check or a small fix, or when a specific model and effort is wanted. Use it instead of starting codex exec, claude -p, opencode run or grok in the shell: the user cannot see those runs, while a child thread shows in this thread's Agents panel. Pass role (reviewer, worker) to apply that Prism role's kit and model, or name instance, model and effort. For a job that should end in one PR, use prism_submit. Follow up with read_thread and message_thread.",
+    "Use when another agent should do work: a bounded task, a review, or a whole job that ends in one PR (role: dispatcher). Use it instead of codex exec, claude -p, opencode run or grok in the shell: the user cannot see those runs. role applies that Prism role's kit and first eligible model, skipping providers at a usage limit: worker with a lane by difficulty, reviewer, and retry then escalation to replace a failed child. Or name instance, model and effort. Each finished turn of the child reports its final reply here unless reportBack is false. Follow up with read_thread and message_thread.",
   parameters: SpawnThreadInput,
   success: SpawnThreadResult,
   failure: ThreadsToolError,
@@ -163,7 +163,7 @@ const MessageThreadTool = Tool.make("message_thread", {
 
 const InterruptThreadTool = Tool.make("interrupt_thread", {
   description:
-    "Stop the running turn of a child thread by default, or any thread in this project with scope: project, and wait until T3 reports it settled. Use it before replacing a stalled or usage-limit-hit child, so two threads never write to the same branch. An idle, failed or stopped thread returns no_active_run unchanged, and so does a starting thread whose turn has not begun within 30 seconds (statusAfter: starting); interrupt_requested means the turn had not settled yet, so read_thread before replacing it.",
+    "Stop the running turn of a child thread by default, or any thread in this project with scope: project, and wait until T3 reports it settled. Use it before replacing a stalled, failed or usage-limit-hit child with role retry, then escalation, so two threads never write to the same branch. An idle, failed or stopped thread returns no_active_run unchanged, and so does a starting thread whose turn has not begun within 30 seconds (statusAfter: starting); interrupt_requested means the turn had not settled yet, so read_thread before replacing it.",
   parameters: InterruptThreadInput,
   success: InterruptThreadResult,
   failure: ThreadsToolError,
