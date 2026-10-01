@@ -739,6 +739,7 @@ for per-match decisions and the absorption PR record.
     "apps/server/src/mcp/toolkits/threads/wightMode.test.ts",
     "apps/server/src/mcp/toolkits/threads/wightToolkit.test.ts",
     "apps/server/src/mcp/toolkits/threads/wightMode.ts",
+    "apps/server/src/mcp/toolkits/threads/sendThreadTurn.ts",
     "apps/web/src/components/chat/WightModeControl.tsx",
     "apps/web/src/components/settings/WightLimitSetting.tsx",
     "apps/web/src/wightMode.test.ts",

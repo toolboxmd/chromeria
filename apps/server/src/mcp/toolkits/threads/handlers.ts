@@ -56,6 +56,7 @@ import {
   ThreadsToolkit,
 } from "./tools.ts";
 
+import { makeThreadTurnSender } from "./sendThreadTurn.ts";
 import { makeWightMode } from "./wightMode.ts";
 
 const REPORT_TEXT_LIMIT = 4_000;
@@ -362,41 +363,12 @@ const make = Effect.gen(function* () {
       });
     });
 
-  const startTurn = (
-    thread: OrchestrationThreadShell,
-    text: string,
-    turnCommandId?: CommandId,
-    idleOnly = false,
-    idleAdmission?: Effect.Effect<boolean>,
-  ) =>
-    Effect.gen(function* () {
-      const createdAt = yield* nowIso;
-      yield* dispatch(
-        {
-          type: "thread.turn.start",
-          ...(idleOnly
-            ? {
-                idleGuard: {
-                  latestTurnId: thread.latestTurn?.turnId ?? null,
-                  updatedAt: thread.updatedAt,
-                },
-              }
-            : {}),
-          commandId: turnCommandId ?? (yield* commandId("turn")),
-          threadId: thread.id,
-          message: {
-            messageId: MessageId.make(yield* uuid),
-            role: "user",
-            text,
-            attachments: [],
-          },
-          runtimeMode: thread.runtimeMode,
-          interactionMode: thread.interactionMode,
-          createdAt,
-        },
-        idleAdmission === undefined ? undefined : { idleAdmission },
-      );
-    });
+  const startTurn = makeThreadTurnSender({
+    dispatch,
+    commandId: commandId("turn"),
+    messageId: Effect.map(uuid, MessageId.make),
+    now: nowIso,
+  });
 
   /**
    * Mirrors a child thread's lifecycle into its parent's activities as the
@@ -667,7 +639,17 @@ const make = Effect.gen(function* () {
           Effect.gen(function* () {
             if ((yield* serverSettings.getSettings).wightModes[thread.id]) return;
             if (trigger === "lifted") earlyResumeSpent.add(thread.id);
-            yield* startTurn(thread, RESUME_TEXT);
+            yield* startTurn(
+              thread,
+              RESUME_TEXT,
+              undefined,
+              true,
+              serverSettings.getSettings.pipe(
+                Effect.map((settings) => settings.wightModes[thread.id] === undefined),
+                Effect.catchCause(() => Effect.succeed(false)),
+              ),
+            );
+            if ((yield* serverSettings.getSettings).wightModes[thread.id]) return;
             const parentId = parentThreadIdOf(thread.id);
             const parent = parentId === null ? undefined : yield* threadShell(parentId);
             if (parent) yield* startTurn(parent, resumeNotice(thread, trigger));

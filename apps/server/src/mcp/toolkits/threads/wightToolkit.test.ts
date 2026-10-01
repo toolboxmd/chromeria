@@ -3,11 +3,18 @@ import * as NodePath from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
+  CommandId,
+  MessageId,
   ProviderInstanceId,
+  ProviderDriverKind,
   type ServerProvider,
 } from "@t3tools/contracts";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Deferred from "effect/Deferred";
+import * as TestClock from "effect/testing/TestClock";
+import { RESUME_TEXT } from "./usageLimitResume.ts";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
@@ -28,6 +35,102 @@ import {
 
 /** Real toolkit subscriptions/commands/projections; only provider capacity and settings storage are fake. */
 describe("Wight toolkit wiring", () => {
+  it.effect(
+    "a legacy usage resume loses admission when Wight takes quota ownership after its last check",
+    () =>
+      Effect.gen(function* () {
+        const directory = yield* temporaryDirectory("t3-wight-legacy-");
+        let current = DEFAULT_SERVER_SETTINGS;
+        let usage = 100;
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const watcherRead = yield* Deferred.make<void>();
+        const settings = Layer.mock(ServerSettingsService)({
+          getSettings: Effect.sync(() => current),
+          streamChanges: Stream.empty,
+          subscribeChanges: Effect.succeed(Stream.empty),
+        });
+        const registry = Layer.mock(ProviderRegistry)({
+          getProviders: Effect.sync(() => [
+            {
+              instanceId: ProviderInstanceId.make("codex"),
+              enabled: true,
+              usageLimits: {
+                checkedAt: NOW,
+                windows: [
+                  {
+                    id: "session",
+                    kind: "session",
+                    label: "Session",
+                    usedPercent: usage,
+                    resetsAt: "1970-01-01T01:00:00.000Z",
+                  },
+                ],
+              },
+            } as unknown as ServerProvider,
+          ]),
+          streamChanges: Stream.empty,
+        });
+        yield* withServer(
+          NodePath.join(directory, "state.sqlite"),
+          Effect.gen(function* () {
+            yield* createParent(directory);
+            const engine = yield* OrchestrationEngineService;
+            yield* engine.dispatch({
+              type: "thread.turn.start",
+              commandId: CommandId.make("legacy-initial"),
+              threadId: PARENT_ID,
+              message: {
+                messageId: MessageId.make("legacy-initial"),
+                role: "user",
+                text: "Work",
+                attachments: [],
+              },
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              createdAt: NOW,
+            });
+            yield* engine.dispatch(session(PARENT_ID, "running", "limited"));
+            yield* engine.dispatch(
+              session(PARENT_ID, "error", "limited", "Codex usage limit reached"),
+            );
+            yield* Deferred.await(watcherRead);
+            yield* TestClock.adjust(6_000);
+            usage = 20;
+            const advancing = yield* Effect.forkChild(TestClock.adjust(3_700_000));
+            // Toolkit has already checked Wight off and constructed its dispatch at this point.
+            yield* Deferred.await(entered);
+            current = {
+              ...DEFAULT_SERVER_SETTINGS,
+              wightModes: { [PARENT_ID]: { enabledAt: NOW, expiresAt: null } },
+              providerInstances: {
+                [ProviderInstanceId.make("codex")]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  wightLimitPercent: 10,
+                },
+              },
+            };
+            yield* Deferred.succeed(release, undefined);
+            yield* Fiber.join(advancing);
+            // Drain through a later real engine command, without a sleep or polling.
+            yield* engine.dispatch(session(PARENT_ID, "ready", null));
+            const query = yield* ProjectionSnapshotQuery;
+            expect(
+              Option.getOrThrow(yield* query.getThreadDetailById(PARENT_ID)).messages.map(
+                (message) => message.text,
+              ),
+            ).toEqual(["Work"]);
+          }),
+          () => Deferred.succeed(watcherRead, undefined).pipe(Effect.asVoid),
+          { services: Layer.merge(settings, registry) },
+          (command) =>
+            command.type === "thread.turn.start" && command.message.text === RESUME_TEXT
+              ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))
+              : Effect.void,
+        );
+      }).pipe(Effect.scoped),
+  );
+
   it.effect(
     "a live settings toggle starts idle work; active toggles wait for the next idle receipt",
     () =>
@@ -122,7 +225,7 @@ describe("Wight toolkit wiring", () => {
             yield* settings.updateSettings({ wightModes: { [PARENT_ID]: null } });
           }),
           undefined,
-          Layer.mergeAll(Layer.succeed(ServerSettingsService, settings), registry),
+          { services: Layer.mergeAll(Layer.succeed(ServerSettingsService, settings), registry) },
         );
       }).pipe(Effect.scoped),
   );
