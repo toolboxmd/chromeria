@@ -40,7 +40,7 @@ function reportFailure(error: unknown) {
 }
 
 /** Opens the Issues page with an Issue's side panel, read through the given server. */
-export function useOpenIssueInIssuesView() {
+function useOpenIssueInIssuesView() {
   const navigate = useNavigate();
   return useCallback(
     (url: string, environmentId: EnvironmentId) =>

@@ -71,7 +71,6 @@ vi.mock("./useStartThreadFromIssue", () => ({
     start: vi.fn(),
   }),
 }));
-vi.mock("./useOpenIssueOrPullRequestLink", () => ({ useOpenIssueInIssuesView: () => vi.fn() }));
 vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: () => vi.fn() }));
 vi.mock("~/lib/openPullRequestLink", () => ({ useOpenPrLink: () => vi.fn() }));
 
