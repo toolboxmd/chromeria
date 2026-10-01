@@ -75,7 +75,7 @@ function IssueRow({
       </span>
       <button
         type="button"
-        aria-label={`Open ${link.repository}#${link.number} in Issues`}
+        aria-label={`Open ${link.repository}#${link.number} in the right panel`}
         className="flex min-w-0 flex-1 text-left"
         onClick={() => onOpen(link)}
       >
