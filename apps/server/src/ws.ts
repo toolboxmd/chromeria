@@ -1893,7 +1893,7 @@ const makeWsRpcLayer = (
       return WsRpcGroup.of({
         // Fork: GitHub Issues (toolboxmd/t3code#27).
         ...makeIssueRpcHandlers(issues, observeRpcEffect),
-        ...makeSchedulerRpcHandlers(scheduler, `user:${currentSession.subject}`, observeRpcEffect),
+        ...makeSchedulerRpcHandlers(scheduler, currentSession, sessions, observeRpcEffect),
         // Fork: Issue links (toolboxmd/t3code#28).
         ...issueLinkHandlers,
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>

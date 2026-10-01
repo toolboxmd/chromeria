@@ -248,13 +248,9 @@ export const makeSpectrum = Effect.fn("Spectrum.make")(function* (
           }
           const tasks = yield* engine.getScheduledTasks ?? Effect.succeed([]);
           const owner = tasks
+            .filter((task) => !task.deleted)
             .flatMap((task) => task.runs)
-            .find(
-              (run) =>
-                run.threadId === state.callerId &&
-                run.status !== "done" &&
-                run.status !== "needs-you",
-            );
+            .find((run) => run.threadId === state.callerId && run.status !== "done");
           if (owner) {
             yield* dispatch({
               type: "thread.activity.append",

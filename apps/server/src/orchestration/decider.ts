@@ -243,15 +243,30 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command.task.runs.some(
           (run) =>
             !command.task.checks.some((check) => check.version === run.checkVersion) &&
-            run.status !== "done" &&
-            run.status !== "needs-you",
+            run.status !== "done",
         )
       )
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: "Every active run needs its pinned immutable check.",
         });
+      if (command.task.runs.some((run) => threadOwner(run) !== threadOwner(command.task)))
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Run creator ownership must match its task.",
+        });
       if (previous) {
+        if (
+          threadOwner(previous) !== threadOwner(command.task) ||
+          previous.runs.some((run) => {
+            const next = command.task.runs.find((entry) => entry.id === run.id);
+            return next !== undefined && threadOwner(next) !== threadOwner(run);
+          })
+        )
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "Scheduled creator ownership is immutable.",
+          });
         const lastVersion = previous.checks.at(-1)!.version;
         const added = command.task.checks.filter((check) => check.version > lastVersion);
         if (added.some((check, index) => check.version !== lastVersion + index + 1))
@@ -264,12 +279,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           return existing !== undefined && !Schema.toEquivalence(TaskCheckVersion)(existing, check);
         });
         const changedJudge = previous.runs.some((run) => {
-          if (run.status === "done" || run.status === "needs-you") return false;
+          if (run.status === "done") return false;
           const next = command.task.runs.find((entry) => entry.id === run.id);
           return (
             !next ||
             next.checkVersion !== run.checkVersion ||
             next.checkCwd !== run.checkCwd ||
+            next.slot !== run.slot ||
+            next.originSequence !== run.originSequence ||
+            next.sendIndex < run.sendIndex ||
+            (run.hasWork && !next.hasWork) ||
+            (run.dispatchedAt !== null && next.dispatchedAt === null) ||
             !Schema.toEquivalence(TaskDefinition)(next.definition, run.definition) ||
             (run.threadId !== null && next.threadId !== run.threadId)
           );

@@ -66,6 +66,7 @@ export const TaskCheckResult = Schema.Struct({
 });
 export type TaskCheckResult = typeof TaskCheckResult.Type;
 export const TaskRun = Schema.Struct({
+  owner: Schema.optionalKey(TrimmedNonEmptyString),
   definition: TaskDefinition,
   checkCwd: TrimmedNonEmptyString,
   id: TrimmedNonEmptyString,
@@ -97,6 +98,7 @@ export const TaskMinuteChoice = Schema.Struct({
 });
 export type TaskMinuteChoice = typeof TaskMinuteChoice.Type;
 export const ScheduledTask = Schema.Struct({
+  owner: Schema.optionalKey(TrimmedNonEmptyString),
   checkCwd: TrimmedNonEmptyString,
   id: TrimmedNonEmptyString,
   revision: PositiveInt,
@@ -176,8 +178,7 @@ export const SchedulerRpcGroup = RpcGroup.make(
 export const SCHEDULE_WINDOW_DESCRIPTION =
   "Fixed times use a symmetric +/-30-minute window by default. Set windowMinutes: 0 for the exact minute. The server chooses the least busy minute and returns that minute and its neighbours.";
 export const schedulerOwnsThread = (tasks: ReadonlyArray<ScheduledTask>, id: string) =>
-  tasks.some((task) =>
-    task.runs.some(
-      (run) => run.threadId === id && run.status !== "done" && run.status !== "needs-you",
-    ),
+  tasks.some(
+    (task) =>
+      !task.deleted && task.runs.some((run) => run.threadId === id && run.status !== "done"),
   );

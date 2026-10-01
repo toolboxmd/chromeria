@@ -3,9 +3,12 @@ import * as NodePath from "node:path";
 import * as NodeFSP from "node:fs/promises";
 import { describe, expect, it } from "@effect/vitest";
 import {
+  AuthSessionId,
   CommandId,
   EventId,
+  EnvironmentId,
   MessageId,
+  OrchestrationProposedPlanId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
@@ -18,12 +21,21 @@ import {
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
+import * as Clock from "effect/Clock";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as SessionStore from "../auth/SessionStore.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
+import { SchedulerToolkit } from "../mcp/toolkits/scheduler/tools.ts";
+import { SchedulerToolkitHandlersLive } from "../mcp/toolkits/scheduler/handlers.ts";
+import { McpInvocationContext, type McpCapability } from "../mcp/McpInvocationContext.ts";
+import { Scheduler } from "./Service.ts";
 import { makeSchedulerRpcHandlers } from "./rpcHandlers.ts";
+import { iso } from "./Schedule.ts";
 import { RECOVERY_DELAYS } from "./Scheduler.ts";
 import { TestClock } from "effect/testing";
 import { OrchestrationLayerLive } from "../orchestration/runtimeLayer.ts";
@@ -195,6 +207,708 @@ const fakeProvider = (
 };
 
 describe("scheduler real SQLite and sender boundary", () => {
+  it.effect("RPC creator lookup failure is typed and creates no task", () =>
+    Effect.gen(function* () {
+      const directory = yield* temporaryDirectory("scheduler-auth-failure-");
+      yield* within(
+        directory,
+        Effect.gen(function* () {
+          yield* createParent(directory);
+          const scheduler = yield* makeLiveScheduler;
+          const api = makeSchedulerRpcHandlers(
+            scheduler,
+            { subject: "authorized", sessionId: AuthSessionId.make("failure") },
+            {
+              getPerson: () =>
+                Effect.fail(
+                  new SessionStore.ActiveSessionsListError({
+                    cause: new Error("Store unavailable"),
+                  }),
+                ),
+            },
+            (_, effect) => effect,
+          );
+          expect(yield* api["scheduler.create"](definition).pipe(Effect.flip)).toBeInstanceOf(
+            SchedulerError,
+          );
+          expect(yield* scheduler.list).toHaveLength(0);
+        }),
+      );
+    }),
+  );
+
+  for (const retired of [false, true]) {
+    it.effect(
+      `explicit management safely handles quiescent exhausted one-shot, retired=${retired}`,
+      () =>
+        Effect.gen(function* () {
+          const directory = yield* temporaryDirectory("scheduler-management-");
+          yield* within(
+            directory,
+            Effect.gen(function* () {
+              yield* createParent(directory);
+              const scheduler = yield* makeLiveScheduler;
+              const engine = yield* OrchestrationEngineService;
+              const created = yield* scheduler.create(
+                {
+                  ...definition,
+                  schedule: {
+                    kind: "once",
+                    at: iso((yield* Clock.currentTimeMillis) + 60_000),
+                    windowMinutes: 0,
+                  },
+                },
+                "creator",
+              );
+              yield* scheduler.runNow(created.id);
+              yield* scheduler.reconcile();
+              const fake = fakeProvider(engine);
+              yield* fake.execute("after-work");
+              yield* scheduler.reconcile();
+              for (const delay of RECOVERY_DELAYS) {
+                yield* TestClock.adjust(delay);
+                yield* scheduler.reconcile();
+                yield* fake.execute("after-work");
+                yield* scheduler.reconcile();
+              }
+              const exhausted = yield* currentTask(scheduler);
+              expect(exhausted.runs[0]!.status).toBe("needs-you");
+              yield* TestClock.adjust(86_400_000);
+              yield* scheduler.reconcile();
+              expect((yield* currentTask(scheduler)).runs).toHaveLength(1);
+              expect((yield* currentTask(scheduler)).runs[0]!.status).toBe("needs-you");
+              expect(
+                yield* scheduler.delete(created.id, PARENT_ID).pipe(Effect.flip),
+              ).toBeInstanceOf(SchedulerError);
+              if (retired) {
+                yield* engine.dispatch({
+                  type: "thread.activity.append",
+                  commandId: commandId(),
+                  threadId: PARENT_ID,
+                  activity: {
+                    id: EventId.make("retire-exhausted"),
+                    kind: "thread.subtree-retire-requested",
+                    summary: "Explicit retirement",
+                    payload: {},
+                    tone: "info",
+                    turnId: null,
+                    createdAt: NOW,
+                  },
+                  createdAt: NOW,
+                });
+                const retirement = yield* engine.getThreadRetirement(PARENT_ID);
+                expect(retirement?.retired).toBe(true);
+                // External provider stop acknowledgment uses the exact durable receipt identity.
+                yield* engine.dispatch({
+                  ...session(PARENT_ID, "interrupted", null),
+                  commandId: CommandId.make(retirement!.stopAckCommandId),
+                });
+                expect((yield* engine.getThreadRetirement(PARENT_ID))?.pendingStop).toBe(false);
+                expect(
+                  (yield* scheduler.inspectRun(yield* currentTask(scheduler), exhausted.runs[0]!))
+                    .retired,
+                ).toBe(true);
+                expect(yield* scheduler.runNow(created.id).pipe(Effect.flip)).toBeInstanceOf(
+                  SchedulerError,
+                );
+                const removed = yield* scheduler.delete(created.id, "user:explicit-delete");
+                expect(removed.deleted).toBe(true);
+                expect(removed.runs[0]).toMatchObject({
+                  id: exhausted.runs[0]!.id,
+                  status: "needs-you",
+                  checkVersion: 1,
+                  hasWork: true,
+                });
+                expect(yield* scheduler.list).toHaveLength(0);
+                expect((yield* engine.getScheduledTasks ?? Effect.succeed([]))[0]!.checks).toEqual(
+                  exhausted.checks,
+                );
+              } else {
+                // A quiescent exhausted task is removable, but live approval/report/queued work is not.
+                yield* engine.dispatch({
+                  type: "thread.activity.append",
+                  commandId: commandId(),
+                  threadId: PARENT_ID,
+                  activity: {
+                    id: EventId.make("delete-approval"),
+                    kind: "approval.requested",
+                    summary: "Pending approval",
+                    payload: { requestId: "delete-approval" },
+                    tone: "info",
+                    turnId: null,
+                    createdAt: NOW,
+                  },
+                  createdAt: NOW,
+                });
+                expect(
+                  yield* scheduler.delete(created.id, "user:delete").pipe(Effect.flip),
+                ).toBeInstanceOf(SchedulerError);
+                yield* engine.dispatch({
+                  type: "thread.activity.append",
+                  commandId: commandId(),
+                  threadId: PARENT_ID,
+                  activity: {
+                    id: EventId.make("delete-approval-resolved"),
+                    kind: "approval.resolved",
+                    summary: "Resolved",
+                    payload: { requestId: "delete-approval" },
+                    tone: "info",
+                    turnId: null,
+                    createdAt: NOW,
+                  },
+                  createdAt: NOW,
+                });
+                const shell = Option.getOrThrow(
+                  yield* (yield* ProjectionSnapshotQuery).getThreadShellById(PARENT_ID),
+                );
+                const child = ThreadId.make("management-child");
+                yield* engine.dispatch({
+                  type: "thread.create",
+                  commandId: commandId(),
+                  threadId: child,
+                  projectId: shell.projectId,
+                  title: "Pending Drafter",
+                  modelSelection: shell.modelSelection,
+                  runtimeMode: shell.runtimeMode,
+                  interactionMode: "default",
+                  branch: null,
+                  worktreePath: null,
+                  createdAt: NOW,
+                });
+                yield* engine.dispatch(session(child, "running", "child-management"));
+                yield* engine.dispatch({
+                  type: "thread.activity.append",
+                  commandId: commandId(),
+                  threadId: PARENT_ID,
+                  activity: {
+                    id: EventId.make("pending-child"),
+                    kind: "task.started",
+                    summary: "Drafter running",
+                    payload: { taskId: child, status: "running" },
+                    tone: "info",
+                    turnId: null,
+                    createdAt: NOW,
+                  },
+                  createdAt: NOW,
+                });
+                expect(
+                  yield* scheduler.delete(created.id, "user:delete").pipe(Effect.flip),
+                ).toBeInstanceOf(SchedulerError);
+                yield* engine.dispatch(
+                  session(child, "error", "child-management", "Drafter failed"),
+                );
+                yield* engine.dispatch({
+                  type: "thread.activity.append",
+                  commandId: commandId(),
+                  threadId: PARENT_ID,
+                  activity: {
+                    id: EventId.make("pending-report"),
+                    kind: "task.updated",
+                    summary: "Failed child report",
+                    payload: { taskId: child, status: "failed" },
+                    tone: "info",
+                    turnId: null,
+                    createdAt: NOW,
+                  },
+                  createdAt: NOW,
+                });
+                expect(
+                  yield* scheduler.delete(created.id, "user:delete").pipe(Effect.flip),
+                ).toBeInstanceOf(SchedulerError);
+                yield* engine.dispatch({
+                  type: "thread.turn.start",
+                  commandId: commandId(),
+                  threadId: PARENT_ID,
+                  message: {
+                    messageId: MessageId.make("delete-user-turn"),
+                    role: "user",
+                    text: "Pending user turn",
+                    attachments: [],
+                  },
+                  runtimeMode: shell.runtimeMode,
+                  interactionMode: "default",
+                  createdAt: iso(yield* Clock.currentTimeMillis),
+                });
+                expect(
+                  yield* scheduler.delete(created.id, "user:delete").pipe(Effect.flip),
+                ).toBeInstanceOf(SchedulerError);
+                yield* engine.dispatch(session(PARENT_ID, "interrupted", null));
+                const resumed = yield* scheduler.runNow(created.id);
+                expect(resumed.runs).toHaveLength(1);
+                expect(resumed.runs[0]).toMatchObject({
+                  id: exhausted.runs[0]!.id,
+                  threadId: PARENT_ID,
+                  checkVersion: 1,
+                  hasWork: true,
+                  status: "retry",
+                });
+                yield* scheduler.reconcile();
+                yield* fake.execute();
+                expect(fake.sideEffects).toBe(1);
+                expect(
+                  yield* scheduler.delete(created.id, "user:delete").pipe(Effect.flip),
+                ).toBeInstanceOf(SchedulerError);
+                yield* Effect.promise(() =>
+                  NodeFSP.writeFile(NodePath.join(directory, "result.txt"), "pass"),
+                );
+                yield* scheduler.reconcile();
+                expect((yield* currentTask(scheduler)).runs[0]!.status).toBe("done");
+              }
+            }),
+          );
+        }),
+    );
+  }
+
+  for (const person of ["Pauli", null]) {
+    it.effect(
+      `pins RPC creator ${person ?? "default Luke"} separately from audit through full SQLite restart`,
+      () =>
+        Effect.gen(function* () {
+          const directory = yield* temporaryDirectory("scheduler-people-");
+          let saved: ScheduledTask | undefined;
+          let closed = 0;
+          const auth = SessionStore.layer.pipe(
+            Layer.provide(ServerSecretStore.layer),
+            Layer.provide(
+              Layer.succeed(ServerEnvironmentIdentity, {
+                getEnvironmentId: Effect.succeed(EnvironmentId.make("isolated-people")),
+              }),
+            ),
+          );
+          yield* within(
+            directory,
+            Effect.gen(function* () {
+              yield* Effect.addFinalizer(() =>
+                Effect.sync(() => {
+                  closed++;
+                }),
+              );
+              yield* createParent(directory);
+              const sessions = yield* SessionStore.SessionStore;
+              const issued = yield* sessions.issue({ subject: "authenticated-creator" });
+              if (person) yield* sessions.setPerson(issued.sessionId, person);
+              const scheduler = yield* makeLiveScheduler;
+              const shell = Option.getOrThrow(
+                yield* (yield* ProjectionSnapshotQuery).getThreadShellById(PARENT_ID),
+              );
+              const api = makeSchedulerRpcHandlers(
+                scheduler,
+                { subject: "authenticated-creator", sessionId: issued.sessionId },
+                sessions,
+                (_, effect) => effect,
+              );
+              const raw = {
+                ...definition,
+                target: { kind: "new-thread" as const, projectId: shell.projectId },
+                owner: "forged",
+                actor: "forged",
+              };
+              const created = yield* api["scheduler.create"](raw);
+              expect(created).toMatchObject({ owner: person ?? "Luke" });
+              expect(created.checks[0]!.actor).toBe("user:authenticated-creator");
+              yield* scheduler.runNow(created.id);
+              yield* sessions.setPerson(issued.sessionId, person === "Pauli" ? "Luke" : "Pauli");
+              const editor = yield* sessions.issue({ subject: "elevated-editor" });
+              yield* sessions.setPerson(editor.sessionId, person === "Pauli" ? "Luke" : "Pauli");
+              const editorApi = makeSchedulerRpcHandlers(
+                scheduler,
+                { subject: "elevated-editor", sessionId: editor.sessionId },
+                sessions,
+                (_, effect) => effect,
+              );
+              const edit = {
+                taskId: created.id,
+                checkCommand: "exit 2",
+                checkReason: "Future-only change",
+                owner: "Elevated",
+              };
+              yield* editorApi["scheduler.edit"](edit);
+              expect((yield* currentTask(scheduler)).owner).toBe(person ?? "Luke");
+              expect((yield* currentTask(scheduler)).checks.at(-1)!.actor).toBe(
+                "user:elevated-editor",
+              );
+              saved = yield* currentTask(scheduler);
+              expect(saved.runs[0]).toMatchObject({ owner: person ?? "Luke", checkVersion: 1 });
+            }).pipe(Effect.provide(auth)),
+          );
+          expect(closed).toBe(1);
+          yield* within(
+            directory,
+            Effect.gen(function* () {
+              yield* Effect.addFinalizer(() =>
+                Effect.sync(() => {
+                  closed++;
+                }),
+              );
+              const scheduler = yield* makeLiveScheduler;
+              yield* scheduler.reconcile();
+              const replayed = yield* currentTask(scheduler);
+              expect(replayed.owner).toBe(person ?? "Luke");
+              expect(replayed.runs[0]!.owner).toBe(person ?? "Luke");
+              expect(replayed.runs[0]!.checkVersion).toBe(1);
+              const shell = Option.getOrThrow(
+                yield* (yield* ProjectionSnapshotQuery).getThreadShellById(
+                  replayed.runs[0]!.threadId!,
+                ),
+              );
+              expect(shell.owner).toBe(person ?? "Luke");
+              const engine = yield* OrchestrationEngineService;
+              for (const forged of [
+                { ...replayed, owner: "Elevated" },
+                { ...replayed, runs: replayed.runs.map((run) => ({ ...run, owner: "Elevated" })) },
+              ]) {
+                expect(
+                  Exit.isFailure(
+                    yield* Effect.exit(
+                      engine.dispatch({
+                        type: "scheduler.state.set",
+                        commandId: commandId(),
+                        threadId: ThreadId.make(replayed.id),
+                        expectedRevision: replayed.revision,
+                        task: { ...forged, revision: replayed.revision + 1 },
+                        createdAt: NOW,
+                      }),
+                    ),
+                  ),
+                ).toBe(true);
+              }
+              expect(saved!.checks[0]!.actor).toBe("user:authenticated-creator");
+            }),
+          );
+          expect(closed).toBe(2);
+        }),
+    );
+  }
+
+  it.effect("MCP creation resolves the caller thread owner rather than payload person", () =>
+    Effect.gen(function* () {
+      const directory = yield* temporaryDirectory("scheduler-mcp-owner-");
+      yield* within(
+        directory,
+        Effect.gen(function* () {
+          yield* createParent(directory);
+          const scheduler = yield* makeLiveScheduler;
+          const engine = yield* OrchestrationEngineService;
+          const parent = Option.getOrThrow(
+            yield* (yield* ProjectionSnapshotQuery).getThreadShellById(PARENT_ID),
+          );
+          const caller = ThreadId.make("pauli-caller");
+          yield* engine.dispatch({
+            type: "thread.create",
+            commandId: commandId(),
+            threadId: caller,
+            owner: "Pauli",
+            projectId: parent.projectId,
+            title: "Pauli caller",
+            modelSelection: parent.modelSelection,
+            runtimeMode: parent.runtimeMode,
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: NOW,
+          });
+          const result = yield* Effect.gen(function* () {
+            const toolkit = yield* SchedulerToolkit;
+            return yield* toolkit
+              .handle("create_scheduled_task", {
+                ...definition,
+                owner: "Luke",
+              } as typeof definition)
+              .pipe(Stream.unwrap, Stream.runCollect);
+          }).pipe(
+            Effect.provide(SchedulerToolkitHandlersLive),
+            Effect.provideService(Scheduler, scheduler),
+            Effect.provideService(McpInvocationContext, {
+              environmentId: EnvironmentId.make("isolated-mcp"),
+              threadId: caller,
+              providerSessionId: "test",
+              providerInstanceId: provider.instanceId,
+              capabilities: new Set<McpCapability>(),
+              issuedAt: 1,
+            }),
+          );
+          expect(result.at(-1)!.result).toMatchObject({
+            owner: "Pauli",
+            checks: [{ actor: caller }],
+          });
+        }),
+      );
+    }),
+  );
+
+  it.effect(
+    "retains the same pinned worked run through exhaustion, latest slot and durable restart",
+    () =>
+      Effect.gen(function* () {
+        const directory = yield* temporaryDirectory("scheduler-exhaustion-");
+        const state = {
+          sideEffects: 0,
+          executed: new Set<string>(),
+          context: new Set<string>(),
+          closed: 0,
+        };
+        let original: ScheduledTask | undefined;
+        yield* within(
+          directory,
+          Effect.gen(function* () {
+            yield* Effect.addFinalizer(() =>
+              Effect.sync(() => {
+                state.closed++;
+              }),
+            );
+            yield* createParent(directory);
+            const scheduler = yield* makeLiveScheduler;
+            const engine = yield* OrchestrationEngineService;
+            const fake = fakeProvider(engine, state);
+            const created = yield* scheduler.create(
+              { ...definition, schedule: { kind: "interval", minutes: 1440 } },
+              "creator",
+            );
+            yield* scheduler.runNow(created.id);
+            yield* scheduler.reconcile();
+            yield* fake.execute("after-work");
+            yield* scheduler.reconcile();
+            for (const delay of RECOVERY_DELAYS) {
+              yield* TestClock.adjust(delay);
+              yield* scheduler.reconcile();
+              yield* fake.execute("after-work");
+              yield* scheduler.reconcile();
+            }
+            original = yield* currentTask(scheduler);
+            expect(original.runs[0]!.status).toBe("needs-you");
+            expect(fake.sideEffects).toBe(1);
+            const before = yield* userTexts(engine, PARENT_ID);
+            for (const kind of ["wight", "usage-limit-resume", "spectrum"]) {
+              yield* engine.dispatch({
+                type: "thread.turn.start",
+                commandId: CommandId.make(
+                  kind === "spectrum"
+                    ? `server:spectrum:host:0:${PARENT_ID}:0:0:exhausted`
+                    : `server:${kind}:exhausted`,
+                ),
+                threadId: PARENT_ID,
+                message: {
+                  messageId: MessageId.make(`competing-${kind}`),
+                  role: "user",
+                  text: "EFFECT: competing automatic wake",
+                  attachments: [],
+                },
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                createdAt: NOW,
+              });
+            }
+            expect(yield* userTexts(engine, PARENT_ID)).toEqual(before);
+            expect(
+              yield* scheduler
+                .edit(
+                  { taskId: created.id, checkCommand: "exit 0", checkReason: "Cheat" },
+                  PARENT_ID,
+                )
+                .pipe(Effect.flip),
+            ).toBeInstanceOf(SchedulerError);
+            for (const forged of [
+              { ...original, checks: original.checks.filter((check) => check.version !== 1) },
+              {
+                ...original,
+                runs: original.runs.map((run) => ({
+                  ...run,
+                  checkCwd: "/wrong",
+                  definition: { ...run.definition, prompt: "EFFECT: restart" },
+                })),
+              },
+            ])
+              expect(
+                Exit.isFailure(
+                  yield* Effect.exit(
+                    engine.dispatch({
+                      type: "scheduler.state.set",
+                      commandId: commandId(),
+                      threadId: ThreadId.make(original.id),
+                      expectedRevision: original.revision,
+                      task: { ...forged, revision: original.revision + 1 },
+                      createdAt: NOW,
+                    }),
+                  ),
+                ),
+              ).toBe(true);
+            for (let i = 0; i < 24; i++)
+              yield* scheduler.edit(
+                { taskId: created.id, checkCommand: `exit ${i + 1}`, checkReason: "Future judge" },
+                "other-author",
+              );
+            expect(
+              (yield* currentTask(scheduler)).checks.some((check) => check.version === 1),
+            ).toBe(true);
+            original = yield* currentTask(scheduler);
+          }),
+        );
+        expect(state.closed).toBe(1);
+        yield* within(
+          directory,
+          Effect.gen(function* () {
+            yield* Effect.addFinalizer(() =>
+              Effect.sync(() => {
+                state.closed++;
+              }),
+            );
+            const scheduler = yield* makeLiveScheduler;
+            const engine = yield* OrchestrationEngineService;
+            yield* TestClock.adjust(3 * 86_400_000);
+            yield* scheduler.reconcile();
+            const resumed = yield* currentTask(scheduler);
+            expect(resumed.runs).toHaveLength(1);
+            expect(resumed.runs[0]).toMatchObject({
+              id: original!.runs[0]!.id,
+              threadId: PARENT_ID,
+              checkVersion: 1,
+              checkCwd: directory,
+              definition: original!.runs[0]!.definition,
+              status: "running",
+            });
+            expect(resumed.consumedSlot).not.toBe(original!.consumedSlot);
+            const fake = fakeProvider(engine, state);
+            yield* fake.execute();
+            expect(fake.sideEffects).toBe(1);
+            yield* Effect.promise(() =>
+              NodeFSP.writeFile(NodePath.join(directory, "result.txt"), "pass"),
+            );
+            yield* scheduler.reconcile();
+            expect((yield* currentTask(scheduler)).runs[0]!.status).toBe("done");
+          }),
+        );
+        expect(state.closed).toBe(2);
+      }),
+  );
+
+  for (const block of ["approval", "user-input", "plan", "queued-turn"] as const) {
+    it.effect(`does not finish a passing run with actual ${block} after its lease expires`, () =>
+      Effect.gen(function* () {
+        const directory = yield* temporaryDirectory(`scheduler-blocked-${block}-`);
+        yield* within(
+          directory,
+          Effect.gen(function* () {
+            yield* createParent(directory);
+            const engine = yield* OrchestrationEngineService;
+            const scheduler = yield* makeLiveScheduler;
+            const created = yield* scheduler.create(definition, "creator");
+            yield* scheduler.runNow(created.id);
+            yield* scheduler.reconcile();
+            yield* fakeProvider(engine).execute();
+            if (block === "plan") {
+              yield* engine.dispatch({
+                type: "thread.proposed-plan.upsert",
+                commandId: commandId(),
+                threadId: PARENT_ID,
+                proposedPlan: {
+                  id: OrchestrationProposedPlanId.make("pending-plan"),
+                  turnId: null,
+                  planMarkdown: "Approve real unfinished work",
+                  implementedAt: null,
+                  implementationThreadId: null,
+                  createdAt: NOW,
+                  updatedAt: NOW,
+                },
+                createdAt: NOW,
+              });
+            } else if (block === "queued-turn") {
+              yield* engine.dispatch({
+                type: "thread.turn.start",
+                commandId: commandId(),
+                threadId: PARENT_ID,
+                message: {
+                  messageId: MessageId.make("queued-user"),
+                  role: "user",
+                  text: "User work still waiting",
+                  attachments: [],
+                },
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                createdAt: iso((yield* Clock.currentTimeMillis) + 1),
+              });
+            } else {
+              yield* engine.dispatch({
+                type: "thread.activity.append",
+                commandId: commandId(),
+                threadId: PARENT_ID,
+                activity: {
+                  id: EventId.make(`pending-${block}`),
+                  kind: `${block}.requested`,
+                  summary: "Awaiting user",
+                  payload: {
+                    requestId: `pending-${block}`,
+                    responseMode: "message",
+                    questions: [],
+                  },
+                  tone: "info",
+                  turnId: null,
+                  createdAt: NOW,
+                },
+                createdAt: NOW,
+              });
+            }
+            const shell = Option.getOrThrow(
+              yield* (yield* ProjectionSnapshotQuery).getThreadShellById(PARENT_ID),
+            );
+            if (block === "approval") expect(shell.hasPendingApprovals).toBe(true);
+            if (block === "user-input") expect(shell.hasPendingUserInput).toBe(true);
+            if (block === "plan") expect(shell.hasActionableProposedPlan).toBe(true);
+            yield* Effect.promise(() =>
+              NodeFSP.writeFile(NodePath.join(directory, "result.txt"), "pass"),
+            );
+            yield* TestClock.adjust(130_000);
+            yield* scheduler.reconcile();
+            expect((yield* currentTask(scheduler)).runs[0]!.status).toBe("running");
+            expect(yield* userTexts(engine, PARENT_ID)).toHaveLength(
+              block === "queued-turn" ? 2 : 1,
+            );
+            yield* TestClock.adjust(130_000);
+            yield* scheduler.reconcile();
+            expect((yield* currentTask(scheduler)).runs[0]!.status).toBe("running");
+            if (block === "plan")
+              yield* engine.dispatch({
+                type: "thread.proposed-plan.upsert",
+                commandId: commandId(),
+                threadId: PARENT_ID,
+                proposedPlan: {
+                  id: OrchestrationProposedPlanId.make("pending-plan"),
+                  turnId: null,
+                  planMarkdown: "Approve real unfinished work",
+                  implementedAt: NOW,
+                  implementationThreadId: PARENT_ID,
+                  createdAt: NOW,
+                  updatedAt: NOW,
+                },
+                createdAt: NOW,
+              });
+            else if (block === "queued-turn") {
+              yield* engine.dispatch(session(PARENT_ID, "running", "processed-user"));
+              yield* engine.dispatch(session(PARENT_ID, "ready", "processed-user"));
+            } else
+              yield* engine.dispatch({
+                type: "thread.activity.append",
+                commandId: commandId(),
+                threadId: PARENT_ID,
+                activity: {
+                  id: EventId.make(`resolved-${block}`),
+                  kind: `${block}.resolved`,
+                  summary: "Resolved",
+                  payload: { requestId: `pending-${block}` },
+                  tone: "info",
+                  turnId: null,
+                  createdAt: NOW,
+                },
+                createdAt: NOW,
+              });
+            yield* scheduler.reconcile();
+            expect((yield* currentTask(scheduler)).runs[0]!.status).toBe("done");
+          }),
+        );
+      }),
+    );
+  }
+
   it.effect(
     "create RPC returns typed calendar failures and derives check authors from its authenticated caller",
     () =>
@@ -205,7 +919,12 @@ describe("scheduler real SQLite and sender boundary", () => {
           Effect.gen(function* () {
             yield* createParent(directory);
             const scheduler = yield* makeLiveScheduler;
-            const api = makeSchedulerRpcHandlers(scheduler, "user:session", (_, effect) => effect);
+            const api = makeSchedulerRpcHandlers(
+              scheduler,
+              { subject: "session", sessionId: AuthSessionId.make("session") },
+              { getPerson: () => Effect.succeed(null) },
+              (_, effect) => effect,
+            );
             for (const schedule of [
               { kind: "weekly" as const, weekdays: [4], times: ["08:00"], timeZone: "Not/AZone" },
               { kind: "once" as const, at: "1969-12-31T08:00:00Z", windowMinutes: 0 },

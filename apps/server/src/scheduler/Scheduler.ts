@@ -1,5 +1,7 @@
 import {
   SchedulerError,
+  DEFAULT_PERSON,
+  threadOwner,
   ThreadId,
   type ScheduledTask,
   type TaskRun,
@@ -22,7 +24,7 @@ export const RECOVERY_DELAYS = [30_000, 60_000, 300_000, 900_000, 3_600_000] as 
 export const LEASE_MS = 120_000;
 const decodeCreate = Schema.decodeUnknownEffect(CreateSchema);
 const decodeEdit = Schema.decodeUnknownEffect(EditSchema);
-const terminal = (run: TaskRun) => run.status === "done" || run.status === "needs-you";
+const terminal = (run: TaskRun) => run.status === "done";
 const fail = (detail: string) => Effect.fail(new SchedulerError({ detail }));
 export type RunObservation = {
   readonly active: boolean;
@@ -31,6 +33,7 @@ export type RunObservation = {
   readonly hasWork: boolean;
   readonly pendingDrafters: boolean;
   readonly pendingReports?: boolean;
+  readonly blocked?: boolean;
   readonly drafterIds: ReadonlyArray<ThreadId>;
   readonly turnId: string | null;
   readonly error: string | null;
@@ -118,6 +121,7 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
         return yield* fail("This task already has unfinished work.");
       if (task.runs.some((run) => run.id === `${task.id}:${slot}`)) return task;
       const run: TaskRun = {
+        owner: threadOwner(task),
         definition: task.definition,
         checkCwd: task.checkCwd,
         id: `${task.id}:${slot}`,
@@ -159,6 +163,29 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
       ),
     });
   };
+  // Retry opportunity changes; accepted send identities and all pinned work context survive.
+  const resume = (
+    task: ScheduledTask,
+    run: TaskRun,
+    slot: string,
+    now: number,
+    observation: RunObservation,
+  ) =>
+    store(task, {
+      consumedSlot: slot,
+      runs: task.runs.map((entry) =>
+        entry.id !== run.id
+          ? entry
+          : {
+              ...run,
+              status: "retry",
+              attempt: 0,
+              retryAt: null,
+              leaseUntil: now + LEASE_MS,
+              hasWork: run.hasWork || observation.hasWork || run.dispatchedAt !== null,
+            },
+      ),
+    });
   const drive = (id: string) =>
     locked(
       id,
@@ -166,12 +193,12 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
         let task = yield* lookup(id);
         const now = yield* Clock.currentTimeMillis;
         const slots = taskSlots(task, now);
-        if (
+        const nextSlot =
           !task.paused &&
           slots.latest !== null &&
-          (task.consumedSlot === null || slots.latest > Date.parse(task.consumedSlot))
-        ) {
-          const slot = iso(slots.latest);
+          (task.consumedSlot === null || slots.latest > Date.parse(task.consumedSlot));
+        if (nextSlot) {
+          const slot = iso(slots.latest!);
           task = task.runs.some((run) => !terminal(run))
             ? yield* store(task, { consumedSlot: slot })
             : yield* claim(task, slot, now);
@@ -180,6 +207,7 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
         if (!run || task.paused) return;
         const observation = yield* deps.observe(task, run);
         if (observation.retired) {
+          if (run.status === "needs-you") return;
           yield* retry(
             task,
             { ...run, attempt: RECOVERY_DELAYS.length },
@@ -203,6 +231,15 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
             drafterIds: [...new Set([...run.drafterIds, ...observation.drafterIds])],
           });
           run = task.runs.find((entry) => entry.id === run!.id)!;
+        }
+        if (run.status === "needs-you") {
+          if (!nextSlot) return;
+          task = yield* resume(task, run, iso(slots.latest!), now, observation);
+          run = task.runs.find((entry) => entry.id === run!.id)!;
+        }
+        if (observation.blocked) {
+          if (run.leaseUntil <= now) yield* updateRun(task, run, { leaseUntil: now + LEASE_MS });
+          return;
         }
         if (observation.usageLimited) {
           if (run.status !== "usage-limit" || run.retryAt !== observation.resetAt)
@@ -291,7 +328,7 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
             Effect.catch((error) => retry(task, run!, error.detail, now).pipe(Effect.as(null))),
           );
         if (threadId === null) return;
-        const continuing = hasWork || run.status === "usage-limit";
+        const continuing = hasWork || run.hasWork || run.status === "usage-limit";
         task = yield* updateRun(task, run, {
           threadId,
           status: "running",
@@ -325,7 +362,7 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
         }
       }),
     );
-  const create = (raw: CreateScheduledTask, actor: string) =>
+  const create = (raw: CreateScheduledTask, actor: string, owner: string = DEFAULT_PERSON) =>
     creationLock.withPermits(1)(
       Effect.gen(function* () {
         const input = yield* decodeCreate(raw).pipe(
@@ -352,6 +389,7 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
         const task = yield* Effect.try({
           try: (): ScheduledTask => {
             const task: ScheduledTask = {
+              owner,
               checkCwd,
               id,
               revision: 1,
@@ -446,10 +484,20 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
         const task = yield* lookup(id);
         if (task.runs.some((run) => !terminal(run) && run.threadId === actor))
           return yield* fail("A judged thread cannot pause or delete its own task.");
-        if (patch.deleted && task.runs.some((run) => !terminal(run)))
-          return yield* fail(
-            "Task has unfinished work. Pause it before deleting after settlement.",
-          );
+        if (patch.deleted) {
+          for (const run of task.runs.filter((entry) => !terminal(entry))) {
+            const observation = yield* deps.observe(task, run);
+            if (
+              run.status !== "needs-you" ||
+              observation.active ||
+              observation.blocked ||
+              observation.pendingDrafters ||
+              observation.pendingReports ||
+              (!observation.idle && !observation.retired)
+            )
+              return yield* fail("Task has live or pending unfinished work and cannot be deleted.");
+          }
+        }
         const next = yield* store(task, patch);
         yield* deps.wake;
         return next;
@@ -462,7 +510,16 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
         const task = yield* lookup(id);
         const now = yield* Clock.currentTimeMillis;
         if (task.paused) return yield* fail("Resume this task before running it now.");
-        const next = yield* claim(task, iso(now), now);
+        const unfinished = task.runs.find((run) => !terminal(run));
+        let next: ScheduledTask;
+        if (unfinished?.status === "needs-you") {
+          const observation = yield* deps.observe(task, unfinished);
+          if (observation.retired)
+            return yield* fail(
+              "Recover the retired thread explicitly before resuming its pinned run.",
+            );
+          next = yield* resume(task, unfinished, iso(now), now, observation);
+        } else next = yield* claim(task, iso(now), now);
         yield* deps.wake;
         return next;
       }),
@@ -490,7 +547,9 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
         return [
           ...(next === null ? [] : [next]),
           ...task.runs.flatMap((run) =>
-            terminal(run) ? [] : [run.leaseUntil, ...(run.retryAt === null ? [] : [run.retryAt])],
+            terminal(run) || run.status === "needs-you"
+              ? []
+              : [run.leaseUntil, ...(run.retryAt === null ? [] : [run.retryAt])],
           ),
         ];
       })

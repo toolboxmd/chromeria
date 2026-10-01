@@ -23,6 +23,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
+import { RECOVERY_DELAYS } from "./Scheduler.ts";
 import { makeLiveScheduler } from "./Service.ts";
 import { SpectrumState, makeSpectrum } from "../mcp/toolkits/threads/spectrum.ts";
 import {
@@ -239,6 +240,65 @@ const executeParent = (
   });
 
 describe("scheduler Spectrum integration", () => {
+  it.effect(
+    "retains Spectrum ownership and pending report context while its parent needs-you",
+    () =>
+      Effect.gen(function* () {
+        const directory = yield* temporaryDirectory("scheduler-spectrum-exhausted-");
+        yield* withRuntime(
+          directory,
+          Effect.gen(function* () {
+            yield* createParent(directory);
+            const scheduler = yield* makeLiveScheduler;
+            const engine = yield* OrchestrationEngineService;
+            const created = yield* scheduler.create(
+              { ...definition, schedule: { kind: "interval", minutes: 1440 } },
+              "creator",
+            );
+            yield* scheduler.runNow(created.id);
+            yield* scheduler.reconcile();
+            const history = { executed: new Set<string>(), work: 0, reports: 0 };
+            yield* executeParent(engine, history, true);
+            yield* scheduler.reconcile();
+            for (const delay of RECOVERY_DELAYS) {
+              yield* TestClock.adjust(delay);
+              yield* scheduler.reconcile();
+              yield* executeParent(engine, history, true);
+              yield* scheduler.reconcile();
+            }
+            expect((yield* task(scheduler)).runs[0]!.status).toBe("needs-you");
+            const before = yield* parentTexts(engine);
+            const started = yield* callTool("start_spectrum", { ...spectrumInput, limit: 1 });
+            expect(
+              yield* scheduler.delete(created.id, "user:delete").pipe(Effect.flip),
+            ).toBeInstanceOf(SchedulerError);
+            const state = yield* spectrumState(started.threadId);
+            yield* dispatchUntil(
+              answer(state.pending[0]!, "exhausted-color", "FULL SPECTRUM RESULT after exhaustion"),
+              (event) => event.type === "thread.settled" && event.aggregateId === started.threadId,
+            );
+            expect(yield* parentTexts(engine)).toEqual(before);
+            expect(
+              yield* scheduler.delete(created.id, "user:delete").pipe(Effect.flip),
+            ).toBeInstanceOf(SchedulerError);
+            yield* scheduler.runNow(created.id);
+            yield* scheduler.reconcile();
+            expect((yield* parentTexts(engine)).at(-1)).toContain(
+              "FULL SPECTRUM RESULT after exhaustion",
+            );
+            yield* executeParent(engine, history);
+            expect(history.work).toBe(1);
+            expect(history.reports).toBe(1);
+            yield* Effect.promise(() =>
+              NodeFSP.writeFile(NodePath.join(directory, "result.txt"), "pass"),
+            );
+            yield* scheduler.reconcile();
+            expect((yield* task(scheduler)).runs[0]!.status).toBe("done");
+          }),
+        );
+      }),
+  );
+
   it.effect(
     "uses the task role's first Color for an idle existing target before its first provider request",
     () =>

@@ -1,5 +1,6 @@
 import {
   CommandId,
+  threadOwner,
   DEFAULT_RUNTIME_MODE,
   MessageId,
   SchedulerError,
@@ -39,6 +40,9 @@ import { makeRunReports, appendRunReports } from "./RunReports.ts";
 import { isSpectrumThreadId } from "../mcp/toolkits/threads/spectrumIdentity.ts";
 import { ServerRuntimeStartup } from "../serverRuntimeStartup.ts";
 
+import { ProjectionTurnRepositoryLive } from "../persistence/Layers/ProjectionTurns.ts";
+import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
+
 const decodeCheck = Schema.decodeUnknownEffect(Schema.fromJsonString(TaskCheckVersion));
 const error = (cause: unknown) => new SchedulerError({ detail: String(cause) });
 export const schedulerIdle = (thread: OrchestrationThreadShell, now: string) =>
@@ -66,6 +70,7 @@ export const makeLiveScheduler = Effect.gen(function* () {
   const process = yield* ProcessRunner;
   const clock = yield* Effect.serviceOption(StreamClock);
   const sql = yield* SqlClient.SqlClient;
+  const turns = yield* ProjectionTurnRepository.pipe(Effect.provide(ProjectionTurnRepositoryLive));
   const uuid = (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie);
   const processId = yield* uuid;
   const readReports = yield* makeRunReports;
@@ -171,6 +176,13 @@ export const makeLiveScheduler = Effect.gen(function* () {
       let pendingDrafters = reports.pending;
       for (const id of drafterIds) {
         const child = yield* getThread(id);
+        const queuedChild =
+          child &&
+          Option.isSome(
+            yield* turns
+              .getPendingTurnStartByThreadId({ threadId: child.id })
+              .pipe(Effect.mapError(error)),
+          );
         if (
           child &&
           child.archivedAt === null &&
@@ -183,6 +195,7 @@ export const makeLiveScheduler = Effect.gen(function* () {
             child.hasPendingUserInput ||
             child.hasActionableProposedPlan ||
             isUsageLimitError(child.session?.lastError) ||
+            queuedChild ||
             threadHasQueuedTurnStart(child, iso(now)))
         )
           pendingDrafters = true;
@@ -207,9 +220,21 @@ export const makeLiveScheduler = Effect.gen(function* () {
         active &&
         now - (liveness.lastStreamAt ?? Date.parse(run.dispatchedAt ?? iso(now))) >=
           (liveness.openTool === null ? 300_000 : 3_600_000);
+      const queuedTurn = Option.isSome(
+        yield* turns
+          .getPendingTurnStartByThreadId({ threadId: thread.id })
+          .pipe(Effect.mapError(error)),
+      );
+      const blocked =
+        thread.hasPendingApprovals ||
+        thread.hasPendingUserInput ||
+        thread.hasActionableProposedPlan ||
+        queuedTurn ||
+        threadHasQueuedTurnStart(thread, iso(now));
       return {
         active,
-        idle: schedulerIdle(thread, iso(now)),
+        blocked,
+        idle: !blocked && schedulerIdle(thread, iso(now)),
         retired:
           thread.archivedAt !== null ||
           (yield* engine.getThreadRetirement(thread.id))?.retired === true ||
@@ -339,6 +364,7 @@ export const makeLiveScheduler = Effect.gen(function* () {
               threadId: id,
               projectId,
               title: task.definition.title,
+              owner: threadOwner(run),
               modelSelection,
               runtimeMode: DEFAULT_RUNTIME_MODE,
               interactionMode: "default",
