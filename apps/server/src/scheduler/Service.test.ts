@@ -647,6 +647,19 @@ describe("scheduler real SQLite and sender boundary", () => {
               "Drafter result survives restart",
             );
             expect((yield* currentTask(scheduler)).runs[0]!.drafterIds).toHaveLength(1);
+            yield* engine.dispatch(session(PARENT_ID, "running", "report-context"));
+            yield* engine.dispatch(session(PARENT_ID, "ready", "report-context"));
+            yield* scheduler.reconcile();
+            yield* TestClock.adjust(60_000);
+            yield* scheduler.reconcile();
+            expect((yield* userTexts(engine, PARENT_ID)).at(-1)).not.toContain(
+              "Drafter result survives restart",
+            );
+            expect(
+              (yield* userTexts(engine, PARENT_ID)).filter((text) =>
+                text.includes("Drafter result survives restart"),
+              ),
+            ).toHaveLength(1);
           }),
         );
       }),
@@ -701,6 +714,13 @@ describe("scheduler real SQLite and sender boundary", () => {
             engine.dispatch(session(child, "ready", "resumed-child")),
             parentActivity(child, "task.progress", "idle"),
           );
+          yield* scheduler.reconcile();
+          expect((yield* currentTask(scheduler)).runs[0]!.status).toBe("running");
+          expect((yield* userTexts(engine, PARENT_ID)).at(-1)).toContain(
+            "Quota recovery completed",
+          );
+          yield* engine.dispatch(session(PARENT_ID, "running", "quota-report-context"));
+          yield* engine.dispatch(session(PARENT_ID, "ready", "quota-report-context"));
           yield* scheduler.reconcile();
           expect((yield* currentTask(scheduler)).runs[0]!.status).toBe("done");
         }).pipe(

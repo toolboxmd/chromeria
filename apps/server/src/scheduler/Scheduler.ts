@@ -30,6 +30,7 @@ export type RunObservation = {
   readonly retired: boolean;
   readonly hasWork: boolean;
   readonly pendingDrafters: boolean;
+  readonly pendingReports?: boolean;
   readonly drafterIds: ReadonlyArray<ThreadId>;
   readonly turnId: string | null;
   readonly error: string | null;
@@ -250,24 +251,35 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
               yield* updateRun(task, run, { check, hasWork, leaseUntil: now + LEASE_MS });
               return;
             }
-            yield* store(task, {
-              failureStreak: 0,
-              lastError: null,
-              runs: task.runs.map((entry) =>
-                entry.id === run!.id
-                  ? { ...run!, check, hasWork, status: "done", retryAt: null }
-                  : entry,
-              ),
+            if (!observation.pendingReports) {
+              yield* store(task, {
+                failureStreak: 0,
+                lastError: null,
+                runs: task.runs.map((entry) =>
+                  entry.id === run!.id
+                    ? { ...run!, check, hasWork, status: "done", retryAt: null }
+                    : entry,
+                ),
+              });
+              return;
+            }
+            // Passing the judge cannot discard queued Drafter context. Deliver it through our own turn.
+            task = yield* updateRun(task, run, {
+              check,
+              hasWork: true,
+              status: "retry",
+              retryAt: null,
             });
+            run = task.runs.find((entry) => entry.id === run!.id)!;
+          } else {
+            yield* retry(
+              task,
+              { ...run, check, hasWork: hasWork || !observation.error },
+              observation.error ?? `Outcome check failed:\n${verdict.output}`,
+              now,
+            );
             return;
           }
-          yield* retry(
-            task,
-            { ...run, check, hasWork: hasWork || !observation.error },
-            observation.error ?? `Outcome check failed:\n${verdict.output}`,
-            now,
-          );
-          return;
         }
         if (run.status !== "usage-limit" && run.retryAt !== null && run.retryAt > now) return;
         if (observation.pendingDrafters) return;

@@ -35,6 +35,8 @@ import { isUsageLimitError, usageLimitResetAt } from "../mcp/toolkits/threads/us
 import { threadHasQueuedTurnStart } from "../orchestration/ThreadSettlementPolicy.ts";
 import { makeScheduler, type RunObservation } from "./Scheduler.ts";
 import { iso } from "./Schedule.ts";
+import { makeRunReports, appendRunReports } from "./RunReports.ts";
+import { isSpectrumThreadId } from "../mcp/toolkits/threads/spectrumIdentity.ts";
 import { ServerRuntimeStartup } from "../serverRuntimeStartup.ts";
 
 const decodeCheck = Schema.decodeUnknownEffect(Schema.fromJsonString(TaskCheckVersion));
@@ -66,6 +68,7 @@ export const makeLiveScheduler = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const uuid = (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie);
   const processId = yield* uuid;
+  const readReports = yield* makeRunReports;
   const wakes = yield* Queue.unbounded<void>();
   const wake = Queue.offer(wakes, undefined).pipe(Effect.asVoid);
   const getThread = (id: string) =>
@@ -160,17 +163,19 @@ export const makeLiveScheduler = Effect.gen(function* () {
           );
         }
       }
-      const drafterIds = [...new Set([...run.drafterIds, ...children.keys()])].map((id) =>
-        ThreadId.make(id),
-      );
-      let pendingDrafters = false;
+      const reports = yield* readReports(run, events).pipe(Effect.mapError(error));
+      hasWork ||= reports.participants.length > 0 || reports.reports.length > 0;
+      const drafterIds = [
+        ...new Set([...run.drafterIds, ...children.keys(), ...reports.participants]),
+      ].map((id) => ThreadId.make(id));
+      let pendingDrafters = reports.pending;
       for (const id of drafterIds) {
         const child = yield* getThread(id);
         if (
           child &&
           child.archivedAt === null &&
           !(yield* engine.getThreadRetirement(id))?.retired &&
-          ((child.session === null && children.get(id) !== "idle") ||
+          ((child.session === null && children.has(id) && children.get(id) !== "idle") ||
             child.session?.status === "running" ||
             child.session?.status === "starting" ||
             child.backgroundLiveness === "working" ||
@@ -212,6 +217,7 @@ export const makeLiveScheduler = Effect.gen(function* () {
         hasWork,
         drafterIds,
         pendingDrafters,
+        pendingReports: reports.reports.length > 0,
         turnId: thread.latestTurn?.turnId ?? null,
         error: lastError,
         usageLimited: limited,
@@ -270,6 +276,10 @@ export const makeLiveScheduler = Effect.gen(function* () {
     },
     validateTarget: (target) =>
       Effect.gen(function* () {
+        if (target.kind === "thread" && isSpectrumThreadId(target.threadId))
+          return yield* new SchedulerError({
+            detail: "Spectrum transcript threads have no provider and cannot be scheduled targets.",
+          });
         const thread = target.kind === "thread" ? yield* getThread(target.threadId) : undefined;
         const projectId = target.kind === "new-thread" ? target.projectId : thread?.projectId;
         if (!projectId) return yield* new SchedulerError({ detail: "Target thread not found." });
@@ -337,7 +347,11 @@ export const makeLiveScheduler = Effect.gen(function* () {
               createdAt: iso(yield* Clock.currentTimeMillis),
             })
             .pipe(Effect.mapError(error));
-        else if (task.definition.target.kind === "new-thread" || run.attempt > 0)
+        else {
+          if (!schedulerIdle(existing, iso(yield* Clock.currentTimeMillis)))
+            return yield* new SchedulerError({
+              detail: "Target became busy before selecting its scheduled Color.",
+            });
           yield* engine
             .dispatch({
               type: "thread.meta.update",
@@ -346,6 +360,7 @@ export const makeLiveScheduler = Effect.gen(function* () {
               modelSelection,
             })
             .pipe(Effect.mapError(error));
+        }
         return id;
       }),
     send: (task, run, text) =>
@@ -389,26 +404,8 @@ export const makeLiveScheduler = Effect.gen(function* () {
             limit: Number.MAX_SAFE_INTEGER,
           })
           .pipe(Stream.runCollect, Effect.mapError(error));
-        const reports = new Map<string, string>();
-        for (const event of reportEvents) {
-          if (event.type !== "thread.activity-appended") continue;
-          const activity = event.payload.activity;
-          if (
-            !activity.kind.startsWith("task.") ||
-            !Predicate.isObject(activity.payload) ||
-            typeof activity.payload.taskId !== "string"
-          )
-            continue;
-          const summary =
-            typeof activity.payload.summary === "string"
-              ? activity.payload.summary
-              : activity.summary;
-          reports.set(
-            activity.payload.taskId,
-            `[Drafter ${activity.payload.taskId}, ${String(activity.payload.status ?? activity.kind)}] ${summary.slice(0, 4000)}`,
-          );
-        }
-        const withReports = `${text}${reports.size ? `\nRun Drafter reports/errors:\n${[...reports.values()].join("\n")}` : ""}`;
+        const queued = yield* readReports(run, reportEvents).pipe(Effect.mapError(error));
+        const withReports = appendRunReports(text, queued.reports);
         const commandId = CommandId.make(`server:scheduler-turn:${run.id}:${run.sendIndex}`);
         yield* sender(
           thread,
