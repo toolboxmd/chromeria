@@ -42,7 +42,6 @@ import * as ProviderService from "../../../provider/Services/ProviderService.ts"
 import { ServerSettingsService } from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { ThreadsToolkitHandlersLive } from "./handlers.ts";
-import { makeSubagentThreadId } from "./subagentThreadId.ts";
 import { ThreadsToolkit } from "./tools.ts";
 import { RESUME_TEXT } from "./usageLimitResume.ts";
 
@@ -52,7 +51,6 @@ const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const INSTANCE = ProviderInstanceId.make("claudeAgent");
 const PROJECT_ID = ProjectId.make("project-limit");
 const PARENT_ID = ThreadId.make("parent-limit");
-const JOB_ID = ThreadId.make(makeSubagentThreadId(PARENT_ID, "f03bcdab"));
 const LIMIT_ERROR = "Claude usage limit reached. Send the message again once the limit resets.";
 
 let commandCount = 0;
@@ -244,7 +242,7 @@ const userMessages = (threadId: ThreadId) =>
 
 describe("usage-limit resume for child threads (toolboxmd/chromeria#71)", () => {
   it.effect(
-    "resumes a direct child at the first reply on its instance, tells the parent once, and leaves Prism jobs alone",
+    "resumes a direct child at the first reply on its instance, and tells the parent once",
     () =>
       Effect.gen(function* () {
         const directory = yield* Effect.promise(() =>
@@ -279,43 +277,11 @@ describe("usage-limit resume for child threads (toolboxmd/chromeria#71)", () => 
           ]);
           const { threadId } = yield* spawnDirectChild;
           const child = ThreadId.make(threadId);
-          // A Prism job thread, opened the way Model Router opens them.
-          yield* dispatchAll([
-            {
-              type: "thread.create",
-              commandId: commandId(),
-              threadId: JOB_ID,
-              projectId: PROJECT_ID,
-              title: "Retry Release Reconciliation Dispatch",
-              modelSelection: { instanceId: INSTANCE, model: "claude-opus-5-5" },
-              runtimeMode: "full-access",
-              interactionMode: "default",
-              branch: null,
-              worktreePath: null,
-              createdAt: iso(0),
-            },
-            {
-              type: "thread.turn.start",
-              commandId: commandId(),
-              threadId: JOB_ID,
-              message: {
-                messageId: MessageId.make("job-task"),
-                role: "user",
-                text: `[model-router job prism-1 worker seq 1 on route t3:claudeAgent:claude-opus-5-5@medium; planner thread ${PARENT_ID}]\n\nDo it.`,
-                attachments: [],
-              },
-              runtimeMode: "full-access",
-              interactionMode: "default",
-              createdAt: iso(0),
-            },
-          ]);
-
-          // Both hit the limit. The toolkit handles events in order, so once
-          // the job's failure row lands, the child's resume is scheduled.
-          yield* dispatchAll(failOnLimit(child, "child-turn-1"));
+          // The toolkit handles events in order, so once the child's failure
+          // row lands, its resume is scheduled.
           yield* dispatchUntil(
-            dispatchAll(failOnLimit(JOB_ID, "job-turn-1")),
-            parentFailedRow(JOB_ID),
+            dispatchAll(failOnLimit(child, "child-turn-1")),
+            parentFailedRow(child),
           );
 
           // Past the settle delay, the parent gets a reply on the same instance.
@@ -356,7 +322,6 @@ describe("usage-limit resume for child threads (toolboxmd/chromeria#71)", () => 
           );
 
           expect((yield* userMessages(child)).slice(1)).toEqual([RESUME_TEXT]);
-          expect((yield* userMessages(JOB_ID)).slice(1)).toEqual([]);
           expect(
             (yield* userMessages(PARENT_ID)).filter((text) => text.includes("resumed")),
           ).toEqual([

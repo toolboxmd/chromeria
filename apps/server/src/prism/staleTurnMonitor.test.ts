@@ -133,22 +133,23 @@ it.effect(
     ),
 );
 
-it.effect(
-  "Router's marked job threads expose stale without duplicating Router's parent message",
-  () =>
-    Effect.gen(function* () {
-      const f = yield* fixture("model-router job-62 worker seq 1");
-      yield* TestClock.adjust("20 seconds");
-      expect(f.detector.state.status(CHILD).stale).toBe(true);
-      expect(yield* Queue.size(f.messages)).toBe(0);
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        Layer.mergeAll(
-          staleTurnDetectorLayer,
-          NodeCrypto.layer,
-          NodeSqliteClient.layer({ filename: ":memory:" }),
-        ),
+it.effect("notifies the parent of every stale child, whatever its title", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture("model-router job-62 worker seq 1");
+    yield* TestClock.adjust("20 seconds");
+    expect(f.detector.state.status(CHILD).stale).toBe(true);
+    expect(yield* Queue.take(f.messages)).toMatchObject({
+      type: "thread.turn.start",
+      threadId: PARENT,
+    });
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      Layer.mergeAll(
+        staleTurnDetectorLayer,
+        NodeCrypto.layer,
+        NodeSqliteClient.layer({ filename: ":memory:" }),
       ),
     ),
+  ),
 );

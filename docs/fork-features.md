@@ -233,7 +233,7 @@ for per-match decisions and the absorption PR record.
 ```json
 {
   "id": "agents-panel",
-  "purpose": "Separate Prism and direct spawns, nest child threads and navigate parent and siblings.",
+  "purpose": "Nest child threads under their parent and navigate parent and siblings.",
   "issues": ["https://github.com/toolboxmd/t3code/issues/17"],
   "prs": ["https://github.com/toolboxmd/t3code/pull/18"],
   "newFiles": [
@@ -249,7 +249,6 @@ for per-match decisions and the absorption PR record.
   "sharedFiles": [],
   "keywords": [
     "AgentsPanel",
-    "Prism Spawns",
     "Direct Spawns",
     "child tree",
     "breadcrumb",
@@ -264,7 +263,7 @@ for per-match decisions and the absorption PR record.
 ```json
 {
   "id": "prism-toolkit",
-  "purpose": "Expose provider capacity and give Prism roles their kits and models; every role has every thread tool.",
+  "purpose": "Give Prism roles their kits and models; every role has every thread tool.",
   "issues": [
     "https://github.com/toolboxmd/t3code/issues/19",
     "https://github.com/toolboxmd/chromeria/issues/93"
@@ -274,16 +273,10 @@ for per-match decisions and the absorption PR record.
     "https://github.com/toolboxmd/chromeria/pull/101"
   ],
   "newFiles": [
-    "apps/server/src/mcp/toolkits/prism/handlers.test.ts",
-    "apps/server/src/mcp/toolkits/prism/handlers.ts",
-    "apps/server/src/mcp/toolkits/prism/tools.ts",
     "apps/server/src/mcp/toolkits/threads/roles.test.ts",
     "apps/server/src/mcp/toolkits/threads/roles.ts",
-    "apps/server/src/prism/snapshotRoute.test.ts",
-    "apps/server/src/prism/snapshotRoute.ts",
     "packages/contracts/src/prism.test.ts",
-    "packages/contracts/src/prism.ts",
-    "packages/contracts/src/prismSnapshot.ts"
+    "packages/contracts/src/prism.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/provider/Drivers/OpenCodeDriver.ts",
@@ -291,7 +284,6 @@ for per-match decisions and the absorption PR record.
     "packages/contracts/src/settings.ts"
   ],
   "sharedFiles": [
-    "apps/server/src/mcp/McpHttpServer.ts",
     "apps/server/src/mcp/toolkits/threads/handlers.ts",
     "apps/server/src/mcp/toolkits/threads/tools.ts"
   ],
@@ -300,7 +292,6 @@ for per-match decisions and the absorption PR record.
     "role kit",
     "prismRoles",
     "spawn_thread",
-    "provider snapshot",
     "capacity",
     "usage limit",
     "resume"
@@ -587,32 +578,28 @@ for per-match decisions and the absorption PR record.
 }
 ```
 
-## Prism stream clock and cancel
+## Prism stream clock
 
 ```json
 {
   "id": "prism-stream-clock",
-  "purpose": "Stamp each thread's last provider stream event in memory for Model Router liveness, record per-turn stream statistics, and cancel Prism jobs.",
+  "purpose": "Stamp each thread's last provider stream event in memory for stale-turn detection and record per-turn stream statistics.",
   "issues": ["https://github.com/toolboxmd/t3code/issues/55"],
   "prs": ["https://github.com/toolboxmd/t3code/pull/56"],
   "newFiles": [
-    "apps/server/src/prism/livenessRoute.ts",
     "apps/server/src/prism/streamClock.test.ts",
-    "apps/server/src/prism/streamClock.ts"
+    "apps/server/src/prism/streamClock.ts",
+    "apps/server/src/prism/streamStats.ts"
   ],
   "upstreamFiles": ["apps/mobile/src/lib/threadActivity.ts", "apps/web/src/session-logic.ts"],
   "sharedFiles": [
     "apps/server/src/mcp/McpHttpServer.ts",
-    "apps/server/src/mcp/toolkits/prism/handlers.test.ts",
-    "apps/server/src/mcp/toolkits/prism/handlers.ts",
-    "apps/server/src/mcp/toolkits/prism/tools.ts",
     "apps/server/src/server.ts",
     "packages/contracts/src/prism.ts"
   ],
   "keywords": [
     "stream clock",
     "liveness",
-    "prism_cancel",
     "ProviderEventLoggers",
     "thinking_tokens",
     "prism.stream-stats",
@@ -630,7 +617,6 @@ for per-match decisions and the absorption PR record.
   "issues": ["https://github.com/toolboxmd/chromeria/issues/62"],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/65"],
   "newFiles": [
-    "apps/server/src/prism/livenessRoute.test.ts",
     "apps/server/src/prism/staleTurnDetector.ts",
     "apps/server/src/prism/staleTurnDetector.test.ts",
     "apps/server/src/prism/staleTurnMonitor.ts",
@@ -639,11 +625,10 @@ for per-match decisions and the absorption PR record.
   "upstreamFiles": [],
   "sharedFiles": [
     "apps/server/src/mcp/McpHttpServer.ts",
-    "apps/server/src/prism/livenessRoute.ts",
     "apps/server/src/prism/streamClock.ts",
     "apps/server/src/prism/streamClock.test.ts",
-    "packages/contracts/src/prism.ts",
-    "packages/contracts/src/prism.test.ts"
+    "apps/server/src/prism/streamStats.ts",
+    "packages/contracts/src/prism.ts"
   ],
   "keywords": [
     "stale",

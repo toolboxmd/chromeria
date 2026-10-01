@@ -6,9 +6,9 @@
  * delta, Claude `thinking_tokens`, Codex `item/*Delta`, OpenCode
  * `message.part.delta`) and each canonical runtime event. The clock taps the
  * shared `ProviderEventLoggers` pair, so no adapter changes and nothing is
- * persisted per delta. Model Router reads it through
- * `GET /api/prism/liveness` to tell a silent model from a working one; each
- * finished turn's statistics are recorded once as a thread activity.
+ * persisted per delta. The stale-turn detector reads it to tell a silent
+ * model from a working one; each finished turn's statistics are recorded once
+ * as a thread activity.
  */
 import {
   isToolLifecycleItemType,
