@@ -84,6 +84,23 @@ describe("interrupt_thread", () => {
     ),
   );
 
+  it.effect("settles when the interrupted turn ends and a newer one has started", () =>
+    withChild("t3-interrupt-newer-", "running", (child) =>
+      Effect.gen(function* () {
+        const { call } = yield* startInterrupt(child);
+        // Turn 1 ended and turn 2 started before T3 handled the interrupt; the
+        // reactor drops it, so turn 2 keeps running.
+        yield* dispatchAll([session(child, "running", "turn-2")]);
+        expect(yield* Fiber.join(call)).toEqual({
+          threadId: child,
+          turnId: "turn-1",
+          status: "interrupted",
+          statusAfter: "running",
+        });
+      }).pipe(Effect.scoped),
+    ),
+  );
+
   it.effect("returns an idle child unchanged without sending an interrupt", () =>
     withChild("t3-interrupt-idle-", "ready", (child) =>
       Effect.gen(function* () {

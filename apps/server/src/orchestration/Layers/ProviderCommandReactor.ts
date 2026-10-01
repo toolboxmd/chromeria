@@ -1530,11 +1530,19 @@ const make = Effect.gen(function* () {
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
   ) {
+    const thread = yield* resolveThreadShell(event.payload.threadId);
+    // An interrupt that names a turn is stale once that turn is no longer the
+    // active one: a newer turn started before this request was handled.
+    if (
+      event.payload.turnId !== undefined &&
+      thread?.session?.activeTurnId !== event.payload.turnId
+    ) {
+      return;
+    }
     yield* cancelTurnsAfterCompaction(
       event.payload.threadId,
       "Context compaction was interrupted. Send this message again to continue.",
     );
-    const thread = yield* resolveThreadShell(event.payload.threadId);
     if (!thread) {
       return;
     }

@@ -147,6 +147,8 @@ for per-match decisions and the absorption PR record.
   "upstreamFiles": [
     "apps/server/src/entrypoint.test.ts",
     "apps/server/src/mcp/McpHttpServer.ts",
+    "apps/server/src/orchestration/Layers/ProviderCommandReactor.test.ts",
+    "apps/server/src/orchestration/Layers/ProviderCommandReactor.ts",
     "apps/server/src/orchestration/http.ts",
     "apps/server/src/server.test.ts",
     "apps/web/src/components/LegacySidebar.tsx",

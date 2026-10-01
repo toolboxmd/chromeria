@@ -600,6 +600,9 @@ const make = Effect.gen(function* () {
           };
         }
         const turnId = target.session?.activeTurnId ?? null;
+        // Settled once the sampled turn stopped running, whether or not a newer one started.
+        const turnSettled = (session: OrchestrationSession | null) =>
+          !hasActiveTurn(session) || (turnId !== null && session?.activeTurnId !== turnId);
         const settled = yield* Effect.scoped(
           Effect.gen(function* () {
             // Subscribe first so a settle that lands right after the command is not missed.
@@ -612,13 +615,13 @@ const make = Effect.gen(function* () {
               createdAt: yield* nowIso,
             });
             const now = yield* threadShell(threadId);
-            if (now && !hasActiveTurn(now.session)) return Option.some(now.session);
+            if (now && turnSettled(now.session)) return Option.some(now.session);
             return yield* events.pipe(
               Stream.filter(
                 (event) =>
                   event.type === "thread.session-set" &&
                   event.aggregateId === target.id &&
-                  !hasActiveTurn(event.payload.session),
+                  turnSettled(event.payload.session),
               ),
               Stream.runHead,
               Effect.map(

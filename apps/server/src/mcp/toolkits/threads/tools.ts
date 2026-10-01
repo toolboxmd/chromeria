@@ -104,7 +104,8 @@ export const InterruptThreadInput = Schema.Struct({
  * Mirrors upstream orchestration V2's `t3_thread_interrupt` result so callers
  * port unchanged: `no_active_run` when nothing was running,
  * `interrupt_requested` when the turn had not settled within the wait, and
- * `interrupted` once T3 reported it settled.
+ * `interrupted` once T3 reported that turn no longer running. The interrupt
+ * names the turn, so it never stops a newer turn that started meanwhile.
  */
 export const InterruptThreadResult = Schema.Struct({
   threadId: Schema.String,

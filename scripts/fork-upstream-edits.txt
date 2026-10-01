@@ -113,3 +113,7 @@ apps/web/package.json
 apps/web/src/components/ChatMarkdown.test.tsx
 pnpm-lock.yaml
 third-party-licenses.config.json
+
+# interrupt_thread: the provider reactor drops an interrupt for a turn that is no longer active (#95)
+apps/server/src/orchestration/Layers/ProviderCommandReactor.test.ts
+apps/server/src/orchestration/Layers/ProviderCommandReactor.ts
