@@ -361,7 +361,10 @@ describe("Spectrum recovery state transport", () => {
       { type: "thread.turn.start", message: { text: fullText } },
       { type: "thread.message.assistant.append", text: fullText },
     ];
-    const source = { ...activity({ pending, outbox, phase: "relay", step: 2 }), kind: "spectrum.state" };
+    const source = {
+      ...activity({ pending, outbox, phase: "relay", step: 2 }),
+      kind: "spectrum.state",
+    };
     const persisted = JSON.stringify(source);
     const event = {
       type: "thread.activity-appended",
@@ -384,6 +387,9 @@ describe("Spectrum recovery state transport", () => {
     expect(source.payload).toMatchObject({ outbox });
     expect(live.sequence).toBe(17);
     // Ordinary lifecycle activities do not lose their own outbox-shaped fields.
-    expect(projectActivityPayload(activity({ pending, outbox })).payload).toEqual({ pending, outbox });
+    expect(projectActivityPayload(activity({ pending, outbox })).payload).toEqual({
+      pending,
+      outbox,
+    });
   });
 });

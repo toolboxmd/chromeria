@@ -416,8 +416,23 @@ export const makeSpectrum = Effect.fn("Spectrum.make")(function* (
             createdAt,
           });
         else if (pending?.requested && pending.turnId === null) {
-          const messages = (yield* detail(child.id)).messages;
-          if (messages.findLast((message) => message.role === "user")?.id === pending.messageId)
+          // History-only broadcasts do not supersede a provider request.
+          const events = yield* engine
+            .readThreadEvents({
+              threadId: child.id,
+              fromSequenceExclusive: pending.requestSequence - 1,
+              toSequenceInclusive: yield* engine.latestSequence,
+              limit: 100_000,
+            })
+            .pipe(Stream.runCollect);
+          const latestRequest = events.findLast(
+            (event) => event.type === "thread.turn-start-requested",
+          );
+          if (
+            latestRequest?.type === "thread.turn-start-requested" &&
+            latestRequest.sequence === pending.requestSequence &&
+            latestRequest.payload.messageId === pending.messageId
+          )
             outbox.push({
               type: "thread.session.stop",
               threadId: child.id,

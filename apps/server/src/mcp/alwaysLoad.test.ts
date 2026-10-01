@@ -8,7 +8,9 @@ import { PreviewToolkit } from "./toolkits/preview/tools.ts";
 import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
 import { ThreadsToolkit } from "./toolkits/threads/tools.ts";
 
-const DELEGATION_TOOLS = ["spawn_thread", "read_thread", "message_thread"];
+// Spectrum delegates a group to server coordination. Its description must be visible
+// with the single-Drafter tools so agents use its barriers instead of model relay.
+const DELEGATION_TOOLS = ["spawn_thread", "read_thread", "message_thread", "start_spectrum"];
 
 const allTools = [
   DeviceToolkit,

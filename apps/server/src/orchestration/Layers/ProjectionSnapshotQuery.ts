@@ -1557,7 +1557,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       JOIN projection_threads t ON t.thread_id = a.thread_id
       WHERE a.kind = ${kind}
         AND t.deleted_at IS NULL
-        AND (${includeArchived} OR t.archived_at IS NULL)
+        AND (${includeArchived ? 1 : 0} OR t.archived_at IS NULL)
       ORDER BY a.created_at ASC, a.activity_id ASC
     `,
   });

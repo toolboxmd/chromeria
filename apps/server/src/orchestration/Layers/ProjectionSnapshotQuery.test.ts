@@ -3765,6 +3765,18 @@ projectionSnapshotLayer("ProjectionSnapshotQuery activities by kind", (it) => {
         setups.map((activity) => [activity.id, activity.kind, activity.payload]),
         [["setup-live", "worktree-setup", { phase: "running" }]],
       );
+      assert.deepEqual(
+        yield* query.listActivitiesByKind("worktree-setup", { includeArchived: false }),
+        setups,
+      );
+      assert.deepEqual(
+        (yield* query.listActivitiesByKind("worktree-setup", { includeArchived: true })).map(
+          (activity) => activity.id,
+        ),
+        ["setup-live", "setup-shelved"],
+      );
+      // Spectrum recovery also queries on a fresh database, before any state exists.
+      assert.deepEqual(yield* query.listActivitiesByKind("spectrum.state"), []);
       assert.deepEqual(yield* query.listActivitiesByKind("nope"), []);
     }),
   );

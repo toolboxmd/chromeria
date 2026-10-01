@@ -14,6 +14,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
@@ -881,6 +882,131 @@ describe("Spectrum lifecycle regressions", () => {
       ),
   );
 });
+
+for (const successor of [false, true]) {
+  it.effect(
+    successor
+      ? "unbound restart preserves a genuine successor provider request"
+      : "unbound restart stops a surviving provider despite history-only User steering",
+    () =>
+      scenario((directory, database) =>
+        Effect.gen(function* () {
+          const started = yield* withEngineOnly(
+            database,
+            Effect.gen(function* () {
+              yield* createParent(directory);
+              const spectrum = yield* makeSpectrum(() => "reasoningEffort");
+              const started = yield* spectrum.start(
+                yield* threadShell(PARENT_ID),
+                input("free", 1),
+              );
+              yield* feed(spectrum, 0);
+              const pending = (yield* state(started.threadId)).pending[0]!;
+              expect(pending).toMatchObject({ requested: true, turnId: null });
+              const request = (yield* detail(pending.threadId)).messages.find(
+                (message) => message.id === pending.messageId,
+              )!;
+              const createdAt = DateTime.formatIso(
+                DateTime.add(DateTime.makeUnsafe(request.createdAt), { milliseconds: 1 }),
+              );
+              // The same persisted append command used by Spectrum's User broadcast;
+              // monotonic timestamps ensure the projected last User really changes.
+              yield* dispatchAll([
+                {
+                  type: "thread.message.user.append",
+                  commandId: commandId(),
+                  threadId: ThreadId.make(pending.threadId),
+                  message: {
+                    messageId: MessageId.make("history-only-user"),
+                    text: "[User]\nKeep this new context",
+                    attachments: [],
+                  },
+                  createdAt,
+                },
+              ]);
+              expect(
+                (yield* detail(pending.threadId)).messages.findLast(
+                  (message) => message.role === "user",
+                )?.id,
+              ).toBe("history-only-user");
+              yield* dispatchAll([session(ThreadId.make(pending.threadId), "starting", null)]);
+              if (successor)
+                yield* sendUser(pending.threadId, "Independent newer provider request");
+              return started;
+            }),
+          );
+          const participantId = ThreadId.make(started.participants[0]!.threadId);
+          const release = yield* Deferred.make<void>();
+          const stopped = yield* Deferred.make<void>();
+          const stops: string[] = [];
+          const liveSession: ProviderSession = {
+            threadId: participantId,
+            provider: ProviderDriverKind.make("codex"),
+            providerInstanceId: ProviderInstanceId.make("codex"),
+            runtimeMode: "full-access",
+            status: "ready",
+            cwd: directory,
+            createdAt: NOW,
+            updatedAt: NOW,
+          };
+          yield* withServer(
+            database,
+            Effect.gen(function* () {
+              const reactor = yield* ProviderCommandReactor;
+              yield* reactor.start();
+              // Park the toolkit's automatic recovery at its shell-read seam;
+              // drive this recovery explicitly after the reactor has subscribed.
+              const spectrum = yield* makeSpectrum(() => "reasoningEffort");
+              yield* spectrum.recover;
+              const engine = yield* OrchestrationEngineService;
+              const events = yield* engine.readEvents(0, 100_000).pipe(Stream.runCollect);
+              const requests = events.filter(
+                (event) =>
+                  event.type === "thread.turn-start-requested" &&
+                  event.aggregateId === participantId,
+              );
+              expect(requests).toHaveLength(successor ? 2 : 1);
+              expect(
+                events.filter(
+                  (event) =>
+                    event.type === "thread.session-stop-requested" &&
+                    event.aggregateId === participantId,
+                ),
+              ).toHaveLength(successor ? 0 : 1);
+              expect(
+                events.filter(
+                  (event) =>
+                    event.type === "thread.settled" && event.aggregateId === started.threadId,
+                ),
+              ).toHaveLength(1);
+              expect(
+                (yield* parentMessages).filter((message) => message.text.startsWith("[Spectrum")),
+              ).toHaveLength(1);
+              if (!successor) yield* Deferred.await(stopped);
+              yield* reactor.drain;
+              expect(stops.filter((id) => id === participantId)).toHaveLength(successor ? 0 : 1);
+            }),
+            (id) => (id === participantId ? Deferred.await(release) : Effect.void),
+            {
+              provider: {
+                listSessions: () => Effect.succeed([liveSession]),
+                stopSession: ({ threadId }) =>
+                  Effect.sync(() => {
+                    stops.push(threadId);
+                  }).pipe(
+                    Effect.andThen(
+                      threadId === participantId
+                        ? Deferred.succeed(stopped, undefined)
+                        : Effect.void,
+                    ),
+                  ),
+              },
+            },
+          );
+        }).pipe(Effect.scoped),
+      ),
+  );
+}
 
 const retire = (id: string) =>
   dispatchAll([

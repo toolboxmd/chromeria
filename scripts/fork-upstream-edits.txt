@@ -159,3 +159,7 @@ apps/web/src/components/ChatView.logic.test.ts
 # Spectrum recovery outbox excluded from client transport (#118)
 apps/server/src/orchestration/ActivityPayloadProjection.ts
 apps/server/src/orchestration/ActivityPayloadProjection.test.ts
+
+# Spectrum startup native SQLite binding and delegation loading regressions (#118)
+apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts
+apps/server/src/mcp/alwaysLoad.test.ts

@@ -172,6 +172,8 @@ for per-match decisions and the absorption PR record.
     "apps/web/src/components/Sidebar.tsx",
     "apps/server/src/orchestration/Layers/OrchestrationEngine.ts",
     "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts",
+    "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts",
+    "apps/server/src/mcp/alwaysLoad.test.ts",
     "apps/server/src/orchestration/Services/OrchestrationEngine.ts",
     "apps/server/src/orchestration/Services/ProjectionSnapshotQuery.ts",
     "apps/server/src/project/AgentSessionImporter.test.ts",
