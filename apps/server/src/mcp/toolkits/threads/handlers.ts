@@ -7,6 +7,7 @@ import {
   type OrchestrationEvent,
   type OrchestrationSession,
   DEFAULT_PRISM_LANE,
+  DEFAULT_RUNTIME_MODE,
   type OrchestrationThreadShell,
   PRISM_ROLE_LABELS,
   prismRoleFromName,
@@ -554,7 +555,6 @@ const make = Effect.gen(function* () {
         );
         reportBack.set(childId, input.reportBack !== false);
         const createdAt = yield* nowIso;
-        const runtimeMode = input.runtimeMode ?? kit?.runtimeMode ?? parent.runtimeMode;
         const titlePrefix = role ? PRISM_ROLE_LABELS[role] : "Subagent";
         yield* dispatch({
           type: "thread.create",
@@ -563,7 +563,9 @@ const make = Effect.gen(function* () {
           projectId: parent.projectId,
           title: input.title ?? `${titlePrefix}: ${input.task.slice(0, 60)}`,
           modelSelection,
-          runtimeMode,
+          // Children never inherit a restricted mode: their approvals would go to the
+          // user, not the planner, and stall the child unseen.
+          runtimeMode: DEFAULT_RUNTIME_MODE,
           interactionMode: "default",
           branch: parent.branch,
           worktreePath: parent.worktreePath,

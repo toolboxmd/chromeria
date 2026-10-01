@@ -4,6 +4,7 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import * as Tool from "effect/unstable/ai/Tool";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -16,7 +17,7 @@ import {
   threadToolScopeOf,
 } from "./roles.ts";
 import { makeSubagentThreadId } from "./subagentThreadId.ts";
-import { SpawnThreadInput } from "./tools.ts";
+import { SpawnThreadInput, ThreadsToolkit } from "./tools.ts";
 
 const decodeSpawnInput = Schema.decodeUnknownSync(SpawnThreadInput);
 const child = (role: string) => makeSubagentThreadId("planner-1", `${role}-abc123`);
@@ -220,5 +221,15 @@ describe("role task message", () => {
 
   it("sends the bare task for an empty kit", () => {
     expect(roleTaskMessage(DEFAULT_PRISM_ROLE_KITS.worker, "Fix it.")).toBe("Fix it.");
+  });
+});
+
+describe("spawn_thread runtime mode", () => {
+  it("is not an agent choice: the schema omits it and a passed value is dropped", () => {
+    const schema = JSON.stringify(Tool.getJsonSchema(ThreadsToolkit.tools.spawn_thread));
+    expect(schema).not.toContain("runtimeMode");
+    expect(decodeSpawnInput({ task: "x", runtimeMode: "approval-required" })).not.toHaveProperty(
+      "runtimeMode",
+    );
   });
 });

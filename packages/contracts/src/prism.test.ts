@@ -78,6 +78,14 @@ describe("Prism role kits", () => {
     expect("enabled" in DEFAULT_PRISM_ROLE_KITS.reviewer).toBe(false);
   });
 
+  it("load saved settings that still name a role runtime mode, dropping it", () => {
+    const settings = decodeServerSettings({
+      prismRoles: { reviewer: { instructions: "Read.", runtimeMode: "approval-required" } },
+    });
+    expect(settings.prismRoles.reviewer.instructions).toBe("Read.");
+    expect("runtimeMode" in settings.prismRoles.reviewer).toBe(false);
+  });
+
   it("keep a saved per-lane list as the single list of a role other than the worker", () => {
     const opus = { instanceId: "claudeAgent", model: "claude-opus-5-5", effort: "high" };
     const luna = { instanceId: "codex", model: "gpt-5.6-luna" };

@@ -3,7 +3,6 @@ import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { IsoDateTime, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
-import { RuntimeMode } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 /**
@@ -104,8 +103,6 @@ export function prismRoleFromName(name: PrismRoleName): PrismRole {
 const kitFields = (role: PrismRole) => ({
   /** Prepended to the first message of every thread started in this role. */
   instructions: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
-  /** Permissions; absent means the spawning thread's runtime mode. */
-  runtimeMode: Schema.optionalKey(RuntimeMode),
   /** Skill names the role is told to use. */
   skills: Schema.Array(TrimmedNonEmptyString).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   threadTools: PrismThreadToolScope.pipe(
@@ -176,7 +173,6 @@ export function prismRoleModels(
 
 const kitPatchFields = {
   instructions: Schema.optionalKey(TrimmedString),
-  runtimeMode: Schema.optionalKey(RuntimeMode),
   skills: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
   threadTools: Schema.optionalKey(PrismThreadToolScope),
 };
