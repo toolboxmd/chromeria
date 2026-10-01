@@ -42,10 +42,24 @@ tasks already near it. Set the window to 0 to run at the exact minute.
 - A run that did some work is never restarted from scratch. The thread gets a
   "continue" with the error or the check output. A usage limit waits for its reset.
 - When the retries run out, the task shows **Needs you** with the reason. The
-  next scheduled time tries again.
+  run stays unfinished: the next scheduled time tries the same run again, in
+  the same thread and with the same check.
 - After the server was off, a task runs once for the latest missed time. A time
   that arrives while the previous run is still unfinished is skipped.
 
-**Pause** stops new runs and the scheduler's retries and continues, without
-cancelling the current thread or its turn. **Resume** picks the work up again.
-**Run now** and **Delete** wait until the current run is done or needs you.
+## Manage a task
+
+- **Pause** stops new runs and the scheduler's retries and continues, without
+  cancelling the current thread or its turn. **Resume** picks the work up again.
+- **Run now** starts a run. It waits while a run is in progress, and a paused
+  task must be resumed first. On a task that needs you it shows **Resume run**
+  and continues the same run in the same thread. If that thread was stopped, it
+  is refused: send the thread a message to take it back up, and resume the run
+  once that work has finished.
+- **Delete** removes the task from the list. It waits while a run is in progress.
+  On a task that needs you it is refused while anything the run started is still
+  live or pending. The run is never marked done, and its check history is kept.
+
+Scheduled tasks belong to one environment. When Settings shows all
+environments or a project, the page asks you to choose the environment whose
+tasks to manage.

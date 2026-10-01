@@ -858,7 +858,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/keybindings": null,
   "/settings/providers": null,
   "/settings/prism": "project-defaults",
-  "/settings/scheduled-tasks": "environment-defaults",
+  "/settings/scheduled-tasks": "environment",
   "/settings/integrations": null,
   "/settings/source-control": "environment-defaults",
   "/settings/storage": "project-defaults",

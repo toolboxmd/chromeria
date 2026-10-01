@@ -218,20 +218,33 @@ export function editPayloadFromDraft(
 
 export const activeCheck = (task: ScheduledTask) => task.checks.at(-1)!;
 export const latestRun = (task: ScheduledTask): TaskRun | null => task.runs.at(-1) ?? null;
-const runSettled = (run: TaskRun) => run.status === "done" || run.status === "needs-you";
-export const hasUnfinishedRun = (task: ScheduledTask) => task.runs.some((run) => !runSettled(run));
+/** Only a verified run is settled. A needs-you run stays unfinished and keeps its thread and check. */
+export const unfinishedRun = (task: ScheduledTask): TaskRun | null =>
+  task.runs.find((run) => run.status !== "done") ?? null;
 
-/** Why Run now is unavailable, matching the server's refusals; null when allowed. */
+/** The task waits on the user: its retries ran out and nothing runs until someone acts. */
+export const needsYou = (task: ScheduledTask) => unfinishedRun(task)?.status === "needs-you";
+
+/**
+ * Why Run now is unavailable, matching the server's refusals; null when allowed. On a task
+ * that needs you it resumes the same pinned run. The server still refuses a retired thread.
+ */
 export function runNowBlockedReason(task: ScheduledTask): string | null {
   if (task.paused) return "Resume this task before running it now.";
-  if (hasUnfinishedRun(task)) return "A run is still unfinished.";
+  const run = unfinishedRun(task);
+  if (run !== null && run.status !== "needs-you") return "A run is still in progress.";
   return null;
 }
 
-/** Why Delete is unavailable, matching the server's refusal; null when allowed. */
+/**
+ * Why Delete is unavailable; null when the server may accept it. Work in progress always
+ * refuses. A task that needs you can go only when nothing it started is still live or pending,
+ * which only the server can see, so the request is left to the server.
+ */
 export function deleteBlockedReason(task: ScheduledTask): string | null {
-  return hasUnfinishedRun(task)
-    ? "A run is still unfinished. Pause the task and let the run settle before deleting."
+  const run = unfinishedRun(task);
+  return run !== null && run.status !== "needs-you"
+    ? "A run is still in progress. Pause the task and wait until it is done or needs you."
     : null;
 }
 

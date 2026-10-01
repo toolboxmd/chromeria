@@ -44,6 +44,7 @@ import { toastManager } from "../ui/toast";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useSettingsScope } from "./SettingsScopeContext";
+import { SettingsScopeNotice } from "./SettingsScopeNotice";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 import {
   activeCheck,
@@ -58,6 +59,7 @@ import {
   emptyTaskDraft,
   formatSlot,
   latestRun,
+  needsYou,
   runNowBlockedReason,
   runStatusView,
   taskStatusView,
@@ -96,8 +98,9 @@ function useTargets(environmentId: EnvironmentId | null) {
 type Targets = ReturnType<typeof useTargets>;
 
 export function ScheduledTasksSettings() {
-  const { environment } = useSettingsScope();
-  const environmentId = environment?.environmentId ?? null;
+  const { scope } = useSettingsScope();
+  // Tasks belong to one environment; other selections would show a stand-in environment's tasks.
+  const environmentId = scope.kind === "environment" ? scope.environmentId : null;
   const list = useEnvironmentQuery(
     environmentId === null ? null : scheduledTaskList({ environmentId, input: {} }),
   );
@@ -109,6 +112,13 @@ export function ScheduledTasksSettings() {
     [list.data],
   );
 
+  if (environmentId === null)
+    return (
+      <SettingsScopeNotice target="environment">
+        Scheduled tasks belong to one environment. Choose the environment whose tasks to manage.
+      </SettingsScopeNotice>
+    );
+
   return (
     <SettingsPageContainer>
       <SettingsSection
@@ -116,12 +126,7 @@ export function ScheduledTasksSettings() {
         title="Scheduled tasks"
         variant="plain"
         headerAction={
-          <Button
-            size="xs"
-            variant="outline"
-            disabled={environmentId === null}
-            onClick={() => setDialog({ kind: "create" })}
-          >
+          <Button size="xs" variant="outline" onClick={() => setDialog({ kind: "create" })}>
             <PlusIcon />
             New task
           </Button>
@@ -133,33 +138,27 @@ export function ScheduledTasksSettings() {
           passes. Fixed times run within ±{DEFAULT_WINDOW_MINUTES} minutes by default so tasks
           asking for the same time spread out.
         </p>
-        {environmentId === null && (
-          <p role="status" className="px-3 text-sm text-muted-foreground sm:px-4">
-            Connect an environment to manage its scheduled tasks.
-          </p>
-        )}
         {list.error && (
           <p role="alert" className="px-3 text-sm text-destructive sm:px-4">
             {list.error}
           </p>
         )}
-        {environmentId !== null && list.isSuccess && tasks.length === 0 && (
+        {list.isSuccess && tasks.length === 0 && (
           <p className="px-3 text-sm text-muted-foreground sm:px-4">
             No scheduled tasks yet. Create one here, or ask an agent to.
           </p>
         )}
-        {environmentId !== null &&
-          tasks.map((task) => (
-            <TaskRow
-              key={task.id}
-              environmentId={environmentId}
-              task={task}
-              targets={targets}
-              onEdit={() => setDialog({ kind: "edit", task })}
-            />
-          ))}
+        {tasks.map((task) => (
+          <TaskRow
+            key={task.id}
+            environmentId={environmentId}
+            task={task}
+            targets={targets}
+            onEdit={() => setDialog({ kind: "edit", task })}
+          />
+        ))}
       </SettingsSection>
-      {environmentId !== null && dialog !== null && (
+      {dialog !== null && (
         <TaskDialog
           environmentId={environmentId}
           task={dialog.kind === "edit" ? dialog.task : null}
@@ -214,6 +213,8 @@ function TaskRow({
   const remove = useAtomCommand(scheduledTaskDelete, { reportFailure: false });
   const status = taskStatusView(task);
   const run = latestRun(task);
+  // Run now on a task that needs you resumes the same run, thread and check.
+  const resumes = needsYou(task);
   const check = activeCheck(task);
   const { definition } = task;
 
@@ -233,7 +234,9 @@ function TaskRow({
   };
   const confirmDelete = async () => {
     const confirmed = await requestConfirmDialog(
-      `Delete "${definition.title}"?\nIt stops running and leaves this list. Its check history stays in the audit log.`,
+      needsYou(task)
+        ? `Delete "${definition.title}"?\nIt leaves this list. Its unfinished run is not marked done; the run and its check history stay in the audit log. The server refuses while anything the run started is still live or pending.`
+        : `Delete "${definition.title}"?\nIt stops running and leaves this list. Its check history stays in the audit log.`,
       { variant: "destructive" },
     );
     if (confirmed !== true) return;
@@ -278,12 +281,12 @@ function TaskRow({
             reason={runNowBlockedReason(task)}
             disabled={pending}
             onClick={() =>
-              void act("Could not start a run", () =>
+              void act(resumes ? "Could not resume the run" : "Could not start a run", () =>
                 runNow({ environmentId, input: { taskId: task.id } }),
               )
             }
           >
-            Run now
+            {resumes ? "Resume run" : "Run now"}
           </BlockedButton>
           <Button
             size="xs"

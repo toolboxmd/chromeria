@@ -9,11 +9,13 @@ import {
   draftFromTask,
   editPayloadFromDraft,
   emptyTaskDraft,
+  needsYou,
   runNowBlockedReason,
   runStatusView,
   taskStatusView,
   type TaskDraft,
 } from "./ScheduledTasksSettings.logic";
+import { getSettingsSearchTargetScope, isSettingsSearchScopeAvailable } from "./settingsSearch";
 
 const draft = (patch: Partial<TaskDraft> = {}): TaskDraft => ({
   ...emptyTaskDraft("Europe/Warsaw"),
@@ -201,12 +203,43 @@ describe("run and task status", () => {
 });
 
 describe("management limits", () => {
-  it("blocks run now while paused or unfinished, and delete while unfinished", () => {
-    expect(runNowBlockedReason(task())).toBeNull();
-    expect(runNowBlockedReason(task({ paused: true }))).not.toBeNull();
-    expect(runNowBlockedReason(task({ runs: [run({ status: "usage-limit" })] }))).not.toBeNull();
-    expect(deleteBlockedReason(task({ runs: [run({ status: "claimed" })] }))).not.toBeNull();
-    expect(deleteBlockedReason(task({ runs: [run({ status: "needs-you" })] }))).toBeNull();
+  it("allows both actions once every run is verified done", () => {
+    const settled = task({ runs: [run({ status: "done" })] });
+    expect(runNowBlockedReason(settled)).toBeNull();
+    expect(deleteBlockedReason(settled)).toBeNull();
+    expect(needsYou(settled)).toBe(false);
+  });
+
+  it.each(["claimed", "running", "retry", "usage-limit"] as const)(
+    "blocks run now and delete while a run is %s",
+    (status) => {
+      const busy = task({ runs: [run({ status: "done" }), run({ id: "task-1:b", status })] });
+      expect(runNowBlockedReason(busy)).not.toBeNull();
+      expect(deleteBlockedReason(busy)).not.toBeNull();
+    },
+  );
+
+  it("leaves run now (resume) and delete to the server when the task needs you", () => {
+    const waiting = task({ runs: [run({ status: "needs-you" })] });
+    expect(needsYou(waiting)).toBe(true);
+    expect(runNowBlockedReason(waiting)).toBeNull();
+    expect(deleteBlockedReason(waiting)).toBeNull();
+  });
+
+  it("requires resuming a paused task before run now, but not before delete", () => {
+    const paused = task({ paused: true, runs: [run({ status: "needs-you" })] });
+    expect(runNowBlockedReason(paused)).toBe("Resume this task before running it now.");
+    expect(deleteBlockedReason(paused)).toBeNull();
+  });
+});
+
+describe("settings scope", () => {
+  it("opens from search only for one selected environment", () => {
+    const target = getSettingsSearchTargetScope("scheduled-tasks");
+    expect(target?.scope).toBe("environment");
+    expect(isSettingsSearchScopeAvailable(target!.scope, "environment")).toBe(true);
+    expect(isSettingsSearchScopeAvailable(target!.scope, "all")).toBe(false);
+    expect(isSettingsSearchScopeAvailable(target!.scope, "project")).toBe(false);
   });
 });
 
