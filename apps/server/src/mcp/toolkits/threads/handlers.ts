@@ -40,7 +40,6 @@ import {
 } from "./childReportState.ts";
 import { isSubagentThreadId, makeSubagentThreadId, parentThreadIdOf } from "./subagentThreadId.ts";
 import {
-  isRouterJobMessage,
   isUsageLimitError,
   RESUME_TEXT,
   resumeAfterUsageLimitReset,
@@ -557,23 +556,11 @@ const make = Effect.gen(function* () {
     yield* Deferred.succeed(waiter, undefined);
   });
 
-  /** Prism job threads open with Model Router's job tag (see usageLimitResume.ts). */
-  const isRouterJobThread = (threadId: string) =>
-    snapshots.getThreadDetailById(ThreadId.make(threadId)).pipe(
-      Effect.map((thread) => {
-        if (Option.isNone(thread)) return false;
-        const first = thread.value.messages.find((message) => message.role === "user");
-        return first !== undefined && isRouterJobMessage(first.text);
-      }),
-      Effect.catchCause(() => Effect.succeed(false)),
-    );
-
   /**
    * Schedules one "continue" after the usage limit that failed a thread's
    * turn lifts (see usageLimitResume.ts), and tells a child's parent when it
    * is sent. Only an error that itself reads as a usage limit qualifies.
-   * Starting another turn first, or archiving the thread, cancels it. Prism
-   * job threads are skipped.
+   * Starting another turn first, or archiving the thread, cancels it.
    */
   const resumeAfterUsageLimit = Effect.fn("ThreadsToolkit.resumeAfterUsageLimit")(function* (
     event: OrchestrationEvent,
@@ -585,7 +572,6 @@ const make = Effect.gen(function* () {
     const turnId = failed?.latestTurn?.turnId;
     if (!failed || !turnId || pendingResumes.get(threadId) === turnId) return;
     if (stoppedTurns.get(threadId) === turnId) return;
-    if (isSubagentThreadId(threadId) && (yield* isRouterJobThread(threadId))) return;
     const instanceId = event.payload.session.providerInstanceId ?? failed.modelSelection.instanceId;
     pendingResumes.set(threadId, turnId);
     const fiber = yield* resumeAfterUsageLimitReset(

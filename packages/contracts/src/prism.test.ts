@@ -1,64 +1,13 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  DEFAULT_PRISM_ROLE_KITS,
-  PrismRoleKits,
-  PrismRoleKitsPatch,
-  PrismLiveness,
-} from "./prism.ts";
+import { DEFAULT_PRISM_ROLE_KITS, PrismRoleKits, PrismRoleKitsPatch } from "./prism.ts";
 import { ProjectSettingsOverrides, ServerSettings } from "./settings.ts";
 
 const decodeServerSettings = Schema.decodeSync(ServerSettings);
 const decodeProjectOverrides = Schema.decodeSync(ProjectSettingsOverrides);
 const decodeKitsPatch = Schema.decodeSync(PrismRoleKitsPatch);
 const encodeKits = Schema.encodeSync(PrismRoleKits);
-
-const decodeLiveness = Schema.decodeUnknownSync(PrismLiveness);
-const encodeLiveness = Schema.encodeSync(PrismLiveness);
-
-describe("Prism liveness", () => {
-  const live = {
-    threadId: "sub.parent.child",
-    now: "2026-09-28T12:00:00.000Z",
-    lastStreamAt: "2026-09-28T11:58:00.000Z",
-    silenceMs: 120_000,
-    openTool: null,
-    turn: {
-      turnId: "turn-1",
-      provider: "opencode",
-      model: "muse",
-      startedAt: "2026-09-28T11:57:00.000Z",
-      eventCount: 42,
-    },
-    stale: true,
-    staleSince: "2026-09-28T11:59:53.000Z",
-    thresholdMs: 90_000,
-    thresholdSource: "default",
-    reason: "silence",
-  };
-
-  it("round-trips the stale decision alongside the existing clock fields", () => {
-    const decoded = decodeLiveness(live);
-    expect(encodeLiveness(decoded)).toEqual(live);
-    expect(
-      decodeLiveness({
-        ...live,
-        stale: false,
-        staleSince: null,
-        thresholdSource: "measured",
-        reason: null,
-      }),
-    ).toMatchObject({ stale: false, staleSince: null, thresholdSource: "measured", reason: null });
-  });
-
-  it("requires a complete decision and rejects unknown reasons and threshold sources", () => {
-    const { stale: _stale, ...missing } = live;
-    expect(() => decodeLiveness(missing)).toThrow();
-    expect(() => decodeLiveness({ ...live, reason: "timeout" })).toThrow();
-    expect(() => decodeLiveness({ ...live, thresholdSource: "fixed" })).toThrow();
-  });
-});
 
 describe("Prism role kits", () => {
   it("default the six roles to no preferred models", () => {

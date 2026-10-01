@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
-import { IsoDateTime, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
+import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 /**
@@ -208,34 +208,3 @@ export const PRISM_STREAM_STATS_ACTIVITY_KIND = "prism.stream-stats";
 
 export const PrismStaleReason = Schema.Literals(["silence", "provider-dead", "provider-error"]);
 export type PrismStaleReason = typeof PrismStaleReason.Type;
-
-/** The server's stream clock and stale decision, shared by Router and thread parents. */
-export const PrismLiveness = Schema.Struct({
-  threadId: Schema.String,
-  now: IsoDateTime,
-  lastStreamAt: Schema.NullOr(IsoDateTime),
-  silenceMs: Schema.NullOr(Schema.Number),
-  openTool: Schema.NullOr(
-    Schema.Struct({
-      itemId: Schema.String,
-      itemType: Schema.String,
-      title: Schema.NullOr(Schema.String),
-      startedAt: IsoDateTime,
-    }),
-  ),
-  turn: Schema.NullOr(
-    Schema.Struct({
-      turnId: Schema.NullOr(Schema.String),
-      provider: Schema.String,
-      model: Schema.NullOr(Schema.String),
-      startedAt: IsoDateTime,
-      eventCount: Schema.Number,
-    }),
-  ),
-  stale: Schema.Boolean,
-  staleSince: Schema.NullOr(IsoDateTime),
-  thresholdMs: Schema.Number,
-  thresholdSource: Schema.Literals(["measured", "default"]),
-  reason: Schema.NullOr(PrismStaleReason),
-});
-export type PrismLiveness = typeof PrismLiveness.Type;

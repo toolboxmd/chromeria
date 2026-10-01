@@ -4,11 +4,9 @@ import * as Effect from "effect/Effect";
 import { TestClock } from "effect/testing";
 
 import type { EventNdjsonLogger } from "../provider/Layers/EventNdjsonLogger.ts";
-import { livenessView, streamStatsActivity } from "./livenessRoute.ts";
+import { streamStatsActivity } from "./streamStats.ts";
 import { make, makeStreamClockState, tapLoggers, type TurnStreamStats } from "./streamClock.ts";
-import { makeStaleTurnDetectorState, staleTurnDetectorLayer } from "./staleTurnDetector.ts";
-
-const unknownStale = makeStaleTurnDetectorState(() => {}).status(ThreadId.make("other"));
+import { staleTurnDetectorLayer } from "./staleTurnDetector.ts";
 
 const THREAD = ThreadId.make("thread-1");
 
@@ -47,7 +45,6 @@ it("advances on every native delta, including ones with no canonical event", () 
   assert.strictEqual(live.lastStreamAt, 9_000);
   assert.strictEqual(live.turn?.eventCount, 2);
   assert.strictEqual(live.turn?.model, "claude-opus-5-5");
-  assert.deepStrictEqual(livenessView(THREAD, 12_500, live, unknownStale).silenceMs, 3_500);
 });
 
 it("reports an open tool call and leaves its silence out of the max gap", () => {
@@ -142,22 +139,11 @@ it("stops advancing when a turn is aborted and records it as aborted", () => {
 
 it("knows nothing about a thread that has not streamed since startup", () => {
   const { clock } = fakeClock();
-  assert.deepStrictEqual(
-    livenessView("other", 1_000, clock.liveness(ThreadId.make("other")), unknownStale),
-    {
-      threadId: "other",
-      now: "1970-01-01T00:00:01.000Z",
-      lastStreamAt: null,
-      silenceMs: null,
-      openTool: null,
-      turn: null,
-      stale: false,
-      staleSince: null,
-      thresholdMs: 120_000,
-      thresholdSource: "default",
-      reason: null,
-    },
-  );
+  assert.deepStrictEqual(clock.liveness(ThreadId.make("other")), {
+    lastStreamAt: null,
+    openTool: null,
+    turn: null,
+  });
 });
 
 it.effect("stamps the clock through the loggers and still writes to the log", () =>

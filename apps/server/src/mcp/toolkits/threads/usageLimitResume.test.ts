@@ -15,7 +15,6 @@ import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 
 import {
-  isRouterJobMessage,
   isUsageLimitError,
   RESET_RECHECK_MS,
   RESUME_DELAY_MS,
@@ -359,19 +358,5 @@ describe("isUsageLimitError", () => {
     ]) {
       assert.isFalse(isUsageLimitError(message), String(message));
     }
-  });
-});
-
-describe("isRouterJobMessage", () => {
-  it("recognizes Model Router's job tag and nothing else", () => {
-    assert.isTrue(
-      isRouterJobMessage(
-        "[model-router job prism-mumm1j50-69984526 worker seq 1 on route t3:claudeAgent:claude-opus-5-5@medium; planner thread 4979d148]\n\nDo it.",
-      ),
-    );
-    assert.isFalse(
-      isRouterJobMessage("Implement https://github.com/toolboxmd/chromeria/issues/71."),
-    );
-    assert.isFalse(isRouterJobMessage("Review this: [model-router job x worker on route y]"));
   });
 });

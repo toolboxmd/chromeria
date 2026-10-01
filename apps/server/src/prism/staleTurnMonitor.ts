@@ -32,14 +32,6 @@ const notifyStaleParent = Effect.fn("Prism.notifyStaleParent")(function* (stale:
   const parentId = parentThreadIdOf(stale.threadId);
   if (parentId === null) return;
   const snapshots = yield* ProjectionSnapshotQuery;
-  const child = yield* snapshots.getThreadShellById(stale.threadId);
-  // Router's existing thread titles are its only cheap job marker in T3.
-  // If renamed, membership is unknown and the parent still gets a message.
-  if (
-    Option.isSome(child) &&
-    /^model-router .+ (dispatcher|worker seq \d+|review \d+)$/.test(child.value.title)
-  )
-    return;
   const parent = yield* snapshots.getThreadShellById(ThreadId.make(parentId));
   if (Option.isNone(parent)) return;
   const engine = yield* OrchestrationEngineService;

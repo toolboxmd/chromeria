@@ -3,26 +3,14 @@
  * turn fails while its provider is out of usage gets one "continue" once the
  * limit lifts. That is a minute after the displayed reset, or earlier when
  * another thread on the same provider instance gets a reply, since the
- * displayed reset can be hours pessimistic. Prism job threads are left alone:
- * Model Router reroutes or blocks them itself, and a late "continue" to an old
- * worker would duplicate work. Upstream Orchestrator V2 has its own "Resume
- * at reset", so this goes away with the V2 port.
+ * displayed reset can be hours pessimistic. Upstream Orchestrator V2 has its
+ * own "Resume at reset", so this goes away with the V2 port.
  */
 import type { OrchestrationThreadShell, ServerProvider } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 
 export const RESUME_TEXT = "Continue. (Sent automatically after the usage limit reset.)";
-
-/**
- * Model Router opens every job thread with a first user message
- * `[model-router job <request id> <kind> on route <route>; planner thread <id>]`
- * (parsed in full by apps/web/src/components/AgentThreadTree.logic.ts).
- * Titles are no marker: they get regenerated.
- */
-export function isRouterJobMessage(firstUserMessage: string): boolean {
-  return firstUserMessage.trimStart().startsWith("[model-router job ");
-}
 
 /**
  * Whether a turn's error is a usage limit, from the error itself. The

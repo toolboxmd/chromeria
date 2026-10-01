@@ -1,104 +1,31 @@
 /**
- * Agents panel tree for child threads (toolboxmd/t3code#17): the Prism job
- * tags, the per-row child-count chevron, and the compact nested rows.
+ * Agents panel tree for child threads (toolboxmd/t3code#17): the per-row
+ * child-count chevron and the compact nested rows.
  */
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   formatSubagentModelLabel,
-  type RuntimeSubagent,
   type RuntimeSubagentStatus,
 } from "@t3tools/client-runtime/state/subagentRuntime";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { useEffect, useMemo, type ReactNode } from "react";
-import { create } from "zustand";
+import { useMemo, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
-import { useThreadDetail, useThreadShells } from "~/state/entities";
+import { useThreadShells } from "~/state/entities";
 import { AgentThreadLink } from "./AgentThreadLink";
-import {
-  assignAgentSections,
-  childThreadsByParent,
-  routerJobTagOfMessages,
-  threadShellStatus,
-  type AgentSections,
-  type RouterJobTag,
-} from "./AgentThreadTree.logic";
-import { isSubagentThreadId } from "./subagentThreads";
+import { childThreadsByParent, threadShellStatus } from "./AgentThreadTree.logic";
 
-/**
- * Router tags never change once a thread's first message lands, so each
- * child thread is read once per session and then released.
- */
-const useRouterJobTagStore = create<{
-  readonly tags: Readonly<Record<string, RouterJobTag | null>>;
-  readonly record: (key: string, tag: RouterJobTag | null) => void;
-}>()((set) => ({
-  tags: {},
-  record: (key, tag) => set((state) => ({ tags: { ...state.tags, [key]: tag } })),
-}));
-
-const tagKey = (environmentId: EnvironmentId, threadId: string) =>
-  `${environmentId}\u0000${threadId}`;
-
-function RouterJobTagProbe({
-  environmentId,
-  threadId,
-}: {
-  environmentId: EnvironmentId;
-  threadId: string;
-}) {
-  const detail = useThreadDetail(scopeThreadRef(environmentId, threadId as ThreadId));
-  const record = useRouterJobTagStore((state) => state.record);
-  useEffect(() => {
-    // A thread with no user message yet may still receive its tag.
-    if (!detail?.messages.some((message) => message.role === "user")) return;
-    record(tagKey(environmentId, threadId), routerJobTagOfMessages(detail.messages));
-  }, [detail, environmentId, record, threadId]);
-  return null;
-}
-
-export interface AgentThreadTree {
-  readonly sections: AgentSections;
-  readonly childrenByParent: ReadonlyMap<string, ReadonlyArray<EnvironmentThreadShell>>;
-  /** Mount once so unknown child threads get their router tag read. */
-  readonly probes: ReactNode;
-}
-
-export function useAgentThreadTree(
+/** Live child threads per parent in this environment, for the Agents panel rows. */
+export function useChildThreadsByParent(
   environmentId: EnvironmentId | null,
-  directAgents: ReadonlyArray<RuntimeSubagent>,
-): AgentThreadTree {
+): ReadonlyMap<string, ReadonlyArray<EnvironmentThreadShell>> {
   const shells = useThreadShells();
-  const tags = useRouterJobTagStore((state) => state.tags);
-  const childrenByParent = useMemo(
+  return useMemo(
     () => childThreadsByParent(shells.filter((shell) => shell.environmentId === environmentId)),
     [environmentId, shells],
   );
-  return useMemo(() => {
-    const known = new Map<string, RouterJobTag | null>();
-    const unknown: string[] = [];
-    if (environmentId !== null) {
-      for (const agent of directAgents) {
-        if (!isSubagentThreadId(agent.id)) continue;
-        const key = tagKey(environmentId, agent.id);
-        if (key in tags) known.set(agent.id, tags[key] ?? null);
-        else unknown.push(agent.id);
-      }
-    }
-    return {
-      sections: assignAgentSections(directAgents, known),
-      childrenByParent,
-      probes:
-        environmentId === null
-          ? null
-          : unknown.map((threadId) => (
-              <RouterJobTagProbe key={threadId} environmentId={environmentId} threadId={threadId} />
-            )),
-    };
-  }, [childrenByParent, directAgents, environmentId, tags]);
 }
 
 function ChildThreadToggle({

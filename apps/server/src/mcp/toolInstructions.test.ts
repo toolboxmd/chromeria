@@ -11,7 +11,6 @@ describe("t3-code tool instructions", () => {
         "Delegate with spawn_thread and a role (worker with a lane by difficulty, reviewer); Prism picks the model.",
         "For a job that ends in one PR, start spawn_thread(role: dispatcher) with the brief, unless the user or a comparison job says to coordinate it yourself.",
         "When a child fails, hits a limit or goes stale, interrupt_thread it and, once it reports settled, spawn retry, then escalation, then ask whoever started you.",
-        "Only if no dispatcher can start, fall back to prism_submit",
       ];
       const routingPositions = routing.map((rule) => instructions.indexOf(rule));
       expect(routingPositions.every((position) => position >= 0)).toBe(true);
@@ -22,18 +21,7 @@ describe("t3-code tool instructions", () => {
       expect(instructions).toContain(
         "never by starting codex exec, claude -p, opencode run or grok in the shell",
       );
-      const defectSteps = [
-        "have a spawn_thread child with role reviewer confirm the defect from prism_status and ~/.local/share/durable-runner/outputs/<requestId>/",
-        "then open or update the toolboxmd/model-router Issue with that confirmation",
-        "then start a spawn_thread child with role worker on the fix in its own worktree, with a normal PR and review",
-        "Meanwhile keep the job going or recover it.",
-      ];
-      const positions = defectSteps.map((step) => instructions.indexOf(step));
-      expect(positions.every((position) => position >= 0)).toBe(true);
-      expect(positions).toEqual([...positions].sort((a, b) => a - b));
-      expect(instructions).toContain(
-        "Comment an unconfirmed suspicion on an existing Issue or drop it; never file it as a new Issue.",
-      );
+      expect(instructions).not.toMatch(/prism_|model-router/);
     },
   );
 
