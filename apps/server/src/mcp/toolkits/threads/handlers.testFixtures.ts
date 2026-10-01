@@ -48,13 +48,13 @@ import { ThreadsToolkit } from "./tools.ts";
 
 const PROJECT_ID = ProjectId.make("project-threads");
 export const PARENT_ID = ThreadId.make("parent-threads");
-const NOW = "2026-01-01T00:00:00.000Z";
+export const NOW = "2026-01-01T00:00:00.000Z";
 
 let commandCount = 0;
-const commandId = () => CommandId.make(`test-threads-${++commandCount}`);
+export const commandId = () => CommandId.make(`test-threads-${++commandCount}`);
 
-/** One server process: real engine and projections over a SQLite file, plus the toolkit. */
-const serverLayer = (databasePath: string) => {
+/** One server process: real engine and projections over a SQLite file, toolkit services faked. */
+const engineLayer = (databasePath: string) => {
   const orchestration = Layer.mergeAll(
     OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
@@ -71,7 +71,7 @@ const serverLayer = (databasePath: string) => {
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-threads-" })),
     Layer.provideMerge(NodeServices.layer),
   );
-  const dependencies = Layer.mergeAll(
+  return Layer.mergeAll(
     orchestration,
     ServerSettingsService.layerTest(),
     Layer.mock(ProviderService.ProviderService)({
@@ -85,12 +85,24 @@ const serverLayer = (databasePath: string) => {
     }),
     Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
   );
+};
+
+/** The same process with the threads toolkit running. */
+const serverLayer = (databasePath: string) => {
+  const dependencies = engineLayer(databasePath);
   return Layer.mergeAll(ThreadsToolkitHandlersLive.pipe(Layer.provide(dependencies)), dependencies);
 };
 
 /** Runs `body` against a fresh server on `databasePath`; the server stops when it ends. */
 export const withServer = <A, E, R>(databasePath: string, body: Effect.Effect<A, E, R>) =>
   body.pipe(Effect.provide(serverLayer(databasePath)));
+
+/**
+ * Runs `body` against the engine alone, with no threads toolkit listening:
+ * events it dispatches are the ones a stopping server never bridged.
+ */
+export const withEngineOnly = <A, E, R>(databasePath: string, body: Effect.Effect<A, E, R>) =>
+  body.pipe(Effect.provide(engineLayer(databasePath)));
 
 /** A temporary directory removed when the surrounding scope closes. */
 export const temporaryDirectory = (prefix: string) =>

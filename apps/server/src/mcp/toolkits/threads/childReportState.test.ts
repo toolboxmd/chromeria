@@ -1,25 +1,36 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodePath from "node:path";
 
-import { EventId, ThreadId, type OrchestrationThreadActivity } from "@t3tools/contracts";
+import {
+  CommandId,
+  EventId,
+  MessageId,
+  ThreadId,
+  type OrchestrationThreadActivity,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import { describe, expect, it } from "@effect/vitest";
 
+import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { childReportStatesFrom, unrecordedChildReportState } from "./childReportState.ts";
 import {
   assistantReply,
   callTool,
+  commandId,
   createParent,
   dispatchAll,
   dispatchUntil,
+  NOW,
   PARENT_ID,
   parentActivity,
   parentMessages,
   session,
   taskStarted,
   temporaryDirectory,
+  withEngineOnly,
   withServer,
 } from "./handlers.testFixtures.ts";
 
@@ -157,6 +168,191 @@ describe("child report-back across a server restart", () => {
       );
       expect(reportsOf(messages).map((message) => message.text)).toEqual([
         expect.stringContaining("HERON"),
+      ]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+/** More parent activities than the thread detail keeps, all newer than any task row. */
+const fillParentActivityWindow = dispatchAll(
+  Array.from({ length: 520 }, (_, index) => {
+    const createdAt = `2099-01-01T00:00:00.${String(index).padStart(3, "0")}Z`;
+    return {
+      type: "thread.activity.append",
+      commandId: commandId(),
+      threadId: PARENT_ID,
+      activity: {
+        id: EventId.make(`filler-${index}`),
+        tone: "info",
+        kind: "tool.completed",
+        summary: "Filler",
+        payload: {},
+        turnId: null,
+        createdAt,
+      },
+      createdAt,
+    } as const;
+  }),
+);
+
+/** A child finishing one turn with `text`. */
+const finishedTurn = (child: ThreadId, turnId: string, messageId: string, text: string) => [
+  session(child, "running", turnId),
+  ...assistantReply(child, messageId, text),
+  session(child, "ready", null),
+];
+
+/** Waits until the parent holds a report containing `text`, already or by a later event. */
+const parentReport = (text: string) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const events = yield* engine.subscribeDomainEvents;
+      if (reportsOf(yield* parentMessages).some((message) => message.text.includes(text))) return;
+      yield* events.pipe(
+        Stream.filter(
+          (event) =>
+            event.type === "thread.message-sent" &&
+            event.aggregateId === PARENT_ID &&
+            event.payload.text.includes(text),
+        ),
+        Stream.runHead,
+      );
+    }),
+  );
+
+/**
+ * Runs one idle transition without a new reply, then waits until the bridge
+ * has finished handling it: it handles events in order, so once the next
+ * running row lands any report for that transition was already dispatched.
+ */
+const settleBridge = (child: ThreadId) =>
+  Effect.gen(function* () {
+    yield* dispatchUntil(
+      dispatchAll([session(child, "running", "settle"), session(child, "ready", null)]),
+      parentActivity(child, "task.progress", "idle"),
+    );
+    yield* dispatchUntil(
+      dispatchAll([session(child, "running", "after-settle")]),
+      parentActivity(child, "task.updated", "running"),
+    );
+    return yield* parentMessages;
+  });
+
+/** A child finishing one turn, once the bridge has recorded it idle. */
+const finishedTurnRecorded = (child: ThreadId, turnId: string, messageId: string, text: string) =>
+  dispatchUntil(
+    dispatchAll(finishedTurn(child, turnId, messageId, text)),
+    parentActivity(child, "task.progress", "idle"),
+  );
+
+describe("child report-back beyond the parent's activity window", () => {
+  it.effect("keeps each child's setting however many parent activities followed", () =>
+    Effect.gen(function* () {
+      const directory = yield* temporaryDirectory("t3-child-window-");
+      const databasePath = NodePath.join(directory, "state.sqlite");
+      const [loudId, quietId] = yield* withServer(
+        databasePath,
+        Effect.gen(function* () {
+          yield* createParent(directory);
+          const loud = yield* dispatchUntil(spawnChild(true), taskStarted);
+          const quiet = yield* dispatchUntil(spawnChild(false), taskStarted);
+          yield* fillParentActivityWindow;
+          return [loud.result.threadId, quiet.result.threadId] as const;
+        }),
+      );
+      const loud = ThreadId.make(loudId);
+      const quiet = ThreadId.make(quietId);
+
+      // After the restart the quiet child finishes two turns before the loud
+      // child finishes one. Its second reply is new after the bridge restored
+      // it, so a lost setting would report it; the bridge handles events in
+      // order, so that report would land before the loud one.
+      const messages = yield* withServer(
+        databasePath,
+        Effect.gen(function* () {
+          yield* finishedTurnRecorded(quiet, "quiet-turn-1", "quiet-reply-1", "QUIET-1");
+          yield* finishedTurnRecorded(quiet, "quiet-turn-2", "quiet-reply-2", "QUIET-2");
+          yield* dispatchAll(finishedTurn(loud, "turn-1", "reply-1", "HERON"));
+          yield* parentReport("HERON");
+          return yield* parentMessages;
+        }),
+      );
+      expect(reportsOf(messages).map((message) => message.text)).toEqual([
+        expect.stringContaining("HERON"),
+      ]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+describe("child report-back for turns that finished during a restart", () => {
+  it.effect("reports a reply no bridge saw once, and not again after another restart", () =>
+    Effect.gen(function* () {
+      const directory = yield* temporaryDirectory("t3-child-missed-");
+      const databasePath = NodePath.join(directory, "state.sqlite");
+      const childId = yield* withServer(
+        databasePath,
+        Effect.gen(function* () {
+          yield* createParent(directory);
+          const { result } = yield* dispatchUntil(spawnChild(true), taskStarted);
+          return result.threadId;
+        }),
+      );
+      const child = ThreadId.make(childId);
+
+      // The turn finishes while the server is stopping: no bridge is listening.
+      yield* withEngineOnly(
+        databasePath,
+        dispatchAll(finishedTurn(child, "turn-1", "reply-1", "OSPREY")),
+      );
+
+      yield* withServer(databasePath, parentReport("OSPREY"));
+      const messages = yield* withServer(databasePath, settleBridge(child));
+      expect(reportsOf(messages).map((message) => message.text)).toEqual([
+        expect.stringContaining("OSPREY"),
+      ]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("does not resend a report the stopped server sent before recording it", () =>
+    Effect.gen(function* () {
+      const directory = yield* temporaryDirectory("t3-child-sent-");
+      const databasePath = NodePath.join(directory, "state.sqlite");
+      const childId = yield* withServer(
+        databasePath,
+        Effect.gen(function* () {
+          yield* createParent(directory);
+          const { result } = yield* dispatchUntil(spawnChild(true), taskStarted);
+          return result.threadId;
+        }),
+      );
+      const child = ThreadId.make(childId);
+
+      // The previous process delivered the report, then stopped before its idle row.
+      yield* withEngineOnly(
+        databasePath,
+        dispatchAll([
+          ...finishedTurn(child, "turn-1", "reply-1", "EGRET"),
+          {
+            type: "thread.turn.start",
+            commandId: CommandId.make(`server:mcp-threads-report:${childId}:reply-1`),
+            threadId: PARENT_ID,
+            message: {
+              messageId: MessageId.make("report-1"),
+              role: "user",
+              text: `[Subagent child (thread ${childId}) finished a turn]\n\nEGRET`,
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdAt: NOW,
+          },
+        ]),
+      );
+
+      const messages = yield* withServer(databasePath, settleBridge(child));
+      expect(reportsOf(messages).map((message) => message.text)).toEqual([
+        expect.stringContaining("EGRET"),
       ]);
     }).pipe(Effect.scoped),
   );

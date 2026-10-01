@@ -118,7 +118,8 @@ for per-match decisions and the absorption PR record.
     "https://github.com/toolboxmd/t3code/issues/48",
     "https://github.com/toolboxmd/t3code/issues/59",
     "https://github.com/toolboxmd/t3code/issues/61",
-    "https://github.com/toolboxmd/chromeria/issues/95"
+    "https://github.com/toolboxmd/chromeria/issues/95",
+    "https://github.com/toolboxmd/chromeria/issues/94"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/10",
