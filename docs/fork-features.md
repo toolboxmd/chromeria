@@ -696,7 +696,7 @@ for per-match decisions and the absorption PR record.
   "id": "promachos-mode",
   "purpose": "Switch web and desktop to a chat-first view of the Promachos home's conversations: paragraph bubbles, a working indicator and inline question and approval cards.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/116"],
-  "prs": [],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/128"],
   "newFiles": [
     "apps/web/src/components/promachos/PromachosChat.tsx",
     "apps/web/src/components/promachos/PromachosModeSwitch.tsx",
