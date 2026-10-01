@@ -521,6 +521,8 @@ const AUTHORIZATION_PREFIX = "Bearer ";
 const DPOP_AUTHORIZATION_PREFIX = "DPoP ";
 const WEBSOCKET_TICKET_QUERY_PARAM = "wsTicket";
 
+const isPerson = Schema.is(Schema.Literals(PEOPLE));
+
 const bySessionPriority = (left: AuthClientSession, right: AuthClientSession) => {
   const leftCanManage = left.scopes.includes(AuthAccessWriteScope);
   const rightCanManage = right.scopes.includes(AuthAccessWriteScope);
@@ -1041,7 +1043,7 @@ export const make = Effect.gen(function* () {
     sessionId,
     person,
   ) => {
-    if (person !== null && !Schema.is(Schema.Literals(PEOPLE))(person)) {
+    if (person !== null && !isPerson(person)) {
       return Effect.fail(new ServerAuthForbiddenOperationError({}));
     }
     return sessions

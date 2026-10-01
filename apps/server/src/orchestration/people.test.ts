@@ -57,6 +57,28 @@ it.effect("persists ownership and sharing through events, thread reads and shell
         const query = yield* ProjectionSnapshotQuery;
         const detail = () =>
           query.getThreadDetailById(PARENT_ID).pipe(Effect.map(Option.getOrThrow));
+        const expectOwnershipReads = (coOwners: string[]) =>
+          Effect.gen(function* () {
+            expect(Option.getOrThrow(yield* query.getThreadShellById(PARENT_ID))).toMatchObject({
+              owner: "Luke",
+              coOwners,
+            });
+            expect(
+              Option.getOrThrow(yield* query.getThreadDetailSnapshot(PARENT_ID)).thread,
+            ).toMatchObject({ owner: "Luke", coOwners });
+            expect((yield* query.getCommandReadModel()).threads[0]).toMatchObject({
+              owner: "Luke",
+              coOwners,
+            });
+            expect((yield* query.getSnapshot()).threads[0]).toMatchObject({
+              owner: "Luke",
+              coOwners,
+            });
+            expect((yield* query.getShellSnapshot()).threads[0]).toMatchObject({
+              owner: "Luke",
+              coOwners,
+            });
+          });
         expect((yield* detail()).owner).toBe("Luke");
         const command = { threadId: PARENT_ID, createdAt: NOW };
         yield* engine.dispatch({
@@ -68,6 +90,7 @@ it.effect("persists ownership and sharing through events, thread reads and shell
         });
         let thread = yield* detail();
         expect(thread.coOwners).toEqual(["Pauli"]);
+        yield* expectOwnershipReads(["Pauli"]);
         expect(thread.activities.at(-1)).toMatchObject({
           kind: "thread.sharing",
           tone: "info",
@@ -110,6 +133,7 @@ it.effect("persists ownership and sharing through events, thread reads and shell
         });
         thread = yield* detail();
         expect(thread.coOwners).toEqual(["Future person"]);
+        yield* expectOwnershipReads(["Future person"]);
         expect(thread.activities.at(-1)?.summary).toBe("Pauli left this shared thread");
         expect(
           (yield* engine
@@ -124,6 +148,7 @@ it.effect("persists ownership and sharing through events, thread reads and shell
         });
         thread = yield* detail();
         expect(thread.coOwners).toEqual([]);
+        yield* expectOwnershipReads([]);
         expect(thread.activities.at(-1)?.summary).toBe("Luke stopped sharing this thread");
         expect(
           (yield* engine

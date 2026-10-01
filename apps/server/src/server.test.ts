@@ -8317,6 +8317,89 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  for (const [action, coOwners] of [
+    ["shared", ["Pauli"]],
+    ["unshared", []],
+    ["left", []],
+  ] as const) {
+    it.effect(`carries ownership in shell upserts and thread streams after ${action}`, () =>
+      Effect.gen(function* () {
+        const event: OrchestrationEvent = {
+          sequence: 1,
+          eventId: EventId.make(`sharing-${action}`),
+          aggregateKind: "thread",
+          aggregateId: defaultThreadId,
+          occurredAt: "2026-01-01T00:00:00.000Z",
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.sharing-set",
+          payload: {
+            threadId: defaultThreadId,
+            coOwners,
+            action,
+            actor: action === "left" ? "Pauli" : "Luke",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+        };
+        yield* buildAppUnderTest({
+          layers: {
+            orchestrationEngine: {
+              latestSequence: Effect.succeed(1),
+              readEvents: () => Stream.make(event),
+              readThreadEvents: () => Stream.make(event),
+            },
+            projectionSnapshotQuery: {
+              getThreadShellById: () =>
+                Effect.succeedSome(
+                  makeDefaultOrchestrationThreadShell({ owner: "Luke", coOwners }),
+                ),
+              getThreadDetailSnapshot: () =>
+                Effect.succeedSome({
+                  snapshotSequence: 1,
+                  thread: {
+                    ...makeDefaultOrchestrationReadModel().threads[0]!,
+                    owner: "Luke",
+                    coOwners,
+                  },
+                }),
+            },
+          },
+        });
+        const wsUrl = yield* getWsServerUrl("/ws");
+        yield* Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            Effect.gen(function* () {
+              const shell = yield* client[ORCHESTRATION_WS_METHODS.subscribeShell]({
+                afterSequence: 0,
+              }).pipe(Stream.take(1), Stream.runCollect);
+              assert.equal(shell[0]?.kind, "thread-upserted");
+              if (shell[0]?.kind === "thread-upserted") {
+                assert.equal(shell[0].thread.owner, "Luke");
+                assert.deepEqual(shell[0].thread.coOwners, coOwners);
+              }
+              const detail = yield* client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+                threadId: defaultThreadId,
+              }).pipe(Stream.take(1), Stream.runCollect);
+              assert.equal(detail[0]?.kind, "snapshot");
+              if (detail[0]?.kind === "snapshot") {
+                assert.equal(detail[0].snapshot.thread.owner, "Luke");
+                assert.deepEqual(detail[0].snapshot.thread.coOwners, coOwners);
+              }
+              const replay = yield* client[ORCHESTRATION_WS_METHODS.subscribeThread]({
+                threadId: defaultThreadId,
+                afterSequence: 0,
+              }).pipe(Stream.take(1), Stream.runCollect);
+              assert.equal(replay[0]?.kind, "event");
+              if (replay[0]?.kind === "event") assert.deepEqual(replay[0].event, event);
+            }),
+          ),
+        );
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    );
+  }
+
   it.effect("records thread analytics only after a client command succeeds", () =>
     Effect.gen(function* () {
       const effects: string[] = [];

@@ -788,7 +788,6 @@ export const make = Effect.gen(function* () {
           client: toClientMetadata(row.value.client),
           expiresAt: row.value.expiresAt,
           subject: row.value.subject,
-          ...(row.value.person === null ? {} : { person: row.value.person }),
           scopes: row.value.scopes,
         } satisfies VerifiedSession;
       }

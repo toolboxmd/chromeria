@@ -785,3 +785,70 @@ for per-match decisions and the absorption PR record.
   "keywords": ["Wight", "idle continuation", "wightLimitPercent", "wightModes"]
 }
 ```
+
+## Device people and thread ownership
+
+```json
+{
+  "id": "thread-people",
+  "purpose": "Label devices and show thread ownership and sharing as views without access control.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/121"],
+  "prs": ["pending: coordinator opens the final PR for #121"],
+  "newFiles": [
+    "apps/server/src/orchestration/people.test.ts",
+    "apps/server/src/persistence/Migrations/055_ThreadPeople.test.ts",
+    "apps/server/src/persistence/Migrations/055_ThreadPeople.ts",
+    "packages/contracts/src/people.ts"
+  ],
+  "upstreamFiles": [
+    "apps/server/src/auth/EnvironmentAuth.test.ts",
+    "apps/server/src/auth/EnvironmentAuth.ts",
+    "apps/server/src/auth/SessionStore.test.ts",
+    "apps/server/src/auth/SessionStore.ts",
+    "apps/server/src/auth/http.ts",
+    "apps/server/src/git/linkCreatedPullRequest.test.ts",
+    "apps/server/src/mcp/toolkits/pullRequests/handlers.test.ts",
+    "apps/server/src/orchestration/Layers/ProjectionPipeline.ts",
+    "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts",
+    "apps/server/src/orchestration/PullRequestSyncReactor.test.ts",
+    "apps/server/src/orchestration/Schemas.ts",
+    "apps/server/src/orchestration/ThreadPullRequestReactor.test.ts",
+    "apps/server/src/orchestration/ThreadSettlementPolicy.test.ts",
+    "apps/server/src/orchestration/commandInvariants.test.ts",
+    "apps/server/src/orchestration/decider.active-order.test.ts",
+    "apps/server/src/orchestration/decider.autoSettleSet.test.ts",
+    "apps/server/src/orchestration/decider.pinned.test.ts",
+    "apps/server/src/orchestration/decider.pullRequests.test.ts",
+    "apps/server/src/orchestration/decider.questionAttachments.test.ts",
+    "apps/server/src/orchestration/decider.settled.test.ts",
+    "apps/server/src/orchestration/decider.snoozed.test.ts",
+    "apps/server/src/orchestration/decider.titleRegeneration.test.ts",
+    "apps/server/src/orchestration/decider.turnDiffComplete.test.ts",
+    "apps/server/src/orchestration/decider.userInputDismiss.test.ts",
+    "apps/server/src/orchestration/messageContext.test.ts",
+    "apps/server/src/orchestration/projector.test.ts",
+    "apps/server/src/orchestration/projector.ts",
+    "apps/server/src/persistence/AuthSessions.ts",
+    "apps/server/src/persistence/Layers/ProjectionThreads.ts",
+    "apps/server/src/persistence/Migrations.ts",
+    "apps/server/src/persistence/Services/ProjectionThreads.ts",
+    "apps/server/src/provider/Layers/ProviderSessionReaper.test.ts",
+    "packages/contracts/src/auth.ts",
+    "packages/contracts/src/environmentHttp.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/mcp/toolkits/threads/handlers.ts",
+    "apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts",
+    "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts",
+    "apps/server/src/orchestration/ThreadSettlementReactor.test.ts",
+    "apps/server/src/orchestration/decider.ts",
+    "apps/server/src/project/AgentSessionImporter.test.ts",
+    "apps/server/src/relay/AgentAwarenessRelay.test.ts",
+    "apps/server/src/server.test.ts",
+    "apps/server/src/ws.ts",
+    "packages/contracts/src/index.ts",
+    "packages/contracts/src/orchestration.ts"
+  ],
+  "keywords": ["thread ownership", "coOwners", "person picker"]
+}
+```

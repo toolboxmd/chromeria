@@ -12,11 +12,16 @@ import {
   ProjectionThreadRepository,
   type ProjectionThreadRepositoryShape,
 } from "../Services/ProjectionThreads.ts";
-import { ModelSelection, ThreadLinkedPullRequest, ThreadTitleState } from "@t3tools/contracts";
+import {
+  TrimmedNonEmptyString,
+  ModelSelection,
+  ThreadLinkedPullRequest,
+  ThreadTitleState,
+} from "@t3tools/contracts";
 
 const ProjectionThreadDbRow = ProjectionThread.mapFields(
   Struct.assign({
-    coOwners: Schema.fromJsonString(Schema.Array(Schema.String)),
+    coOwners: Schema.fromJsonString(Schema.Array(TrimmedNonEmptyString)),
     modelSelection: Schema.fromJsonString(ModelSelection),
     titleState: Schema.NullOr(Schema.fromJsonString(ThreadTitleState)),
     linkedPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),

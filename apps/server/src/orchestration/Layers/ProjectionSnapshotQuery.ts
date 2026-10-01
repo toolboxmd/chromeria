@@ -7,6 +7,7 @@ import {
   IsoDateTime,
   MessageId,
   NonNegativeInt,
+  TrimmedNonEmptyString,
   OrchestrationCheckpointFile,
   OrchestrationCheckpointStatus,
   OrchestrationProposedPlanId,
@@ -128,7 +129,7 @@ const ProjectionThreadPullRequestDbRowSchema = ProjectionThreadPullRequest.mapFi
 );
 const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
   Struct.assign({
-    coOwners: Schema.fromJsonString(Schema.Array(Schema.String)),
+    coOwners: Schema.fromJsonString(Schema.Array(TrimmedNonEmptyString)),
     modelSelection: Schema.fromJsonString(ModelSelection),
     titleState: Schema.NullOr(Schema.fromJsonString(ThreadTitleState)),
     linkedPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),
@@ -1770,7 +1771,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             'thread.activity-appended',
             'thread.turn-diff-completed',
             'thread.reverted',
-            'thread.session-set'
+            'thread.session-set',
+            'thread.sharing-set'
           )
       `,
   });

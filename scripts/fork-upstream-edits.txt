@@ -153,13 +153,49 @@ apps/server/src/orchestration/Services/OrchestrationEngine.ts
 # Spectrum user input has no relay-provider intent (#118)
 apps/server/src/orchestration/decider.ts
 # Spectrum composer sends settle once the user message is projected (#118)
-apps/web/src/components/ChatView.logic.ts
 apps/web/src/components/ChatView.logic.test.ts
+apps/web/src/components/ChatView.logic.ts
 
 # Spectrum recovery outbox excluded from client transport (#118)
-apps/server/src/orchestration/ActivityPayloadProjection.ts
 apps/server/src/orchestration/ActivityPayloadProjection.test.ts
+apps/server/src/orchestration/ActivityPayloadProjection.ts
 
 # Spectrum startup native SQLite binding and delegation loading regressions (#118)
-apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts
 apps/server/src/mcp/alwaysLoad.test.ts
+apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts
+
+# Device people and thread ownership (#121)
+apps/server/src/auth/EnvironmentAuth.test.ts
+apps/server/src/auth/EnvironmentAuth.ts
+apps/server/src/auth/SessionStore.test.ts
+apps/server/src/auth/SessionStore.ts
+apps/server/src/auth/http.ts
+apps/server/src/git/linkCreatedPullRequest.test.ts
+apps/server/src/mcp/toolkits/pullRequests/handlers.test.ts
+apps/server/src/orchestration/Layers/ProjectionPipeline.ts
+apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts
+apps/server/src/orchestration/PullRequestSyncReactor.test.ts
+apps/server/src/orchestration/Schemas.ts
+apps/server/src/orchestration/ThreadPullRequestReactor.test.ts
+apps/server/src/orchestration/ThreadSettlementPolicy.test.ts
+apps/server/src/orchestration/commandInvariants.test.ts
+apps/server/src/orchestration/decider.active-order.test.ts
+apps/server/src/orchestration/decider.autoSettleSet.test.ts
+apps/server/src/orchestration/decider.pinned.test.ts
+apps/server/src/orchestration/decider.pullRequests.test.ts
+apps/server/src/orchestration/decider.questionAttachments.test.ts
+apps/server/src/orchestration/decider.settled.test.ts
+apps/server/src/orchestration/decider.snoozed.test.ts
+apps/server/src/orchestration/decider.titleRegeneration.test.ts
+apps/server/src/orchestration/decider.turnDiffComplete.test.ts
+apps/server/src/orchestration/decider.userInputDismiss.test.ts
+apps/server/src/orchestration/messageContext.test.ts
+apps/server/src/orchestration/projector.test.ts
+apps/server/src/orchestration/projector.ts
+apps/server/src/persistence/AuthSessions.ts
+apps/server/src/persistence/Layers/ProjectionThreads.ts
+apps/server/src/persistence/Migrations.ts
+apps/server/src/persistence/Services/ProjectionThreads.ts
+apps/server/src/provider/Layers/ProviderSessionReaper.test.ts
+packages/contracts/src/auth.ts
+packages/contracts/src/environmentHttp.ts
