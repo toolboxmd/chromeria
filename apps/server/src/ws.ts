@@ -3,6 +3,7 @@ import {
   withUsageLimitsCommands,
 } from "@t3tools/shared/usageLimits";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -87,6 +88,7 @@ import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as ServerConfig from "./config.ts";
+import { resolvePromachosStart } from "./prism/promachosStart.ts";
 import * as EnvironmentTheme from "./environmentTheme.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
@@ -1889,7 +1891,26 @@ const makeWsRpcLayer = (
             ORCHESTRATION_WS_METHODS.dispatchCommand,
             Effect.gen(function* () {
               yield* ProjectCloneTracker.rejectCommandsDuringClone(projectCloneTracker, command);
-              const normalizedCommand = yield* normalizeDispatchCommand(command);
+              let startCommand = command;
+              if (command.type === "thread.turn.start" && command.prismRole === "promachos") {
+                const existing = yield* projectionSnapshotQuery.getThreadShellById(
+                  command.threadId,
+                );
+                const resolved = resolvePromachosStart(
+                  command,
+                  Option.isSome(existing),
+                  yield* serverSettings.getSettings,
+                  yield* providerRegistry.getProviders,
+                  yield* Clock.currentTimeMillis,
+                );
+                if ("refusal" in resolved) {
+                  return yield* new OrchestrationDispatchCommandError({
+                    message: resolved.refusal,
+                  });
+                }
+                startCommand = resolved.command;
+              }
+              const normalizedCommand = yield* normalizeDispatchCommand(startCommand);
               // Archive removes the thread from the client, so this transport
               // closes its session and terminals after the command lands.
               // Settlement cleanup is driven by thread.settled events in the

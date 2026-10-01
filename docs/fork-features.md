@@ -270,7 +270,8 @@ for per-match decisions and the absorption PR record.
   "purpose": "Give Prism roles their kits and models; every role has every thread tool.",
   "issues": [
     "https://github.com/toolboxmd/t3code/issues/19",
-    "https://github.com/toolboxmd/chromeria/issues/93"
+    "https://github.com/toolboxmd/chromeria/issues/93",
+    "https://github.com/toolboxmd/chromeria/issues/115"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/22",
@@ -279,17 +280,22 @@ for per-match decisions and the absorption PR record.
   "newFiles": [
     "apps/server/src/mcp/toolkits/threads/roles.test.ts",
     "apps/server/src/mcp/toolkits/threads/roles.ts",
+    "apps/server/src/prism/promachosStart.ts",
     "packages/contracts/src/prism.test.ts",
     "packages/contracts/src/prism.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/provider/Drivers/OpenCodeDriver.ts",
     "packages/contracts/src/index.ts",
-    "packages/contracts/src/settings.ts"
+    "packages/contracts/src/settings.ts",
+    "packages/contracts/src/orchestration.ts"
   ],
   "sharedFiles": [
     "apps/server/src/mcp/toolkits/threads/handlers.ts",
-    "apps/server/src/mcp/toolkits/threads/tools.ts"
+    "apps/server/src/mcp/toolkits/threads/tools.ts",
+    "apps/server/src/server.test.ts",
+    "apps/server/src/ws.ts",
+    "apps/web/src/components/settings/PrismSettings.tsx"
   ],
   "keywords": [
     "prism",

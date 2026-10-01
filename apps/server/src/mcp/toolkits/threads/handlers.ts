@@ -35,7 +35,7 @@ import { ServerSettingsService } from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { makeSpawnSetup } from "./spawnSetup.ts";
 import { makeSpawnWorkspace } from "./spawnWorkspace.ts";
-import { pickRoleModel, prismRoleSuffix, roleTaskMessage } from "./roles.ts";
+import { effortOptionId, pickRoleModel, prismRoleSuffix, roleTaskMessage } from "./roles.ts";
 import {
   type ChildReportState,
   childReportStatesFrom,
@@ -86,24 +86,7 @@ export function subagentStatusOf(session: OrchestrationSession | null): Subagent
   }
 }
 
-/**
- * Provider option id that carries reasoning effort, per driver. Codex and
- * Grok advertise `reasoningEffort`, OpenCode advertises `variant`, and
- * Claude, Cursor and Antigravity read `effort`. ModelSelection options are
- * free-form id/value pairs that adapters ignore when unknown, so sending
- * `effort` to Antigravity (which has no effort control) is a harmless no-op.
- */
-export function effortOptionId(driverKind: string): string {
-  switch (driverKind) {
-    case "codex":
-    case "grok":
-      return "reasoningEffort";
-    case "opencode":
-      return "variant";
-    default:
-      return "effort";
-  }
-}
+export { effortOptionId } from "./roles.ts";
 
 const fail = (reason: string) => Effect.fail(new ThreadsToolError({ reason }));
 
