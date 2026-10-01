@@ -71,7 +71,6 @@ vi.mock("./useStartThreadFromIssue", () => ({
     start: vi.fn(),
   }),
 }));
-vi.mock("./useOpenIssueOrPullRequestLink", () => ({ useOpenIssueInIssuesView: () => vi.fn() }));
 vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: () => vi.fn() }));
 vi.mock("~/lib/openPullRequestLink", () => ({ useOpenPrLink: () => vi.fn() }));
 
@@ -84,7 +83,7 @@ function renderPanel() {
       .slice(1)
       .map((row) => {
         const icon = /aria-label="([^"]+)"/u.exec(row)?.[1];
-        const number = /aria-label="Open acme\/web#(\d+) in Issues"/u.exec(row)?.[1];
+        const number = /aria-label="Open acme\/web#(\d+) in the right panel"/u.exec(row)?.[1];
         return [Number(number), icon] as const;
       }),
   );

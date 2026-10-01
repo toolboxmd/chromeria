@@ -1,3 +1,7 @@
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { ThreadId } from "@t3tools/contracts";
+import { selectActiveRightPanelSurface, useRightPanelStore } from "~/rightPanelStore";
+
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
@@ -119,6 +123,48 @@ describe("openIssueOrPullRequestLink", () => {
     expect(await run({ readIssue: async () => true })).toEqual({
       kind: "issue",
       opened: ["issue"],
+    });
+  });
+
+  it("opens confirmed Issues in the thread store, replacing the target without changing PR tabs", async () => {
+    useRightPanelStore.setState({ byThreadKey: {}, userActionRevisionByThreadKey: {} });
+    const ref = scopeThreadRef(environmentId, ThreadId.make("thread-120"));
+    const store = useRightPanelStore.getState();
+    store.openPullRequest(ref, {
+      projectId: "toolboxmd-t3code",
+      repository: "toolboxmd/t3code",
+      number: 40,
+    });
+    for (const number of [120, 121]) {
+      const url = `https://github.com/toolboxmd/t3code/issues/${number}`;
+      expect(
+        await openIssueOrPullRequestLink({
+          readPullRequest: async () => null,
+          openPullRequest: () => {
+            throw new Error("not a pull request");
+          },
+          readIssue: async () => true,
+          openIssue: () => store.openIssue(ref, { environmentId, url }),
+          openExternal: async () => {
+            throw new Error("not external");
+          },
+        }),
+      ).toBe("issue");
+      expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, ref)).toEqual(
+        {
+          id: "issue",
+          kind: "issue",
+          environmentId,
+          url,
+        },
+      );
+    }
+    store.closeSurface(ref, "issue");
+    expect(
+      selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, ref),
+    ).toMatchObject({
+      kind: "pull-request",
+      number: 40,
     });
   });
 

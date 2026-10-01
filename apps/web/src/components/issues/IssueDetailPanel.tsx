@@ -60,12 +60,14 @@ export function IssueDetailPanel({
   linkEnvironments,
   linkedPullRequests,
   onOpenThread,
+  className,
 }: {
   environmentId: EnvironmentId;
   reference: IssueRef;
   /** A checkout on the same server, which markdown media are fetched through. */
   cwd: string;
-  onClose: () => void;
+  /** Absent in the right panel, whose tab closes it. */
+  onClose?: () => void;
   /** The Issue changed on GitHub; the list should read it again. */
   onChanged: () => void;
   /** Why no thread can start from this Issue, or null when one can. */
@@ -76,6 +78,8 @@ export function IssueDetailPanel({
   /** Thread-linked pull requests the list read, by `issueKey`, for their state. */
   linkedPullRequests: ReadonlyMap<string, IssuePullRequest>;
   onOpenThread: (thread: IssueRowThread) => void;
+  /** Layout from the parent; beside the Issues list by default. */
+  className?: string;
 }) {
   const result = useIssueDetail(environmentId, reference);
   const detail = AsyncResult.isSuccess(result) ? result.value : null;
@@ -86,7 +90,10 @@ export function IssueDetailPanel({
   return (
     <aside
       aria-label={`${reference.repository}#${reference.number}`}
-      className="flex min-h-0 w-[min(44rem,50%)] shrink-0 flex-col border-l border-border bg-background"
+      className={cn(
+        "flex min-h-0 w-[min(44rem,50%)] shrink-0 flex-col border-l border-border bg-background",
+        className,
+      )}
     >
       <div className="flex h-[var(--workspace-topbar-height)] shrink-0 items-center gap-2 border-b border-border px-3 [-webkit-app-region:no-drag]">
         {detail ? <IssueStateGlyph state={detail.state} /> : null}
@@ -124,9 +131,11 @@ export function IssueDetailPanel({
         >
           <ExternalLinkIcon className="size-4" />
         </Button>
-        <Button size="icon-sm" variant="ghost" aria-label="Close panel" onClick={onClose}>
-          <XIcon className="size-4" />
-        </Button>
+        {onClose ? (
+          <Button size="icon-sm" variant="ghost" aria-label="Close panel" onClick={onClose}>
+            <XIcon className="size-4" />
+          </Button>
+        ) : null}
       </div>
       {detail === null ? (
         <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground">

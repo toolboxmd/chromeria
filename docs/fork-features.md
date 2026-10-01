@@ -429,6 +429,7 @@ for per-match decisions and the absorption PR record.
     "apps/server/src/mcp/toolkits/issues/handlers.ts",
     "apps/server/src/mcp/toolkits/issues/tools.ts",
     "apps/web/src/components/issues/ThreadIssueLinks.tsx",
+    "apps/web/src/components/issues/ThreadIssuePanel.tsx",
     "apps/web/src/components/issues/ThreadLinksPanel.tsx",
     "apps/web/src/components/issues/issueLinks.logic.test.ts",
     "apps/web/src/components/issues/issueLinks.logic.ts",
@@ -442,6 +443,8 @@ for per-match decisions and the absorption PR record.
     "apps/server/src/environment/ServerEnvironment.ts",
     "apps/web/src/components/ChatView.tsx",
     "apps/web/src/components/RightPanelTabs.tsx",
+    "apps/web/src/rightPanelStore.ts",
+    "apps/web/src/rightPanelStore.test.ts",
     "packages/client-runtime/src/rpc/client.ts",
     "packages/contracts/src/environment.ts",
     "apps/web/src/components/pullRequest/ThreadPullRequestsPanel.tsx"

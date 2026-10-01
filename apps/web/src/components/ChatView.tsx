@@ -218,6 +218,7 @@ import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavaila
 import { RightPanelTabs } from "./RightPanelTabs";
 import { AgentsPanel } from "./AgentsPanel";
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
+import { ThreadIssuePanel } from "./issues/ThreadIssuePanel";
 import { ThreadLinksPanel } from "./issues/ThreadLinksPanel";
 import { useDeviceState } from "~/state/device";
 import { DeviceSetup } from "./device/DeviceSetup";
@@ -9631,6 +9632,11 @@ export default function ChatView(props: ChatViewProps) {
       <ThreadLinksPanel
         threadRef={activeThreadRef}
         issueLinks={serverConfig?.environment.capabilities.issueLinks === true}
+      />
+    ) : renderedRightPanelSurface?.kind === "issue" ? (
+      <ThreadIssuePanel
+        environmentId={renderedRightPanelSurface.environmentId}
+        url={renderedRightPanelSurface.url}
       />
     ) : renderedRightPanelSurface?.kind === "agents" ? (
       <AgentsPanel

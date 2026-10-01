@@ -66,7 +66,7 @@ import {
   type IssueTreeNode,
 } from "./issueList.logic";
 import { publishIssuePaletteSource } from "./issuePaletteStore";
-import { resolveIssuePanelEnvironment } from "./issueLinks.logic";
+import { issueMarkdownCwd, resolveIssuePanelEnvironment } from "./issueLinks.logic";
 import { ISSUE_STATUS_PRESENTATION, IssueStateGlyph, IssueStatusGlyph } from "./issuePresentation";
 import {
   COLLAPSED_ISSUE_STATUSES,
@@ -388,15 +388,7 @@ export function IssuesView() {
   const selectedCwd =
     selected === null
       ? null
-      : (projects.find(
-          (project) =>
-            project.environmentId === selected.environmentId &&
-            project.repositoryIdentity?.canonicalKey?.toLowerCase() ===
-              `${selected.reference.host}/${selected.reference.repository}`.toLowerCase(),
-        )?.workspaceRoot ??
-        projects.find((project) => project.environmentId === selected.environmentId)
-          ?.workspaceRoot ??
-        null);
+      : issueMarkdownCwd(projects, selected.environmentId, selected.reference);
 
   let body: ReactNode;
   if (environmentIds.length === 0) {
