@@ -18,6 +18,7 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
@@ -45,6 +46,10 @@ import {
 } from "./tools.ts";
 
 const REPORT_TEXT_LIMIT = 4_000;
+/** How long interrupt_thread waits for the turn to settle before returning interrupt_requested. */
+export const INTERRUPT_SETTLE_TIMEOUT = Duration.seconds(30);
+/** How long interrupt_thread waits for a starting thread to report its turn id. */
+export const INTERRUPT_TURN_START_TIMEOUT = Duration.seconds(30);
 type ThreadScopeIdentity = { readonly id: string; readonly projectId: string };
 type ThreadLifecycle = ThreadScopeIdentity & {
   readonly archivedAt: string | null;
@@ -102,6 +107,11 @@ const fail = (reason: string) => Effect.fail(new ThreadsToolError({ reason }));
  */
 export function deliveryOf(statusBefore: SubagentStatus): "new-turn" | "steer" {
   return statusBefore === "running" ? "steer" : "new-turn";
+}
+
+/** Whether a thread has a turn interrupt_thread can stop: one running or still starting. */
+function hasActiveTurn(session: OrchestrationSession | null): boolean {
+  return session?.status === "running" || session?.status === "starting";
 }
 
 export function isSettled(thread: Pick<ThreadLifecycle, "settledOverride" | "settledAt">) {
@@ -496,6 +506,42 @@ const make = Effect.gen(function* () {
     ),
   );
 
+  /**
+   * The turn id a starting thread reports once its turn is active, or null
+   * when it stops being active or reports none within the wait, with the
+   * session last seen.
+   */
+  const awaitTurnId = (threadId: ThreadId) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const decided = (session: OrchestrationSession | null) =>
+          !hasActiveTurn(session) || (session?.activeTurnId ?? null) !== null;
+        const events = yield* engine.subscribeDomainEvents;
+        const now = (yield* threadShell(threadId))?.session ?? null;
+        const session = decided(now)
+          ? now
+          : yield* events.pipe(
+              Stream.filter(
+                (event) =>
+                  event.type === "thread.session-set" &&
+                  event.aggregateId === threadId &&
+                  decided(event.payload.session),
+              ),
+              Stream.runHead,
+              Effect.map(
+                Option.map((event) =>
+                  event.type === "thread.session-set" ? event.payload.session : null,
+                ),
+              ),
+              Effect.timeoutOption(INTERRUPT_TURN_START_TIMEOUT),
+              Effect.map(Option.flatten),
+              Effect.map(Option.getOrElse(() => now)),
+            );
+        const turnId = hasActiveTurn(session) ? (session?.activeTurnId ?? null) : null;
+        return { turnId, session };
+      }),
+    );
+
   return ThreadsToolkit.of({
     spawn_thread: (input) =>
       Effect.gen(function* () {
@@ -579,6 +625,81 @@ const make = Effect.gen(function* () {
         }
         yield* startTurn(target, attributedMessage(text, caller, target));
         return { threadId, statusBefore, delivery: deliveryOf(statusBefore) };
+      }),
+    interrupt_thread: ({ threadId, scope }) =>
+      Effect.gen(function* () {
+        const { target } = yield* callerScopedThread(threadId, scope);
+        if (!hasActiveTurn(target.session)) {
+          return {
+            threadId,
+            turnId: null,
+            status: "no_active_run" as const,
+            statusAfter: subagentStatusOf(target.session),
+          };
+        }
+        // Every interrupt names its turn, so the reactor drops it if a newer
+        // turn is active by then. A starting thread has no turn id yet: wait
+        // for it rather than send an interrupt that could stop a later turn.
+        const sampled = target.session?.activeTurnId ?? null;
+        const started = sampled !== null ? null : yield* awaitTurnId(target.id);
+        const turnId = sampled ?? started?.turnId ?? null;
+        if (turnId === null) {
+          return {
+            threadId,
+            turnId: null,
+            status: "no_active_run" as const,
+            statusAfter: subagentStatusOf(started?.session ?? target.session),
+          };
+        }
+        // Settled once that turn stopped running, whether or not a newer one started.
+        const turnSettled = (session: OrchestrationSession | null) =>
+          !hasActiveTurn(session) || session?.activeTurnId !== turnId;
+        const settled = yield* Effect.scoped(
+          Effect.gen(function* () {
+            // Subscribe first so a settle that lands right after the command is not missed.
+            const events = yield* engine.subscribeDomainEvents;
+            yield* dispatch({
+              type: "thread.turn.interrupt",
+              commandId: yield* commandId("interrupt"),
+              threadId: target.id,
+              turnId,
+              createdAt: yield* nowIso,
+            });
+            const now = yield* threadShell(threadId);
+            if (now && turnSettled(now.session)) return Option.some(now.session);
+            return yield* events.pipe(
+              Stream.filter(
+                (event) =>
+                  event.type === "thread.session-set" &&
+                  event.aggregateId === target.id &&
+                  turnSettled(event.payload.session),
+              ),
+              Stream.runHead,
+              Effect.map(
+                Option.map((event) =>
+                  event.type === "thread.session-set" ? event.payload.session : null,
+                ),
+              ),
+              Effect.timeoutOption(INTERRUPT_SETTLE_TIMEOUT),
+              Effect.map(Option.flatten),
+            );
+          }),
+        );
+        if (Option.isSome(settled)) {
+          return {
+            threadId,
+            turnId,
+            status: "interrupted" as const,
+            statusAfter: subagentStatusOf(settled.value),
+          };
+        }
+        const latest = yield* threadShell(threadId);
+        return {
+          threadId,
+          turnId,
+          status: "interrupt_requested" as const,
+          statusAfter: subagentStatusOf(latest?.session ?? target.session),
+        };
       }),
     read_thread: ({ threadId, scope }) =>
       callerScopedThread(threadId, scope).pipe(Effect.flatMap(({ target }) => summarize(target))),

@@ -3714,6 +3714,58 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
+  effectIt.effect("drops an interrupt for a turn that is no longer the active one", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() => createHarness());
+      const now = "2026-01-01T00:00:00.000Z";
+      const runningTurn = (turnId: string, commandId: string) =>
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make(commandId),
+          threadId: ThreadId.make("thread-1"),
+          session: {
+            threadId: ThreadId.make("thread-1"),
+            status: "running",
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: asTurnId(turnId),
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        });
+
+      // Turn A was sampled for the interrupt, but turn B started before the
+      // reactor handled the request.
+      yield* runningTurn("turn-a", "cmd-session-set-stale-a");
+      yield* runningTurn("turn-b", "cmd-session-set-stale-b");
+      yield* harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-turn-interrupt-stale"),
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-a"),
+        createdAt: now,
+      });
+      yield* Effect.promise(() => harness.drain());
+      expect(harness.interruptTurn).not.toHaveBeenCalled();
+      const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+        (entry) => entry.id === ThreadId.make("thread-1"),
+      );
+      expect(thread?.session).toMatchObject({ status: "running", activeTurnId: "turn-b" });
+
+      // The same request naming the active turn still interrupts it.
+      yield* harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-turn-interrupt-current"),
+        threadId: ThreadId.make("thread-1"),
+        turnId: asTurnId("turn-b"),
+        createdAt: now,
+      });
+      yield* Effect.promise(() => harness.drain());
+      expect(harness.interruptTurn).toHaveBeenCalledTimes(1);
+    }),
+  );
+
   effectIt.effect(
     "stops a running session and records the failure when provider interrupt fails",
     () =>

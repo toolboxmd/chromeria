@@ -112,17 +112,19 @@ for per-match decisions and the absorption PR record.
 ```json
 {
   "id": "child-threads",
-  "purpose": "Spawn child threads, hide them from sidebars and mobile, and open them from their parent.",
+  "purpose": "Spawn and interrupt child threads, hide them from sidebars and mobile, and open them from their parent.",
   "issues": [
     "https://github.com/toolboxmd/t3code/issues/8",
     "https://github.com/toolboxmd/t3code/issues/48",
     "https://github.com/toolboxmd/t3code/issues/59",
-    "https://github.com/toolboxmd/t3code/issues/61"
+    "https://github.com/toolboxmd/t3code/issues/61",
+    "https://github.com/toolboxmd/chromeria/issues/95"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/10",
     "https://github.com/toolboxmd/t3code/pull/60",
-    "https://github.com/toolboxmd/t3code/pull/63"
+    "https://github.com/toolboxmd/t3code/pull/63",
+    "https://github.com/toolboxmd/chromeria/pull/102"
   ],
   "newFiles": [
     "apps/server/src/mcp/toolkits/threads/childReportState.test.ts",
@@ -130,6 +132,7 @@ for per-match decisions and the absorption PR record.
     "apps/server/src/mcp/toolkits/threads/childThreads.test.ts",
     "apps/server/src/mcp/toolkits/threads/handlers.testFixtures.ts",
     "apps/server/src/mcp/toolkits/threads/handlers.ts",
+    "apps/server/src/mcp/toolkits/threads/interruptThread.test.ts",
     "apps/server/src/mcp/toolkits/threads/mobileShell.test.ts",
     "apps/server/src/mcp/toolkits/threads/mobileShell.ts",
     "apps/server/src/mcp/toolkits/threads/subagentThreadId.test.ts",
@@ -144,6 +147,8 @@ for per-match decisions and the absorption PR record.
   "upstreamFiles": [
     "apps/server/src/entrypoint.test.ts",
     "apps/server/src/mcp/McpHttpServer.ts",
+    "apps/server/src/orchestration/Layers/ProviderCommandReactor.test.ts",
+    "apps/server/src/orchestration/Layers/ProviderCommandReactor.ts",
     "apps/server/src/orchestration/http.ts",
     "apps/server/src/server.test.ts",
     "apps/web/src/components/LegacySidebar.tsx",
@@ -154,7 +159,14 @@ for per-match decisions and the absorption PR record.
     "apps/web/src/components/AgentsPanel.tsx",
     "apps/server/src/ws.ts"
   ],
-  "keywords": ["parentThreadId", "child thread", "subagent", "spawn_thread", "sidebar"]
+  "keywords": [
+    "parentThreadId",
+    "child thread",
+    "subagent",
+    "spawn_thread",
+    "interrupt_thread",
+    "sidebar"
+  ]
 }
 ```
 

@@ -202,7 +202,11 @@ export const parentMessages = Effect.gen(function* () {
   return Option.getOrThrow(yield* snapshots.getThreadDetailById(PARENT_ID)).messages;
 });
 
-export const session = (threadId: ThreadId, status: "running" | "ready", turnId: string | null) =>
+export const session = (
+  threadId: ThreadId,
+  status: "starting" | "running" | "ready" | "interrupted",
+  turnId: string | null,
+) =>
   ({
     type: "thread.session.set",
     commandId: commandId(),

@@ -95,6 +95,28 @@ export const MessageThreadResult = Schema.Struct({
   }),
 });
 
+export const InterruptThreadInput = Schema.Struct({
+  threadId: TrimmedNonEmptyString.annotate({ description: "A thread in the selected scope." }),
+  scope: threadScope,
+});
+
+/**
+ * Mirrors upstream orchestration V2's `t3_thread_interrupt` result so callers
+ * port unchanged: `no_active_run` when nothing was running,
+ * `interrupt_requested` when the turn had not settled within the wait, and
+ * `interrupted` once T3 reported that turn no longer running. The interrupt
+ * always names the turn, so it never stops a newer turn that started
+ * meanwhile. A starting thread is interrupted once it reports its turn;
+ * `no_active_run` with `statusAfter: "starting"` means none started within
+ * the wait and nothing was sent.
+ */
+export const InterruptThreadResult = Schema.Struct({
+  threadId: Schema.String,
+  turnId: Schema.NullOr(Schema.String),
+  status: Schema.Literals(["interrupted", "interrupt_requested", "no_active_run"]),
+  statusAfter: SubagentStatus,
+});
+
 export const ThreadSummary = Schema.Struct({
   threadId: Schema.String,
   id: Schema.String,
@@ -137,6 +159,20 @@ const MessageThreadTool = Tool.make("message_thread", {
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
+const InterruptThreadTool = Tool.make("interrupt_thread", {
+  description:
+    "Stop the running turn of a child thread by default, or any thread in this project with scope: project, and wait until T3 reports it settled. Use it before replacing a stalled or usage-limit-hit child, so two threads never write to the same branch. An idle, failed or stopped thread returns no_active_run unchanged, and so does a starting thread whose turn has not begun within 30 seconds (statusAfter: starting); interrupt_requested means the turn had not settled yet, so read_thread before replacing it.",
+  parameters: InterruptThreadInput,
+  success: InterruptThreadResult,
+  failure: ThreadsToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Interrupt thread")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
 const ReadThreadTool = Tool.make("read_thread", {
@@ -183,6 +219,7 @@ const ListThreadsTool = Tool.make("list_threads", {
 export const ThreadsToolkit = Toolkit.make(
   SpawnThreadTool,
   MessageThreadTool,
+  InterruptThreadTool,
   ReadThreadTool,
   ListChildThreadsTool,
   ListThreadsTool,
