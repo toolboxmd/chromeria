@@ -931,8 +931,9 @@ for per-match decisions and the absorption PR record.
     "docs/user/scheduled-tasks.md",
     "packages/contracts/src/scheduler.ts"
   ],
-  "upstreamFiles": ["apps/server/src/orchestration/projector.ts"],
+  "upstreamFiles": [],
   "sharedFiles": [
+    "apps/server/src/orchestration/projector.ts",
     "apps/server/src/auth/RpcAuthorization.ts",
     "apps/server/src/mcp/McpHttpServer.ts",
     "apps/server/src/mcp/toolkits/threads/handlers.ts",
