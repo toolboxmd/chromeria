@@ -25,13 +25,23 @@ function promachosTurnStartInput<T extends TurnStartInput>(
     : input;
 }
 
-/**
- * Whether Prism picks the model for a new conversation. When it does, the
- * composer offers no multiple-model start: each started thread would be a
- * new Promachos conversation, and Prism, not the picker, chooses its model.
- */
+/** Whether Prism picks the model for a new conversation. */
 export function promachosPicksModel(promachosModels: ReadonlyArray<unknown> | null): boolean {
   return promachosModels !== null && promachosModels.length > 0;
+}
+
+/**
+ * The multiple-model selection the view acts on. Where Prism picks the
+ * model, each started thread would be a new Promachos conversation, so there
+ * is none: the composer offers no multiple-model start and the workspace
+ * controls behave as for one model. The saved selection is kept and returns
+ * in the standard view.
+ */
+export function promachosMultipleModelSelections<T>(
+  saved: T | null,
+  promachosModels: ReadonlyArray<unknown> | null,
+): T | null {
+  return promachosPicksModel(promachosModels) ? null : saved;
 }
 
 /**

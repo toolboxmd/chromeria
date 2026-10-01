@@ -10,7 +10,7 @@ import {
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { withPromachosStart } from "./promachosStart";
+import { promachosMultipleModelSelections, withPromachosStart } from "./promachosStart";
 
 const decodeCommand = Schema.decodeUnknownSync(ClientOrchestrationCommand);
 const createdAt = "2026-10-01T20:00:00.000Z";
@@ -106,5 +106,18 @@ describe("withPromachosStart", () => {
     expect(withPromachosStart(start, promachosModels)(firstSend("refused"))).toBe(refusal);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ prismRole: "promachos" });
+  });
+});
+
+describe("promachosMultipleModelSelections", () => {
+  const saved = [modelSelection, { ...modelSelection, model: "gpt-5.5-mini" }];
+
+  it("acts on no saved multiple-model selection where Prism picks the model", () => {
+    expect(promachosMultipleModelSelections(saved, promachosModels)).toBeNull();
+  });
+
+  it("keeps the saved selection for an empty list and the standard view", () => {
+    expect(promachosMultipleModelSelections(saved, [])).toBe(saved);
+    expect(promachosMultipleModelSelections(saved, null)).toBe(saved);
   });
 });

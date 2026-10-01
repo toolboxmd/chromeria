@@ -535,7 +535,11 @@ import {
 } from "./chat/composerPromptHistory";
 import { usePromachosInlineCardHost } from "./promachos/PromachosChat";
 import { usePromachosChat } from "./promachos/promachosMode";
-import { promachosPicksModel, withPromachosStart } from "./promachos/promachosStart";
+import {
+  promachosMultipleModelSelections,
+  promachosPicksModel,
+  withPromachosStart,
+} from "./promachos/promachosStart";
 
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_QUEUED_MESSAGES: QueuedComposerMessage[] = [];
@@ -2172,6 +2176,11 @@ export default function ChatView(props: ChatViewProps) {
   const promachosModels = promachosChat
     ? activeProjectSettings.settings.prismRoles.promachos.models
     : null;
+  // The saved fan-out stays in its atom for the standard view.
+  const viewMultipleModelSelections = promachosMultipleModelSelections(
+    multipleModelSelections,
+    promachosModels,
+  );
   const activeProjectScripts = useMemo(
     () => (activeProject ? resolveProjectScripts(settings, activeProject) : []),
     [activeProject, settings],
@@ -9322,7 +9331,7 @@ export default function ChatView(props: ChatViewProps) {
   );
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
-      if (multipleModelSelections !== null) return;
+      if (viewMultipleModelSelections !== null) return;
       if (canOverrideServerThreadEnvMode) {
         setPendingServerThreadEnvMode(mode);
         scheduleComposerFocus();
@@ -9345,7 +9354,7 @@ export default function ChatView(props: ChatViewProps) {
       composerDraftTarget,
       draftThread?.worktreePath,
       isLocalDraftThread,
-      multipleModelSelections,
+      viewMultipleModelSelections,
       activeProjectSettings.settings.newWorktreesStartFromOrigin,
       setPendingServerThreadEnvMode,
       scheduleComposerFocus,
@@ -10019,9 +10028,7 @@ export default function ChatView(props: ChatViewProps) {
                         <div ref={attachDraftHeroComposerAnchorRef} className="relative z-10">
                           <ChatComposer
                             inlineCardHost={promachosCardHost.composerHost}
-                            multipleModelSelections={
-                              promachosPicksModel(promachosModels) ? null : multipleModelSelections
-                            }
+                            multipleModelSelections={viewMultipleModelSelections}
                             supportsMultipleModels={
                               serverConfig?.environment.capabilities.requiredWorktreeBootstrap ===
                                 true && !promachosPicksModel(promachosModels)
@@ -10164,7 +10171,7 @@ export default function ChatView(props: ChatViewProps) {
                           {mountComposerContextStrip && (
                             <div className="pointer-events-auto">
                               <BranchToolbar
-                                forceNewWorktree={multipleModelSelections !== null}
+                                forceNewWorktree={viewMultipleModelSelections !== null}
                                 ref={branchToolbarRef}
                                 environmentId={activeThread.environmentId}
                                 threadId={activeThread.id}
