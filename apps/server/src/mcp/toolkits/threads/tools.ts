@@ -1,10 +1,4 @@
-import {
-  PrismLane,
-  PrismRole,
-  PrismRoleName,
-  RuntimeMode,
-  TrimmedNonEmptyString,
-} from "@t3tools/contracts";
+import { PrismLane, PrismRole, PrismRoleName, TrimmedNonEmptyString } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Tool from "effect/unstable/ai/Tool";
@@ -69,7 +63,6 @@ export const SpawnThreadInput = Schema.Struct({
     }),
   ),
   title: Schema.optional(TrimmedNonEmptyString),
-  runtimeMode: Schema.optional(RuntimeMode),
   reportBack: Schema.optional(
     Schema.Boolean.annotate({
       description:

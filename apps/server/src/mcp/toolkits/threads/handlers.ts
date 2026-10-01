@@ -554,7 +554,7 @@ const make = Effect.gen(function* () {
         );
         reportBack.set(childId, input.reportBack !== false);
         const createdAt = yield* nowIso;
-        const runtimeMode = input.runtimeMode ?? kit?.runtimeMode ?? parent.runtimeMode;
+        const runtimeMode = kit?.runtimeMode ?? parent.runtimeMode;
         const titlePrefix = role ? PRISM_ROLE_LABELS[role] : "Subagent";
         yield* dispatch({
           type: "thread.create",
