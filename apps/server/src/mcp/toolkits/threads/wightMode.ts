@@ -49,6 +49,7 @@ const wightContinueText = (now: string) =>
 export const makeWightMode = Effect.fnUntraced(function* <E, R>(deps: {
   readonly settings: Effect.Effect<ServerSettings, E, R>;
   readonly providers: Effect.Effect<ReadonlyArray<ServerProvider>, E, R>;
+  readonly retired: (id: string) => Effect.Effect<boolean, E, R>;
   readonly thread: (id: string) => Effect.Effect<OrchestrationThreadShell | undefined, E, R>;
   readonly resume: (
     thread: OrchestrationThreadShell,
@@ -93,6 +94,7 @@ export const makeWightMode = Effect.fnUntraced(function* <E, R>(deps: {
     const providers = yield* deps.providers;
     for (const [id, activation] of Object.entries(settings.wightModes)) {
       if (activation.expiresAt !== null && activation.expiresAt <= now) continue;
+      if (yield* deps.retired(id)) continue;
       const thread = yield* deps.thread(id);
       if (!thread || !wightIdle(thread, nowIso)) continue;
       const instance = thread.session?.providerInstanceId ?? thread.modelSelection.instanceId;
@@ -126,7 +128,12 @@ export const makeWightMode = Effect.fnUntraced(function* <E, R>(deps: {
         Effect.gen(function* () {
           const current = yield* deps.settings;
           const active = current.wightModes[thread.id];
-          if (!active || active.enabledAt !== activation.enabledAt) return false;
+          if (
+            !active ||
+            active.enabledAt !== activation.enabledAt ||
+            (yield* deps.retired(thread.id))
+          )
+            return false;
           const fresh = (yield* deps.providers).find((entry) => entry.instanceId === instance);
           const now = yield* Clock.currentTimeMillis;
           return (

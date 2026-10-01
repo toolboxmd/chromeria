@@ -78,6 +78,10 @@ describe("automatic idle turn admission on real SQLite engine", () => {
               const ids: CommandId[] = [];
               const runtime = yield* makeWightMode({
                 settings: Effect.sync(() => settings),
+                retired: (id) =>
+                  engine
+                    .getThreadRetirement(id)
+                    .pipe(Effect.map((state) => state?.retired ?? false)),
                 providers: Effect.sync(() => [
                   {
                     instanceId: instance,

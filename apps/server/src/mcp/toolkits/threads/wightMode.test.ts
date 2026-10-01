@@ -63,10 +63,12 @@ const harness = (initial: ServerSettings, initialThreads = [thread()]) =>
     let providers = [provider(20)];
     const threads = new Map(initialThreads.map((entry) => [entry.id, entry]));
     const sends: Array<{ id: string; text: string }> = [];
+    let retired = false;
     let afterRead: (() => void) | undefined;
     const runtime = yield* makeWightMode({
       settings: Effect.sync(() => settings),
       providers: Effect.sync(() => providers),
+      retired: () => Effect.sync(() => retired),
       thread: (id) =>
         Effect.sync(() => {
           const value = threads.get(ThreadId.make(id));
@@ -91,6 +93,9 @@ const harness = (initial: ServerSettings, initialThreads = [thread()]) =>
     });
     return {
       ...runtime,
+      retire: () => {
+        retired = true;
+      },
       sends,
       threads,
       settings: (next: ServerSettings) => {
@@ -106,6 +111,17 @@ const harness = (initial: ServerSettings, initialThreads = [thread()]) =>
   });
 
 describe("Wight mode", () => {
+  it.effect("a retired idle shell cannot receive a nudge even at fresh below-threshold usage", () =>
+    Effect.gen(function* () {
+      const h = yield* harness(activate([ID]));
+      h.retire();
+      yield* h.reconcile();
+      h.providers([provider(0)]);
+      yield* h.reconcile();
+      expect(h.sends).toHaveLength(0);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("enables idle, waits for active, turns off, and includes current time", () =>
     Effect.gen(function* () {
       const h = yield* harness(activate([ID]));

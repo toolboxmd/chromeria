@@ -7,7 +7,10 @@ import {
 import * as Effect from "effect/Effect";
 import type { OrchestrationEngineShape } from "../../../orchestration/Services/OrchestrationEngine.ts";
 
-/** Normal server-origin turn dispatch, preserving thread modes and optional serialized idle admission. */
+/**
+ * Normal server-origin turn dispatch, preserving thread modes and optional serialized idle admission.
+ * Automatic callers keep server: IDs; server:mcp-threads-message: is reserved for explicit recovery.
+ */
 export const makeThreadTurnSender =
   <E, R>(deps: {
     readonly dispatch: (

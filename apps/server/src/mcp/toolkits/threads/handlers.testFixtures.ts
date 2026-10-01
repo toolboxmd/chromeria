@@ -130,6 +130,7 @@ const serverLayer = (
   afterShellRead?: AfterShellRead,
   options?: SpawnTestOptions,
   beforeDispatch?: BeforeToolkitDispatch,
+  afterDispatch?: BeforeToolkitDispatch,
 ) => {
   const dependencies = options?.services
     ? Layer.mergeAll(engineLayer(databasePath, options), options.services)
@@ -155,22 +156,26 @@ const serverLayer = (
       });
     }),
   );
-  const toolkit = beforeDispatch
-    ? Layer.unwrap(
-        Effect.gen(function* () {
-          const engine = yield* OrchestrationEngineService;
-          const wrapped = OrchestrationEngineService.of({
-            ...engine,
-            dispatch: (command, options) =>
-              beforeDispatch(command).pipe(Effect.andThen(engine.dispatch(command, options))),
-          });
-          return ThreadsToolkitHandlersLive.pipe(
-            Layer.provide(toolkitQuery),
-            Layer.provide(Layer.succeed(OrchestrationEngineService, wrapped)),
-          );
-        }),
-      ).pipe(Layer.provide(dependencies))
-    : ThreadsToolkitHandlersLive.pipe(Layer.provide(toolkitQuery), Layer.provide(dependencies));
+  const toolkit =
+    beforeDispatch || afterDispatch
+      ? Layer.unwrap(
+          Effect.gen(function* () {
+            const engine = yield* OrchestrationEngineService;
+            const wrapped = OrchestrationEngineService.of({
+              ...engine,
+              dispatch: (command, options) =>
+                (beforeDispatch?.(command) ?? Effect.void).pipe(
+                  Effect.andThen(engine.dispatch(command, options)),
+                  Effect.ensuring(Effect.suspend(() => afterDispatch?.(command) ?? Effect.void)),
+                ),
+            });
+            return ThreadsToolkitHandlersLive.pipe(
+              Layer.provide(toolkitQuery),
+              Layer.provide(Layer.succeed(OrchestrationEngineService, wrapped)),
+            );
+          }),
+        ).pipe(Layer.provide(dependencies))
+      : ThreadsToolkitHandlersLive.pipe(Layer.provide(toolkitQuery), Layer.provide(dependencies));
   return Layer.mergeAll(
     toolkit,
     ...(options?.provider
@@ -204,7 +209,13 @@ export const withServer = <A, E, R>(
   afterShellRead?: AfterShellRead,
   options?: SpawnTestOptions,
   beforeDispatch?: BeforeToolkitDispatch,
-) => body.pipe(Effect.provide(serverLayer(databasePath, afterShellRead, options, beforeDispatch)));
+  afterDispatch?: BeforeToolkitDispatch,
+) =>
+  body.pipe(
+    Effect.provide(
+      serverLayer(databasePath, afterShellRead, options, beforeDispatch, afterDispatch),
+    ),
+  );
 
 /**
  * Runs `body` against the engine alone, with no threads toolkit listening:

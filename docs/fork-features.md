@@ -747,8 +747,6 @@ for per-match decisions and the absorption PR record.
     "packages/contracts/src/wight.ts"
   ],
   "upstreamFiles": [
-    "apps/server/src/orchestration/Layers/OrchestrationEngine.ts",
-    "apps/server/src/orchestration/Services/OrchestrationEngine.ts",
     "apps/server/src/orchestration/decider.ts",
     "apps/web/src/components/settings/ProviderInstanceCard.tsx",
     "docs/user/thread-sidebar.md",

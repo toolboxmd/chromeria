@@ -274,26 +274,28 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           // External capacity/settings can change without a domain event. Do not burn the retry identity.
           return { sequence: commandReadModel.snapshotSequence };
         }
-        const eventGroups = pendingAutomaticStart ? [] : yield* Effect.forEach(commands, (command) =>
-          decideOrchestrationCommand({
-            command,
-            readModel: commandReadModel,
-            ...(Option.isSome(userInputActivity)
-              ? { userInputActivity: userInputActivity.value }
-              : {}),
-          }).pipe(
-            Effect.provideService(Crypto.Crypto, crypto),
-            Effect.mapError((cause) =>
-              isOrchestrationCommandRejection(cause)
-                ? cause
-                : new OrchestrationCommandInvariantError({
-                    commandType: envelope.command.type,
-                    detail: "Failed to generate an event identifier.",
-                    cause,
-                  }),
-            ),
-          ),
-        );
+        const eventGroups = pendingAutomaticStart
+          ? []
+          : yield* Effect.forEach(commands, (command) =>
+              decideOrchestrationCommand({
+                command,
+                readModel: commandReadModel,
+                ...(Option.isSome(userInputActivity)
+                  ? { userInputActivity: userInputActivity.value }
+                  : {}),
+              }).pipe(
+                Effect.provideService(Crypto.Crypto, crypto),
+                Effect.mapError((cause) =>
+                  isOrchestrationCommandRejection(cause)
+                    ? cause
+                    : new OrchestrationCommandInvariantError({
+                        commandType: envelope.command.type,
+                        detail: "Failed to generate an event identifier.",
+                        cause,
+                      }),
+                ),
+              ),
+            );
         const plannedEvents = eventGroups.flatMap((events) =>
           Array.isArray(events) ? events : [events],
         );

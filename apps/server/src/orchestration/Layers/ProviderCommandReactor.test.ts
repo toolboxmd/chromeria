@@ -717,51 +717,70 @@ describe("ProviderCommandReactor", () => {
       }),
   );
 
-  effectIt.effect("retirement cancels a queued start before the provider starts", () =>
-    Effect.gen(function* () {
-      const activated = yield* Deferred.make<void>();
-      const harness = yield* Effect.promise(() =>
-        createHarness({ serverActivation: Deferred.await(activated) }),
-      );
-      const threadId = ThreadId.make("thread-1");
-      const now = "2026-01-01T00:00:00.000Z";
-      yield* harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-retire-queued"),
-        threadId,
-        message: {
-          messageId: asMessageId("retire-queued"),
-          role: "user",
-          text: "Work",
-          attachments: [],
-        },
-        runtimeMode: "approval-required",
-        interactionMode: "default",
-        createdAt: now,
-      });
-      yield* harness.engine.dispatch({
-        type: "thread.activity.append",
-        commandId: CommandId.make("server:mcp-threads-retire:queued"),
-        threadId,
-        activity: {
-          id: EventId.make("retire-queued-request"),
-          kind: RETIRE_SUBTREE_KIND,
-          summary: "Retire",
-          tone: "info",
-          payload: {},
-          turnId: null,
-          createdAt: now,
-        },
-        createdAt: now,
-      });
-      yield* Deferred.succeed(activated, undefined);
-      yield* Effect.promise(() => harness.drain());
-      expect(harness.startSession).not.toHaveBeenCalled();
-      expect(harness.sendTurn).not.toHaveBeenCalled();
-      expect((yield* harness.engine.getThreadRetirement(threadId))?.pendingStop).toBe(false);
-      expect(yield* Effect.promise(() => harness.readPendingTurnStarts())).toEqual([]);
-    }),
-  );
+  for (const automatic of [false, true]) {
+    effectIt.effect(
+      `retirement cancels a queued ${automatic ? "Wight" : "manual"} start before the provider starts`,
+      () =>
+        Effect.gen(function* () {
+          const activated = yield* Deferred.make<void>();
+          const harness = yield* Effect.promise(() =>
+            createHarness({ serverActivation: Deferred.await(activated) }),
+          );
+          const threadId = ThreadId.make("thread-1");
+          const now = "2026-01-01T00:00:00.000Z";
+          const shell = Option.getOrThrow(
+            yield* harness.snapshotQuery.getThreadShellById(threadId),
+          );
+          yield* harness.engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make(
+              automatic
+                ? `server:wight:${threadId}:${now}:${shell.updatedAt}:${shell.latestTurn?.turnId ?? "initial"}:${yield* harness.engine.latestSequence}`
+                : "cmd-retire-queued",
+            ),
+            ...(automatic
+              ? {
+                  idleGuard: {
+                    latestTurnId: shell.latestTurn?.turnId ?? null,
+                    updatedAt: shell.updatedAt,
+                  },
+                }
+              : {}),
+            threadId,
+            message: {
+              messageId: asMessageId("retire-queued"),
+              role: "user",
+              text: automatic ? "Continue. (Wight mode.)" : "Work",
+              attachments: [],
+            },
+            runtimeMode: "approval-required",
+            interactionMode: "default",
+            createdAt: now,
+          });
+          yield* harness.engine.dispatch({
+            type: "thread.activity.append",
+            commandId: CommandId.make("server:mcp-threads-retire:queued"),
+            threadId,
+            activity: {
+              id: EventId.make("retire-queued-request"),
+              kind: RETIRE_SUBTREE_KIND,
+              summary: "Retire",
+              tone: "info",
+              payload: {},
+              turnId: null,
+              createdAt: now,
+            },
+            createdAt: now,
+          });
+          yield* Deferred.succeed(activated, undefined);
+          yield* Effect.promise(() => harness.drain());
+          expect(harness.startSession).not.toHaveBeenCalled();
+          expect(harness.sendTurn).not.toHaveBeenCalled();
+          expect((yield* harness.engine.getThreadRetirement(threadId))?.pendingStop).toBe(false);
+          expect(yield* Effect.promise(() => harness.readPendingTurnStarts())).toEqual([]);
+        }),
+    );
+  }
 
   effectIt.effect("recovers a retirement stop that committed before reactor subscription", () =>
     Effect.gen(function* () {

@@ -510,6 +510,8 @@ const make = Effect.gen(function* () {
       Effect.catch(() => fail("Could not read Wight settings.")),
     ),
     providers: registry.getProviders,
+    retired: (id) =>
+      engine.getThreadRetirement(id).pipe(Effect.map((state) => state?.retired ?? false)),
     thread: threadShell,
     resume: (thread, text, activation, admission) =>
       Effect.gen(function* () {
