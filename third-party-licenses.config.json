@@ -473,6 +473,16 @@
         "licenseId": "MIT",
         "copyrights": ["Copyright (c) 2025 opencode"]
       }
+    },
+    {
+      "name": "khroma",
+      "version": "2.1.0",
+      "generatedNotice": {
+        "licenseId": "MIT",
+        "copyrights": ["Copyright (c) 2019-present Fabio Spampinato, Andrew Maney"]
+      },
+      "license": "MIT",
+      "sourceUrl": "https://github.com/fabiospampinato/khroma"
     }
   ]
 }

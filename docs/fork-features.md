@@ -645,7 +645,8 @@ for per-match decisions and the absorption PR record.
   "upstreamFiles": [
     "apps/web/package.json",
     "apps/web/src/components/ChatMarkdown.test.tsx",
-    "pnpm-lock.yaml"
+    "pnpm-lock.yaml",
+    "third-party-licenses.config.json"
   ],
   "sharedFiles": ["apps/web/src/components/ChatMarkdown.tsx"],
   "keywords": ["mermaid", "renderMermaidImage", "MermaidDiagram"]

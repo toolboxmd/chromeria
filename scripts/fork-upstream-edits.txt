@@ -112,3 +112,4 @@ apps/server/src/server.test.ts
 apps/web/package.json
 apps/web/src/components/ChatMarkdown.test.tsx
 pnpm-lock.yaml
+third-party-licenses.config.json
