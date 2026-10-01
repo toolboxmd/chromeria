@@ -5,6 +5,7 @@ import { ThreadId, issueKeyString } from "@t3tools/contracts";
 
 import {
   issueLinkChangesMatch,
+  issueMarkdownCwd,
   issueStartPrompt,
   issueStateChunks,
   linkedIssueEntries,
@@ -287,5 +288,35 @@ describe("linked Issue state", () => {
     ]);
     expect(entries.get(issueKeyString(linked))).toEqual(returned);
     expect(entries.has(issueKeyString(other))).toBe(false);
+  });
+});
+
+describe("issueMarkdownCwd", () => {
+  const issue = { host: "github.com", repository: "Acme/Web", number: 1 };
+  const projects = [
+    {
+      environmentId: "other" as EnvironmentId,
+      workspaceRoot: "/other/web",
+      ...identity("github.com/acme/web"),
+    },
+    {
+      environmentId: "selected" as EnvironmentId,
+      workspaceRoot: "/selected/api",
+      ...identity("github.com/acme/api"),
+    },
+    {
+      environmentId: "selected" as EnvironmentId,
+      workspaceRoot: "/selected/web",
+      ...identity("github.com/acme/web"),
+    },
+  ];
+  it("uses the repository checkout on the read server, ignoring other servers", () => {
+    expect(issueMarkdownCwd(projects, "selected" as EnvironmentId, issue)).toBe("/selected/web");
+  });
+  it("falls back to any checkout on that server and never another server", () => {
+    expect(issueMarkdownCwd(projects.slice(0, 2), "selected" as EnvironmentId, issue)).toBe(
+      "/selected/api",
+    );
+    expect(issueMarkdownCwd(projects, "absent" as EnvironmentId, issue)).toBeNull();
   });
 });

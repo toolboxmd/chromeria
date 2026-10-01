@@ -111,6 +111,29 @@ export function resolveIssuePanelEnvironment<
 }
 
 /**
+ * The checkout an Issue's markdown media are fetched through: the Issue's own repository on that
+ * server, else any project there, else null.
+ */
+export function issueMarkdownCwd(
+  projects: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly workspaceRoot: string;
+    readonly repositoryIdentity?: { readonly canonicalKey?: string } | null | undefined;
+  }>,
+  environmentId: EnvironmentId,
+  issue: IssueKey,
+): string | null {
+  const onServer = projects.filter((project) => project.environmentId === environmentId);
+  const key = `${issue.host}/${issue.repository}`.toLowerCase();
+  return (
+    onServer.find((project) => project.repositoryIdentity?.canonicalKey?.toLowerCase() === key)
+      ?.workspaceRoot ??
+    onServer[0]?.workspaceRoot ??
+    null
+  );
+}
+
+/**
  * Opens a draft in the Issue's project, writes the Issue into its composer and links the draft's
  * thread id at once, so the thread is linked from its first send. Null when nothing opened.
  */

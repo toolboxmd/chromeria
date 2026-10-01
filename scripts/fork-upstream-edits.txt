@@ -117,3 +117,7 @@ third-party-licenses.config.json
 # interrupt_thread: the provider reactor drops an interrupt for a turn that is no longer active (#95)
 apps/server/src/orchestration/Layers/ProviderCommandReactor.test.ts
 apps/server/src/orchestration/Layers/ProviderCommandReactor.ts
+
+# Issue detail in the thread right panel (#120)
+apps/web/src/rightPanelStore.ts
+apps/web/src/rightPanelStore.test.ts

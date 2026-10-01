@@ -1,4 +1,4 @@
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 import { parseIssueUrl } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useRef } from "react";
@@ -8,6 +8,7 @@ import {
   resolveBrowserLinkTargetPreference,
   resolveLinkTarget,
 } from "~/browser/browserLinkTarget";
+import { useRightPanelStore } from "~/rightPanelStore";
 import { issueDetail } from "~/state/issues";
 import { useProjects, useServerConfigs } from "~/state/entities";
 import { pullRequestEnvironment } from "~/state/pullRequests";
@@ -58,8 +59,9 @@ export function useOpenIssueInIssuesView() {
 
 /**
  * Opens a GitHub `/issues/N` link in the app: the pull request panel when N is a pull request,
- * the Issues side panel when it is an Issue, the browser otherwise. Returns null, doing nothing,
- * for any other link. Both reads happen on click, never on render.
+ * the thread's right panel when it is an Issue (the Issues page without a thread), the browser
+ * otherwise. Returns null, doing nothing, for any other link. Both reads happen on click, never
+ * on render.
  */
 export function useOpenIssueOrPullRequestLink(
   openChangeRequestLink: (
@@ -69,9 +71,10 @@ export function useOpenIssueOrPullRequestLink(
     environmentId: EnvironmentId | undefined,
   ) => boolean,
   openLink: (url: string) => Promise<void>,
-  /** `openLink` opens beside a thread, so the in-app browser can take the link. */
-  hasThread: boolean,
+  /** The thread the link is read in: Issues open beside it, and so can the in-app browser. */
+  threadRef: ScopedThreadRef | undefined,
 ) {
+  const hasThread = threadRef !== undefined;
   const projects = useProjects();
   const serverConfigs = useServerConfigs();
   const openIssue = useOpenIssueInIssuesView();
@@ -122,7 +125,11 @@ export function useOpenIssueOrPullRequestLink(
           environmentId === null || capabilities?.issues !== true
             ? null
             : async () => (await readIssue({ environmentId, input: issue }))._tag === "Success",
-        openIssue: () => environmentId !== null && openIssue(url, environmentId),
+        openIssue: () => {
+          if (environmentId === null) return;
+          if (threadRef === undefined) return openIssue(url, environmentId);
+          useRightPanelStore.getState().openIssue(threadRef, { environmentId, url });
+        },
         openExternal: async () => {
           const linkTarget = resolveLinkTarget({
             url,
@@ -168,6 +175,7 @@ export function useOpenIssueOrPullRequestLink(
       readIssue,
       readPullRequest,
       serverConfigs,
+      threadRef,
     ],
   );
 }

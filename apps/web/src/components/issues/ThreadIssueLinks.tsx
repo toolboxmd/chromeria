@@ -15,6 +15,7 @@ import {
 import { useState } from "react";
 
 import { cn } from "~/lib/utils";
+import { useRightPanelStore } from "~/rightPanelStore";
 import { issueLinkEnvironment } from "~/state/issueLinks";
 import { useDescendantThreadShells } from "~/state/threadDescendants";
 import { useAtomCommand } from "~/state/use-atom-command";
@@ -35,7 +36,6 @@ import {
   parseIssueReferenceInput,
 } from "./issueLinks.logic";
 import { IssueStateGlyph } from "./issuePresentation";
-import { useOpenIssueInIssuesView } from "./useOpenIssueOrPullRequestLink";
 import { useStartThreadFromIssue } from "./useStartThreadFromIssue";
 import { useThreadIssueLinks } from "./useThreadIssueLinks";
 
@@ -182,10 +182,11 @@ export function ThreadIssueLinks({
   const link = useAtomCommand(issueLinkEnvironment.link, { reportFailure: true });
   const unlink = useAtomCommand(issueLinkEnvironment.unlink, { reportFailure: true });
   const startThread = useStartThreadFromIssue();
-  const openIssueInIssuesView = useOpenIssueInIssuesView();
-  // The Issues page opens with this Issue's side panel, read through this thread's server.
+  // Beside the thread, read through this thread's server.
   const openIssue = (issue: ThreadIssueLink) =>
-    openIssueInIssuesView(issue.url, threadRef.environmentId);
+    useRightPanelStore
+      .getState()
+      .openIssue(threadRef, { environmentId: threadRef.environmentId, url: issue.url });
   // Null while the link field is closed.
   const [reference, setReference] = useState<string | null>(null);
   const target = reference === null ? null : parseIssueReferenceInput(reference);

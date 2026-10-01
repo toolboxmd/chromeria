@@ -1,4 +1,8 @@
-import { pullRequestHostOf, type SourceControlProviderKind } from "@t3tools/contracts";
+import {
+  parseIssueUrl,
+  pullRequestHostOf,
+  type SourceControlProviderKind,
+} from "@t3tools/contracts";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { useProjects, useServerConfigs, useThreadShells } from "~/state/entities";
 import {
@@ -15,6 +19,7 @@ import type {
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import {
   Bot,
+  CircleDot,
   Smartphone,
   ChevronDown,
   ChevronLeft,
@@ -632,6 +637,10 @@ function surfaceTitle(
       return "Linked PRs and Issues";
     case "agents":
       return "Agents";
+    case "issue": {
+      const issue = parseIssueUrl(surface.url);
+      return issue === null ? "Issue" : `#${issue.number}`;
+    }
     case "device":
       return surface.title ?? surface.target?.name ?? "Device";
     case "preview": {
@@ -717,6 +726,8 @@ function SurfaceIcon({
       return <PullRequestGlyph.link className="size-3 shrink-0" />;
     case "agents":
       return <Bot className="size-3 shrink-0" />;
+    case "issue":
+      return <CircleDot className="size-3 shrink-0" />;
     case "device":
       return surface.target?.platform === "ios" ? (
         <AppleIcon className="size-3 shrink-0" />
