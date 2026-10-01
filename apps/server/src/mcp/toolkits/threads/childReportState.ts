@@ -12,7 +12,9 @@ import type { OrchestrationThreadActivity } from "@t3tools/contracts";
  * row at all (spawned before #48) restores with `reportBack: true` and its
  * current reply counted as reported. Delivery itself is exactly once: each
  * report's command id is derived from the reply, and the engine's command
- * receipts drop a resend.
+ * receipts drop a resend. On start, the bridge subscribes before it catches
+ * up children whose newest row is not idle but whose session is, so an idle
+ * transition is never lost between the two.
  */
 export interface ChildReportState {
   readonly reportBack: boolean;

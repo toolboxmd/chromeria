@@ -356,4 +356,47 @@ describe("child report-back for turns that finished during a restart", () => {
       ]);
     }).pipe(Effect.scoped),
   );
+
+  it.effect("reports an idle transition that lands while the restart catch-up runs", () =>
+    Effect.gen(function* () {
+      const directory = yield* temporaryDirectory("t3-child-catch-up-");
+      const databasePath = NodePath.join(directory, "state.sqlite");
+      const childId = yield* withServer(
+        databasePath,
+        Effect.gen(function* () {
+          yield* createParent(directory);
+          const { result } = yield* dispatchUntil(spawnChild(true), taskStarted);
+          const child = ThreadId.make(result.threadId);
+          // The bridge records the child running; the turn is still open at the restart.
+          yield* dispatchUntil(
+            dispatchAll([session(child, "running", "turn-1")]),
+            parentActivity(child, "task.updated", "running"),
+          );
+          return result.threadId;
+        }),
+      );
+      const child = ThreadId.make(childId);
+
+      // After the restart the catch-up reads the child as still running; the
+      // turn finishes right after that read, before anything else runs.
+      let finished = false;
+      const finishAfterFirstRead = (threadId: string) =>
+        threadId !== childId || finished
+          ? Effect.void
+          : Effect.gen(function* () {
+              finished = true;
+              yield* dispatchAll([
+                ...assistantReply(child, "reply-1", "KESTREL"),
+                session(child, "ready", null),
+              ]).pipe(Effect.orDie);
+            });
+      yield* withServer(databasePath, parentReport("KESTREL"), finishAfterFirstRead);
+      expect(finished).toBe(true);
+
+      const messages = yield* withServer(databasePath, settleBridge(child));
+      expect(reportsOf(messages).map((message) => message.text)).toEqual([
+        expect.stringContaining("KESTREL"),
+      ]);
+    }).pipe(Effect.scoped),
+  );
 });

@@ -87,15 +87,48 @@ const engineLayer = (databasePath: string) => {
   );
 };
 
+/**
+ * Runs after the toolkit reads one thread's shell, before the read returns:
+ * the place to make an event land between a read and what follows it.
+ */
+type AfterShellRead = (threadId: string) => Effect.Effect<void, never, OrchestrationEngineService>;
+
 /** The same process with the threads toolkit running. */
-const serverLayer = (databasePath: string) => {
+const serverLayer = (databasePath: string, afterShellRead?: AfterShellRead) => {
   const dependencies = engineLayer(databasePath);
-  return Layer.mergeAll(ThreadsToolkitHandlersLive.pipe(Layer.provide(dependencies)), dependencies);
+  const toolkitQuery = Layer.effect(
+    ProjectionSnapshotQuery,
+    Effect.gen(function* () {
+      const query = yield* ProjectionSnapshotQuery;
+      const engine = yield* OrchestrationEngineService;
+      if (!afterShellRead) return query;
+      return ProjectionSnapshotQuery.of({
+        ...query,
+        getThreadShellById: (threadId) =>
+          query
+            .getThreadShellById(threadId)
+            .pipe(
+              Effect.tap(() =>
+                afterShellRead(threadId).pipe(
+                  Effect.provideService(OrchestrationEngineService, engine),
+                ),
+              ),
+            ),
+      });
+    }),
+  );
+  return Layer.mergeAll(
+    ThreadsToolkitHandlersLive.pipe(Layer.provide(toolkitQuery), Layer.provide(dependencies)),
+    dependencies,
+  );
 };
 
 /** Runs `body` against a fresh server on `databasePath`; the server stops when it ends. */
-export const withServer = <A, E, R>(databasePath: string, body: Effect.Effect<A, E, R>) =>
-  body.pipe(Effect.provide(serverLayer(databasePath)));
+export const withServer = <A, E, R>(
+  databasePath: string,
+  body: Effect.Effect<A, E, R>,
+  afterShellRead?: AfterShellRead,
+) => body.pipe(Effect.provide(serverLayer(databasePath, afterShellRead)));
 
 /**
  * Runs `body` against the engine alone, with no threads toolkit listening:

@@ -173,8 +173,8 @@ const make = Effect.gen(function* () {
   const lastStatus = new Map<string, SubagentStatus>();
   /** Child thread id -> assistant message id last reported to the parent. */
   const lastReported = new Map<string, string>();
-  /** Child thread id -> when the parent last recorded it idle, from rows before this process. */
-  const recordedIdleAt = new Map<string, string>();
+  /** Child thread id -> whether its newest parent row before this process recorded it idle. */
+  const recordedIdle = new Map<string, boolean>();
 
   const uuid = crypto.randomUUIDv4.pipe(Effect.orDie);
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -229,8 +229,10 @@ const make = Effect.gen(function* () {
    */
   const restoreAllReportStates = yield* Effect.cached(
     Effect.gen(function* () {
-      const rows = yield* Effect.forEach(["task.started", "task.progress"], (kind) =>
-        snapshots.listActivitiesByKind(kind).pipe(Effect.catchCause(() => Effect.succeed([]))),
+      const rows = yield* Effect.forEach(
+        ["task.started", "task.progress", "task.updated"],
+        (kind) =>
+          snapshots.listActivitiesByKind(kind).pipe(Effect.catchCause(() => Effect.succeed([]))),
       );
       const chronological = rows
         .flat()
@@ -240,9 +242,8 @@ const make = Effect.gen(function* () {
       }
       for (const row of chronological) {
         const payload = row.payload as { taskId?: unknown; status?: unknown } | null;
-        if (row.kind === "task.progress" && payload?.status === "idle") {
-          if (typeof payload.taskId === "string") recordedIdleAt.set(payload.taskId, row.createdAt);
-        }
+        if (typeof payload?.taskId !== "string" || !isSubagentThreadId(payload.taskId)) continue;
+        recordedIdle.set(payload.taskId, row.kind === "task.progress" && payload.status === "idle");
       }
     }),
   );
@@ -478,27 +479,21 @@ const make = Effect.gen(function* () {
     });
 
   /**
-   * Reports replies that finished while no bridge was listening, such as a
-   * turn that completed as the previous process stopped: an idle child that
-   * reports back and whose latest turn completed after the parent last
-   * recorded it idle. Children with no task rows predate report state and
-   * are skipped.
+   * Catches up children whose last transition no bridge saw, such as a turn
+   * that finished as the previous process stopped: every child whose newest
+   * parent row does not record it idle but whose session is idle now gets
+   * its idle row, and its reply is reported once if it reports back.
    */
-  const reportMissedTurns = Effect.gen(function* () {
+  const catchUpUnrecordedIdle = Effect.gen(function* () {
     yield* restoreAllReportStates;
-    const shells = yield* snapshots.getShellSnapshot().pipe(
-      Effect.map((snapshot) => snapshot.threads),
-      Effect.catchCause(() => Effect.succeed([])),
-    );
-    for (const thread of shells) {
-      const completedAt = thread.latestTurn?.completedAt;
-      if (!isSubagentThreadId(thread.id) || thread.archivedAt !== null || !completedAt) continue;
-      if (subagentStatusOf(thread.session) !== "idle" || reportBack.get(thread.id) !== true)
+    for (const [childId, idle] of recordedIdle) {
+      if (idle || lastStatus.has(childId)) continue;
+      const child = yield* threadShell(childId);
+      if (!child || child.archivedAt !== null || subagentStatusOf(child.session) !== "idle") {
         continue;
-      const idleAt = recordedIdleAt.get(thread.id);
-      if (idleAt !== undefined && idleAt >= completedAt) continue;
-      lastStatus.set(thread.id, "idle");
-      yield* reportFinishedTurn(parentThreadIdOf(thread.id)!, thread.id, { recordIdle: false });
+      }
+      lastStatus.set(childId, "idle");
+      yield* reportFinishedTurn(parentThreadIdOf(childId)!, childId, { recordIdle: true });
     }
   });
 
@@ -551,17 +546,30 @@ const make = Effect.gen(function* () {
     );
 
   // Consume the hot stream like the upstream reactors do. This layer builds
-  // with the HTTP routes, so it must not acquire an engine subscription at
-  // build time (`subscribeDomainEvents`).
+  // with the HTTP routes, so the subscription is taken in the forked fiber,
+  // not at build time. Subscribing before the catch-up pass buffers every
+  // event that lands during it; the bridge then handles them, and an idle
+  // transition both saw is reported once (lastReported, then the report's
+  // command receipt).
   yield* Effect.forkScoped(
-    Stream.runForEach(engine.streamDomainEvents, (event) =>
-      bridge(event).pipe(
-        skipOnFailure("bridge", event),
-        Effect.andThen(
-          resumeAfterUsageLimit(event).pipe(skipOnFailure("usage-limit resume", event)),
+    Effect.gen(function* () {
+      const events = yield* engine.subscribeDomainEvents;
+      yield* catchUpUnrecordedIdle.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("threads toolkit restart catch-up failed", {
+            cause: Cause.pretty(cause),
+          }),
         ),
-      ),
-    ),
+      );
+      yield* Stream.runForEach(events, (event) =>
+        bridge(event).pipe(
+          skipOnFailure("bridge", event),
+          Effect.andThen(
+            resumeAfterUsageLimit(event).pipe(skipOnFailure("usage-limit resume", event)),
+          ),
+        ),
+      );
+    }).pipe(Effect.scoped),
   );
 
   /**
@@ -599,17 +607,6 @@ const make = Effect.gen(function* () {
         return { turnId, session };
       }),
     );
-
-  // Once per process, after the bridge: replies a stopping server never bridged.
-  yield* Effect.forkScoped(
-    reportMissedTurns.pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("threads toolkit missed-report pass failed", {
-          cause: Cause.pretty(cause),
-        }),
-      ),
-    ),
-  );
 
   return ThreadsToolkit.of({
     spawn_thread: (input) =>
