@@ -795,6 +795,7 @@ for per-match decisions and the absorption PR record.
   "issues": ["https://github.com/toolboxmd/chromeria/issues/121"],
   "prs": ["pending: coordinator opens the final PR for #121"],
   "newFiles": [
+    "apps/server/src/orchestration/stampCommandPerson.ts",
     "apps/server/src/orchestration/people.test.ts",
     "apps/server/src/persistence/Migrations/055_ThreadPeople.test.ts",
     "apps/server/src/persistence/Migrations/055_ThreadPeople.ts",
@@ -877,6 +878,7 @@ for per-match decisions and the absorption PR record.
     "packages/contracts/src/environmentHttp.ts"
   ],
   "sharedFiles": [
+    "apps/server/src/orchestration/http.ts",
     "apps/server/src/mcp/toolkits/threads/handlers.ts",
     "apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts",
     "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts",

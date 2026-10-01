@@ -183,8 +183,7 @@ import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import * as VcsProjectConfig from "./vcs/VcsProjectConfig.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
-import { DEFAULT_PERSON } from "@t3tools/contracts";
-import { PersistenceSqlError } from "./persistence/Errors.ts";
+import { stampCommandPerson } from "./orchestration/stampCommandPerson.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
@@ -539,27 +538,7 @@ const makeWsRpcLayer = (
         command,
       ) =>
         Effect.gen(function* () {
-          if (
-            command.type === "thread.create" ||
-            command.type === "thread.share" ||
-            command.type === "thread.unshare" ||
-            command.type === "thread.leave"
-          ) {
-            const person =
-              (yield* sessions.getPerson(currentSessionId).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new PersistenceSqlError({
-                      operation: "ws.dispatchFromClient:getPerson",
-                      cause,
-                    }),
-                ),
-              )) ?? DEFAULT_PERSON;
-            command =
-              command.type === "thread.create"
-                ? { ...command, owner: person }
-                : { ...command, actor: person };
-          }
+          command = yield* stampCommandPerson(command, currentSessionId, sessions);
           return yield* orchestrationEngine.dispatch(
             command,
             hasClientOrigin ? { origin: clientOrigin } : undefined,

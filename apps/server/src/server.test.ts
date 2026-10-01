@@ -8179,6 +8179,132 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("HTTP dispatch replaces forged owners and actors with the live session person", () =>
+    Effect.gen(function* () {
+      const dispatched: OrchestrationCommand[] = [];
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatched.push(command);
+                return { sequence: dispatched.length };
+              }),
+          },
+        },
+      });
+      const headers = {
+        cookie: yield* getAuthenticatedSessionCookieHeader(),
+        "content-type": "application/json",
+      };
+      const clients = yield* responseJsonEffect<
+        ReadonlyArray<{ sessionId: string; current: boolean }>
+      >(yield* fetchEffect(yield* getHttpServerUrl("/api/auth/clients"), { headers }));
+      const sessionId = clients.find((session) => session.current)!.sessionId;
+      const personUrl = yield* getHttpServerUrl("/api/auth/clients/person");
+      const dispatchUrl = yield* getHttpServerUrl("/api/orchestration/dispatch");
+      const create = {
+        type: "thread.create" as const,
+        commandId: CommandId.make("http-person-create"),
+        threadId: defaultThreadId,
+        projectId: defaultProjectId,
+        title: "Person",
+        owner: "Forged",
+        modelSelection: defaultModelSelection,
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+        branch: null,
+        worktreePath: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      };
+      const send = (command: ClientOrchestrationCommand) =>
+        Effect.gen(function* () {
+          const response = yield* fetchEffect(dispatchUrl, {
+            method: "POST",
+            headers,
+            body: jsonRequestBody(command),
+          });
+          assert.equal(response.status, 200);
+          return dispatched.at(-1)!;
+        });
+      const unlabelled = yield* send(create);
+      assert.equal(
+        (unlabelled as Extract<OrchestrationCommand, { type: "thread.create" }>).owner,
+        "Luke",
+      );
+      for (const person of ["Pauli", "Luke"] as const) {
+        assert.equal(
+          (yield* fetchEffect(personUrl, {
+            method: "POST",
+            headers,
+            body: jsonRequestBody({ sessionId, person }),
+          })).status,
+          200,
+        );
+        const created = yield* send({
+          ...create,
+          commandId: CommandId.make(`http-create-${person}`),
+        });
+        assert.equal(
+          (created as Extract<OrchestrationCommand, { type: "thread.create" }>).owner,
+          person,
+        );
+        for (const type of ["thread.share", "thread.unshare", "thread.leave"] as const) {
+          const result = yield* send({
+            type,
+            commandId: CommandId.make(`http-${type}-${person}`),
+            threadId: defaultThreadId,
+            actor: "Forged",
+            createdAt: create.createdAt,
+            ...(type === "thread.share" ? { coOwner: "Pauli" } : {}),
+          } as ClientOrchestrationCommand);
+          assert.equal(
+            (
+              result as Extract<
+                OrchestrationCommand,
+                { type: "thread.share" | "thread.unshare" | "thread.leave" }
+              >
+            ).actor,
+            person,
+          );
+        }
+        const result = yield* send({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`http-bootstrap-${person}`),
+          threadId: defaultThreadId,
+          message: {
+            messageId: MessageId.make(`http-message-${person}`),
+            role: "user",
+            text: "hello",
+            attachments: [],
+          },
+          modelSelection: defaultModelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdAt: create.createdAt,
+          bootstrap: {
+            createThread: {
+              projectId: defaultProjectId,
+              title: "Bootstrap",
+              modelSelection: defaultModelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+              owner: "Forged",
+              createdAt: create.createdAt,
+            },
+          },
+        });
+        assert.equal(
+          (result as Extract<OrchestrationCommand, { type: "thread.turn.start" }>).bootstrap
+            ?.createThread?.owner,
+          person,
+        );
+      }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect(
     "stamps owners and sharing actors from the live device person without reconnecting",
     () =>
