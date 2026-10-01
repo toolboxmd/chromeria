@@ -921,6 +921,12 @@ for per-match decisions and the absorption PR record.
     "apps/server/src/scheduler/Service.test.ts",
     "apps/server/src/scheduler/Service.ts",
     "apps/server/src/scheduler/rpcHandlers.ts",
+    "apps/web/src/components/settings/ScheduledTasksSettings.logic.test.ts",
+    "apps/web/src/components/settings/ScheduledTasksSettings.logic.ts",
+    "apps/web/src/components/settings/ScheduledTasksSettings.tsx",
+    "apps/web/src/routes/settings.scheduled-tasks.tsx",
+    "apps/web/src/state/scheduler.ts",
+    "docs/user/scheduled-tasks.md",
     "packages/contracts/src/scheduler.ts"
   ],
   "upstreamFiles": ["apps/server/src/orchestration/projector.ts"],
@@ -933,6 +939,10 @@ for per-match decisions and the absorption PR record.
     "apps/server/src/orchestration/decider.ts",
     "apps/server/src/server.ts",
     "apps/server/src/ws.ts",
+    "apps/web/src/components/settings/SettingsSidebarNav.tsx",
+    "apps/web/src/components/settings/settingsSearch.ts",
+    "apps/web/src/routeTree.gen.ts",
+    "docs/README.md",
     "packages/contracts/src/index.ts",
     "packages/contracts/src/orchestration.ts",
     "packages/contracts/src/rpc.ts"
