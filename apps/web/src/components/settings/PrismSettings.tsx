@@ -75,7 +75,14 @@ import {
 type ModelChoice = ReturnType<typeof prismModelChoices>[number];
 
 /** The planner is whoever submits the job; it is not configured here. */
-const PAGE_ROLES = ["promachos", "dispatcher", "worker", "reviewer", "retry", "escalation"] as const;
+const PAGE_ROLES = [
+  "promachos",
+  "dispatcher",
+  "worker",
+  "reviewer",
+  "retry",
+  "escalation",
+] as const;
 type PageRole = (typeof PAGE_ROLES)[number];
 
 const ROLE_DETAILS: Record<
