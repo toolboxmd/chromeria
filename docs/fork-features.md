@@ -910,7 +910,7 @@ for per-match decisions and the absorption PR record.
   "id": "scheduled-tasks",
   "purpose": "Run repeating and one-shot tasks until their pinned server outcome check passes, with durable same-thread recovery.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/123"],
-  "prs": ["Pending coordinator final PR for #123"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/132"],
   "newFiles": [
     "apps/server/src/mcp/toolkits/scheduler/handlers.ts",
     "apps/server/src/mcp/toolkits/scheduler/tools.ts",
