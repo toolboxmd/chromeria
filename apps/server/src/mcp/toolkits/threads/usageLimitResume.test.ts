@@ -102,6 +102,8 @@ const nextReplyAmong = (replyTimes: ReadonlyArray<number>) => () =>
 
 interface ResumeCase {
   readonly usedPercent: number;
+  /** Whether the usage window shows the limit lifted once it resets (default true). */
+  readonly refreshedAtReset?: boolean;
   readonly atReset: OrchestrationThreadShell;
   /** Minutes after the failure at which other threads get replies from the instance. */
   readonly repliesAt?: ReadonlyArray<number>;
@@ -109,15 +111,26 @@ interface ResumeCase {
 }
 
 /** Runs a resume for a limit resetting at 20 minutes and reports when it resumed. */
-const runResume = ({ usedPercent, atReset, repliesAt = [], resumeEarly = true }: ResumeCase) =>
+const runResume = ({
+  usedPercent,
+  refreshedAtReset = true,
+  atReset,
+  repliesAt = [],
+  resumeEarly = true,
+}: ResumeCase) =>
   Effect.gen(function* () {
     const failedAt = yield* Clock.currentTimeMillis;
-    const windows = [window(usedPercent, failedAt + 20 * MINUTE)];
+    const resetsAt = failedAt + 20 * MINUTE;
+    const windows = Effect.map(Clock.currentTimeMillis, (now) =>
+      refreshedAtReset && now >= resetsAt
+        ? [window(10, resetsAt + 5 * 60 * MINUTE)]
+        : [window(usedPercent, resetsAt)],
+    );
     const resumed: Array<{ threadId: string; trigger: string; afterMs: number }> = [];
     const fiber = yield* resumeAfterUsageLimitReset(
       {
         thread: () => Effect.succeed(atReset),
-        providers: Effect.succeed([provider(windows)]),
+        providers: Effect.map(windows, (current) => [provider(current)]),
         nextReplyOn: nextReplyAmong(repliesAt.map((minutes) => failedAt + minutes * MINUTE)),
         resume: (resumedThread, trigger) =>
           Effect.gen(function* () {
@@ -131,13 +144,20 @@ const runResume = ({ usedPercent, atReset, repliesAt = [], resumeEarly = true }:
     yield* TestClock.adjust(20 * MINUTE);
     const beforeReset = resumed.filter((entry) => entry.trigger === "reset");
     yield* TestClock.adjust(RESUME_DELAY_MS);
+    return { fiber, beforeReset, resumed };
+  });
+
+/** runResume, then the watcher's outcome. */
+const resumeOutcome = (input: ResumeCase) =>
+  Effect.gen(function* () {
+    const { fiber, beforeReset, resumed } = yield* runResume(input);
     return { outcome: yield* Fiber.join(fiber), beforeReset, resumed };
   });
 
 describe("resumeAfterUsageLimitReset", () => {
   it.effect("resumes once, a minute after the limit resets", () =>
     Effect.gen(function* () {
-      const result = yield* runResume({ usedPercent: 100, atReset: thread("turn-failed") });
+      const result = yield* resumeOutcome({ usedPercent: 100, atReset: thread("turn-failed") });
       assert.equal(result.outcome, "reset");
       assert.deepEqual(result.beforeReset, []);
       assert.deepEqual(result.resumed, [
@@ -146,9 +166,23 @@ describe("resumeAfterUsageLimitReset", () => {
     }),
   );
 
+  it.effect("sends nothing at the reset while the window still shows exhausted", () =>
+    Effect.gen(function* () {
+      const { fiber, resumed } = yield* runResume({
+        usedPercent: 100,
+        refreshedAtReset: false,
+        atReset: thread("turn-failed"),
+      });
+      // A minute past the reset the reading still shows 100 %: no continue.
+      yield* TestClock.adjust(3 * RESET_RECHECK_MS);
+      assert.deepEqual(resumed, []);
+      yield* Fiber.interrupt(fiber);
+    }),
+  );
+
   it.effect("resumes at the first reply on the instance when it comes before the reset", () =>
     Effect.gen(function* () {
-      const result = yield* runResume({
+      const result = yield* resumeOutcome({
         usedPercent: 100,
         atReset: thread("turn-failed"),
         repliesAt: [3, 7],
@@ -162,7 +196,7 @@ describe("resumeAfterUsageLimitReset", () => {
 
   it.effect("waits for the reset once an early resume is spent", () =>
     Effect.gen(function* () {
-      const result = yield* runResume({
+      const result = yield* resumeOutcome({
         usedPercent: 100,
         atReset: thread("turn-failed"),
         repliesAt: [3],
@@ -177,7 +211,7 @@ describe("resumeAfterUsageLimitReset", () => {
 
   it.effect("does nothing when the provider is not out of usage", () =>
     Effect.gen(function* () {
-      const result = yield* runResume({
+      const result = yield* resumeOutcome({
         usedPercent: 40,
         atReset: thread("turn-failed"),
         repliesAt: [3],
@@ -189,11 +223,11 @@ describe("resumeAfterUsageLimitReset", () => {
 
   it.effect("stands down when someone started another turn or archived the thread", () =>
     Effect.gen(function* () {
-      const newerTurn = yield* runResume({ usedPercent: 100, atReset: thread("turn-newer") });
+      const newerTurn = yield* resumeOutcome({ usedPercent: 100, atReset: thread("turn-newer") });
       assert.equal(newerTurn.outcome, "superseded");
       assert.deepEqual(newerTurn.resumed, []);
 
-      const newerBeforeReply = yield* runResume({
+      const newerBeforeReply = yield* resumeOutcome({
         usedPercent: 100,
         atReset: thread("turn-newer"),
         repliesAt: [3],
@@ -201,7 +235,7 @@ describe("resumeAfterUsageLimitReset", () => {
       assert.equal(newerBeforeReply.outcome, "superseded");
       assert.deepEqual(newerBeforeReply.resumed, []);
 
-      const archived = yield* runResume({
+      const archived = yield* resumeOutcome({
         usedPercent: 100,
         atReset: thread("turn-failed", { archivedAt: iso(0) }),
       });

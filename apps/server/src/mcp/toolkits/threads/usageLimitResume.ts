@@ -97,10 +97,11 @@ export function resumeNotice(
 /**
  * Waits for the usage limit behind a failed turn to lift, then resumes the
  * thread once, unless someone started another turn or archived it first.
- * An exhausted window whose reset time already passed is a stale reading:
- * the watcher keeps waiting for a reply on the instance and re-reads the
- * windows, resuming at a future reset or once none is exhausted, never
- * while the limit still shows.
+ * It resumes only when a reading shows no exhausted window, never while
+ * the limit still shows: at a future reset it re-reads the windows, and a
+ * window still exhausted then, or whose reset time already passed, is
+ * re-read every few minutes while a reply on the instance can still resume
+ * early.
  */
 export const resumeAfterUsageLimitReset = <E, R>(
   deps: {
@@ -121,14 +122,15 @@ export const resumeAfterUsageLimitReset = <E, R>(
       providers.find((candidate) => candidate.instanceId === input.instanceId),
     );
     if (!isUsageExhausted(yield* readProvider)) return "not-limited" as const;
+    // Resumes only once a fresh reading shows no exhausted window: sleep to a
+    // future reset (plus the margin), otherwise re-read every few minutes.
     const untilReset = Effect.gen(function* () {
       for (;;) {
         const provider = yield* readProvider;
+        if (!isUsageExhausted(provider)) return;
         const now = yield* Clock.currentTimeMillis;
         const resetAt = usageLimitResetAt(provider, now);
-        if (resetAt !== null) return yield* Effect.sleep(resetAt + RESUME_DELAY_MS - now);
-        if (!isUsageExhausted(provider)) return;
-        yield* Effect.sleep(RESET_RECHECK_MS);
+        yield* Effect.sleep(resetAt !== null ? resetAt + RESUME_DELAY_MS - now : RESET_RECHECK_MS);
       }
     });
     const trigger: ResumeTrigger = input.resumeEarly

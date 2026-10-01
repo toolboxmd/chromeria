@@ -15,6 +15,7 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -75,6 +76,23 @@ const limitedProvider = {
   },
 } as unknown as ServerProvider;
 
+// The same reading once the session window has reset.
+const liftedProvider = {
+  instanceId: INSTANCE,
+  usageLimits: {
+    checkedAt: iso(3 * HOUR),
+    windows: [
+      {
+        id: "session",
+        kind: "session",
+        label: "Session",
+        usedPercent: 0,
+        resetsAt: iso(8 * HOUR),
+      },
+    ],
+  },
+} as unknown as ServerProvider;
+
 /** One server process: real engine and projections over a SQLite file, plus the toolkit. */
 const serverLayer = (databasePath: string) => {
   const orchestration = Layer.mergeAll(
@@ -106,7 +124,9 @@ const serverLayer = (databasePath: string) => {
         } as never),
     }),
     Layer.mock(ProviderRegistry.ProviderRegistry)({
-      getProviders: Effect.succeed([limitedProvider]),
+      getProviders: Effect.map(Clock.currentTimeMillis, (now) => [
+        now >= 3 * HOUR ? liftedProvider : limitedProvider,
+      ]),
     }),
   );
   return Layer.mergeAll(ThreadsToolkitHandlersLive.pipe(Layer.provide(dependencies)), dependencies);
