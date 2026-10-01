@@ -1,7 +1,8 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-export default Effect.gen(function* () {
+// Fork columns stay outside the numbered migration history reserved for upstream.
+export const ensureThreadPeopleSchema = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const sessions = yield* sql<{ readonly name: string }>`PRAGMA table_info(auth_sessions)`;
   if (!sessions.some((column) => column.name === "person")) {

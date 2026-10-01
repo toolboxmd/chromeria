@@ -201,7 +201,7 @@ apps/server/src/orchestration/projector.test.ts
 apps/server/src/orchestration/projector.ts
 apps/server/src/persistence/AuthSessions.ts
 apps/server/src/persistence/Layers/ProjectionThreads.ts
-apps/server/src/persistence/Migrations.ts
+apps/server/src/persistence/Layers/Sqlite.ts
 apps/server/src/persistence/Services/ProjectionThreads.ts
 apps/server/src/provider/Layers/ProviderSessionReaper.test.ts
 apps/web/src/components/ChatView.logic.test.ts
