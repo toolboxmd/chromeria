@@ -13,6 +13,8 @@ import * as Toolkit from "effect/unstable/ai/Toolkit";
 import { ALWAYS_LOAD_META } from "../../alwaysLoad.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
+import { StartSpectrumInput, StartSpectrumResult } from "./spectrumTools.ts";
+
 const dependencies = [McpInvocationContext.McpInvocationContext];
 
 export class ThreadsToolError extends Schema.TaggedError<ThreadsToolError>()("ThreadsToolError", {
@@ -255,6 +257,16 @@ const ListThreadsTool = Tool.make("list_threads", {
   .annotate(Tool.OpenWorld, false);
 
 export const ThreadsToolkit = Toolkit.make(
+  Tool.make("start_spectrum", {
+    description:
+      "Open a visible Spectrum with hidden Drafters of the given Colors (named models or Prism roles). Council: independent answers, at least two server-relayed barrier rounds, then the moderator Color synthesizes. Free: ordered turns up to limit. Replies are relayed verbatim without a relay model. User messages reach all Drafters at the next barrier; completion reports here and settles the Spectrum. Use read_thread or message_thread with scope: project to inspect or join. Reopen to continue with its transcript. limit means relay rounds in council (default 2) or total turns in free (default three per Color); moderator is a zero-based Color index (default 0).",
+    parameters: StartSpectrumInput,
+    success: StartSpectrumResult,
+    failure: ThreadsToolError,
+    dependencies,
+  })
+    .annotate(Tool.Meta, ALWAYS_LOAD_META)
+    .annotate(Tool.Title, "Start Spectrum"),
   SpawnThreadTool,
   MessageThreadTool,
   InterruptThreadTool,

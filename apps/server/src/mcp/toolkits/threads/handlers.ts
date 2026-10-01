@@ -58,6 +58,8 @@ import {
 
 import { makeThreadTurnSender } from "./sendThreadTurn.ts";
 import { makeWightMode } from "./wightMode.ts";
+import { makeSpectrum } from "./spectrum.ts";
+import { isSpectrumParticipantId, isSpectrumThreadId } from "./spectrumIdentity.ts";
 
 const REPORT_TEXT_LIMIT = 4_000;
 /** How long interrupt_thread waits for the turn to settle before returning interrupt_requested. */
@@ -163,6 +165,7 @@ const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const prepareSpawnWorkspace = yield* makeSpawnWorkspace;
   const runSpawnSetup = yield* makeSpawnSetup;
+  const spectrum = yield* makeSpectrum(effortOptionId);
 
   /** Child thread id -> whether its turn results go back to the parent.
    * This and `lastReported` are also written to the parent's task.* rows and
@@ -267,7 +270,9 @@ const make = Effect.gen(function* () {
         threadId: thread.id,
         id: thread.id,
         title: thread.title,
-        status: subagentStatusOf(thread.session),
+        status: isSpectrumThreadId(thread.id)
+          ? spectrum.statusOf(thread.id)
+          : subagentStatusOf(thread.session),
         instanceId: thread.session?.providerInstanceId ?? thread.modelSelection.instanceId,
         provider: thread.session?.providerInstanceId ?? thread.modelSelection.instanceId,
         model: thread.modelSelection.model,
@@ -376,6 +381,7 @@ const make = Effect.gen(function* () {
    * finished turn's reply back to the parent as a message.
    */
   const bridge = Effect.fn("ThreadsToolkit.bridge")(function* (event: OrchestrationEvent) {
+    if (isSpectrumParticipantId(event.aggregateId)) return;
     if (event.aggregateKind !== "thread" || !isSubagentThreadId(event.aggregateId)) return;
     const childId = event.aggregateId;
     const parentId = parentThreadIdOf(childId)!;
@@ -494,7 +500,7 @@ const make = Effect.gen(function* () {
   const catchUpUnrecordedIdle = Effect.gen(function* () {
     yield* restoreAllReportStates;
     for (const [childId, idle] of recordedIdle) {
-      if (idle || lastStatus.has(childId)) continue;
+      if (isSpectrumParticipantId(childId) || idle || lastStatus.has(childId)) continue;
       const child = yield* threadShell(childId);
       if (!child || child.archivedAt !== null || subagentStatusOf(child.session) !== "idle") {
         continue;
@@ -689,6 +695,7 @@ const make = Effect.gen(function* () {
   yield* Effect.forkScoped(
     Effect.gen(function* () {
       const events = yield* engine.subscribeDomainEvents;
+      yield* spectrum.recover;
       yield* catchUpUnrecordedIdle.pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("threads toolkit restart catch-up failed", {
@@ -697,22 +704,29 @@ const make = Effect.gen(function* () {
         ),
       );
       yield* Stream.runForEach(events, (event) =>
-        bridge(event).pipe(
-          skipOnFailure("bridge", event),
-          Effect.andThen(
-            resumeAfterUsageLimit(event).pipe(skipOnFailure("usage-limit resume", event)),
+        spectrum
+          .onEvent(event)
+          .pipe(
+            skipOnFailure("spectrum", event),
+            Effect.andThen(bridge(event)),
+            skipOnFailure("bridge", event),
+            Effect.andThen(
+              (isSpectrumParticipantId(event.aggregateId)
+                ? Effect.void
+                : resumeAfterUsageLimit(event)
+              ).pipe(skipOnFailure("usage-limit resume", event)),
+            ),
+            Effect.andThen(releaseReplyWaiters(event).pipe(skipOnFailure("reply waiters", event))),
+            Effect.andThen(
+              event.type === "thread.session-set" ||
+                event.type === "thread.activity-appended" ||
+                event.type === "thread.meta-updated" ||
+                event.type === "thread.unarchived" ||
+                event.type === "thread.proposed-plan-upserted"
+                ? reconcileWight
+                : Effect.void,
+            ),
           ),
-          Effect.andThen(releaseReplyWaiters(event).pipe(skipOnFailure("reply waiters", event))),
-          Effect.andThen(
-            event.type === "thread.session-set" ||
-              event.type === "thread.activity-appended" ||
-              event.type === "thread.meta-updated" ||
-              event.type === "thread.unarchived" ||
-              event.type === "thread.proposed-plan-upserted"
-              ? reconcileWight
-              : Effect.void,
-          ),
-        ),
       );
     }).pipe(Effect.scoped),
   );
@@ -754,6 +768,8 @@ const make = Effect.gen(function* () {
     );
 
   return ThreadsToolkit.of({
+    start_spectrum: (input) =>
+      callingThread.pipe(Effect.flatMap((parent) => spectrum.start(parent, input))),
     spawn_thread: (input) =>
       Effect.gen(function* () {
         const parent = yield* callingThread;
@@ -857,7 +873,9 @@ const make = Effect.gen(function* () {
         if (callerRetirement?.retired) {
           return yield* fail(`Thread ${caller.id} is retired and cannot message other threads.`);
         }
-        const statusBefore = subagentStatusOf(target.session);
+        const statusBefore = isSpectrumThreadId(target.id)
+          ? spectrum.statusOf(target.id)
+          : subagentStatusOf(target.session);
         if (statusBefore === "starting") {
           return yield* fail(`Thread ${threadId} is still starting. Retry in a few seconds.`);
         }

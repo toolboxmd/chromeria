@@ -25,6 +25,15 @@ export function parentThreadIdOf(threadId: string): string | null {
   return threadId.slice(PREFIX.length, threadId.lastIndexOf("."));
 }
 
+/**
+ * A Spectrum transcript, `spectrum.<uuid>`: the server appends its messages and
+ * never runs a provider turn on it. Its Drafters are ordinary hidden children.
+ * Keep in sync with apps/server/src/mcp/toolkits/threads/spectrumIdentity.ts.
+ */
+export function isSpectrumThreadId(threadId: string): boolean {
+  return threadId.startsWith("spectrum.");
+}
+
 /** Whether `threadId` was spawned by `ancestorId`, directly or through other child threads. */
 export function isDescendantThreadId(threadId: string, ancestorId: string): boolean {
   for (

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { isSubagentThreadId, makeSubagentThreadId, parentThreadIdOf } from "./subagentThreads";
+import {
+  isSpectrumThreadId,
+  isSubagentThreadId,
+  makeSubagentThreadId,
+  parentThreadIdOf,
+} from "./subagentThreads";
 
 describe("child thread ids", () => {
   it("round-trips the parent, including nested children", () => {
@@ -15,5 +20,15 @@ describe("child thread ids", () => {
     expect(isSubagentThreadId("0b6f7c1e-2d3a-4c5b-9e8f-1a2b3c4d5e6f")).toBe(false);
     expect(parentThreadIdOf("0b6f7c1e-2d3a-4c5b-9e8f-1a2b3c4d5e6f")).toBeNull();
     expect(parentThreadIdOf("sub.")).toBeNull();
+  });
+
+  it("keeps a Spectrum visible and nests its Drafters under it", () => {
+    const spectrum = "spectrum.0b6f7c1e-2d3a-4c5b-9e8f-1a2b3c4d5e6f";
+    const drafter = `sub.${spectrum}.0`;
+    expect(isSubagentThreadId(spectrum)).toBe(false);
+    expect(isSpectrumThreadId(spectrum)).toBe(true);
+    expect(isSubagentThreadId(drafter)).toBe(true);
+    expect(parentThreadIdOf(drafter)).toBe(spectrum);
+    expect(isSpectrumThreadId(drafter)).toBe(false);
   });
 });

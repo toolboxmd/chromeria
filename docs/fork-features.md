@@ -122,7 +122,8 @@ for per-match decisions and the absorption PR record.
     "https://github.com/toolboxmd/chromeria/issues/94",
     "https://github.com/toolboxmd/chromeria/issues/71",
     "https://github.com/toolboxmd/chromeria/issues/114",
-    "https://github.com/toolboxmd/chromeria/issues/122"
+    "https://github.com/toolboxmd/chromeria/issues/122",
+    "https://github.com/toolboxmd/chromeria/issues/118"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/10",
@@ -154,7 +155,11 @@ for per-match decisions and the absorption PR record.
     "apps/web/src/components/subagentThreads.ts",
     "apps/server/src/mcp/toolkits/threads/retireSubtree.ts",
     "apps/server/src/mcp/toolkits/threads/retireSubtree.test.ts",
-    "apps/server/src/orchestration/ThreadRetirement.ts"
+    "apps/server/src/orchestration/ThreadRetirement.ts",
+    "apps/server/src/mcp/toolkits/threads/spectrum.ts",
+    "apps/server/src/mcp/toolkits/threads/spectrum.test.ts",
+    "apps/server/src/mcp/toolkits/threads/spectrumIdentity.ts",
+    "apps/server/src/mcp/toolkits/threads/spectrumTools.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/entrypoint.test.ts",
@@ -167,6 +172,8 @@ for per-match decisions and the absorption PR record.
     "apps/web/src/components/Sidebar.tsx",
     "apps/server/src/orchestration/Layers/OrchestrationEngine.ts",
     "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts",
+    "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.test.ts",
+    "apps/server/src/mcp/alwaysLoad.test.ts",
     "apps/server/src/orchestration/Services/OrchestrationEngine.ts",
     "apps/server/src/orchestration/Services/ProjectionSnapshotQuery.ts",
     "apps/server/src/project/AgentSessionImporter.test.ts",
@@ -175,12 +182,20 @@ for per-match decisions and the absorption PR record.
     "apps/server/src/serverRuntimeStartup.test.ts",
     "apps/server/src/serverRuntimeStartup.ts",
     "apps/server/src/serverRuntimeStartup.worktreeSetup.test.ts",
-    "apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts"
+    "apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts",
+    "apps/server/src/orchestration/ActivityPayloadProjection.ts",
+    "apps/server/src/orchestration/ActivityPayloadProjection.test.ts",
+    "apps/web/src/components/ChatView.logic.ts",
+    "apps/web/src/components/ChatView.logic.test.ts"
   ],
   "sharedFiles": [
+    "apps/server/src/orchestration/decider.ts",
     "scripts/build-desktop-artifact.ts",
     "apps/web/src/components/AgentsPanel.tsx",
-    "apps/server/src/ws.ts"
+    "apps/server/src/ws.ts",
+    "apps/web/src/components/ChatView.tsx",
+    "apps/web/src/session-logic.ts",
+    "apps/mobile/src/lib/threadActivity.ts"
   ],
   "keywords": [
     "parentThreadId",
@@ -188,7 +203,13 @@ for per-match decisions and the absorption PR record.
     "subagent",
     "spawn_thread",
     "interrupt_thread",
-    "sidebar"
+    "sidebar",
+    "start_spectrum",
+    "Spectrum",
+    "Color",
+    "council",
+    "verbatim",
+    "barrier"
   ]
 }
 ```

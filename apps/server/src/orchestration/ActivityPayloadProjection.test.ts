@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vite-plus/test";
-import type { OrchestrationThreadActivity } from "@t3tools/contracts";
-import { projectActivityPayload } from "./ActivityPayloadProjection.ts";
+import type {
+  OrchestrationEvent,
+  OrchestrationThreadDetailSnapshot,
+  OrchestrationThreadActivity,
+} from "@t3tools/contracts";
+import {
+  projectActivityEvent,
+  projectActivityPayload,
+  projectThreadDetailSnapshot,
+} from "./ActivityPayloadProjection.ts";
 
 function activity(payload: Record<string, unknown>): OrchestrationThreadActivity {
   return {
@@ -342,5 +350,46 @@ describe("projectActivityPayload", () => {
     });
     const projected = projectActivityPayload(source);
     expect(projected.payload).toEqual(source.payload);
+  });
+});
+
+describe("Spectrum recovery state transport", () => {
+  it("bounds outbox transport without changing persisted recovery or pending turn metadata", () => {
+    const fullText = "verbatim relay ".repeat(100_000);
+    const pending = [{ threadId: "sub.spectrum.1.0", turnId: "turn-exact", done: false }];
+    const outbox = [
+      { type: "thread.turn.start", message: { text: fullText } },
+      { type: "thread.message.assistant.append", text: fullText },
+    ];
+    const source = {
+      ...activity({ pending, outbox, phase: "relay", step: 2 }),
+      kind: "spectrum.state",
+    };
+    const persisted = JSON.stringify(source);
+    const event = {
+      type: "thread.activity-appended",
+      sequence: 17,
+      payload: { threadId: "spectrum.1", activity: source },
+    } as unknown as OrchestrationEvent;
+    const snapshot = {
+      thread: { messages: [], activities: [source] },
+    } as unknown as OrchestrationThreadDetailSnapshot;
+
+    const live = projectActivityEvent(event);
+    if (live.type !== "thread.activity-appended") throw new Error("Expected activity event");
+    const history = projectThreadDetailSnapshot(snapshot).thread.activities[0]!;
+    for (const projected of [projectActivityPayload(source), live.payload.activity, history]) {
+      expect(JSON.stringify(projected).length).toBeLessThan(1000);
+      expect(projected.payload).toMatchObject({ pending, phase: "relay", step: 2 });
+      expect(projectActivityPayload(projected)).toEqual(projected);
+    }
+    expect(JSON.stringify(source)).toBe(persisted);
+    expect(source.payload).toMatchObject({ outbox });
+    expect(live.sequence).toBe(17);
+    // Ordinary lifecycle activities do not lose their own outbox-shaped fields.
+    expect(projectActivityPayload(activity({ pending, outbox })).payload).toEqual({
+      pending,
+      outbox,
+    });
   });
 });

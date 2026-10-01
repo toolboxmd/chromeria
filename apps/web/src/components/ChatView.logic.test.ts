@@ -1968,6 +1968,41 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
     ).toBe(true);
   });
 
+  it("acknowledges a providerless thread once its user message is projected", () => {
+    const localDispatch = createLocalDispatchSnapshot(makeThread());
+    const common = {
+      localDispatch,
+      phase: "disconnected" as const,
+      latestTurn: null,
+      session: null,
+      hasPendingApproval: false,
+      hasPendingUserInput: false,
+      threadError: null,
+    };
+
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        ...common,
+        latestUserMessageId: MessageId.make("message-joined"),
+        providerless: true,
+      }),
+    ).toBe(true);
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        ...common,
+        latestUserMessageId: localDispatch.latestUserMessageId,
+        providerless: true,
+      }),
+    ).toBe(false);
+    // A provider thread still waits for its turn or session after the message lands.
+    expect(
+      hasServerAcknowledgedLocalDispatch({
+        ...common,
+        latestUserMessageId: MessageId.make("message-joined"),
+      }),
+    ).toBe(false);
+  });
+
   it("acknowledges pending user interaction and errors immediately", () => {
     const localDispatch = createLocalDispatchSnapshot(makeThread());
     const common = {

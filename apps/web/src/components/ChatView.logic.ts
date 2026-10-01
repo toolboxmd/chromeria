@@ -1263,6 +1263,8 @@ export function hasServerAcknowledgedLocalDispatch(input: {
   hasPendingUserInput: boolean;
   latestTurnStartFailureId?: string | null;
   threadError: string | null | undefined;
+  /** The thread never runs a provider turn, as in a Spectrum transcript. */
+  providerless?: boolean;
 }): boolean {
   if (!input.localDispatch) {
     return false;
@@ -1290,6 +1292,11 @@ export function hasServerAcknowledgedLocalDispatch(input: {
     input.localDispatch.latestTurnRequestedAt !== (latestTurn?.requestedAt ?? null) ||
     input.localDispatch.latestTurnStartedAt !== (latestTurn?.startedAt ?? null) ||
     input.localDispatch.latestTurnCompletedAt !== (latestTurn?.completedAt ?? null);
+
+  // No turn or session ever follows, so the projected user message is the whole acknowledgement.
+  if (input.providerless && latestUserMessageChanged) {
+    return true;
+  }
 
   if (input.phase === "running") {
     // Steering adds a user message to the current running turn without

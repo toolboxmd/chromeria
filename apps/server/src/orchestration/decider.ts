@@ -1,3 +1,4 @@
+import { isSpectrumThreadId } from "../mcp/toolkits/threads/spectrumIdentity.ts";
 import {
   EventId,
   MAX_SCRIPT_ID_LENGTH,
@@ -108,9 +109,10 @@ function openRequests(thread: Pick<OrchestrationThread, "activities">) {
 
 /** Apply the shared shell-level rule to the detailed command read model. */
 function hasQueuedTurnStartForThread(
-  thread: Pick<OrchestrationThread, "messages" | "latestTurn" | "session">,
+  thread: Pick<OrchestrationThread, "id" | "messages" | "latestTurn" | "session">,
   now: string,
 ): boolean {
+  if (isSpectrumThreadId(thread.id)) return false;
   let latestUserMessageAt: string | null = null;
   let latestUserMessageAtMs = Number.NEGATIVE_INFINITY;
   for (const message of thread.messages) {
@@ -1533,7 +1535,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       return [
         ...lifecycleResetEvents,
         ...(userMessageEvent ? [userMessageEvent] : []),
-        turnStartRequestedEvent,
+        ...(isSpectrumThreadId(command.threadId) ? [] : [turnStartRequestedEvent]),
       ];
     }
 
