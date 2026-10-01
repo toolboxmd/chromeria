@@ -54,6 +54,8 @@ import { useIsMobile } from "~/hooks/useMediaQuery";
 import { Button } from "../ui/button";
 import { Menu, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 
+import { WightModeControl } from "./WightModeControl";
+
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
   activeThreadId: ThreadId;
@@ -500,6 +502,9 @@ export const ChatHeader = memo(function ChatHeader({
           "[[data-panel-animations=true]_&]:motion-safe:transition-[padding-right] [[data-panel-animations=true]_&]:motion-safe:duration-(--panel-animation-duration) [[data-panel-animations=true]_&]:motion-safe:ease-out",
         )}
       >
+        {isServerThread ? (
+          <WightModeControl environmentId={activeThreadEnvironmentId} threadId={activeThreadId} />
+        ) : null}
         <Menu open={actionsCollapsed && actionsOpen} onOpenChange={setActionsOpen}>
           <MenuTrigger
             className={

@@ -37,6 +37,8 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 
+import { WightLimitPercent } from "./wight.ts";
+
 const PROVIDER_SLUG_MAX_CHARS = 64;
 /**
  * Slug pattern shared by driver kinds and instance ids — letters, digits,
@@ -127,6 +129,7 @@ export const ProviderInstanceConfig = Schema.Struct({
   accentColor: Schema.optional(TrimmedNonEmptyString),
   environment: Schema.optionalKey(ProviderInstanceEnvironment),
   enabled: Schema.optionalKey(Schema.Boolean),
+  wightLimitPercent: Schema.optionalKey(WightLimitPercent),
   config: Schema.optionalKey(Schema.Unknown),
 });
 export type ProviderInstanceConfig = typeof ProviderInstanceConfig.Type;

@@ -1399,6 +1399,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (command.idleGuard !== undefined) {
+        const guard = command.idleGuard;
+        if (
+          targetThread.archivedAt !== null ||
+          targetThread.updatedAt !== guard.updatedAt ||
+          (targetThread.latestTurn?.turnId ?? null) !== guard.latestTurnId ||
+          targetThread.session?.status === "running" ||
+          targetThread.session?.status === "starting" ||
+          targetThread.latestTurn?.state === "running" ||
+          openRequests(targetThread).size > 0 ||
+          hasQueuedTurnStartForThread(targetThread, command.createdAt)
+        )
+          return [];
+      }
       const sourceProposedPlan = command.sourceProposedPlan;
       const sourceThread = sourceProposedPlan
         ? yield* requireThread({

@@ -64,6 +64,7 @@ export const commandId = () => CommandId.make(`test-threads-${++commandCount}`);
 
 /** One server process: real engine and projections over a SQLite file, toolkit services faked. */
 export interface SpawnTestOptions {
+  readonly services?: Layer.Layer<ServerSettingsService | import("../../../provider/Services/ProviderRegistry.ts").ProviderRegistry>;
   readonly settings?: Parameters<typeof ServerSettingsService.layerTest>[0];
   readonly git?: Partial<GitWorkflowService["Service"]>;
   readonly setup?: ProjectSetupScriptRunner["Service"]["runForThread"];
@@ -125,7 +126,9 @@ const serverLayer = (
   afterShellRead?: AfterShellRead,
   options?: SpawnTestOptions,
 ) => {
-  const dependencies = engineLayer(databasePath, options);
+  const dependencies = options?.services
+    ? Layer.mergeAll(engineLayer(databasePath, options), options.services)
+    : engineLayer(databasePath, options);
   const toolkitQuery = Layer.effect(
     ProjectionSnapshotQuery,
     Effect.gen(function* () {

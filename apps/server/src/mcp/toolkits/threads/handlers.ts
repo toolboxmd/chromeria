@@ -56,6 +56,8 @@ import {
   ThreadsToolkit,
 } from "./tools.ts";
 
+import { makeWightMode } from "./wightMode.ts";
+
 const REPORT_TEXT_LIMIT = 4_000;
 /** How long interrupt_thread waits for the turn to settle before returning interrupt_requested. */
 export const INTERRUPT_SETTLE_TIMEOUT = Duration.seconds(30);
@@ -357,11 +359,24 @@ const make = Effect.gen(function* () {
       });
     });
 
-  const startTurn = (thread: OrchestrationThreadShell, text: string, turnCommandId?: CommandId) =>
+  const startTurn = (
+    thread: OrchestrationThreadShell,
+    text: string,
+    turnCommandId?: CommandId,
+    idleOnly = false,
+  ) =>
     Effect.gen(function* () {
       const createdAt = yield* nowIso;
       yield* dispatch({
         type: "thread.turn.start",
+        ...(idleOnly
+          ? {
+              idleGuard: {
+                latestTurnId: thread.latestTurn?.turnId ?? null,
+                updatedAt: thread.updatedAt,
+              },
+            }
+          : {}),
         commandId: turnCommandId ?? (yield* commandId("turn")),
         threadId: thread.id,
         message: {
@@ -511,6 +526,40 @@ const make = Effect.gen(function* () {
   });
 
   const scope = yield* Scope.Scope;
+  const wight = yield* makeWightMode({
+    settings: serverSettings.getSettings.pipe(
+      Effect.catch(() => fail("Could not read Wight settings.")),
+    ),
+    providers: registry.getProviders,
+    thread: threadShell,
+    resume: (thread, text, activation) =>
+      Effect.gen(function* () {
+        const sequence = yield* engine.latestSequence;
+        yield* startTurn(
+          thread,
+          text,
+          CommandId.make(
+            `server:wight:${thread.id}:${activation.enabledAt}:${thread.updatedAt}:${thread.latestTurn?.turnId ?? "initial"}:${sequence}`,
+          ),
+          true,
+        );
+      }),
+  });
+  const reconcileWight = wight
+    .reconcile()
+    .pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Wight reconciliation failed", { cause: Cause.pretty(cause) }),
+      ),
+    );
+  yield* Effect.forkScoped(
+    Effect.gen(function* () {
+      const changes = yield* serverSettings.subscribeChanges;
+      yield* reconcileWight;
+      yield* Stream.runForEach(changes, () => reconcileWight);
+    }),
+  );
+  yield* Effect.forkScoped(Stream.runForEach(registry.streamChanges, () => reconcileWight));
   /** Thread id -> the failed turn a usage-limit resume is pending for. */
   const pendingResumes = new Map<string, string>();
   /** Thread id -> the fiber waiting to send that resume. */
@@ -587,6 +636,7 @@ const make = Effect.gen(function* () {
     const failed = yield* threadShell(threadId);
     const turnId = failed?.latestTurn?.turnId;
     if (!failed || !turnId || pendingResumes.get(threadId) === turnId) return;
+    if ((yield* serverSettings.getSettings).wightModes[threadId]) return;
     if (
       stoppedTurns.get(threadId) === turnId ||
       (yield* engine.getThreadRetirement(threadId))?.retired
@@ -601,6 +651,7 @@ const make = Effect.gen(function* () {
         nextReplyOn,
         resume: (thread, trigger) =>
           Effect.gen(function* () {
+            if ((yield* serverSettings.getSettings).wightModes[thread.id]) return;
             if (trigger === "lifted") earlyResumeSpent.add(thread.id);
             yield* startTurn(thread, RESUME_TEXT);
             const parentId = parentThreadIdOf(thread.id);
@@ -654,6 +705,15 @@ const make = Effect.gen(function* () {
             resumeAfterUsageLimit(event).pipe(skipOnFailure("usage-limit resume", event)),
           ),
           Effect.andThen(releaseReplyWaiters(event).pipe(skipOnFailure("reply waiters", event))),
+          Effect.andThen(
+            event.type === "thread.session-set" ||
+              event.type === "thread.activity-appended" ||
+              event.type === "thread.meta-updated" ||
+              event.type === "thread.unarchived" ||
+              event.type === "thread.proposed-plan-upserted"
+              ? reconcileWight
+              : Effect.void,
+          ),
         ),
       );
     }).pipe(Effect.scoped),
@@ -831,6 +891,9 @@ const make = Effect.gen(function* () {
           const { session, ...reply } = result;
           return { ...reply, statusAfter: subagentStatusOf(session) };
         }
+        yield* serverSettings
+          .updateSettings({ wightModes: { [target.id]: null } })
+          .pipe(Effect.catch(() => fail("Could not turn Wight mode off before interrupting.")));
         yield* cancelUsageLimitResume(target.id, target.latestTurn?.turnId ?? null);
         if (!hasActiveTurn(target.session)) {
           return {

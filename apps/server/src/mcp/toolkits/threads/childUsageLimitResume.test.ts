@@ -129,6 +129,7 @@ const serverLayer = (databasePath: string) => {
         } as never),
     }),
     Layer.mock(ProviderRegistry.ProviderRegistry)({
+      streamChanges: Stream.empty,
       getProviders: Effect.map(Clock.currentTimeMillis, (now) => [
         now >= 3 * HOUR ? liftedProvider : limitedProvider,
       ]),
