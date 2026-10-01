@@ -112,6 +112,30 @@ const serverLayer = (databasePath: string) => {
   return Layer.mergeAll(ThreadsToolkitHandlersLive.pipe(Layer.provide(dependencies)), dependencies);
 };
 
+type ThreadTools = typeof ThreadsToolkit.tools;
+
+/** Calls one thread tool as the parent and returns its result. */
+const callTool = <Name extends keyof ThreadTools>(
+  name: Name,
+  params: Tool.Parameters<ThreadTools[Name]>,
+) =>
+  Effect.gen(function* () {
+    const toolkit = yield* ThreadsToolkit;
+    return yield* toolkit.handle(name, params as never).pipe(
+      Stream.unwrap,
+      Stream.runCollect,
+      Effect.map((chunk) => chunk.at(-1)!.result as Tool.Success<ThreadTools[Name]>),
+      Effect.provideService(McpInvocationContext.McpInvocationContext, {
+        environmentId: EnvironmentId.make("environment-limit"),
+        threadId: PARENT_ID,
+        providerSessionId: "provider-session-limit",
+        providerInstanceId: INSTANCE,
+        capabilities: new Set<McpInvocationContext.McpCapability>(),
+        issuedAt: 1,
+      }),
+    );
+  });
+
 const spawnDirectChild = Effect.gen(function* () {
   const toolkit = yield* ThreadsToolkit;
   return yield* toolkit.handle("spawn_thread", { task: "Implement the Issue." }).pipe(
@@ -320,5 +344,168 @@ describe("usage-limit resume for child threads (toolboxmd/chromeria#71)", () => 
           ]);
         }).pipe(Effect.provide(serverLayer(NodePath.join(directory, "state.sqlite"))));
       }).pipe(Effect.scoped),
+  );
+});
+
+/** The project and parent every test spawns from. */
+const createParent = (directory: string) =>
+  dispatchAll([
+    {
+      type: "project.create",
+      commandId: commandId(),
+      projectId: PROJECT_ID,
+      title: "Limit",
+      workspaceRoot: directory,
+      createdAt: iso(0),
+    },
+    {
+      type: "thread.create",
+      commandId: commandId(),
+      threadId: PARENT_ID,
+      projectId: PROJECT_ID,
+      title: "Parent",
+      modelSelection: { instanceId: INSTANCE, model: "claude-opus-5-5" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: iso(0),
+    },
+  ]);
+
+/** A finished assistant reply on `threadId`. */
+const reply = (threadId: ThreadId, messageId: string, text: string, at: number) => [
+  {
+    type: "thread.message.assistant.delta",
+    commandId: commandId(),
+    threadId,
+    messageId: MessageId.make(messageId),
+    delta: text,
+    createdAt: iso(at),
+  } as const,
+  {
+    type: "thread.message.assistant.complete",
+    commandId: commandId(),
+    threadId,
+    messageId: MessageId.make(messageId),
+    createdAt: iso(at),
+  } as const,
+];
+
+const parentRow = (childId: string, status: string) => (event: OrchestrationEvent) =>
+  event.type === "thread.activity-appended" &&
+  event.aggregateId === PARENT_ID &&
+  (event.payload.activity.payload as { taskId?: string }).taskId === childId &&
+  (event.payload.activity.payload as { status?: string }).status === status;
+
+const temporaryDirectory = Effect.gen(function* () {
+  const directory = yield* Effect.promise(() =>
+    NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-child-limit-")),
+  );
+  yield* Effect.addFinalizer(() =>
+    Effect.promise(() => NodeFSP.rm(directory, { recursive: true, force: true })),
+  );
+  return directory;
+});
+
+describe("usage-limit resume with interrupt_thread and report-back", () => {
+  it.effect("never continues a limit-hit child that interrupt_thread stopped", () =>
+    Effect.gen(function* () {
+      const directory = yield* temporaryDirectory;
+      yield* Effect.gen(function* () {
+        yield* createParent(directory);
+        const child = ThreadId.make((yield* spawnDirectChild).threadId);
+        const marker = ThreadId.make((yield* spawnDirectChild).threadId);
+        // The bridge handles events in order: once the marker's running row
+        // lands, the child's resume is scheduled.
+        yield* dispatchAll(failOnLimit(child, "child-turn-1"));
+        yield* dispatchUntil(
+          dispatchAll([session(marker, "running", "marker-turn-1")]),
+          parentRow(marker, "running"),
+        );
+
+        // The dispatcher replaces the child: it interrupts it first.
+        expect(yield* callTool("interrupt_thread", { threadId: child, scope: "children" })).toEqual(
+          { threadId: child, turnId: null, status: "no_active_run", statusAfter: "failed" },
+        );
+
+        // A reply on the instance, then the displayed reset passes.
+        yield* TestClock.adjust(MINUTE);
+        yield* dispatchAll([
+          session(PARENT_ID, "running", "parent-turn-1"),
+          ...reply(PARENT_ID, "parent-reply-1", "Still working.", MINUTE),
+        ]);
+        yield* TestClock.adjust(4 * HOUR);
+        yield* dispatchUntil(
+          dispatchAll([session(marker, "ready", null)]),
+          parentRow(marker, "idle"),
+        );
+
+        expect((yield* userMessages(child)).slice(1)).toEqual([]);
+        expect((yield* userMessages(PARENT_ID)).filter((text) => text.includes("resumed"))).toEqual(
+          [],
+        );
+      }).pipe(Effect.provide(serverLayer(NodePath.join(directory, "state.sqlite"))));
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("reports a continued child's reply once, also after a restart", () =>
+    Effect.gen(function* () {
+      const directory = yield* temporaryDirectory;
+      const databasePath = NodePath.join(directory, "state.sqlite");
+      const reports = (messages: ReadonlyArray<string>) =>
+        messages.filter((text) => text.includes("finished a turn"));
+      const childId = yield* Effect.gen(function* () {
+        yield* createParent(directory);
+        const child = ThreadId.make((yield* spawnDirectChild).threadId);
+        // The first turn writes part of a reply, then hits the limit.
+        yield* dispatchAll([
+          session(child, "running", "child-turn-1"),
+          ...reply(child, "child-part-1", "PARTIAL", 0),
+        ]);
+        yield* dispatchUntil(
+          dispatchAll([session(child, "error", "child-turn-1", LIMIT_ERROR)]),
+          parentRow(child, "failed"),
+        );
+        // The displayed reset passes; the child is continued and finishes.
+        yield* dispatchUntil(
+          TestClock.adjust(4 * HOUR),
+          (event) =>
+            event.type === "thread.message-sent" &&
+            event.aggregateId === child &&
+            event.payload.text === RESUME_TEXT,
+        );
+        yield* dispatchUntil(
+          dispatchAll([
+            session(child, "running", "child-turn-2"),
+            ...reply(child, "child-reply-2", "FINISHED", 4 * HOUR),
+            session(child, "ready", null),
+          ]),
+          (event) =>
+            event.type === "thread.message-sent" &&
+            event.aggregateId === PARENT_ID &&
+            event.payload.text.includes("finished a turn"),
+        );
+        expect(reports(yield* userMessages(PARENT_ID))).toEqual([
+          expect.stringContaining("FINISHED"),
+        ]);
+        return child;
+      }).pipe(Effect.provide(serverLayer(databasePath)));
+
+      // After a restart, an idle transition without a new reply sends nothing.
+      const messages = yield* Effect.gen(function* () {
+        yield* dispatchUntil(
+          dispatchAll([session(childId, "running", "settle"), session(childId, "ready", null)]),
+          parentRow(childId, "idle"),
+        );
+        yield* dispatchUntil(
+          dispatchAll([session(childId, "running", "after-settle")]),
+          parentRow(childId, "running"),
+        );
+        return yield* userMessages(PARENT_ID);
+      }).pipe(Effect.provide(serverLayer(databasePath)));
+      expect(reports(messages)).toEqual([expect.stringContaining("FINISHED")]);
+      expect(messages.filter((text) => text.includes("resumed automatically"))).toHaveLength(1);
+    }).pipe(Effect.scoped),
   );
 });

@@ -163,7 +163,7 @@ const MessageThreadTool = Tool.make("message_thread", {
 
 const InterruptThreadTool = Tool.make("interrupt_thread", {
   description:
-    "Stop the running turn of a child thread by default, or any thread in this project with scope: project, and wait until T3 reports it settled. Use it before replacing a stalled, failed or usage-limit-hit child with role retry, then escalation, so two threads never write to the same branch. An idle, failed or stopped thread returns no_active_run unchanged, and so does a starting thread whose turn has not begun within 30 seconds (statusAfter: starting); interrupt_requested means the turn had not settled yet, so read_thread before replacing it.",
+    "Stop the running turn of a child thread by default, or any thread in this project with scope: project, and wait until T3 reports it settled. Use it before replacing a stalled, failed or usage-limit-hit child with role retry, then escalation, so two threads never write to the same branch; it also cancels the automatic continue a usage-limit-hit thread would get. An idle, failed or stopped thread returns no_active_run unchanged, and so does a starting thread whose turn has not begun within 30 seconds (statusAfter: starting); interrupt_requested means the turn had not settled yet, so read_thread before replacing it.",
   parameters: InterruptThreadInput,
   success: InterruptThreadResult,
   failure: ThreadsToolError,

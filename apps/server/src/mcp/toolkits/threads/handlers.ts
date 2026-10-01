@@ -21,6 +21,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -506,6 +507,23 @@ const make = Effect.gen(function* () {
   const scope = yield* Scope.Scope;
   /** Thread id -> the failed turn a usage-limit resume is pending for. */
   const pendingResumes = new Map<string, string>();
+  /** Thread id -> the fiber waiting to send that resume. */
+  const resumeFibers = new Map<string, Fiber.Fiber<unknown, unknown>>();
+  /** Thread id -> the turn interrupt_thread stopped; it is never continued automatically. */
+  const stoppedTurns = new Map<string, string>();
+
+  /**
+   * Called by interrupt_thread: a stopped thread must not continue on its
+   * own after a usage limit, or a replaced worker would write again.
+   */
+  const cancelUsageLimitResume = (threadId: string, turnId: string | null) =>
+    Effect.gen(function* () {
+      if (turnId !== null) stoppedTurns.set(threadId, turnId);
+      const fiber = resumeFibers.get(threadId);
+      if (!fiber) return;
+      resumeFibers.delete(threadId);
+      yield* Fiber.interrupt(fiber);
+    });
   /** Provider instance id -> resumes waiting for any thread's next reply from it. */
   const replyWaiters = new Map<string, Deferred.Deferred<void>>();
   /** Threads resumed early that have not had a reply since. */
@@ -563,10 +581,11 @@ const make = Effect.gen(function* () {
     const failed = yield* threadShell(threadId);
     const turnId = failed?.latestTurn?.turnId;
     if (!failed || !turnId || pendingResumes.get(threadId) === turnId) return;
+    if (stoppedTurns.get(threadId) === turnId) return;
     if (isSubagentThreadId(threadId) && (yield* isRouterJobThread(threadId))) return;
     const instanceId = event.payload.session.providerInstanceId ?? failed.modelSelection.instanceId;
     pendingResumes.set(threadId, turnId);
-    yield* resumeAfterUsageLimitReset(
+    const fiber = yield* resumeAfterUsageLimitReset(
       {
         thread: threadShell,
         providers: registry.getProviders,
@@ -592,6 +611,7 @@ const make = Effect.gen(function* () {
       ),
       Effect.forkIn(scope),
     );
+    if (pendingResumes.get(threadId) === turnId) resumeFibers.set(threadId, fiber);
   });
 
   const skipOnFailure = (name: string, event: OrchestrationEvent) =>
@@ -753,6 +773,7 @@ const make = Effect.gen(function* () {
     interrupt_thread: ({ threadId, scope }) =>
       Effect.gen(function* () {
         const { target } = yield* callerScopedThread(threadId, scope);
+        yield* cancelUsageLimitResume(target.id, target.latestTurn?.turnId ?? null);
         if (!hasActiveTurn(target.session)) {
           return {
             threadId,
@@ -767,6 +788,7 @@ const make = Effect.gen(function* () {
         const sampled = target.session?.activeTurnId ?? null;
         const started = sampled !== null ? null : yield* awaitTurnId(target.id);
         const turnId = sampled ?? started?.turnId ?? null;
+        if (started?.turnId) yield* cancelUsageLimitResume(target.id, started.turnId);
         if (turnId === null) {
           return {
             threadId,
