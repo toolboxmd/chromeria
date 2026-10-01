@@ -167,12 +167,14 @@ const make = Effect.gen(function* () {
 
   /** Child thread id -> whether its turn results go back to the parent.
    * This and `lastReported` are also written to the parent's task.* rows and
-   * restored from there after a restart (see childReportState.ts). */
+   * restored from all of them after a restart (see childReportState.ts). */
   const reportBack = new Map<string, boolean>();
   /** Child thread id -> last status the parent's Agents panel was told. */
   const lastStatus = new Map<string, SubagentStatus>();
   /** Child thread id -> assistant message id last reported to the parent. */
   const lastReported = new Map<string, string>();
+  /** Child thread id -> whether its newest parent row before this process recorded it idle. */
+  const recordedIdle = new Map<string, boolean>();
 
   const uuid = crypto.randomUUIDv4.pipe(Effect.orDie);
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -213,8 +215,6 @@ const make = Effect.gen(function* () {
       Effect.catchCause(() => Effect.succeed(null)),
     );
 
-  /** Parents whose children's report state this process already restored. */
-  const restoredParents = new Set<string>();
   const remember = (childId: string, state: ChildReportState) => {
     reportBack.set(childId, state.reportBack);
     if (state.lastReported !== null && !lastReported.has(childId)) {
@@ -223,21 +223,36 @@ const make = Effect.gen(function* () {
   };
 
   /**
-   * Restores report state after a restart: every child of the parent from
-   * one read of the parent, then this child alone if the parent kept no row
-   * for it.
+   * Every child's report state from every parent's task rows, read once per
+   * process. Reading by kind skips the thread detail's activity window, so
+   * a child keeps its setting however many parent activities followed.
    */
-  const restoreReportState = (parentId: string, childId: string) =>
+  const restoreAllReportStates = yield* Effect.cached(
+    Effect.gen(function* () {
+      const rows = yield* Effect.forEach(
+        ["task.started", "task.progress", "task.updated"],
+        (kind) =>
+          snapshots.listActivitiesByKind(kind).pipe(Effect.catchCause(() => Effect.succeed([]))),
+      );
+      const chronological = rows
+        .flat()
+        .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+      for (const [id, state] of childReportStatesFrom(chronological)) {
+        if (!reportBack.has(id)) remember(id, state);
+      }
+      for (const row of chronological) {
+        const payload = row.payload as { taskId?: unknown; status?: unknown } | null;
+        if (typeof payload?.taskId !== "string" || !isSubagentThreadId(payload.taskId)) continue;
+        recordedIdle.set(payload.taskId, row.kind === "task.progress" && payload.status === "idle");
+      }
+    }),
+  );
+
+  /** Restores report state after a restart; a child with no row keeps its current reply as reported. */
+  const restoreReportState = (childId: string) =>
     Effect.gen(function* () {
       if (reportBack.has(childId)) return;
-      if (!restoredParents.has(parentId)) {
-        restoredParents.add(parentId);
-        const parent = yield* snapshots
-          .getThreadDetailById(ThreadId.make(parentId))
-          .pipe(Effect.catchCause(() => Effect.succeedNone));
-        const states = childReportStatesFrom(Option.isSome(parent) ? parent.value.activities : []);
-        for (const [id, state] of states) if (!reportBack.has(id)) remember(id, state);
-      }
+      yield* restoreAllReportStates;
       if (reportBack.has(childId)) return;
       const last = yield* lastAssistantMessage(childId);
       remember(childId, unrecordedChildReportState(last?.id ?? null));
@@ -337,12 +352,12 @@ const make = Effect.gen(function* () {
       });
     });
 
-  const startTurn = (thread: OrchestrationThreadShell, text: string) =>
+  const startTurn = (thread: OrchestrationThreadShell, text: string, turnCommandId?: CommandId) =>
     Effect.gen(function* () {
       const createdAt = yield* nowIso;
       yield* dispatch({
         type: "thread.turn.start",
-        commandId: yield* commandId("turn"),
+        commandId: turnCommandId ?? (yield* commandId("turn")),
         threadId: thread.id,
         message: {
           messageId: MessageId.make(yield* uuid),
@@ -383,7 +398,7 @@ const make = Effect.gen(function* () {
       return;
     }
     if (event.type !== "thread.session-set") return;
-    yield* restoreReportState(parentId, childId);
+    yield* restoreReportState(childId);
     const status = subagentStatusOf(event.payload.session);
     const previous = lastStatus.get(childId);
     if (status === previous) return;
@@ -411,37 +426,75 @@ const make = Effect.gen(function* () {
       return;
     }
     if (status !== "idle") return;
-    const last = yield* lastAssistantMessage(childId);
-    const report =
-      reportBack.get(childId) === true &&
-      last?.id &&
-      last.text &&
-      lastReported.get(childId) !== last.id
-        ? { id: last.id, text: last.text }
-        : null;
-    if (report) lastReported.set(childId, report.id);
-    const reportedMessageId = lastReported.get(childId);
-    // Every idle row carries the report state, so a restart restores it from
-    // the newest row even when older rows left the parent's activity window.
-    yield* appendParentActivity(parentId, "task.progress", "Subagent idle", {
-      taskId: childId,
-      status: "idle",
-      ...(last?.text ? { summary: last.text } : {}),
-      reportBack: reportBack.get(childId) === true,
-      ...(reportedMessageId ? { reportedMessageId } : {}),
+    yield* reportFinishedTurn(parentId, childId, { recordIdle: true });
+  });
+
+  /**
+   * Sends a child's newest reply to its parent once, then records the idle
+   * row carrying the report state. The report's command id is derived from
+   * the reply, so the engine's command receipts drop a resend after a
+   * restart even if the process stopped before the row was written.
+   */
+  const reportFinishedTurn = (
+    parentId: string,
+    childId: string,
+    options: { readonly recordIdle: boolean },
+  ) =>
+    Effect.gen(function* () {
+      const last = yield* lastAssistantMessage(childId);
+      const report =
+        reportBack.get(childId) === true &&
+        last?.id &&
+        last.text &&
+        lastReported.get(childId) !== last.id
+          ? { id: last.id, text: last.text }
+          : null;
+      if (!report && !options.recordIdle) return;
+      if (report) {
+        const parent = yield* threadShell(parentId);
+        const child = yield* threadShell(childId);
+        if (parent) {
+          const text =
+            report.text.length > REPORT_TEXT_LIMIT
+              ? `${report.text.slice(0, REPORT_TEXT_LIMIT)}…`
+              : report.text;
+          yield* startTurn(
+            parent,
+            `[Subagent ${child?.title ?? childId} (thread ${childId}) finished a turn]\n\n${text}`,
+            CommandId.make(`server:mcp-threads-report:${childId}:${report.id}`),
+          );
+        }
+        lastReported.set(childId, report.id);
+      }
+      const reportedMessageId = lastReported.get(childId);
+      // Every idle row carries the report state, so a restart restores it from
+      // the newest row for the child.
+      yield* appendParentActivity(parentId, "task.progress", "Subagent idle", {
+        taskId: childId,
+        status: "idle",
+        ...(last?.text ? { summary: last.text } : {}),
+        reportBack: reportBack.get(childId) === true,
+        ...(reportedMessageId ? { reportedMessageId } : {}),
+      });
     });
-    if (!report) return;
-    const parent = yield* threadShell(parentId);
-    const child = yield* threadShell(childId);
-    if (!parent) return;
-    const text =
-      report.text.length > REPORT_TEXT_LIMIT
-        ? `${report.text.slice(0, REPORT_TEXT_LIMIT)}…`
-        : report.text;
-    yield* startTurn(
-      parent,
-      `[Subagent ${child?.title ?? childId} (thread ${childId}) finished a turn]\n\n${text}`,
-    );
+
+  /**
+   * Catches up children whose last transition no bridge saw, such as a turn
+   * that finished as the previous process stopped: every child whose newest
+   * parent row does not record it idle but whose session is idle now gets
+   * its idle row, and its reply is reported once if it reports back.
+   */
+  const catchUpUnrecordedIdle = Effect.gen(function* () {
+    yield* restoreAllReportStates;
+    for (const [childId, idle] of recordedIdle) {
+      if (idle || lastStatus.has(childId)) continue;
+      const child = yield* threadShell(childId);
+      if (!child || child.archivedAt !== null || subagentStatusOf(child.session) !== "idle") {
+        continue;
+      }
+      lastStatus.set(childId, "idle");
+      yield* reportFinishedTurn(parentThreadIdOf(childId)!, childId, { recordIdle: true });
+    }
   });
 
   const scope = yield* Scope.Scope;
@@ -493,17 +546,30 @@ const make = Effect.gen(function* () {
     );
 
   // Consume the hot stream like the upstream reactors do. This layer builds
-  // with the HTTP routes, so it must not acquire an engine subscription at
-  // build time (`subscribeDomainEvents`).
+  // with the HTTP routes, so the subscription is taken in the forked fiber,
+  // not at build time. Subscribing before the catch-up pass buffers every
+  // event that lands during it; the bridge then handles them, and an idle
+  // transition both saw is reported once (lastReported, then the report's
+  // command receipt).
   yield* Effect.forkScoped(
-    Stream.runForEach(engine.streamDomainEvents, (event) =>
-      bridge(event).pipe(
-        skipOnFailure("bridge", event),
-        Effect.andThen(
-          resumeAfterUsageLimit(event).pipe(skipOnFailure("usage-limit resume", event)),
+    Effect.gen(function* () {
+      const events = yield* engine.subscribeDomainEvents;
+      yield* catchUpUnrecordedIdle.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("threads toolkit restart catch-up failed", {
+            cause: Cause.pretty(cause),
+          }),
         ),
-      ),
-    ),
+      );
+      yield* Stream.runForEach(events, (event) =>
+        bridge(event).pipe(
+          skipOnFailure("bridge", event),
+          Effect.andThen(
+            resumeAfterUsageLimit(event).pipe(skipOnFailure("usage-limit resume", event)),
+          ),
+        ),
+      );
+    }).pipe(Effect.scoped),
   );
 
   /**

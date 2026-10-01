@@ -2,19 +2,19 @@ import type { OrchestrationThreadActivity } from "@t3tools/contracts";
 
 /**
  * What the threads toolkit bridge needs to remember per child thread
- * (toolboxmd/t3code#48): whether finished turns go back to the parent, and
- * the last assistant message already reported there.
+ * (toolboxmd/t3code#48, toolboxmd/chromeria#94): whether finished turns go
+ * back to the parent, and the last assistant message already reported there.
  *
  * The bridge keeps this in memory and writes both values into the parent's
- * task.* rows (task.started and every idle task.progress row), so a
- * restarted server restores them from the newest row for the child.
- *
- * Remaining gap: the parent's thread detail holds only its newest activities
- * (THREAD_DETAIL_ACTIVITY_LIMIT). A child with no row left in that window
- * restores with spawn_thread's default `reportBack: true`, and its current
- * last reply counts as already reported, so nothing old is re-sent. A child
- * spawned with `reportBack: false` whose rows all fell out of the window
- * therefore reports again after a restart.
+ * task.* rows (task.started and every idle task.progress row). A restarted
+ * server folds every such row, read by kind rather than through the parent's
+ * activity window, so the newest row for each child wins. A child with no
+ * row at all (spawned before #48) restores with `reportBack: true` and its
+ * current reply counted as reported. Delivery itself is exactly once: each
+ * report's command id is derived from the reply, and the engine's command
+ * receipts drop a resend. On start, the bridge subscribes before it catches
+ * up children whose newest row is not idle but whose session is, so an idle
+ * transition is never lost between the two.
  */
 export interface ChildReportState {
   readonly reportBack: boolean;
