@@ -841,6 +841,7 @@ describe("environment reconnect warning grace", () => {
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
+    coOwners: [],
     id: threadId,
     environmentId,
     projectId,
@@ -968,6 +969,7 @@ describe("draft promotion during worktree setup", () => {
 describe("buildLoadingThreadFromShell", () => {
   it("preserves shell metadata and supplies empty detail collections", () => {
     const shell = {
+      coOwners: [],
       environmentId,
       id: threadId,
       projectId,

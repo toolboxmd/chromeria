@@ -32,6 +32,7 @@ const SNAPSHOT: OrchestrationShellSnapshot = {
   projects: [],
   threads: [
     {
+      coOwners: [],
       id: THREAD_ID,
       projectId: ProjectId.make("project"),
       title: "Remote thread",

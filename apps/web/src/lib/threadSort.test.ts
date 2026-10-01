@@ -14,6 +14,7 @@ const PROJECT_ID = ProjectId.make("project-1");
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
+    coOwners: [],
     id: ThreadId.make("thread-1"),
     environmentId: LOCAL_ENVIRONMENT_ID,
     projectId: PROJECT_ID,

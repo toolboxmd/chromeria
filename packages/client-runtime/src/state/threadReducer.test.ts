@@ -24,6 +24,7 @@ const baseEventFields = {
 } as const;
 
 const baseThread: OrchestrationThread = {
+  coOwners: [],
   id: ThreadId.make("thread-1"),
   projectId: ProjectId.make("project-1"),
   title: "Test Thread",
@@ -91,6 +92,7 @@ describe("applyThreadDetailEvent", () => {
           interactionMode: "default",
           branch: "main",
           worktreePath: null,
+          owner: "Pauli",
           createdAt: "2026-04-01T01:00:00.000Z",
           updatedAt: "2026-04-01T01:00:00.000Z",
         },
@@ -103,7 +105,51 @@ describe("applyThreadDetailEvent", () => {
         expect(result.thread.branch).toBe("main");
         expect(result.thread.messages).toEqual([]);
         expect(result.thread.session).toBeNull();
+        expect(result.thread.owner).toBe("Pauli");
+        expect(result.thread.coOwners).toEqual([]);
       }
+    });
+  });
+
+  describe("thread.sharing-set", () => {
+    const sharingSet = (
+      thread: OrchestrationThread,
+      action: "shared" | "unshared" | "left",
+      coOwners: string[],
+      updatedAt: string,
+    ) =>
+      applyThreadDetailEvent(thread, {
+        ...baseEventFields,
+        sequence: 3,
+        occurredAt: updatedAt,
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.sharing-set",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          coOwners,
+          action,
+          actor: action === "left" ? "Pauli" : "Luke",
+          updatedAt,
+        },
+      });
+
+    it("replaces the co-owners on share, unshare and leave", () => {
+      const shared = sharingSet(baseThread, "shared", ["Pauli"], "2026-04-01T03:00:00.000Z");
+      expect(shared).toMatchObject({
+        kind: "updated",
+        thread: { coOwners: ["Pauli"], updatedAt: "2026-04-01T03:00:00.000Z" },
+      });
+      if (shared.kind !== "updated") return;
+
+      expect(sharingSet(shared.thread, "unshared", [], "2026-04-01T04:00:00.000Z")).toMatchObject({
+        kind: "updated",
+        thread: { coOwners: [] },
+      });
+      expect(sharingSet(shared.thread, "left", [], "2026-04-01T04:00:00.000Z")).toMatchObject({
+        kind: "updated",
+        thread: { coOwners: [] },
+      });
     });
   });
 

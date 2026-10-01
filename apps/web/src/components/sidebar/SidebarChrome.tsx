@@ -31,9 +31,11 @@ import { SidebarProviderUpdatePill } from "./SidebarProviderUpdatePill";
 import { SidebarUpdateArchitectureWarning, SidebarUpdatePill } from "./SidebarUpdatePill";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { PromachosModeSwitch } from "../promachos/PromachosModeSwitch";
+import { PersonPicker } from "../people/PersonPicker";
 
-// Fork: the Promachos mode switch sits on its own row under the titlebar
-// (toolboxmd/chromeria#116), so the titlebar keeps its space.
+// Fork: the Promachos mode switch (toolboxmd/chromeria#116) and the person
+// picker (#121) sit on their own rows under the titlebar, so the titlebar
+// keeps its space.
 export const SidebarChromeHeader = memo(function SidebarChromeHeader({
   isElectron,
 }: {
@@ -43,6 +45,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
     <>
       <SidebarTitlebar isElectron={isElectron} />
       <PromachosModeSwitch />
+      <PersonPicker />
     </>
   );
 });

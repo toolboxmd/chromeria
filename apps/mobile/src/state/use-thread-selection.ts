@@ -54,6 +54,7 @@ function threadDetailToShell(
   thread: OrchestrationThread,
 ): EnvironmentThreadShell {
   return {
+    coOwners: thread.coOwners,
     environmentId,
     id: thread.id,
     projectId: thread.projectId,

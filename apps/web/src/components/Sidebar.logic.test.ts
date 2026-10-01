@@ -2092,6 +2092,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
+    coOwners: [],
     id: ThreadId.make("thread-1"),
     environmentId: localEnvironmentId,
     projectId: ProjectId.make("project-1"),

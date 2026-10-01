@@ -472,6 +472,7 @@ export function buildLocalDraftThread(
   fallbackModelSelection: ModelSelection,
 ): Thread {
   return {
+    coOwners: [],
     id: threadId,
     environmentId: draftThread.environmentId,
     projectId: draftThread.projectId,

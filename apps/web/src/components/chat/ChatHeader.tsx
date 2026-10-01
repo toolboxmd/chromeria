@@ -55,6 +55,7 @@ import { Button } from "../ui/button";
 import { Menu, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 
 import { WightModeControl } from "./WightModeControl";
+import { ThreadSharingControl } from "../people/ThreadSharingControl";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -503,7 +504,13 @@ export const ChatHeader = memo(function ChatHeader({
         )}
       >
         {isServerThread ? (
-          <WightModeControl environmentId={activeThreadEnvironmentId} threadId={activeThreadId} />
+          <>
+            <ThreadSharingControl
+              environmentId={activeThreadEnvironmentId}
+              threadId={activeThreadId}
+            />
+            <WightModeControl environmentId={activeThreadEnvironmentId} threadId={activeThreadId} />
+          </>
         ) : null}
         <Menu open={actionsCollapsed && actionsOpen} onOpenChange={setActionsOpen}>
           <MenuTrigger

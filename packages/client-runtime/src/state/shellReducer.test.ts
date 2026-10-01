@@ -24,6 +24,7 @@ const stubProject = {
 } as const;
 
 const stubThread = {
+  coOwners: [],
   id: ThreadId.make("thread-1"),
   projectId: ProjectId.make("project-1"),
   title: "Test Thread",

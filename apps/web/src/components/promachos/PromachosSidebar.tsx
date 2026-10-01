@@ -28,6 +28,8 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "../ui/sidebar";
+import { SharedThreadLabel } from "../people/SharedThreadLabel";
+import { usePersonViewThreads } from "../people/usePersonView";
 import { promachosConversations } from "./promachosConversations";
 import { usePromachosHome, useStartPromachosConversation } from "./promachosMode";
 
@@ -119,7 +121,11 @@ function PromachosConversationList({
   onChangeHome: () => void;
 }) {
   const threads = useThreadShells();
-  const conversations = useMemo(() => promachosConversations(threads, home), [threads, home]);
+  const personThreads = usePersonViewThreads(threads);
+  const conversations = useMemo(
+    () => promachosConversations(personThreads, home),
+    [personThreads, home],
+  );
   const childActivityByThreadKey = useMemo(
     () => childThreadActivityByThreadKey(threads),
     [threads],
@@ -194,6 +200,7 @@ function PromachosConversationList({
                 }
               >
                 <span className="min-w-0 flex-1 truncate">{thread.title}</span>
+                <SharedThreadLabel coOwners={thread.coOwners} />
                 {badge ? (
                   <Badge className="shrink-0" size="sm" variant={badge.variant}>
                     {badge.label}

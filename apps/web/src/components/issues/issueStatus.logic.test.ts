@@ -196,6 +196,7 @@ function shell(
   overrides: Partial<EnvironmentThreadShell> = {},
 ): EnvironmentThreadShell {
   return {
+    coOwners: [],
     environmentId: LOCAL,
     id: ThreadId.make(id),
     projectId: ProjectId.make("project"),
