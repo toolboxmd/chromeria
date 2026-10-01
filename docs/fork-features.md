@@ -694,7 +694,7 @@ for per-match decisions and the absorption PR record.
 ```json
 {
   "id": "promachos-mode",
-  "purpose": "Switch web and desktop to a chat-first view of the Promachos home's conversations: paragraph bubbles, a working indicator and inline question and approval cards.",
+  "purpose": "Switch web and desktop to a chat-first view of the Promachos home's conversations: paragraph bubbles, a working indicator, inline question and approval cards, and new conversations started on his Prism role.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/116"],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/128"],
   "newFiles": [
@@ -707,6 +707,8 @@ for per-match decisions and the absorption PR record.
     "apps/web/src/components/promachos/promachosConversations.test.ts",
     "apps/web/src/components/promachos/promachosConversations.ts",
     "apps/web/src/components/promachos/promachosMode.ts",
+    "apps/web/src/components/promachos/promachosStart.test.ts",
+    "apps/web/src/components/promachos/promachosStart.ts",
     "apps/web/src/components/promachos/promachosTimeline.ts",
     "docs/user/promachos-mode.md"
   ],

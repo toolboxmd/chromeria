@@ -535,6 +535,7 @@ import {
 } from "./chat/composerPromptHistory";
 import { usePromachosInlineCardHost } from "./promachos/PromachosChat";
 import { usePromachosChat } from "./promachos/promachosMode";
+import { withPromachosStart } from "./promachos/promachosStart";
 
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_QUEUED_MESSAGES: QueuedComposerMessage[] = [];
@@ -2167,6 +2168,10 @@ export default function ChatView(props: ChatViewProps) {
     () => resolveProjectSettings(settings, activeProject?.id ?? null, activeProject ?? undefined),
     [activeProject, settings],
   );
+  // Fork: a new Promachos conversation starts on his Prism role's list (#115).
+  const promachosModels = promachosChat
+    ? activeProjectSettings.settings.prismRoles.promachos.models
+    : null;
   const activeProjectScripts = useMemo(
     () => (activeProject ? resolveProjectScripts(settings, activeProject) : []),
     [activeProject, settings],
@@ -8386,7 +8391,10 @@ export default function ChatView(props: ChatViewProps) {
       if (backgroundThreadRef) {
         beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
       }
-      const startPromise = startThreadTurn({
+      const startPromise = withPromachosStart(
+        startThreadTurn,
+        promachosModels,
+      )({
         environmentId,
         input: {
           threadId: threadIdForSend,

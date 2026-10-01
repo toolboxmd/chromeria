@@ -19,5 +19,8 @@ home, open the menu on the home's name.
 - Only conversations in the home show as chats. Other threads keep the standard view,
   and agents a conversation starts stay in its Agents panel.
 - Type a custom answer to a question in the composer, as in the standard view.
-- The right panel, the composer and its model picker work as they do in the standard
-  view.
+- A new conversation starts on the first model with capacity in the Promachos list
+  under **Settings → Prism**. If that list is empty, it starts on the model picked in
+  the composer. If no listed model has capacity, the conversation does not start and
+  the chat shows why.
+- The right panel and the composer work as they do in the standard view.

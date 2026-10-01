@@ -49,11 +49,9 @@ export function usePromachosChat(projectRef: ScopedProjectRef | null): boolean {
 }
 
 /**
- * Starts a new Promachos conversation in the home.
- *
- * The one entry point for new conversations: it uses the normal new-thread
- * flow today, and is where the Promachos's Prism role takes over model choice
- * (toolboxmd/chromeria#115).
+ * Opens a new Promachos conversation in the home. Its first send starts on
+ * the Promachos's Prism role when that role has a model list
+ * (`withPromachosStart`, toolboxmd/chromeria#115).
  */
 export function useStartPromachosConversation() {
   const startNewThread = useNewThreadHandler();
