@@ -793,7 +793,7 @@ for per-match decisions and the absorption PR record.
   "id": "thread-people",
   "purpose": "Label devices, filter threads by person and share threads, as views without access control.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/121"],
-  "prs": ["pending: coordinator opens the final PR for #121"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/131"],
   "newFiles": [
     "apps/server/src/orchestration/stampCommandPerson.ts",
     "apps/server/src/orchestration/people.test.ts",
