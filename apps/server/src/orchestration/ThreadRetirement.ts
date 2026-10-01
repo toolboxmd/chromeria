@@ -47,7 +47,7 @@ export function blocksQueuedStart(state: ThreadRetirement | undefined, sequence:
 }
 
 /** Automatic toolkit turns and server continuations never count as explicit recovery. */
-export function isAutomaticTurn(commandId: string) {
+function isAutomaticTurn(commandId: string) {
   return commandId.startsWith("server:") && !commandId.startsWith("server:mcp-threads-message:");
 }
 
