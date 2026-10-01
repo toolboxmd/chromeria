@@ -42,7 +42,7 @@ export function wightIdle(thread: OrchestrationThreadShell, now: string): boolea
 }
 
 /** New inputs already reach the provider through normal user/report/answer delivery. */
-export const wightContinueText = (now: string) =>
+const wightContinueText = (now: string) =>
   `Continue. Current date and time: ${now}. (Wight mode.)\nConsider any new user messages, child reports and answers in this conversation since your last turn.`;
 
 /** One serialized reconciler, driven by domain/settings/provider changes, with one deadline wake. */
@@ -54,6 +54,7 @@ export const makeWightMode = Effect.fnUntraced(function* <E, R>(deps: {
     thread: OrchestrationThreadShell,
     text: string,
     activation: WightMode,
+    admission: Effect.Effect<boolean, E, R>,
   ) => Effect.Effect<void, E, R>;
 }) {
   const scope = yield* Scope.Scope;
@@ -122,6 +123,20 @@ export const makeWightMode = Effect.fnUntraced(function* <E, R>(deps: {
         thread,
         wightContinueText(DateTime.formatIso(DateTime.makeUnsafe(sendAt))),
         activation,
+        Effect.gen(function* () {
+          const current = yield* deps.settings;
+          const active = current.wightModes[thread.id];
+          if (!active || active.enabledAt !== activation.enabledAt) return false;
+          const fresh = (yield* deps.providers).find((entry) => entry.instanceId === instance);
+          const now = yield* Clock.currentTimeMillis;
+          return (
+            (active.expiresAt === null || active.expiresAt > now) &&
+            !wightPaused(
+              fresh,
+              current.providerInstances[instance]?.wightLimitPercent ?? DEFAULT_WIGHT_LIMIT_PERCENT,
+            )
+          );
+        }),
       );
     }
   }, lock.withPermits(1));

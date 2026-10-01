@@ -67,6 +67,7 @@ const isOrchestrationCommandIdConflictError = Schema.is(OrchestrationCommandIdCo
 interface CommandEnvelope {
   command: OrchestrationCommand;
   origin: OrchestrationClientOrigin | undefined;
+  idleAdmission: Effect.Effect<boolean> | undefined;
   result: Deferred.Deferred<{ sequence: number }, OrchestrationDispatchError>;
   startedAtMs: number;
 }
@@ -264,6 +265,15 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             }),
           );
         const commands = yield* retirementCommands(envelope.command, commandReadModel, retirements);
+        if (
+          envelope.command.type === "thread.turn.start" &&
+          envelope.command.idleGuard !== undefined &&
+          envelope.idleAdmission !== undefined &&
+          !(yield* envelope.idleAdmission)
+        ) {
+          // External capacity/settings can change without a domain event. Do not burn the retry identity.
+          return { sequence: commandReadModel.snapshotSequence };
+        }
         const eventGroups = pendingAutomaticStart ? [] : yield* Effect.forEach(commands, (command) =>
           decideOrchestrationCommand({
             command,
@@ -497,6 +507,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       yield* Queue.offer(commandQueue, {
         command,
         origin: options?.origin,
+        idleAdmission: options?.idleAdmission,
         result,
         startedAtMs: yield* Clock.currentTimeMillis,
       });

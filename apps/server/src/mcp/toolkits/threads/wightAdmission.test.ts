@@ -1,8 +1,18 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodePath from "node:path";
 import { describe, expect, it } from "@effect/vitest";
-import { CommandId, MessageId } from "@t3tools/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  ProviderDriverKind,
+  CommandId,
+  MessageId,
+  type ServerSettings,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
+import { makeWightMode } from "./wightMode.ts";
 import * as Option from "effect/Option";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
@@ -41,6 +51,110 @@ const nudge = (shell: Effect.Success<typeof readShell>, sequence: number, at = l
 });
 
 describe("automatic idle turn admission on real SQLite engine", () => {
+  it.effect(
+    "queued nudges recheck toggle, slider, usage and timer at admission without burning retries",
+    () =>
+      Effect.gen(function* () {
+        for (const change of ["toggle", "slider", "usage", "timer"] as const) {
+          const directory = yield* temporaryDirectory("t3-wight-capacity-");
+          yield* withEngineOnly(
+            NodePath.join(directory, "state.sqlite"),
+            Effect.gen(function* () {
+              yield* createParent(directory);
+              const engine = yield* OrchestrationEngineService;
+              const receipts = yield* OrchestrationCommandReceiptRepository;
+              const shell = yield* readShell;
+              const query = yield* ProjectionSnapshotQuery;
+              const instance = shell.modelSelection.instanceId;
+              const enabled: ServerSettings = {
+                ...DEFAULT_SERVER_SETTINGS,
+                wightModes: { [PARENT_ID]: { enabledAt: NOW, expiresAt: null } },
+              };
+              let settings = enabled;
+              let usage = 20;
+              const admitting = yield* Deferred.make<void>();
+              const release = yield* Deferred.make<void>();
+              let gate = true;
+              const ids: CommandId[] = [];
+              const runtime = yield* makeWightMode({
+                settings: Effect.sync(() => settings),
+                providers: Effect.sync(() => [
+                  {
+                    instanceId: instance,
+                    enabled: true,
+                    usageLimits: {
+                      checkedAt: NOW,
+                      windows: [
+                        { id: "session", kind: "session", label: "Session", usedPercent: usage },
+                      ],
+                    },
+                  } as unknown as ServerProvider,
+                ]),
+                thread: () =>
+                  readShell.pipe(
+                    Effect.provideService(ProjectionSnapshotQuery, query),
+                    Effect.orDie,
+                  ),
+                resume: (thread, _text, _activation, admission) =>
+                  Effect.gen(function* () {
+                    const command = nudge(thread, yield* engine.latestSequence);
+                    ids.push(command.commandId);
+                    yield* engine.dispatch(command, {
+                      idleAdmission: Effect.gen(function* () {
+                        // This executes only after Queue.offer, inside the serialized engine worker.
+                        if (gate) {
+                          yield* Deferred.succeed(admitting, undefined);
+                          yield* Deferred.await(release);
+                        }
+                        return yield* admission;
+                      }),
+                    });
+                  }).pipe(Effect.orDie),
+              });
+              const queued = yield* Effect.forkChild(runtime.reconcile());
+              yield* Deferred.await(admitting);
+              if (change === "toggle") settings = DEFAULT_SERVER_SETTINGS;
+              if (change === "slider")
+                settings = {
+                  ...enabled,
+                  providerInstances: {
+                    [instance]: { driver: ProviderDriverKind.make("codex"), wightLimitPercent: 10 },
+                  },
+                };
+              if (change === "usage") usage = 90;
+              if (change === "timer")
+                settings = {
+                  ...enabled,
+                  wightModes: {
+                    [PARENT_ID]: { enabledAt: NOW, expiresAt: 0 },
+                  },
+                };
+              yield* Deferred.succeed(release, undefined);
+              yield* Fiber.join(queued);
+              expect(
+                Option.getOrThrow(yield* query.getThreadDetailById(PARENT_ID)).messages,
+                change,
+              ).toHaveLength(0);
+              expect(
+                Option.isNone(yield* receipts.getByCommandId({ commandId: ids[0]! })),
+                change,
+              ).toBe(true);
+              settings = enabled;
+              usage = 20;
+              gate = false;
+              yield* runtime.reconcile();
+              yield* runtime.reconcile();
+              expect(ids[1], change).toBe(ids[0]);
+              expect(
+                Option.getOrThrow(yield* query.getThreadDetailById(PARENT_ID)).messages,
+                change,
+              ).toHaveLength(1);
+            }),
+          );
+        }
+      }).pipe(Effect.scoped),
+  );
+
   it.effect(
     "a stale no-op receipt leaves the next idle revision eligible for exactly one nudge",
     () =>

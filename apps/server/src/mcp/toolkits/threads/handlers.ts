@@ -179,9 +179,12 @@ const make = Effect.gen(function* () {
   const commandId = (tag: string) =>
     Effect.map(uuid, (id) => CommandId.make(`server:mcp-threads-${tag}:${id}`));
 
-  const dispatch = (command: Parameters<typeof engine.dispatch>[0]) =>
+  const dispatch = (
+    command: Parameters<typeof engine.dispatch>[0],
+    options?: Parameters<typeof engine.dispatch>[1],
+  ) =>
     engine
-      .dispatch(command)
+      .dispatch(command, options)
       .pipe(
         Effect.catchCause((cause) =>
           Cause.hasInterruptsOnly(cause)
@@ -364,31 +367,35 @@ const make = Effect.gen(function* () {
     text: string,
     turnCommandId?: CommandId,
     idleOnly = false,
+    idleAdmission?: Effect.Effect<boolean>,
   ) =>
     Effect.gen(function* () {
       const createdAt = yield* nowIso;
-      yield* dispatch({
-        type: "thread.turn.start",
-        ...(idleOnly
-          ? {
-              idleGuard: {
-                latestTurnId: thread.latestTurn?.turnId ?? null,
-                updatedAt: thread.updatedAt,
-              },
-            }
-          : {}),
-        commandId: turnCommandId ?? (yield* commandId("turn")),
-        threadId: thread.id,
-        message: {
-          messageId: MessageId.make(yield* uuid),
-          role: "user",
-          text,
-          attachments: [],
+      yield* dispatch(
+        {
+          type: "thread.turn.start",
+          ...(idleOnly
+            ? {
+                idleGuard: {
+                  latestTurnId: thread.latestTurn?.turnId ?? null,
+                  updatedAt: thread.updatedAt,
+                },
+              }
+            : {}),
+          commandId: turnCommandId ?? (yield* commandId("turn")),
+          threadId: thread.id,
+          message: {
+            messageId: MessageId.make(yield* uuid),
+            role: "user",
+            text,
+            attachments: [],
+          },
+          runtimeMode: thread.runtimeMode,
+          interactionMode: thread.interactionMode,
+          createdAt,
         },
-        runtimeMode: thread.runtimeMode,
-        interactionMode: thread.interactionMode,
-        createdAt,
-      });
+        idleAdmission === undefined ? undefined : { idleAdmission },
+      );
     });
 
   /**
@@ -532,7 +539,7 @@ const make = Effect.gen(function* () {
     ),
     providers: registry.getProviders,
     thread: threadShell,
-    resume: (thread, text, activation) =>
+    resume: (thread, text, activation, admission) =>
       Effect.gen(function* () {
         const sequence = yield* engine.latestSequence;
         yield* startTurn(
@@ -542,6 +549,13 @@ const make = Effect.gen(function* () {
             `server:wight:${thread.id}:${activation.enabledAt}:${thread.updatedAt}:${thread.latestTurn?.turnId ?? "initial"}:${sequence}`,
           ),
           true,
+          admission.pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Wight admission check failed", {
+                cause: Cause.pretty(cause),
+              }).pipe(Effect.as(false)),
+            ),
+          ),
         );
       }),
   });
