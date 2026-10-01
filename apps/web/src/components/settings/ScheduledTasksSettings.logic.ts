@@ -64,7 +64,7 @@ export function emptyTaskDraft(timeZone: string): TaskDraft {
 const pad = (value: number) => String(value).padStart(2, "0");
 
 /** A `datetime-local` value for an instant, in the browser's time zone. */
-export function toLocalDateTimeInput(iso: string): string {
+function toLocalDateTimeInput(iso: string): string {
   const date = new Date(iso);
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
@@ -148,7 +148,7 @@ function scheduleFromDraft(draft: TaskDraft): Parsed<TaskSchedule> {
   };
 }
 
-export function definitionFromDraft(draft: TaskDraft): Parsed<TaskDefinition> {
+function definitionFromDraft(draft: TaskDraft): Parsed<TaskDefinition> {
   const title = draft.title.trim();
   const prompt = draft.prompt.trim();
   if (title === "") return { ok: false, error: "Title is required." };
@@ -219,7 +219,7 @@ export function editPayloadFromDraft(
 export const activeCheck = (task: ScheduledTask) => task.checks.at(-1)!;
 export const latestRun = (task: ScheduledTask): TaskRun | null => task.runs.at(-1) ?? null;
 /** Only a verified run is settled. A needs-you run stays unfinished and keeps its thread and check. */
-export const unfinishedRun = (task: ScheduledTask): TaskRun | null =>
+const unfinishedRun = (task: ScheduledTask): TaskRun | null =>
   task.runs.find((run) => run.status !== "done") ?? null;
 
 /** The task waits on the user: its retries ran out and nothing runs until someone acts. */
@@ -289,13 +289,13 @@ export function taskStatusView(task: ScheduledTask): RunStatusView {
 
 const plural = (count: number, unit: string) => `${count} ${unit}${count === 1 ? "" : "s"}`;
 
-export function formatInterval(minutes: number): string {
+function formatInterval(minutes: number): string {
   if (minutes % 1440 === 0) return `Every ${plural(minutes / 1440, "day")}`;
   if (minutes % 60 === 0) return `Every ${plural(minutes / 60, "hour")}`;
   return `Every ${plural(minutes, "minute")}`;
 }
 
-export function formatWindow(windowMinutes: number | undefined): string {
+function formatWindow(windowMinutes: number | undefined): string {
   const window = windowMinutes ?? DEFAULT_WINDOW_MINUTES;
   return window === 0 ? "exact minute" : `within ±${window} min`;
 }
