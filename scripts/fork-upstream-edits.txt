@@ -243,3 +243,7 @@ apps/server/src/vcs/GitVcsDriver.test.ts
 apps/server/src/vcs/GitVcsDriver.ts
 apps/server/src/vcs/GitVcsDriverCore.test.ts
 apps/server/src/vcs/GitVcsDriverCore.ts
+
+# Preview capture while the window is not painted (#151)
+apps/desktop/src/preview/Manager.test.ts
+apps/desktop/src/preview/Manager.ts

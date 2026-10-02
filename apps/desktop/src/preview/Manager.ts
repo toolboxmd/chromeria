@@ -686,6 +686,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   let pendingRecording: PendingRecording | null = null;
   const displayMediaHandlerSessions = new WeakSet<Session>();
   let frameCaptureWindowOpen = true;
+  // Guest page captures in flight. Changed only under `frameCaptureSessionsRef`.
+  let pageCaptureLeases = 0;
   let currentMainWindow: BrowserWindow | undefined;
   let mainWindowCleanupFiber: Fiber.Fiber<void, never> | undefined;
   const tabLifecycleLocks = new Map<
@@ -735,12 +737,49 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       yield* requireCurrentGuest;
       return image;
     });
-    return yield* capture.pipe(
-      Effect.retry({
-        times: CAPTURE_PAGE_RETRY_ATTEMPTS - 1,
-        schedule: Schedule.spaced(CAPTURE_PAGE_RETRY_DELAY_MS),
-        while: isPreviewOperationError,
+    // The main window is throttled while it is not painted, and a hidden
+    // embedder never composites the guest, so capturePage stalls. Hold the
+    // window unthrottled for the whole retried capture.
+    const acquireLease = SynchronizedRef.updateEffect(frameCaptureSessionsRef, (sessions) =>
+      Effect.gen(function* () {
+        if (pageCaptureLeases === 0 && sessions.size === 0) {
+          yield* setFrameCaptureBackgroundThrottling(false).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("Failed to unthrottle the window for a preview capture.", {
+                error,
+              }),
+            ),
+          );
+        }
+        pageCaptureLeases += 1;
+        return sessions;
       }),
+    );
+    const releaseLease = SynchronizedRef.updateEffect(frameCaptureSessionsRef, (sessions) =>
+      Effect.gen(function* () {
+        pageCaptureLeases -= 1;
+        if (pageCaptureLeases === 0 && sessions.size === 0) {
+          yield* setFrameCaptureBackgroundThrottling(true).pipe(
+            Effect.retry({ times: 2 }),
+            Effect.catch((error) =>
+              Effect.logWarning("Failed to restore preview capture throttling.", { error }),
+            ),
+          );
+        }
+        return sessions;
+      }),
+    );
+    return yield* Effect.acquireUseRelease(
+      acquireLease,
+      () =>
+        capture.pipe(
+          Effect.retry({
+            times: CAPTURE_PAGE_RETRY_ATTEMPTS - 1,
+            schedule: Schedule.spaced(CAPTURE_PAGE_RETRY_DELAY_MS),
+            while: isPreviewOperationError,
+          }),
+        ),
+      () => releaseLease,
     );
   });
   const currentIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
@@ -909,7 +948,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
         yield* restoreFrameCaptureWebContentsBackgroundThrottling(
           current.unthrottledWebContentsIds,
         );
-        if (remainingSessions.size === 0) {
+        if (remainingSessions.size === 0 && pageCaptureLeases === 0) {
           yield* setFrameCaptureBackgroundThrottling(true).pipe(
             Effect.retry({ times: 2 }),
             Effect.catch((error) =>
@@ -2079,7 +2118,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     }
     yield* SynchronizedRef.modifyEffect(frameCaptureSessionsRef, (sessions) =>
       Effect.gen(function* () {
-        if (sessions.size > 0) {
+        if (sessions.size > 0 || pageCaptureLeases > 0) {
           yield* setWindowBackgroundThrottling(window, false);
         }
         yield* Ref.set(mainWindowRef, Option.some(window));
@@ -3086,12 +3125,13 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               }),
             ] as const;
           }
-          if (sessions.size === 0) {
+          const windowThrottled = sessions.size === 0 && pageCaptureLeases === 0;
+          if (windowThrottled) {
             yield* setFrameCaptureBackgroundThrottling(false);
           }
           yield* setFrameCaptureWebContentsBackgroundThrottling(wc, false).pipe(
             Effect.onError(() =>
-              sessions.size === 0
+              windowThrottled
                 ? setFrameCaptureBackgroundThrottling(true).pipe(Effect.ignore)
                 : Effect.void,
             ),
