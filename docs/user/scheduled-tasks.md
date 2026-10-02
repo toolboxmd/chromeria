@@ -87,8 +87,9 @@ command. It can use `{date}`, `{run_id}` and `{task_id}`.
   thread a message to take it back up, and resume the run once that work has
   finished.
 - **Delete** removes the task from the list. It waits while a run is in progress.
-  On a task that needs you it is refused while anything the run started is still
-  live or pending. The run is never marked done, and its check history is kept.
+  On an agent task that needs you it is refused while anything the run started
+  is still live or pending. That run is never marked done, and its check history
+  is kept. A deleted command task keeps its run history.
 
 Scheduled tasks belong to one environment. When Settings shows all
 environments or a project, the page asks you to choose the environment whose
