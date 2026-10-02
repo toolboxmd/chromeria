@@ -202,6 +202,7 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
         yield* store(task, {
           failureStreak: passed ? 0 : task.failureStreak + 1,
           lastError: error,
+          ...(passed ? { lastSuccessfulRunId: run.id } : {}),
           runs: task.runs.map((entry) =>
             entry.id !== run.id
               ? entry

@@ -204,9 +204,17 @@ describe("scheduled command failure notifications", () => {
     // Two failed runs between polls: the streak, not the newest run, shows the change.
     await poll("one", task(2, "running"));
     expect(alerts()).toHaveLength(1);
-    // A shorter streak means a run passed in between and the task failed again.
-    await poll("one", task(1));
+    // A pass and a new failure between polls leave the same streak; the passing run shows it.
+    await poll("one", task(2, "needs-you", { lastSuccessfulRunId: "task-1:pass-1" }));
     expect(alerts()).toHaveLength(2);
+    await poll("one", task(1, "needs-you", { lastSuccessfulRunId: "task-1:pass-2" }));
+    expect(alerts()).toHaveLength(3);
+    await poll("one", task(1, "needs-you", { lastSuccessfulRunId: "task-1:pass-3" }));
+    expect(alerts()).toHaveLength(4);
+    // Further failures, a run in progress and an edit keep the marker and stay quiet.
+    await poll("one", task(2, "needs-you", { lastSuccessfulRunId: "task-1:pass-3" }));
+    await poll("one", task(2, "running", { lastSuccessfulRunId: "task-1:pass-3", revision: 9 }));
+    expect(alerts()).toHaveLength(4);
   });
 
   it("counts a task's first-ever failure, and never alerts for agent tasks", async () => {

@@ -279,6 +279,21 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail:
             "A done run requires a passing verdict from its pinned check version, or a command exit code 0.",
         });
+      const success = command.task.lastSuccessfulRunId;
+      if (success !== previous?.lastSuccessfulRunId) {
+        const passed = command.task.runs.find((run) => run.id === success);
+        const before = previous?.runs.find((run) => run.id === success);
+        if (
+          !commandTask ||
+          passed?.status !== "done" ||
+          before === undefined ||
+          before.status === "done"
+        )
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: "A command task's last successful run changes only when that run passes.",
+          });
+      }
       if (command.task.runs.some((run) => threadOwner(run) !== threadOwner(command.task)))
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,

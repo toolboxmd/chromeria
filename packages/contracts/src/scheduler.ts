@@ -168,6 +168,12 @@ export const ScheduledTask = Schema.Struct({
   runs: Schema.Array(TaskRun),
   failureStreak: NonNegativeInt,
   lastError: Schema.NullOr(Schema.String),
+  /**
+   * The command run that most recently exited 0, set only by the server when that run settles
+   * and never cleared. Failure watchers that sample the list see a pass between two samples
+   * by this changing, even when the failure streak looks unchanged.
+   */
+  lastSuccessfulRunId: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type ScheduledTask = typeof ScheduledTask.Type;
 /**

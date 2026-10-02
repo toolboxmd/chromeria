@@ -331,6 +331,80 @@ describe("scheduled command tasks", () => {
     }),
   );
 
+  it.effect("records the last passing run durably, so a pass between two samples is visible", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(NOW));
+      const directory = yield* temporaryDirectory("scheduler-command-success-");
+      let kept: ScheduledTask | undefined;
+      yield* within(
+        directory,
+        Effect.gen(function* () {
+          yield* createParent(directory);
+          const scheduler = yield* makeLiveScheduler;
+          const created = yield* scheduler.create(command("exit 3"), "user:creator");
+          const runAs = (text: string) =>
+            Effect.gen(function* () {
+              if (text !== "") {
+                yield* scheduler.edit(
+                  { taskId: created.id, definition: command(text) },
+                  "user:creator",
+                );
+              }
+              yield* TestClock.adjust("60 minutes");
+              yield* scheduler.reconcile();
+              yield* scheduler.drainCommands;
+              return yield* only(scheduler);
+            });
+          // A first-ever failure has no passing run.
+          const firstFailure = yield* runAs("");
+          expect(firstFailure.failureStreak).toBe(1);
+          expect(firstFailure.lastSuccessfulRunId).toBeUndefined();
+          const pass = (yield* runAs("true")).runs.at(-1)!;
+          const failedAgain = yield* runAs("exit 3");
+          // Pass then fail: the streak is 1 again, as before the pass; only the marker shows it.
+          expect(failedAgain.failureStreak).toBe(firstFailure.failureStreak);
+          expect(failedAgain.lastSuccessfulRunId).toBe(pass.id);
+          // Failures, pause and edits keep the marker; compact responses carry it.
+          yield* runAs("");
+          yield* scheduler.pause(created.id, true, "user:creator");
+          yield* scheduler.pause(created.id, false, "user:creator");
+          yield* scheduler.edit(
+            { taskId: created.id, definition: command("exit 4") },
+            "user:creator",
+          );
+          const failing = yield* only(scheduler);
+          expect(failing).toMatchObject({ failureStreak: 2, lastSuccessfulRunId: pass.id });
+          expect((yield* scheduler.listCompact)[0]!.lastSuccessfulRunId).toBe(pass.id);
+
+          const later = (yield* runAs("true")).runs.at(-1)!;
+          const current = yield* only(scheduler);
+          expect(current.lastSuccessfulRunId).toBe(later.id);
+          const { lastSuccessfulRunId: _, ...cleared } = persisted(current);
+          const failedRun = current.runs.find((run) => run.status === "needs-you")!;
+          // Only the server's settle of a passing run may move it: not clearing, not a failed
+          // run, not an earlier pass, not an unknown id.
+          for (const forged of [
+            { ...cleared, revision: current.revision },
+            { ...persisted(current), lastSuccessfulRunId: failedRun.id },
+            { ...persisted(current), lastSuccessfulRunId: pass.id },
+            { ...persisted(current), lastSuccessfulRunId: "invented" },
+          ])
+            expect(Exit.isFailure(yield* forge(forged, {}))).toBe(true);
+          kept = persisted(yield* only(scheduler));
+        }),
+      );
+      // A restart replays the marker from the event log.
+      yield* within(
+        directory,
+        Effect.gen(function* () {
+          const scheduler = yield* makeLiveScheduler;
+          expect(persisted(yield* only(scheduler))).toEqual(kept);
+          expect(kept!.lastSuccessfulRunId).toBeDefined();
+        }),
+      );
+    }),
+  );
+
   it.effect(
     "keeps output for the newest runs only and bounds a chatty five-minute command's state",
     () =>
