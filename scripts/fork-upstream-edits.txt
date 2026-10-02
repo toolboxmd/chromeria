@@ -232,3 +232,11 @@ packages/contracts/src/environmentHttp.ts
 
 # Check-gated scheduled tasks (#123)
 apps/server/src/orchestration/projector.ts
+
+# Partial-clone remotes keep repository identity (#135)
+apps/server/src/project/RepositoryIdentityResolver.test.ts
+apps/server/src/project/RepositoryIdentityResolver.ts
+apps/server/src/vcs/GitVcsDriver.test.ts
+apps/server/src/vcs/GitVcsDriver.ts
+apps/server/src/vcs/GitVcsDriverCore.test.ts
+apps/server/src/vcs/GitVcsDriverCore.ts

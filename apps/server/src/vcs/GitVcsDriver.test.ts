@@ -9,6 +9,7 @@ import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -512,6 +513,40 @@ it.effect("checkpoint recovery preserves interruption and removes the private in
     assert.isDefined(privateIndex);
     assert.isFalse(yield* fs.exists(privateIndex!));
     assert.isFalse(yield* driver.checkpoints.hasCheckpointRef({ cwd, checkpointRef }));
+  }).pipe(Effect.scoped, Effect.provide(GitContractLayer)),
+);
+
+it.effect("listRemotes keeps a partial-clone remote whose fetch line carries a filter", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const driver = yield* GitVcsDriver.makeVcsDriverShape();
+    const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-list-remotes-" });
+    const git = (args: ReadonlyArray<string>) =>
+      driver.execute({ operation: "list-remotes-test", cwd, args });
+    yield* git(["init"]);
+    yield* git(["remote", "add", "origin", "https://github.com/pingdotgg/t3code.git"]);
+    yield* git(["config", "remote.origin.promisor", "true"]);
+    yield* git(["config", "remote.origin.partialclonefilter", "blob:none"]);
+    yield* git(["remote", "add", "fork", "git@github.com:octocat/t3code.git"]);
+    assert.include((yield* git(["remote", "-v"])).stdout, "(fetch) [blob:none]");
+
+    const { remotes } = yield* driver.listRemotes(cwd);
+
+    assert.deepStrictEqual(
+      remotes.map(({ name, url, pushUrl }) => ({ name, url, pushUrl })),
+      [
+        {
+          name: "fork",
+          url: "git@github.com:octocat/t3code.git",
+          pushUrl: Option.some("git@github.com:octocat/t3code.git"),
+        },
+        {
+          name: "origin",
+          url: "https://github.com/pingdotgg/t3code.git",
+          pushUrl: Option.some("https://github.com/pingdotgg/t3code.git"),
+        },
+      ],
+    );
   }).pipe(Effect.scoped, Effect.provide(GitContractLayer)),
 );
 

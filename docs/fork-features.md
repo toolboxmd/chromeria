@@ -955,3 +955,25 @@ for per-match decisions and the absorption PR record.
   "keywords": ["scheduler", "scheduledTasks", "scheduler.state-set", "schedulerOwnsThread"]
 }
 ```
+
+## Partial-clone remotes keep repository identity
+
+```json
+{
+  "id": "partial-clone-remotes",
+  "purpose": "Parse `git remote -v` lines that end with a partial-clone filter such as `[blob:none]`, so partial clones keep repository identity and remote lookup.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/135"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...fix/partial-clone-identity"],
+  "newFiles": [],
+  "upstreamFiles": [
+    "apps/server/src/project/RepositoryIdentityResolver.test.ts",
+    "apps/server/src/project/RepositoryIdentityResolver.ts",
+    "apps/server/src/vcs/GitVcsDriver.test.ts",
+    "apps/server/src/vcs/GitVcsDriver.ts",
+    "apps/server/src/vcs/GitVcsDriverCore.test.ts",
+    "apps/server/src/vcs/GitVcsDriverCore.ts"
+  ],
+  "sharedFiles": [],
+  "keywords": ["partial clone", "blob:none", "partialclonefilter", "git remote -v"]
+}
+```
