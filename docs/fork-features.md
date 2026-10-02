@@ -1020,6 +1020,7 @@ for per-match decisions and the absorption PR record.
   "prs": ["https://github.com/toolboxmd/chromeria/pull/154"],
   "newFiles": [],
   "upstreamFiles": [
+    "apps/server/src/mcp/McpHttpServer.test.ts",
     "packages/contracts/src/previewAutomation.ts",
     "apps/server/src/mcp/toolkits/preview/handlers.ts",
     "apps/server/src/mcp/toolkits/preview/handlers.test.ts"
