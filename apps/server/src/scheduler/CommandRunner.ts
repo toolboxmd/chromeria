@@ -12,7 +12,7 @@ import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawne
  * frees its task for later slots.
  */
 export const COMMAND_TIMEOUT_MS = 30 * 60_000;
-/** Every retained run repeats in each scheduler state event, so the tail stays small. */
+/** Every write of a command task's runtime state rewrites its kept tails, so each stays small. */
 export const COMMAND_OUTPUT_BYTES = 4_096;
 /** How long to read output a finished or stopped process left in its pipe. */
 const DRAIN_MS = 2_000;

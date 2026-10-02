@@ -1,4 +1,5 @@
 import { isSpectrumThreadId } from "../mcp/toolkits/threads/spectrumIdentity.ts";
+import { auditedTask, isRuntimeWrite } from "../scheduler/RuntimeState.ts";
 import {
   TaskCheckVersion,
   TaskDefinition,
@@ -359,6 +360,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
               "Existing check versions, active run judges and retained settled runs are immutable.",
           });
       }
+      // A command task's routine state lives only in its runtime row; the engine stores it.
+      if (isRuntimeWrite(previous, command.task)) return [];
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -367,7 +370,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           occurredAt: command.createdAt,
         })),
         type: "scheduler.state-set",
-        payload: command.task,
+        payload: auditedTask(command.task),
       };
     }
     case "project.create": {

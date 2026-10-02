@@ -87,7 +87,7 @@ export const TaskCheckResult = Schema.Struct({
   checkedAt: IsoDateTime,
 });
 export type TaskCheckResult = typeof TaskCheckResult.Type;
-/** Every state event repeats the task, so only the newest command runs keep their output. */
+/** A command task's state is rewritten on every run, so only its newest runs keep their output. */
 export const COMMAND_OUTPUTS_KEPT = 3;
 /** A finished command run. It started at its run's `dispatchedAt`, persisted before the spawn. */
 export const CommandResult = Schema.Struct({
