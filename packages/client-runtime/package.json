@@ -115,6 +115,10 @@
       "types": "./src/state/attachments.ts",
       "default": "./src/state/attachments.ts"
     },
+    "./agent-message": {
+      "types": "./src/agentMessage.ts",
+      "default": "./src/agentMessage.ts"
+    },
     "./text-paste": {
       "types": "./src/textPaste.ts",
       "default": "./src/textPaste.ts"

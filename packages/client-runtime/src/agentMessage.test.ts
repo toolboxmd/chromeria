@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { parseAgentMessage } from "./agentMessage";
+import { parseAgentMessage } from "./agentMessage.ts";
 
 describe("parseAgentMessage", () => {
   it("parses a child report", () => {
