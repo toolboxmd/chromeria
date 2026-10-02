@@ -8,25 +8,34 @@ import { PreviewToolkit } from "./toolkits/preview/tools.ts";
 import { PullRequestsToolkit } from "./toolkits/pullRequests/tools.ts";
 import { ThreadsToolkit } from "./toolkits/threads/tools.ts";
 
-// Spectrum delegates a group to server coordination. Its description must be visible
-// with the single-Drafter tools so agents use its barriers instead of model relay.
-const DELEGATION_TOOLS = ["spawn_thread", "read_thread", "message_thread", "start_spectrum"];
-
-const allTools = [
-  DeviceToolkit,
-  IssuesToolkit,
-  PreviewToolkit,
-  PullRequestsToolkit,
-  ThreadsToolkit,
-].flatMap((toolkit) => Object.values(toolkit.tools) as ReadonlyArray<Tool.Any>);
+const deferredTools = [DeviceToolkit, IssuesToolkit, PreviewToolkit, PullRequestsToolkit].flatMap(
+  (toolkit) => Object.values(toolkit.tools) as ReadonlyArray<Tool.Any>,
+);
+const threadTools = Object.values(ThreadsToolkit.tools) as ReadonlyArray<Tool.Any>;
+const allTools = [...deferredTools, ...threadTools];
 
 const alwaysLoaded = (tool: Tool.Any) =>
   Context.getOrUndefined(tool.annotations, Tool.Meta)?.["anthropic/alwaysLoad"] === true;
 
 describe("t3-code tool loading", () => {
-  it("keeps exactly the delegation tools out of Claude Code's deferred tool search", () => {
-    const loaded = allTools.filter(alwaysLoaded).map((tool) => tool.name);
-    expect([...new Set(loaded)].toSorted()).toEqual([...DELEGATION_TOOLS].toSorted());
+  it("makes parent delegation and blocked-child response tools immediately available", () => {
+    // Spectrum needs visible barriers, and a blocked child needs a response path
+    // without first requiring the parent to discover another tool.
+    for (const name of [
+      "spawn_thread",
+      "read_thread",
+      "message_thread",
+      "start_spectrum",
+      "pending_request_respond",
+    ]) {
+      const tool = threadTools.find((candidate) => candidate.name === name);
+      expect(tool, name).toBeDefined();
+      expect(tool && alwaysLoaded(tool), name).toBe(true);
+    }
+  });
+
+  it("keeps tools outside thread delegation in deferred tool search", () => {
+    expect(deferredTools.filter(alwaysLoaded).map((tool) => tool.name)).toEqual([]);
   });
 
   it("spawn_thread says when to use it, names the shell alternative, and stays short", () => {
