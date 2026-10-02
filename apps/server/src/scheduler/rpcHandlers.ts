@@ -21,7 +21,8 @@ export const makeSchedulerRpcHandlers = (
 ) => {
   const actor = `user:${session.subject}`;
   return {
-    "scheduler.list": () => observe("scheduler.list", scheduler.list),
+    "scheduler.list": (input: { compact?: boolean }) =>
+      observe("scheduler.list", input.compact ? scheduler.listCompact : scheduler.list),
     "scheduler.checkHistory": (input: CheckHistoryInput) =>
       observe("scheduler.checkHistory", scheduler.checkHistory(input)),
     "scheduler.create": (input: CreateScheduledTask) =>

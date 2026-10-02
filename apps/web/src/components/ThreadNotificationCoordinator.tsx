@@ -20,6 +20,7 @@ import {
   setNotificationBadge,
   unlockNotificationAudio,
 } from "../threadNotifications";
+import { ScheduledCommandNotifications } from "./ScheduledCommandNotifications";
 import { resolveSidebarThreadStatus } from "./Sidebar.logic";
 import { toastManager } from "./ui/toast";
 
@@ -224,5 +225,7 @@ function EnvironmentNotifications({
     shell,
   ]);
 
-  return null;
+  return (
+    <ScheduledCommandNotifications environmentId={environmentId} onNotification={onNotification} />
+  );
 }

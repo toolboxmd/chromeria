@@ -77,6 +77,7 @@ const makeHarness = Effect.gen(function* () {
           checked.push(command);
           return { passed, output: passed ? "verified" : "missing result" };
         }),
+      execute: () => Effect.die("Agent tasks never execute a scheduled command."),
       observe: (_, run) => Effect.sync(() => states.get(run.id) ?? observation),
       prepare: (_, run) =>
         unavailable

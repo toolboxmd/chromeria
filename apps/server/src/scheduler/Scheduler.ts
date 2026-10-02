@@ -1,9 +1,14 @@
 import {
   SchedulerError,
+  COMMAND_OUTPUTS_KEPT,
   DEFAULT_PERSON,
+  isCommandTask,
+  isSettledRun,
   threadOwner,
   ThreadId,
   type ScheduledTask,
+  type ScheduledTaskView,
+  type TaskDefinition,
   type TaskRun,
   type CreateScheduledTask,
   type EditScheduledTask,
@@ -12,6 +17,7 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as FiberSet from "effect/FiberSet";
 import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
 import {
@@ -19,13 +25,28 @@ import {
   EditScheduledTask as EditSchema,
 } from "@t3tools/contracts";
 import { chooseMinutes, iso, taskSlots } from "./Schedule.ts";
+import type { ShellCommandOutcome } from "./CommandRunner.ts";
 
 export const RECOVERY_DELAYS = [30_000, 60_000, 300_000, 900_000, 3_600_000] as const;
 export const LEASE_MS = 120_000;
 const decodeCreate = Schema.decodeUnknownEffect(CreateSchema);
 const decodeEdit = Schema.decodeUnknownEffect(EditSchema);
-const terminal = (run: TaskRun) => run.status === "done";
+const terminal = isSettledRun;
 const fail = (detail: string) => Effect.fail(new SchedulerError({ detail }));
+const present = (task: ScheduledTask, now: number): ScheduledTaskView => {
+  const next = task.paused || task.deleted ? null : taskSlots(task, now).next;
+  return { ...task, nextRunAt: next === null ? null : iso(next) };
+};
+/** A response-only copy for failure watchers: the active check and the newest run's metadata. */
+const compact = (task: ScheduledTaskView): ScheduledTaskView => ({
+  ...task,
+  checks: task.checks.slice(-1),
+  runs: task.runs.slice(-1).map((run) => {
+    if (run.commandResult?.output === undefined) return run;
+    const { output: _, ...commandResult } = run.commandResult;
+    return { ...run, commandResult };
+  }),
+});
 export type RunObservation = {
   readonly active: boolean;
   readonly idle: boolean;
@@ -56,13 +77,17 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
     command: string,
     variables: { taskId: string; runId: string; date: string; cwd: string },
   ) => Effect.Effect<{ passed: boolean; output: string }, SchedulerError>;
+  /** Runs a command task's command once. Only its own timeout ends it early. */
+  readonly execute: (
+    command: string,
+    variables: { taskId: string; runId: string; date: string; cwd: string },
+  ) => Effect.Effect<ShellCommandOutcome, SchedulerError>;
   readonly historyVersion: (
     taskId: string,
     version: number,
   ) => Effect.Effect<TaskCheckVersion | undefined, SchedulerError>;
-  readonly validateTarget: (
-    task: CreateScheduledTask["target"],
-  ) => Effect.Effect<string, SchedulerError>;
+  /** The pinned working directory: the target thread's worktree or the project root. */
+  readonly validateTarget: (definition: TaskDefinition) => Effect.Effect<string, SchedulerError>;
   readonly observe: (
     task: ScheduledTask,
     run: TaskRun,
@@ -78,6 +103,9 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
 }) {
   const locks = new Map<string, Semaphore.Semaphore>();
   const creationLock = yield* Semaphore.make(1);
+  // Command runs execute outside their task lock; closing the scheduler's scope stops them.
+  const commands = yield* FiberSet.make();
+  const executing = new Set<string>();
   const locked = <A>(id: string, body: Effect.Effect<A, SchedulerError>) =>
     Effect.gen(function* () {
       let lock = locks.get(id);
@@ -104,9 +132,15 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
       const checks = candidate.checks.filter(
         (check, index) => index >= candidate.checks.length - 20 || pinned.has(check.version),
       );
-      const runs = candidate.runs.filter(
+      const kept = candidate.runs.filter(
         (run, index) => !terminal(run) || index >= candidate.runs.length - 20,
       );
+      const runs = kept.map((run, index) => {
+        if (index >= kept.length - COMMAND_OUTPUTS_KEPT || run.commandResult?.output === undefined)
+          return run;
+        const { output: _, ...commandResult } = run.commandResult;
+        return { ...run, commandResult };
+      });
       const next = { ...candidate, checks, runs, revision: task.revision + 1, updatedAt: iso(now) };
       yield* deps.save(task, next);
       return next;
@@ -120,15 +154,19 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
       if (task.runs.some((run) => !terminal(run)))
         return yield* fail("This task already has unfinished work.");
       if (task.runs.some((run) => run.id === `${task.id}:${slot}`)) return task;
+      const definition = task.definition;
+      const command = isCommandTask(definition);
       const run: TaskRun = {
         owner: threadOwner(task),
-        definition: task.definition,
+        definition,
         checkCwd: task.checkCwd,
         id: `${task.id}:${slot}`,
         slot,
-        checkVersion: task.checks.at(-1)!.version,
-        threadId: task.definition.target.kind === "thread" ? task.definition.target.threadId : null,
-        status: "claimed",
+        ...(command ? {} : { checkVersion: task.checks.at(-1)!.version }),
+        threadId:
+          !command && definition.target.kind === "thread" ? definition.target.threadId : null,
+        // A command claim is its admission: stored as running before anything is spawned.
+        status: command ? "running" : "claimed",
         processId: deps.processId,
         originSequence: yield* deps.sequence,
         sendIndex: 0,
@@ -136,14 +174,101 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
         hasWork: false,
         leaseUntil: now + LEASE_MS,
         retryAt: null,
-        dispatchedAt: null,
+        dispatchedAt: command ? iso(now) : null,
         observedTurnId: null,
         error: null,
         check: null,
         drafterIds: [],
       };
-      return yield* store(task, { consumedSlot: slot, runs: [...task.runs, run] });
+      const next = yield* store(task, { consumedSlot: slot, runs: [...task.runs, run] });
+      if (isCommandTask(run.definition)) yield* launch(next.id, run, run.definition.command);
+      return next;
     });
+  // Settles only the run this process admitted, so a result never lands on another run.
+  const finish = (taskId: string, runId: string, outcome: ShellCommandOutcome) =>
+    locked(
+      taskId,
+      Effect.gen(function* () {
+        const task = (yield* deps.tasks).find((entry) => entry.id === taskId);
+        const run = task?.runs.find((entry) => entry.id === runId);
+        if (!task || !run || run.status !== "running" || run.processId !== deps.processId) return;
+        const now = yield* Clock.currentTimeMillis;
+        const passed = outcome.exitCode === 0 && !outcome.timedOut;
+        const error = passed
+          ? null
+          : outcome.timedOut
+            ? "The command timed out and was stopped."
+            : (outcome.failure ?? `The command exited with code ${outcome.exitCode}.`);
+        yield* store(task, {
+          failureStreak: passed ? 0 : task.failureStreak + 1,
+          lastError: error,
+          ...(passed ? { lastSuccessfulRunId: run.id } : {}),
+          runs: task.runs.map((entry) =>
+            entry.id !== run.id
+              ? entry
+              : {
+                  ...run,
+                  status: passed ? "done" : "needs-you",
+                  error,
+                  commandResult: {
+                    exitCode: outcome.exitCode,
+                    output: outcome.output,
+                    timedOut: outcome.timedOut,
+                    endedAt: iso(now),
+                  },
+                },
+          ),
+        });
+      }),
+    );
+  const launch = (taskId: string, run: TaskRun, command: string) =>
+    Effect.gen(function* () {
+      const runId = run.id;
+      executing.add(runId);
+      yield* FiberSet.run(
+        commands,
+        deps
+          .execute(command, {
+            taskId,
+            runId,
+            date: run.slot.slice(0, 10),
+            cwd: run.checkCwd,
+          })
+          .pipe(
+            Effect.catch((error) =>
+              Effect.succeed({
+                exitCode: null,
+                output: "",
+                timedOut: false,
+                failure: error.detail,
+              }),
+            ),
+            Effect.flatMap((outcome) => finish(taskId, runId, outcome)),
+            Effect.catch((error) =>
+              Effect.logWarning("Scheduled command result was not recorded", {
+                taskId,
+                runId,
+                error: error.detail,
+              }),
+            ),
+            Effect.ensuring(Effect.sync(() => executing.delete(runId))),
+          ),
+      );
+    });
+  // A command run admitted by an earlier process, or whose result was lost, may have run.
+  const settleOrphanedCommand = (task: ScheduledTask) => {
+    const run = task.runs.find((entry) => !terminal(entry));
+    if (!run || executing.has(run.id)) return Effect.succeed(task);
+    const error =
+      "This command run was interrupted before its result was recorded, for example by a Chromeria restart. It may or may not have finished, and it was not run again.";
+    return store(task, {
+      failureStreak: task.failureStreak + 1,
+      lastError: error,
+      runs: task.runs.map((entry) =>
+        entry.id === run.id ? { ...run, status: "needs-you", error } : entry,
+      ),
+    });
+  };
   const retry = (task: ScheduledTask, run: TaskRun, error: string, now: number) => {
     const delay = RECOVERY_DELAYS[run.attempt];
     return store(task, {
@@ -197,6 +322,15 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
           !task.paused &&
           slots.latest !== null &&
           (task.consumedSlot === null || slots.latest > Date.parse(task.consumedSlot));
+        if (isCommandTask(task.definition)) {
+          // Settle an ambiguous admission first, so a newer missed slot still runs once.
+          task = yield* settleOrphanedCommand(task);
+          if (!nextSlot) return;
+          const slot = iso(slots.latest!);
+          if (task.runs.some((run) => !terminal(run))) yield* store(task, { consumedSlot: slot });
+          else yield* claim(task, slot, now);
+          return;
+        }
         if (nextSlot) {
           const slot = iso(slots.latest!);
           task = task.runs.some((run) => !terminal(run))
@@ -205,6 +339,8 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
         }
         let run = task.runs.find((entry) => !terminal(entry));
         if (!run || task.paused) return;
+        const definition = run.definition;
+        if (isCommandTask(definition)) return;
         const observation = yield* deps.observe(task, run);
         if (observation.retired) {
           if (run.status === "needs-you") return;
@@ -343,7 +479,7 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
         const context = `Scheduled task ${task.id}, run ${run.id}. Immutable outcome check version ${run.checkVersion}.\n`;
         const text = continuing
           ? `${context}Continue in this conversation. Check what is already done, then finish. Do not repeat completed side effects.\n${run.error ?? "Recovering after a server restart."}\n${run.check?.output ?? ""}`
-          : `${context}${run.definition.prompt}`;
+          : `${context}${definition.prompt}`;
         const sent = yield* deps
           .send({ ...task, definition: run.definition }, run, text)
           .pipe(
@@ -369,27 +505,47 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
           Effect.mapError(
             () =>
               new SchedulerError({
-                detail: "A valid schedule, target and nonempty outcome check are required.",
+                detail:
+                  "A valid schedule plus a target and nonempty outcome check, or a project and command, are required.",
               }),
           ),
         );
-        const checkCwd = yield* deps.validateTarget(input.target);
         const now = yield* Clock.currentTimeMillis;
         const id = `scheduled-${yield* deps.uuid}`;
-        const tested = yield* deps.check(input.checkCommand, {
-          taskId: id,
-          runId: `${id}:creation`,
-          date: iso(now).slice(0, 10),
-          cwd: checkCwd,
-        });
-        if (tested.passed)
-          return yield* fail("Outcome check already passes. Task creation refused.");
-        const { checkCommand, checkReason, ...definition } = input;
+        let definition: TaskDefinition;
+        let checks: ScheduledTask["checks"] = [];
+        if (isCommandTask(input)) definition = input;
+        else {
+          const { checkCommand, checkReason, ...agent } = input;
+          definition = agent;
+          checks = [
+            {
+              version: 1,
+              command: checkCommand,
+              actor,
+              reason: checkReason,
+              createdAt: iso(now),
+              revertedFrom: null,
+            },
+          ];
+        }
+        const checkCwd = yield* deps.validateTarget(definition);
+        if (checks[0]) {
+          const tested = yield* deps.check(checks[0].command, {
+            taskId: id,
+            runId: `${id}:creation`,
+            date: iso(now).slice(0, 10),
+            cwd: checkCwd,
+          });
+          if (tested.passed)
+            return yield* fail("Outcome check already passes. Task creation refused.");
+        }
         const existing = yield* deps.tasks;
         const task = yield* Effect.try({
           try: (): ScheduledTask => {
             const task: ScheduledTask = {
               owner,
+              createdBy: actor,
               checkCwd,
               id,
               revision: 1,
@@ -398,16 +554,7 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
               updatedAt: iso(now),
               paused: false,
               deleted: false,
-              checks: [
-                {
-                  version: 1,
-                  command: checkCommand,
-                  actor,
-                  reason: checkReason,
-                  createdAt: iso(now),
-                  revertedFrom: null,
-                },
-              ],
+              checks,
               choices: chooseMinutes(definition, existing, now),
               consumedSlot: null,
               runs: [],
@@ -421,7 +568,7 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
         });
         yield* deps.save(undefined, task);
         yield* deps.wake;
-        return task;
+        return present(task, now);
       }),
     );
   const edit = (raw: EditScheduledTask, actor: string) =>
@@ -435,6 +582,17 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
         if (task.runs.some((run) => !terminal(run) && run.threadId === actor))
           return yield* fail(
             "A judged thread cannot edit its own scheduled task or outcome check.",
+          );
+        if (input.definition && isCommandTask(input.definition) !== isCommandTask(task.definition))
+          return yield* fail("A task's kind cannot change. Create a new task instead.");
+        if (
+          isCommandTask(task.definition) &&
+          (input.checkCommand !== undefined ||
+            input.checkReason !== undefined ||
+            input.revertVersion !== undefined)
+        )
+          return yield* fail(
+            "Command tasks have no outcome check. Change the command in the definition.",
           );
         let checks = task.checks;
         if (input.checkCommand !== undefined || input.revertVersion !== undefined) {
@@ -459,7 +617,7 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
           checks = [...checks, version];
         }
         const definition = input.definition ?? task.definition;
-        const checkCwd = yield* deps.validateTarget(definition.target);
+        const checkCwd = yield* deps.validateTarget(definition);
         const now = yield* Clock.currentTimeMillis;
         const existing = (yield* deps.tasks).filter((entry) => entry.id !== task.id);
         const choices = yield* Effect.try({
@@ -474,7 +632,7 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
         });
         const next = yield* store(task, { definition, checks, choices, checkCwd });
         yield* deps.wake;
-        return next;
+        return present(next, now);
       }),
     );
   const alter = (id: string, actor: string, patch: Partial<ScheduledTask>) =>
@@ -500,7 +658,7 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
         }
         const next = yield* store(task, patch);
         yield* deps.wake;
-        return next;
+        return present(next, yield* Clock.currentTimeMillis);
       }),
     );
   const runNow = (id: string) =>
@@ -521,7 +679,7 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
           next = yield* resume(task, unfinished, iso(now), now, observation);
         } else next = yield* claim(task, iso(now), now);
         yield* deps.wake;
-        return next;
+        return present(next, now);
       }),
     );
   const reconcile = Effect.fn("Scheduler.reconcile")(function* () {
@@ -556,13 +714,21 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
       .filter((time) => time > now);
     return deadlines.length ? Math.min(...deadlines) : null;
   });
+  const list = Effect.all([deps.tasks, Clock.currentTimeMillis]).pipe(
+    Effect.map(([tasks, now]) =>
+      tasks.filter((task) => !task.deleted).map((task) => present(task, now)),
+    ),
+  );
   return {
-    list: deps.tasks.pipe(Effect.map((tasks) => tasks.filter((task) => !task.deleted))),
+    list,
+    listCompact: list.pipe(Effect.map((tasks) => tasks.map(compact))),
     create,
     edit,
     pause: (id: string, paused: boolean, actor: string) => alter(id, actor, { paused }),
     delete: (id: string, actor: string) => alter(id, actor, { deleted: true }),
     runNow,
     reconcile,
+    /** Completes when every command started by this process has recorded its result. */
+    drainCommands: FiberSet.awaitEmpty(commands),
   };
 });

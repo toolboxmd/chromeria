@@ -1,7 +1,14 @@
-import { ProjectId, type ScheduledTask, type TaskRun } from "@t3tools/contracts";
+import {
+  isCommandTask,
+  ProjectId,
+  type CreateScheduledTask,
+  type ScheduledTask,
+  type TaskRun,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  commandRunView,
   createPayloadFromDraft,
   deleteBlockedReason,
   describeChoice,
@@ -12,6 +19,7 @@ import {
   needsYou,
   runNowBlockedReason,
   runStatusView,
+  taskCreator,
   taskStatusView,
   type TaskDraft,
 } from "./ScheduledTasksSettings.logic";
@@ -49,6 +57,12 @@ const run = (patch: Partial<TaskRun> = {}): TaskRun => ({
   drafterIds: [],
   ...patch,
 });
+
+/** The agent create payload, failing the test when the draft produced a command task. */
+function agentPayload(result: ReturnType<typeof createPayloadFromDraft>) {
+  if (!result.ok || isCommandTask(result.value)) throw new Error("Expected an agent payload.");
+  return result.value as Exclude<CreateScheduledTask, { kind: "command" }>;
+}
 
 function task(patch: Partial<ScheduledTask> = {}): ScheduledTask {
   return {
@@ -121,8 +135,7 @@ describe("createPayloadFromDraft", () => {
   });
 
   it("sends a lane only for the worker role", () => {
-    const worker = createPayloadFromDraft(draft({ lane: "hard" }));
-    expect(worker.ok && worker.value.lane).toBe("hard");
+    expect(agentPayload(createPayloadFromDraft(draft({ lane: "hard" }))).lane).toBe("hard");
     const reviewer = createPayloadFromDraft(draft({ role: "reviewer", lane: "hard" }));
     expect(reviewer.ok && "lane" in reviewer.value).toBe(false);
   });
@@ -131,7 +144,7 @@ describe("createPayloadFromDraft", () => {
     const result = createPayloadFromDraft(
       draft({ targetKind: "thread", threadId: "thread-9", scheduleKind: "interval" }),
     );
-    expect(result.ok && result.value.target).toEqual({ kind: "thread", threadId: "thread-9" });
+    expect(agentPayload(result).target).toEqual({ kind: "thread", threadId: "thread-9" });
     expect(result.ok && result.value.schedule).toEqual({ kind: "interval", minutes: 60 });
   });
 });
@@ -264,5 +277,142 @@ describe("schedule text", () => {
     expect(
       describeChoice({ requested: "08:00", chosen: "08:00", offsetMinutes: 0, neighbours: [] }),
     ).toBe("08:00 (as asked)");
+  });
+});
+
+const commandTask = (patch: Partial<ScheduledTask> = {}): ScheduledTask =>
+  task({
+    definition: {
+      kind: "command",
+      title: "Backup",
+      projectId: ProjectId.make("project-1"),
+      command: "./backup.sh",
+      schedule: { kind: "interval", minutes: 5 },
+    },
+    checks: [],
+    createdBy: "user:owner",
+    ...patch,
+  });
+
+const commandRun = (patch: Partial<TaskRun> = {}): TaskRun => {
+  const { checkVersion: _, ...agentRun } = run();
+  return {
+    ...agentRun,
+    definition: commandTask().definition,
+    dispatchedAt: "2026-10-01T08:00:00.000Z",
+    ...patch,
+  };
+};
+
+describe("command tasks", () => {
+  const commandDraft = (patch: Partial<TaskDraft> = {}) =>
+    draft({
+      kind: "command",
+      command: " ./backup.sh ",
+      checkCommand: "",
+      checkReason: "",
+      ...patch,
+    });
+
+  it("creates a command task without an outcome check, prompt or role", () => {
+    expect(createPayloadFromDraft(commandDraft({ scheduleKind: "interval" }))).toEqual({
+      ok: true,
+      value: {
+        kind: "command",
+        title: "Daily report",
+        projectId: "project-1",
+        command: "./backup.sh",
+        schedule: { kind: "interval", minutes: 60 },
+      },
+    });
+    expect(createPayloadFromDraft(commandDraft({ command: " " })).ok).toBe(false);
+    expect(createPayloadFromDraft(commandDraft({ projectId: "" })).ok).toBe(false);
+  });
+
+  it("edits a command by replacing its definition and never sends check fields", () => {
+    const stored = commandTask();
+    expect(editPayloadFromDraft(stored, draftFromTask(stored))).toEqual({ ok: true, value: null });
+    const result = editPayloadFromDraft(stored, {
+      ...draftFromTask(stored),
+      command: "./backup.sh --full",
+      checkCommand: "true",
+      checkReason: "ignored",
+    });
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        taskId: "task-1",
+        definition: { ...stored.definition, command: "./backup.sh --full" },
+      },
+    });
+  });
+
+  it("keeps showing a failure until a run passes, even while the next run is in progress", () => {
+    const failed = commandRun({
+      status: "needs-you",
+      commandResult: { exitCode: 3, timedOut: false, endedAt: "2026-10-01T08:01:00.000Z" },
+    });
+    expect(taskStatusView(commandTask({ failureStreak: 1, runs: [failed] }))).toEqual({
+      label: "Needs you",
+      tone: "error",
+    });
+    expect(
+      taskStatusView(
+        commandTask({ failureStreak: 1, runs: [failed, commandRun({ id: "task-1:b" })] }),
+      ).label,
+    ).toBe("Running, last run failed");
+    expect(
+      taskStatusView(commandTask({ paused: true, failureStreak: 2, runs: [failed] })).label,
+    ).toBe("Needs you");
+    const passed = commandRun({ status: "done" });
+    expect(taskStatusView(commandTask({ runs: [failed, passed] })).label).toBe("Passed");
+    expect(taskStatusView(commandTask({ paused: true, runs: [passed] })).label).toBe("Paused");
+  });
+
+  it("starts a new run after a failure and refuses run now and delete only while running", () => {
+    const failed = commandTask({ failureStreak: 1, runs: [commandRun({ status: "needs-you" })] });
+    expect(needsYou(failed)).toBe(false);
+    expect(runNowBlockedReason(failed)).toBeNull();
+    expect(deleteBlockedReason(failed)).toBeNull();
+    const running = commandTask({ runs: [commandRun({ status: "running" })] });
+    expect(runNowBlockedReason(running)).toBe("A run is still in progress.");
+    expect(deleteBlockedReason(running)).toBe("The command is still running. Wait until it ends.");
+  });
+
+  it("reports an interrupted run as unknown rather than finished", () => {
+    const view = commandRunView(commandRun({ status: "needs-you", error: "restarted" }));
+    expect(view.exit).toBe("Unknown: the run was interrupted and was not run again");
+    expect(view.ended).toBe("Unknown");
+    expect(view.output).toBeNull();
+  });
+
+  it("shows the output tail only where the server kept it", () => {
+    const endedAt = "2026-10-01T08:01:00.000Z";
+    const kept = commandRunView(
+      commandRun({
+        status: "done",
+        commandResult: { exitCode: 0, output: "ok\n", timedOut: false, endedAt },
+      }),
+    );
+    expect(kept).toMatchObject({ exit: "Exit 0", output: "ok\n", outputNote: null });
+    const dropped = commandRunView(
+      commandRun({ status: "needs-you", commandResult: { exitCode: 2, timedOut: false, endedAt } }),
+    );
+    expect(dropped).toMatchObject({ exit: "Exit 2", output: null });
+    expect(dropped.outputNote).toContain("newest 3 runs");
+    const timedOut = commandRunView(
+      commandRun({
+        status: "needs-you",
+        commandResult: { exitCode: null, output: "", timedOut: true, endedAt },
+      }),
+    );
+    expect(timedOut.exit).toBe("Timed out after 30 minutes");
+  });
+
+  it("names the recorded creator and admits when nobody was recorded", () => {
+    expect(taskCreator(commandTask({ createdBy: "thread-7" }))).toBe("thread-7");
+    expect(taskCreator(task())).toBe("user:owner");
+    const { createdBy: _, ...legacy } = commandTask();
+    expect(taskCreator(legacy)).toBeNull();
   });
 });

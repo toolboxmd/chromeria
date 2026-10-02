@@ -1,9 +1,11 @@
 import {
+  isCommandTask,
   PRISM_ROLE_LABELS,
   PRISM_ROLES,
   PrismLane,
   type EnvironmentId,
   type ScheduledTask,
+  type ScheduledTaskView,
   type TaskCheckVersion,
   type TaskRun,
 } from "@t3tools/contracts";
@@ -48,6 +50,7 @@ import { SettingsScopeNotice } from "./SettingsScopeNotice";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 import {
   activeCheck,
+  commandRunView,
   createPayloadFromDraft,
   DEFAULT_WINDOW_MINUTES,
   deleteBlockedReason,
@@ -62,6 +65,7 @@ import {
   needsYou,
   runNowBlockedReason,
   runStatusView,
+  taskCreator,
   taskStatusView,
   type TaskDraft,
   WEEKDAY_LABELS,
@@ -133,10 +137,11 @@ export function ScheduledTasksSettings() {
         }
       >
         <p className="px-3 text-sm text-muted-foreground sm:px-4">
-          A run is done only when its outcome check exits 0 and no Drafter it started is pending. A
-          turn that finishes with the check still failing is continued in the same thread until it
-          passes. Fixed times run within ±{DEFAULT_WINDOW_MINUTES} minutes by default so tasks
-          asking for the same time spread out.
+          An agent run is done only when its outcome check exits 0 and no Drafter it started is
+          pending. A turn that finishes with the check still failing is continued in the same thread
+          until it passes. A command run starts no agent: exit 0 passes, anything else needs you.
+          Fixed times run within ±{DEFAULT_WINDOW_MINUTES} minutes by default so tasks asking for
+          the same time spread out.
         </p>
         {list.error && (
           <p role="alert" className="px-3 text-sm text-destructive sm:px-4">
@@ -188,11 +193,30 @@ function BlockedButton({
   );
 }
 
+/** Where the task runs, and for an agent task the Prism role it runs in. */
 function targetLabel(task: ScheduledTask, targets: Targets) {
-  const target = task.definition.target;
-  return target.kind === "new-thread"
-    ? `New thread in ${targets.projectTitle(target.projectId) ?? target.projectId}`
-    : `Continues "${targets.threadTitle(target.threadId) ?? target.threadId}"`;
+  const { definition } = task;
+  if (isCommandTask(definition))
+    return `Runs in ${targets.projectTitle(definition.projectId) ?? definition.projectId}`;
+  const target = definition.target;
+  const where =
+    target.kind === "new-thread"
+      ? `New thread in ${targets.projectTitle(target.projectId) ?? target.projectId}`
+      : `Continues "${targets.threadTitle(target.threadId) ?? target.threadId}"`;
+  const lane = definition.role === "worker" && definition.lane ? ` (${definition.lane})` : "";
+  return `${where} · ${PRISM_ROLE_LABELS[definition.role]}${lane}`;
+}
+
+function lastRunLabel(task: ScheduledTask) {
+  const run = latestRun(task);
+  if (run === null) return "Never ran";
+  if (isCommandTask(run.definition)) {
+    const view = commandRunView(run);
+    return `${view.started ?? formatSlot(run.slot)}: ${view.exit}`;
+  }
+  return `${formatSlot(run.slot)}, judged by check v${run.checkVersion}: ${
+    run.check === null ? "no verdict yet" : run.check.passed ? "passed" : "failed"
+  }`;
 }
 
 function TaskRow({
@@ -202,7 +226,7 @@ function TaskRow({
   onEdit,
 }: {
   environmentId: EnvironmentId;
-  task: ScheduledTask;
+  task: ScheduledTaskView;
   targets: Targets;
   onEdit: () => void;
 }) {
@@ -212,10 +236,9 @@ function TaskRow({
   const runNow = useAtomCommand(scheduledTaskRunNow, { reportFailure: false });
   const remove = useAtomCommand(scheduledTaskDelete, { reportFailure: false });
   const status = taskStatusView(task);
-  const run = latestRun(task);
-  // Run now on a task that needs you resumes the same run, thread and check.
+  // Run now on an agent task that needs you resumes the same run, thread and check.
   const resumes = needsYou(task);
-  const check = activeCheck(task);
+  const creator = taskCreator(task);
   const { definition } = task;
 
   const act = async (
@@ -234,9 +257,11 @@ function TaskRow({
   };
   const confirmDelete = async () => {
     const confirmed = await requestConfirmDialog(
-      needsYou(task)
-        ? `Delete "${definition.title}"?\nIt leaves this list. Its unfinished run is not marked done; the run and its check history stay in the audit log. The server refuses while anything the run started is still live or pending.`
-        : `Delete "${definition.title}"?\nIt stops running and leaves this list. Its check history stays in the audit log.`,
+      isCommandTask(definition)
+        ? `Delete "${definition.title}"?\nIt stops running and leaves this list. Its run history is kept.`
+        : needsYou(task)
+          ? `Delete "${definition.title}"?\nIt leaves this list. Its unfinished run is not marked done; the run and its check history stay in the audit log. The server refuses while anything the run started is still live or pending.`
+          : `Delete "${definition.title}"?\nIt stops running and leaves this list. Its check history stays in the audit log.`,
       { variant: "destructive" },
     );
     if (confirmed !== true) return;
@@ -262,15 +287,14 @@ function TaskRow({
           <span className="min-w-0 space-y-0.5">
             <span className="flex flex-wrap items-center gap-2">
               <span className="text-sm font-medium">{definition.title}</span>
+              <Badge variant="outline">{isCommandTask(definition) ? "Command" : "Agent"}</Badge>
               <Badge variant={status.tone}>{status.label}</Badge>
               {task.paused && status.label !== "Paused" && (
                 <Badge variant="secondary">Paused</Badge>
               )}
             </span>
             <span className="block text-xs text-muted-foreground">
-              {describeSchedule(definition.schedule)} · {targetLabel(task, targets)} ·{" "}
-              {PRISM_ROLE_LABELS[definition.role]}
-              {definition.role === "worker" && definition.lane ? ` (${definition.lane})` : ""}
+              {describeSchedule(definition.schedule)} · {targetLabel(task, targets)}
             </span>
           </span>
         </button>
@@ -315,16 +339,20 @@ function TaskRow({
         </div>
       </div>
       <dl className="grid gap-x-4 gap-y-1 pl-5.5 text-xs sm:grid-cols-[auto_1fr]">
-        <dt className="text-muted-foreground">Last run</dt>
+        <dt className="text-muted-foreground">Next run</dt>
         <dd>
-          {run === null
-            ? "Never ran"
-            : `${formatSlot(run.slot)}, judged by check v${run.checkVersion}: ${
-                run.check === null ? "no verdict yet" : run.check.passed ? "passed" : "failed"
-              }`}
+          {task.nextRunAt !== null
+            ? formatSlot(task.nextRunAt)
+            : task.paused
+              ? "None while paused"
+              : "None scheduled"}
         </dd>
+        <dt className="text-muted-foreground">Last run</dt>
+        <dd>{lastRunLabel(task)}</dd>
         <dt className="text-muted-foreground">Failure streak</dt>
         <dd>{task.failureStreak}</dd>
+        <dt className="text-muted-foreground">Created by</dt>
+        <dd>{creator === null ? "Unknown" : describeActor(creator, targets.threadTitle)}</dd>
         {task.lastError && (
           <>
             <dt className="text-muted-foreground">Last error</dt>
@@ -338,9 +366,7 @@ function TaskRow({
           </>
         )}
       </dl>
-      {open && (
-        <TaskDetails environmentId={environmentId} task={task} targets={targets} check={check} />
-      )}
+      {open && <TaskDetails environmentId={environmentId} task={task} targets={targets} />}
     </div>
   );
 }
@@ -349,27 +375,45 @@ function TaskDetails({
   environmentId,
   task,
   targets,
-  check,
 }: {
   environmentId: EnvironmentId;
   task: ScheduledTask;
   targets: Targets;
-  check: TaskCheckVersion;
 }) {
+  const { definition } = task;
+  const check = activeCheck(task);
   const neighbours = task.choices.flatMap((choice) => choice.neighbours);
   return (
     <div className="space-y-4 pl-5.5 text-xs">
-      <section className="space-y-1">
-        <h3 className="font-medium">Prompt</h3>
-        <p className="whitespace-pre-wrap text-muted-foreground">{task.definition.prompt}</p>
-      </section>
-      <section className="space-y-1">
-        <h3 className="font-medium">Outcome check v{check.version}</h3>
-        <pre className="overflow-x-auto rounded-md bg-muted/40 p-2 font-mono">{check.command}</pre>
-        <p className="text-muted-foreground">
-          Runs in <span className="font-mono">{task.checkCwd}</span>. Exit 0 means done.
-        </p>
-      </section>
+      {isCommandTask(definition) ? (
+        <section className="space-y-1">
+          <h3 className="font-medium">Command</h3>
+          <pre className="overflow-x-auto rounded-md bg-muted/40 p-2 font-mono">
+            {definition.command}
+          </pre>
+          <p className="text-muted-foreground">
+            Runs with /bin/sh in <span className="font-mono">{task.checkCwd}</span>. Exit 0 passes;
+            anything else needs you. It stops after 30 minutes. No agent starts and nothing retries:
+            the next scheduled time runs it again.
+          </p>
+        </section>
+      ) : (
+        <section className="space-y-1">
+          <h3 className="font-medium">Prompt</h3>
+          <p className="whitespace-pre-wrap text-muted-foreground">{definition.prompt}</p>
+        </section>
+      )}
+      {check !== null && (
+        <section className="space-y-1">
+          <h3 className="font-medium">Outcome check v{check.version}</h3>
+          <pre className="overflow-x-auto rounded-md bg-muted/40 p-2 font-mono">
+            {check.command}
+          </pre>
+          <p className="text-muted-foreground">
+            Runs in <span className="font-mono">{task.checkCwd}</span>. Exit 0 means done.
+          </p>
+        </section>
+      )}
       {neighbours.length > 0 && (
         <section className="space-y-1">
           <h3 className="font-medium">Tasks near the chosen minute</h3>
@@ -394,12 +438,51 @@ function TaskDetails({
           </ul>
         )}
       </section>
-      <CheckHistory environmentId={environmentId} task={task} targets={targets} />
+      {check !== null && (
+        <CheckHistory
+          environmentId={environmentId}
+          task={task}
+          targets={targets}
+          active={check.version}
+        />
+      )}
     </div>
   );
 }
 
+function CommandRunEntry({ run }: { run: TaskRun }) {
+  const status = runStatusView(run);
+  const view = commandRunView(run);
+  return (
+    <li className="space-y-1 rounded-md border border-border/50 p-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span>{formatSlot(run.slot)}</span>
+        <Badge variant={status.tone}>{status.label}</Badge>
+        <span className="text-muted-foreground">{view.exit}</span>
+      </div>
+      <p className="text-muted-foreground">
+        Started {view.started ?? "unknown"}
+        {view.ended !== null ? ` · ended ${view.ended}` : ""}
+      </p>
+      {run.error && <p className="break-words text-destructive">{run.error}</p>}
+      {view.output !== null ? (
+        <details>
+          <summary className="cursor-pointer text-muted-foreground">Output (last 4 KiB)</summary>
+          <pre className="mt-1 max-h-48 overflow-auto rounded-md bg-muted/40 p-2 font-mono whitespace-pre-wrap">
+            {view.output || "(no output)"}
+          </pre>
+        </details>
+      ) : (
+        view.outputNote !== null && (
+          <p className="text-muted-foreground">Output: {view.outputNote}</p>
+        )
+      )}
+    </li>
+  );
+}
+
 function RunEntry({ run }: { run: TaskRun }) {
+  if (isCommandTask(run.definition)) return <CommandRunEntry run={run} />;
   const status = runStatusView(run);
   return (
     <li className="space-y-1 rounded-md border border-border/50 p-2">
@@ -431,10 +514,12 @@ function CheckHistory({
   environmentId,
   task,
   targets,
+  active,
 }: {
   environmentId: EnvironmentId;
   task: ScheduledTask;
   targets: Targets;
+  active: number;
 }) {
   const readHistory = useAtomCommand(scheduledTaskCheckHistory, { reportFailure: false });
   const [older, setOlder] = useState<ReadonlyArray<TaskCheckVersion>>([]);
@@ -445,7 +530,6 @@ function CheckHistory({
     const byVersion = new Map([...task.checks, ...older].map((check) => [check.version, check]));
     return [...byVersion.values()].toSorted((a, b) => b.version - a.version);
   }, [older, task.checks]);
-  const active = activeCheck(task).version;
   const oldest = shown.at(-1)?.version ?? 1;
 
   const loadOlder = async () => {
@@ -661,12 +745,28 @@ function TaskDialog({
         <DialogHeader>
           <DialogTitle>{task ? "Edit scheduled task" : "New scheduled task"}</DialogTitle>
           <DialogDescription>
-            A run is done only when the outcome check exits 0. Until then the scheduler keeps the
-            work going in the same thread.
+            {draft.kind === "command"
+              ? "Runs a shell command on the schedule, without an agent. Exit 0 passes; anything else needs you until a later run passes."
+              : "A run is done only when the outcome check exits 0. Until then the scheduler keeps the work going in the same thread."}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
           <div className="space-y-4">
+            {task === null && (
+              <div className="space-y-1">
+                <Label>Kind</Label>
+                <ToggleGroup
+                  aria-label="Kind"
+                  value={[draft.kind]}
+                  onValueChange={(next) => {
+                    if (next[0] === "agent" || next[0] === "command") set("kind", next[0]);
+                  }}
+                >
+                  <Toggle value="agent">Agent</Toggle>
+                  <Toggle value="command">Command</Toggle>
+                </ToggleGroup>
+              </div>
+            )}
             <Field id="scheduled-task-title" label="Title">
               <Input
                 id="scheduled-task-title"
@@ -674,57 +774,13 @@ function TaskDialog({
                 onChange={(event) => set("title", event.target.value)}
               />
             </Field>
-            <Field id="scheduled-task-prompt" label="Prompt">
-              <Textarea
-                id="scheduled-task-prompt"
-                value={draft.prompt}
-                onChange={(event) => set("prompt", event.target.value)}
-              />
-            </Field>
-            <TargetFields draft={draft} set={set} targets={targets} />
-            <div className="flex flex-wrap gap-4">
-              <Field id="scheduled-task-role" label="Prism role">
-                <Select
-                  value={draft.role}
-                  onValueChange={(value) => {
-                    const role = PRISM_ROLES.find((candidate) => candidate === value);
-                    if (role) set("role", role);
-                  }}
-                >
-                  <SelectTrigger id="scheduled-task-role" size="sm" className="w-44">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectPopup>
-                    {PRISM_ROLES.map((role) => (
-                      <SelectItem key={role} value={role}>
-                        {PRISM_ROLE_LABELS[role]}
-                      </SelectItem>
-                    ))}
-                  </SelectPopup>
-                </Select>
-              </Field>
-              {draft.role === "worker" && (
-                <div className="space-y-1">
-                  <Label>Worker lane</Label>
-                  <ToggleGroup
-                    aria-label="Worker lane"
-                    value={[draft.lane]}
-                    onValueChange={(next) => {
-                      const lane = PrismLane.literals.find((candidate) => candidate === next[0]);
-                      if (lane) set("lane", lane);
-                    }}
-                  >
-                    {PrismLane.literals.map((lane) => (
-                      <Toggle key={lane} value={lane}>
-                        {lane[0]!.toUpperCase() + lane.slice(1)}
-                      </Toggle>
-                    ))}
-                  </ToggleGroup>
-                </div>
-              )}
-            </div>
+            {draft.kind === "command" ? (
+              <CommandFields draft={draft} set={set} targets={targets} />
+            ) : (
+              <AgentFields draft={draft} set={set} targets={targets} />
+            )}
             <ScheduleFields draft={draft} set={set} />
-            <CheckFields draft={draft} set={set} task={task} />
+            {draft.kind === "agent" && <CheckFields draft={draft} set={set} task={task} />}
             {error && (
               <p role="alert" className="text-sm text-destructive">
                 {error}
@@ -742,6 +798,101 @@ function TaskDialog({
         </DialogFooter>
       </DialogPopup>
     </Dialog>
+  );
+}
+
+function AgentFields({
+  draft,
+  set,
+  targets,
+}: {
+  draft: TaskDraft;
+  set: SetDraft;
+  targets: Targets;
+}) {
+  return (
+    <>
+      <Field id="scheduled-task-prompt" label="Prompt">
+        <Textarea
+          id="scheduled-task-prompt"
+          value={draft.prompt}
+          onChange={(event) => set("prompt", event.target.value)}
+        />
+      </Field>
+      <TargetFields draft={draft} set={set} targets={targets} />
+      <div className="flex flex-wrap gap-4">
+        <Field id="scheduled-task-role" label="Prism role">
+          <Select
+            value={draft.role}
+            onValueChange={(value) => {
+              const role = PRISM_ROLES.find((candidate) => candidate === value);
+              if (role) set("role", role);
+            }}
+          >
+            <SelectTrigger id="scheduled-task-role" size="sm" className="w-44">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectPopup>
+              {PRISM_ROLES.map((role) => (
+                <SelectItem key={role} value={role}>
+                  {PRISM_ROLE_LABELS[role]}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        </Field>
+        {draft.role === "worker" && (
+          <div className="space-y-1">
+            <Label>Worker lane</Label>
+            <ToggleGroup
+              aria-label="Worker lane"
+              value={[draft.lane]}
+              onValueChange={(next) => {
+                const lane = PrismLane.literals.find((candidate) => candidate === next[0]);
+                if (lane) set("lane", lane);
+              }}
+            >
+              {PrismLane.literals.map((lane) => (
+                <Toggle key={lane} value={lane}>
+                  {lane[0]!.toUpperCase() + lane.slice(1)}
+                </Toggle>
+              ))}
+            </ToggleGroup>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+function CommandFields({
+  draft,
+  set,
+  targets,
+}: {
+  draft: TaskDraft;
+  set: SetDraft;
+  targets: Targets;
+}) {
+  return (
+    <>
+      <div className="space-y-1">
+        <Label>Project</Label>
+        <ProjectSelect draft={draft} set={set} targets={targets} />
+      </div>
+      <Field
+        id="scheduled-task-command"
+        label="Command"
+        help="Runs with /bin/sh in the project root, with no input, and stops after 30 minutes. Keep it in the foreground. You can use {date}, {run_id} and {task_id}."
+      >
+        <Textarea
+          id="scheduled-task-command"
+          placeholder="./scripts/backup.sh"
+          value={draft.command}
+          onChange={(event) => set("command", event.target.value)}
+        />
+      </Field>
+    </>
   );
 }
 
@@ -784,21 +935,7 @@ function TargetFields({
         <Toggle value="thread">Existing thread</Toggle>
       </ToggleGroup>
       {draft.targetKind === "new-thread" ? (
-        <Select
-          value={draft.projectId === "" ? null : draft.projectId}
-          onValueChange={(value) => set("projectId", value ?? "")}
-        >
-          <SelectTrigger size="sm" aria-label="Project">
-            <SelectValue placeholder="Choose a project" />
-          </SelectTrigger>
-          <SelectPopup>
-            {targets.projects.map((project) => (
-              <SelectItem key={project.id} value={project.id}>
-                {project.title}
-              </SelectItem>
-            ))}
-          </SelectPopup>
-        </Select>
+        <ProjectSelect draft={draft} set={set} targets={targets} />
       ) : (
         <Select
           value={draft.threadId === "" ? null : draft.threadId}
@@ -817,6 +954,34 @@ function TargetFields({
         </Select>
       )}
     </div>
+  );
+}
+
+function ProjectSelect({
+  draft,
+  set,
+  targets,
+}: {
+  draft: TaskDraft;
+  set: SetDraft;
+  targets: Targets;
+}) {
+  return (
+    <Select
+      value={draft.projectId === "" ? null : draft.projectId}
+      onValueChange={(value) => set("projectId", value ?? "")}
+    >
+      <SelectTrigger size="sm" aria-label="Project">
+        <SelectValue placeholder="Choose a project" />
+      </SelectTrigger>
+      <SelectPopup>
+        {targets.projects.map((project) => (
+          <SelectItem key={project.id} value={project.id}>
+            {project.title}
+          </SelectItem>
+        ))}
+      </SelectPopup>
+    </Select>
   );
 }
 
@@ -924,22 +1089,21 @@ function CheckFields({
   set: SetDraft;
   task: ScheduledTask | null;
 }) {
+  const current = task === null ? null : activeCheck(task);
   return (
     <div className="space-y-3">
       <Field
         id="scheduled-task-check"
-        label={
-          task ? `New outcome check (optional, now v${activeCheck(task).version})` : "Outcome check"
-        }
+        label={current ? `New outcome check (optional, now v${current.version})` : "Outcome check"}
         help={
-          task
+          current
             ? "Leave empty to keep the current check. A new check applies to future runs only; a running run keeps its check."
             : "A shell command the server runs after each turn, in the project root for a new thread, or the thread's worktree (the project root when it has none). Exit 0 means done. You can use {date}, {run_id} and {task_id}. It must fail now: a check that already passes is refused."
         }
       >
         <Textarea
           id="scheduled-task-check"
-          placeholder={task ? activeCheck(task).command : "test -f reports/{date}.md"}
+          placeholder={current ? current.command : "test -f reports/{date}.md"}
           value={draft.checkCommand}
           onChange={(event) => set("checkCommand", event.target.value)}
         />

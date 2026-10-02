@@ -2,6 +2,7 @@ import {
   CommandId,
   threadOwner,
   DEFAULT_RUNTIME_MODE,
+  isCommandTask,
   MessageId,
   SchedulerError,
   TaskCheckVersion,
@@ -24,6 +25,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
@@ -36,6 +38,7 @@ import { isUsageLimitError, usageLimitResetAt } from "../mcp/toolkits/threads/us
 import { threadHasQueuedTurnStart } from "../orchestration/ThreadSettlementPolicy.ts";
 import { makeScheduler, type RunObservation } from "./Scheduler.ts";
 import { iso } from "./Schedule.ts";
+import { COMMAND_TIMEOUT_MS, expandTemplate, runShellCommand } from "./CommandRunner.ts";
 import { makeRunReports, appendRunReports } from "./RunReports.ts";
 import { isSpectrumThreadId } from "../mcp/toolkits/threads/spectrumIdentity.ts";
 import { ServerRuntimeStartup } from "../serverRuntimeStartup.ts";
@@ -67,6 +70,7 @@ export const makeLiveScheduler = Effect.gen(function* () {
   const registry = yield* ProviderRegistry;
   const settings = yield* ServerSettingsService;
   const process = yield* ProcessRunner;
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const clock = yield* Effect.serviceOption(StreamClock);
   const sql = yield* SqlClient.SqlClient;
   const turns = yield* ProjectionTurnRepository.pipe(Effect.provide(ProjectionTurnRepositoryLive));
@@ -273,32 +277,46 @@ export const makeLiveScheduler = Effect.gen(function* () {
           })
           .pipe(Effect.asVoid, Effect.mapError(error));
       }),
-    check: (command, variables) => {
-      const expanded = command.replace(/\{(date|run_id|task_id)\}/g, (_, key: string) =>
-        key === "date" ? variables.date : key === "run_id" ? variables.runId : variables.taskId,
-      );
-      return process
-        .run({
-          command: "/bin/sh",
-          args: ["-c", expanded],
-          cwd: variables.cwd,
-          timeout: "30 seconds",
-          maxOutputBytes: CHECK_OUTPUT_BYTES,
-          outputMode: "truncate",
-          timeoutBehavior: "timedOutResult",
-        })
-        .pipe(
-          Effect.map((result) => ({
-            passed: result.code === 0 && !result.timedOut,
-            output: truncateCheckOutput(
-              `${result.stdout}${result.stderr}${result.timedOut ? "\nOutcome check timed out." : ""}`,
+    check: (command, variables) =>
+      expandTemplate(command, variables).pipe(
+        Effect.flatMap((expanded) =>
+          process
+            .run({
+              command: "/bin/sh",
+              args: ["-c", expanded],
+              cwd: variables.cwd,
+              timeout: "30 seconds",
+              maxOutputBytes: CHECK_OUTPUT_BYTES,
+              outputMode: "truncate",
+              timeoutBehavior: "timedOutResult",
+            })
+            .pipe(
+              Effect.map((result) => ({
+                passed: result.code === 0 && !result.timedOut,
+                output: truncateCheckOutput(
+                  `${result.stdout}${result.stderr}${result.timedOut ? "\nOutcome check timed out." : ""}`,
+                ),
+              })),
+              Effect.mapError(error),
             ),
-          })),
-          Effect.mapError(error),
-        );
-    },
-    validateTarget: (target) =>
+        ),
+      ),
+    execute: (command, variables) =>
+      expandTemplate(command, variables).pipe(
+        Effect.flatMap((expanded) =>
+          runShellCommand({
+            command: expanded,
+            cwd: variables.cwd,
+            deadline: Effect.sleep(COMMAND_TIMEOUT_MS),
+          }),
+        ),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      ),
+    validateTarget: (definition) =>
       Effect.gen(function* () {
+        const target = isCommandTask(definition)
+          ? { kind: "new-thread" as const, projectId: definition.projectId }
+          : definition.target;
         if (target.kind === "thread" && isSpectrumThreadId(target.threadId))
           return yield* new SchedulerError({
             detail: "Spectrum transcript threads have no provider and cannot be scheduled targets.",
@@ -316,12 +334,15 @@ export const makeLiveScheduler = Effect.gen(function* () {
     observe,
     prepare: (task, run) =>
       Effect.gen(function* () {
+        const definition = task.definition;
+        if (isCommandTask(definition))
+          return yield* new SchedulerError({ detail: "Command tasks start no thread." });
         const id = run.threadId ?? ThreadId.make(`scheduled-thread-${run.id}`);
         const existing = yield* getThread(id);
         if (run.hasWork && existing && run.attempt === 0) return id;
         const projectId =
-          task.definition.target.kind === "new-thread"
-            ? task.definition.target.projectId
+          definition.target.kind === "new-thread"
+            ? definition.target.projectId
             : existing?.projectId;
         if (!projectId)
           return yield* Effect.fail(new SchedulerError({ detail: "Target project unavailable." }));
@@ -331,8 +352,8 @@ export const makeLiveScheduler = Effect.gen(function* () {
         ).settings;
         const models = prismRoleModels(
           config.prismRoles,
-          task.definition.role,
-          task.definition.lane ?? "medium",
+          definition.role,
+          definition.lane ?? "medium",
         );
         const providers = yield* registry.getProviders;
         const rotated = models.length
@@ -361,7 +382,7 @@ export const makeLiveScheduler = Effect.gen(function* () {
               commandId: CommandId.make(`server:scheduler-create:${run.id}`),
               threadId: id,
               projectId,
-              title: task.definition.title,
+              title: definition.title,
               owner: threadOwner(run),
               modelSelection,
               runtimeMode: DEFAULT_RUNTIME_MODE,
@@ -389,7 +410,8 @@ export const makeLiveScheduler = Effect.gen(function* () {
       }),
     send: (task, run, text) =>
       Effect.gen(function* () {
-        if (!run.threadId) return false;
+        const definition = task.definition;
+        if (!run.threadId || isCommandTask(definition)) return false;
         const thread = yield* getThread(run.threadId);
         if (!thread) return false;
         const admission = Effect.gen(function* () {
@@ -435,7 +457,7 @@ export const makeLiveScheduler = Effect.gen(function* () {
           thread,
           run.hasWork
             ? withReports
-            : roleTaskMessage(projectSettings.prismRoles[task.definition.role], withReports),
+            : roleTaskMessage(projectSettings.prismRoles[definition.role], withReports),
           commandId,
           true,
           admission,
@@ -467,6 +489,11 @@ export const makeLiveScheduler = Effect.gen(function* () {
   // Authorization consults durable attribution, including judges older than the health window.
   const authorAllowed = (taskId: string, actor: string) =>
     Effect.gen(function* () {
+      // Command runs have no thread, so no actor can be their judge. Skip the history scan.
+      const current = (yield* engine.getScheduledTasks ?? Effect.succeed([])).find(
+        (task) => task.id === taskId,
+      );
+      if (current && isCommandTask(current.definition)) return;
       const rows = yield* sql<{
         found: number;
       }>`SELECT 1 AS found FROM orchestration_events, json_each(payload_json, '$.runs') AS runs

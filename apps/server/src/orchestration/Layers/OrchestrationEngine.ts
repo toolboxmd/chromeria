@@ -5,7 +5,7 @@ import type {
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
-import { OrchestrationCommand, ScheduledTask, schedulerOwnsThread } from "@t3tools/contracts";
+import { OrchestrationCommand, schedulerOwnsThread } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
@@ -51,6 +51,11 @@ import {
   type ThreadRetirement,
 } from "../ThreadRetirement.ts";
 import { spectrumStopSuperseded } from "../../mcp/toolkits/threads/spectrumIdentity.ts";
+import {
+  durableRevision,
+  loadScheduledTasks,
+  storeTaskState,
+} from "../../scheduler/RuntimeState.ts";
 import { decideOrchestrationCommand } from "../decider.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
@@ -92,8 +97,6 @@ function commandToAggregateRef(command: OrchestrationCommand): {
       };
   }
 }
-
-const decodeScheduledTask = Schema.decodeUnknownEffect(Schema.fromJsonString(ScheduledTask));
 
 const makeOrchestrationEngine = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -334,12 +337,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           .withTransaction(
             Effect.gen(function* () {
               if (envelope.command.type === "scheduler.state.set") {
-                const current = yield* sql<{
-                  revision: number;
-                }>`SELECT json_extract(payload_json, '$.revision') AS revision
-                  FROM orchestration_events WHERE event_type = 'scheduler.state-set' AND stream_id = ${envelope.command.task.id}
-                  ORDER BY sequence DESC LIMIT 1`;
-                if ((current[0]?.revision ?? 0) !== envelope.command.expectedRevision)
+                if (
+                  (yield* durableRevision(sql, envelope.command.task.id)) !==
+                  envelope.command.expectedRevision
+                )
                   return yield* new OrchestrationCommandInvariantError({
                     commandType: envelope.command.type,
                     detail: "Durable scheduled task claim lost its revision race.",
@@ -356,14 +357,22 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 attachmentCleanups.push(cleanup);
                 committedEvents.push(savedEvent);
               }
+              if (envelope.command.type === "scheduler.state.set")
+                nextCommandReadModel = yield* storeTaskState(
+                  sql,
+                  nextCommandReadModel,
+                  envelope.command.task,
+                );
 
               const lastSavedEvent = committedEvents.at(-1) ?? null;
               if (
                 lastSavedEvent === null &&
-                envelope.command.type === "thread.turn.start" &&
-                envelope.command.idleGuard !== undefined
+                ((envelope.command.type === "thread.turn.start" &&
+                  envelope.command.idleGuard !== undefined) ||
+                  envelope.command.type === "scheduler.state.set")
               ) {
-                // Losing an idle race is an accepted no-op, not a provider failure.
+                // Losing an idle race is an accepted no-op, not a provider failure. A scheduled
+                // command's routine state is accepted with its runtime row and no event.
                 yield* commandReceiptRepository.upsert({
                   commandId: envelope.command.commandId,
                   aggregateKind: aggregateRef.aggregateKind,
@@ -508,16 +517,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   yield* projectionPipeline.bootstrap;
   commandReadModel = yield* projectionSnapshotQuery.getCommandReadModel();
-  // Fork-owned state is projected from the existing log. No schema migration or separate journal.
-  const schedulerRows = yield* sql<{ payload: string }>`
-    SELECT payload_json AS payload FROM orchestration_events
-    WHERE event_type = 'scheduler.state-set' AND sequence IN (
-      SELECT MAX(sequence) FROM orchestration_events WHERE event_type = 'scheduler.state-set' GROUP BY stream_id
-    )
-  `;
+  // Fork-owned scheduler state: the log plus command tasks' runtime rows. No numbered migration.
   commandReadModel = {
     ...commandReadModel,
-    scheduledTasks: yield* Effect.forEach(schedulerRows, (row) => decodeScheduledTask(row.payload)),
+    scheduledTasks: yield* loadScheduledTasks(sql),
   };
   for (const activity of yield* projectionSnapshotQuery.listActivitiesByKind(RETIREMENT_KIND, {
     includeArchived: true,

@@ -908,13 +908,20 @@ for per-match decisions and the absorption PR record.
 ```json
 {
   "id": "scheduled-tasks",
-  "purpose": "Run repeating and one-shot tasks until their pinned server outcome check passes, with durable same-thread recovery.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/123"],
+  "purpose": "Run repeating and one-shot tasks until their pinned server outcome check passes, with durable same-thread recovery, plus scheduled shell commands that start no agent.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/123",
+    "https://github.com/toolboxmd/chromeria/issues/136"
+  ],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/132"],
   "newFiles": [
     "apps/server/src/mcp/toolkits/scheduler/handlers.ts",
     "apps/server/src/mcp/toolkits/scheduler/tools.ts",
+    "apps/server/src/scheduler/CommandRunner.test.ts",
+    "apps/server/src/scheduler/CommandRunner.ts",
+    "apps/server/src/scheduler/CommandTasks.test.ts",
     "apps/server/src/scheduler/RunReports.ts",
+    "apps/server/src/scheduler/RuntimeState.ts",
     "apps/server/src/scheduler/SpectrumIntegration.test.ts",
     "apps/server/src/scheduler/Schedule.test.ts",
     "apps/server/src/scheduler/Schedule.ts",
@@ -923,15 +930,22 @@ for per-match decisions and the absorption PR record.
     "apps/server/src/scheduler/Service.test.ts",
     "apps/server/src/scheduler/Service.ts",
     "apps/server/src/scheduler/rpcHandlers.ts",
+    "apps/web/src/components/ScheduledCommandNotifications.test.tsx",
+    "apps/web/src/components/ScheduledCommandNotifications.tsx",
     "apps/web/src/components/settings/ScheduledTasksSettings.logic.test.ts",
     "apps/web/src/components/settings/ScheduledTasksSettings.logic.ts",
     "apps/web/src/components/settings/ScheduledTasksSettings.tsx",
     "apps/web/src/routes/settings.scheduled-tasks.tsx",
+    "apps/web/src/scheduledCommandFailures.ts",
     "apps/web/src/state/scheduler.ts",
     "docs/user/scheduled-tasks.md",
     "packages/contracts/src/scheduler.ts"
   ],
-  "upstreamFiles": [],
+  "upstreamFiles": [
+    "apps/web/src/components/ThreadNotificationCoordinator.badge.test.tsx",
+    "apps/web/src/components/ThreadNotificationCoordinator.test.tsx",
+    "apps/web/src/components/ThreadNotificationCoordinator.tsx"
+  ],
   "sharedFiles": [
     "apps/server/src/orchestration/projector.ts",
     "apps/server/src/auth/RpcAuthorization.ts",
