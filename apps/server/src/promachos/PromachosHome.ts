@@ -30,7 +30,7 @@ This folder is the Promachos home. Every Promachos conversation runs here and re
 <!-- Write the Promachos persona here: his name, how he speaks, and how he works with you. -->
 `;
 
-export const STARTER_CLAUDE_MD = "@AGENTS.md\n";
+const STARTER_CLAUDE_MD = "@AGENTS.md\n";
 
 /** How the home finds or registers its project; the WebSocket layer dispatches the command. */
 export interface PromachosHomeProjects {
