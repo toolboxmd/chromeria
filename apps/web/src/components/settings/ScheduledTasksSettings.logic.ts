@@ -268,7 +268,7 @@ export const needsYou = (task: ScheduledTask) => unfinishedRun(task)?.status ===
  * The command task is failing: its last finished run failed and no run has passed since. A run
  * in progress does not clear it; only a passing run does.
  */
-export const commandFailing = (task: ScheduledTask) =>
+const commandFailing = (task: ScheduledTask) =>
   isCommandTask(task.definition) && task.failureStreak > 0;
 
 /**
