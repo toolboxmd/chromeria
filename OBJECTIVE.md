@@ -9,4 +9,4 @@ The Objective is complete when:
 - Drafters start in any project, as children or top-level threads.
 - A Spectrum runs council and free modes, compared in judged tests.
 
-VMs and mobile builds stay outside.
+VMs stay outside.
