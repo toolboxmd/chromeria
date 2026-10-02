@@ -251,7 +251,7 @@ import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../times
 
 import { SkillChipIcon, SkillInlineText } from "./SkillInlineText";
 import { deriveAgentSpawnSummary } from "./agentSpawnSummary";
-import { parseAgentMessage } from "./agentMessage";
+import { parseAgentMessage } from "@t3tools/client-runtime/agent-message";
 import { AgentMessageRow } from "./AgentMessageRow";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import {

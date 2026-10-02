@@ -199,6 +199,7 @@ import {
   ThreadMarkdownImageUnavailable,
   ThreadMarkdownImageView,
 } from "./ThreadMarkdownImage";
+import { AgentMessageCard, agentMessageOf } from "./AgentMessageCard";
 
 /** `ml-7` gutter plus the `px-3` padding of the expanded reasoning container. */
 const REASONING_CONTENT_INSET = 52;
@@ -1535,6 +1536,29 @@ function renderFeedEntry(
       props.terminalAssistantMessageIds.has(message.id) &&
       !assistantTurnStillInProgress &&
       !message.streaming;
+
+    const agentMessage = isUser ? agentMessageOf(message) : null;
+    if (agentMessage) {
+      return (
+        <AgentMessageCard
+          key={message.id}
+          message={agentMessage}
+          environmentId={props.environmentId}
+          iconSubtleColor={iconSubtleColor}
+          contentWidth={props.markdownContentWidth}
+          renderBody={(text) => (
+            <AssistantMarkdownContent
+              markdown={text}
+              markdownStyles={markdownStyles.assistant}
+              linkHandlers={props.markdownLinkHandlers}
+              renderImage={props.renderMarkdownImage}
+              skills={props.skills}
+            />
+          )}
+          onCopy={() => props.onCopyWorkRow(message.id, message.text)}
+        />
+      );
+    }
 
     if (isUser) {
       const referenceIds = new Set(

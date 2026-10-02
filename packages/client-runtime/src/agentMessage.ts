@@ -1,8 +1,8 @@
 /**
  * Messages other agents send into a thread arrive as ordinary user messages
  * whose first line names the sender (built by the server's `threads` MCP
- * toolkit, apps/server/src/mcp/toolkits/threads/handlers.ts). The timeline
- * parses that header to show them as compact rows instead of user bubbles.
+ * toolkit, apps/server/src/mcp/toolkits/threads/handlers.ts). Web and mobile
+ * timelines parse that header to show them compactly instead of as user bubbles.
  */
 export interface AgentMessage {
   kind: "report" | "message";
