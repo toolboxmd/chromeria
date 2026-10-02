@@ -2801,6 +2801,27 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.equal(yield* git(cwd, ["remote"]), "octocat\norigin");
       }),
     );
+
+    it.effect("ensureRemote reuses a partial-clone remote whose fetch line carries a filter", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* git(cwd, ["remote", "add", "origin", "https://github.com/pingdotgg/t3code.git"]);
+        yield* git(cwd, ["config", "remote.origin.promisor", "true"]);
+        yield* git(cwd, ["config", "remote.origin.partialclonefilter", "blob:none"]);
+        assert.include(yield* git(cwd, ["remote", "-v"]), "(fetch) [blob:none]");
+
+        const reused = yield* driver.ensureRemote({
+          cwd,
+          preferredName: "pingdotgg",
+          url: "git@github.com:pingdotgg/t3code.git",
+        });
+        assert.equal(reused, "origin");
+        assert.equal(yield* git(cwd, ["remote"]), "origin");
+      }),
+    );
   });
 
   describe("commit context", () => {
