@@ -1009,3 +1009,23 @@ for per-match decisions and the absorption PR record.
   "keywords": ["capturePage", "setBackgroundThrottling"]
 }
 ```
+
+## Clear error for unsupported preview URLs
+
+```json
+{
+  "id": "preview-url-error",
+  "purpose": "Reject unsupported preview URLs before dispatch with actionable agent-facing errors.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/153"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/154"],
+  "newFiles": [],
+  "upstreamFiles": [
+    "apps/server/src/mcp/McpHttpServer.test.ts",
+    "packages/contracts/src/previewAutomation.ts",
+    "apps/server/src/mcp/toolkits/preview/handlers.ts",
+    "apps/server/src/mcp/toolkits/preview/handlers.test.ts"
+  ],
+  "sharedFiles": [],
+  "keywords": ["normalizePreviewUrl", "about:blank", "PreviewAutomationInvalidUrlError"]
+}
+```

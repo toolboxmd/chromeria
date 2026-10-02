@@ -1,7 +1,13 @@
 import { expect, it } from "@effect/vitest";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { EnvironmentId, PreviewTabId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  PreviewAutomationInvalidUrlError,
+  PreviewTabId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -176,6 +182,49 @@ it.effect.each([{}, { includeImage: false }])(
         });
       }),
     ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("returns the declared invalid URL error without asking a connected preview host", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+      const connected = yield* Deferred.make<void>();
+      const requests: unknown[] = [];
+      const clientId = "mcp-invalid-url-client";
+      const events = yield* broker.connect({ clientId, environmentId });
+      yield* Stream.runForEach(events, (event) => {
+        if (event.type === "connected") return Deferred.succeed(connected, undefined);
+        requests.push(event.request);
+        // If validation regresses, answer so the test observes the opaque host failure.
+        return broker.respond({
+          clientId,
+          connectionId: event.connectionId,
+          requestId: event.request.requestId,
+          ok: false,
+          error: { _tag: "PreviewAutomationExecutionError", message: "host rejected URL" },
+        });
+      }).pipe(Effect.forkScoped);
+      yield* Deferred.await(connected);
+
+      const result = yield* server
+        .callTool({ name: "preview_open", arguments: { url: "about:blank" } })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+
+      const expected = new PreviewAutomationInvalidUrlError({
+        operation: "open",
+        reason: "parse",
+        protocol: "https:",
+        inputLength: "about:blank".length,
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content).toEqual([{ type: "text", text: expected.message }]);
+      expect(requests).toEqual([]);
+    }),
+  ).pipe(Effect.provide(TestLayer)),
 );
 
 it.effect.each([

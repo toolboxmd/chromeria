@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import {
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PREVIEW_RECORDING_STOP_TIMEOUT_MS,
+  PreviewAutomationInvalidUrlError,
   PreviewAutomationRecordingTransferError,
   PreviewAutomationRecordingDesktopUpdateRequiredError,
   PreviewAutomationRecordingArtifact,
@@ -18,6 +19,8 @@ import {
   type PreviewAutomationStatus,
   type PreviewTabId,
 } from "@t3tools/contracts";
+
+import { isPreviewUrlNormalizationError, normalizePreviewUrl } from "@t3tools/shared/preview";
 
 import {
   parseAttachmentUuid,
@@ -187,12 +190,35 @@ export const claimPreviewRecording = Effect.fn("PreviewToolkit.claimRecording")(
   return { ...recording, id: finalId, path: finalPath };
 });
 
+const validatePreviewUrl = (operation: "open" | "navigate", url: string) =>
+  Effect.try({
+    try: () => normalizePreviewUrl(url),
+    catch: (error) => {
+      if (!isPreviewUrlNormalizationError(error)) throw error;
+      return new PreviewAutomationInvalidUrlError({
+        operation,
+        reason: error.reason,
+        ...(error.protocol === undefined ? {} : { protocol: error.protocol }),
+        inputLength: error.inputLength,
+      });
+    },
+  });
+
 const handlers = {
   preview_status: (input) => invokeTargeted<PreviewAutomationStatus>("status", input ?? {}),
   preview_open: (input) =>
-    invokeTargeted<PreviewAutomationStatus>("open", normalizePreviewOpenInput(input)),
+    Effect.gen(function* () {
+      if (input.url !== undefined) yield* validatePreviewUrl("open", input.url);
+      return yield* invokeTargeted<PreviewAutomationStatus>(
+        "open",
+        normalizePreviewOpenInput(input),
+      );
+    }),
   preview_navigate: (input) =>
-    invokeTargeted<PreviewAutomationStatus>("navigate", input, input.timeoutMs),
+    Effect.gen(function* () {
+      if (input.url !== undefined) yield* validatePreviewUrl("navigate", input.url);
+      return yield* invokeTargeted<PreviewAutomationStatus>("navigate", input, input.timeoutMs);
+    }),
   preview_resize: (input) =>
     invokeTargeted<PreviewAutomationResizeResult>("resize", input, input.timeoutMs),
   preview_set_appearance: (input) =>

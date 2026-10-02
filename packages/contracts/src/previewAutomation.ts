@@ -790,6 +790,26 @@ export class PreviewAutomationExecutionError extends Schema.TaggedError<PreviewA
   }
 }
 
+export class PreviewAutomationInvalidUrlError extends Schema.TaggedError<PreviewAutomationInvalidUrlError>()(
+  "PreviewAutomationInvalidUrlError",
+  {
+    operation: PreviewAutomationOperation,
+    reason: Schema.Literals(["empty", "parse", "unsupported-protocol"]),
+    protocol: Schema.optional(Schema.String),
+    inputLength: Schema.Number,
+  },
+) {
+  override get message(): string {
+    const operation = this.operation === "open" ? "open" : "navigate";
+    const protocol = this.protocol === undefined ? "" : `: ${this.protocol}`;
+    const hint =
+      operation === "open"
+        ? "Omit url to open a blank tab."
+        : "Use target {kind:'environment-port',port} for a dev server.";
+    return `preview_${operation} accepts an absolute http(s) URL or a schemeless host such as example.com or localhost:5173 (got ${this.reason}${protocol}). ${hint}`;
+  }
+}
+
 export class PreviewAutomationInvalidSelectorError extends Schema.TaggedError<PreviewAutomationInvalidSelectorError>()(
   "PreviewAutomationInvalidSelectorError",
   {
@@ -934,6 +954,7 @@ export const PreviewAutomationError = Schema.Union([
   PreviewAutomationTimeoutError,
   PreviewAutomationControlInterruptedError,
   PreviewAutomationExecutionError,
+  PreviewAutomationInvalidUrlError,
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationTargetNotEditableError,
   PreviewAutomationResultTooLargeError,
