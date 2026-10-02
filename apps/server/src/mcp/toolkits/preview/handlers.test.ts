@@ -1,17 +1,102 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Stream from "effect/Stream";
 
 import {
   createPendingAttachmentId,
   parseThreadSegmentFromAttachmentId,
 } from "../../../attachmentStore.ts";
 import * as ServerConfig from "../../../config.ts";
-import { claimPreviewRecording, normalizePreviewOpenInput } from "./handlers.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
+import {
+  claimPreviewRecording,
+  normalizePreviewOpenInput,
+  PreviewStandardToolkitHandlersLive,
+} from "./handlers.ts";
+import { PreviewStandardToolkit } from "./tools.ts";
+
+const makePreviewHarness = Effect.fnUntraced(function* () {
+  const requests: PreviewAutomationBroker.PreviewAutomationInvokeInput[] = [];
+  const broker = Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({
+    invoke: <A>(request: PreviewAutomationBroker.PreviewAutomationInvokeInput) => {
+      requests.push(request);
+      return Effect.succeed({
+        available: true,
+        visible: false,
+        tabId: null,
+        url: null,
+        title: null,
+        loading: false,
+      } as A);
+    },
+  });
+  const toolkit = yield* PreviewStandardToolkit.pipe(
+    Effect.provide(PreviewStandardToolkitHandlersLive.pipe(Layer.provide(broker))),
+  );
+  const call = <Name extends "preview_open" | "preview_navigate">(
+    name: Name,
+    input: Parameters<typeof toolkit.handle<Name>>[1],
+  ) =>
+    toolkit.handle(name, input).pipe(
+      Stream.unwrap,
+      Stream.runCollect,
+      Effect.provide(broker),
+      Effect.provideService(McpInvocationContext.McpInvocationContext, {
+        environmentId: EnvironmentId.make("environment-1"),
+        threadId: ThreadId.make("thread-1"),
+        providerSessionId: "session-1",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        capabilities: new Set(["preview"] as const),
+        issuedAt: 1,
+      }),
+    );
+  return { call, requests };
+});
+
+describe("preview URL validation", () => {
+  it.effect.each(["preview_open", "preview_navigate"] as const)(
+    "%s rejects about:blank before dispatch with actionable, URL-free diagnostics",
+    (name) =>
+      Effect.gen(function* () {
+        const { call, requests } = yield* makePreviewHarness();
+        const result = yield* call(name, { url: "about:blank" }).pipe(Effect.result);
+        expect(requests).toEqual([]);
+        expect(result._tag).toBe("Failure");
+        if (result._tag !== "Failure") return;
+        expect(result.failure._tag).toBe("PreviewAutomationInvalidUrlError");
+        expect(result.failure.message).toContain(name);
+        expect(result.failure.message).toContain("absolute http(s) URL");
+        expect(result.failure.message).toContain("example.com");
+        expect(result.failure.message).toContain("localhost:5173");
+        expect(result.failure.message).not.toContain("about:blank");
+        expect(result.failure.message).toContain(
+          name === "preview_open" ? "Omit url to open a blank tab." : "environment-port",
+        );
+      }),
+  );
+
+  it.effect("dispatches valid URLs unchanged, blank opens, and environment targets", () =>
+    Effect.gen(function* () {
+      const { call, requests } = yield* makePreviewHarness();
+      yield* call("preview_open", { url: "example.com" });
+      yield* call("preview_open", {});
+      yield* call("preview_navigate", { url: "localhost:5173" });
+      yield* call("preview_navigate", { target: { kind: "environment-port", port: 5173 } });
+      expect(requests.map(({ operation, input }) => ({ operation, input }))).toEqual([
+        { operation: "open", input: { url: "example.com", reuseExistingTab: true } },
+        { operation: "open", input: { reuseExistingTab: true } },
+        { operation: "navigate", input: { url: "localhost:5173" } },
+        { operation: "navigate", input: { target: { kind: "environment-port", port: 5173 } } },
+      ]);
+    }),
+  );
+});
 
 describe("normalizePreviewOpenInput", () => {
   it("leaves an unstated visibility for the client preference to decide", () => {

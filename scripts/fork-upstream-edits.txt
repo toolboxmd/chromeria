@@ -247,3 +247,8 @@ apps/server/src/vcs/GitVcsDriverCore.ts
 # Preview capture while the window is not painted (#151)
 apps/desktop/src/preview/Manager.test.ts
 apps/desktop/src/preview/Manager.ts
+
+# Clear error for unsupported preview URLs (#153)
+packages/contracts/src/previewAutomation.ts
+apps/server/src/mcp/toolkits/preview/handlers.ts
+apps/server/src/mcp/toolkits/preview/handlers.test.ts
