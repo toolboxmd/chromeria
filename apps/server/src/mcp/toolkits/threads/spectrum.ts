@@ -177,6 +177,7 @@ export const makeSpectrum = Effect.fn("Spectrum.make")(function* (
     commandId: CommandId.make(`${id}:start`),
     threadId: thread.id,
     message: { messageId: MessageId.make(id), role: "user", text, attachments: [] },
+    modelSelection: thread.modelSelection,
     runtimeMode: thread.runtimeMode,
     interactionMode: thread.interactionMode,
     createdAt,

@@ -52,6 +52,7 @@ const notifyStaleParent = Effect.fn("Prism.notifyStaleParent")(function* (stale:
         `Reason: ${stale.reason}.`,
       attachments: [],
     },
+    modelSelection: parent.value.modelSelection,
     runtimeMode: parent.value.runtimeMode,
     interactionMode: parent.value.interactionMode,
     createdAt,
