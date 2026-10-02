@@ -169,7 +169,7 @@ export const ThreadSummary = Schema.Struct({
 
 const SpawnThreadTool = Tool.make("spawn_thread", {
   description:
-    "Use when another agent should do work: a bounded task, review, or one-PR job (role: dispatcher). Use instead of codex exec, claude -p, opencode run or grok in the shell so the user can see the work. Prism roles choose a kit and eligible model; worker takes a difficulty lane. Use retry then escalation for failed children, or name instance, model and effort. Optional projectId, mode and runtimeMode control placement and launch. Children report back by default. Follow up with read_thread and message_thread.",
+    "Use when another agent should do work: a bounded task (role: worker), a review (role: reviewer), or work that needs several agents coordinated (role: dispatcher). Use instead of codex exec, claude -p, opencode run or grok in the shell so the user can see the work. Prism roles choose a kit and eligible model; worker takes a difficulty lane. Use retry then escalation for failed children, or name instance, model and effort. Optional projectId, mode and runtimeMode control placement and launch. Children report back by default. Follow up with read_thread and message_thread.",
   parameters: SpawnThreadInput,
   success: SpawnThreadResult,
   failure: ThreadsToolError,

@@ -9,7 +9,7 @@ describe("t3-code tool instructions", () => {
       expect(instructions).toContain("<t3_code_tool_use>");
       const routing = [
         "Delegate with spawn_thread and a role (worker with a lane by difficulty, reviewer); Prism picks the model.",
-        "For a job that ends in one PR, start spawn_thread(role: dispatcher) with the brief, unless the user or a comparison job says to coordinate it yourself.",
+        "Use spawn_thread(role: dispatcher) only when the work needs several agents coordinated, such as parallel workers or several PRs, and the user or a comparison job has not asked you to coordinate it yourself; give a single bounded change to one worker.",
         "When a child fails, hits a limit or goes stale, interrupt_thread it and, once it reports settled, spawn retry, then escalation, then ask whoever started you.",
       ];
       const routingPositions = routing.map((rule) => instructions.indexOf(rule));
