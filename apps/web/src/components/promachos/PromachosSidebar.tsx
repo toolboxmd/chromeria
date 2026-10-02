@@ -31,6 +31,7 @@ import {
 import { SharedThreadLabel } from "../people/SharedThreadLabel";
 import { usePersonViewThreads } from "../people/usePersonView";
 import { promachosConversations } from "./promachosConversations";
+import { PromachosNewHome } from "./PromachosNewHome";
 import { usePromachosHome, useStartPromachosConversation } from "./promachosMode";
 
 const STATUS_BADGE: Partial<
@@ -86,7 +87,7 @@ export function PromachosSidebar() {
           <SidebarGroup>
             <p className="px-2 pt-1 pb-2 text-muted-foreground text-xs">
               {home === null
-                ? "Choose the project that is the Promachos home. His conversations live there."
+                ? "Choose the project that is the Promachos home, or create a new one. His conversations live there."
                 : "The Promachos home is not available here. Choose it again."}
             </p>
             <SidebarMenu>
@@ -101,6 +102,14 @@ export function PromachosSidebar() {
                     <span>{projectLabel(project, environmentLabelById, multipleEnvironments)}</span>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
+              ))}
+              {environments.map((environment) => (
+                <PromachosNewHome
+                  key={environment.environmentId}
+                  environmentId={environment.environmentId}
+                  label={environments.length > 1 ? `New home · ${environment.label}` : "New home"}
+                  onCreated={setHome}
+                />
               ))}
             </SidebarMenu>
           </SidebarGroup>

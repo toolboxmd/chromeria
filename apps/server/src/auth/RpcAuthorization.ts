@@ -8,6 +8,7 @@ import {
   AuthReviewWriteScope,
   AuthTerminalOperateScope,
   ISSUE_WS_METHODS,
+  PROMACHOS_HOME_WS_METHODS,
   ORCHESTRATION_WS_METHODS,
   type AuthEnvironmentScope,
   WS_METHODS,
@@ -188,6 +189,7 @@ export const RPC_REQUIRED_SCOPES = {
   [ISSUE_WS_METHODS.issuesSetState]: AuthOrchestrationOperateScope,
   // Fork: Issue links (toolboxmd/t3code#28).
   ...ISSUE_LINK_RPC_SCOPES,
+  [PROMACHOS_HOME_WS_METHODS.create]: AuthOrchestrationOperateScope,
 } as const satisfies Readonly<Record<WsRpcMethod, AuthEnvironmentScope>>;
 
 export function requiredScopeForRpcMethod(method: string): AuthEnvironmentScope {

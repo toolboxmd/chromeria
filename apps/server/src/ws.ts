@@ -169,6 +169,7 @@ import { makeIssueRpcHandlers } from "./issues/issueRpcHandlers.ts";
 import { listLinkedPullRequestThreads } from "./pullRequest/linkedThreads.ts";
 import { IssueLinks } from "./issueLinks/IssueLinks.ts";
 import { makeIssueLinkRpcHandlers } from "./issueLinks/rpcHandlers.ts";
+import { makePromachosHomeRpcHandlers } from "./promachos/PromachosHome.ts";
 import { pullRequestSyncKey } from "./pullRequest/pullRequestSyncKey.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as PullRequestSyncReactor from "./orchestration/PullRequestSyncReactor.ts";
@@ -1890,12 +1891,34 @@ const makeWsRpcLayer = (
           .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
 
       const issueLinkHandlers = yield* makeIssueLinkRpcHandlers;
+      // Fork: Promachos home (toolboxmd/chromeria#139).
+      const promachosHomeHandlers = yield* makePromachosHomeRpcHandlers(observeRpcEffect, {
+        find: (workspaceRoot) =>
+          projectionSnapshotQuery
+            .getActiveProjectByWorkspaceRoot(workspaceRoot)
+            .pipe(Effect.map((project) => (Option.isSome(project) ? project.value.id : null))),
+        create: ({ workspaceRoot, title }) =>
+          Effect.gen(function* () {
+            const projectId = ProjectId.make(yield* randomUUID);
+            const command = yield* normalizeDispatchCommand({
+              type: "project.create",
+              commandId: yield* serverCommandId("promachos-home-create"),
+              projectId,
+              title,
+              workspaceRoot,
+              createdAt: DateTime.formatIso(yield* DateTime.now),
+            });
+            yield* dispatchNormalizedCommand(command);
+            return projectId;
+          }).pipe(Effect.provideContext(normalizerContext)),
+      });
       return WsRpcGroup.of({
         // Fork: GitHub Issues (toolboxmd/t3code#27).
         ...makeIssueRpcHandlers(issues, observeRpcEffect),
         ...makeSchedulerRpcHandlers(scheduler, currentSession, sessions, observeRpcEffect),
         // Fork: Issue links (toolboxmd/t3code#28).
         ...issueLinkHandlers,
+        ...promachosHomeHandlers,
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.dispatchCommand,
