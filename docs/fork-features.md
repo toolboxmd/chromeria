@@ -991,3 +991,21 @@ for per-match decisions and the absorption PR record.
   "keywords": ["partial clone", "blob:none", "partialclonefilter", "git remote -v"]
 }
 ```
+
+## Preview capture while the window is not painted
+
+```json
+{
+  "id": "preview-capture-unthrottle",
+  "purpose": "Keep the main window unthrottled during each guest `capturePage`, so agent preview screenshots work while Chromeria is minimized, hidden or covered.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/151"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...fix/preview-capture"],
+  "newFiles": [],
+  "upstreamFiles": [
+    "apps/desktop/src/preview/Manager.test.ts",
+    "apps/desktop/src/preview/Manager.ts"
+  ],
+  "sharedFiles": [],
+  "keywords": ["capturePage", "setBackgroundThrottling"]
+}
+```

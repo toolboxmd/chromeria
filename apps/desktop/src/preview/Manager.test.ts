@@ -2272,6 +2272,88 @@ describe("PreviewManager", () => {
     ),
   );
 
+  effectIt.effect("keeps the main window unthrottled while a guest page capture runs", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        const events: Array<string> = [];
+        const setBackgroundThrottling = vi.fn((enabled: boolean) => {
+          events.push(`throttle:${enabled}`);
+        });
+        const image = {
+          toPNG: () => Buffer.from("preview-png"),
+          toJPEG: () => Buffer.from("recording-frame"),
+          getSize: () => ({ width: 1280, height: 720 }),
+        };
+        const capturePage = vi.fn(async () => {
+          events.push("capture");
+          return image;
+        });
+        fromId.mockReturnValue(makeTestPreviewWebContents(capturePage));
+
+        yield* manager.createTab("tab_page_capture");
+        yield* manager.registerWebview("tab_page_capture", 42);
+        yield* manager.setMainWindow({
+          isDestroyed: () => false,
+          once: vi.fn(),
+          webContents: { setBackgroundThrottling },
+        } as never);
+
+        yield* manager.captureScreenshot("tab_page_capture");
+        expect(events).toEqual(["throttle:false", "capture", "throttle:true"]);
+
+        // A capture that exhausts its retries still restores throttling.
+        events.length = 0;
+        capturePage.mockImplementation(async () => {
+          events.push("capture");
+          throw new Error("UnknownVizError");
+        });
+        const failingFiber = yield* Effect.exit(manager.captureScreenshot("tab_page_capture")).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* TestClock.adjust(1_000);
+        expect(Exit.isFailure(yield* Fiber.join(failingFiber))).toBe(true);
+        expect(events).toEqual([
+          "throttle:false",
+          "capture",
+          "capture",
+          "capture",
+          "throttle:true",
+        ]);
+
+        // A recording already holds the window unthrottled, so a capture leaves it alone.
+        events.length = 0;
+        capturePage.mockImplementation(async () => {
+          events.push("capture");
+          return image;
+        });
+        yield* manager.startRecording("tab_page_capture");
+        expect(events).toEqual(["throttle:false", "capture"]);
+        events.length = 0;
+        yield* manager.captureScreenshot("tab_page_capture");
+        expect(events).toEqual(["capture"]);
+
+        // Stopping that recording mid-capture defers the restore until the capture ends.
+        events.length = 0;
+        let finishCapture: (() => void) | undefined;
+        capturePage.mockImplementation(() => {
+          events.push("capture");
+          return new Promise((resolve) => {
+            finishCapture = () => resolve(image);
+          });
+        });
+        const inFlightFiber = yield* manager
+          .captureScreenshot("tab_page_capture")
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* settle(() => finishCapture !== undefined);
+        yield* manager.stopRecording("tab_page_capture");
+        expect(events).toEqual(["capture"]);
+        finishCapture?.();
+        yield* Fiber.join(inFlightFiber);
+        expect(events).toEqual(["capture", "throttle:true"]);
+      }),
+    ),
+  );
+
   effectIt.effect("does not commit failed starts and retries throttle restoration", () =>
     withManager((manager) =>
       Effect.gen(function* () {
