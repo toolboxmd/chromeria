@@ -33,6 +33,7 @@ import {
   PARENT_ID,
   parentMessages,
   session,
+  type SpawnTestOptions,
   temporaryDirectory,
   withEngineOnly,
   withServer,
@@ -1091,6 +1092,311 @@ for (const successor of [false, true]) {
       ),
   );
 }
+
+/** A crash after a Drafter's request persisted, before its provider turn was bound. */
+const crashBeforeBinding = (directory: string, database: string) =>
+  withEngineOnly(
+    database,
+    Effect.gen(function* () {
+      yield* createParent(directory);
+      const spectrum = yield* makeSpectrum(() => "reasoningEffort");
+      const started = yield* spectrum.start(yield* threadShell(PARENT_ID), input("free", 1));
+      yield* feed(spectrum, 0);
+      const pending = (yield* state(started.threadId)).pending[0]!;
+      expect(pending).toMatchObject({ requested: true, turnId: null });
+      yield* dispatchAll([session(ThreadId.make(pending.threadId), "starting", null)]);
+      return { spectrumId: started.threadId, participantId: ThreadId.make(pending.threadId) };
+    }),
+  );
+
+/**
+ * A provider that records each physical effect in order, starting with the Drafter's surviving
+ * session. A Drafter send stays in flight until `release`; `hold` parks the next session lookup,
+ * and with it the reactor worker.
+ */
+const physicalProvider = (directory: string, participantId: ThreadId) =>
+  Effect.gen(function* () {
+    const calls: string[] = [];
+    const admitted = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const interrupted = yield* Deferred.make<void>();
+    let gate: Effect.Effect<void> | undefined;
+    const live = (threadId: ThreadId): ProviderSession => ({
+      threadId,
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      runtimeMode: "full-access",
+      status: "ready",
+      cwd: directory,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    let sessions = [live(participantId)];
+    const provider: SpawnTestOptions["provider"] = {
+      listSessions: () =>
+        Effect.suspend(() => {
+          const held = gate ?? Effect.void;
+          gate = undefined;
+          return held;
+        }).pipe(Effect.map(() => sessions)),
+      getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
+      startSession: (threadId) =>
+        Effect.sync(() => {
+          calls.push(`start:${threadId}`);
+          sessions = [...sessions, live(threadId)];
+          return live(threadId);
+        }),
+      sendTurn: (request) =>
+        Effect.sync(() => calls.push(`send:${request.threadId}`)).pipe(
+          Effect.andThen(
+            request.threadId === participantId
+              ? Deferred.succeed(admitted, undefined).pipe(
+                  Effect.andThen(Deferred.await(release)),
+                  Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined)),
+                )
+              : Effect.void,
+          ),
+          Effect.as({
+            threadId: request.threadId,
+            turnId: TurnId.make(`turn-${request.threadId}`),
+          }),
+        ),
+      stopSession: ({ threadId }) =>
+        Effect.sync(() => {
+          calls.push(`stop:${threadId}`);
+          sessions = sessions.filter((session) => session.threadId !== threadId);
+        }),
+    };
+    const hold = (effect: Effect.Effect<void>) => {
+      gate = effect;
+    };
+    return { calls, provider, admitted, release, interrupted, hold };
+  });
+const of = (calls: ReadonlyArray<string>, threadId: string) =>
+  calls.filter((call) => call.endsWith(`:${threadId}`));
+const bound = (threadId: string) => (event: OrchestrationEvent) =>
+  event.type === "thread.activity-appended" &&
+  event.aggregateId === threadId &&
+  event.payload.activity.kind === "spectrum.turn-bound";
+
+it.effect(
+  "unbound restart never stops a successor admitted between its identity read and the stop",
+  () =>
+    scenario((directory, database) =>
+      Effect.gen(function* () {
+        const { spectrumId, participantId } = yield* crashBeforeBinding(directory, database);
+        const physical = yield* physicalProvider(directory, participantId);
+        const parked = yield* Deferred.make<void>();
+        yield* withServer(
+          database,
+          Effect.gen(function* () {
+            const reactor = yield* ProviderCommandReactor;
+            yield* reactor.start();
+            const engine = yield* OrchestrationEngineService;
+            // Recovery has read the Drafter's latest request; a successor persists and the
+            // reactor admits its send before recovery dispatches the stop.
+            const spectrum = yield* makeSpectrum(() => "reasoningEffort").pipe(
+              Effect.provideService(OrchestrationEngineService, {
+                ...engine,
+                dispatch: (command, options) =>
+                  Effect.gen(function* () {
+                    if (
+                      command.type === "thread.session.stop" &&
+                      command.threadId === participantId
+                    ) {
+                      yield* sendUser(participantId, "Genuine successor").pipe(
+                        Effect.provideService(OrchestrationEngineService, engine),
+                      );
+                      yield* Deferred.await(physical.admitted);
+                    }
+                    return yield* engine.dispatch(command, options);
+                  }),
+              }),
+            );
+            yield* spectrum.recover;
+            yield* reactor.drain;
+            const events = yield* engine.readEvents(0, 100_000).pipe(Stream.runCollect);
+            expect(physical.calls).not.toContain(`stop:${participantId}`);
+            // Refused before persisting: no reactor or client ever sees a stale stop.
+            expect(
+              events.filter(
+                (event) =>
+                  event.type === "thread.session-stop-requested" &&
+                  event.aggregateId === participantId,
+              ),
+            ).toHaveLength(0);
+            expect((yield* threadShell(participantId)).session?.status).toBe("starting");
+            yield* dispatchUntil(
+              Deferred.succeed(physical.release, undefined),
+              bound(participantId),
+            );
+            yield* reactor.drain;
+            expect(yield* Deferred.isDone(physical.interrupted)).toBe(false);
+            expect(of(physical.calls, participantId)).toEqual([`send:${participantId}`]);
+            expect((yield* threadShell(participantId)).session?.status).toBe("starting");
+            expect(events.filter(settled(spectrumId))).toHaveLength(1);
+            expect(
+              (yield* parentMessages).filter((message) => message.text.startsWith("[Spectrum")),
+            ).toHaveLength(1);
+            // A restart replays the refused stop from the outbox without wedging or repeating it.
+            yield* (yield* makeSpectrum(() => "reasoningEffort")).recover;
+            yield* reactor.drain;
+            const replayed = yield* engine.readEvents(0, 100_000).pipe(Stream.runCollect);
+            expect(
+              replayed.filter(
+                (event) =>
+                  event.type === "thread.session-stop-requested" &&
+                  event.aggregateId === participantId,
+              ),
+            ).toHaveLength(0);
+            expect(replayed.filter(settled(spectrumId))).toHaveLength(1);
+            expect(
+              (yield* parentMessages).filter((message) => message.text.startsWith("[Spectrum")),
+            ).toHaveLength(1);
+            expect((yield* state(spectrumId)).status).toBe("settled");
+            expect(of(physical.calls, participantId)).toEqual([`send:${participantId}`]);
+          }),
+          (id) => (id === participantId ? Deferred.await(parked) : Effect.void),
+          { provider: physical.provider },
+        );
+      }).pipe(Effect.scoped),
+    ),
+);
+
+it.effect(
+  "unbound restart stops before a successor persisted after the stop, which then survives",
+  () =>
+    scenario((directory, database) =>
+      Effect.gen(function* () {
+        const { participantId } = yield* crashBeforeBinding(directory, database);
+        const physical = yield* physicalProvider(directory, participantId);
+        const held = yield* Deferred.make<void>();
+        const resume = yield* Deferred.make<void>();
+        const parked = yield* Deferred.make<void>();
+        yield* withServer(
+          database,
+          Effect.gen(function* () {
+            const reactor = yield* ProviderCommandReactor;
+            yield* reactor.start();
+            const engine = yield* OrchestrationEngineService;
+            const spectrum = yield* makeSpectrum(() => "reasoningEffort").pipe(
+              Effect.provideService(OrchestrationEngineService, {
+                ...engine,
+                dispatch: (command, options) =>
+                  Effect.gen(function* () {
+                    // Park the reactor in the caller's report turn, queued ahead of the stop.
+                    if (command.type === "thread.turn.start" && command.threadId === PARENT_ID)
+                      physical.hold(
+                        Deferred.succeed(held, undefined).pipe(
+                          Effect.andThen(Deferred.await(resume)),
+                        ),
+                      );
+                    if (
+                      command.type !== "thread.session.stop" ||
+                      command.threadId !== participantId
+                    )
+                      return yield* engine.dispatch(command, options);
+                    yield* Deferred.await(held);
+                    const stop = yield* engine.dispatch(command, options);
+                    // Persisted after the stop, before the reactor reads it.
+                    yield* sendUser(participantId, "Genuine successor").pipe(
+                      Effect.provideService(OrchestrationEngineService, engine),
+                    );
+                    yield* Deferred.succeed(resume, undefined);
+                    return stop;
+                  }),
+              }),
+            );
+            yield* spectrum.recover;
+            yield* Deferred.await(physical.admitted);
+            yield* reactor.drain;
+            expect(of(physical.calls, participantId)).toEqual([
+              `stop:${participantId}`,
+              `start:${participantId}`,
+              `send:${participantId}`,
+            ]);
+            yield* dispatchUntil(
+              Deferred.succeed(physical.release, undefined),
+              bound(participantId),
+            );
+            yield* reactor.drain;
+            expect(yield* Deferred.isDone(physical.interrupted)).toBe(false);
+            const events = yield* engine.readEvents(0, 100_000).pipe(Stream.runCollect);
+            // The stop writes "stopped" once, before the successor's own writes, never after.
+            const statuses = events
+              .filter(
+                (event) =>
+                  event.type === "thread.session-set" && event.aggregateId === participantId,
+              )
+              .map((event) => event.type === "thread.session-set" && event.payload.session.status);
+            const stopped = statuses.indexOf("stopped");
+            expect(stopped).toBeGreaterThan(-1);
+            expect(statuses.slice(stopped + 1)).not.toContain("stopped");
+            expect(statuses.length).toBeGreaterThan(stopped + 1);
+            expect((yield* threadShell(participantId)).session?.status).toBe("starting");
+          }),
+          (id) => (id === participantId ? Deferred.await(parked) : Effect.void),
+          { provider: physical.provider },
+        );
+      }).pipe(Effect.scoped),
+    ),
+);
+
+it.effect("a legacy Spectrum recovery stop never reaches the provider; an ordinary stop does", () =>
+  scenario((directory, database) =>
+    Effect.gen(function* () {
+      const { spectrumId, participantId } = yield* crashBeforeBinding(directory, database);
+      const physical = yield* physicalProvider(directory, participantId);
+      const parked = yield* Deferred.make<void>();
+      const stop = (id: string) =>
+        dispatchAll([
+          {
+            type: "thread.session.stop",
+            commandId: CommandId.make(id),
+            threadId: participantId,
+            createdAt: NOW,
+          },
+        ]);
+      yield* withServer(
+        database,
+        Effect.gen(function* () {
+          const reactor = yield* ProviderCommandReactor;
+          yield* reactor.start();
+          yield* sendUser(participantId, "Genuine successor");
+          yield* Deferred.await(physical.admitted);
+          // Builds before named requests stopped a Drafter by its id alone.
+          const legacy = yield* Effect.result(
+            stop(`server:spectrum:${spectrumId}:0:0:discussion:1:stop-unbound:${participantId}`),
+          );
+          yield* reactor.drain;
+          expect(physical.calls).not.toContain(`stop:${participantId}`);
+          expect(legacy._tag === "Failure" && legacy.failure._tag).toBe(
+            "OrchestrationCommandInvariantError",
+          );
+          expect((yield* threadShell(participantId)).session?.status).toBe("starting");
+          yield* stop(commandId());
+          yield* reactor.drain;
+          expect(of(physical.calls, participantId)).toEqual([
+            `send:${participantId}`,
+            `stop:${participantId}`,
+          ]);
+          expect((yield* threadShell(participantId)).session?.status).toBe("stopped");
+          const engine = yield* OrchestrationEngineService;
+          expect(
+            (yield* engine.readEvents(0, 100_000).pipe(Stream.runCollect)).filter(
+              (event) =>
+                event.type === "thread.session-stop-requested" &&
+                event.aggregateId === participantId,
+            ),
+          ).toHaveLength(1);
+          yield* Deferred.succeed(physical.release, undefined);
+        }),
+        (id) => (id === participantId ? Deferred.await(parked) : Effect.void),
+        { provider: physical.provider },
+      );
+    }).pipe(Effect.scoped),
+  ),
+);
 
 const retire = (id: string) =>
   dispatchAll([
