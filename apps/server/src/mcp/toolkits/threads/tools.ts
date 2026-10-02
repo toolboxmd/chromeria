@@ -1,4 +1,7 @@
 import {
+  ApprovalRequestId,
+  ProviderApprovalDecision,
+  ProviderUserInputAnswers,
   PrismLane,
   PrismRole,
   ProjectId,
@@ -25,7 +28,14 @@ export class ThreadsToolError extends Schema.TaggedError<ThreadsToolError>()("Th
   }
 }
 
-export const SubagentStatus = Schema.Literals(["starting", "running", "idle", "failed", "stopped"]);
+export const SubagentStatus = Schema.Literals([
+  "starting",
+  "running",
+  "waiting",
+  "idle",
+  "failed",
+  "stopped",
+]);
 export type SubagentStatus = typeof SubagentStatus.Type;
 
 export const ThreadScope = Schema.Literals(["children", "project"]);
@@ -53,7 +63,8 @@ export const SpawnThreadInput = Schema.Struct({
   ),
   runtimeMode: Schema.optional(
     RuntimeMode.annotate({
-      description: "Defaults to full-access. approval-required sends approvals to the user.",
+      description:
+        "Defaults to full-access. The parent owns child approvals and questions in every mode, including approval-required; the user can still answer.",
     }),
   ),
   task: TrimmedNonEmptyString.annotate({
@@ -93,7 +104,7 @@ export const SpawnThreadInput = Schema.Struct({
   reportBack: Schema.optional(
     Schema.Boolean.annotate({
       description:
-        "When true (default), each time the child finishes a turn its final reply is sent to this thread as a message.",
+        "When true (default), each pending approval/question and each finished turn is sent to this thread as a message once.",
     }),
   ),
 });
@@ -153,7 +164,16 @@ export const InterruptThreadResult = Schema.Struct({
   statusAfter: SubagentStatus,
 });
 
+export const PendingThreadRequest = Schema.Struct({
+  requestId: ApprovalRequestId,
+  kind: Schema.Literals(["approval", "user-input"]),
+  summary: Schema.String,
+  detail: Schema.Record(Schema.String, Schema.Unknown),
+});
+export type PendingThreadRequest = typeof PendingThreadRequest.Type;
+
 export const ThreadSummary = Schema.Struct({
+  pendingRequests: Schema.Array(PendingThreadRequest),
   threadId: Schema.String,
   id: Schema.String,
   title: Schema.String,
@@ -211,9 +231,33 @@ const InterruptThreadTool = Tool.make("interrupt_thread", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+const PendingRequestRespondTool = Tool.make("pending_request_respond", {
+  description:
+    "Answer a pending approval or question of this thread's child or descendant, across projects and in every runtime mode. Read pendingRequests with read_thread first. For approvals pass decision (accept, acceptForSession, acceptAlways, decline or cancel, using the offered options); for questions pass answers keyed by question id. The user can still answer in the child UI. Refuses unrelated threads and resolved or unknown requests.",
+  parameters: Schema.Struct({
+    threadId: TrimmedNonEmptyString,
+    requestId: ApprovalRequestId,
+    decision: Schema.optional(ProviderApprovalDecision),
+    answers: Schema.optional(ProviderUserInputAnswers),
+  }),
+  success: Schema.Struct({
+    threadId: Schema.String,
+    requestId: ApprovalRequestId,
+    kind: Schema.Literals(["approval", "user-input"]),
+  }),
+  failure: ThreadsToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Respond to child request")
+  .annotate(Tool.Meta, ALWAYS_LOAD_META)
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
 const ReadThreadTool = Tool.make("read_thread", {
   description:
-    "Read a thread's status and its latest assistant reply. The default scope is this thread's children; use scope: project and optional projectId for any thread in the selected project, including settled threads.",
+    "Read a thread's status, pending approvals/questions with request ids and detail, and its latest assistant reply. Pending requests report status waiting. The default scope is this thread's children; use scope: project and optional projectId for any thread in the selected project, including settled threads.",
   parameters: Schema.Struct({
     threadId: TrimmedNonEmptyString,
     scope: threadScope,
@@ -271,6 +315,7 @@ export const ThreadsToolkit = Toolkit.make(
   MessageThreadTool,
   InterruptThreadTool,
   ReadThreadTool,
+  PendingRequestRespondTool,
   ListChildThreadsTool,
   ListThreadsTool,
 );
