@@ -1017,7 +1017,7 @@ for per-match decisions and the absorption PR record.
   "id": "preview-url-error",
   "purpose": "Reject unsupported preview URLs before dispatch with actionable agent-facing errors.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/153"],
-  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...fix/preview-open-url"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/154"],
   "newFiles": [],
   "upstreamFiles": [
     "packages/contracts/src/previewAutomation.ts",
