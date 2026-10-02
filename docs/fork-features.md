@@ -921,6 +921,7 @@ for per-match decisions and the absorption PR record.
     "apps/server/src/scheduler/CommandRunner.ts",
     "apps/server/src/scheduler/CommandTasks.test.ts",
     "apps/server/src/scheduler/RunReports.ts",
+    "apps/server/src/scheduler/RuntimeState.ts",
     "apps/server/src/scheduler/SpectrumIntegration.test.ts",
     "apps/server/src/scheduler/Schedule.test.ts",
     "apps/server/src/scheduler/Schedule.ts",
