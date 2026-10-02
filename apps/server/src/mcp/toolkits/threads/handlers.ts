@@ -1,4 +1,5 @@
 import {
+  ApprovalRequestId,
   schedulerOwnsThread,
   CommandId,
   threadOwner,
@@ -27,6 +28,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import { retireSubtree } from "./retireSubtree.ts";
@@ -44,7 +46,13 @@ import {
   childReportStatesFrom,
   unrecordedChildReportState,
 } from "./childReportState.ts";
-import { isSubagentThreadId, makeSubagentThreadId, parentThreadIdOf } from "./subagentThreadId.ts";
+import { pendingThreadRequests } from "./pendingRequests.ts";
+import {
+  isDescendantThreadId,
+  isSubagentThreadId,
+  makeSubagentThreadId,
+  parentThreadIdOf,
+} from "./subagentThreadId.ts";
 import {
   isUsageLimitError,
   RESUME_TEXT,
@@ -52,6 +60,7 @@ import {
   resumeNotice,
 } from "./usageLimitResume.ts";
 import {
+  type PendingThreadRequest,
   type SubagentStatus,
   type ThreadScope,
   ThreadsToolError,
@@ -64,6 +73,7 @@ import { makeSpectrum } from "./spectrum.ts";
 import { isSpectrumParticipantId, isSpectrumThreadId } from "./spectrumIdentity.ts";
 
 const REPORT_TEXT_LIMIT = 4_000;
+const encodeRequestDetail = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 /** How long interrupt_thread waits for the turn to settle before returning interrupt_requested. */
 export const INTERRUPT_SETTLE_TIMEOUT = Duration.seconds(30);
 /** How long interrupt_thread waits for a starting thread to report its turn id. */
@@ -107,7 +117,7 @@ const fail = (reason: string) => Effect.fail(new ThreadsToolError({ reason }));
  * turn open forever in live runs.
  */
 export function deliveryOf(statusBefore: SubagentStatus): "new-turn" | "steer" {
-  return statusBefore === "running" ? "steer" : "new-turn";
+  return statusBefore === "running" || statusBefore === "waiting" ? "steer" : "new-turn";
 }
 
 /** Whether a thread has a turn interrupt_thread can stop: one running or still starting. */
@@ -214,10 +224,20 @@ const make = Effect.gen(function* () {
         for (let index = messages.length - 1; index >= 0; index -= 1) {
           const message = messages[index]!;
           if (message.role === "assistant" && message.text.trim().length > 0) {
-            return { id: message.id, text: message.text, userMessageCount };
+            return {
+              id: message.id,
+              text: message.text,
+              userMessageCount,
+              pendingRequests: pendingThreadRequests(thread.value.activities),
+            };
           }
         }
-        return { id: null, text: null, userMessageCount };
+        return {
+          id: null,
+          text: null,
+          userMessageCount,
+          pendingRequests: pendingThreadRequests(thread.value.activities),
+        };
       }),
       Effect.catchCause(() => Effect.succeed(null)),
     );
@@ -272,9 +292,12 @@ const make = Effect.gen(function* () {
         threadId: thread.id,
         id: thread.id,
         title: thread.title,
-        status: isSpectrumThreadId(thread.id)
-          ? spectrum.statusOf(thread.id)
-          : subagentStatusOf(thread.session),
+        pendingRequests: last?.pendingRequests ?? [],
+        status: last?.pendingRequests.length
+          ? ("waiting" as const)
+          : isSpectrumThreadId(thread.id)
+            ? spectrum.statusOf(thread.id)
+            : subagentStatusOf(thread.session),
         instanceId: thread.session?.providerInstanceId ?? thread.modelSelection.instanceId,
         provider: thread.session?.providerInstanceId ?? thread.modelSelection.instanceId,
         model: thread.modelSelection.model,
@@ -404,6 +427,16 @@ const make = Effect.gen(function* () {
       });
       return;
     }
+    if (
+      event.type === "thread.activity-appended" &&
+      (event.payload.activity.kind === "approval.requested" ||
+        event.payload.activity.kind === "user-input.requested")
+    ) {
+      yield* restoreReportState(childId);
+      const requests = (yield* lastAssistantMessage(childId))?.pendingRequests ?? [];
+      for (const request of requests) yield* reportPendingRequest(parentId, childId, request);
+      return;
+    }
     if (event.type !== "thread.session-set") return;
     yield* restoreReportState(childId);
     const status = subagentStatusOf(event.payload.session);
@@ -434,6 +467,58 @@ const make = Effect.gen(function* () {
     }
     if (status !== "idle") return;
     yield* reportFinishedTurn(parentId, childId, { recordIdle: true });
+  });
+
+  /** Request identity supplies the same durable command-receipt dedupe as finished-turn reports. */
+  const reportPendingRequest = (parentId: string, childId: string, request: PendingThreadRequest) =>
+    Effect.gen(function* () {
+      if (reportBack.get(childId) !== true || (yield* engine.getThreadRetirement(childId))?.retired)
+        return;
+      const parent = yield* threadShell(parentId);
+      const child = yield* threadShell(childId);
+      if (
+        !parent ||
+        !child ||
+        schedulerOwnsThread(yield* engine.getScheduledTasks ?? Effect.succeed([]), parentId) ||
+        (yield* engine.getThreadRetirement(parentId))?.retired
+      )
+        return;
+      const detail = yield* encodeRequestDetail(request.detail).pipe(
+        Effect.catch(() => fail("Could not encode pending request detail.")),
+      );
+      yield* startTurn(
+        parent,
+        `[Subagent ${child.title} (thread ${childId}) waiting on ${request.kind}, request ${request.requestId}]\n\n${request.summary}\n${detail}\n\nRespond with pending_request_respond. You own this child's approvals and questions in every runtime mode.`,
+        CommandId.make(
+          `server:mcp-threads-request:${childId}:${request.kind}:${request.requestId}`,
+        ),
+      ).pipe(
+        Effect.catch((error) =>
+          Effect.gen(function* () {
+            if (!(yield* engine.getThreadRetirement(parentId))?.retired) return yield* error;
+          }),
+        ),
+      );
+    });
+
+  /** Subscribe before scanning so requests that arrive during recovery are not lost. */
+  const catchUpPendingRequests = Effect.gen(function* () {
+    yield* restoreAllReportStates;
+    const shells = yield* snapshots.getShellSnapshot();
+    for (const child of shells.threads) {
+      const parentId = parentThreadIdOf(child.id);
+      if (
+        !parentId ||
+        isSpectrumParticipantId(child.id) ||
+        child.archivedAt !== null ||
+        (!child.hasPendingApprovals && !child.hasPendingUserInput)
+      )
+        continue;
+      yield* restoreReportState(child.id);
+      for (const request of (yield* lastAssistantMessage(child.id))?.pendingRequests ?? []) {
+        yield* reportPendingRequest(parentId, child.id, request);
+      }
+    }
   });
 
   /**
@@ -729,6 +814,13 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const events = yield* engine.subscribeDomainEvents;
       yield* spectrum.recover;
+      yield* catchUpPendingRequests.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("threads toolkit pending-request catch-up failed", {
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
       yield* catchUpUnrecordedIdle.pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("threads toolkit restart catch-up failed", {
@@ -1017,6 +1109,48 @@ const make = Effect.gen(function* () {
           status: "interrupt_requested" as const,
           statusAfter: subagentStatusOf(latest?.session ?? target.session),
         };
+      }),
+    pending_request_respond: ({ threadId, requestId, decision, answers }) =>
+      Effect.gen(function* () {
+        const caller = yield* callingThread;
+        if (!isDescendantThreadId(threadId, caller.id))
+          return yield* fail(`Thread ${threadId} is not a descendant of ${caller.id}.`);
+        if ((yield* engine.getThreadRetirement(caller.id))?.retired)
+          return yield* fail(`Thread ${caller.id} is retired.`);
+        const target = yield* threadShell(threadId);
+        if (!target) return yield* fail(`Thread ${threadId} was not found.`);
+        const request = (yield* lastAssistantMessage(threadId))?.pendingRequests.find(
+          (request) => request.requestId === requestId,
+        );
+        if (!request)
+          return yield* fail(
+            `Request ${requestId} is unknown or already resolved in thread ${threadId}.`,
+          );
+        const createdAt = yield* nowIso;
+        if (request.kind === "approval") {
+          if (decision === undefined || answers !== undefined)
+            return yield* fail("Approval requests require decision and no answers.");
+          yield* dispatch({
+            type: "thread.approval.respond",
+            commandId: yield* commandId("approval"),
+            threadId: target.id,
+            requestId: ApprovalRequestId.make(requestId),
+            decision,
+            createdAt,
+          });
+        } else {
+          if (answers === undefined || decision !== undefined)
+            return yield* fail("Question requests require answers and no decision.");
+          yield* dispatch({
+            type: "thread.user-input.respond",
+            commandId: yield* commandId("input"),
+            threadId: target.id,
+            requestId: ApprovalRequestId.make(requestId),
+            answers,
+            createdAt,
+          });
+        }
+        return { threadId, requestId, kind: request.kind };
       }),
     read_thread: ({ threadId, scope, projectId }) =>
       callerScopedThread(threadId, scope, projectId).pipe(
