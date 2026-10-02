@@ -240,7 +240,11 @@ export const SchedulerRpcGroup = RpcGroup.make(
     error,
   }),
   Rpc.make("scheduler.list", {
-    payload: Schema.Struct({}),
+    /**
+     * `compact` returns each task with only its active check and newest run, without command
+     * output: enough to watch for failures cheaply. The default is the full view.
+     */
+    payload: Schema.Struct({ compact: Schema.optionalKey(Schema.Boolean) }),
     success: Schema.Array(ScheduledTaskView),
     error,
   }),

@@ -4,6 +4,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import {
+  AuthSessionId,
   COMMAND_OUTPUTS_KEPT,
   EnvironmentId,
   ProjectId,
@@ -48,6 +49,7 @@ import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolv
 import { makeProviderRegistryLayer } from "../provider/testUtils/providerRegistryMock.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { COMMAND_OUTPUT_BYTES } from "./CommandRunner.ts";
+import { makeSchedulerRpcHandlers } from "./rpcHandlers.ts";
 import { Scheduler, makeLiveScheduler } from "./Service.ts";
 
 const PROJECT_ID = ProjectId.make("project-threads");
@@ -98,7 +100,10 @@ const forge = (task: ScheduledTask, patch: Partial<ScheduledTask>) =>
   );
 const encodeTask = Schema.encodeSync(ScheduledTask);
 const decodeTask = Schema.decodeUnknownSync(ScheduledTask);
-const encodeList = Schema.encodeSync(Schema.Array(ScheduledTaskView));
+const listJson = Schema.encodeSync(Schema.fromJsonString(Schema.Array(ScheduledTaskView)));
+const reportJson = Schema.encodeSync(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Number)),
+);
 const decodeJsonTask = Schema.decodeUnknownSync(Schema.fromJsonString(ScheduledTask));
 const encodeJsonTask = Schema.encodeSync(Schema.fromJsonString(ScheduledTask));
 /** The task exactly as the state store holds it, without the computed view fields. */
@@ -369,24 +374,50 @@ describe("scheduled command tasks", () => {
             const rows = yield* sql<{ bytes: number }>`
               SELECT length(payload_json) AS bytes FROM orchestration_events
               WHERE event_type = 'scheduler.state-set' AND stream_id = ${created.id}`;
-            const listBytes = Buffer.byteLength(JSON.stringify(encodeList(yield* scheduler.list)));
             const largest = Math.max(...rows.map((row) => row.bytes));
             const total = rows.reduce((sum, row) => sum + row.bytes, 0);
-            console.info(
-              `SCHEDULER_SIZE_REPORT ${JSON.stringify({
-                intervalMinutes: 5,
-                runs: RUNS,
-                outputBytesPerRun: 20_000,
-                stateEvents: rows.length,
-                largestStateEventBytes: largest,
-                totalStateEventBytes: total,
-                listResponseBytes: listBytes,
-                projectedStateBytesPerDay: Math.round((total / RUNS) * 288),
-              })}`,
+            // The RPC chooses the view; compact is a response copy and leaves stored state alone.
+            const api = makeSchedulerRpcHandlers(
+              scheduler,
+              { subject: "creator", sessionId: AuthSessionId.make("command-sizes") },
+              { getPerson: () => Effect.succeed(null) },
+              (_, effect) => effect,
             );
+            const full = yield* api["scheduler.list"]({});
+            const compact = yield* api["scheduler.list"]({ compact: true });
+            const { output: _newestOutput, ...newestMetadata } = task.runs.at(-1)!.commandResult!;
+            expect(full).toEqual([task]);
+            expect(compact).toEqual([
+              {
+                ...task,
+                checks: [],
+                runs: [{ ...task.runs.at(-1)!, commandResult: newestMetadata }],
+              },
+            ]);
+            expect(yield* only(scheduler)).toEqual(task);
+            const fullBytes = Buffer.byteLength(listJson(full));
+            const compactBytes = Buffer.byteLength(listJson(compact));
+            const report = {
+              intervalMinutes: 5,
+              runs: RUNS,
+              outputBytesPerRun: 20_000,
+              stateEvents: rows.length,
+              largestStateEventBytes: largest,
+              totalStateEventBytes: total,
+              projectedStateBytesPerDay: Math.round((total / RUNS) * 288),
+              fullListBytesPerTask: fullBytes,
+              compactListBytesPerTask: compactBytes,
+              fullListBytesPerTaskPerDayEvery15s: fullBytes * 5_760,
+              compactListBytesPerTaskPerDayEvery60s: compactBytes * 1_440,
+            };
+            // Set SCHEDULER_SIZE_REPORT to a file path to keep these measurements.
+            const reportPath = process.env.SCHEDULER_SIZE_REPORT;
+            if (reportPath)
+              yield* Effect.promise(() => NodeFSP.writeFile(reportPath, reportJson(report)));
             // Twenty runs of metadata plus three 4 KiB tails, not twenty tails.
             expect(largest).toBeLessThan(40_000);
-            expect(listBytes).toBeLessThan(40_000);
+            expect(fullBytes).toBeLessThan(40_000);
+            expect(compactBytes).toBeLessThan(3_000);
 
             // The decider accepts only the scheduler's own trimming of settled runs.
             const newest = task.runs.at(-1)!;

@@ -37,6 +37,16 @@ const present = (task: ScheduledTask, now: number): ScheduledTaskView => {
   const next = task.paused || task.deleted ? null : taskSlots(task, now).next;
   return { ...task, nextRunAt: next === null ? null : iso(next) };
 };
+/** A response-only copy for failure watchers: the active check and the newest run's metadata. */
+const compact = (task: ScheduledTaskView): ScheduledTaskView => ({
+  ...task,
+  checks: task.checks.slice(-1),
+  runs: task.runs.slice(-1).map((run) => {
+    if (run.commandResult?.output === undefined) return run;
+    const { output: _, ...commandResult } = run.commandResult;
+    return { ...run, commandResult };
+  }),
+});
 export type RunObservation = {
   readonly active: boolean;
   readonly idle: boolean;
@@ -703,12 +713,14 @@ export const makeScheduler = Effect.fnUntraced(function* (deps: {
       .filter((time) => time > now);
     return deadlines.length ? Math.min(...deadlines) : null;
   });
-  return {
-    list: Effect.all([deps.tasks, Clock.currentTimeMillis]).pipe(
-      Effect.map(([tasks, now]) =>
-        tasks.filter((task) => !task.deleted).map((task) => present(task, now)),
-      ),
+  const list = Effect.all([deps.tasks, Clock.currentTimeMillis]).pipe(
+    Effect.map(([tasks, now]) =>
+      tasks.filter((task) => !task.deleted).map((task) => present(task, now)),
     ),
+  );
+  return {
+    list,
+    listCompact: list.pipe(Effect.map((tasks) => tasks.map(compact))),
     create,
     edit,
     pause: (id: string, paused: boolean, actor: string) => alter(id, actor, { paused }),
