@@ -258,7 +258,7 @@ function TaskRow({
   const confirmDelete = async () => {
     const confirmed = await requestConfirmDialog(
       isCommandTask(definition)
-        ? `Delete "${definition.title}"?\nIt stops running and leaves this list. Its run history stays in the audit log.`
+        ? `Delete "${definition.title}"?\nIt stops running and leaves this list. Its run history is kept.`
         : needsYou(task)
           ? `Delete "${definition.title}"?\nIt leaves this list. Its unfinished run is not marked done; the run and its check history stay in the audit log. The server refuses while anything the run started is still live or pending.`
           : `Delete "${definition.title}"?\nIt stops running and leaves this list. Its check history stays in the audit log.`,
