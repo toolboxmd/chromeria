@@ -22,6 +22,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import { OrchestrationCommandReceiptRepository } from "../../../persistence/Services/OrchestrationCommandReceipts.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
@@ -72,6 +73,10 @@ export const SpectrumState = Schema.Struct({
   outbox: Schema.Array(OrchestrationCommand),
 });
 export type SpectrumState = typeof SpectrumState.Type;
+export const spectrumReportQueueId = (state: SpectrumState, commandId: string) =>
+  CommandId.make(
+    `server:spectrum:${state.id}:${state.retirementGeneration ?? 0}:${state.callerId}:${state.callerGeneration ?? 0}:${state.callerGeneration ?? 0}:${commandId}:scheduler-report`,
+  );
 const TurnBinding = Schema.Struct({ messageId: Schema.String, turnId: Schema.String });
 const StartFailure = Schema.Struct({
   requestId: Schema.String,
@@ -81,6 +86,7 @@ const decodeBinding = Schema.decodeUnknownEffect(TurnBinding);
 const decodeFailure = Schema.decodeUnknownEffect(StartFailure);
 const decodeState = Schema.decodeUnknownEffect(SpectrumState);
 const STATE_KIND = "spectrum.state";
+export const SCHEDULER_REPORT_KIND = "scheduler.spectrum-report";
 const fail = (reason: string) => Effect.fail(new ThreadsToolError({ reason }));
 const spectrumTranscript = (
   entries: ReadonlyArray<{ readonly label: string; readonly text: string }>,
@@ -94,6 +100,7 @@ export const makeSpectrum = Effect.fn("Spectrum.make")(function* (
   effortOptionId: (driverKind: string) => string,
 ) {
   const engine = yield* OrchestrationEngineService;
+  const receipts = yield* OrchestrationCommandReceiptRepository;
   const snapshots = yield* ProjectionSnapshotQuery;
   const settings = yield* ServerSettingsService;
   const providers = yield* ProviderService;
@@ -230,6 +237,39 @@ export const makeSpectrum = Effect.fn("Spectrum.make")(function* (
             `server:spectrum:${state.id}:${state.retirementGeneration ?? 0}:${state.callerId}:${state.callerGeneration ?? 0}:${targetGeneration}:${command.commandId}`,
           ),
         };
+        if (command.type === "thread.turn.start" && command.threadId === state.callerId) {
+          const queueId = spectrumReportQueueId(state, command.commandId);
+          const queued = yield* receipts.getByCommandId({ commandId: queueId });
+          // Once handed off, outbox replay must never become a competing turn after the run settles.
+          if (Option.isSome(queued)) {
+            if (queued.value.status !== "accepted")
+              return yield* fail("Scheduler report handoff was rejected.");
+            continue;
+          }
+          const tasks = yield* engine.getScheduledTasks ?? Effect.succeed([]);
+          const owner = tasks
+            .filter((task) => !task.deleted)
+            .flatMap((task) => task.runs)
+            .find((run) => run.threadId === state.callerId && run.status !== "done");
+          if (owner) {
+            yield* dispatch({
+              type: "thread.activity.append",
+              commandId: queueId,
+              threadId: command.threadId,
+              activity: {
+                id: EventId.make(queueId),
+                kind: SCHEDULER_REPORT_KIND,
+                summary: "Spectrum report queued for scheduled continuation",
+                payload: { runId: owner.id, text: command.message.text },
+                tone: "info",
+                turnId: null,
+                createdAt: command.createdAt,
+              },
+              createdAt: command.createdAt,
+            });
+            continue;
+          }
+        }
         yield* engine
           .dispatch(guarded)
           .pipe(

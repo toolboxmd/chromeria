@@ -49,3 +49,5 @@ export * from "./usage.ts";
 export * from "./rpc.ts";
 export * from "./worktreeSetup.ts";
 export * from "./people.ts";
+
+export * from "./scheduler.ts";

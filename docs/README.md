@@ -7,6 +7,7 @@
 - [Working with threads](./user/thread-sidebar.md)
 - [Promachos mode](./user/promachos-mode.md)
 - [People and shared threads](./user/people.md)
+- [Scheduled tasks](./user/scheduled-tasks.md)
 - [Permission modes](./user/permission-modes.md)
 - [Terminal history](./user/terminal.md)
 - [Source control](./user/source-control.md)

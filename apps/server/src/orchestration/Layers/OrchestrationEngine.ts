@@ -5,7 +5,7 @@ import type {
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
-import { OrchestrationCommand } from "@t3tools/contracts";
+import { OrchestrationCommand, ScheduledTask, schedulerOwnsThread } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
@@ -91,6 +91,8 @@ function commandToAggregateRef(command: OrchestrationCommand): {
       };
   }
 }
+
+const decodeScheduledTask = Schema.decodeUnknownEffect(Schema.fromJsonString(ScheduledTask));
 
 const makeOrchestrationEngine = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -264,6 +266,15 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               threadId: envelope.command.threadId,
             }),
           );
+        if (
+          envelope.command.type === "thread.turn.start" &&
+          envelope.command.commandId.startsWith("server:") &&
+          !envelope.command.commandId.startsWith("server:scheduler-turn:") &&
+          !envelope.command.commandId.startsWith("server:mcp-threads-message:") &&
+          schedulerOwnsThread(commandReadModel.scheduledTasks ?? [], envelope.command.threadId)
+        ) {
+          return { sequence: commandReadModel.snapshotSequence };
+        }
         const commands = yield* retirementCommands(envelope.command, commandReadModel, retirements);
         if (
           envelope.command.type === "thread.turn.start" &&
@@ -311,6 +322,18 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         const committedCommand = yield* sql
           .withTransaction(
             Effect.gen(function* () {
+              if (envelope.command.type === "scheduler.state.set") {
+                const current = yield* sql<{
+                  revision: number;
+                }>`SELECT json_extract(payload_json, '$.revision') AS revision
+                  FROM orchestration_events WHERE event_type = 'scheduler.state-set' AND stream_id = ${envelope.command.task.id}
+                  ORDER BY sequence DESC LIMIT 1`;
+                if ((current[0]?.revision ?? 0) !== envelope.command.expectedRevision)
+                  return yield* new OrchestrationCommandInvariantError({
+                    commandType: envelope.command.type,
+                    detail: "Durable scheduled task claim lost its revision race.",
+                  });
+              }
               const committedEvents: OrchestrationEvent[] = [];
               const attachmentCleanups: Effect.Effect<void>[] = [];
               let nextCommandReadModel = commandReadModel;
@@ -474,6 +497,17 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   yield* projectionPipeline.bootstrap;
   commandReadModel = yield* projectionSnapshotQuery.getCommandReadModel();
+  // Fork-owned state is projected from the existing log. No schema migration or separate journal.
+  const schedulerRows = yield* sql<{ payload: string }>`
+    SELECT payload_json AS payload FROM orchestration_events
+    WHERE event_type = 'scheduler.state-set' AND sequence IN (
+      SELECT MAX(sequence) FROM orchestration_events WHERE event_type = 'scheduler.state-set' GROUP BY stream_id
+    )
+  `;
+  commandReadModel = {
+    ...commandReadModel,
+    scheduledTasks: yield* Effect.forEach(schedulerRows, (row) => decodeScheduledTask(row.payload)),
+  };
   for (const activity of yield* projectionSnapshotQuery.listActivitiesByKind(RETIREMENT_KIND, {
     includeArchived: true,
   })) {
@@ -521,6 +555,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     readThreadEvents,
     getThreadReplayStats,
     dispatch,
+    getScheduledTasks: Effect.sync(() => commandReadModel.scheduledTasks ?? []),
     getThreadRetirement: (threadId) => Effect.sync(() => retirementOf(retirements, threadId)),
     subscribeDomainEvents: PubSub.subscribe(eventPubSub).pipe(Effect.map(Stream.fromSubscription)),
     // Each access creates a fresh PubSub subscription so that multiple

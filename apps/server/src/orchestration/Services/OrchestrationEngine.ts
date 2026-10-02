@@ -11,6 +11,7 @@
  * @module OrchestrationEngineService
  */
 import type {
+  ScheduledTask,
   OrchestrationClientOrigin,
   OrchestrationCommand,
   OrchestrationEvent,
@@ -36,6 +37,7 @@ export interface OrchestrationThreadReplayRange {
  * OrchestrationEngineShape - Service API for orchestration command and event flow.
  */
 export interface OrchestrationEngineShape {
+  readonly getScheduledTasks?: Effect.Effect<ReadonlyArray<ScheduledTask>>;
   /** Fork extension: durable retirement and queued-turn cutoff. */
   readonly getThreadRetirement: (threadId: string) => Effect.Effect<ThreadRetirement | undefined>;
 

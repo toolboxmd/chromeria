@@ -1,4 +1,5 @@
 import {
+  schedulerOwnsThread,
   CommandId,
   threadOwner,
   EventId,
@@ -460,7 +461,11 @@ const make = Effect.gen(function* () {
       if (report) {
         const parent = yield* threadShell(parentId);
         const child = yield* threadShell(childId);
-        if (parent && !(yield* engine.getThreadRetirement(parentId))?.retired) {
+        if (
+          parent &&
+          !schedulerOwnsThread(yield* engine.getScheduledTasks ?? Effect.succeed([]), parentId) &&
+          !(yield* engine.getThreadRetirement(parentId))?.retired
+        ) {
           const text =
             report.text.length > REPORT_TEXT_LIMIT
               ? `${report.text.slice(0, REPORT_TEXT_LIMIT)}…`
@@ -518,7 +523,12 @@ const make = Effect.gen(function* () {
     ),
     providers: registry.getProviders,
     retired: (id) =>
-      engine.getThreadRetirement(id).pipe(Effect.map((state) => state?.retired ?? false)),
+      Effect.gen(function* () {
+        return (
+          schedulerOwnsThread(yield* engine.getScheduledTasks ?? Effect.succeed([]), id) ||
+          (yield* engine.getThreadRetirement(id))?.retired === true
+        );
+      }),
     thread: threadShell,
     resume: (thread, text, activation, admission) =>
       Effect.gen(function* () {
@@ -631,7 +641,11 @@ const make = Effect.gen(function* () {
     const failed = yield* threadShell(threadId);
     const turnId = failed?.latestTurn?.turnId;
     if (!failed || !turnId || pendingResumes.get(threadId) === turnId) return;
-    if ((yield* serverSettings.getSettings).wightModes[threadId]) return;
+    if (
+      schedulerOwnsThread(yield* engine.getScheduledTasks ?? Effect.succeed([]), threadId) ||
+      (yield* serverSettings.getSettings).wightModes[threadId]
+    )
+      return;
     if (
       stoppedTurns.get(threadId) === turnId ||
       (yield* engine.getThreadRetirement(threadId))?.retired
@@ -646,19 +660,37 @@ const make = Effect.gen(function* () {
         nextReplyOn,
         resume: (thread, trigger) =>
           Effect.gen(function* () {
-            if ((yield* serverSettings.getSettings).wightModes[thread.id]) return;
+            if (
+              schedulerOwnsThread(
+                yield* engine.getScheduledTasks ?? Effect.succeed([]),
+                thread.id,
+              ) ||
+              (yield* serverSettings.getSettings).wightModes[thread.id]
+            )
+              return;
             if (trigger === "lifted") earlyResumeSpent.add(thread.id);
             yield* startTurn(
               thread,
               RESUME_TEXT,
               undefined,
               true,
-              serverSettings.getSettings.pipe(
-                Effect.map((settings) => settings.wightModes[thread.id] === undefined),
-                Effect.catchCause(() => Effect.succeed(false)),
-              ),
+              Effect.gen(function* () {
+                return (
+                  !schedulerOwnsThread(
+                    yield* engine.getScheduledTasks ?? Effect.succeed([]),
+                    thread.id,
+                  ) && (yield* serverSettings.getSettings).wightModes[thread.id] === undefined
+                );
+              }).pipe(Effect.catchCause(() => Effect.succeed(false))),
             );
-            if ((yield* serverSettings.getSettings).wightModes[thread.id]) return;
+            if (
+              schedulerOwnsThread(
+                yield* engine.getScheduledTasks ?? Effect.succeed([]),
+                thread.id,
+              ) ||
+              (yield* serverSettings.getSettings).wightModes[thread.id]
+            )
+              return;
             const parentId = parentThreadIdOf(thread.id);
             const parent = parentId === null ? undefined : yield* threadShell(parentId);
             if (parent) yield* startTurn(parent, resumeNotice(thread, trigger));
