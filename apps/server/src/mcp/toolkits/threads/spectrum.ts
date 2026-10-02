@@ -29,6 +29,7 @@ import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts
 import { ProviderService } from "../../../provider/Services/ProviderService.ts";
 import { ServerSettingsService } from "../../../serverSettings.ts";
 import { pickRoleModel, roleTaskMessage } from "./roles.ts";
+import { spectrumStopSuffix, spectrumStopSuperseded } from "./spectrumIdentity.ts";
 import type { StartSpectrumInput } from "./spectrumTools.ts";
 import { ThreadsToolError } from "./tools.ts";
 
@@ -282,6 +283,21 @@ export const makeSpectrum = Effect.fn("Spectrum.make")(function* (
                 : fail(String(error)),
             ),
           );
+      } else if (command.type === "thread.session.stop") {
+        const stop = { ...command, commandId: CommandId.make(`server:${command.commandId}`) };
+        // Only the engine's refusal of a superseded stop, live or replayed, lets the outbox move on.
+        yield* engine.dispatch(stop).pipe(
+          Effect.catch((error) =>
+            spectrumStopSuperseded(engine, stop).pipe(
+              Effect.catch(() => Effect.succeed(false)),
+              Effect.flatMap((superseded) =>
+                superseded
+                  ? Effect.void
+                  : fail(`Spectrum command ${command.type} failed: ${String(error)}`),
+              ),
+            ),
+          ),
+        );
       } else
         yield* dispatch({ ...command, commandId: CommandId.make(`server:${command.commandId}`) });
     }
@@ -474,10 +490,13 @@ export const makeSpectrum = Effect.fn("Spectrum.make")(function* (
             latestRequest.sequence === pending.requestSequence &&
             latestRequest.payload.messageId === pending.messageId
           )
+            // The engine refuses this stop if a successor request lands before it.
             outbox.push({
               type: "thread.session.stop",
               threadId: child.id,
-              commandId: CommandId.make(key(state, `stop-unbound:${child.id}`)),
+              commandId: CommandId.make(
+                key(state, spectrumStopSuffix(child.id, pending.requestSequence)),
+              ),
               createdAt,
             });
         }

@@ -50,6 +50,7 @@ import {
   rememberRetirement,
   type ThreadRetirement,
 } from "../ThreadRetirement.ts";
+import { spectrumStopSuperseded } from "../../mcp/toolkits/threads/spectrumIdentity.ts";
 import { decideOrchestrationCommand } from "../decider.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
@@ -198,6 +199,16 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           return yield* new OrchestrationCommandInvariantError({
             commandType: envelope.command.type,
             detail: `thread ${envelope.command.threadId} changed before automatic settlement`,
+          });
+        }
+
+        if (
+          envelope.command.type === "thread.session.stop" &&
+          (yield* spectrumStopSuperseded({ readThreadEvents }, envelope.command))
+        ) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: envelope.command.type,
+            detail: `thread ${envelope.command.threadId} has a newer request than this Spectrum stop`,
           });
         }
 
