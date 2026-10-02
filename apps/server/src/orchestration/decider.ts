@@ -4,6 +4,9 @@ import {
   TaskDefinition,
   TaskRun,
   EventId,
+  COMMAND_OUTPUTS_KEPT,
+  isCommandTask,
+  isSettledRun,
   threadOwner,
   MAX_SCRIPT_ID_LENGTH,
   SCRIPT_RUN_COMMAND_PATTERN,
@@ -240,11 +243,22 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "Scheduled task changed before this command; retry from current state.",
         });
       }
+      const commandTask = isCommandTask(command.task.definition);
+      const sameRun = Schema.toEquivalence(TaskRun);
+      if (
+        (commandTask ? command.task.checks.length > 0 : command.task.checks.length === 0) ||
+        command.task.runs.some((run) => isCommandTask(run.definition) !== commandTask)
+      )
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Agent tasks need an outcome check; command tasks and their runs have none.",
+        });
       if (
         command.task.runs.some(
           (run) =>
-            !command.task.checks.some((check) => check.version === run.checkVersion) &&
-            run.status !== "done",
+            !commandTask &&
+            !isSettledRun(run) &&
+            !command.task.checks.some((check) => check.version === run.checkVersion),
         )
       )
         return yield* new OrchestrationCommandInvariantError({
@@ -255,12 +269,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command.task.runs.some(
           (run) =>
             run.status === "done" &&
-            (run.check?.passed !== true || run.check.version !== run.checkVersion),
+            (commandTask
+              ? run.commandResult?.exitCode !== 0 || run.commandResult.timedOut
+              : run.check?.passed !== true || run.check.version !== run.checkVersion),
         )
       )
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail: "A done run requires a passing verdict from its pinned check version.",
+          detail:
+            "A done run requires a passing verdict from its pinned check version, or a command exit code 0.",
         });
       if (command.task.runs.some((run) => threadOwner(run) !== threadOwner(command.task)))
         return yield* new OrchestrationCommandInvariantError({
@@ -269,6 +286,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       if (previous) {
         if (
+          isCommandTask(previous.definition) !== commandTask ||
+          previous.createdBy !== command.task.createdBy ||
           threadOwner(previous) !== threadOwner(command.task) ||
           previous.runs.some((run) => {
             const next = command.task.runs.find((entry) => entry.id === run.id);
@@ -277,9 +296,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         )
           return yield* new OrchestrationCommandInvariantError({
             commandType: command.type,
-            detail: "Scheduled creator ownership is immutable.",
+            detail: "Scheduled task kind, creator and ownership are immutable.",
           });
-        const lastVersion = previous.checks.at(-1)!.version;
+        const lastVersion = previous.checks.at(-1)?.version ?? 0;
         const added = command.task.checks.filter((check) => check.version > lastVersion);
         if (added.some((check, index) => check.version !== lastVersion + index + 1))
           return yield* new OrchestrationCommandInvariantError({
@@ -293,8 +312,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         const changedJudge = previous.runs.some((run) => {
           const next = command.task.runs.find((entry) => entry.id === run.id);
           // Settled evidence may leave the bounded view, but a retained verdict cannot be rewritten.
-          if (run.status === "done")
-            return next !== undefined && !Schema.toEquivalence(TaskRun)(run, next);
+          // An older command run may only drop its output tail; its exit code and times stay.
+          if (isSettledRun(run)) {
+            if (next === undefined || sameRun(run, next)) return false;
+            const position = command.task.runs.indexOf(next);
+            if (
+              run.commandResult?.output === undefined ||
+              position >= command.task.runs.length - COMMAND_OUTPUTS_KEPT
+            )
+              return true;
+            const { output: _, ...commandResult } = run.commandResult;
+            return !sameRun({ ...run, commandResult }, next);
+          }
           return (
             !next ||
             next.checkVersion !== run.checkVersion ||

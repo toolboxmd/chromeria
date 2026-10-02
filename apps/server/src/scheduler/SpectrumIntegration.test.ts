@@ -362,7 +362,7 @@ describe("scheduler Spectrum integration", () => {
               .edit({ taskId: created.id, definition: invalid }, "user")
               .pipe(Effect.flip),
           ).toBeInstanceOf(SchedulerError);
-          expect((yield* task(scheduler)).definition.target).toEqual(definition.target);
+          expect((yield* task(scheduler)).definition).toMatchObject({ target: definition.target });
         }),
       );
     }),

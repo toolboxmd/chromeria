@@ -908,12 +908,18 @@ for per-match decisions and the absorption PR record.
 ```json
 {
   "id": "scheduled-tasks",
-  "purpose": "Run repeating and one-shot tasks until their pinned server outcome check passes, with durable same-thread recovery.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/123"],
+  "purpose": "Run repeating and one-shot tasks until their pinned server outcome check passes, with durable same-thread recovery, plus scheduled shell commands that start no agent.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/123",
+    "https://github.com/toolboxmd/chromeria/issues/136"
+  ],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/132"],
   "newFiles": [
     "apps/server/src/mcp/toolkits/scheduler/handlers.ts",
     "apps/server/src/mcp/toolkits/scheduler/tools.ts",
+    "apps/server/src/scheduler/CommandRunner.test.ts",
+    "apps/server/src/scheduler/CommandRunner.ts",
+    "apps/server/src/scheduler/CommandTasks.test.ts",
     "apps/server/src/scheduler/RunReports.ts",
     "apps/server/src/scheduler/SpectrumIntegration.test.ts",
     "apps/server/src/scheduler/Schedule.test.ts",

@@ -40,7 +40,8 @@ export const TaskTarget = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("new-thread"), projectId: ProjectId }),
   Schema.Struct({ kind: Schema.Literal("thread"), threadId: ThreadId }),
 ]);
-export const TaskDefinition = Schema.Struct({
+export const AgentTaskDefinition = Schema.Struct({
+  kind: Schema.optionalKey(Schema.Literal("agent")),
   title: TrimmedNonEmptyString,
   prompt: TrimmedNonEmptyString,
   target: TaskTarget,
@@ -48,7 +49,28 @@ export const TaskDefinition = Schema.Struct({
   lane: Schema.optionalKey(PrismLane),
   schedule: TaskSchedule,
 });
+export type AgentTaskDefinition = typeof AgentTaskDefinition.Type;
+/** The MCP command tool's input; its kind is implied. */
+export const CreateScheduledCommand = Schema.Struct({
+  title: TrimmedNonEmptyString,
+  projectId: ProjectId,
+  command: TrimmedNonEmptyString,
+  schedule: TaskSchedule,
+});
+/**
+ * A command task starts no agent and has no outcome check or retries. Each run pins this
+ * definition, runs `command` once with /bin/sh in the project root, and records its
+ * `commandResult`; exit code 0 is done, anything else needs you.
+ */
+export const CommandTaskDefinition = Schema.Struct({
+  kind: Schema.Literal("command"),
+  ...CreateScheduledCommand.fields,
+});
+export type CommandTaskDefinition = typeof CommandTaskDefinition.Type;
+export const TaskDefinition = Schema.Union([AgentTaskDefinition, CommandTaskDefinition]);
 export type TaskDefinition = typeof TaskDefinition.Type;
+export const isCommandTask = (definition: TaskDefinition): definition is CommandTaskDefinition =>
+  definition.kind === "command";
 export const TaskCheckVersion = Schema.Struct({
   version: PositiveInt,
   command: TrimmedNonEmptyString,
@@ -65,13 +87,29 @@ export const TaskCheckResult = Schema.Struct({
   checkedAt: IsoDateTime,
 });
 export type TaskCheckResult = typeof TaskCheckResult.Type;
+/** Every state event repeats the task, so only the newest command runs keep their output. */
+export const COMMAND_OUTPUTS_KEPT = 3;
+/** A finished command run. It started at its run's `dispatchedAt`, persisted before the spawn. */
+export const CommandResult = Schema.Struct({
+  /** Null when the process timed out, was killed by a signal or never started. */
+  exitCode: Schema.NullOr(Schema.Int),
+  /**
+   * The last bytes of stdout and stderr together, in arrival order. Only the task's newest
+   * runs keep it; older runs keep their exit code and times.
+   */
+  output: Schema.optionalKey(Schema.String),
+  timedOut: Schema.Boolean,
+  endedAt: IsoDateTime,
+});
+export type CommandResult = typeof CommandResult.Type;
 export const TaskRun = Schema.Struct({
   owner: Schema.optionalKey(TrimmedNonEmptyString),
   definition: TaskDefinition,
   checkCwd: TrimmedNonEmptyString,
   id: TrimmedNonEmptyString,
   slot: IsoDateTime,
-  checkVersion: PositiveInt,
+  /** The pinned outcome check of an agent run. Command runs have none. */
+  checkVersion: Schema.optionalKey(PositiveInt),
   threadId: Schema.NullOr(ThreadId),
   status: Schema.Literals(["claimed", "running", "retry", "usage-limit", "done", "needs-you"]),
   processId: Schema.String,
@@ -85,9 +123,20 @@ export const TaskRun = Schema.Struct({
   observedTurnId: Schema.NullOr(Schema.String),
   error: Schema.NullOr(Schema.String),
   check: Schema.NullOr(TaskCheckResult),
+  /**
+   * Present once a command run's process ends. A command run that needs you without one was
+   * interrupted, for example by a restart: its end, exit code and output are unknown.
+   */
+  commandResult: Schema.optionalKey(CommandResult),
   drafterIds: Schema.Array(ThreadId),
 });
 export type TaskRun = typeof TaskRun.Type;
+/**
+ * A settled run no longer holds its task. An agent run settles only when done; a command run that
+ * needs you is settled too, because it never resumes: the next slot or Run now starts a new run.
+ */
+export const isSettledRun = (run: TaskRun) =>
+  run.status === "done" || (run.status === "needs-you" && isCommandTask(run.definition));
 export const TaskMinuteChoice = Schema.Struct({
   requested: Schema.String,
   offsetMinutes: Schema.Number,
@@ -99,6 +148,11 @@ export const TaskMinuteChoice = Schema.Struct({
 export type TaskMinuteChoice = typeof TaskMinuteChoice.Type;
 export const ScheduledTask = Schema.Struct({
   owner: Schema.optionalKey(TrimmedNonEmptyString),
+  /**
+   * Who created the task, derived by the server: `user:<subject>` or the creating agent's thread
+   * id. Tasks created before it existed have their first check version's actor instead.
+   */
+  createdBy: Schema.optionalKey(TrimmedNonEmptyString),
   checkCwd: TrimmedNonEmptyString,
   id: TrimmedNonEmptyString,
   revision: PositiveInt,
@@ -107,7 +161,8 @@ export const ScheduledTask = Schema.Struct({
   updatedAt: IsoDateTime,
   paused: Schema.Boolean,
   deleted: Schema.Boolean,
-  checks: Schema.Array(TaskCheckVersion).check(Schema.isMinLength(1)),
+  /** Agent tasks keep at least one version; command tasks have none. */
+  checks: Schema.Array(TaskCheckVersion),
   choices: Schema.Array(TaskMinuteChoice),
   consumedSlot: Schema.NullOr(IsoDateTime),
   runs: Schema.Array(TaskRun),
@@ -115,6 +170,25 @@ export const ScheduledTask = Schema.Struct({
   lastError: Schema.NullOr(Schema.String),
 });
 export type ScheduledTask = typeof ScheduledTask.Type;
+/**
+ * The failed run that turned a healthy command task into a failing one, or null. Notify once
+ * per run id: later failures extend the streak silently, and a passing run clears it.
+ */
+export const commandFailureToNotify = (task: ScheduledTask): TaskRun | null => {
+  const run = task.runs.at(-1);
+  return run !== undefined &&
+    isCommandTask(task.definition) &&
+    run.status === "needs-you" &&
+    task.failureStreak === 1
+    ? run
+    : null;
+};
+/** A task as the management API returns it. `nextRunAt` is computed when read and never stored. */
+export const ScheduledTaskView = Schema.Struct({
+  ...ScheduledTask.fields,
+  nextRunAt: Schema.NullOr(IsoDateTime),
+});
+export type ScheduledTaskView = typeof ScheduledTaskView.Type;
 export const SchedulerStateCommand = Schema.Struct({
   type: Schema.Literal("scheduler.state.set"),
   commandId: CommandId,
@@ -123,11 +197,12 @@ export const SchedulerStateCommand = Schema.Struct({
   task: ScheduledTask,
   createdAt: IsoDateTime,
 });
-export const CreateScheduledTask = Schema.Struct({
-  ...TaskDefinition.fields,
+export const CreateAgentScheduledTask = Schema.Struct({
+  ...AgentTaskDefinition.fields,
   checkCommand: TrimmedNonEmptyString,
   checkReason: TrimmedNonEmptyString,
 });
+export const CreateScheduledTask = Schema.Union([CreateAgentScheduledTask, CommandTaskDefinition]);
 export type CreateScheduledTask = typeof CreateScheduledTask.Type;
 export const EditScheduledTask = Schema.Struct({
   taskId: TrimmedNonEmptyString,
@@ -166,14 +241,14 @@ export const SchedulerRpcGroup = RpcGroup.make(
   }),
   Rpc.make("scheduler.list", {
     payload: Schema.Struct({}),
-    success: Schema.Array(ScheduledTask),
+    success: Schema.Array(ScheduledTaskView),
     error,
   }),
-  Rpc.make("scheduler.create", { payload: CreateScheduledTask, success: ScheduledTask, error }),
-  Rpc.make("scheduler.edit", { payload: EditScheduledTask, success: ScheduledTask, error }),
-  Rpc.make("scheduler.pause", { payload: PauseScheduledTask, success: ScheduledTask, error }),
-  Rpc.make("scheduler.delete", { payload: ScheduledTaskId, success: ScheduledTask, error }),
-  Rpc.make("scheduler.runNow", { payload: ScheduledTaskId, success: ScheduledTask, error }),
+  Rpc.make("scheduler.create", { payload: CreateScheduledTask, success: ScheduledTaskView, error }),
+  Rpc.make("scheduler.edit", { payload: EditScheduledTask, success: ScheduledTaskView, error }),
+  Rpc.make("scheduler.pause", { payload: PauseScheduledTask, success: ScheduledTaskView, error }),
+  Rpc.make("scheduler.delete", { payload: ScheduledTaskId, success: ScheduledTaskView, error }),
+  Rpc.make("scheduler.runNow", { payload: ScheduledTaskId, success: ScheduledTaskView, error }),
 );
 export const SCHEDULE_WINDOW_DESCRIPTION =
   "Fixed times use a symmetric +/-30-minute window by default. Set windowMinutes: 0 for the exact minute. The server chooses the least busy minute and returns that minute and its neighbours.";
