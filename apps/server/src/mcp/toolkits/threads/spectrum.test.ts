@@ -249,6 +249,73 @@ describe("Spectrum server orchestration", () => {
       ),
   );
 
+  it.effect("starts every Color, the moderator and the caller report on its stored model", () =>
+    scenario((directory, database) =>
+      withServer(
+        database,
+        Effect.gen(function* () {
+          yield* createParent(directory);
+          const started = yield* callTool(
+            "start_spectrum",
+            decodeInput({
+              question: "Which option works?",
+              mode: "council",
+              colors: [
+                { label: "Blue", model: "blue-model", effort: "xhigh" },
+                { label: "Red", model: "red-model", effort: "low" },
+              ],
+            }),
+          );
+          const id = started.threadId;
+          const [blue, red] = started.participants.map((participant) => participant.threadId);
+          for (const round of [0, 1, 2]) {
+            const current = yield* state(id);
+            yield* dispatchUntil(
+              answer(current.pending[0]!, `blue-${round}`, [`Blue ${round}`]),
+              shared(id, `blue-${round}-m0`),
+            );
+            yield* dispatchUntil(
+              answer(current.pending[1]!, `red-${round}`, [`Red ${round}`]),
+              nextTurn(blue!),
+            );
+          }
+          yield* dispatchUntil(
+            answer((yield* state(id)).pending[0]!, "synthesis", ["Final"]),
+            settled(id),
+          );
+          const engine = yield* OrchestrationEngineService;
+          const latest = yield* engine.latestSequence;
+          const requested = (threadId: string) =>
+            engine
+              .readThreadEvents({
+                threadId: ThreadId.make(threadId),
+                fromSequenceExclusive: 0,
+                toSequenceInclusive: latest,
+              })
+              .pipe(
+                Stream.runCollect,
+                Effect.map((events) =>
+                  events.flatMap((event) =>
+                    event.type === "thread.turn-start-requested"
+                      ? [event.payload.modelSelection]
+                      : [],
+                  ),
+                ),
+              );
+          const selection = (model: string, effort?: string) => ({
+            instanceId: "codex",
+            model,
+            ...(effort ? { options: [{ id: "reasoningEffort", value: effort }] } : {}),
+          });
+          // Blue answers, relays and, as moderator, synthesizes.
+          expect(yield* requested(blue!)).toEqual(Array(4).fill(selection("blue-model", "xhigh")));
+          expect(yield* requested(red!)).toEqual(Array(3).fill(selection("red-model", "low")));
+          expect(yield* requested(PARENT_ID)).toEqual([selection("gpt-5")]);
+        }),
+      ),
+    ),
+  );
+
   it.effect("rejects stale/wrong turn replies and out-of-order free speakers", () =>
     scenario((directory, database) =>
       withServer(

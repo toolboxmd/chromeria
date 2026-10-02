@@ -44,6 +44,7 @@ export const makeThreadTurnSender =
           commandId: commandId ?? (yield* deps.commandId),
           threadId: thread.id,
           message: { messageId: yield* deps.messageId, role: "user", text, attachments: [] },
+          modelSelection: thread.modelSelection,
           runtimeMode: thread.runtimeMode,
           interactionMode: thread.interactionMode,
           createdAt,

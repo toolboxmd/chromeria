@@ -1,7 +1,9 @@
 import {
   EventId,
   PRISM_STREAM_STATS_ACTIVITY_KIND,
+  ProviderInstanceId,
   ThreadId,
+  type ModelSelection,
   type OrchestrationThreadShell,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
@@ -29,8 +31,14 @@ const PARENT = ThreadId.make("parent");
 const CHILD = ThreadId.make("sub.parent.child");
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 type Command = Parameters<OrchestrationEngineService["Service"]["dispatch"]>[0];
+const parentSelection: ModelSelection = {
+  instanceId: ProviderInstanceId.make("codex"),
+  model: "gpt-5",
+  options: [{ id: "reasoningEffort", value: "xhigh" }],
+};
 const parent = {
   id: PARENT,
+  modelSelection: parentSelection,
   runtimeMode: "full-access",
   interactionMode: "default",
 } as OrchestrationThreadShell;
@@ -104,6 +112,11 @@ it.effect(
       expect(message.type).toBe("thread.turn.start");
       if (message.type !== "thread.turn.start") return;
       expect(message.threadId).toBe(PARENT);
+      expect(message.modelSelection).toEqual({
+        instanceId: "codex",
+        model: "gpt-5",
+        options: [{ id: "reasoningEffort", value: "xhigh" }],
+      });
       expect(message.message.text).toContain("sub.parent.child");
       expect(message.message.text).toContain("muse (opencode)");
       expect(message.message.text).toContain("1970-01-01T00:00:00.000Z (turn.started)");
