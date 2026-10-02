@@ -999,7 +999,7 @@ for per-match decisions and the absorption PR record.
   "id": "preview-capture-unthrottle",
   "purpose": "Keep the main window unthrottled during each guest `capturePage`, so agent preview screenshots work while Chromeria is minimized, hidden or covered.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/151"],
-  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...fix/preview-capture"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/152"],
   "newFiles": [],
   "upstreamFiles": [
     "apps/desktop/src/preview/Manager.test.ts",
