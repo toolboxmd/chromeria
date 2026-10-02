@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 
 import * as ServerConfig from "../config.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
@@ -224,6 +225,61 @@ it.layer(BaseLayer, { excludeTestServices: true })("createPromachosHome", (it) =
           expect(result.workspaceRoot).toBe(home);
           expect(yield* fileSystem.exists(path.join(home, "AGENTS.md"))).toBe(true);
         }),
+    );
+
+    it.effect("keeps a file another process puts in place and leaves no staging behind", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = path.join(yield* tempDir, "promachos");
+        let failInstall = true;
+        // The first install fails right after another process writes its own AGENTS.md.
+        const racing = FileSystem.FileSystem.of({
+          ...fileSystem,
+          link: (from, to) =>
+            failInstall && to.endsWith("AGENTS.md")
+              ? fileSystem.writeFileString(to, "# Theirs\n").pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      PlatformError.systemError({
+                        _tag: "PermissionDenied",
+                        module: "FileSystem",
+                        method: "link",
+                        pathOrDescriptor: to,
+                      }),
+                    ),
+                  ),
+                )
+              : fileSystem.link(from, to),
+        });
+        const vcs = makeGit();
+        const { projects, created } = makeProjects();
+
+        const failure = yield* createPromachosHome({ path: home }, projects).pipe(
+          Effect.provide(vcs.layer),
+          Effect.provideService(FileSystem.FileSystem, racing),
+          Effect.flip,
+        );
+
+        expect(failure.message).toContain(`Could not write ${path.join(home, "AGENTS.md")}`);
+        expect(yield* fileSystem.readFileString(path.join(home, "AGENTS.md"))).toBe("# Theirs\n");
+        expect((yield* fileSystem.readDirectory(home)).toSorted()).toEqual([".git", "AGENTS.md"]);
+        expect(created).toEqual([]);
+
+        failInstall = false;
+        yield* createPromachosHome({ path: home }, projects).pipe(
+          Effect.provide(vcs.layer),
+          Effect.provideService(FileSystem.FileSystem, racing),
+        );
+
+        expect(yield* fileSystem.readFileString(path.join(home, "AGENTS.md"))).toBe("# Theirs\n");
+        expect((yield* fileSystem.readDirectory(home)).toSorted()).toEqual([
+          ".git",
+          "AGENTS.md",
+          "CLAUDE.md",
+        ]);
+        expect(created).toEqual([home]);
+      }),
     );
 
     it.effect("reuses the project another client added first", () =>

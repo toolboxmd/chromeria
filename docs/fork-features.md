@@ -720,7 +720,10 @@ for per-match decisions and the absorption PR record.
     "https://github.com/toolboxmd/chromeria/issues/116",
     "https://github.com/toolboxmd/chromeria/issues/139"
   ],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/128"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/128",
+    "https://github.com/toolboxmd/chromeria/pull/141"
+  ],
   "newFiles": [
     "apps/server/src/promachos/PromachosHome.test.ts",
     "apps/server/src/promachos/PromachosHome.ts",

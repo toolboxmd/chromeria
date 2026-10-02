@@ -87,20 +87,23 @@ export const createPromachosHome = Effect.fn("PromachosHome.create")(function* (
     ["CLAUDE.md", STARTER_CLAUDE_MD],
   ] as const) {
     const file = path.join(workspaceRoot, name);
-    // The exclusive open never touches an existing file. Only a file this call created is
-    // removed after a failed write, so a retry writes it again.
+    // The file is written in full inside a private folder, then hard-linked into place. The
+    // link never replaces an existing file, and cleanup removes only the private folder, so a
+    // failure leaves nothing behind that blocks a retry.
     yield* Effect.scoped(
       Effect.gen(function* () {
-        const handle = yield* fileSystem.open(file, { flag: "wx" }).pipe(
+        const staging = yield* fileSystem.makeTempDirectoryScoped({
+          directory: workspaceRoot,
+          prefix: ".promachos-home-",
+        });
+        const staged = path.join(staging, name);
+        yield* fileSystem.writeFileString(staged, contents);
+        yield* fileSystem.link(staged, file).pipe(
           Effect.catchIf(
             (error) => error.reason._tag === "AlreadyExists",
-            () => Effect.succeed(null),
+            () => Effect.void,
           ),
         );
-        if (handle === null) return;
-        yield* handle
-          .writeAll(new TextEncoder().encode(contents))
-          .pipe(Effect.tapError(() => fileSystem.remove(file).pipe(Effect.ignore)));
       }),
     ).pipe(Effect.catch((error) => fail(`Could not write ${file}: ${causeMessage(error)}`)));
   }
