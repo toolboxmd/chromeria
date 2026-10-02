@@ -78,6 +78,8 @@ vi.mock("./ui/toast", () => ({
   toastManager: { add: state.add, close: state.close },
 }));
 
+vi.mock("./ScheduledCommandNotifications", () => ({ ScheduledCommandNotifications: () => null }));
+
 import { ThreadNotificationCoordinator } from "./ThreadNotificationCoordinator";
 
 let renderer: ReactTestRenderer | undefined;

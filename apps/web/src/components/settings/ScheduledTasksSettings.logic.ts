@@ -1,11 +1,15 @@
 import {
+  COMMAND_OUTPUTS_KEPT,
   DEFAULT_PRISM_LANE,
+  isCommandTask,
+  isSettledRun,
   type CreateScheduledTask,
   type EditScheduledTask,
   type PrismLane,
   type PrismRole,
   type ProjectId,
   type ScheduledTask,
+  type TaskCheckVersion,
   type TaskDefinition,
   type TaskMinuteChoice,
   type TaskRun,
@@ -21,8 +25,11 @@ export type ScheduleKind = TaskSchedule["kind"];
 
 /** The create/edit form's editable text, before it becomes a task definition. */
 export interface TaskDraft {
+  /** An agent task sends a prompt; a command task runs `command` in `projectId` with no agent. */
+  readonly kind: "agent" | "command";
   readonly title: string;
   readonly prompt: string;
+  readonly command: string;
   readonly targetKind: "new-thread" | "thread";
   readonly projectId: string;
   readonly threadId: string;
@@ -42,8 +49,10 @@ export interface TaskDraft {
 
 export function emptyTaskDraft(timeZone: string): TaskDraft {
   return {
+    kind: "agent",
     title: "",
     prompt: "",
+    command: "",
     targetKind: "new-thread",
     projectId: "",
     threadId: "",
@@ -77,12 +86,16 @@ export function draftFromTask(task: ScheduledTask): TaskDraft {
   return {
     ...base,
     title: definition.title,
-    prompt: definition.prompt,
-    targetKind: definition.target.kind,
-    projectId: definition.target.kind === "new-thread" ? definition.target.projectId : "",
-    threadId: definition.target.kind === "thread" ? definition.target.threadId : "",
-    role: definition.role,
-    lane: definition.lane ?? DEFAULT_PRISM_LANE,
+    ...(isCommandTask(definition)
+      ? { kind: "command", command: definition.command, projectId: definition.projectId }
+      : {
+          prompt: definition.prompt,
+          targetKind: definition.target.kind,
+          projectId: definition.target.kind === "new-thread" ? definition.target.projectId : "",
+          threadId: definition.target.kind === "thread" ? definition.target.threadId : "",
+          role: definition.role,
+          lane: definition.lane ?? DEFAULT_PRISM_LANE,
+        }),
     scheduleKind: schedule.kind,
     ...(schedule.kind === "interval" ? { intervalMinutes: String(schedule.minutes) } : {}),
     ...(schedule.kind === "weekly"
@@ -152,6 +165,24 @@ function definitionFromDraft(draft: TaskDraft): Parsed<TaskDefinition> {
   const title = draft.title.trim();
   const prompt = draft.prompt.trim();
   if (title === "") return { ok: false, error: "Title is required." };
+  if (draft.kind === "command") {
+    const command = draft.command.trim();
+    if (command === "") return { ok: false, error: "Command is required." };
+    if (draft.projectId === "")
+      return { ok: false, error: "Choose the project the command runs in." };
+    const schedule = scheduleFromDraft(draft);
+    if (!schedule.ok) return schedule;
+    return {
+      ok: true,
+      value: {
+        kind: "command",
+        title,
+        projectId: draft.projectId as ProjectId,
+        command,
+        schedule: schedule.value,
+      },
+    };
+  }
   if (prompt === "") return { ok: false, error: "Prompt is required." };
   if (draft.targetKind === "new-thread" && draft.projectId === "")
     return { ok: false, error: "Choose the project new threads start in." };
@@ -179,6 +210,8 @@ function definitionFromDraft(draft: TaskDraft): Parsed<TaskDefinition> {
 export function createPayloadFromDraft(draft: TaskDraft): Parsed<CreateScheduledTask> {
   const definition = definitionFromDraft(draft);
   if (!definition.ok) return definition;
+  // The exit code is a command task's result, so it has no outcome check.
+  if (isCommandTask(definition.value)) return { ok: true, value: definition.value };
   const checkCommand = draft.checkCommand.trim();
   const checkReason = draft.checkReason.trim();
   if (checkCommand === "") return { ok: false, error: "An outcome check is required." };
@@ -200,9 +233,10 @@ export function editPayloadFromDraft(
   const before = definitionFromDraft(draftFromTask(task));
   const definitionChanged =
     !before.ok || JSON.stringify(before.value) !== JSON.stringify(definition.value);
-  const checkCommand = draft.checkCommand.trim();
+  const check = activeCheck(task);
+  const checkCommand = check === null ? "" : draft.checkCommand.trim();
   const checkReason = draft.checkReason.trim();
-  const checkChanged = checkCommand !== "" && checkCommand !== activeCheck(task).command;
+  const checkChanged = check !== null && checkCommand !== "" && checkCommand !== check.command;
   if (checkChanged && checkReason === "")
     return { ok: false, error: "Say why the check changes. It applies to future runs only." };
   if (!definitionChanged && !checkChanged) return { ok: true, value: null };
@@ -216,18 +250,31 @@ export function editPayloadFromDraft(
   };
 }
 
-export const activeCheck = (task: ScheduledTask) => task.checks.at(-1)!;
+/** An agent task's current outcome check; command tasks have none. */
+export const activeCheck = (task: ScheduledTask): TaskCheckVersion | null =>
+  task.checks.at(-1) ?? null;
 export const latestRun = (task: ScheduledTask): TaskRun | null => task.runs.at(-1) ?? null;
-/** Only a verified run is settled. A needs-you run stays unfinished and keeps its thread and check. */
+/**
+ * The run still holding the task. An agent run that needs you stays unfinished and keeps its
+ * thread and check; a command run that needs you is settled, because it never resumes.
+ */
 const unfinishedRun = (task: ScheduledTask): TaskRun | null =>
-  task.runs.find((run) => run.status !== "done") ?? null;
+  task.runs.find((run) => !isSettledRun(run)) ?? null;
 
-/** The task waits on the user: its retries ran out and nothing runs until someone acts. */
+/** The agent task waits on the user: its retries ran out and nothing runs until someone acts. */
 export const needsYou = (task: ScheduledTask) => unfinishedRun(task)?.status === "needs-you";
 
 /**
- * Why Run now is unavailable, matching the server's refusals; null when allowed. On a task
- * that needs you it resumes the same pinned run. The server still refuses a retired thread.
+ * The command task is failing: its last finished run failed and no run has passed since. A run
+ * in progress does not clear it; only a passing run does.
+ */
+export const commandFailing = (task: ScheduledTask) =>
+  isCommandTask(task.definition) && task.failureStreak > 0;
+
+/**
+ * Why Run now is unavailable, matching the server's refusals; null when allowed. On an agent
+ * task that needs you it resumes the same pinned run, and the server still refuses a retired
+ * thread. On a command task it always starts a new run.
  */
 export function runNowBlockedReason(task: ScheduledTask): string | null {
   if (task.paused) return "Resume this task before running it now.";
@@ -243,9 +290,56 @@ export function runNowBlockedReason(task: ScheduledTask): string | null {
  */
 export function deleteBlockedReason(task: ScheduledTask): string | null {
   const run = unfinishedRun(task);
-  return run !== null && run.status !== "needs-you"
-    ? "A run is still in progress. Pause the task and wait until it is done or needs you."
-    : null;
+  if (run === null || run.status === "needs-you") return null;
+  return isCommandTask(task.definition)
+    ? "The command is still running. Wait until it ends."
+    : "A run is still in progress. Pause the task and wait until it is done or needs you.";
+}
+
+/** Who created the task, or null when the server never recorded it. */
+export const taskCreator = (task: ScheduledTask): string | null =>
+  task.createdBy ?? task.checks[0]?.actor ?? null;
+
+export interface CommandRunView {
+  readonly started: string | null;
+  readonly ended: string | null;
+  readonly exit: string;
+  /** The output tail, or null with `outputNote` saying why there is none. */
+  readonly output: string | null;
+  readonly outputNote: string | null;
+}
+
+/**
+ * One command run's record in words. A run that needs you without a result was interrupted:
+ * whether and how it ended is unknown, and nothing pretends otherwise.
+ */
+export function commandRunView(run: TaskRun): CommandRunView {
+  const started = run.dispatchedAt === null ? null : formatSlot(run.dispatchedAt);
+  const result = run.commandResult;
+  if (result === undefined) {
+    const running = run.status === "running" || run.status === "claimed";
+    return {
+      started,
+      ended: running ? null : "Unknown",
+      exit: running ? "Running" : "Unknown: the run was interrupted and was not run again",
+      output: null,
+      outputNote: running ? null : "Unknown",
+    };
+  }
+  return {
+    started,
+    ended: formatSlot(result.endedAt),
+    exit: result.timedOut
+      ? "Timed out after 30 minutes"
+      : result.exitCode === null
+        ? "No exit code (stopped by a signal or never started)"
+        : `Exit ${result.exitCode}`,
+    output: result.output ?? null,
+    outputNote:
+      result.output === undefined
+        ? `Not kept: only the newest ${COMMAND_OUTPUTS_KEPT} runs keep their output`
+        : null,
+  };
 }
 
 export type StatusTone = "success" | "warning" | "error" | "info" | "secondary";
@@ -260,6 +354,12 @@ export interface RunStatusView {
  * done, and a failing check keeps the work going in the same thread.
  */
 export function runStatusView(run: TaskRun): RunStatusView {
+  if (isCommandTask(run.definition))
+    return run.status === "done"
+      ? { label: "Passed", tone: "success" }
+      : run.status === "needs-you"
+        ? { label: "Needs you", tone: "error" }
+        : { label: "Running", tone: "info" };
   switch (run.status) {
     case "done":
       return { label: "Verified done", tone: "success" };
@@ -281,7 +381,12 @@ export function runStatusView(run: TaskRun): RunStatusView {
 /** The task's headline state for its row. Pause never hides unfinished work or a needs-you mark. */
 export function taskStatusView(task: ScheduledTask): RunStatusView {
   const run = latestRun(task);
-  if (task.paused && (run === null || run.status === "done"))
+  // A failing command keeps showing it while paused or while its next run is in progress.
+  if (commandFailing(task))
+    return run !== null && !isSettledRun(run)
+      ? { label: "Running, last run failed", tone: "warning" }
+      : { label: "Needs you", tone: "error" };
+  if (task.paused && (run === null || isSettledRun(run)))
     return { label: "Paused", tone: "secondary" };
   if (run === null) return { label: "No runs yet", tone: "secondary" };
   return runStatusView(run);

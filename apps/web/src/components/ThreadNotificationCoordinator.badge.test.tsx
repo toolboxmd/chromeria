@@ -39,6 +39,8 @@ vi.mock("../threadNotifications", async (importOriginal) => ({
   setNotificationBadge: state.badge,
 }));
 
+vi.mock("./ScheduledCommandNotifications", () => ({ ScheduledCommandNotifications: () => null }));
+
 import { ThreadNotificationCoordinator } from "./ThreadNotificationCoordinator";
 
 class TestNotification extends EventTarget {

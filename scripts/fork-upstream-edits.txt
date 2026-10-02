@@ -232,6 +232,9 @@ packages/contracts/src/environmentHttp.ts
 
 # Check-gated scheduled tasks (#123)
 apps/server/src/orchestration/projector.ts
+apps/web/src/components/ThreadNotificationCoordinator.badge.test.tsx
+apps/web/src/components/ThreadNotificationCoordinator.test.tsx
+apps/web/src/components/ThreadNotificationCoordinator.tsx
 
 # Partial-clone remotes keep repository identity (#135)
 apps/server/src/project/RepositoryIdentityResolver.test.ts

@@ -929,15 +929,22 @@ for per-match decisions and the absorption PR record.
     "apps/server/src/scheduler/Service.test.ts",
     "apps/server/src/scheduler/Service.ts",
     "apps/server/src/scheduler/rpcHandlers.ts",
+    "apps/web/src/components/ScheduledCommandNotifications.test.tsx",
+    "apps/web/src/components/ScheduledCommandNotifications.tsx",
     "apps/web/src/components/settings/ScheduledTasksSettings.logic.test.ts",
     "apps/web/src/components/settings/ScheduledTasksSettings.logic.ts",
     "apps/web/src/components/settings/ScheduledTasksSettings.tsx",
     "apps/web/src/routes/settings.scheduled-tasks.tsx",
+    "apps/web/src/scheduledCommandFailures.ts",
     "apps/web/src/state/scheduler.ts",
     "docs/user/scheduled-tasks.md",
     "packages/contracts/src/scheduler.ts"
   ],
-  "upstreamFiles": [],
+  "upstreamFiles": [
+    "apps/web/src/components/ThreadNotificationCoordinator.badge.test.tsx",
+    "apps/web/src/components/ThreadNotificationCoordinator.test.tsx",
+    "apps/web/src/components/ThreadNotificationCoordinator.tsx"
+  ],
   "sharedFiles": [
     "apps/server/src/orchestration/projector.ts",
     "apps/server/src/auth/RpcAuthorization.ts",

@@ -61,3 +61,18 @@ export const scheduledTaskCheckHistory = createEnvironmentRpcCommand(connectionA
   label: "environment-data:scheduler:check-history",
   tag: "scheduler.checkHistory",
 });
+
+/**
+ * The compact list the failure notifications watch in every environment: each task's active
+ * check and newest run, without command output. A separate family keeps this slow cadence
+ * apart from the full list Settings rereads while it is open.
+ */
+export const scheduledTaskFailureWatch = createEnvironmentRpcQueryAtomFamily(
+  connectionAtomRuntime,
+  {
+    label: "environment-data:scheduler:failure-watch",
+    tag: "scheduler.list",
+    staleTimeMs: 30_000,
+    refreshIntervalMs: 60_000,
+  },
+);
