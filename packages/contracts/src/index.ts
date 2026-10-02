@@ -26,6 +26,7 @@ export * from "./wight.ts";
 export * from "./prism.ts";
 export * from "./issues.ts";
 export * from "./issueLinks.ts";
+export * from "./promachosHome.ts";
 export * from "./git.ts";
 export * from "./vcs.ts";
 export * from "./sourceControl.ts";

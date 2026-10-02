@@ -715,13 +715,22 @@ for per-match decisions and the absorption PR record.
 ```json
 {
   "id": "promachos-mode",
-  "purpose": "Switch web and desktop to a chat-first view of the Promachos home's conversations: paragraph bubbles, a working indicator, inline question and approval cards, and new conversations started on his Prism role.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/116"],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/128"],
+  "purpose": "Switch web and desktop to a chat-first view of the Promachos home's conversations: paragraph bubbles, a working indicator, inline question and approval cards, new conversations started on his Prism role, and a New home option that creates a starter home on the environment's machine.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/116",
+    "https://github.com/toolboxmd/chromeria/issues/139"
+  ],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/128",
+    "https://github.com/toolboxmd/chromeria/pull/141"
+  ],
   "newFiles": [
+    "apps/server/src/promachos/PromachosHome.test.ts",
+    "apps/server/src/promachos/PromachosHome.ts",
     "apps/web/src/components/promachos/PromachosChat.test.tsx",
     "apps/web/src/components/promachos/PromachosChat.tsx",
     "apps/web/src/components/promachos/PromachosModeSwitch.tsx",
+    "apps/web/src/components/promachos/PromachosNewHome.tsx",
     "apps/web/src/components/promachos/PromachosSidebar.tsx",
     "apps/web/src/components/promachos/promachosBubbles.test.tsx",
     "apps/web/src/components/promachos/promachosBubbles.ts",
@@ -731,7 +740,8 @@ for per-match decisions and the absorption PR record.
     "apps/web/src/components/promachos/promachosStart.test.ts",
     "apps/web/src/components/promachos/promachosStart.ts",
     "apps/web/src/components/promachos/promachosTimeline.ts",
-    "docs/user/promachos-mode.md"
+    "docs/user/promachos-mode.md",
+    "packages/contracts/src/promachosHome.ts"
   ],
   "upstreamFiles": [
     "apps/web/src/components/AppSidebarLayout.tsx",
@@ -739,11 +749,15 @@ for per-match decisions and the absorption PR record.
     "docs/README.md"
   ],
   "sharedFiles": [
+    "apps/server/src/auth/RpcAuthorization.ts",
+    "apps/server/src/ws.ts",
     "apps/web/src/components/ChatView.tsx",
     "apps/web/src/components/chat/MessagesTimeline.tsx",
-    "apps/web/src/components/sidebar/SidebarChrome.tsx"
+    "apps/web/src/components/sidebar/SidebarChrome.tsx",
+    "packages/contracts/src/index.ts",
+    "packages/contracts/src/rpc.ts"
   ],
-  "keywords": ["Promachos", "chat bubbles", "bubble", "chat-first", "inline approval"]
+  "keywords": ["Promachos", "New home", "chat bubbles", "bubble", "chat-first", "inline approval"]
 }
 ```
 
