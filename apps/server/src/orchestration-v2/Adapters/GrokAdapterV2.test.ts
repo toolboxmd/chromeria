@@ -473,11 +473,13 @@ describe("Grok model selection carries the reasoning effort", () => {
   const flavor = makeGrokAcpAdapterFlavor({
     makeRuntime: () => Effect.never,
   } as unknown as GrokAdapterV2Options);
-  const selection: ModelSelection = {
-    instanceId: "grok",
-    model: "grok-4.6",
-    options: [{ id: "reasoningEffort", value: "low" }],
-  } as unknown as ModelSelection;
+  const selectEffort = (effort: string): ModelSelection =>
+    ({
+      instanceId: "grok",
+      model: "grok-4.6",
+      options: [{ id: "reasoningEffort", value: effort }],
+    }) as unknown as ModelSelection;
+  const selection = selectEffort("low");
 
   const makeRuntime = (configOptions: ReadonlyArray<unknown> = []) => {
     const calls: Array<Record<string, unknown>> = [];
@@ -528,6 +530,7 @@ describe("Grok model selection carries the reasoning effort", () => {
         runtime,
         startResult: startResult(1, "xhigh"),
         modelSelection: selection,
+        previousSelection: null,
       });
       assert.equal(applied, "grok-4.6");
       assert.deepEqual(calls, [{ setSessionModel: "grok-4.6", meta: { reasoningEffort: "low" } }]);
@@ -541,8 +544,35 @@ describe("Grok model selection carries the reasoning effort", () => {
         runtime,
         startResult: startResult(1, "low"),
         modelSelection: selection,
+        previousSelection: null,
       });
       assert.deepEqual(calls, []);
+    }),
+  );
+
+  it.effect("returns a protocol 1 session to its setup-time effort after a live change", () =>
+    Effect.gen(function* () {
+      const { runtime, calls } = makeRuntime();
+      const setup = startResult(1, "xhigh");
+      yield* flavor.applyModelSelection!({
+        runtime,
+        startResult: setup,
+        modelSelection: selection,
+        previousSelection: null,
+      });
+      // The adapter replays same-runtime switches against the stored setup,
+      // whose metadata still says xhigh; only the previous selection knows the
+      // session actually runs at low.
+      yield* flavor.applyModelSelection!({
+        runtime,
+        startResult: setup,
+        modelSelection: selectEffort("xhigh"),
+        previousSelection: selection,
+      });
+      assert.deepEqual(calls, [
+        { setSessionModel: "grok-4.6", meta: { reasoningEffort: "low" } },
+        { setSessionModel: "grok-4.6", meta: { reasoningEffort: "xhigh" } },
+      ]);
     }),
   );
 
@@ -570,6 +600,7 @@ describe("Grok model selection carries the reasoning effort", () => {
         runtime,
         startResult: startResult(2),
         modelSelection: selection,
+        previousSelection: null,
       });
       assert.equal(applied, "grok-4.6");
       assert.deepEqual(calls, [{ setConfigOption: "reasoning_effort", value: "low" }]);

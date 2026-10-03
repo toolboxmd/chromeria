@@ -256,7 +256,7 @@ export function makeGrokAcpAdapterFlavor(options: GrokAdapterV2Options): AcpAdap
     supportsImagePrompts: true,
     supportsCompaction: true,
     resolveModelId: (selection) => resolveGrokAcpBaseModelId(selection.model),
-    applyModelSelection: ({ runtime, startResult, modelSelection }) =>
+    applyModelSelection: ({ runtime, startResult, modelSelection, previousSelection }) =>
       Effect.gen(function* () {
         const legacy = startResult.initializeResult.protocolVersion === 1;
         const options = legacy ? [] : yield* runtime.getConfigOptions;
@@ -269,6 +269,7 @@ export function makeGrokAcpAdapterFlavor(options: GrokAdapterV2Options): AcpAdap
         const effortOption = options.find(
           (option) => option.category === "thought_level" && option.type === "select",
         );
+        const configuredEffort = effortOption?.currentValue;
         const currentModelId = legacy
           ? currentGrokModelIdFromSessionSetup(startResult.sessionSetupResult)
           : typeof configuredModel === "string"
@@ -291,9 +292,16 @@ export function makeGrokAcpAdapterFlavor(options: GrokAdapterV2Options): AcpAdap
                   }),
               },
           currentModelId,
+          // Protocol 1 has no live effort state: the stored setup only describes
+          // the session as activated, and same-runtime switches keep just its
+          // model id current. Baseline on the effort the previous selection
+          // applied so switching away and back is not skipped as a no-op.
           currentReasoningEffort: legacy
-            ? currentGrokReasoningEffortFromSessionSetup(startResult.sessionSetupResult)
-            : effortOption?.currentValue,
+            ? (getModelSelectionStringOptionValue(previousSelection, "reasoningEffort") ??
+              currentGrokReasoningEffortFromSessionSetup(startResult.sessionSetupResult))
+            : typeof configuredEffort === "string"
+              ? configuredEffort
+              : undefined,
           requestedModelId: resolveGrokAcpBaseModelId(modelSelection.model),
           requestedReasoningEffort: getModelSelectionStringOptionValue(
             modelSelection,
