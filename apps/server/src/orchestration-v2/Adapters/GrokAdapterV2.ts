@@ -5,6 +5,7 @@ import {
   xAiRateLimitedErrorCode,
 } from "../../provider/acp/XAiAcpExtension.ts";
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { resolveSelfInvocation, type SelfInvocation } from "@t3tools/shared/nodeRuntime";
 import {
   defaultInstanceIdForDriver,
@@ -28,6 +29,7 @@ import { makeAcpNativeLoggerFactory } from "../../provider/acp/AcpNativeLogging.
 import {
   applyGrokAcpModelSelection,
   currentGrokModelIdFromSessionSetup,
+  currentGrokReasoningEffortFromSessionSetup,
   grokApprovalOptions,
   makeGrokAcpRuntime,
   resolveGrokAcpBaseModelId,
@@ -259,16 +261,44 @@ export function makeGrokAcpAdapterFlavor(options: GrokAdapterV2Options): AcpAdap
         const legacy = startResult.initializeResult.protocolVersion === 1;
         const options = legacy ? [] : yield* runtime.getConfigOptions;
         const configuredModel = options.find((option) => option.category === "model")?.currentValue;
+        // The composer stores effort under the capability id `reasoningEffort`, while the Grok
+        // session exposes it as the `thought_level` config option (`reasoning_effort`), so the
+        // generic id-matched option loop never applies it. Carry it the way text generation
+        // already does: protocol 1 takes it as `session/set_model` metadata; later protocols
+        // write the session's own thought-level option.
+        const effortOption = options.find(
+          (option) => option.category === "thought_level" && option.type === "select",
+        );
+        const currentModelId = legacy
+          ? currentGrokModelIdFromSessionSetup(startResult.sessionSetupResult)
+          : typeof configuredModel === "string"
+            ? configuredModel
+            : undefined;
         return yield* applyGrokAcpModelSelection({
           runtime: legacy
             ? runtime
-            : { setSessionModel: (model) => runtime.setModel(model).pipe(Effect.as({})) },
-          currentModelId: legacy
-            ? currentGrokModelIdFromSessionSetup(startResult.sessionSetupResult)
-            : typeof configuredModel === "string"
-              ? configuredModel
-              : undefined,
+            : {
+                setSessionModel: (model, meta) =>
+                  Effect.gen(function* () {
+                    if (model !== currentModelId) {
+                      yield* runtime.setModel(model);
+                    }
+                    const effort = meta?.reasoningEffort;
+                    if (effortOption !== undefined && typeof effort === "string") {
+                      yield* runtime.setConfigOption(effortOption.id, effort);
+                    }
+                    return {};
+                  }),
+              },
+          currentModelId,
+          currentReasoningEffort: legacy
+            ? currentGrokReasoningEffortFromSessionSetup(startResult.sessionSetupResult)
+            : effortOption?.currentValue,
           requestedModelId: resolveGrokAcpBaseModelId(modelSelection.model),
+          requestedReasoningEffort: getModelSelectionStringOptionValue(
+            modelSelection,
+            "reasoningEffort",
+          ),
           mapError: (cause) => cause,
         });
       }),

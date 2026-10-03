@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   GrokSettings,
+  type ModelSelection,
   ProjectId,
   ProviderInstanceId,
   ProviderSessionId,
@@ -31,6 +32,7 @@ import * as IdAllocator from "../IdAllocator.ts";
 import { ProviderAdapterV2RuntimePolicy } from "../ProviderAdapter.ts";
 import * as RuntimePolicy from "../RuntimePolicy.ts";
 import { acpPermissionDisposition } from "../../provider/acp/AcpClientPolicy.ts";
+import type * as AcpSessionRuntime from "../../provider/acp/AcpSessionRuntime.ts";
 import {
   AcpProviderCapabilitiesV2,
   acpCompletedTurnShouldTerminalizeTool,
@@ -463,6 +465,114 @@ describe("Grok launch permission mode", () => {
         yield* launchArgs(policy("full-access", { approvalPolicy: "on-request" })),
         asking,
       );
+    }),
+  );
+});
+
+describe("Grok model selection carries the reasoning effort", () => {
+  const flavor = makeGrokAcpAdapterFlavor({
+    makeRuntime: () => Effect.never,
+  } as unknown as GrokAdapterV2Options);
+  const selection: ModelSelection = {
+    instanceId: "grok",
+    model: "grok-4.6",
+    options: [{ id: "reasoningEffort", value: "low" }],
+  } as unknown as ModelSelection;
+
+  const makeRuntime = (configOptions: ReadonlyArray<unknown> = []) => {
+    const calls: Array<Record<string, unknown>> = [];
+    const runtime = {
+      getConfigOptions: Effect.succeed(configOptions),
+      setSessionModel: (modelId: string, meta?: { readonly [key: string]: unknown } | null) =>
+        Effect.sync(() => {
+          calls.push(
+            meta === undefined ? { setSessionModel: modelId } : { setSessionModel: modelId, meta },
+          );
+          return {};
+        }),
+      setModel: (model: string) => Effect.sync(() => void calls.push({ setModel: model })),
+      setConfigOption: (configId: string, value: string | boolean) =>
+        Effect.sync(() => {
+          calls.push({ setConfigOption: configId, value });
+          return { configOptions: [] };
+        }),
+    } as unknown as AcpSessionRuntime.AcpSessionRuntime["Service"];
+    return { runtime, calls };
+  };
+
+  const startResult = (protocolVersion: number, currentEffort?: string) =>
+    ({
+      sessionId: "session-1",
+      initializeResult: { protocolVersion },
+      sessionSetupResult: {
+        sessionId: "session-1",
+        models: {
+          currentModelId: "grok-4.6",
+          availableModels: [
+            {
+              modelId: "grok-4.6",
+              name: "Grok 4.6",
+              ...(currentEffort === undefined ? {} : { _meta: { reasoningEffort: currentEffort } }),
+            },
+          ],
+        },
+      },
+      modelConfigId: undefined,
+    }) as unknown as AcpSessionRuntime.AcpSessionRuntimeStartResult;
+
+  it.effect("sends the selected effort as session/set_model metadata on protocol 1", () =>
+    Effect.gen(function* () {
+      const { runtime, calls } = makeRuntime();
+      // Same model as the session default: only the effort changes (#15251).
+      const applied = yield* flavor.applyModelSelection!({
+        runtime,
+        startResult: startResult(1, "xhigh"),
+        modelSelection: selection,
+      });
+      assert.equal(applied, "grok-4.6");
+      assert.deepEqual(calls, [{ setSessionModel: "grok-4.6", meta: { reasoningEffort: "low" } }]);
+    }),
+  );
+
+  it.effect("does not resend an effort the protocol 1 session already runs at", () =>
+    Effect.gen(function* () {
+      const { runtime, calls } = makeRuntime();
+      yield* flavor.applyModelSelection!({
+        runtime,
+        startResult: startResult(1, "low"),
+        modelSelection: selection,
+      });
+      assert.deepEqual(calls, []);
+    }),
+  );
+
+  it.effect("writes the thought-level option on newer protocols without a model change", () =>
+    Effect.gen(function* () {
+      const { runtime, calls } = makeRuntime([
+        {
+          id: "model",
+          name: "Model",
+          category: "model",
+          type: "select",
+          currentValue: "grok-4.6",
+          options: [],
+        },
+        {
+          id: "reasoning_effort",
+          name: "Reasoning effort",
+          category: "thought_level",
+          type: "select",
+          currentValue: "xhigh",
+          options: [],
+        },
+      ]);
+      const applied = yield* flavor.applyModelSelection!({
+        runtime,
+        startResult: startResult(2),
+        modelSelection: selection,
+      });
+      assert.equal(applied, "grok-4.6");
+      assert.deepEqual(calls, [{ setConfigOption: "reasoning_effort", value: "low" }]);
     }),
   );
 });
