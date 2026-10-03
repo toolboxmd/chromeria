@@ -285,20 +285,60 @@ export function makeGrokAcpAdapterFlavor(options: GrokAdapterV2Options): AcpAdap
                       yield* runtime.setModel(model);
                     }
                     const effort = meta?.reasoningEffort;
-                    if (effortOption !== undefined && typeof effort === "string") {
-                      yield* runtime.setConfigOption(effortOption.id, effort);
+                    if (effortOption === undefined || typeof effort !== "string") {
+                      return {};
                     }
+                    // A model switch can change which efforts the session offers, so
+                    // check the live option and, like the generic option loop, skip a
+                    // value it no longer advertises or rejects instead of failing the
+                    // session open; the agent's default applies.
+                    const liveOption = (yield* runtime.getConfigOptions).find(
+                      (option) => option.id === effortOption.id,
+                    );
+                    if (
+                      liveOption === undefined ||
+                      (liveOption.type === "select" &&
+                        !liveOption.options
+                          .flatMap((entry) =>
+                            "value" in entry
+                              ? [entry.value]
+                              : entry.options.map((choice) => choice.value),
+                          )
+                          .includes(effort))
+                    ) {
+                      yield* Effect.logWarning(
+                        "Grok session does not offer the requested reasoning effort",
+                        { optionId: effortOption.id, value: effort },
+                      );
+                      return {};
+                    }
+                    yield* runtime.setConfigOption(effortOption.id, effort).pipe(
+                      Effect.catchTags({
+                        AcpRequestError: (error) =>
+                          Effect.logWarning(
+                            "Grok session rejected the requested reasoning effort",
+                            {
+                              optionId: effortOption.id,
+                              value: effort,
+                              detail: error.message,
+                            },
+                          ),
+                      }),
+                    );
                     return {};
                   }),
               },
           currentModelId,
           // Protocol 1 has no live effort state: the stored setup only describes
           // the session as activated, and same-runtime switches keep just its
-          // model id current. Baseline on the effort the previous selection
-          // applied so switching away and back is not skipped as a no-op.
+          // model id current. Once a selection has run on this session, baseline
+          // on the effort that selection carried. An effort-free selection left
+          // the live value unknown, so a requested effort is then sent rather
+          // than compared against stale setup metadata.
           currentReasoningEffort: legacy
-            ? (getModelSelectionStringOptionValue(previousSelection, "reasoningEffort") ??
-              currentGrokReasoningEffortFromSessionSetup(startResult.sessionSetupResult))
+            ? previousSelection === null
+              ? currentGrokReasoningEffortFromSessionSetup(startResult.sessionSetupResult)
+              : getModelSelectionStringOptionValue(previousSelection, "reasoningEffort")
             : typeof configuredEffort === "string"
               ? configuredEffort
               : undefined,
