@@ -275,7 +275,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
   );
 
   it.effect.each(["add", "replace"] as const)(
-    "refreshes the primary upstream after %s before cache expiry",
+    "keeps origin as primary when upstream is %s before cache expiry",
     (change) =>
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
@@ -291,9 +291,7 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
 
         const resolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
         const initialIdentity = yield* resolver.resolve(cwd);
-        expect(initialIdentity?.canonicalKey).toBe(
-          change === "add" ? "github.com/julius/t3code" : "github.com/t3tools/previous",
-        );
+        expect(initialIdentity?.canonicalKey).toBe("github.com/julius/t3code");
 
         yield* git(cwd, [
           "remote",
@@ -305,11 +303,33 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
         const identity = yield* resolver.resolve(cwd, { refresh: true });
 
         expect(identity).not.toBeNull();
-        expect(identity?.locator.remoteName).toBe("upstream");
-        expect(identity?.canonicalKey).toBe("github.com/t3tools/t3code");
-        expect(identity?.displayName).toBe("t3tools/t3code");
+        expect(identity?.locator.remoteName).toBe("origin");
+        expect(identity?.locator.remoteUrl).toBe("git@github.com:julius/t3code.git");
+        expect(identity?.canonicalKey).toBe("github.com/julius/t3code");
+        expect(identity?.displayName).toBe("julius/t3code");
         expect(yield* resolver.resolve(cwd)).toEqual(identity);
       }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+  );
+
+  it.effect("falls back to upstream when origin is absent", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-repository-identity-upstream-only-test-",
+      });
+
+      yield* git(cwd, ["init"]);
+      yield* git(cwd, ["remote", "add", "upstream", "git@github.com:T3Tools/t3code.git"]);
+
+      const resolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+      const identity = yield* resolver.resolve(cwd);
+
+      expect(identity).not.toBeNull();
+      expect(identity?.locator.remoteName).toBe("upstream");
+      expect(identity?.locator.remoteUrl).toBe("git@github.com:T3Tools/t3code.git");
+      expect(identity?.canonicalKey).toBe("github.com/t3tools/t3code");
+      expect(identity?.displayName).toBe("t3tools/t3code");
+    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
   );
 
   it.effect("uses the last remote path segment as the repository name for nested groups", () =>
