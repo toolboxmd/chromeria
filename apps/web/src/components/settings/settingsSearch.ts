@@ -389,6 +389,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "environment-defaults",
   },
   {
+    id: "auto-update-providers",
+    title: "Update providers automatically",
+    to: "/settings/general",
+    searchTerms: ["install provider cli updates automatically without click codex claude"],
+    scope: "environment-defaults",
+  },
+  {
     id: "continue-threads-after-server-update",
     title: "Continue threads after restarts",
     to: "/settings/general",

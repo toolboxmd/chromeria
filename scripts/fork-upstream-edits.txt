@@ -253,3 +253,7 @@ apps/server/src/mcp/McpHttpServer.test.ts
 packages/contracts/src/previewAutomation.ts
 apps/server/src/mcp/toolkits/preview/handlers.ts
 apps/server/src/mcp/toolkits/preview/handlers.test.ts
+
+# Opt-in automatic provider updates (#159)
+apps/web/src/components/settings/SettingsPanels.tsx
+docs/user/updating.md

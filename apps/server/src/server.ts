@@ -53,6 +53,8 @@ import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionD
 import * as ProviderSessionRuntime from "./persistence/ProviderSessionRuntime.ts";
 import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRegistry.ts";
 import * as ModelManifest from "./provider/ModelManifest.ts";
+import * as ProviderAutoUpdate from "./provider/providerAutoUpdate.ts";
+import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ResetCreditCoordinator from "./provider/Layers/resetCreditCoordinator.ts";
 import * as StreamClock from "./prism/streamClock.ts";
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
@@ -981,9 +983,13 @@ const makeServerLayer = Layer.unwrap(
       tailscaleServeLayer,
       cloudDesiredLinkReconcileLayer,
       HeapSnapshot.layer,
+      // Fork: opt-in automatic provider updates (toolboxmd/chromeria#159).
+      ProviderAutoUpdate.layer,
     );
 
     return serverApplicationLayer.pipe(
+      // Fork: shared by the WebSocket RPCs and automatic updates (toolboxmd/chromeria#159).
+      Layer.provide(ProviderMaintenanceRunner.layer),
       Layer.provideMerge(runtimeServicesLive),
       Layer.provide(activationLayer),
       Layer.provideMerge(serverRelayBrokerTracingLayer),
