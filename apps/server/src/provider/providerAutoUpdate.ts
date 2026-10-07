@@ -29,7 +29,7 @@ export interface ProviderAutoUpdateTarget {
  * while an update is active or its last result was a failure, and deferred
  * while any of its sessions is mid-turn.
  */
-export function selectProviderAutoUpdateTargets(input: {
+function selectProviderAutoUpdateTargets(input: {
   readonly settings: Pick<ServerSettings, "autoUpdateProviders" | "enableProviderUpdateChecks">;
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly sessions: ReadonlyArray<ProviderSession>;
