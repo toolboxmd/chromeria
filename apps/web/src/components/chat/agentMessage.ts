@@ -1,0 +1,40 @@
+/**
+ * Messages other agents send into a thread arrive as ordinary user messages
+ * whose first line names the sender (built by the server's `threads` MCP
+ * toolkit, apps/server/src/mcp/toolkits/threads/handlers.ts). The timeline
+ * parses that header to show them as compact rows instead of user bubbles.
+ */
+export interface AgentMessage {
+  kind: "report" | "message";
+  threadId: string;
+  title: string;
+  body: string;
+  /** First non-empty body line, for the collapsed row. */
+  preview: string;
+}
+
+// Titles may contain parentheses or brackets, so anchor on the line's end.
+const REPORT_HEADER = /^\[Subagent (.+) \(thread ([^\s()]+)\) finished a turn\]$/;
+const MESSAGE_HEADER = /^\[Message from (.+) \(thread ([^\s()]+)\)\]$/;
+
+/** The sender and body of an agent-sent message, or null for a user's own message. */
+export function parseAgentMessage(text: string): AgentMessage | null {
+  if (!text.startsWith("[")) return null;
+  const newline = text.indexOf("\n");
+  const header = newline === -1 ? text : text.slice(0, newline);
+  const report = REPORT_HEADER.exec(header);
+  const match = report ?? MESSAGE_HEADER.exec(header);
+  if (!match) return null;
+  const body = newline === -1 ? "" : text.slice(newline + 1).replace(/^\n/, "");
+  return {
+    kind: report ? "report" : "message",
+    title: match[1]!,
+    threadId: match[2]!,
+    body,
+    preview:
+      body
+        .split("\n")
+        .find((line) => line.trim().length > 0)
+        ?.trim() ?? "",
+  };
+}
