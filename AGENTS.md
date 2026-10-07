@@ -113,6 +113,14 @@ An empty database is a bad test. Seed your worktree's `.t3` with a copy of real 
 
 For authorized mobile verification, a missing or outdated native client is a build step, not a blocker. Run `node scripts/mobile-native-client.ts ensure <ios|android> <device-id>` on the simulator host before starting Metro. It checks the local Expo fingerprint and builds/installs when needed. See `test-t3-mobile` for the full workflow.
 
+## Upstream first
+
+Before fixing a bug or building a feature, search `pingdotgg/t3code` main, open PRs, and Issues, and record what you found in the Issue. Treat an upstream fix as a candidate, not an answer:
+
+- Prefer a merged commit over an open PR.
+- Read the whole diff before running any of it, and confirm it fixes our reproduction and fits the fork's changes.
+- A ported fix gets the same proof and independent review as our own code. Link the upstream source in the PR.
+
 ## Pull requests
 
 - Never make a PR unless the developer explicitly asks you to do so.
