@@ -977,3 +977,32 @@ for per-match decisions and the absorption PR record.
   "keywords": ["partial clone", "blob:none", "partialclonefilter", "git remote -v"]
 }
 ```
+
+## Agent message cards
+
+```json
+{
+  "id": "agent-message-cards",
+  "purpose": "Show reports and messages from other agent threads as compact, expandable rows on web and cards on mobile instead of user bubbles.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/140",
+    "https://github.com/toolboxmd/chromeria/issues/145"
+  ],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/142",
+    "https://github.com/toolboxmd/chromeria/pull/147"
+  ],
+  "newFiles": [
+    "apps/mobile/src/features/threads/AgentMessageCard.tsx",
+    "apps/web/src/components/chat/AgentMessageRow.tsx",
+    "packages/client-runtime/src/agentMessage.test.ts",
+    "packages/client-runtime/src/agentMessage.ts"
+  ],
+  "upstreamFiles": [
+    "apps/mobile/src/features/threads/ThreadFeed.tsx",
+    "packages/client-runtime/package.json"
+  ],
+  "sharedFiles": ["apps/web/src/components/chat/MessagesTimeline.tsx"],
+  "keywords": ["agent message", "Report from", "Message from", "[Subagent "]
+}
+```

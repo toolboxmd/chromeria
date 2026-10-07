@@ -6,7 +6,7 @@ import { useMemo, useState, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 import { useThreadShell } from "~/state/entities";
-import type { AgentMessage } from "./agentMessage";
+import type { AgentMessage } from "@t3tools/client-runtime/agent-message";
 
 const stopToggle = (event: { stopPropagation: () => void }) => event.stopPropagation();
 

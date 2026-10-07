@@ -240,3 +240,7 @@ apps/server/src/vcs/GitVcsDriver.test.ts
 apps/server/src/vcs/GitVcsDriver.ts
 apps/server/src/vcs/GitVcsDriverCore.test.ts
 apps/server/src/vcs/GitVcsDriverCore.ts
+
+# Agent message cards on mobile (#145)
+apps/mobile/src/features/threads/ThreadFeed.tsx
+packages/client-runtime/package.json

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { parseAgentMessage } from "./agentMessage";
+import { parseAgentMessage } from "./agentMessage.ts";
 
 describe("parseAgentMessage", () => {
   it("parses a child report", () => {
@@ -36,6 +36,15 @@ describe("parseAgentMessage", () => {
     expect(
       parseAgentMessage("[Subagent Retry (2) (thread sub.p.2) finished a turn]\n\nok"),
     ).toMatchObject({ kind: "report", title: "Retry (2)", threadId: "sub.p.2" });
+  });
+
+  it("drops the markdown block marker from the preview", () => {
+    for (const line of ["## Summary", "- Summary", "1. Summary", "> Summary"]) {
+      expect(parseAgentMessage(`[Message from A (thread t-1)]\n\n${line}`)).toMatchObject({
+        body: line,
+        preview: "Summary",
+      });
+    }
   });
 
   it("accepts a header with an empty body", () => {
