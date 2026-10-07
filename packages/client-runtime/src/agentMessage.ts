@@ -9,13 +9,15 @@ export interface AgentMessage {
   threadId: string;
   title: string;
   body: string;
-  /** First non-empty body line, for the collapsed row. */
+  /** First non-empty body line without its markdown block marker, for the collapsed row. */
   preview: string;
 }
 
 // Titles may contain parentheses or brackets, so anchor on the line's end.
 const REPORT_HEADER = /^\[Subagent (.+) \(thread ([^\s()]+)\) finished a turn\]$/;
 const MESSAGE_HEADER = /^\[Message from (.+) \(thread ([^\s()]+)\)\]$/;
+// Heading, list, numbered list and quote markers render as formatting, not text.
+const BLOCK_MARKER = /^(?:#{1,6}|[-*+]|\d+[.)]|>)\s+/;
 
 /** The sender and body of an agent-sent message, or null for a user's own message. */
 export function parseAgentMessage(text: string): AgentMessage | null {
@@ -35,6 +37,7 @@ export function parseAgentMessage(text: string): AgentMessage | null {
       body
         .split("\n")
         .find((line) => line.trim().length > 0)
-        ?.trim() ?? "",
+        ?.trim()
+        .replace(BLOCK_MARKER, "") ?? "",
   };
 }

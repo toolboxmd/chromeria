@@ -38,6 +38,15 @@ describe("parseAgentMessage", () => {
     ).toMatchObject({ kind: "report", title: "Retry (2)", threadId: "sub.p.2" });
   });
 
+  it("drops the markdown block marker from the preview", () => {
+    for (const line of ["## Summary", "- Summary", "1. Summary", "> Summary"]) {
+      expect(parseAgentMessage(`[Message from A (thread t-1)]\n\n${line}`)).toMatchObject({
+        body: line,
+        preview: "Summary",
+      });
+    }
+  });
+
   it("accepts a header with an empty body", () => {
     expect(parseAgentMessage("[Message from A (thread t-1)]")).toMatchObject({
       body: "",

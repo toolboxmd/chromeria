@@ -52,6 +52,11 @@ export const AgentMessageCard = memo(function AgentMessageCard(props: {
   const thread = useThreadShell(threadRef);
   const label = message.kind === "report" ? "Report from" : "Message from";
   const hasBody = message.body.trim().length > 0;
+  const toggle = () => {
+    if (!hasBody) return;
+    void Haptics.selectionAsync();
+    setExpanded((value) => !value);
+  };
 
   return (
     <Animated.View layout={LAYOUT_TRANSITION} className="-mx-1 mb-1 px-1">
@@ -64,12 +69,18 @@ export const AgentMessageCard = memo(function AgentMessageCard(props: {
             ? `Double tap to ${expanded ? "hide" : "show"} the message. Long press to copy.`
             : "Long press to copy."
         }
-        hitSlop={4}
-        onPress={() => {
-          if (!hasBody) return;
-          void Haptics.selectionAsync();
-          setExpanded((value) => !value);
+        // The card is one accessibility element: double tap toggles it, and the
+        // nested title link is offered as a VoiceOver/TalkBack action instead.
+        accessibilityActions={[
+          ...(hasBody ? [{ name: "activate" }] : []),
+          ...(thread ? [{ name: "openThread", label: `Open ${message.title}` }] : []),
+        ]}
+        onAccessibilityAction={(event) => {
+          if (event.nativeEvent.actionName === "activate") toggle();
+          if (event.nativeEvent.actionName === "openThread" && thread) selectThread(thread);
         }}
+        hitSlop={4}
+        onPress={toggle}
         onLongPress={props.onCopy}
         className="rounded-xl border border-border-subtle bg-card px-2.5 py-2 active:bg-subtle"
       >
@@ -108,7 +119,7 @@ export const AgentMessageCard = memo(function AgentMessageCard(props: {
                 </Text>
               )}
             </View>
-            {message.preview ? (
+            {message.preview && !expanded ? (
               <Text className="text-xs text-foreground-muted" numberOfLines={1}>
                 {message.preview}
               </Text>
