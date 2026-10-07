@@ -1043,3 +1043,28 @@ for per-match decisions and the absorption PR record.
   "keywords": ["normalizePreviewUrl", "about:blank", "PreviewAutomationInvalidUrlError"]
 }
 ```
+
+## Opt-in automatic provider updates
+
+```json
+{
+  "id": "provider-auto-update",
+  "purpose": "Let each environment opt in to installing provider CLI updates without a click.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/159"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/160"],
+  "newFiles": [
+    "apps/server/src/provider/providerAutoUpdate.ts",
+    "apps/server/src/provider/providerAutoUpdate.test.ts",
+    "apps/web/src/components/settings/AutoUpdateProvidersSetting.tsx"
+  ],
+  "upstreamFiles": ["apps/web/src/components/settings/SettingsPanels.tsx", "docs/user/updating.md"],
+  "sharedFiles": [
+    "apps/server/src/server.ts",
+    "apps/server/src/server.test.ts",
+    "apps/server/src/ws.ts",
+    "apps/web/src/components/settings/settingsSearch.ts",
+    "packages/contracts/src/settings.ts"
+  ],
+  "keywords": ["autoUpdateProviders", "auto-update providers", "automatic provider updates"]
+}
+```

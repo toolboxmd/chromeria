@@ -141,6 +141,7 @@ import {
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { ScopedSwitch } from "./ScopedSwitch";
+import { AutoUpdateProvidersSetting } from "./AutoUpdateProvidersSetting";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ThemeLibrary } from "./ThemeSettings";
@@ -2807,34 +2808,10 @@ export function GeneralSettingsPanel() {
           }
         />
 
-        <SettingsRow
-          serverScoped
-          settingKeys={["autoUpdateProviders"]}
-          {...searchableSetting("auto-update-providers")}
-          description="Install newer provider CLI versions without a click. Needs provider update checks. Waits while that provider is running a turn."
-          resetAction={
-            settings.autoUpdateProviders !== DEFAULT_UNIFIED_SETTINGS.autoUpdateProviders ? (
-              <SettingResetButton
-                label="automatic provider updates"
-                onClick={() =>
-                  updateSettings({
-                    autoUpdateProviders: DEFAULT_UNIFIED_SETTINGS.autoUpdateProviders,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <ScopedSwitch
-              settingKeys={["autoUpdateProviders"]}
-              checked={settings.autoUpdateProviders}
-              disabled={!settings.enableProviderUpdateChecks}
-              onCheckedChange={(checked) =>
-                updateSettings({ autoUpdateProviders: Boolean(checked) })
-              }
-              aria-label="Update providers automatically"
-            />
-          }
+        <AutoUpdateProvidersSetting
+          value={settings.autoUpdateProviders}
+          checksEnabled={settings.enableProviderUpdateChecks}
+          onChange={(autoUpdateProviders) => updateSettings({ autoUpdateProviders })}
         />
 
         <SettingsRow
