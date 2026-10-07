@@ -47,6 +47,16 @@ If you run the server with `npx` rather than an installed `t3`, there is
 nothing to update on the host: stop the server and relaunch it as
 `npx t3@<client-version>` with the same subcommand and options.
 
+## Update providers automatically
+
+**Settings → General → Update providers automatically** is off by default. Turn
+it on to let an environment install newer provider CLI versions, such as Claude
+Code or Codex, without clicking the update notice. It needs **Provider update
+checks** on. An update waits while that provider is in the middle of a turn, and
+installs without a one-click update, such as manual installs, are skipped. Each
+new version is tried once per server start; a failure appears in the provider
+update notice.
+
 ## If an update fails
 
 Keep the client open until it reconnects or reports a failure. A failed service
