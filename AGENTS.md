@@ -115,7 +115,7 @@ For authorized mobile verification, a missing or outdated native client is a bui
 
 ## Pull requests
 
-- Never make a PR unless the developer explicitly asks you to do so.
+- Open a PR when the work is ready; you do not need to ask first. Merging still needs the developer's approval.
 - Conventional commit titles, plain language: `fix(web): new threads no longer spike CPU`.
 - Body: the problem in a sentence or two, then how you fixed it. End with the model and harness that did the work.
 - Do not bump versions. This fork has no version policy on purpose: the `package.json` versions belong to upstream releases, and a Chromeria build is identified by the commit SHA embedded as `t3codeCommitHash`. Do not hold a PR for a version decision.
