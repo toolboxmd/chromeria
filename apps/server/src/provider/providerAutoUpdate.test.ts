@@ -5,13 +5,23 @@ import {
   ProviderInstanceId,
   ServerProviderUpdateError,
   ThreadId,
+  type ProviderRuntimeEvent,
   type ProviderSession,
   type ServerProvider,
   type ServerSettings,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
 
+import * as ServerSettingsModule from "../serverSettings.ts";
+import * as ProviderAutoUpdate from "./providerAutoUpdate.ts";
 import { makeProviderAutoUpdater } from "./providerAutoUpdate.ts";
+import * as ProviderMaintenanceRunner from "./providerMaintenanceRunner.ts";
+import { ProviderRegistry } from "./Services/ProviderRegistry.ts";
+import { ProviderService } from "./Services/ProviderService.ts";
 
 const CODEX = ProviderDriverKind.make("codex");
 const CLAUDE = ProviderDriverKind.make("claudeAgent");
@@ -19,9 +29,10 @@ const CLAUDE = ProviderDriverKind.make("claudeAgent");
 function outdated(
   driver: ProviderDriverKind,
   overrides: Partial<NonNullable<ServerProvider["versionAdvisory"]>> = {},
+  instanceId: string = driver,
 ): ServerProvider {
   return {
-    instanceId: ProviderInstanceId.make(driver),
+    instanceId: ProviderInstanceId.make(instanceId),
     driver,
     enabled: true,
     installed: true,
@@ -160,5 +171,85 @@ describe("providerAutoUpdate", () => {
       yield* evaluate;
       assert.deepStrictEqual(state.calls, ["claudeAgent", "codex"]);
     }),
+  );
+  it.effect("leaves a failed or unchanged update for the user", () =>
+    Effect.gen(function* () {
+      const failed: ServerProvider = {
+        ...outdated(CODEX),
+        updateState: {
+          status: "failed",
+          startedAt: null,
+          finishedAt: null,
+          message: "Update command exited with code 1.",
+          output: null,
+        },
+      };
+      const { state, updater } = harness({ providers: [failed, outdated(CLAUDE)] });
+      yield* updater.evaluate;
+      assert.deepStrictEqual(state.calls, ["claudeAgent"]);
+    }),
+  );
+
+  it.effect("runs a shared install command once for all instances of a driver", () =>
+    Effect.gen(function* () {
+      const { state, updater } = harness({
+        providers: [outdated(CODEX), outdated(CODEX, {}, "codex-work")],
+      });
+      yield* updater.evaluate;
+      state.providers = [outdated(CODEX, {}, "codex-work")];
+      yield* updater.evaluate;
+      assert.deepStrictEqual(state.calls, ["codex"]);
+    }),
+  );
+
+  it.effect("skips a driver whose instances need different update commands", () =>
+    Effect.gen(function* () {
+      const { state, updater } = harness({
+        providers: [
+          outdated(CODEX),
+          outdated(CODEX, { updateCommand: "brew upgrade codex" }, "codex-brew"),
+        ],
+      });
+      yield* updater.evaluate;
+      assert.deepStrictEqual(state.calls, []);
+    }),
+  );
+
+  it.effect("the layer runs a deferred update when the turn ends", () =>
+    Effect.gen(function* () {
+      let sessions = [runningSession(CODEX)];
+      const firstPass = yield* Deferred.make<void>();
+      const updated = yield* Deferred.make<string>();
+      const events = yield* Queue.unbounded<ProviderRuntimeEvent>();
+      const deps = Layer.mergeAll(
+        ServerSettingsModule.layerTest({ autoUpdateProviders: true }),
+        Layer.mock(ProviderRegistry)({
+          getProviders: Effect.succeed([outdated(CODEX)]),
+          streamChanges: Stream.never,
+        }),
+        Layer.mock(ProviderService)({
+          // Read before signalling, so the first pass cannot see the flipped sessions.
+          listSessions: () =>
+            Effect.sync(() => sessions).pipe(
+              Effect.tap(() => Deferred.succeed(firstPass, undefined)),
+            ),
+          streamEvents: Stream.fromQueue(events),
+        }),
+        Layer.mock(ProviderMaintenanceRunner.ProviderMaintenanceRunner)({
+          updateProvider: (target) =>
+            Deferred.succeed(
+              updated,
+              typeof target === "string" ? target : (target.instanceId ?? ""),
+            ).pipe(Effect.as({ providers: [] })),
+        }),
+      );
+      yield* Layer.build(ProviderAutoUpdate.layer.pipe(Layer.provide(deps)));
+
+      yield* Deferred.await(firstPass);
+      assert.isFalse(yield* Deferred.isDone(updated));
+      sessions = [{ ...runningSession(CODEX), status: "ready" }];
+      yield* Queue.offer(events, { type: "turn.completed" } as unknown as ProviderRuntimeEvent);
+      assert.strictEqual(yield* Deferred.await(updated), "codex");
+    }).pipe(Effect.scoped),
   );
 });

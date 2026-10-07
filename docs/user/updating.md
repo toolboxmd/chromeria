@@ -54,8 +54,9 @@ it on to let an environment install newer provider CLI versions, such as Claude
 Code or Codex, without clicking the update notice. It needs **Provider update
 checks** on. An update waits while that provider is in the middle of a turn, and
 installs without a one-click update, such as manual installs, are skipped. Each
-new version is tried once per server start; a failure appears in the provider
-update notice.
+new version is tried once per server start. A failure appears in the provider
+update notice, and automatic updates for that provider pause until you update it
+from the notice or restart the server.
 
 ## If an update fails
 

@@ -18,14 +18,16 @@ import * as ProviderMaintenanceRunner from "./providerMaintenanceRunner.ts";
 
 export interface ProviderAutoUpdateTarget {
   readonly provider: ServerProvider;
-  /** Instance plus target version: each pair is attempted at most once per server run. */
+  /** Driver, install and target version: each is attempted at most once per server run. */
   readonly attemptKey: string;
 }
 
 /**
- * Providers that should be updated now. Mirrors the one-click candidate rule
- * the update notification uses, skips installs without an update command, and
- * defers an instance while one of its sessions is mid-turn.
+ * Providers that should be updated now. Applies the update notification's
+ * one-click rule per driver: every outdated instance must share one update
+ * command, and that command runs once for all of them. A driver is skipped
+ * while an update is active or its last result was a failure, and deferred
+ * while any of its sessions is mid-turn.
  */
 export function selectProviderAutoUpdateTargets(input: {
   readonly settings: Pick<ServerSettings, "autoUpdateProviders" | "enableProviderUpdateChecks">;
@@ -36,42 +38,61 @@ export function selectProviderAutoUpdateTargets(input: {
   if (!input.settings.autoUpdateProviders || !input.settings.enableProviderUpdateChecks) {
     return [];
   }
-  const targets: Array<ProviderAutoUpdateTarget> = [];
+  const outdatedByDriver = new Map<string, Array<ServerProvider>>();
   for (const provider of input.providers) {
     const advisory = provider.versionAdvisory;
     if (
       !provider.enabled ||
       !provider.installed ||
       advisory?.status !== "behind_latest" ||
-      !advisory.canUpdate ||
-      advisory.updateCommand === null ||
-      advisory.latestVersion === null ||
       provider.compatibilityAdvisory?.latestVersionStatus === "broken" ||
-      provider.compatibilityAdvisory?.latestVersionStatus === "unsupported" ||
-      provider.updateState?.status === "queued" ||
-      provider.updateState?.status === "running"
+      provider.compatibilityAdvisory?.latestVersionStatus === "unsupported"
     ) {
       continue;
     }
-    const attemptKey = `${provider.instanceId}@${advisory.latestVersion}`;
-    if (input.attempted.has(attemptKey) || isInstanceMidTurn(provider, input.sessions)) {
+    outdatedByDriver.set(provider.driver, [
+      ...(outdatedByDriver.get(provider.driver) ?? []),
+      provider,
+    ]);
+  }
+
+  const targets: Array<ProviderAutoUpdateTarget> = [];
+  for (const [driver, outdated] of outdatedByDriver) {
+    const first = outdated[0]!;
+    const commands = new Set(outdated.map((provider) => provider.versionAdvisory?.updateCommand));
+    const updateCommand = first.versionAdvisory?.updateCommand ?? null;
+    const latestVersion = first.versionAdvisory?.latestVersion ?? null;
+    if (
+      commands.size !== 1 ||
+      updateCommand === null ||
+      latestVersion === null ||
+      outdated.some(
+        (provider) =>
+          provider.versionAdvisory?.canUpdate !== true ||
+          provider.updateState?.status === "queued" ||
+          provider.updateState?.status === "running" ||
+          provider.updateState?.status === "failed" ||
+          provider.updateState?.status === "unchanged",
+      )
+    ) {
       continue;
     }
-    targets.push({ provider, attemptKey });
+    const attemptKey = `${driver}:${updateCommand}@${latestVersion}`;
+    if (input.attempted.has(attemptKey) || isDriverMidTurn(driver, input.sessions)) {
+      continue;
+    }
+    targets.push({ provider: first, attemptKey });
   }
   return targets;
 }
 
-function isInstanceMidTurn(
-  provider: ServerProvider,
-  sessions: ReadonlyArray<ProviderSession>,
-): boolean {
+function isDriverMidTurn(driver: string, sessions: ReadonlyArray<ProviderSession>): boolean {
   return sessions.some(
     (session) =>
-      (session.status === "running" || session.activeTurnId !== undefined) &&
-      (session.providerInstanceId === undefined
-        ? session.provider === provider.driver
-        : session.providerInstanceId === provider.instanceId),
+      session.provider === driver &&
+      (session.status === "connecting" ||
+        session.status === "running" ||
+        session.activeTurnId !== undefined),
   );
 }
 
@@ -122,7 +143,12 @@ export function makeProviderAutoUpdater(deps: {
   return { evaluate };
 }
 
-const WAKE_EVENT_TYPES = new Set(["turn.completed", "turn.aborted", "session.exited"]);
+const WAKE_EVENT_TYPES = new Set([
+  "turn.completed",
+  "turn.aborted",
+  "session.state.changed",
+  "session.exited",
+]);
 
 /**
  * Re-evaluates at startup, when provider snapshots or settings change, and
@@ -134,11 +160,11 @@ export const layer = Layer.effectDiscard(
     const providerRegistry = yield* ProviderRegistry;
     const providerService = yield* ProviderService;
     const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
-    const runner = yield* ProviderMaintenanceRunner.make();
+    const runner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
     const { evaluate } = makeProviderAutoUpdater({
       getSettings: serverSettings.getSettings,
       getProviders: providerRegistry.getProviders,
-      listSessions: providerService.listSessions(),
+      listSessions: Effect.suspend(() => providerService.listSessions()),
       updateProvider: runner.updateProvider,
     });
 

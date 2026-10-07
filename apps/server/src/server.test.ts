@@ -138,6 +138,7 @@ import { OrchestrationEventStore } from "./persistence/Services/OrchestrationEve
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ModelManifest from "./provider/ModelManifest.ts";
+import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import { ProviderAuthService } from "./provider/Services/ProviderAuthService.ts";
 import { ProviderInstanceRegistry } from "./provider/Services/ProviderInstanceRegistry.ts";
@@ -836,6 +837,7 @@ const buildAppUnderTest = (options?: {
       // Viewed-file marks for a host that keeps none of its own are rows, so the routes want a
       // database. Its own, in memory: nothing here shares a table with the auth store.
       makeRoutesLayer.pipe(
+        Layer.provide(ProviderMaintenanceRunner.layer),
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
         Layer.provide(Layer.mergeAll(serviceLauncherClientLayer, SqlitePersistenceMemory)),
       ),

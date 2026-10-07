@@ -3886,6 +3886,9 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     const sql = yield* SqlClient.SqlClient;
     const issueLinks = yield* IssueLinks;
     const scheduler = yield* Scheduler;
+    // Fork: one runner per server so its command lock also covers automatic updates (toolboxmd/chromeria#159).
+    const sharedProviderMaintenanceRunner =
+      yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -3930,7 +3933,12 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               Layer.provide(Layer.succeed(IssueLinks, issueLinks)),
               Layer.provide(Layer.succeed(Scheduler, scheduler)),
               Layer.provide(AgentSessionScanner.layer),
-              Layer.provide(ProviderMaintenanceRunner.layer),
+              Layer.provide(
+                Layer.succeed(
+                  ProviderMaintenanceRunner.ProviderMaintenanceRunner,
+                  sharedProviderMaintenanceRunner,
+                ),
+              ),
               Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, serverSelfUpdate)),
               // One server-lifetime service means clients share the same PR caches, and a WS
               // mutation invalidates the HTTP diff cache that every client reads from.
