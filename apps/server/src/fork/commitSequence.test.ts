@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { CommandId, EventId } from "@t3tools/contracts";
+import { CommandId, EventId, RunId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -150,4 +150,41 @@ it.effect(
         0,
       );
     }).pipe(Effect.provide(runtime)),
+);
+
+it.effect("rejects state-only cancellation without changing queued core work", () =>
+  Effect.gen(function* () {
+    const { sql, sink, input, thread, sequence } = yield* setup;
+    const outbox = yield* Outbox.EffectOutboxV2;
+    yield* outbox.enqueue([
+      {
+        id: "effect:existing",
+        commandId: CommandId.make("command:existing"),
+        threadId: thread.id,
+        request: { type: "provider-turn.start", runId: RunId.make("run:existing") },
+      },
+    ]);
+    const before = yield* sql`SELECT * FROM orchestration_v2_effect_outbox`;
+    for (const guards of [[], [Effect.succeed("accept_noop" as const)]]) {
+      const rejected = yield* sink
+        .commitCommand({
+          ...input,
+          forkPlans: [{ ...input.forkPlans[0]!, guards }],
+          cancelUnsettledEffects: {
+            effectTypes: ["provider-turn.start"],
+            reason: "State-only commands cannot cancel core work",
+          },
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(rejected._tag, "EventSinkWriteError");
+      const receipts = yield* Receipts.CommandReceiptStoreV2;
+      assert.isTrue(Option.isNone(yield* receipts.getByCommandId(input.commandId)));
+      assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_effect_outbox`, before);
+      assert.strictEqual(
+        (yield* sql<{ value: number }>`SELECT value FROM fork_counter`)[0]!.value,
+        0,
+      );
+      assert.strictEqual(yield* sink.latestSequence(), sequence);
+    }
+  }).pipe(Effect.provide(runtime)),
 );

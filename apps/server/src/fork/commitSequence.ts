@@ -10,6 +10,7 @@ export class ForkStateOnlyCommitError extends Schema.TaggedError<ForkStateOnlyCo
 export function validateForkStateOnlyCommand(input: {
   readonly commandId: CommandId;
   readonly events: ReadonlyArray<unknown>;
+  readonly cancelUnsettledEffects?: unknown;
   readonly forkPlans?: ReadonlyArray<unknown>;
   readonly effects: ReadonlyArray<unknown>;
 }) {
@@ -18,7 +19,7 @@ export function validateForkStateOnlyCommand(input: {
     return Effect.fail(
       new ForkStateOnlyCommitError({ commandId: input.commandId, kind: "missing_plan" }),
     );
-  if (input.effects.length > 0)
+  if (input.effects.length > 0 || input.cancelUnsettledEffects !== undefined)
     return Effect.fail(
       new ForkStateOnlyCommitError({ commandId: input.commandId, kind: "core_effects" }),
     );
