@@ -5,8 +5,8 @@ import { PERSON_VIEWS } from "./personView";
 import { usePersonView, useRefreshDevicePeopleOnFocus } from "./usePersonView";
 
 /**
- * Picks whose threads the sidebar lists, in both the standard and Promachos
- * sidebars. Its own full-width row, under the mode switch.
+ * Picks whose threads the sidebar lists. Its own full-width row, under the
+ * sidebar header.
  */
 export function PersonPicker() {
   const onSettings = useLocation({
