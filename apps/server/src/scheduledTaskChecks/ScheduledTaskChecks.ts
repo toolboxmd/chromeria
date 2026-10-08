@@ -25,6 +25,9 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { isSqlError, type SqlError } from "effect/sql/SqlError";
 
 import { isThreadRetired } from "../childThreads/retirement.ts";
+import { ProviderAdapterRegistryV2 } from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as Prism from "../prism/PrismService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
@@ -46,21 +49,6 @@ import {
   type CheckState,
 } from "./state.ts";
 import { ensureCheckSchema, listCheckStates } from "./store.ts";
-
-/**
- * Prism's pick for a role (toolboxmd/chromeria#169 wires it). The default
- * cannot pick, so a task with a role fails visibly instead of silently
- * running on the task's own model.
- */
-export class ScheduledTaskRoleSelection extends Context.Reference<{
-  readonly select: (input: {
-    readonly role: string;
-    readonly lane: "easy" | "medium" | "hard";
-    readonly projectId: ScheduledTask["projectId"];
-  }) => Effect.Effect<{ readonly modelSelection: ModelSelection; readonly kitText: string } | null>;
-}>("t3/scheduledTaskChecks/ScheduledTaskRoleSelection", {
-  defaultValue: () => ({ select: () => Effect.succeed(null) }),
-}) {}
 
 /** The fork summaries an agent sees on a listed task. */
 export const forkSummaryFields = (task: ScheduledTask) => ({
@@ -207,7 +195,9 @@ const makeEngine = Effect.gen(function* () {
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const processes = yield* ProcessRunner;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const roles = yield* ScheduledTaskRoleSelection;
+  const prism = yield* Prism.PrismService;
+  const adapters = yield* ProviderAdapterRegistryV2;
+  const providers = yield* ProviderRegistry.ProviderRegistry;
   const changes = yield* PubSub.sliding<void>(1);
   yield* ensureCheckSchema;
 
@@ -353,20 +343,37 @@ const makeEngine = Effect.gen(function* () {
           return yield* new ScheduledTaskCheckError({ message: "Target project not found." });
         return project.value.workspaceRoot;
       }),
-    role: (state, task) =>
+    role: (state, task, launching) =>
       state.role === null
         ? Effect.succeed(null)
-        : roles
-            .select({ role: state.role, lane: state.lane ?? "medium", projectId: task.projectId })
+        : prism
+            .resolve({
+              projectId: task.projectId,
+              role: state.role,
+              lane: state.lane ?? undefined,
+              // A post keeps its thread's model, so only the kit is taken. A launch asks
+              // Prism for a model and validates it like any unattended launch; with no
+              // eligible model the run retries rather than using the task's own model.
+              ...(launching
+                ? {
+                    validate: (selection: ModelSelection) =>
+                      Prism.validateLaunchSelection(selection).pipe(
+                        Effect.provideService(ProviderAdapterRegistryV2, adapters),
+                        Effect.provideService(ProviderRegistry.ProviderRegistry, providers),
+                      ),
+                  }
+                : { explicit: task.modelSelection }),
+            })
             .pipe(
-              Effect.flatMap((picked) =>
-                picked === null
-                  ? Effect.fail(
-                      new ScheduledTaskCheckError({
-                        message: `Prism cannot pick a model for role ${state.role} here; the task does not run on another model instead.`,
-                      }),
-                    )
-                  : Effect.succeed(picked),
+              Effect.map((picked) => ({
+                modelSelection: picked.modelSelection,
+                kitText: picked.kitText === "" ? null : picked.kitText,
+              })),
+              Effect.mapError(
+                (error) =>
+                  new ScheduledTaskCheckError({
+                    message: `Prism could not start role ${state.role}: ${error.message}`,
+                  }),
               ),
             ),
   });

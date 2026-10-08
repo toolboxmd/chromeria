@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { IsoDateTime, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { PrismLane, PrismRole } from "./prism.ts";
 
 /**
  * Fork: scheduled task extensions (toolboxmd/chromeria#174). Upstream's
@@ -113,8 +114,8 @@ export const ScheduledTaskOutcomeCheck = Schema.Struct({
   /** The active check version that new runs are pinned to. */
   version: PositiveInt,
   command: TrimmedNonEmptyString,
-  role: Schema.NullOr(TrimmedNonEmptyString),
-  lane: Schema.NullOr(TrimmedNonEmptyString),
+  role: Schema.NullOr(PrismRole),
+  lane: Schema.NullOr(PrismLane),
   run: Schema.NullOr(
     Schema.Struct({
       id: TrimmedNonEmptyString,
@@ -172,11 +173,12 @@ const CheckReason = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000)).annot
   description:
     "Why passing this check proves the task is done. Required with checkCommand or revertCheckVersion.",
 });
-const Role = TrimmedNonEmptyString.check(Schema.isMaxLength(64)).annotate({
-  description: "Prism role that picks the model for each run, such as planner or worker.",
+const Role = PrismRole.annotate({
+  description:
+    "Prism role whose kit and model list start each run, such as planner or worker. A role that Prism cannot place makes the run retry; it never falls back to another model.",
 });
-const Lane = Schema.Literals(["easy", "medium", "hard"]).annotate({
-  description: "Difficulty lane for the Prism role; defaults to medium.",
+const Lane = PrismLane.annotate({
+  description: "Difficulty lane for the worker role; defaults to medium.",
 });
 const ShellCommand = TrimmedNonEmptyString.check(Schema.isMaxLength(8_000)).annotate({
   description:

@@ -111,12 +111,14 @@ export interface CheckedRunDeps {
     readonly threadId: ThreadId | null;
   }) => Effect.Effect<string, ScheduledTaskCheckError>;
   /**
-   * The Prism pick for a task with a role, null without one. It fails when a
+   * The Prism pick for a task with a role, null without one. `launching` asks
+   * for a model for a new thread; a post only uses the kit. It fails when a
    * role cannot be honored; a role never falls back to the task's model.
    */
   readonly role: (
     state: CheckState,
     task: ScheduledTask,
+    launching: boolean,
   ) => Effect.Effect<
     { readonly modelSelection: ModelSelection; readonly kitText: string | null } | null,
     ScheduledTaskCheckError
@@ -213,23 +215,23 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
     Effect.gen(function* () {
       const index = run.sends.length;
       const kind = run.hasWork ? "continue" : "start";
-      const picked = yield* deps.role(state, task).pipe(Effect.result);
+      const launching = task.threadId === null && index === 0;
+      const picked = yield* deps.role(state, task, launching).pipe(Effect.result);
       if (picked._tag === "Failure") {
         const failed = yield* retry(state, run, picked.failure.message, now);
         return { _tag: "refused", state: failed, error: picked.failure } as const;
       }
       const role = picked.success;
-      const launch =
-        task.threadId === null && index === 0
-          ? {
-              projectId: task.projectId,
-              title: task.title,
-              modelSelection: role?.modelSelection ?? task.modelSelection,
-              runtimeMode: task.runtimeMode,
-              interactionMode: task.interactionMode,
-              workspaceStrategy: task.workspaceStrategy,
-            }
-          : null;
+      const launch = launching
+        ? {
+            projectId: task.projectId,
+            title: task.title,
+            modelSelection: role?.modelSelection ?? task.modelSelection,
+            runtimeMode: task.runtimeMode,
+            interactionMode: task.interactionMode,
+            workspaceStrategy: task.workspaceStrategy,
+          }
+        : null;
       const send: RunSend = {
         index,
         ...sendIdentity(run, index),

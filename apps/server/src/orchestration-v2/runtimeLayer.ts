@@ -60,6 +60,7 @@ import * as ThreadForkService from "./ThreadForkService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ScheduledTaskChecks from "../scheduledTaskChecks/ScheduledTaskChecks.ts";
+import * as Prism from "../prism/PrismService.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 
@@ -302,6 +303,8 @@ const layerScheduledTaskProvided = ScheduledTaskChecks.withOutcomeChecks(
       ProjectionStore.layer,
       ProjectStore.layer,
       ProcessRunner.layer,
+      Prism.layer,
+      layerProviderAdapterRegistryProvided,
     ),
   ),
 );

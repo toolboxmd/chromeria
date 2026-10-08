@@ -143,7 +143,7 @@ const harness = (options: { readonly role?: string } = {}) =>
           return { passed: passes, output: passes ? "ok" : "still missing" };
         }),
       workspace: ({ threadId: bound }) => Effect.succeed(bound === null ? "/project" : "/worktree"),
-      role: (state) =>
+      role: (state, _task, launching) =>
         state.role === null
           ? Effect.succeed(null)
           : options.role === undefined
@@ -151,7 +151,8 @@ const harness = (options: { readonly role?: string } = {}) =>
                 new ScheduledTaskCheckError({ message: `no Prism pick for ${state.role}` }),
               )
             : Effect.succeed({
-                modelSelection: { ...selection, model: options.role },
+                // A post only takes the kit; a launch takes Prism's model too.
+                modelSelection: launching ? { ...selection, model: options.role } : selection,
                 kitText: "KIT",
               }),
     });

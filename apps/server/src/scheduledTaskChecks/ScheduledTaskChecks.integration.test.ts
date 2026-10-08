@@ -33,6 +33,8 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import type { ProviderAdapterV2Shape } from "../orchestration-v2/ProviderAdapter.ts";
 import * as Registry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as Prism from "../prism/PrismService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as Harness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -98,6 +100,10 @@ const runtime = (database: Database) => {
     NodeCrypto.layer,
     NodeServices.layer,
     Scheduler.layer,
+    // These tasks have no Prism role, so routing is never consulted.
+    Layer.mock(Prism.PrismService)({}),
+    Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+    Registry.layerFromAdapters([adapter]),
   );
   return Layer.mergeAll(
     dependencies,
