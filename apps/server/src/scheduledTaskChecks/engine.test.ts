@@ -679,6 +679,34 @@ it.effect("a command whose task is deleted while its workspace is found never st
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
+it.effect("a command edited while its run finds the workspace runs as admitted, once", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    const h = yield* harness();
+    const command = task({ threadId: null });
+    yield* h.save({ command: "backup --v1" });
+    const spawn = yield* h.decide("scheduled", NOW, command);
+    assert.equal(spawn._tag, "fork");
+    const hold = yield* h.holdWorkspace;
+    // Admitted and detached: its process fiber is finding the workspace when the edit lands.
+    if (spawn._tag === "fork") yield* spawn.dispatch;
+    yield* Deferred.await(hold.reached);
+    yield* h.save({ command: "backup --v2" });
+    yield* Deferred.succeed(hold.release, undefined);
+    yield* h.finishCommand({ exitCode: 0, output: "ok", timedOut: false, failure: null });
+    assert.deepEqual(h.executed, [`backup --v1@/project#${taskId}:2026-10-08T12:00:00.000Z`]);
+    // The next run takes the edited command.
+    yield* TestClock.adjust(3_600_000);
+    const next = yield* h.decide("scheduled", NOW + 3_600_000, command);
+    if (next._tag === "fork") yield* next.dispatch;
+    yield* h.finishCommand({ exitCode: 0, output: "ok", timedOut: false, failure: null });
+    assert.deepEqual(h.executed, [
+      `backup --v1@/project#${taskId}:2026-10-08T12:00:00.000Z`,
+      `backup --v2@/project#${taskId}:2026-10-08T13:00:00.000Z`,
+    ]);
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
 it.effect(
   "a send held for a waiting report stays unsent through later steps and a restart, then goes out once unchanged",
   () =>

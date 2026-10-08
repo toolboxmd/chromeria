@@ -340,11 +340,13 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
    * Starts a command run's process detached, so a long command never holds
    * upstream's poll. Its workspace is found first; a fresh ownership check and
    * the spawn then share the task's lock, so a task deleted meanwhile, or a run
-   * that moved on, starts nothing. The lock is released once the process has
+   * that moved on, starts nothing. It runs the command admitted with the run,
+   * never an edit made since. The lock is released once the process has
    * spawned, never held while it runs.
    */
-  const launchCommand = (task: ScheduledTask, runId: string) =>
+  const launchCommand = (task: ScheduledTask, run: CheckedRun, command: string) =>
     Effect.gen(function* () {
+      const runId = run.id;
       executing.add(runId);
       yield* FiberSet.run(
         commands,
@@ -355,10 +357,10 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
               task.id,
               Effect.gen(function* () {
                 const state = yield* readCheckState(task.id);
-                const run = state?.runs.find((entry) => entry.id === runId);
-                if (state === null || run === undefined || run.stage !== "running") return null;
+                const owned = state?.runs.find((entry) => entry.id === runId);
+                if (owned === undefined || owned.stage !== "running") return null;
                 return yield* deps.start({
-                  command: state.command!,
+                  command,
                   cwd,
                   taskId: task.id,
                   runId,
@@ -524,7 +526,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
             if (state.kind === "command") {
               // Stored as running before anything is spawned: a restart never runs it twice.
               yield* store(state, withRun);
-              return fork(launchCommand(task, run.id));
+              return fork(launchCommand(task, run, state.command!));
             }
             const started = yield* startSend(task, withRun, run, now);
             return started._tag === "refused"
