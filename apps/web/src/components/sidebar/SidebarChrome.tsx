@@ -1,3 +1,4 @@
+import { PromachosModeSwitch } from "../promachos/PromachosModeSwitch";
 import { ArrowLeftIcon, ChartNoAxesColumnIcon, CircleDotIcon, SettingsIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { memo, useCallback } from "react";
@@ -37,6 +38,15 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
 }: {
   isElectron: boolean;
 }) {
+  return (
+    <>
+      <SidebarTitlebar isElectron={isElectron} />
+      <PromachosModeSwitch />
+    </>
+  );
+});
+
+const SidebarTitlebar = memo(function SidebarTitlebar({ isElectron }: { isElectron: boolean }) {
   const stageLabel = useEnvironmentStageLabel();
   const environmentIdentificationMode = useEnvironmentIdentificationMode();
   const backdropVariant = resolveSidebarStageBackdropVariant(
