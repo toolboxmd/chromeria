@@ -1,3 +1,5 @@
+import { retirementAdmission } from "../childThreads/retirement.ts";
+import { ForkCommitGuardRejected, type ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { assert, it } from "@effect/vitest";
 import {
@@ -128,7 +130,7 @@ function threadCreatedEvent(input: {
   readonly id: string;
   readonly thread: OrchestrationV2AppThread;
   readonly now: DateTime.Utc;
-}): OrchestrationV2DomainEvent {
+}): Extract<OrchestrationV2DomainEvent, { type: "thread.created" }> {
   return {
     id: EventId.make(input.id),
     type: "thread.created",
@@ -1406,6 +1408,377 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         expectedSequences,
       );
       assert.deepEqual(pageLimits, [500, 500, 500]);
+    }),
+  );
+
+  it.effect.each(["guard", "mutation", "event-write"] as const)(
+    "rolls back the complete fork command transaction on %s failure",
+    (failure) =>
+      Effect.gen(function* () {
+        const sink = yield* EventSink.EventSinkV2;
+        const sql = yield* SqlClient.SqlClient;
+        const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make(`thread:fork-rollback:${failure}`);
+        const commandId = CommandId.make(`command:fork-rollback:${failure}`);
+        yield* sql`CREATE TABLE IF NOT EXISTS fork_commit_proof (id TEXT PRIMARY KEY)`;
+        const rejected = new ForkCommitGuardRejected({ threadId, kind: "state_conflict" });
+        const mutation = Effect.gen(function* () {
+          const transactionSql = yield* SqlClient.SqlClient;
+          yield* transactionSql`INSERT INTO fork_commit_proof (id) VALUES (${commandId})`.pipe(
+            Effect.mapError(
+              () => new ForkCommitGuardRejected({ threadId, kind: "storage_failure" }),
+            ),
+          );
+        });
+        const event = threadCreatedEvent({
+          id: `event:fork-rollback:${failure}`,
+          thread: makeThread(threadId, now),
+          now,
+        });
+        const plans: ReadonlyArray<ForkCommitPlan> = [
+          {
+            guards: failure === "guard" ? [Effect.fail(rejected)] : [],
+            mutations: failure === "mutation" ? [mutation, Effect.fail(rejected)] : [mutation],
+          },
+        ];
+        const outcome = yield* sink
+          .commitCommand({
+            commandId,
+            threadId,
+            commandType: "fork.proof",
+            acceptedAt: now,
+            events: failure === "event-write" ? [event, event] : [event],
+            effects: [
+              {
+                id: `effect:fork-rollback:${failure}`,
+                commandId,
+                threadId,
+                request: { type: "terminal.cleanup" },
+              },
+            ],
+            forkPlans: plans,
+          })
+          .pipe(Effect.result);
+        assert.equal(outcome._tag, "Failure");
+        if (outcome._tag === "Failure" && failure !== "event-write") {
+          assert.instanceOf(outcome.failure, ForkCommitGuardRejected);
+        }
+        assert.lengthOf(yield* sql`SELECT id FROM fork_commit_proof WHERE id = ${commandId}`, 0);
+        assert.isTrue(Option.isNone(yield* receipts.getByCommandId(commandId)));
+        assert.lengthOf(yield* outbox.listByCommandId(commandId), 0);
+        assert.lengthOf(
+          Array.from(yield* sink.readByCommandId({ commandId }).pipe(Stream.runCollect)),
+          0,
+        );
+        assert.equal((yield* projections.getThread(threadId).pipe(Effect.result))._tag, "Failure");
+      }),
+  );
+
+  it.effect(
+    "accept_noop commits only its accepted receipt and skips every later fork plan and side effect",
+    () =>
+      Effect.gen(function* () {
+        const sink = yield* EventSink.EventSinkV2;
+        const sql = yield* SqlClient.SqlClient;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread:fork-noop");
+        const commandId = CommandId.make("command:fork-noop");
+        yield* sink.write({
+          events: [
+            threadCreatedEvent({
+              id: "event:fork-noop:seed",
+              thread: makeThread(threadId, now),
+              now,
+            }),
+          ],
+        });
+        yield* outbox.enqueue([
+          {
+            id: "effect:fork-noop:existing",
+            commandId: CommandId.make("command:fork-noop:seed"),
+            threadId,
+            request: { type: "terminal.cleanup" },
+          },
+        ]);
+        yield* sql`CREATE TABLE fork_noop_proof (id TEXT PRIMARY KEY)`;
+        const beforeThread = yield* projections.getThread(threadId);
+        const beforeEffects = yield* sql`SELECT * FROM orchestration_v2_effect_outbox`;
+        const beforeSequence = yield* sink.latestSequence({ threadId });
+        const mutation = Effect.gen(function* () {
+          const transactionSql = yield* SqlClient.SqlClient;
+          yield* transactionSql`INSERT INTO fork_noop_proof (id) VALUES ('unexpected')`.pipe(
+            Effect.mapError(
+              () => new ForkCommitGuardRejected({ threadId, kind: "storage_failure" }),
+            ),
+          );
+        });
+        const input = {
+          commandId,
+          threadId,
+          commandType: "thread.stop",
+          acceptedAt: now,
+          events: [
+            threadCreatedEvent({
+              id: "event:fork-noop:unexpected",
+              thread: { ...beforeThread, title: "Must not change" },
+              now,
+            }),
+          ],
+          effects: [
+            {
+              id: "effect:fork-noop:unexpected",
+              commandId,
+              threadId,
+              request: { type: "terminal.cleanup" as const },
+            },
+          ],
+          cancelUnsettledEffects: {
+            effectTypes: ["terminal.cleanup" as const],
+            reason: "Must not cancel",
+            drain: true,
+          },
+        };
+        const result = yield* sink.commitCommand({
+          ...input,
+          forkPlans: [
+            { guards: [Effect.succeed("accept_noop" as const)], mutations: [mutation] },
+            {
+              guards: [
+                Effect.fail(new ForkCommitGuardRejected({ threadId, kind: "state_conflict" })),
+              ],
+              mutations: [mutation],
+            },
+          ],
+        });
+        assert.equal(result.receipt.status, "accepted");
+        assert.equal(result.receipt.resultSequence, beforeSequence);
+        assert.isTrue(result.committed);
+        assert.lengthOf(result.storedEvents, 0);
+        assert.equal(result.cancelledEffectCount, 0);
+        assert.deepEqual(yield* projections.getThread(threadId), beforeThread);
+        assert.deepEqual(yield* sql`SELECT * FROM orchestration_v2_effect_outbox`, beforeEffects);
+        assert.lengthOf(yield* sql`SELECT id FROM fork_noop_proof`, 0);
+        assert.equal(yield* sink.latestSequence({ threadId }), beforeSequence);
+        const replay = yield* sink.commitCommand({
+          ...input,
+          forkPlans: [
+            {
+              guards: [Effect.die("No-op receipt replay must not evaluate guards")],
+              mutations: [mutation],
+            },
+          ],
+        });
+        assert.isFalse(replay.committed);
+        assert.equal(replay.receipt.status, "accepted");
+        assert.lengthOf(replay.storedEvents, 0);
+        // This suite shares its store; leave no pending proof effect for later worker tests.
+        yield* outbox.cancelUnsettled({
+          threadId,
+          effectTypes: ["terminal.cleanup"],
+          reason: "No-op proof complete",
+        });
+      }),
+  );
+
+  it.effect("does not evaluate fork guards or mutations on accepted receipt replay", () =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:fork-plan-replay");
+      const commandId = CommandId.make("command:fork-plan-replay");
+      const input = {
+        commandId,
+        threadId,
+        commandType: "fork.proof",
+        acceptedAt: now,
+        events: [
+          threadCreatedEvent({
+            id: "event:fork-plan-replay",
+            thread: makeThread(threadId, now),
+            now,
+          }),
+        ],
+        effects: [],
+      };
+      assert.isTrue((yield* sink.commitCommand(input)).committed);
+      const rejection = Effect.fail(
+        new ForkCommitGuardRejected({ threadId, kind: "state_conflict" }),
+      );
+      const replay = yield* sink.commitCommand({
+        ...input,
+        forkPlans: [{ guards: [rejection], mutations: [rejection] }],
+      });
+      assert.isFalse(replay.committed);
+      assert.lengthOf(replay.storedEvents, 1);
+    }),
+  );
+
+  it.effect("Stop drains a blocked native descendant provider start before returning", () =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const now = yield* DateTime.now;
+      const rootId = ThreadId.make("thread:fork-drain:root");
+      const childId = ThreadId.make("thread:fork-drain:child");
+      const root = makeThread(rootId, now);
+      const child = {
+        ...makeThread(childId, now),
+        lineage: {
+          parentThreadId: rootId,
+          rootThreadId: rootId,
+          relationshipToParent: "subagent" as const,
+        },
+      };
+      yield* sink.write({
+        events: [
+          threadCreatedEvent({ id: "event:fork-drain:root", thread: root, now }),
+          threadCreatedEvent({ id: "event:fork-drain:child", thread: child, now }),
+        ],
+      });
+      const commandId = CommandId.make("command:fork-drain:start");
+      const effectId = "effect:fork-drain:start";
+      yield* outbox.enqueue([
+        {
+          id: effectId,
+          commandId,
+          threadId: childId,
+          request: { type: "provider-turn.start", runId: RunId.make("run:fork-drain") },
+        },
+      ]);
+      const entered = yield* Deferred.make<void>();
+      const interrupted = yield* Deferred.make<void>();
+      const releaseCleanup = yield* Deferred.make<void>();
+      const cleanupDone = yield* Ref.make(false);
+      const executor = Layer.succeed(
+        EffectWorker.OrchestrationEffectExecutorV2,
+        EffectWorker.OrchestrationEffectExecutorV2.of({
+          execute: () =>
+            Effect.gen(function* () {
+              yield* Deferred.succeed(entered, undefined);
+              return yield* Effect.never;
+            }).pipe(
+              Effect.ensuring(
+                Effect.gen(function* () {
+                  yield* Deferred.succeed(interrupted, undefined);
+                  yield* Deferred.await(releaseCleanup);
+                  yield* Ref.set(cleanupDone, true);
+                }),
+              ),
+            ),
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const execution = yield* worker.runOnce.pipe(Effect.forkChild);
+        yield* Deferred.await(entered);
+        const stopId = CommandId.make("command:fork-drain:stop");
+        const stop = yield* sink
+          .commitCommand({
+            commandId: stopId,
+            threadId: rootId,
+            commandType: "thread.stop",
+            acceptedAt: now,
+            events: [
+              {
+                ...threadCreatedEvent({
+                  id: "event:fork-drain:stop",
+                  thread: { ...root, forkRetirement: { token: stopId } },
+                  now,
+                }),
+                type: "thread.metadata-updated",
+              },
+            ],
+            effects: [],
+            cancelUnsettledEffects: {
+              effectTypes: ["provider-turn.start", "provider-turn.restart"],
+              reason: "Stop",
+              includeSubagentDescendants: true,
+              drain: true,
+            },
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(interrupted);
+        assert.isUndefined(stop.pollUnsafe());
+        assert.isFalse(yield* Ref.get(cleanupDone));
+        yield* Deferred.succeed(releaseCleanup, undefined);
+        yield* Fiber.join(stop);
+        yield* Fiber.join(execution);
+        assert.isTrue(yield* Ref.get(cleanupDone));
+        const stored = yield* outbox.get(effectId);
+        assert.equal(Option.getOrThrow(stored).status, "cancelled");
+      }).pipe(
+        Effect.provide(
+          EffectWorker.layerWithOptions({ workerId: "fork-drain" }).pipe(
+            Layer.provide(
+              Layer.merge(Layer.succeed(EffectOutbox.EffectOutboxV2, outbox), executor),
+            ),
+          ),
+        ),
+      );
+    }).pipe(Effect.provide(Layer.fresh(layerTest))),
+  );
+
+  it.effect("checks the ancestor retirement token in the child admission transaction", () =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const rootId = ThreadId.make("thread:fork-admission:root");
+      const childId = ThreadId.make("thread:fork-admission:child");
+      const root = makeThread(rootId, now);
+      const child = {
+        ...makeThread(childId, now),
+        lineage: {
+          rootThreadId: rootId,
+          parentThreadId: rootId,
+          relationshipToParent: "subagent" as const,
+        },
+      };
+      yield* sink.write({
+        events: [
+          threadCreatedEvent({ id: "event:fork-admission:root", thread: root, now }),
+          threadCreatedEvent({ id: "event:fork-admission:child", thread: child, now }),
+        ],
+      });
+      // The child plan is constructed before Stop wins, then evaluated in its actual commit.
+      const guard = retirementAdmission({ threadId: childId, expectedTokens: [] });
+      yield* sink.write({
+        events: [
+          {
+            ...threadCreatedEvent({
+              id: "event:fork-admission:stop",
+              thread: { ...root, forkRetirement: { token: CommandId.make("stop:fork-admission") } },
+              now,
+            }),
+            type: "thread.metadata-updated",
+          },
+        ],
+      });
+      const commandId = CommandId.make("command:fork-admission:late");
+      const result = yield* sink
+        .commitCommand({
+          commandId,
+          threadId: childId,
+          commandType: "message.dispatch",
+          acceptedAt: now,
+          events: [
+            {
+              ...threadCreatedEvent({ id: "event:fork-admission:late", thread: child, now }),
+              type: "thread.metadata-updated",
+            },
+          ],
+          effects: [],
+          forkPlans: [guard],
+        })
+        .pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") assert.equal(result.failure._tag, "ForkCommitGuardRejected");
+      const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+      assert.isTrue(Option.isNone(yield* receipts.getByCommandId(commandId)));
     }),
   );
 
