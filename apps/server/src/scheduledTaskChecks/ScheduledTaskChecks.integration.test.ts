@@ -1207,3 +1207,53 @@ it.effect(
       );
     }).pipe(Effect.scoped),
 );
+
+it.effect(
+  "the live task subscription carries no command output, while the list and the agent tools keep it",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      yield* TestClock.setTime(Date.parse(CANONICAL));
+      const id = ScheduledTaskId.make("scheduled-task:output");
+      const runId = `${id}:${CANONICAL}`;
+      const marker = "UNIQUE-OUTPUT-MARKER-174";
+      yield* Effect.gen(function* () {
+        yield* insertTask({ id, schedule: { type: "interval", everyMs: 3_600_000 }, next: null });
+        yield* writeCheckState(null, {
+          ...checkState(id, [
+            {
+              id: runId,
+              slot: CANONICAL,
+              checkVersion: null,
+              threadId: null,
+              checkCwd: null,
+              stage: "done",
+              attempt: 0,
+              retryAt: null,
+              hasWork: false,
+              sends: [],
+              error: null,
+              check: null,
+              commandResult: { exitCode: 0, timedOut: false, endedAt: CANONICAL, output: marker },
+            },
+          ]),
+          kind: "command",
+          command: "make backup",
+          checks: [],
+          lastSuccessfulRunId: runId,
+        });
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const live = yield* service.subscribeList().pipe(Stream.runHead);
+        const liveTask = Option.getOrThrow(live).tasks.find((task) => task.id === id)!;
+        // The compact state every client watches stays whole; only the output is gone.
+        assert.equal(liveTask.command?.run?.id, runId);
+        assert.equal(liveTask.command?.run?.exitCode, 0);
+        assert.equal(liveTask.command?.lastSuccessfulRunId, runId);
+        assert.notInclude(toJson(Option.getOrThrow(live)), marker);
+        // The full list, which Settings fetches on demand, and the agent tools keep it.
+        const listed = (yield* service.list()).tasks.find((task) => task.id === id)!;
+        assert.equal(listed.command?.run?.output, marker);
+        assert.include(toJson(ScheduledTaskChecks.forkSummaryFields(listed)), marker);
+      }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+    }).pipe(Effect.scoped),
+);

@@ -112,6 +112,22 @@ describe("command failure alerts", () => {
     expect(commandTasksTurnedFailing(failed.health, [task("a", 2, "run:1")]).failing).toEqual([]);
   });
 
+  it("keep one failure episode across a reconnect's compact snapshot, then alert on the next", () => {
+    const failing = commandTasksTurnedFailing(null, [task("a", 0, "run:1")]).health;
+    const turned = commandTasksTurnedFailing(failing, [task("a", 1, "run:1")]);
+    expect(turned.failing.map((entry) => entry.id)).toEqual(["a"]);
+    // The live list never carries output; the same failing state after a reconnect stays quiet.
+    const reconnected = commandTasksTurnedFailing(turned.health, [task("a", 1, "run:1")]);
+    expect(reconnected.failing).toEqual([]);
+    const passed = commandTasksTurnedFailing(reconnected.health, [task("a", 0, "run:2")]);
+    expect(passed.failing).toEqual([]);
+    expect(
+      commandTasksTurnedFailing(passed.health, [task("a", 1, "run:2")]).failing.map(
+        (entry) => entry.id,
+      ),
+    ).toEqual(["a"]);
+  });
+
   it("alert when a run passed between two reads, and on a new task's first failure", () => {
     const before = commandTasksTurnedFailing(null, [task("a", 1, "run:1")]).health;
     // The streak looks unchanged, but a newer run passed in between.

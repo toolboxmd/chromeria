@@ -442,6 +442,18 @@ const toTaskError = (taskId: ScheduledTaskId | undefined) => (cause: unknown) =>
   });
 
 /** The read model reports a fork run's real outcome, never a bare dispatch. */
+/**
+ * What the live task subscription carries: everything but command output,
+ * which only the list and the agent tools return. Every client holds the
+ * subscription open, and none shows output from it.
+ */
+export function withoutCommandOutput(task: ScheduledTask): ScheduledTask {
+  const run = task.command?.run;
+  if (run?.output === undefined) return task;
+  const { output: _output, ...compact } = run;
+  return { ...task, command: { ...task.command!, run: compact } };
+}
+
 export function withForkState(task: ScheduledTask, state: CheckState | undefined): ScheduledTask {
   if (state === undefined) return task;
   const status = checkedRunStatus(state);
@@ -519,7 +531,10 @@ const decoratedLayer = Layer.effect(
         Stream.merge(
           inner.subscribeList(),
           Stream.fromPubSub(changes).pipe(Stream.mapEffect(() => inner.list())),
-        ).pipe(Stream.mapEffect(attachList)),
+        ).pipe(
+          Stream.mapEffect(attachList),
+          Stream.map((result) => ({ ...result, tasks: result.tasks.map(withoutCommandOutput) })),
+        ),
       upsert: (input) =>
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis;

@@ -468,7 +468,7 @@ function ScheduledTaskRow({
             <Badge variant={statusVariant(task.lastRunStatus)}>{task.lastRunStatus}</Badge>
           ) : null}
           {task.lastRunError ? <span className="text-destructive">{task.lastRunError}</span> : null}
-          <ScheduledTaskFork.ForkTaskSummary task={task} />
+          <ScheduledTaskFork.ForkTaskSummary environmentId={environmentId} task={task} />
         </div>
       }
       control={
