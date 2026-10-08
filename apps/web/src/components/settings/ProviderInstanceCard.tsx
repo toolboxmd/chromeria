@@ -1,3 +1,4 @@
+import { WightLimitSetting } from "./WightLimitSetting";
 import { Spinner } from "~/components/ui/spinner";
 
 import {
@@ -1278,6 +1279,15 @@ export function ProviderInstanceCard({
               />
             </div>
           }
+        />
+      </SettingsSection>
+
+      <SettingsSection title="Wight mode">
+        <WightLimitSetting
+          value={instance.wightLimitPercent}
+          provider={liveProvider}
+          disabled={readOnly}
+          onChange={(wightLimitPercent) => onUpdate({ ...instance, wightLimitPercent })}
         />
       </SettingsSection>
 
