@@ -33,6 +33,7 @@ import * as Reactor from "./RecoveryReactor.ts";
 import * as Store from "./RecoveryStore.ts";
 import { continuationAdmission } from "./continuationAdmission.ts";
 import { continuationRunFields } from "./RecoveryHooks.ts";
+import * as Hooks from "./RecoveryHooks.ts";
 import { retryAdmission } from "./recoveryAdmission.ts";
 import { retryCommand } from "./recoveryPolicy.ts";
 import { ForkCommitGuardRejected } from "../childThreads/ForkCommitPlan.ts";
@@ -620,6 +621,18 @@ describe("Prism exact-source recovery history", () => {
         };
         events.push(event(newer, "batch:newer"));
         yield* persist("batch:commit", events);
+        // Delegated finalization must not conclude every historical failure synchronously.
+        const held = yield* Effect.gen(function* () {
+          return yield* (yield* Hooks.RecoveryHooks).holdsFinalization(run.threadId, newer.id);
+        }).pipe(Effect.provide(Hooks.layer));
+        assert.strictEqual(held, false);
+        const sql = yield* SqlClient.SqlClient;
+        assert.strictEqual(
+          (yield* sql<{
+            count: number;
+          }>`SELECT count(*) AS count FROM fork_prism_recovery_outcomes`)[0]?.count,
+          0,
+        );
         const commands = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
         yield* withReactor(
           Effect.gen(function* () {

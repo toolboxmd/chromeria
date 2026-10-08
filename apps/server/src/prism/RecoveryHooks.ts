@@ -1,10 +1,11 @@
 import type {
   OrchestrationV2ServerCommand,
   OrchestrationV2DomainEvent,
-  RunId,
   ServerSettingsError,
   ThreadId,
 } from "@t3tools/contracts";
+import { RunId } from "@t3tools/contracts";
+import * as SqlClient from "effect/sql/SqlClient";
 import { latestExecutedRun } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -37,14 +38,25 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const coordinator = yield* Coordinator.RecoveryCoordinator;
     const projections = yield* Projection.ProjectionStoreV2;
+    const sql = yield* SqlClient.SqlClient;
     return {
       holdsFinalization: (threadId: ThreadId, expectedRunId: RunId) =>
         Effect.gen(function* () {
-          // The first terminal observer must arm recovery before transferring a failed task result.
+          // Arm current recovery before result transfer; historical catch-up belongs to the reactor.
+          const latest = yield* sql<{ run_id: string }>`SELECT run_id
+            FROM orchestration_v2_projection_runs WHERE thread_id=${threadId} AND status<>'queued'
+              AND NOT(status='cancelled' AND json_extract(payload_json,'$.startedAt') IS NULL)
+            ORDER BY (completed_at IS NULL) DESC,completed_at DESC,ordinal DESC,run_id DESC LIMIT 1`;
+          const runIds = [
+            expectedRunId,
+            ...(latest[0] === undefined ? [] : [RunId.make(latest[0].run_id)]),
+          ];
           const projection = yield* projections.getThreadRecords(
             threadId,
             ["runs", "turnItems", "runtimeRequests"],
             {
+              runIds,
+              turnItemRunIds: runIds,
               turnItemTypes: ["error", "run_interrupt_request"],
             },
           );
