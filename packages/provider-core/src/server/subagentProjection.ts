@@ -22,7 +22,7 @@ import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2Pe
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
+import { isOrchestrationV2WorkActive, threadOwner } from "@t3tools/contracts";
 
 function trimmed(value: string | null | undefined): string | undefined {
   const result = value?.trim();
@@ -63,6 +63,9 @@ export function makeSubagentChildThread(input: {
 }): OrchestrationV2AppThread {
   return {
     ...input.parentThread,
+    // Fork: children belong to the parent's owner and start unshared (toolboxmd/chromeria#170).
+    owner: threadOwner(input.parentThread),
+    coOwners: [],
     createdBy: input.createdBy,
     creationSource: input.creationSource,
     id: input.childThreadId,

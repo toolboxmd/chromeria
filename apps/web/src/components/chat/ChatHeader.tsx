@@ -31,6 +31,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { ProjectFavicon } from "../ProjectFavicon";
+import { ThreadSharingControl } from "../people/ThreadSharingControl";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
@@ -431,6 +432,9 @@ export const ChatHeader = memo(function ChatHeader({
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
+      {isServerThread ? (
+        <ThreadSharingControl environmentId={activeThreadEnvironmentId} threadId={activeThreadId} />
+      ) : null}
     </div>
   );
 });

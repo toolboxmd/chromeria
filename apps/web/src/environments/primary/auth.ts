@@ -29,6 +29,7 @@ const PrimaryEnvironmentRequestOperation = Schema.Literals([
   "revoke-pairing-link",
   "list-client-sessions",
   "revoke-client-session",
+  "set-client-session-person",
   "revoke-other-client-sessions",
 ]);
 type PrimaryEnvironmentRequestOperation = typeof PrimaryEnvironmentRequestOperation.Type;
@@ -123,6 +124,8 @@ export interface ServerClientSessionRecord {
   readonly lastConnectedAt: string | null;
   readonly connected: boolean;
   readonly current: boolean;
+  /** Fork: the client's person label; unset means the default person (#121). */
+  readonly person?: string;
 }
 
 type ServerAuthGateState =
@@ -343,6 +346,28 @@ export async function submitServerAuthCredential(credential: string): Promise<vo
   bootstrapPromise = null;
   explicitPairingRequested = false;
   stripPairingTokenFromUrl();
+}
+
+// Fork: label a paired client with its person (toolboxmd/chromeria#121).
+export async function setServerClientSessionPerson(
+  sessionId: AuthSessionId,
+  person: string | null,
+): Promise<void> {
+  try {
+    await runPrimaryHttp(
+      PrimaryEnvironmentHttpClient.pipe(
+        Effect.flatMap((client) =>
+          client.auth.setClientPerson({ headers: {}, payload: { sessionId, person } }),
+        ),
+      ),
+    );
+  } catch (error) {
+    throw PrimaryEnvironmentRequestError.fromCause({
+      operation: "set-client-session-person",
+      sessionId,
+      cause: error,
+    });
+  }
 }
 
 export async function resolveInitialServerAuthGateState(): Promise<ServerAuthGateState> {

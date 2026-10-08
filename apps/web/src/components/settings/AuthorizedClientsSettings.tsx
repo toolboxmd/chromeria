@@ -60,6 +60,7 @@ import { useManagedPolicy, usePrimaryManagedPolicy } from "~/state/managedPolicy
 import { useAtomCommand } from "~/state/use-atom-command";
 import { ManagedControl } from "../ManagedPolicy";
 import { ConnectionStatusDot } from "../ConnectionStatusDot";
+import { ClientPersonSelect } from "../people/ClientPersonSelect";
 import { ITEM_ROW_CLASSNAME, ITEM_ROW_INNER_CLASSNAME } from "./itemRows";
 import {
   formatAccessTimestamp,
@@ -556,6 +557,11 @@ const ConnectedClientListRow = memo(function ConnectedClientListRow({
           </p>
         </div>
         <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
+          <ClientPersonSelect
+            sessionId={clientSession.sessionId}
+            person={clientSession.person}
+            current={clientSession.current}
+          />
           {!clientSession.current ? (
             <Button
               size="xs"

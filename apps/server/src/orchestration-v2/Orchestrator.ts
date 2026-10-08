@@ -191,6 +191,7 @@ import {
 import { planThreadDeletion } from "./ThreadDeletion.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ServerSettings from "../serverSettings.ts";
+import { coOwnersAfterSharing, threadSharingRefusal } from "./ThreadPeople.ts";
 
 const isMessageQuestionAnswer = Schema.is(
   Schema.Union([TrimmedNonEmptyString, Schema.NonEmptyArray(TrimmedNonEmptyString)]),
@@ -570,6 +571,9 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.tag.set":
     case "thread.visit":
     case "thread.mark-unread":
+    case "thread.share":
+    case "thread.unshare":
+    case "thread.leave":
     case "thread.metadata.update":
     case "thread.pull-request.link":
     case "thread.pull-request.unlink":
@@ -2855,6 +2859,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
     const thread: OrchestrationV2AppThread = {
+      ...(command.owner === undefined ? {} : { owner: command.owner }),
       createdBy: command.createdBy,
       creationSource: command.creationSource,
       id: command.threadId,
@@ -3154,6 +3159,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           | "thread.tag.set"
           | "thread.active.reorder"
           | "thread.mark-unread"
+          | "thread.share"
+          | "thread.unshare"
+          | "thread.leave"
           | "thread.metadata.update"
           | "thread.pull-request.link"
           | "thread.pull-request.unlink"
@@ -3185,6 +3193,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandId: command.commandId,
         commandType: command.type,
         cause: `Thread ${command.threadId} is deleted.`,
+      });
+    }
+    const sharingRefusal =
+      command.type === "thread.share" ||
+      command.type === "thread.unshare" ||
+      command.type === "thread.leave"
+        ? threadSharingRefusal(thread, command)
+        : null;
+    if (sharingRefusal !== null) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: sharingRefusal,
       });
     }
     if (
@@ -3715,6 +3736,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               : {}),
           };
         }
+        case "thread.share":
+        case "thread.unshare":
+        case "thread.leave":
+          return { ...thread, coOwners: coOwnersAfterSharing(thread, command), updatedAt: now };
         case "thread.metadata.update": {
           const previousRecovery =
             thread.limitRecovery?.runId === command.limitRecovery?.runId &&
@@ -4077,6 +4102,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return "thread.tags-updated" as const;
         case "thread.mark-unread":
           return "thread.marked-unread" as const;
+        // Fork: sharing changes are thread metadata (toolboxmd/chromeria#170).
+        case "thread.share":
+        case "thread.unshare":
+        case "thread.leave":
+          return "thread.metadata-updated" as const;
         case "thread.metadata.update":
         case "thread.title.regeneration.complete":
           return "thread.metadata-updated" as const;
@@ -4581,7 +4611,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       threadId: command.targetThreadId,
       providerInstanceId: targetThread.providerInstanceId,
       occurredAt: now,
-      payload: targetThread,
+      // Fork: a fork belongs to the forking person and starts unshared (toolboxmd/chromeria#170).
+      payload: { ...targetThread, owner: command.owner ?? null, coOwners: [] },
     });
     yield* emitEvent({
       type: "context-transfer.created",
@@ -13255,6 +13286,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.active.reorder":
       case "thread.tag.set":
       case "thread.mark-unread":
+      case "thread.share":
+      case "thread.unshare":
+      case "thread.leave":
       case "thread.metadata.update":
       case "thread.pull-request.link":
       case "thread.pull-request.unlink":

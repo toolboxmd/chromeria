@@ -7,6 +7,7 @@ import {
   type AuthBrowserSessionResult,
   type AuthClientMetadata,
   type AuthClientSession,
+  PEOPLE,
   type AuthCreatePairingCredentialInput,
   type AuthEnvironmentScope,
   type AuthMcpClientAccess,
@@ -522,6 +523,10 @@ export class EnvironmentAuth extends Context.Service<
     readonly listClientSessions: (
       currentSessionId: AuthSessionId,
     ) => Effect.Effect<ReadonlyArray<AuthClientSession>, ServerAuthInternalError>;
+    readonly setClientSessionPerson: (
+      sessionId: AuthSessionId,
+      person: string | null,
+    ) => Effect.Effect<boolean, ServerAuthForbiddenOperationError | ServerAuthInternalError>;
     readonly revokeClientSession: (
       currentSessionId: AuthSessionId,
       targetSessionId: AuthSessionId,
@@ -584,6 +589,8 @@ const WebSocketUpgradeQuery = Schema.Struct({
   dpop: Schema.optionalKey(Schema.RedactedFromValue(Schema.String)),
 });
 const decodeWebSocketUpgradeQuery = Schema.decodeEffect(WebSocketUpgradeQuery);
+
+const isPerson = Schema.is(Schema.Literals(PEOPLE));
 
 const bySessionPriority = (left: AuthClientSession, right: AuthClientSession) => {
   const leftCanManage = left.scopes.includes(AuthAccessWriteScope);
@@ -825,15 +832,21 @@ export const make = Effect.gen(function* () {
 
   const getSessionState: EnvironmentAuth["Service"]["getSessionState"] = (request) =>
     authenticateRequest(request).pipe(
-      Effect.map(
-        (session) =>
-          ({
-            authenticated: true,
-            auth: descriptor,
-            ...authScopeResponse(session.scopes),
-            sessionMethod: session.method,
-            ...(session.expiresAt ? { expiresAt: DateTime.toUtc(session.expiresAt) } : {}),
-          }) satisfies AuthSessionState,
+      Effect.flatMap((session) =>
+        sessions.getPerson(session.sessionId).pipe(
+          Effect.mapError((cause) => new ServerAuthSessionsListError({ cause })),
+          Effect.map(
+            (person) =>
+              ({
+                ...(person === null ? {} : { person }),
+                authenticated: true,
+                auth: descriptor,
+                ...authScopeResponse(session.scopes),
+                sessionMethod: session.method,
+                ...(session.expiresAt ? { expiresAt: DateTime.toUtc(session.expiresAt) } : {}),
+              }) satisfies AuthSessionState,
+          ),
+        ),
       ),
       Effect.catchIf(isServerAuthCredentialError, () =>
         Effect.succeed({
@@ -1182,6 +1195,18 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("EnvironmentAuth.listClientSessions"),
     );
 
+  const setClientSessionPerson: EnvironmentAuth["Service"]["setClientSessionPerson"] = (
+    sessionId,
+    person,
+  ) => {
+    if (person !== null && !isPerson(person)) {
+      return Effect.fail(new ServerAuthForbiddenOperationError({}));
+    }
+    return sessions
+      .setPerson(sessionId, person)
+      .pipe(Effect.mapError((cause) => new ServerAuthSessionsListError({ cause })));
+  };
+
   const revokeClientSession: EnvironmentAuth["Service"]["revokeClientSession"] = Effect.fn(
     "EnvironmentAuth.revokeClientSession",
   )(function* (currentSessionId, targetSessionId) {
@@ -1398,6 +1423,7 @@ export const make = Effect.gen(function* () {
     revokeSession,
     listClientSessions,
     revokeClientSession,
+    setClientSessionPerson,
     revokeOtherClientSessions,
     authenticateHttpRequest,
     authenticateWebSocketUpgrade,

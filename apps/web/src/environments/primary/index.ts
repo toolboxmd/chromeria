@@ -3,6 +3,7 @@ export {
   PrimaryEnvironmentPairingCredentialRejectedError,
   PrimaryEnvironmentRequestError,
   resolveInitialServerAuthGateState,
+  setServerClientSessionPerson,
   stripPairingTokenFromUrl,
   submitServerAuthCredential,
   takePairingTokenFromUrl,

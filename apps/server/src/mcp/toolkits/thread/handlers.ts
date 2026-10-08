@@ -6,6 +6,7 @@ import {
   type RunId,
   OrchestratorMcpFailure,
   type OrchestrationV2Command,
+  threadOwner,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
@@ -161,7 +162,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       (input) =>
         Effect.gen(function* () {
           const sourcePoint = input.sourcePoint ?? { type: "latest_stable" as const };
-          const { threads, projection } = yield* readThread(input.threadId);
+          const { threads, projection, caller } = yield* readThread(input.threadId);
           const commandId = yield* newCommandId();
           if (input.action === "merge_back") {
             const targetThreadId = yield* required(input.targetThreadId, "targetThreadId");
@@ -183,6 +184,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           const result = yield* threads
             .dispatch({
               type: "thread.fork",
+              ...(caller === undefined ? {} : { owner: threadOwner(caller) }),
               commandId,
               sourceThreadId: projection.thread.id,
               targetThreadId,
