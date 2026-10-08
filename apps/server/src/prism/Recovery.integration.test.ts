@@ -28,6 +28,7 @@ import * as Scheduler from "../scheduling/Scheduler.ts";
 import { ServerActivation } from "../serverActivation.ts";
 import * as Hooks from "./RecoveryHooks.ts";
 import * as Coordinator from "./RecoveryCoordinator.ts";
+import * as History from "./RecoveryHistory.ts";
 import * as Reactor from "./RecoveryReactor.ts";
 import { limitRecoveryCommand } from "../orchestration-v2/UsageLimitRecoveryWorker.ts";
 import { errorFor } from "./recovery.testkit.ts";
@@ -185,6 +186,17 @@ it.effect(
       const child = yield* orchestrator.getThreadProjection(childId);
       assert.strictEqual(child.runs.length, 2);
       assert.deepStrictEqual(child.runs[1]!.modelSelection, selection);
+      assert.strictEqual(child.runs[1]!.forkPrismContinuationSourceRunId, run.id);
+      assert.deepStrictEqual((yield* History.readRecoveryState(run.id)).admittedContinuations, [
+        { sourceRunId: run.id, successorRunId: child.runs[1]!.id, threadId: childId },
+      ]);
+      assert.deepStrictEqual(yield* History.readRecoveryOutcome(run.id), {
+        sourceRunId: run.id,
+        threadId: childId,
+        status: "decided",
+        outcome: "retried",
+        successorRunId: child.runs[1]!.id,
+      });
       yield* finish(child.runs[1]!, failure);
       yield* orchestrator.recoverDelegatedTasks;
       const parent = yield* orchestrator.getThreadProjection(parentId);
@@ -193,6 +205,13 @@ it.effect(
         1,
       );
       assert.strictEqual(parent.subagents[0]?.status, "failed");
+      assert.deepStrictEqual(yield* History.readRecoveryOutcome(child.runs[1]!.id), {
+        sourceRunId: child.runs[1]!.id,
+        threadId: childId,
+        status: "decided",
+        outcome: "not_retryable",
+        reason: "exhausted",
+      });
       yield* (yield* Reactor.RecoveryReactor).sweep;
       assert.strictEqual((yield* orchestrator.getThreadProjection(childId)).runs.length, 2);
     }).pipe(Effect.provide(layer)),
@@ -225,6 +244,14 @@ it.effect(
       });
       yield* (yield* Reactor.RecoveryReactor).sweep;
       assert.strictEqual((yield* orchestrator.getThreadProjection(childId)).runs.length, 1);
+      assert.deepStrictEqual(yield* History.readRecoveryOutcome(run.id), {
+        sourceRunId: run.id,
+        threadId: childId,
+        status: "decided",
+        outcome: "abandoned",
+        reason: "stopped_or_retired",
+      });
+      assert.strictEqual((yield* History.readRecoveryState(run.id)).pendingRecovery, null);
       assert.strictEqual(
         (yield* orchestrator.getThreadProjection(parentId)).contextTransfers.filter(
           (x) => x.type === "subagent_result",
@@ -263,6 +290,10 @@ it.effect(
       const arm = limitRecoveryCommand(candidate, true, DateTime.toEpochMillis(now));
       assert.strictEqual(arm?.type, "thread.metadata.update");
       yield* orchestrator.dispatch(arm!);
+      assert.deepStrictEqual((yield* History.readRecoveryState(run.id)).pendingRecovery, {
+        sourceRunId: run.id,
+        reason: "reset",
+      });
       const armed = (yield* projections.getLimitRecoveryCandidates({
         now: resetAt,
         autoResume: true,
@@ -275,6 +306,17 @@ it.effect(
       const child = yield* orchestrator.getThreadProjection(childId);
       assert.strictEqual(child.runs.length, 2);
       assert.deepStrictEqual(child.runs[1]!.modelSelection, selection);
+      assert.strictEqual(child.runs[1]!.forkPrismContinuationSourceRunId, run.id);
+      assert.deepStrictEqual((yield* History.readRecoveryState(run.id)).admittedContinuations, [
+        { sourceRunId: run.id, successorRunId: child.runs[1]!.id, threadId: childId },
+      ]);
+      assert.deepStrictEqual(yield* History.readRecoveryOutcome(run.id), {
+        sourceRunId: run.id,
+        threadId: childId,
+        status: "decided",
+        outcome: "retried",
+        successorRunId: child.runs[1]!.id,
+      });
       yield* (yield* Reactor.RecoveryReactor).sweep;
       assert.strictEqual(
         (yield* orchestrator.getThreadProjection(parentId)).contextTransfers.filter(
@@ -315,6 +357,14 @@ it.effect("Stop while waiting for reset releases finalization without resuming a
     });
     yield* (yield* Reactor.RecoveryReactor).sweep;
     assert.strictEqual((yield* orchestrator.getThreadProjection(childId)).runs.length, 1);
+    assert.deepStrictEqual(yield* History.readRecoveryOutcome(run.id), {
+      sourceRunId: run.id,
+      threadId: childId,
+      status: "decided",
+      outcome: "abandoned",
+      reason: "stopped_or_retired",
+    });
+    assert.strictEqual((yield* History.readRecoveryState(run.id)).pendingRecovery, null);
     assert.strictEqual(
       (yield* orchestrator.getThreadProjection(parentId)).contextTransfers.filter(
         (x) => x.type === "subagent_result",
