@@ -36,7 +36,7 @@ import { ProcessRunner } from "../processRunner.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import { nextScheduledRunAt } from "../scheduledTasks/Schedule.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
-import { COMMAND_TIMEOUT_MS, runShellCommand } from "./commandRunner.ts";
+import { COMMAND_TIMEOUT_MS, startShellCommand } from "./commandRunner.ts";
 import { ScheduledTaskDispatchPolicy } from "./DispatchPolicy.ts";
 import { makeCheckedRuns, ScheduledTaskCheckError, type CheckedRuns } from "./engine.ts";
 import { followSend, reportsFence, ScheduledTaskSpectra } from "./handoff.ts";
@@ -376,10 +376,10 @@ const makeEngine = Effect.gen(function* () {
           output: `${result.stdout}${result.stderr}${result.timedOut ? "\nOutcome check timed out." : ""}`,
         })),
       ),
-    execute: ({ command, cwd, taskId, runId, date }) =>
+    start: ({ command, cwd, taskId, runId, date }) =>
       expandCheckCommand(command, { taskId, runId, date }).pipe(
         Effect.flatMap((expanded) =>
-          runShellCommand({ command: expanded, cwd, deadline: Effect.sleep(COMMAND_TIMEOUT_MS) }),
+          startShellCommand({ command: expanded, cwd, deadline: Effect.sleep(COMMAND_TIMEOUT_MS) }),
         ),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       ),

@@ -9,7 +9,12 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
-import { COMMAND_OUTPUT_BYTES, makeOutputTail, runShellCommand } from "./commandRunner.ts";
+import {
+  COMMAND_OUTPUT_BYTES,
+  makeOutputTail,
+  runShellCommand,
+  startShellCommand,
+} from "./commandRunner.ts";
 import { ScheduledTaskCheckError } from "./engine.ts";
 import { expandCheckCommand } from "./ScheduledTaskChecks.ts";
 
@@ -67,6 +72,31 @@ describe("scheduled command execution", () => {
       assert.isNull(missing.exitCode);
       assert.isFalse(missing.timedOut);
       assert.match(missing.failure ?? "", /^The command could not start: /);
+    }),
+  );
+
+  it.effect("returns once the process has spawned, and its wait ends with the process", () =>
+    Effect.gen(function* () {
+      const directory = yield* temporaryDirectory("scheduled-command-start-");
+      const ready = NodePath.join(directory, "ready.fifo");
+      const gate = NodePath.join(directory, "gate.fifo");
+      fifo(ready);
+      fifo(gate);
+      // The command cannot end before the test opens its gate, which it does only after start returned.
+      const outcome = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const wait = yield* startShellCommand({
+            command: "echo started > ready.fifo; cat gate.fifo; exit 3",
+            cwd: directory,
+            deadline: Effect.never,
+          });
+          assert.equal(yield* Effect.promise(() => NodeFSP.readFile(ready, "utf8")), "started\n");
+          yield* Effect.promise(() => NodeFSP.writeFile(gate, "opened\n"));
+          return yield* wait;
+        }),
+      ).pipe(Effect.provide(NodeServices.layer));
+      assert.equal(outcome.exitCode, 3);
+      assert.include(outcome.output, "opened\n");
     }),
   );
 

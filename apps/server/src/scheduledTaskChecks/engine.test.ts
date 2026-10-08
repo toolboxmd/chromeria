@@ -112,6 +112,10 @@ const harness = (options: { readonly role?: string } = {}) =>
     const creationTests: Array<string> = [];
     const executed: Array<string> = [];
     let commandDone = yield* Deferred.make<CommandOutcome>();
+    let workspaceHold: {
+      readonly reached: Deferred.Deferred<void>;
+      readonly release: Deferred.Deferred<void>;
+    } | null = null;
     let observation: RunObservation = { ...idle, landed: false, started: false };
     let passes = false;
     let dispatchFails = false;
@@ -138,11 +142,11 @@ const harness = (options: { readonly role?: string } = {}) =>
                 });
               }),
         ),
-      execute: ({ command, cwd, runId }) =>
-        Effect.gen(function* () {
+      start: ({ command, cwd, runId }) =>
+        Effect.sync(() => {
           executed.push(`${command}@${cwd}#${runId}`);
           // A command finishes only when the test releases it.
-          return yield* Deferred.await(commandDone);
+          return Effect.suspend(() => Deferred.await(commandDone));
         }),
       runCheck: ({ command, cwd, runId }) =>
         Effect.sync(() => {
@@ -153,7 +157,15 @@ const harness = (options: { readonly role?: string } = {}) =>
           if (fenceOnCheck !== null) fence = fenceOnCheck;
           return { passed: passes, output: passes ? "ok" : "still missing" };
         }),
-      workspace: ({ threadId: bound }) => Effect.succeed(bound === null ? "/project" : "/worktree"),
+      workspace: ({ threadId: bound }) =>
+        Effect.gen(function* () {
+          const hold = workspaceHold;
+          if (hold !== null) {
+            yield* Deferred.succeed(hold.reached, undefined);
+            yield* Deferred.await(hold.release);
+          }
+          return bound === null ? "/project" : "/worktree";
+        }),
       role: (state, _task, launching) =>
         state.role === null
           ? Effect.succeed(null)
@@ -233,6 +245,15 @@ const harness = (options: { readonly role?: string } = {}) =>
       reportsDuringCheck: (next: ReportFence | null) => {
         fenceOnCheck = next;
       },
+      /** Holds the next workspace lookups until the test releases them. */
+      holdWorkspace: Effect.gen(function* () {
+        const hold = {
+          reached: yield* Deferred.make<void>(),
+          release: yield* Deferred.make<void>(),
+        };
+        workspaceHold = hold;
+        return hold;
+      }),
     };
   });
 
@@ -628,6 +649,33 @@ it.effect("a report that comes to need you after a send is admitted holds the se
     assert.equal(needsYou.stage, "needs-you");
     assert.equal(needsYou.error, `Spectrum report: ${reason}`);
     assert.equal(needsYou.sends.length, 1);
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("a command whose task is deleted while its workspace is found never starts", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    const h = yield* harness();
+    const command = task({ threadId: null });
+    yield* h.save({ command: "backup" });
+    const spawn = yield* h.decide("scheduled", NOW, command);
+    assert.equal(spawn._tag, "fork");
+    const hold = yield* h.holdWorkspace;
+    // Admitted, owned and detached: its process fiber is finding the workspace.
+    if (spawn._tag === "fork") yield* spawn.dispatch;
+    yield* Deferred.await(hold.reached);
+    const sql = yield* SqlClient.SqlClient;
+    yield* h.runs.removeTask(
+      taskId,
+      null,
+      sql`DELETE FROM scheduled_tasks WHERE task_id = ${taskId}`,
+    );
+    assert.isNull(yield* readCheckState(taskId));
+    yield* Deferred.succeed(hold.release, undefined);
+    // Any process started would finish here and be counted.
+    yield* h.finishCommand({ exitCode: 0, output: "ok", timedOut: false, failure: null });
+    assert.deepEqual(h.executed, []);
+    assert.deepEqual(yield* sql`SELECT task_id FROM scheduled_tasks`, []);
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 

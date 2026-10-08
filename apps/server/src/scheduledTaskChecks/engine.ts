@@ -13,6 +13,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FiberSet from "effect/FiberSet";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -106,14 +107,18 @@ export interface CheckedRunDeps {
     { readonly passed: boolean; readonly output: string },
     ScheduledTaskCheckError
   >;
-  /** Runs a command task's command once; only its own timeout ends it early. */
-  readonly execute: (input: {
+  /**
+   * Starts a command task's command once, in the caller's scope, and returns
+   * when its process has spawned or could not start. The returned effect waits
+   * for it to end; only the command's own timeout ends it early.
+   */
+  readonly start: (input: {
     readonly command: string;
     readonly cwd: string;
     readonly taskId: string;
     readonly runId: string;
     readonly date: string;
-  }) => Effect.Effect<CommandOutcome, ScheduledTaskCheckError>;
+  }) => Effect.Effect<Effect.Effect<CommandOutcome>, ScheduledTaskCheckError, Scope.Scope>;
   /** The workspace a check runs in: the thread's worktree, else the project root. */
   readonly workspace: (input: {
     readonly projectId: ScheduledTask["projectId"];
@@ -331,34 +336,53 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
       }),
     );
 
-  /** Starts a command run's process detached, so a long command never holds upstream's poll. */
-  const launchCommand = (task: ScheduledTask, state: CheckState, run: CheckedRun) =>
+  /**
+   * Starts a command run's process detached, so a long command never holds
+   * upstream's poll. Its workspace is found first; a fresh ownership check and
+   * the spawn then share the task's lock, so a task deleted meanwhile, or a run
+   * that moved on, starts nothing. The lock is released once the process has
+   * spawned, never held while it runs.
+   */
+  const launchCommand = (task: ScheduledTask, runId: string) =>
     Effect.gen(function* () {
-      executing.add(run.id);
+      executing.add(runId);
       yield* FiberSet.run(
         commands,
-        Effect.gen(function* () {
-          const cwd = yield* deps.workspace({ projectId: task.projectId, threadId: null });
-          return yield* deps.execute({
-            command: state.command!,
-            cwd,
-            taskId: task.id,
-            runId: run.id,
-            date: run.slot.slice(0, 10),
-          });
-        }).pipe(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const cwd = yield* deps.workspace({ projectId: task.projectId, threadId: null });
+            const started = yield* locked(
+              task.id,
+              Effect.gen(function* () {
+                const state = yield* readCheckState(task.id);
+                const run = state?.runs.find((entry) => entry.id === runId);
+                if (state === null || run === undefined || run.stage !== "running") return null;
+                return yield* deps.start({
+                  command: state.command!,
+                  cwd,
+                  taskId: task.id,
+                  runId,
+                  date: run.slot.slice(0, 10),
+                });
+              }),
+            );
+            return started === null ? null : yield* started;
+          }),
+        ).pipe(
           Effect.catch((error) =>
             Effect.succeed({ exitCode: null, output: "", timedOut: false, failure: error.message }),
           ),
-          Effect.flatMap((outcome) => finishCommand(task.id, run.id, outcome)),
+          Effect.flatMap((outcome) =>
+            outcome === null ? Effect.void : finishCommand(task.id, runId, outcome),
+          ),
           Effect.catchCause((cause) =>
             Effect.logWarning("Scheduled command result was not recorded", {
               taskId: task.id,
-              runId: run.id,
+              runId,
               cause,
             }),
           ),
-          Effect.ensuring(Effect.sync(() => executing.delete(run.id))),
+          Effect.ensuring(Effect.sync(() => executing.delete(runId))),
         ),
       );
     });
@@ -389,15 +413,6 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
         }),
       );
       if (fence.kind === "released") yield* deliver(taskId, state, run, send);
-    });
-  /** A command run admitted earlier starts only if its task still owns it. Callers hold the lock. */
-  const launchIfOwned = (task: ScheduledTask, runId: string) =>
-    Effect.gen(function* () {
-      const state = yield* readCheckState(task.id);
-      const run = state?.runs.find((entry) => entry.id === runId);
-      if (state === null || run === undefined || run.stage !== "running" || executing.has(runId))
-        return;
-      yield* launchCommand(task, state, run);
     });
 
   const newRun = (state: CheckState, task: ScheduledTask, slot: string): CheckedRun => ({
@@ -510,7 +525,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
             if (state.kind === "command") {
               // Stored as running before anything is spawned: a restart never runs it twice.
               yield* store(state, withRun);
-              return fork(locked(task.id, launchIfOwned(task, run.id)));
+              return fork(launchCommand(task, run.id));
             }
             const started = yield* startSend(task, withRun, run, now);
             return started._tag === "refused"
