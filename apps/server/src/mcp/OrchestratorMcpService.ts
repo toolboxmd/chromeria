@@ -1,3 +1,4 @@
+import * as Prism from "../prism/PrismService.ts";
 import {
   CommandId,
   type RunId,
@@ -1131,6 +1132,7 @@ const make = Effect.gen(function* () {
       return { parent, target, shell } as const;
     });
 
+  const prism = yield* Prism.PrismService;
   const loadProviders = providerRegistry.getProviders;
 
   /**
@@ -2000,16 +2002,46 @@ const make = Effect.gen(function* () {
           operation: "delegate-task",
         });
         const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
-        const target = yield* resolveTargetRechecking({
-          parent,
-          target: input.target,
-          providers,
-          skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
+        const explicitTarget =
+          input.target === undefined
+            ? undefined
+            : yield* resolveTargetRechecking({
+                parent,
+                target: input.target,
+                providers,
+                skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
+              });
+        let runtimeTarget = explicitTarget;
+        const target = yield* prism.resolve({
+          projectId: parent.thread.projectId,
+          role: input.prismRole ?? Prism.delegatedPrismRole(input.role),
+          lane: input.lane,
+          explicit: explicitTarget?.modelSelection,
+          inherited: parent.thread.modelSelection,
+          validate:
+            explicitTarget === undefined
+              ? (selection) =>
+                  resolveTargetRechecking({
+                    parent,
+                    providers,
+                    target: {
+                      providerInstanceId: selection.instanceId,
+                      model: selection.model,
+                      options: selection.options,
+                    },
+                    skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
+                  }).pipe(
+                    Effect.map((resolved) => {
+                      runtimeTarget = resolved;
+                      return resolved.modelSelection;
+                    }),
+                  )
+              : undefined,
         });
         const runtimeMode = yield* resolveRuntimeMode(
           parent.thread.runtimeMode,
           input.runtimeMode,
-          target,
+          runtimeTarget,
         );
         const interactionMode = yield* resolveInteractionMode(
           parent.thread.interactionMode,
@@ -2046,7 +2078,7 @@ const make = Effect.gen(function* () {
             ...(input.workspaceStrategy === undefined
               ? {}
               : { workspaceStrategy: input.workspaceStrategy }),
-            task: taskPrompt(input),
+            task: [target.kitText, taskPrompt(input)].filter(Boolean).join("\n\n"),
             ...(input.title === undefined ? {} : { title: input.title }),
             modelSelection: target.modelSelection,
             runtimeMode,
@@ -2720,8 +2752,6 @@ export const layer: Layer.Layer<
   never,
   | Crypto.Crypto
   | FileSystem.FileSystem
-  | GitVcsDriver.GitVcsDriver
-  | ThreadLaunch.ThreadLaunchService
   | ThreadManagementService.ThreadManagementService
   | ThreadLaunchService.ThreadLaunchService
   | GitVcsDriver.GitVcsDriver
@@ -2731,4 +2761,4 @@ export const layer: Layer.Layer<
   | ProjectService.ProjectService
   | SecretRequests.SecretRequests
   | ServerSettings.ServerSettingsService
-> = Layer.effect(OrchestratorMcpService, make);
+> = Layer.effect(OrchestratorMcpService, make).pipe(Layer.provide(Prism.layer));
