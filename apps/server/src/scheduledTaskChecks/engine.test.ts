@@ -714,6 +714,37 @@ it.effect("a command edited while its run finds the workspace runs as admitted, 
 );
 
 it.effect(
+  "a send admitted before its task was deleted and recreated never goes out in the new run of the same id",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const h = yield* harness();
+      const sql = yield* SqlClient.SqlClient;
+      yield* h.save({ checkCommand: "check", checkReason: "outcome" });
+      const first = yield* h.decide("manual", NOW, task({ prompt: "Old work" }));
+      const old = (yield* h.state()).runs[0]!;
+      // Deleted and recreated before its callback ran; Run now at the same instant admits the same ids.
+      yield* h.runs.removeTask(
+        taskId,
+        null,
+        sql`DELETE FROM scheduled_tasks WHERE task_id = ${taskId}`,
+      );
+      yield* h.save({ checkCommand: "check", checkReason: "outcome" });
+      const second = yield* h.decide("manual", NOW, task({ prompt: "New work" }));
+      const replacement = (yield* h.state()).runs[0]!;
+      assert.equal(replacement.id, old.id);
+      assert.equal(replacement.sends[0]!.commandId, old.sends[0]!.commandId);
+      // The deleted admission's callback runs late and sends nothing.
+      if (first._tag === "fork") yield* first.dispatch;
+      assert.deepEqual(h.sent, []);
+      if (second._tag === "fork") yield* second.dispatch;
+      assert.equal(h.sent.length, 1);
+      assert.include(h.sent[0]!.text, "New work");
+      assert.notInclude(h.sent[0]!.text, "Old work");
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect(
   "a command suspended in its workspace lookup never starts after its task is deleted and recreated with a run of the same id",
   () =>
     Effect.gen(function* () {

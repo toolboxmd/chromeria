@@ -1605,3 +1605,60 @@ it.effect(
       }).pipe(Effect.provide(runtime(database)), Effect.scoped);
     }).pipe(Effect.scoped),
 );
+
+it.effect(
+  "an agent task recreated through the schedule tool with the same request id gets, at the same instant, the same run and send ids",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      const worktree = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "chromeria-checks-wt-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(worktree, { recursive: true, force: true })),
+      );
+      yield* TestClock.setTime(Date.parse(CANONICAL));
+      yield* Effect.gen(function* () {
+        yield* createThreadIn(worktree);
+        const checks = yield* ScheduledTaskChecks.ScheduledTaskChecks;
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        // The schedule tool's own call from the bound thread, under one stable request key.
+        const create = (prompt: string) =>
+          checks.schedule(
+            {
+              input: {
+                checkCommand: "test -f done",
+                checkReason: "the work leaves done",
+                schedule: { type: "interval" },
+                clientRequestId: "nightly",
+              },
+              projectId,
+              parent: { thread: { id: threadId } },
+              bindToCurrentThread: true,
+              scope: { requestNamespace: "caller" },
+            },
+            service.upsert,
+          )({
+            title: "Nightly work",
+            prompt,
+            enabled: false,
+            projectId,
+            threadId,
+            workspaceStrategy: { type: "root" },
+            modelSelection: selection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            schedule: { type: "interval", everyMs: 3_600_000 },
+          });
+        const first = yield* create("Old work");
+        yield* service.runNow({ id: first.task.id });
+        const old = (yield* readCheckState(first.task.id))!.runs[0]!;
+        yield* service.delete({ id: first.task.id });
+        const second = yield* create("New work");
+        assert.equal(second.task.id, first.task.id);
+        yield* service.runNow({ id: second.task.id });
+        const replacement = (yield* readCheckState(second.task.id))!.runs[0]!;
+        assert.equal(replacement.id, old.id);
+        assert.equal(replacement.sends[0]!.commandId, old.sends[0]!.commandId);
+        assert.equal(replacement.sends[0]!.messageId, old.sends[0]!.messageId);
+      }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+    }).pipe(Effect.scoped),
+);

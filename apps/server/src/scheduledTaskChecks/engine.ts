@@ -203,14 +203,15 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
   // Command processes run outside their task lock; closing the engine's scope stops them.
   const commands = yield* FiberSet.make();
   /**
-   * Each command run admitted in this process, by run id: set when the run is
-   * admitted, under the task's lock, and ended by a successful delete. A run
-   * admitted again under the same id, for example after a delete and a
-   * recreate in the same millisecond, gets a new admission, so an older
-   * admission never starts or records into it. `launched` is set once its
-   * dispatch ran.
+   * Each run a fire or Run now admitted in this process, by run id: set when
+   * the run is admitted, under the task's lock, and ended by a successful
+   * delete. A run admitted again under the same id, as a recreated task's run
+   * for the same instant or slot is, gets a new admission, so an older
+   * admission's deferred send or command never goes out, starts or records
+   * into it. A step recovers a run from its stored state and needs none.
+   * `launched` is set once a command's dispatch ran.
    */
-  const executing = new Map<string, { launched: boolean }>();
+  const admissions = new Map<string, { launched: boolean }>();
   const store = (previous: CheckState, next: CheckState) =>
     writeCheckState(previous, compact(next)).pipe(Effect.tap(() => deps.changed));
 
@@ -320,7 +321,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
     locked(
       taskId,
       Effect.gen(function* () {
-        if (executing.get(runId) !== admission) return;
+        if (admissions.get(runId) !== admission) return;
         const state = yield* readCheckState(taskId);
         const run = state?.runs.find((entry) => entry.id === runId);
         if (state === null || run === undefined || run.stage !== "running") return;
@@ -375,7 +376,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
             const started = yield* locked(
               task.id,
               Effect.gen(function* () {
-                if (executing.get(runId) !== admission) return null;
+                if (admissions.get(runId) !== admission) return null;
                 const state = yield* readCheckState(task.id);
                 const owned = state?.runs.find((entry) => entry.id === runId);
                 if (owned === undefined || owned.stage !== "running") return null;
@@ -407,7 +408,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
           // Ends only its own admission, never a later one under the same run id.
           Effect.ensuring(
             Effect.sync(() => {
-              if (executing.get(runId) === admission) executing.delete(runId);
+              if (admissions.get(runId) === admission) admissions.delete(runId);
             }),
           ),
         ),
@@ -440,6 +441,32 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
       );
       if (fence.kind === "released") yield* deliver(taskId, state, run, send);
     });
+
+  /** A new admission for a run, replacing any earlier one. Callers hold the task's lock. */
+  const admit = (runId: string) => {
+    const admission = { launched: false };
+    admissions.set(runId, admission);
+    return admission;
+  };
+  /** An admitted run's deferred send, only while that exact admission stands; it then ends. */
+  const deliverAdmitted = (
+    taskId: ScheduledTaskId,
+    runId: string,
+    send: RunSend,
+    admission: { launched: boolean },
+  ) =>
+    locked(
+      taskId,
+      Effect.suspend(() =>
+        admissions.get(runId) === admission ? deliverIfOwned(taskId, runId, send) : Effect.void,
+      ).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (admissions.get(runId) === admission) admissions.delete(runId);
+          }),
+        ),
+      ),
+    );
 
   const newRun = (state: CheckState, task: ScheduledTask, slot: string): CheckedRun => ({
     id: `${task.id}:${slot}`,
@@ -535,7 +562,9 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
               );
               return resumed._tag === "refused"
                 ? fork(Effect.fail(resumed.error))
-                : fork(locked(task.id, deliverIfOwned(task.id, resumed.run.id, resumed.send)));
+                : fork(
+                    deliverAdmitted(task.id, resumed.run.id, resumed.send, admit(resumed.run.id)),
+                  );
             }
             // A scheduled fork trigger is identified by its slot, so a replayed fire is the same run.
             const slot = forkScheduledSlot(task, trigger) ?? iso(now);
@@ -551,14 +580,12 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
             if (state.kind === "command") {
               // Stored as running before anything is spawned: a restart never runs it twice.
               yield* store(state, withRun);
-              const admission = { launched: false };
-              executing.set(run.id, admission);
-              return fork(launchCommand(task, run, state.command!, admission));
+              return fork(launchCommand(task, run, state.command!, admit(run.id)));
             }
             const started = yield* startSend(task, withRun, run, now);
             return started._tag === "refused"
               ? fork(Effect.fail(started.error))
-              : fork(locked(task.id, deliverIfOwned(task.id, started.run.id, started.send)));
+              : fork(deliverAdmitted(task.id, started.run.id, started.send, admit(started.run.id)));
           }),
         ).pipe(
           Effect.catchTags({
@@ -605,7 +632,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
         if (run === undefined) return;
         if (state.kind === "command") {
           // A command run started by an earlier process, or whose result was lost, may have run.
-          if (executing.get(run.id)?.launched === true) return;
+          if (admissions.get(run.id)?.launched === true) return;
           yield* store(state, {
             ...replaceRun(state, { ...run, stage: "needs-you", error: ORPHANED_COMMAND }),
             failureStreak: state.failureStreak + 1,
@@ -895,9 +922,9 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
           }),
         )
         .pipe(
-          // Once committed, its command runs' admissions end: none starts or records after it.
+          // Once committed, its runs' admissions end: no admitted send, command or result follows.
           Effect.map(({ deleted, runs }) => {
-            for (const run of runs) executing.delete(run.id);
+            for (const run of runs) admissions.delete(run.id);
             return deleted;
           }),
         ),
