@@ -219,6 +219,8 @@ it.effect(
 
 it.effect.each([
   { payload: "{}", typedError: true },
+  // People fields present but the thread record itself invalid, with no completion marker.
+  { payload: '{"owner":"Pauli","coOwners":[]}', typedError: true },
   { payload: "not json", typedError: false },
 ])("stops startup when an imported thread payload is $payload", ({ payload, typedError }) =>
   Effect.gen(function* () {
