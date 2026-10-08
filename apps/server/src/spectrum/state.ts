@@ -47,7 +47,15 @@ export const SpectrumState = Schema.Struct({
   mode: Schema.Literals(["council", "free"]),
   limit: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 })),
   moderator: NonNegativeInt,
-  participants: Schema.Array(Participant).check(Schema.isMinLength(2), Schema.isMaxLength(8)),
+  participants: Schema.Array(Participant).check(
+    Schema.isMinLength(2),
+    Schema.isMaxLength(8),
+    Schema.makeFilter((participants) =>
+      new Set(participants.map((participant) => participant.threadId)).size === participants.length
+        ? true
+        : "Spectrum participants must have distinct thread IDs.",
+    ),
+  ),
   generation: NonNegativeInt,
   revision: NonNegativeInt,
   cursor: NonNegativeInt,

@@ -25,6 +25,24 @@ const read = Effect.gen(function* () {
   return Option.getOrThrow(yield* readSpectrum(APPEND.threadId));
 });
 
+it.effect(
+  "refuses duplicate participant threads before persisting colliding barrier identities",
+  () =>
+    Effect.gen(function* () {
+      yield* ensureSpectrumSchema;
+      const state = makeState();
+      const duplicate = {
+        ...state,
+        participants: [state.participants[0]!, state.participants[0]!],
+      };
+      const result = yield* insertSpectrum(duplicate).pipe(Effect.result);
+      assert.isTrue(result._tag === "Failure");
+      assert.isTrue(Option.isNone(yield* readSpectrum(state.threadId)));
+      yield* insertSpectrum(state);
+      assert.deepStrictEqual(Option.getOrThrow(yield* readSpectrum(state.threadId)), state);
+    }).pipe(Effect.provide(database)),
+);
+
 it.effect("recovers exact persisted inbox, outbox, cursor and request identities", () =>
   Effect.gen(function* () {
     yield* ensureSpectrumSchema;

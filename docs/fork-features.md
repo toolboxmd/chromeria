@@ -33,7 +33,8 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "packages/contracts/src/index.ts",
     "apps/server/src/persistence/forkV1Backfills.ts",
     "apps/server/src/orchestration-v2/EventSink.ts",
-    "apps/server/src/childThreads/ForkCommitPlan.ts"
+    "apps/server/src/childThreads/ForkCommitPlan.ts",
+    "apps/server/src/childThreads/retirement.ts"
   ],
   "keywords": [
     "Spectrum",
