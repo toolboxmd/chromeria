@@ -149,6 +149,9 @@ function commandThreadIds(command: OrchestrationV2Command): ReadonlyArray<Thread
     case "thread.active.reorder":
     case "thread.visit":
     case "thread.mark-unread":
+    case "thread.share":
+    case "thread.unshare":
+    case "thread.leave":
     case "thread.metadata.update":
     case "thread.pull-request.link":
     case "thread.pull-request.unlink":

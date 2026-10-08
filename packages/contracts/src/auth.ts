@@ -283,6 +283,7 @@ export const AuthClientMetadata = Schema.Struct({
 export type AuthClientMetadata = typeof AuthClientMetadata.Type;
 
 export const AuthClientSession = Schema.Struct({
+  person: Schema.optionalKey(TrimmedNonEmptyString),
   sessionId: AuthSessionId,
   subject: TrimmedNonEmptyString,
   ...authScopeResponseFields,
@@ -378,6 +379,12 @@ export const AuthRevokePairingLinkInput = Schema.Struct({
 });
 export type AuthRevokePairingLinkInput = typeof AuthRevokePairingLinkInput.Type;
 
+export const AuthSetClientSessionPersonInput = Schema.Struct({
+  sessionId: AuthSessionId,
+  person: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type AuthSetClientSessionPersonInput = typeof AuthSetClientSessionPersonInput.Type;
+
 export const AuthRevokeClientSessionInput = Schema.Struct({
   sessionId: AuthSessionId,
 });
@@ -390,6 +397,7 @@ export const AuthCreatePairingCredentialInput = Schema.Struct({
 export type AuthCreatePairingCredentialInput = typeof AuthCreatePairingCredentialInput.Type;
 
 export const AuthSessionState = Schema.Struct({
+  person: Schema.optionalKey(TrimmedNonEmptyString),
   authenticated: Schema.Boolean,
   auth: ServerAuthDescriptor,
   scopes: Schema.optionalKey(AuthEnvironmentScopes),

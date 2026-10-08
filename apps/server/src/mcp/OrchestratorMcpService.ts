@@ -62,6 +62,7 @@ import {
   type ServerProviderModel,
   ThreadId,
   isOrchestrationV2WorkActive,
+  threadOwner,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue } from "@t3tools/shared/model";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
@@ -2664,6 +2665,8 @@ const make = Effect.gen(function* () {
                   type: "thread.create",
                   createdBy: "agent",
                   creationSource: "mcp",
+                  // Fork: an agent's thread belongs to its caller's owner (toolboxmd/chromeria#170).
+                  owner: threadOwner(parent.thread),
                   commandId,
                   threadId,
                   projectId: parent.thread.projectId,
