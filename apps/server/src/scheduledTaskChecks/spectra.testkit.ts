@@ -1,8 +1,10 @@
 import { CommandId, MessageId, OrchestrationV2Command, type ThreadId } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import type { BoundSpectrum } from "./handoff.ts";
 
 /**
@@ -174,17 +176,19 @@ export const bindSpectrum = (input: {
     return spectrumThreadId;
   });
 
-/** The orchestrator's receipt for a report attempt's dispatch. */
+/** The orchestrator's receipt for a report attempt's dispatch, through the real receipt store. */
 export const reportReceipt = (threadId: ThreadId, id: string, status: "accepted" | "rejected") =>
   Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`INSERT INTO orchestration_v2_command_receipts ${sql.insert({
-      command_id: `report:${id}`,
-      thread_id: threadId,
-      command_type: "message.dispatch",
-      accepted_at: "2026-10-08T12:00:00.000Z",
-      result_sequence: 1,
-      status,
-      error: null,
-    })}`;
-  });
+    const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+    yield* receipts
+      .insertIfAbsent({
+        commandId: CommandId.make(`report:${id}`),
+        threadId,
+        commandType: "message.dispatch",
+        acceptedAt: DateTime.makeUnsafe("2026-10-08T12:00:00.000Z"),
+        resultSequence: 1,
+        status,
+        error: status === "rejected" ? "The report was refused." : null,
+      })
+      .pipe(Effect.orDie);
+  }).pipe(Effect.provide(CommandReceiptStore.layer));

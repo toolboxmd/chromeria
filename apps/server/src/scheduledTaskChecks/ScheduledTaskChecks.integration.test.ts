@@ -1141,3 +1141,69 @@ it.effect(
       }).pipe(Effect.provide(runtime(database, { launch })), Effect.scoped);
     }).pipe(Effect.scoped),
 );
+
+it.effect(
+  "a report whose real receipt is accepted and whose turn completed releases the run; absent or rejected holds",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      const worktree = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "chromeria-checks-wt-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(worktree, { recursive: true, force: true })),
+      );
+      yield* TestClock.setTime(Date.parse(CANONICAL));
+      const id = "scheduled-task:receipts";
+      const runId = `${id}:${CANONICAL}`;
+      const sentMessage = `scheduled-task-check-message:${runId}:0`;
+      yield* Effect.gen(function* () {
+        yield* ensureSpectraFixture;
+        yield* createThreadIn(worktree);
+        yield* insertTask({ id, schedule: { type: "interval", everyMs: 3_600_000 }, next: null });
+        yield* persist("receipts:work", [
+          runEvent("run.created", threadRun("run:receipts:work", sentMessage, "completed"), "work"),
+        ]);
+        yield* writeCheckState(null, checkState(id, [sentRun(runId, sentMessage)]));
+        const spectrum = yield* bindSpectrum({
+          callerThreadId: threadId,
+          schedulerRunId: runId,
+          status: "settled",
+          report: "first",
+        });
+        // The report's turn completed, but its dispatch has no receipt yet: hold.
+        yield* persist("receipts:report", [
+          runEvent(
+            "run.created",
+            threadRun("run:receipts:report", "report-message:first", "completed", 2),
+            "report",
+          ),
+        ]);
+        const checks = yield* ScheduledTaskChecks.ScheduledTaskChecks;
+        yield* checks.reconcile;
+        assert.equal((yield* runOf(id)).stage, "running");
+        // A rejected attempt holds too, until Spectrum's next attempt delivers.
+        yield* reportReceipt(threadId, "first", "rejected");
+        yield* checks.reconcile;
+        assert.equal((yield* runOf(id)).stage, "running");
+        yield* bindSpectrum({
+          callerThreadId: threadId,
+          schedulerRunId: runId,
+          status: "settled",
+          report: "second",
+          spectrumThreadId: spectrum,
+        });
+        yield* reportReceipt(threadId, "second", "accepted");
+        yield* persist("receipts:second", [
+          runEvent(
+            "run.created",
+            threadRun("run:receipts:second", "report-message:second", "completed", 3),
+            "second",
+          ),
+        ]);
+        yield* checks.reconcile;
+        assert.equal((yield* runOf(id)).stage, "done");
+      }).pipe(
+        Effect.provide(runtime(database, { check: Effect.succeed(0), spectra: fixtureSpectra() })),
+        Effect.scoped,
+      );
+    }).pipe(Effect.scoped),
+);

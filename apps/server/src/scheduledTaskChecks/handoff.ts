@@ -192,7 +192,7 @@ const spectrumFence = Effect.fnUntraced(function* (
   if (needsYou !== null) return needsYou;
   if (report.inOutbox) return waiting;
   const receipts = yield* sql<{ readonly status: string }>`
-    SELECT status FROM orchestration_v2_command_receipts WHERE command_id = ${report.commandId}
+    SELECT status FROM orchestration_command_receipts WHERE command_id = ${report.commandId}
   `;
   // No receipt yet, or a rejected one: Spectrum still owes this or a new attempt.
   if (receipts[0]?.status !== "accepted") return waiting;
