@@ -1,3 +1,4 @@
+import * as Prism from "../prism/PrismService.ts";
 import {
   CommandId,
   type RunId,
@@ -1059,6 +1060,7 @@ const make = Effect.gen(function* () {
       return { parent, target, shell } as const;
     });
 
+  const prism = yield* Prism.PrismService;
   const loadProviders = providerRegistry.getProviders;
 
   /**
@@ -1849,10 +1851,31 @@ const make = Effect.gen(function* () {
           }
         }
         const providers = yield* loadProviders;
-        const target = yield* resolveTargetRechecking({
-          parent,
-          target: input.target,
-          providers,
+        // Explicit targets retain upstream validation and precedence.
+        const explicit =
+          input.target === undefined
+            ? undefined
+            : (yield* resolveTargetRechecking({ parent, target: input.target, providers }))
+                .modelSelection;
+        const target = yield* prism.resolve({
+          projectId: parent.thread.projectId,
+          role: input.prismRole ?? Prism.delegatedPrismRole(input.role),
+          lane: input.lane,
+          explicit,
+          inherited: parent.thread.modelSelection,
+          validate:
+            explicit === undefined
+              ? (selection) =>
+                  resolveTargetRechecking({
+                    parent,
+                    providers,
+                    target: {
+                      providerInstanceId: selection.instanceId,
+                      model: selection.model,
+                      options: selection.options,
+                    },
+                  }).pipe(Effect.map((target) => target.modelSelection))
+              : undefined,
         });
         const runtimeMode = yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode);
         const interactionMode = yield* resolveInteractionMode(
@@ -1878,7 +1901,7 @@ const make = Effect.gen(function* () {
             ...(input.workspaceStrategy === undefined
               ? {}
               : { workspaceStrategy: input.workspaceStrategy }),
-            task: taskPrompt(input),
+            task: [target.kitText, taskPrompt(input)].filter(Boolean).join("\n\n"),
             ...(input.title === undefined ? {} : { title: input.title }),
             modelSelection: target.modelSelection,
             runtimeMode,
@@ -2544,10 +2567,11 @@ export const layer: Layer.Layer<
   | FileSystem.FileSystem
   | GitVcsDriver.GitVcsDriver
   | ThreadLaunch.ThreadLaunchService
+  | import("../serverSettings.ts").ServerSettingsService
   | ThreadManagementService.ThreadManagementService
   | ProviderRegistry.ProviderRegistry
   | ProviderAdapterRegistry.ProviderAdapterRegistryV2
   | ScheduledTaskService.ScheduledTaskService
   | ProjectService.ProjectService
   | SecretRequests.SecretRequests
-> = Layer.effect(OrchestratorMcpService, make);
+> = Layer.effect(OrchestratorMcpService, make).pipe(Layer.provide(Prism.layer));

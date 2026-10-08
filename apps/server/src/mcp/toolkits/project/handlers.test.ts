@@ -1,3 +1,6 @@
+import { ProviderDriverKind } from "@t3tools/contracts";
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
+import * as ServerSettings from "../../../serverSettings.ts";
 import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
@@ -27,6 +30,40 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as ProjectHandlers from "./handlers.ts";
 import { ProjectToolkit } from "./tools.ts";
+
+const prismDependencies = Layer.mergeAll(
+  ServerSettings.layerTest(),
+  Layer.mock(ProviderRegistry.ProviderRegistry)({
+    getProviders: Effect.succeed([
+      {
+        instanceId: ProviderInstanceId.make("codex"),
+        driver: ProviderDriverKind.make("codex"),
+        enabled: true,
+        installed: true,
+        version: "test",
+        status: "ready",
+        auth: { status: "authenticated" },
+        checkedAt: "2026-10-08T00:00:00Z",
+        models: [{ slug: "gpt-5", name: "test", isCustom: false, capabilities: null }],
+        skills: [],
+        slashCommands: [],
+      },
+      {
+        instanceId: ProviderInstanceId.make("claude"),
+        driver: ProviderDriverKind.make("claude"),
+        enabled: true,
+        installed: true,
+        version: "test",
+        status: "ready",
+        auth: { status: "authenticated" },
+        checkedAt: "2026-10-08T00:00:00Z",
+        models: [{ slug: "claude-opus", name: "test", isCustom: false, capabilities: null }],
+        skills: [],
+        slashCommands: [],
+      },
+    ]),
+  }),
+);
 
 it.effect("attributes a launched thread's first message to the calling thread", () =>
   Effect.gen(function* () {
@@ -89,14 +126,18 @@ it.effect("attributes a launched thread's first message to the calling thread", 
     );
     const toolkit = yield* ProjectToolkit.pipe(
       Effect.provide(
-        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
-          Layer.provide(layerDependencies),
-        ),
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer)
+          .pipe(Layer.provide(prismDependencies))
+          .pipe(Layer.provide(layerDependencies)),
       ),
     );
     const result = yield* toolkit
       .handle("t3_thread_launch", { title: "Audit", message: "Review the change" })
-      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(layerDependencies));
+      .pipe(
+        Stream.unwrap,
+        Stream.runCollect,
+        Effect.provide(Layer.mergeAll(layerDependencies, prismDependencies)),
+      );
     expect(result.at(-1)?.result).toMatchObject({ projectId, modelSelection });
     expect(launchedSender).toBe(sourceThreadId);
     // Fork: a launched thread belongs to the caller's owner (toolboxmd/chromeria#170).
@@ -165,15 +206,19 @@ it.effect("launches a scratch thread into the Scratch project", () =>
     );
     const toolkit = yield* ProjectToolkit.pipe(
       Effect.provide(
-        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
-          Layer.provide(layerDependencies),
-        ),
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer)
+          .pipe(Layer.provide(prismDependencies))
+          .pipe(Layer.provide(layerDependencies)),
       ),
     );
     const handle = (params: Parameters<typeof toolkit.handle<"t3_thread_launch">>[1]) =>
       toolkit
         .handle("t3_thread_launch", params)
-        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(layerDependencies));
+        .pipe(
+          Stream.unwrap,
+          Stream.runCollect,
+          Effect.provide(Layer.mergeAll(layerDependencies, prismDependencies)),
+        );
 
     const result = yield* handle({ title: "Notes", scratch: true, message: "Draft a list" });
     expect(result.at(-1)?.result).toMatchObject({ projectId: scratchProjectId });
@@ -268,15 +313,19 @@ it.effect("starts a project from just a title when workspaceRoot is omitted", ()
     );
     const toolkit = yield* ProjectToolkit.pipe(
       Effect.provide(
-        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
-          Layer.provide(layerDependencies),
-        ),
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer)
+          .pipe(Layer.provide(prismDependencies))
+          .pipe(Layer.provide(layerDependencies)),
       ),
     );
     const handle = (params: Parameters<typeof toolkit.handle<"t3_project_create">>[1]) =>
       toolkit
         .handle("t3_project_create", params)
-        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(layerDependencies));
+        .pipe(
+          Stream.unwrap,
+          Stream.runCollect,
+          Effect.provide(Layer.mergeAll(layerDependencies, prismDependencies)),
+        );
 
     const result = yield* handle({ title: "Pinball Stats" });
     expect(result.at(-1)?.result).toMatchObject({
@@ -377,13 +426,19 @@ it.effect("a client launches at its ceiling with the project's default model", (
     });
     const toolkit = yield* ProjectToolkit.pipe(
       Effect.provide(
-        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer)
+          .pipe(Layer.provide(prismDependencies))
+          .pipe(Layer.provide(dependencies)),
       ),
     );
     const handle = (params: Parameters<typeof toolkit.handle<"t3_thread_launch">>[1]) =>
       toolkit
         .handle("t3_thread_launch", params)
-        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+        .pipe(
+          Stream.unwrap,
+          Stream.runCollect,
+          Effect.provide(Layer.mergeAll(dependencies, prismDependencies)),
+        );
 
     const result = yield* handle({ title: "Fix", projectId, message: "Fix the bug" });
     expect(result.at(-1)?.result).toMatchObject({ projectId, modelSelection });
@@ -416,7 +471,9 @@ it.effect("a launch binds only an existing checkout that is one of the project's
       launched,
       workspaceRoot: repo,
     });
-    const git = yield* GitVcsDriver.GitVcsDriver.pipe(Effect.provide(dependencies));
+    const git = yield* GitVcsDriver.GitVcsDriver.pipe(
+      Effect.provide(Layer.mergeAll(dependencies, prismDependencies)),
+    );
     for (const args of [
       ["init", "-b", "main"],
       ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init"],
@@ -426,7 +483,9 @@ it.effect("a launch binds only an existing checkout that is one of the project's
     }
     const toolkit = yield* ProjectToolkit.pipe(
       Effect.provide(
-        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer)
+          .pipe(Layer.provide(prismDependencies))
+          .pipe(Layer.provide(dependencies)),
       ),
     );
     const launchInto = (worktreePath: string) =>
@@ -436,7 +495,11 @@ it.effect("a launch binds only an existing checkout that is one of the project's
           projectId,
           workspaceStrategy: { type: "existing_worktree", worktreePath },
         })
-        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+        .pipe(
+          Stream.unwrap,
+          Stream.runCollect,
+          Effect.provide(Layer.mergeAll(dependencies, prismDependencies)),
+        );
 
     expect((yield* launchInto(worktree)).at(-1)?.result).toMatchObject({ projectId });
     expect((yield* launchInto(repo)).at(-1)?.result).toMatchObject({ projectId });

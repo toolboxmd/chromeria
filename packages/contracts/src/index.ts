@@ -67,3 +67,4 @@ export * from "./worktreeSetup.ts";
 export * from "./secretRequest.ts";
 export * from "./clientRpcPermissions.ts";
 export * from "./people.ts";
+export * from "./prism.ts";

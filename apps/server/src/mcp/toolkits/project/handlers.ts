@@ -1,10 +1,5 @@
-import {
-  MessageId,
-  ThreadId,
-  OrchestratorMcpFailure,
-  ProjectId,
-  threadOwner,
-} from "@t3tools/contracts";
+import * as Prism from "../../../prism/PrismService.ts";
+import { MessageId, ThreadId, OrchestratorMcpFailure, ProjectId, threadOwner } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -109,11 +104,19 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             });
           yield* assertProjectWorktree(project.workspaceRoot, input.workspaceStrategy.worktreePath);
         }
-        const modelSelection =
+        const inherited =
           input.modelSelection ??
           caller?.modelSelection ??
           (yield* readProject)?.defaultModelSelection ??
           undefined;
+        const prism = yield* Prism.PrismService;
+        const { modelSelection, kitText } = yield* prism.resolve({
+          projectId,
+          role: input.prismRole ?? "planner",
+          lane: input.lane,
+          explicit: input.modelSelection,
+          inherited,
+        });
         if (modelSelection === undefined)
           return yield* new OrchestratorMcpFailure({
             code: "invalid_request",
@@ -135,7 +138,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 initialMessage: {
                   messageId,
                   ...(caller === undefined ? {} : { senderThreadId: caller.id }),
-                  text: input.message ?? "",
+                  text: [kitText, input.message ?? ""].filter(Boolean).join("\n\n"),
                   attachments,
                 },
               }),
@@ -159,7 +162,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           runId: run?.id ?? null,
           status: run?.status ?? null,
         };
-      }),
+      }).pipe(Effect.provide(Prism.layer)),
   ),
   t3_project_list: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
