@@ -1183,16 +1183,7 @@ export const layer: Layer.Layer<
             }
             return true;
           });
-          yield* streamClock.beginAttempt({
-            threadId: input.run.threadId,
-            runId: input.run.id,
-            runOrdinal: input.run.ordinal,
-            attemptId: input.attempt.id,
-            attemptOrdinal: input.attempt.attemptOrdinal,
-            providerThreadId: input.providerThread.id,
-            provider: input.session.driver,
-            model: input.modelSelection.model,
-          });
+          yield* StreamClock.beginExecutionAttempt(streamClock, input);
           const filterAssistantEvent = makeAssistantStreamingFilter(responseStreamingMode);
           const providerEventFiber = yield* eventSubscription.events.pipe(
             Stream.filterEffect((event) =>
@@ -1215,39 +1206,37 @@ export const layer: Layer.Layer<
                   const isRootProviderThreadUpdate =
                     event.type === "provider_thread.updated" &&
                     event.providerThread.id === input.providerThread.id;
-                  const storedEvents = yield* providerEventIngestor
-                    .ingestNormalized({
-                      analyticsContext: {
-                        modelSelection: input.modelSelection,
-                        runtimeMode: input.runtimePolicy.runtimeMode,
-                        interactionMode: input.runtimePolicy.interactionMode,
-                      },
-                      providerSessionId: input.providerSessionId,
-                      providerInstanceId: input.run.providerInstanceId,
-                      threadId: input.run.threadId,
-                      runId: input.run.id,
-                      nodeId: input.rootNode.id,
-                      event: deliveredEvent,
-                      ...(isRootProviderThreadUpdate
-                        ? rootTerminalAlreadySeen
-                          ? {
-                              writeIfProviderThreadOwner: {
-                                providerThreadId: input.providerThread.id,
-                                runId: input.run.id,
-                                activeAttemptId: input.attempt.id,
-                                expectedLastRunOrdinal: input.run.ordinal,
-                              },
-                            }
-                          : {
-                              writeIfRunCurrent: {
-                                runId: input.run.id,
-                                activeAttemptId: input.attempt.id,
-                                expectedStatus: "running" as const,
-                              },
-                            }
-                        : {}),
-                    })
-                    .pipe(Effect.provideService(StreamClock.StreamClockAttempt, input.attempt.id));
+                  const storedEvents = yield* providerEventIngestor.ingestNormalized({
+                    analyticsContext: {
+                      modelSelection: input.modelSelection,
+                      runtimeMode: input.runtimePolicy.runtimeMode,
+                      interactionMode: input.runtimePolicy.interactionMode,
+                    },
+                    providerSessionId: input.providerSessionId,
+                    providerInstanceId: input.run.providerInstanceId,
+                    threadId: input.run.threadId,
+                    runId: input.run.id,
+                    nodeId: input.rootNode.id,
+                    event: deliveredEvent,
+                    ...(isRootProviderThreadUpdate
+                      ? rootTerminalAlreadySeen
+                        ? {
+                            writeIfProviderThreadOwner: {
+                              providerThreadId: input.providerThread.id,
+                              runId: input.run.id,
+                              activeAttemptId: input.attempt.id,
+                              expectedLastRunOrdinal: input.run.ordinal,
+                            },
+                          }
+                        : {
+                            writeIfRunCurrent: {
+                              runId: input.run.id,
+                              activeAttemptId: input.attempt.id,
+                              expectedStatus: "running" as const,
+                            },
+                          }
+                      : {}),
+                  });
                   storedEventCount = storedEvents.length;
                   if (
                     isRootProviderThreadUpdate &&
@@ -1260,17 +1249,7 @@ export const layer: Layer.Layer<
                   }
                 }
                 if (deliveredEvent === null) {
-                  // Presentation buffering must not turn healthy provider text into silence.
-                  yield* streamClock.observe(
-                    {
-                      threadId: input.run.threadId,
-                      runId: input.run.id,
-                      providerSessionId: input.providerSessionId,
-                      providerInstanceId: input.run.providerInstanceId,
-                      event,
-                    },
-                    input.attempt.id,
-                  );
+                  yield* StreamClock.observeFilteredEvent(streamClock, input, event);
                 }
                 if (event.type === "provider_thread.updated") {
                   if (event.providerThread.id === input.providerThread.id && storedEventCount > 0) {
@@ -1295,6 +1274,7 @@ export const layer: Layer.Layer<
               }),
             ),
             Stream.takeUntilEffect(() => shouldStopProviderEventIngestion),
+            Stream.provideService(StreamClock.StreamClockAttempt, input.attempt.id),
             Stream.runDrain,
             Effect.mapError((cause) => new RunExecutionIngestError({ runId: input.run.id, cause })),
             Effect.flatMap(() =>

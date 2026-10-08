@@ -761,7 +761,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "id": "prism-stream-clock",
   "purpose": "Measure attempt-owned provider activity in memory and persist one idempotent healthy sample per finished provider turn across restarts, without importing v1 activities.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/172"],
-  "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/172-stream-clock-v2"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/184"],
   "newFiles": [
     "apps/server/src/prism/ProviderEventIngestor.ts",
     "apps/server/src/prism/StreamStatsStore.ts",
@@ -789,7 +789,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "id": "prism-stale-turn-detector",
   "purpose": "Send one advisory parent notice for a silent active child; exclude host suspension, open tools and retired or waiting work. V2 and Prism recovery retain terminal failure delivery.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/172"],
-  "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/172-stream-clock-v2"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/184"],
   "newFiles": [
     "apps/server/src/prism/staleTurnDetector.ts",
     "apps/server/src/prism/staleTurnDetector.test.ts",

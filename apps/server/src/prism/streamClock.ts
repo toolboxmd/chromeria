@@ -14,6 +14,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import type { RunExecutionServiceV2StartRootRunInput } from "../orchestration-v2/RunExecutionService.ts";
 import type { ProviderEventIngestInput } from "../orchestration-v2/ProviderEventIngestor.ts";
 import * as StreamStatsStore from "./StreamStatsStore.ts";
 
@@ -344,3 +345,36 @@ export const layer = Layer.effect(
   StreamClockHooks,
   Effect.map(StreamClock, (clock) => clock),
 ).pipe(Layer.provideMerge(layerClock));
+
+/** Register the captured execution owner without expanding the upstream lifecycle hook. */
+export const beginExecutionAttempt = (
+  clock: Pick<StreamClock["Service"], "beginAttempt" | "observe" | "endAttempt">,
+  input: RunExecutionServiceV2StartRootRunInput,
+) =>
+  clock.beginAttempt({
+    threadId: input.run.threadId,
+    runId: input.run.id,
+    runOrdinal: input.run.ordinal,
+    attemptId: input.attempt.id,
+    attemptOrdinal: input.attempt.attemptOrdinal,
+    providerThreadId: input.providerThread.id,
+    provider: input.session.driver,
+    model: input.modelSelection.model,
+  });
+
+/** Presentation buffering must not turn healthy provider text into silence. */
+export const observeFilteredEvent = (
+  clock: Pick<StreamClock["Service"], "beginAttempt" | "observe" | "endAttempt">,
+  input: RunExecutionServiceV2StartRootRunInput,
+  event: ProviderEventIngestInput["event"],
+) =>
+  clock.observe(
+    {
+      threadId: input.run.threadId,
+      runId: input.run.id,
+      providerSessionId: input.providerSessionId,
+      providerInstanceId: input.run.providerInstanceId,
+      event,
+    },
+    input.attempt.id,
+  );
