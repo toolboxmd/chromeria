@@ -6,6 +6,7 @@
 - [Messages and context](./user/composer.md)
 - [Working with threads](./user/thread-sidebar.md)
 - [People and shared threads](./user/people.md)
+- [Promachos mode](./user/promachos-mode.md)
 - [Permission modes](./user/permission-modes.md)
 - [Terminal history](./user/terminal.md)
 - [Source control](./user/source-control.md)

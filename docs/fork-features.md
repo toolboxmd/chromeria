@@ -853,3 +853,57 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "keywords": ["Wight", "wightModes", "wightLimitPercent", "wightAdmission"]
 }
 ```
+
+## promachos-mode
+
+```json
+{
+  "id": "promachos-mode",
+  "purpose": "Chat with the Promachos in bubbles from his persona home, using Prism for the initial launch.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/175"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/175-promachos-v2"],
+  "newFiles": [
+    "apps/server/src/promachos/PromachosHome.test.ts",
+    "apps/server/src/promachos/PromachosHome.ts",
+    "apps/server/src/promachos/PromachosLaunch.ts",
+    "apps/server/src/promachos/PromachosLaunch.tests.ts",
+    "apps/server/src/promachos/PromachosRpc.ts",
+    "apps/web/src/components/promachos/PromachosChat.tsx",
+    "apps/web/src/components/promachos/PromachosModeSwitch.tsx",
+    "apps/web/src/components/promachos/PromachosNewHome.tsx",
+    "apps/web/src/components/promachos/PromachosSidebar.tsx",
+    "apps/web/src/components/promachos/promachosBubbles.test.tsx",
+    "apps/web/src/components/promachos/promachosBubbles.ts",
+    "apps/web/src/components/promachos/promachosConversations.test.ts",
+    "apps/web/src/components/promachos/promachosConversations.ts",
+    "apps/web/src/components/promachos/promachosMode.ts",
+    "apps/web/src/components/promachos/promachosStart.test.ts",
+    "apps/web/src/components/promachos/promachosStart.ts",
+    "apps/web/src/components/promachos/promachosTimeline.test.ts",
+    "apps/web/src/components/promachos/promachosTimeline.ts",
+    "docs/user/promachos-mode.md",
+    "packages/contracts/src/promachosHome.ts"
+  ],
+  "upstreamFiles": [
+    "apps/server/src/auth/RpcAuthorization.test.ts",
+    "apps/web/src/components/AppSidebarLayout.tsx",
+    "apps/web/src/components/chat/ChatComposer.tsx",
+    "packages/client-runtime/src/operations/commands.test.ts",
+    "packages/client-runtime/src/operations/commands.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/observability/RpcInstrumentation.ts",
+    "docs/README.md",
+    "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+    "apps/server/src/ws.ts",
+    "apps/web/src/components/ChatView.tsx",
+    "apps/web/src/components/chat/MessagesTimeline.tsx",
+    "apps/web/src/components/sidebar/SidebarChrome.tsx",
+    "packages/contracts/src/clientRpcPermissions.ts",
+    "packages/contracts/src/index.ts",
+    "packages/contracts/src/orchestrationV2.ts",
+    "packages/contracts/src/rpc.ts"
+  ],
+  "keywords": ["Promachos", "promachos", "PROMACHOS_BUBBLE_MARKDOWN", "prismRole"]
+}
+```

@@ -1,3 +1,5 @@
+import { PromachosSidebar } from "./promachos/PromachosSidebar";
+import { usePromachosMode } from "./promachos/promachosMode";
 import { useAtomValue } from "@effect/atom-react";
 import * as Schema from "effect/Schema";
 import {
@@ -230,6 +232,7 @@ function ProjectProjectionRetention() {
 export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const legacySidebarEnabled = useLegacySidebarEnabled();
+  const [promachosMode] = usePromachosMode();
   const { active: panelAnimationsActive, durationMs: panelAnimationDurationMs } =
     usePanelAnimationSettings();
   // Settings routes show the settings nav in place of whichever thread
@@ -344,6 +347,8 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
               <SidebarChromeHeader isElectron={isElectron} />
               <SettingsSidebarNav pathname={pathname} />
             </>
+          ) : promachosMode ? (
+            <PromachosSidebar />
           ) : legacySidebarEnabled ? (
             <LegacyThreadSidebar />
           ) : (
