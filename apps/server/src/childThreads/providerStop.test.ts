@@ -266,3 +266,108 @@ it.effect.each([
       assert.equal(yield* Ref.get(openSessions), 0);
     }),
 );
+
+it.effect(
+  "concurrent ancestor Stop and automatic child admission leave no provider launch after the worker drains",
+  () =>
+    Effect.gen(function* () {
+      const providerLaunches = yield* Ref.make(0);
+      const instanceId = ProviderInstanceId.make("codex");
+      const adapter: ProviderAdapterV2Shape = {
+        instanceId,
+        driver: ProviderDriverKind.make("codex"),
+        getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+        planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
+        openSession: () =>
+          Ref.update(providerLaunches, (count) => count + 1).pipe(
+            Effect.andThen(Effect.die("Retired child must never reach the adapter")),
+          ),
+      };
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const sink = yield* EventSinkV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const parentId = ThreadId.make("race-parent");
+        const childId = ThreadId.make("race-child");
+        for (const threadId of [parentId, childId]) {
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`create:${threadId}`),
+            threadId,
+            projectId: ProjectId.make("project:admission-race"),
+            title: threadId,
+            modelSelection: { instanceId, model: "gpt-5.1-codex" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdBy: "user",
+            creationSource: "web",
+          });
+        }
+        const child = yield* orchestrator.getThreadProjection(childId);
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("race-lineage"),
+              type: "thread.metadata-updated",
+              threadId: childId,
+              providerInstanceId: instanceId,
+              occurredAt: yield* DateTime.now,
+              payload: {
+                ...child.thread,
+                lineage: {
+                  parentThreadId: parentId,
+                  rootThreadId: parentId,
+                  relationshipToParent: "subagent",
+                },
+              },
+            },
+          ],
+        });
+        yield* Effect.all(
+          [
+            orchestrator.dispatch({
+              type: "thread.stop",
+              commandId: CommandId.make("race-stop"),
+              threadId: parentId,
+            }),
+            orchestrator
+              .dispatch({
+                type: "message.dispatch",
+                commandId: CommandId.make("race-start"),
+                threadId: childId,
+                messageId: MessageId.make("race-start"),
+                text: "Automatic continuation",
+                attachments: [],
+                dispatchMode: { type: "start_immediately" },
+                createdBy: "user",
+                creationSource: "server",
+              })
+              .pipe(Effect.result),
+          ],
+          { concurrency: "unbounded" },
+        );
+        yield* worker.drain();
+        const after = yield* orchestrator.getThreadProjection(childId);
+        assert.isDefined((yield* orchestrator.getThreadProjection(parentId)).thread.forkRetirement);
+        assert.isDefined(after.thread.forkRetirement);
+        assert.isFalse(
+          after.runs.some(
+            (run) =>
+              run.status === "preparing" || run.status === "starting" || run.status === "running",
+          ),
+        );
+        assert.equal(yield* Ref.get(providerLaunches), 0);
+        assert.deepEqual(after.thread.forkResumedRetirements ?? [], []);
+      }).pipe(
+        Effect.provide(
+          Harness.layerWithRegistry(
+            { name: "admission-race" },
+            Registry.layerFromAdapters([adapter]),
+            { runEffectWorker: false },
+          ),
+        ),
+      );
+    }),
+);
