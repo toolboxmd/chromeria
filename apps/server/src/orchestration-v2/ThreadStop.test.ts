@@ -92,6 +92,8 @@ it.effect(
       yield* send(childId, "explicit human revival", "start_immediately");
       const resumed = yield* orchestrator.getThreadProjection(childId);
       assert.include(resumed.thread.forkResumedRetirements ?? [], commandId);
+      assert.equal(resumed.thread.activeProviderThreadId, resumed.runs.at(-1)?.providerThreadId);
+      assert.isNotNull(resumed.thread.activeProviderThreadId);
       assert.deepEqual(
         yield* sql`SELECT command_id, status FROM orchestration_command_receipts
         WHERE command_id IN (${commandId}, ${`send:${childId}:explicit human revival`}) ORDER BY command_id`,

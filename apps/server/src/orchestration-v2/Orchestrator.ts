@@ -32,7 +32,7 @@ import {
   type OrchestrationV2ServerCommand,
   type ThreadPullRequestLink,
   type ThreadPullRequestWatch,
-  OrchestrationV2AppThread,
+  type OrchestrationV2AppThread,
   type OrchestrationV2ContextHandoff,
   type OrchestrationV2ContextSourcePoint,
   type OrchestrationV2ContextTransfer,
@@ -100,8 +100,6 @@ import {
   retirementAdmission,
 } from "../childThreads/retirement.ts";
 import type { ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
-const isAppThread = Schema.is(OrchestrationV2AppThread);
-
 import { EventSinkV2 } from "./EventSink.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
@@ -10701,12 +10699,36 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             );
           if (!stopping && !resume)
             return { ...planned, forkPlans: cancelledRestart ? [] : forkPlans };
-          let thread = yield* projectionStore
-            .getThread(commandThreadId(command))
+          const records = yield* projectionStore
+            .getThreadRecords(commandThreadId(command), [])
             .pipe(mapDispatchError(command));
+          // Provider events also update the app thread. Fold the whole plan so
+          // retirement metadata preserves those updates without loading history.
+          let projection: OrchestrationV2ThreadProjection = {
+            ...records,
+            runs: [],
+            attempts: [],
+            nodes: [],
+            subagents: [],
+            providerSessions: [],
+            providerThreads: [],
+            providerTurns: [],
+            runtimeRequests: [],
+            messages: [],
+            turnItems: [],
+            checkpointScopes: [],
+            contextTransfers: [],
+            checkpoints: [],
+            plans: [],
+            contextHandoffs: [],
+            visibleTurnItems: [],
+            updatedAt: records.thread.updatedAt,
+          };
           for (const event of planned.events) {
-            if (event.threadId === thread.id && isAppThread(event.payload)) thread = event.payload;
+            if (event.threadId === projection.thread.id)
+              projection = applyToProjection(projection, event);
           }
+          const thread = projection.thread;
           const now = yield* DateTime.now;
           const started = planned.events.find(
             (event) => event.type === "run.created" && event.threadId === thread.id,
