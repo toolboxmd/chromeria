@@ -701,7 +701,11 @@ it.effect(
         createdBy: "agent" as const,
         creationSource: "mcp" as const,
       };
-      assert.equal((yield* orchestrator.dispatch(message).pipe(Effect.result))._tag, "Failure");
+      const refused = yield* orchestrator.dispatch(message).pipe(Effect.flip);
+      assert.equal(refused._tag, "OrchestratorCommandRejectedError");
+      if (refused._tag === "OrchestratorCommandRejectedError")
+        assert.equal(refused.cause, "Fork transaction rejected: lineage_incomplete.");
+      assert.lengthOf((yield* orchestrator.getThreadProjection(childId)).messages, 0);
       assert.equal(
         (yield* orchestrator
           .dispatch({

@@ -1,6 +1,5 @@
 import {
   type CommandId,
-  type RuntimeRequestId,
   ThreadId,
   type OrchestrationV2ThreadProjection,
   type RunId,
@@ -11,6 +10,7 @@ import {
 import * as Effect from "effect/Effect";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
 
+import { isCallerAncestor, readPendingRequest } from "../../../childThreads/pendingRequests.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import {
   dispatchFailure,
@@ -50,27 +50,6 @@ const dispatch = Effect.fn("mcp.dispatchThreadCommand")(function* (
   return { sequence: result.sequence };
 });
 
-const readQuestion = Effect.fn("mcp.readQuestion")(function* (input: {
-  threadId?: ThreadId | undefined;
-  requestId: RuntimeRequestId;
-}) {
-  const context = yield* readThread(input.threadId, ["runtimeRequests", "turnItems"]);
-  const request = context.projection.runtimeRequests.find(
-    (request) =>
-      request.id === input.requestId &&
-      request.kind === "user_input" &&
-      request.status === "pending",
-  );
-  const item = context.projection.turnItems.find(
-    (item) => item.type === "user_input_request" && item.requestId === input.requestId,
-  );
-  if (request === undefined || item?.type !== "user_input_request")
-    return yield* new OrchestratorMcpFailure({
-      code: "invalid_request",
-      message: "The pending user-input request was not found.",
-    });
-  return { ...context, request, item };
-});
 /** A tool that changes `threadId`, or the caller's own thread when it is omitted. */
 const writesThread = <P extends { readonly threadId?: ThreadId | undefined }, A, E, R>(
   handle: (params: P) => Effect.Effect<A, E, R>,
@@ -205,30 +184,67 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
   ),
   t3_pending_request_list: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
-      const { projection } = yield* readThread(input.threadId, ["runtimeRequests"]);
+      const context = yield* readThread(input.threadId, ["runtimeRequests"]);
+      const { projection } = context;
+      const descendant = yield* isCallerAncestor(context, projection.thread.id);
       return {
         requestIds: projection.runtimeRequests
-          .filter((request) => request.kind === "user_input" && request.status === "pending")
+          .filter(
+            (request) =>
+              request.status === "pending" &&
+              (request.kind === "user_input" ||
+                (descendant &&
+                  request.kind !== "dynamic_tool_call" &&
+                  request.kind !== "auth_refresh")),
+          )
           .map((request) => request.id),
       };
     }),
   ),
   t3_pending_request_read: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
-      const { item } = yield* readQuestion(input);
-      return { requestId: input.requestId, questions: item.questions };
+      const { item } = yield* readPendingRequest(input);
+      return item.type === "user_input_request"
+        ? { requestId: input.requestId, kind: "user-input" as const, questions: item.questions }
+        : {
+            requestId: input.requestId,
+            kind: "approval" as const,
+            requestKind: item.requestKind,
+            prompt: item.prompt,
+            appName: item.appName,
+            options: item.options,
+          };
     }),
   ),
   t3_pending_request_respond: writesThread((input) =>
     Effect.gen(function* () {
-      const { threads, projection } = yield* readQuestion(input);
+      const context = yield* readPendingRequest(input);
+      const { threads, projection, item } = context;
+      if (
+        context.caller !== undefined &&
+        context.caller.id !== projection.thread.id &&
+        !(yield* isCallerAncestor(context, projection.thread.id))
+      )
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "Only an ancestor thread may answer a descendant request.",
+        });
+      if (
+        (item.type === "approval_request" && input.decision === undefined) ||
+        (item.type === "user_input_request" && input.answers === undefined)
+      )
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "Pass decision for an approval or answers for a question.",
+        });
       const result = yield* threads
         .dispatch({
           type: "runtime-request.respond",
           threadId: projection.thread.id,
           commandId: yield* newCommandId(),
           requestId: input.requestId,
-          answers: input.answers,
+          answers: item.type === "user_input_request" ? input.answers : undefined,
+          decision: item.type === "approval_request" ? input.decision : undefined,
         })
         .pipe(Effect.mapError(dispatchFailure));
       return { sequence: result.sequence };

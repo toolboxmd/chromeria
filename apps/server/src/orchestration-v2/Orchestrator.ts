@@ -1,3 +1,7 @@
+import {
+  reconcileChildRequests,
+  reconcilePendingChildRequests,
+} from "../childThreads/requestWake.ts";
 import type {
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -808,6 +812,7 @@ function lastDeliveredRunForProviderThread(
 }
 
 const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(function* () {
+  const requestWakeScope = yield* Effect.scope;
   const checkpointService = yield* CheckpointServiceV2;
   const commandPolicy = yield* CommandPolicyV2;
   const contextHandoffService = yield* ContextHandoffServiceV2;
@@ -9016,6 +9021,35 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           occurredAt: now,
           payload: { ...attempt, status: "interrupted", completedAt: now },
         });
+        // A cancelled launch has no accepted turn to report its thread becoming idle.
+        // A newer owner or surviving background work still owns the active state.
+        const providerHasBackgroundWork = pendingBackgroundTurnItems({
+          turnItems: projection.turnItems,
+          runs: projection.runs,
+        }).some(
+          (item) =>
+            item.providerThreadId === providerThread.id ||
+            projection.providerTurns.some(
+              (turn) =>
+                turn.id === item.providerTurnId && turn.providerThreadId === providerThread.id,
+            ),
+        );
+        if (
+          providerThread.status === "active" &&
+          providerThread.lastRunOrdinal === run.ordinal &&
+          (providerThread.pendingBackgroundTasks?.length ?? 0) === 0 &&
+          !providerHasBackgroundWork
+        ) {
+          yield* emitEvent({
+            type: "provider-thread.updated",
+            threadId: command.threadId,
+            runId: run.id,
+            nodeId: rootNode.id,
+            providerInstanceId: run.providerInstanceId,
+            occurredAt: now,
+            payload: { ...providerThread, status: "idle", updatedAt: now },
+          });
+        }
         yield* emitEvent({
           type: "node.updated",
           threadId: command.threadId,
@@ -10621,7 +10655,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.type === "thread.stop" ||
       (command.type === "run.interrupt" && command.holdQueue === true);
     const state = needsAdmission
-      ? yield* mapDispatchError(command)(retirement(admissionThreadId))
+      ? yield* retirement(admissionThreadId).pipe(
+          Effect.mapError(
+            (cause) => new OrchestratorProjectionError({ threadId: admissionThreadId, cause }),
+          ),
+        )
       : undefined;
     const resume = command.type === "message.dispatch" && explicitMessage(command);
     const humanOverride = command.type === "message.dispatch" && humanMessage(command);
@@ -10822,13 +10860,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),
       })
       .pipe(
-        Effect.mapError(
-          (cause) =>
-            new OrchestratorDispatchError({
-              commandId: command.commandId,
-              commandType: command.type,
-              cause,
-            }),
+        Effect.mapError((cause) =>
+          cause._tag === "ForkCommitGuardRejected"
+            ? new OrchestratorCommandRejectedError({
+                commandId: command.commandId,
+                commandType: command.type,
+                cause: cause.message,
+              })
+            : new OrchestratorDispatchError({
+                commandId: command.commandId,
+                commandType: command.type,
+                cause,
+              }),
         ),
       );
 
@@ -10857,6 +10900,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const dispatchWithReceipt = (command: OrchestrationV2ServerCommand) =>
     threadDispatch.withLock(commandThreadId(command), dispatchWithReceiptEffect(command));
+
+  const requestWake = (threadId?: ThreadId) =>
+    (threadId === undefined
+      ? reconcilePendingChildRequests(dispatchWithReceiptEffect)
+      : reconcileChildRequests(threadId, dispatchWithReceiptEffect)
+    ).pipe(
+      Effect.provideService(ProjectionStoreV2, projectionStore),
+      Effect.provideService(ThreadCommandExecutor.ThreadCommandExecutor, threadDispatch),
+      Effect.provideService(CommandReceiptStoreV2, commandReceipts),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Failed to reconcile descendant requests", { cause }),
+      ),
+    );
 
   const handleTerminalRun = (stored: OrchestrationV2StoredEvent) =>
     Effect.gen(function* () {
@@ -10927,12 +10983,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       Effect.forkDetach,
     );
 
+  yield* eventSink.stream({ afterSequence: terminalEventsAfterSequence }).pipe(
+    Stream.runForEach((stored) =>
+      stored.event.type === "runtime-request.updated"
+        ? requestWake(stored.event.threadId)
+        : stored.event.type === "thread.metadata-updated" &&
+            stored.event.payload.forkRetirement?.token === stored.commandId
+          ? requestWake()
+          : Effect.void,
+    ),
+    Effect.forkIn(requestWakeScope),
+  );
+
   // Settles child results and completion deliveries whose runs ended without
   // the listener above: before this boot, or in runtime reconciliation, which
   // it skips. Startup runs this after reconciliation and before the effect
   // worker. Queue recovery instead holds unstarted runs until an explicit
   // queue.resume command arrives.
   const recoverDelegatedTasks = Effect.gen(function* () {
+    yield* requestWake();
     yield* projectionStore.getRecoveryThreadIds("subagent-results").pipe(
       Effect.flatMap((threadIds) =>
         Effect.forEach(

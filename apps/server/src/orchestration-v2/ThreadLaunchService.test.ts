@@ -32,6 +32,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -2269,4 +2270,88 @@ it.effect.each([0, 1])("releases an async setup before its completion with exit 
       );
     }).pipe(Effect.provide(harness.layer));
   }),
+);
+
+it.effect(
+  "prepares an accepted delegated destination once through the existing workspace pipeline",
+  () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const harness = makeHarness({
+        runSetup: () =>
+          Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.as({ status: "no-script" as const }),
+          ),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const threadId = ThreadId.make("delegated-destination");
+        yield* threads.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("delegated-create"),
+          threadId,
+          projectId: otherProjectId,
+          title: "Delegated destination",
+          modelSelection,
+          runtimeMode: "approval-required",
+          interactionMode: "plan",
+          branch: null,
+          worktreePath: null,
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+        yield* threads.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("delegated-message"),
+          threadId,
+          messageId: MessageId.make("delegated-message"),
+          text: "Destination task",
+          attachments: [],
+          modelSelection,
+          dispatchMode: {
+            type: "defer_start",
+            workspaceStrategy: { type: "worktree", baseRef: "main" },
+          },
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+        const before = yield* threads.getThreadProjection(threadId);
+        const run = before.runs[0]!;
+        const released = yield* threads.streamStoredEvents.pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.threadId === threadId &&
+              stored.event.type === "run.updated" &&
+              stored.event.payload.id === run.id &&
+              stored.event.payload.status === "starting",
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        const input = {
+          commandId: CommandId.make("delegated-prepare"),
+          threadId,
+          runId: run.id,
+          projectId: otherProjectId,
+        };
+        yield* Effect.all(
+          [launches.prepareDelegatedRun(input), launches.prepareDelegatedRun(input)],
+          { concurrency: "unbounded" },
+        );
+        yield* Deferred.await(entered);
+        assert.equal(harness.createWorktree.mock.calls.length, 1);
+        assert.equal(harness.runSetup.mock.calls.length, 1);
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(released);
+        const after = yield* threads.getThreadProjection(threadId);
+        assert.equal(after.runs[0]!.status, "starting");
+        assert.equal(after.thread.projectId, otherProjectId);
+        assert.equal(after.thread.worktreePath, "/repo-worktrees/feature");
+        assert.equal(after.thread.runtimeMode, "approval-required");
+        assert.equal(after.thread.interactionMode, "plan");
+      }).pipe(Effect.provide(harness.layer));
+    }),
 );
