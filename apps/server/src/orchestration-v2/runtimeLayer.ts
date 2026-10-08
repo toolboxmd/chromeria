@@ -5,6 +5,8 @@ import * as PrismProviderEventIngestor from "../prism/ProviderEventIngestor.ts";
 import * as PrismStaleTurnMonitor from "../prism/staleTurnMonitor.ts";
 import * as PrismRecoveryHooks from "../prism/RecoveryHooks.ts";
 import * as PrismRecoveryReactor from "../prism/RecoveryReactor.ts";
+import * as WightAdmission from "../wight/AdmissionHooks.ts";
+import * as WightMode from "../wight/WightService.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Layer from "effect/Layer";
@@ -221,6 +223,7 @@ const layerPrismRecoveryHooksProvided = PrismRecoveryHooks.layer.pipe(
 );
 
 const layerOrchestratorProvided = Orchestrator.layer.pipe(
+  Layer.provide(WightAdmission.layer),
   Layer.provide(
     Layer.mergeAll(
       layerCheckpointServiceProvided,
@@ -362,6 +365,9 @@ export const layer = Layer.mergeAll(
 );
 
 export const layerProduction = Layer.mergeAll(
+  WightMode.layer.pipe(
+    Layer.provide(Layer.mergeAll(ProjectionStore.layer, layerThreadManagementProvided)),
+  ),
   layer.pipe(Layer.provide(layerProjectService)),
   layerProjectService,
   layerManagedProjectFoldersProvided,

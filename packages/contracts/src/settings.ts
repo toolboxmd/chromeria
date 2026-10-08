@@ -1220,6 +1220,7 @@ export type ProjectScopedServerSettingKey = (typeof PROJECT_SCOPED_SERVER_SETTIN
  */
 export const ProjectSettingsOverrides = Schema.Struct({
   ...forkOpaqueSettingsFields,
+  wightModes: Schema.optionalKey(Schema.Unknown),
   worktreeCleanup: Schema.optionalKey(WorktreeCleanup),
   defaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),

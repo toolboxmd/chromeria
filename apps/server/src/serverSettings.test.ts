@@ -98,7 +98,7 @@ const recordProviderUsage = (provider: string, instanceId: string | null = provi
 
 it.layer(NodeServices.layer)("server settings", (it) => {
   it.effect(
-    "preserves saved V1 Prism kits and opaque Wight settings through unrelated writes",
+    "preserves saved V1 Prism kits and Wight settings through unrelated writes",
     () =>
       Effect.gen(function* () {
         const config = yield* ServerConfig.ServerConfig;
@@ -151,7 +151,11 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         };
         const opaque = {
           prismRoles: savedKits("environment"),
-          wightModes: { future: [null, false, "mode"] },
+          wightModes: {
+            unlimited: { enabledAt: "2026-10-08T17:00:00.000Z", expiresAt: null },
+            timed: { enabledAt: "2026-10-08T17:00:00.000Z", expiresAt: 1_900_000_000_000 },
+            expired: { enabledAt: "2026-10-08T17:00:00.000Z", expiresAt: 0 },
+          },
         };
         const project = { ...opaque, prismRoles: savedKits("project"), defaultAutoPull: true };
         yield* fs.writeFileString(
