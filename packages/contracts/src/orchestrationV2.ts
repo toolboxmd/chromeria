@@ -3176,7 +3176,18 @@ const OrchestrationV2InternalCommand = Schema.Union([
 export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalCommand.Type;
 
 /** Everything the server's orchestrator accepts: client commands plus internal ones. */
-export type OrchestrationV2ServerCommand = OrchestrationV2Command | OrchestrationV2InternalCommand;
+export type OrchestrationV2ServerCommand =
+  | Exclude<OrchestrationV2Command, { readonly type: "message.dispatch" }>
+  | (Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> & {
+      /** Server-only Wight compare-and-start identity, absent from the wire schema. */
+      readonly wightAdmission?: {
+        readonly latestRunId: RunId | null;
+        readonly updatedAt: number;
+        readonly providerInstanceId: ProviderInstanceId;
+        readonly enabledAt: string;
+      };
+    })
+  | OrchestrationV2InternalCommand;
 
 export const ORCHESTRATION_V2_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",

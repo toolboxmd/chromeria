@@ -1,3 +1,5 @@
+import * as WightAdmission from "../wight/AdmissionHooks.ts";
+import { wightAdmissionPlan } from "../wight/admission.ts";
 import {
   reconcileChildRequests,
   reconcilePendingChildRequests,
@@ -822,6 +824,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const projects = yield* ProjectStore.ProjectStoreV2;
   const projectionStore = yield* ProjectionStoreV2;
   const prismRecovery = yield* PrismRecovery.RecoveryHooks;
+  const wightAdmission = yield* WightAdmission.AdmissionHooks;
   const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
   const retirement = (threadId: ThreadId) =>
     readRetirementState(threadId).pipe(Effect.provideService(ProjectionStoreV2, projectionStore));
@@ -10686,7 +10689,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ];
     if (command.type === "thread.stop" && command.forkRetirementStop !== undefined)
       forkPlans.push(propagatedStopAdmission(command.threadId, command.forkRetirementStop));
-    const plan = yield* dispatchOnce(command).pipe(
+    if (command.type === "message.dispatch") {
+      const wightPlan = wightAdmissionPlan(command);
+      if (wightPlan !== null) forkPlans.push(wightPlan);
+    }
+    const plan = yield* Effect.gen(function* () {
+      if (command.type === "message.dispatch" && !(yield* wightAdmission.permits(command)))
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Wight activation no longer permits continuation.",
+        });
+      return yield* dispatchOnce(command);
+    }).pipe(
       Effect.flatMap((planned) =>
         Effect.gen(function* () {
           const cancelledRestart =

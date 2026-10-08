@@ -15,6 +15,7 @@ import {
   ForwardCompatibleOptional,
   OmittedWhenNull,
   ProjectId,
+  ThreadId,
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
@@ -44,6 +45,7 @@ import {
   ProviderInstanceId,
   type ProviderDriverKind,
 } from "./providerInstance.ts";
+import { WightMode } from "./wight.ts";
 import { PullRequestMergeMethod } from "./pullRequest.ts";
 
 // ── Client Settings (local-only) ───────────────────────────────
@@ -1278,6 +1280,9 @@ export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
 export const ServerSettings = Schema.Struct({
   ...forkOpaqueSettingsFields,
+  wightModes: Schema.Record(ThreadId, WightMode).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
   autoUpdateProviders: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   prismRoles: PrismRoleKits.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   worktreeCleanup: WorktreeCleanup.pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -1682,6 +1687,7 @@ const OpenCodeSettingsPatch = Schema.Struct({
 
 export const ServerSettingsPatch = Schema.Struct({
   prismRoles: Schema.optionalKey(PrismRoleKitsPatch),
+  wightModes: Schema.optionalKey(Schema.Record(ThreadId, Schema.NullOr(WightMode))),
   worktreeCleanup: Schema.optionalKey(
     Schema.NullOr(
       Schema.Union([
