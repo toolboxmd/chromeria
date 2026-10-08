@@ -93,7 +93,9 @@ export class DesktopEnvironment extends Context.Service<
   }
 >()("@t3tools/desktop/app/DesktopEnvironment") {}
 
-const APP_BASE_NAME = "T3 Code";
+// Chromeria (toolboxmd fork): product name shown in window titles, menus and
+// the About panel. The stable build shows the bare name without "(Alpha)".
+const APP_BASE_NAME = "Chromeria";
 
 function resolveDesktopAppStageLabel(input: {
   readonly isDevelopment: boolean;
@@ -114,7 +116,7 @@ export function resolveDesktopAppBranding(input: {
   return {
     baseName: APP_BASE_NAME,
     stageLabel,
-    displayName: `${APP_BASE_NAME} (${stageLabel})`,
+    displayName: stageLabel === "Alpha" ? APP_BASE_NAME : `${APP_BASE_NAME} (${stageLabel})`,
   };
 }
 
@@ -186,6 +188,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
     joinPath: path.join,
     t3Home: config.t3Home,
   });
+
   const linuxApplicationsDir = path.join(
     Option.getOrElse(config.xdgDataHome, () => path.join(homeDirectory, ".local", "share")),
     "applications",

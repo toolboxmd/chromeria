@@ -1,3 +1,4 @@
+import { forkPullRequestIdentity } from "../pullRequest/forkRepositoryIdentity.ts";
 import {
   canonicalRepositoryKey,
   sourceControlRepositorySelector,
@@ -51,7 +52,7 @@ function samePullRequest(
   );
 }
 
-function pullRequestMatchesProject(
+export function pullRequestMatchesProject(
   pullRequest: GitManager.GitBranchPullRequest,
   project: OrchestrationProjectShell,
 ): boolean {
@@ -59,7 +60,7 @@ function pullRequestMatchesProject(
     pullRequest.repositoryKey !== null &&
     project.repositoryIdentity != null &&
     canonicalRepositoryKey(pullRequest.repositoryKey) ===
-      canonicalRepositoryKey(project.repositoryIdentity.canonicalKey)
+      canonicalRepositoryKey(forkPullRequestIdentity(project.repositoryIdentity)!.canonicalKey)
   );
 }
 
@@ -77,7 +78,7 @@ export const resolveProjectForPullRequestDiscovery = Effect.fn(
   });
   return {
     project: { ...project, repositoryIdentity },
-    repository: sourceControlRepositorySelector(repositoryIdentity),
+    repository: sourceControlRepositorySelector(forkPullRequestIdentity(repositoryIdentity)),
   };
 });
 
