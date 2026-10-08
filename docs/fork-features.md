@@ -63,6 +63,8 @@ are evidence for review, not proof that a feature has been adopted upstream.
   "upstreamFiles": [
     "apps/desktop/package.json",
     "apps/desktop/src/app/DesktopAppIdentity.test.ts",
+    "apps/desktop/src/app/DesktopClerk.test.ts",
+    "apps/desktop/src/app/DesktopPreReadyFileSystem.test.ts",
     "apps/desktop/src/app/DesktopEnvironment.ts",
     "apps/desktop/src/app/DesktopPreReadyPlatform.test.ts",
     "apps/desktop/src/app/DesktopUserData.test.ts",
