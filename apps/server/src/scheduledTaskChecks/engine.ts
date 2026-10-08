@@ -54,7 +54,10 @@ export interface RunObservation {
   readonly landed: boolean;
   /** A run started by one of this run's sends reached the provider. */
   readonly started: boolean;
-  /** A run is active or queued on the thread. */
+  /**
+   * A run is active or queued on the thread, or the latest send's work is still
+   * continuing or awaiting a conclusive recovery decision.
+   */
   readonly busy: boolean;
   /** The thread waits on the user: a pending approval, question or plan. */
   readonly blocked: boolean;
@@ -123,6 +126,10 @@ export interface CheckedRunDeps {
     { readonly modelSelection: ModelSelection; readonly kitText: string | null } | null,
     ScheduledTaskCheckError
   >;
+  /** Whether bound Spectrum reports still hold this run (the D32 fence), read in the caller's transaction. */
+  readonly reportsHold: (
+    schedulerRunId: string,
+  ) => Effect.Effect<boolean, ScheduledTaskCheckError, SqlClient.SqlClient>;
   readonly changed: Effect.Effect<void>;
 }
 
@@ -164,6 +171,7 @@ const ORPHANED_COMMAND =
   "This command run was interrupted before its result was recorded, for example by a Chromeria restart. It may or may not have finished, and it was not run again.";
 
 export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps) {
+  const sql = yield* SqlClient.SqlClient;
   const locks = new Map<string, Semaphore.Semaphore>();
   const locked = <A, E, R>(taskId: string, body: Effect.Effect<A, E, R>) =>
     Effect.suspend(() => {
@@ -518,6 +526,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
           // Upstream's recovery resumes the thread at reset; never resume it twice.
           if (
             observation.usageLimit.upstreamResumes ||
+            observation.busy ||
             observation.usageLimit.resetAt === null ||
             observation.usageLimit.resetAt > now
           )
@@ -525,19 +534,29 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
         } else if (observation.busy) {
           return;
         } else if (run.stage === "running" || run.stage === "usage-limit") {
+          // A passed check waits for bound reports before it is run again.
+          if (run.awaitingReports === true && (yield* deps.reportsHold(run.id))) return;
           const { result, cwd } = yield* check(task, state, run, now);
           if (result.passed) {
-            yield* store(state, {
-              ...replaceRun(state, {
-                ...run,
-                checkCwd: cwd,
-                check: result,
-                stage: "done",
-                retryAt: null,
+            const checked = state;
+            const passedRun = run;
+            // Settle only in one transaction that re-evaluates every bound report.
+            yield* sql.withTransaction(
+              Effect.gen(function* () {
+                const holding = yield* deps.reportsHold(passedRun.id);
+                yield* store(checked, {
+                  ...replaceRun(checked, {
+                    ...passedRun,
+                    checkCwd: cwd,
+                    check: result,
+                    stage: holding ? passedRun.stage : "done",
+                    awaitingReports: holding,
+                    retryAt: null,
+                  }),
+                  ...(holding ? {} : { failureStreak: 0, lastError: null }),
+                });
               }),
-              failureStreak: 0,
-              lastError: null,
-            });
+            );
             return;
           }
           yield* retry(

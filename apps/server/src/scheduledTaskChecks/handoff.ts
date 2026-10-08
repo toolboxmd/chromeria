@@ -1,7 +1,7 @@
 import {
+  RunId,
   type CommandId,
   type MessageId,
-  type RunId,
   type ScheduledTaskId,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -11,6 +11,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
 import { ForkCommitGuardRejected } from "../childThreads/ForkCommitPlan.ts";
+import * as Recovery from "../prism/RecoveryHistory.ts";
 import { holdsTask } from "./state.ts";
 import { listCheckStates } from "./store.ts";
 
@@ -20,29 +21,10 @@ import { listCheckStates } from "./store.ts";
  * conclusive recovery facts #169 records; it never guesses by thread or time.
  */
 
-/** #169's conclusive fact for one failed source run (D35). */
-export type RecoveryOutcome =
-  | { readonly kind: "pending" }
-  | { readonly kind: "retried"; readonly successorRunId: RunId }
-  | { readonly kind: "not_retryable"; readonly reason: string }
-  | { readonly kind: "abandoned"; readonly reason: string };
-
-/**
- * #169's per-source reader (`readRecoveryOutcome`, approved as D35), wired
- * once its reviewed implementation merges. Null means this build records no
- * recovery facts, so a failed run has no automatic continuation to wait for.
- * A reader's null result is undecided and always holds.
- */
-export class ScheduledRunRecovery extends Context.Reference<{
-  readonly outcome:
-    | ((sourceRunId: RunId) => Effect.Effect<RecoveryOutcome | null, SqlError, SqlClient.SqlClient>)
-    | null;
-}>("t3/scheduledTaskChecks/ScheduledRunRecovery", { defaultValue: () => ({ outcome: null }) }) {}
-
 /** A Spectrum bound to a scheduler run, as #176's Spectrum state reports it (D32). */
 export interface BoundSpectrum {
   readonly status: "active" | "settled" | "retired";
-  /** The current report attempt's `message.dispatch`; null while none was written. */
+  /** The identity of the current report's `message.dispatch`; null while none was written. */
   readonly report: {
     readonly commandId: CommandId;
     readonly messageId: MessageId;
@@ -50,8 +32,8 @@ export interface BoundSpectrum {
     /** Still in Spectrum's outbox, not yet dispatched. */
     readonly inOutbox: boolean;
   } | null;
-  /** The user explicitly abandoned a report that never reached a provider. */
-  readonly abandonedByUser: boolean;
+  /** The user's abandonment of a report; it counts only for the current report's command. */
+  readonly reportAbandonment: { readonly commandId: CommandId } | null;
 }
 
 /** #176 provides the Spectrums bound to a scheduler run; without Spectrum there are none. */
@@ -69,7 +51,6 @@ const MAX_HOPS = 32;
 interface RunRow {
   readonly run_id: string;
   readonly status: string;
-  readonly started_at: string | null;
   readonly user_message_id: string | null;
   readonly restart_source: string | null;
   readonly prism_source: string | null;
@@ -78,7 +59,6 @@ interface RunRow {
 const readRun = (sql: SqlClient.SqlClient, where: { readonly runId: string }) =>
   sql<RunRow>`
     SELECT run_id, status,
-      json_extract(payload_json, '$.startedAt') AS started_at,
       json_extract(payload_json, '$.userMessageId') AS user_message_id,
       json_extract(payload_json, '$.restartContinuationOfRunId') AS restart_source,
       json_extract(payload_json, '$.forkPrismContinuationSourceRunId') AS prism_source
@@ -93,6 +73,25 @@ const readRunByMessage = (sql: SqlClient.SqlClient, threadId: string, messageId:
     LIMIT 1
   `.pipe(Effect.map((rows) => rows[0]?.run_id));
 
+/**
+ * Whether any of these runs reached its provider, by upstream's delivery rule
+ * (ProviderTurnStartService): a provider turn recorded for one of the run's
+ * attempts. Adapters record it only as the provider takes the prompt; a run's
+ * `startedAt` is set before delivery and a failed start records no turn. A
+ * pending turn never started.
+ */
+export const reachedProvider = (sql: SqlClient.SqlClient, runIds: ReadonlyArray<string>) =>
+  runIds.length === 0
+    ? Effect.succeed(false)
+    : sql`
+        SELECT 1 FROM orchestration_v2_projection_provider_turns AS turn
+        JOIN orchestration_v2_projection_run_attempts AS attempt
+          ON attempt.attempt_id = turn.run_attempt_id
+        WHERE attempt.run_id IN ${sql.in(runIds)}
+          AND turn.status <> 'pending' AND turn.started_at IS NOT NULL
+        LIMIT 1
+      `.pipe(Effect.map((rows) => rows.length > 0));
+
 /** Upstream's own restart continuation of a run, linked on the successor. */
 const restartSuccessor = (sql: SqlClient.SqlClient, runId: string) =>
   sql<{ readonly run_id: string }>`
@@ -106,34 +105,36 @@ const restartSuccessor = (sql: SqlClient.SqlClient, runId: string) =>
  * - `waiting`: it or a continuation is not finished, or recovery is undecided;
  * - `completed`: it or an exact continuation completed;
  * - `ended`: it ended without completing and nothing will continue it.
+ *
+ * `started` says whether the provider took any run along the chain; a terminal
+ * status alone, completed included, is no proof of delivery.
  */
 export type RunEnd =
   | { readonly kind: "waiting" }
-  | { readonly kind: "completed"; readonly runId: string }
+  | { readonly kind: "completed"; readonly runId: string; readonly started: boolean }
   | { readonly kind: "ended"; readonly runId: string; readonly started: boolean };
 
 export const followRun = Effect.fn("ScheduledTaskChecks.followRun")(function* (runId: string) {
   const sql = yield* SqlClient.SqlClient;
-  const recovery = yield* ScheduledRunRecovery;
   let current = runId;
-  // Any provider start along the chain means the provider saw the work.
   let started = false;
   for (let hop = 0; hop < MAX_HOPS; hop += 1) {
     const run = yield* readRun(sql, { runId: current });
     if (run === undefined) return { kind: "waiting" } satisfies RunEnd;
-    started ||= run.started_at !== null;
     if (!TERMINAL.has(run.status)) return { kind: "waiting" } satisfies RunEnd;
-    if (run.status === "completed") return { kind: "completed", runId: current } satisfies RunEnd;
+    started ||= yield* reachedProvider(sql, [current]);
+    if (run.status === "completed")
+      return { kind: "completed", runId: current, started } satisfies RunEnd;
     const restarted = yield* restartSuccessor(sql, current);
     if (restarted !== undefined) {
       current = restarted;
       continue;
     }
-    if (recovery.outcome === null)
-      return { kind: "ended", runId: current, started } satisfies RunEnd;
-    const outcome = yield* recovery.outcome(current as RunId);
-    if (outcome === null || outcome.kind === "pending") return { kind: "waiting" } satisfies RunEnd;
-    if (outcome.kind === "retried") {
+    // #169's conclusive fact for this failed run (D35); missing or pending is undecided.
+    const outcome = yield* Recovery.readRecoveryOutcome(RunId.make(current));
+    if (outcome === null || outcome.status === "pending")
+      return { kind: "waiting" } satisfies RunEnd;
+    if (outcome.outcome === "retried") {
       // The fact names the successor; the successor must name this source back.
       const successor = yield* readRun(sql, { runId: outcome.successorRunId });
       if (successor === undefined || successor.prism_source !== current)
@@ -182,7 +183,9 @@ export const reportsHold = Effect.fn("ScheduledTaskChecks.reportsHold")(function
     if (receipts[0]?.status !== "accepted") return true;
     const end = yield* followSend(report.threadId, report.messageId);
     if (end.kind === "waiting") return true;
-    if (end.kind === "ended" && !end.started && !spectrum.abandonedByUser) return true;
+    // A report that never reached a provider, however its run ended, holds
+    // until a new attempt or the user abandons this exact report.
+    if (!end.started && spectrum.reportAbandonment?.commandId !== report.commandId) return true;
   }
   return false;
 });

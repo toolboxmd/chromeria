@@ -39,6 +39,7 @@ import * as Scheduler from "../scheduling/Scheduler.ts";
 import { COMMAND_TIMEOUT_MS, runShellCommand } from "./commandRunner.ts";
 import { ScheduledTaskDispatchPolicy } from "./DispatchPolicy.ts";
 import { makeCheckedRuns, ScheduledTaskCheckError, type CheckedRuns } from "./engine.ts";
+import { followSend, reachedProvider, reportsHold } from "./handoff.ts";
 import { chooseWeeklyMinutes, forkSameSchedule, occupiedMinutes } from "./schedules.ts";
 import {
   CHECK_OUTPUT_BYTES,
@@ -206,6 +207,10 @@ const makeEngine = Effect.gen(function* () {
 
   const runs = yield* makeCheckedRuns({
     changed: PubSub.publish(changes, undefined).pipe(Effect.asVoid),
+    reportsHold: (schedulerRunId) =>
+      reportsHold(schedulerRunId).pipe(
+        Effect.mapError(checkError("Could not read the run's bound reports")),
+      ),
     observe: (task, run) =>
       Effect.gen(function* () {
         const threadId = run.threadId!;
@@ -245,12 +250,27 @@ const makeEngine = Effect.gen(function* () {
         `.pipe(Effect.mapError(checkError("Could not read runs")));
         const last = run.sends.at(-1);
         const limited = shell.status === "failed" && shell.lastErrorClass === "usage_limit";
+        // The latest send's work, followed through exact continuations and recovery facts.
+        const work =
+          last === undefined
+            ? null
+            : yield* followSend(threadId, last.messageId).pipe(
+                Effect.mapError(checkError("Could not follow the scheduled run")),
+              );
+        const started = yield* reachedProvider(
+          sql,
+          sendRuns.map((entry) => entry.id),
+        ).pipe(Effect.mapError(checkError("Could not read provider turns")));
         return {
           unavailable: retired,
           landed:
             last !== undefined && sendRuns.some((entry) => entry.userMessageId === last.messageId),
-          started: sendRuns.some((entry) => entry.startedAt !== null),
-          busy: shell.activeRunId !== null || BUSY_STATUSES.has(shell.status) || queued.length > 0,
+          started,
+          busy:
+            shell.activeRunId !== null ||
+            BUSY_STATUSES.has(shell.status) ||
+            queued.length > 0 ||
+            (sendRuns.length > 0 && work?.kind === "waiting"),
           blocked: shell.pendingRuntimeRequest !== null || shell.hasActionableProposedPlan,
           usageLimit: limited
             ? {
@@ -261,7 +281,7 @@ const makeEngine = Effect.gen(function* () {
             : null,
           runError: shell.status === "failed" ? (shell.lastError ?? "The run failed.") : null,
         };
-      }),
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
     dispatch: ({ taskId, run, send }) =>
       Effect.gen(function* () {
         const payload = send.payload;

@@ -103,6 +103,8 @@ export const CheckedRun = Schema.Struct({
   check: Schema.NullOr(CheckResult),
   /** Present once a command run's process ended. */
   commandResult: Schema.optional(CommandResult),
+  /** Its check passed while bound Spectrum reports were still pending; it reruns after them. */
+  awaitingReports: Schema.optional(Schema.Boolean),
   /** Imported from Chromeria v1 as history: never driven, never resumed. */
   imported: Schema.optional(Schema.Struct({ from: Schema.Literal("v1"), status: Schema.String })),
 });

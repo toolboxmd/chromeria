@@ -113,8 +113,10 @@ const harness = (options: { readonly role?: string } = {}) =>
     let observation: RunObservation = { ...idle, landed: false, started: false };
     let passes = false;
     let dispatchFails = false;
+    let reportsPending = false;
     const runs = yield* makeCheckedRuns({
       changed: Effect.void,
+      reportsHold: () => Effect.sync(() => reportsPending),
       observe: () => Effect.sync(() => observation),
       dispatch: ({ send }) =>
         Effect.suspend(() =>
@@ -209,6 +211,9 @@ const harness = (options: { readonly role?: string } = {}) =>
       },
       failDispatch: (value: boolean) => {
         dispatchFails = value;
+      },
+      holdReports: (value: boolean) => {
+        reportsPending = value;
       },
     };
   });
@@ -727,5 +732,29 @@ it.effect("a fire that read an older definition is not acted on", () =>
       SELECT next_run_at FROM scheduled_tasks WHERE task_id = ${taskId}`;
     assert.isNull(row?.next_run_at ?? null);
     assert.equal(h.sent.length, 0);
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("a passed check waits for bound reports, then reruns before it settles", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    const h = yield* harness();
+    yield* h.save({ checkCommand: "check", checkReason: "outcome" });
+    yield* h.fire("scheduled");
+    h.set({ landed: true, started: true, busy: false });
+    h.pass(true);
+    h.holdReports(true);
+    yield* h.runs.drive(task());
+    const held = yield* h.state();
+    assert.equal(held.runs[0]?.stage, "running");
+    assert.isTrue(held.runs[0]?.awaitingReports === true);
+    assert.deepEqual(checkedRunStatus(held), { status: "running", error: null });
+    // While reports hold, the check is not run again.
+    yield* h.runs.drive(task());
+    assert.equal(h.checks.length, 1);
+    h.holdReports(false);
+    yield* h.runs.drive(task());
+    assert.equal(h.checks.length, 2, "the check reruns after the reports' turns ended");
+    assert.equal((yield* h.state()).runs[0]?.stage, "done");
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
