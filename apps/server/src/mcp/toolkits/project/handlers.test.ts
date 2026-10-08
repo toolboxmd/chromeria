@@ -1,3 +1,4 @@
+import * as AdapterRegistry from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
 import { ProviderDriverKind } from "@t3tools/contracts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
@@ -32,6 +33,10 @@ import * as ProjectHandlers from "./handlers.ts";
 import { ProjectToolkit } from "./tools.ts";
 
 const prismDependencies = Layer.mergeAll(
+  Layer.mock(AdapterRegistry.ProviderAdapterRegistryV2)({
+    list: () =>
+      Effect.succeed([ProviderInstanceId.make("codex"), ProviderInstanceId.make("claude")]),
+  }),
   ServerSettings.layerTest(),
   Layer.mock(ProviderRegistry.ProviderRegistry)({
     getProviders: Effect.succeed([
@@ -521,4 +526,74 @@ it.effect("a launch binds only an existing checkout that is one of the project's
       code: "invalid_request",
     });
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "launch falls through an advertised provider without an adapter, but explicit selection refuses",
+  () =>
+    Effect.gen(function* () {
+      const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+      const { projectId, dependencies } = clientLaunchHarness({
+        runtimeModeCeiling: "auto-accept-edits",
+        launched,
+      });
+      const codex = ProviderInstanceId.make("codex");
+      const claude = ProviderInstanceId.make("claude");
+      const validated: string[] = [];
+      const routing = Layer.mergeAll(
+        prismDependencies,
+        ServerSettings.layerTest({
+          prismRoles: {
+            planner: {
+              models: [
+                { instanceId: codex, model: "gpt-5" },
+                { instanceId: claude, model: "claude-opus", effort: "high" },
+              ],
+            },
+          },
+        }),
+        Layer.mock(AdapterRegistry.ProviderAdapterRegistryV2)({
+          list: () =>
+            Effect.sync(() => {
+              validated.push("lookup");
+              return [claude];
+            }),
+        }),
+      );
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(routing),
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      const handle = (params: Parameters<typeof toolkit.handle<"t3_thread_launch">>[1]) =>
+        toolkit
+          .handle("t3_thread_launch", params)
+          .pipe(
+            Stream.unwrap,
+            Stream.runCollect,
+            Effect.provide(Layer.mergeAll(dependencies, routing)),
+          );
+      const result = yield* handle({ title: "Fix", projectId, message: "Fix the bug" });
+      expect(result.at(-1)?.result).toMatchObject({
+        projectId,
+        modelSelection: {
+          instanceId: claude,
+          model: "claude-opus",
+          options: [{ id: "effort", value: "high" }],
+        },
+      });
+      expect(launched).toHaveLength(1);
+      expect(launched[0]?.runtimeMode).toBe("auto-accept-edits");
+      expect(validated.length).toBeGreaterThan(0);
+      const refused = yield* handle({
+        title: "Explicit",
+        projectId,
+        modelSelection: { instanceId: codex, model: "gpt-5" },
+      });
+      expect(refused.at(-1)?.result).toMatchObject({ code: "provider_unavailable" });
+      expect(launched).toHaveLength(1);
+    }),
 );

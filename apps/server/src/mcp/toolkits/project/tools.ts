@@ -1,4 +1,5 @@
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
+import { ProviderAdapterRegistryV2 } from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import { PrismLane, PrismRole } from "@t3tools/contracts";
 import { McpAttachmentInput } from "../attachment/input.ts";
@@ -146,6 +147,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     ...shared.dependencies,
     ThreadLaunchService.ThreadLaunchService,
     ProviderRegistry.ProviderRegistry,
+    ProviderAdapterRegistryV2,
     ServerSettings.ServerSettingsService,
     ManagedProjectFolders.ManagedProjectFolders,
     GitVcsDriver.GitVcsDriver,

@@ -1,4 +1,5 @@
 import * as Prism from "../../../prism/PrismService.ts";
+import { ProviderAdapterRegistryV2 } from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
   MessageId,
   ThreadId,
@@ -116,12 +117,17 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           (yield* readProject)?.defaultModelSelection ??
           undefined;
         const prism = yield* Prism.PrismService;
+        const adapters = yield* ProviderAdapterRegistryV2;
         const { modelSelection, kitText } = yield* prism.resolve({
           projectId,
           role: input.prismRole ?? "planner",
           lane: input.lane,
           explicit: input.modelSelection,
           inherited,
+          validate: (selection) =>
+            Prism.validateLaunchSelection(selection).pipe(
+              Effect.provideService(ProviderAdapterRegistryV2, adapters),
+            ),
         });
         if (modelSelection === undefined)
           return yield* new OrchestratorMcpFailure({

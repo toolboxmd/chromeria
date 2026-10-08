@@ -16,6 +16,20 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { ProviderAdapterRegistryV2 } from "../orchestration-v2/ProviderAdapterRegistry.ts";
+
+/** Native launch callers validate adapter admission before creating a thread/run. */
+export const validateLaunchSelection = Effect.fn("Prism.validateLaunchSelection")(function* (
+  selection: ModelSelection,
+) {
+  const adapters = yield* ProviderAdapterRegistryV2;
+  if (!(yield* adapters.list()).includes(selection.instanceId))
+    return yield* new OrchestratorMcpFailure({
+      code: "provider_unavailable",
+      message: `No V2 provider adapter is registered for ${selection.instanceId}.`,
+    });
+  return selection;
+});
 
 export function delegatedPrismRole(role?: OrchestratorMcpTaskRole): PrismRole {
   switch (role) {
@@ -106,12 +120,14 @@ const make = Effect.gen(function* () {
       for (const candidate of candidates) {
         const provider = providers.find((p) => p.instanceId === candidate.instanceId);
         if (!provider?.enabled || blocked(provider, now)) continue;
-        if (provider.availability === "unavailable" && (preferences.length > 0 || !input.validate))
-          continue;
+        // A validator can re-probe stale unavailable snapshots before refusing the candidate.
+        const rechecking = provider.availability === "unavailable" && input.validate !== undefined;
+        if (provider.availability === "unavailable" && !rechecking) continue;
         const model = provider.models.find(
           (m) => m.slug === candidate.model || m.aliases?.includes(candidate.model),
         );
-        if (!model && (preferences.length > 0 || provider.models.length > 0)) continue;
+        if (!model && !rechecking && (preferences.length > 0 || provider.models.length > 0))
+          continue;
         const effort = "effort" in candidate ? candidate.effort : undefined;
         const selection: ModelSelection = {
           instanceId: candidate.instanceId,
