@@ -63,6 +63,16 @@ If you run the server with `npx` rather than an installed `t3`, there is
 nothing to update on the host: stop the server and relaunch it as
 `npx t3@<client-version>` with the same subcommand and options.
 
+## Update providers automatically
+
+**Settings → General → Update providers automatically** is off by default. Turn
+it on to let an environment install newer supported provider CLI versions without
+clicking the update notice. It needs **Provider update checks** enabled. Updates
+wait until that provider's active work ends, and new starts wait while its CLI
+installation is being updated. Installs without a supported update command are
+skipped. Each version is attempted once per server start; a failed update remains
+in the provider notice for manual attention or a server restart.
+
 ## If an update fails
 
 Keep the client open until it reconnects or reports a failure. A failed service

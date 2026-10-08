@@ -1,3 +1,4 @@
+import { AutoUpdateProvidersSetting } from "./AutoUpdateProvidersSetting";
 import { SettingsGroup } from "./SettingsGroup";
 import { useScopedSettingsWriteAllowed } from "./useScopedSettings";
 import { Spinner } from "~/components/ui/spinner";
@@ -2908,6 +2909,12 @@ export function GeneralSettingsPanel() {
               aria-label="Check provider versions"
             />
           }
+        />
+
+        <AutoUpdateProvidersSetting
+          value={settings.autoUpdateProviders}
+          checksEnabled={settings.enableProviderUpdateChecks}
+          onChange={(autoUpdateProviders) => updateSettings({ autoUpdateProviders })}
         />
 
         <SettingsRow

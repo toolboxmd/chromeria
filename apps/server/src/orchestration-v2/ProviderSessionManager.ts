@@ -1,3 +1,4 @@
+import { applyProviderStartAdmission } from "../provider/forkProviderStartAdmission.ts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
@@ -2015,7 +2016,7 @@ export const layerWithOptions = (
         ),
       );
 
-      return ProviderSessionManagerV2.of({
+      const manager = ProviderSessionManagerV2.of({
         shutdown,
         open: (input) =>
           sessionOpen.withLock(
@@ -2449,6 +2450,7 @@ export const layerWithOptions = (
             ),
           ),
       } satisfies ProviderSessionManagerV2Shape);
+      return yield* applyProviderStartAdmission(manager, registry);
     }),
   );
 
