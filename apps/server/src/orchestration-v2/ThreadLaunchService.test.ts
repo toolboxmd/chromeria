@@ -1,4 +1,5 @@
 import * as DocumentText from "../provider/DocumentText.ts";
+import { registerPromachosLaunchTests } from "../promachos/PromachosLaunch.tests.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
@@ -280,6 +281,7 @@ function makeHarness(options: HarnessOptions = {}) {
   );
   return {
     layer: Layer.mergeAll(
+      layerRegistry,
       layerLaunch,
       layerRegistry,
       layerThreadManagement,
@@ -2744,3 +2746,5 @@ it.effect.each([false, true])(
       );
     }),
 );
+
+registerPromachosLaunchTests({ makeHarness, launchInput, modelSelection });

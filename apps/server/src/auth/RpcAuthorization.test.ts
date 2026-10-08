@@ -1,4 +1,6 @@
 import {
+  PROMACHOS_HOME_WS_METHODS,
+  clientRpcRequiredScopes,
   AuthEnvironmentMaintainScope,
   AuthDiagnosticsReadScope,
   AuthFilesystemReadScope,
@@ -31,6 +33,15 @@ import {
 import * as RpcAuthorization from "./RpcAuthorization.ts";
 
 describe("RPC authorization scopes", () => {
+  it("requires operate scope for Promachos home creation on both client and server", () => {
+    expect(requiredScopeForRpcMethod(PROMACHOS_HOME_WS_METHODS.create)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+    expect(
+      clientRpcRequiredScopes(PROMACHOS_HOME_WS_METHODS.create, { path: "~/promachos" }),
+    ).toEqual([AuthOrchestrationOperateScope]);
+  });
+
   it("declares exactly one scope for every RPC in the server group", () => {
     expect(new Set(Object.keys(RPC_REQUIRED_SCOPES))).toEqual(new Set(WsRpcGroup.requests.keys()));
   });

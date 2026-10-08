@@ -1,3 +1,4 @@
+import { withPromachosStart } from "../promachos/promachosStart";
 import {
   mergeDirectPreviewAnnotation,
   resolveBackgroundDraftWorkspaceOptions,
@@ -253,6 +254,8 @@ interface ComposerSendInput {
     runtimeMode: RuntimeMode;
     interactionMode: ProviderInteractionMode;
   }) => Promise<AtomCommandResult<void, unknown>>;
+  /** Fork: the Promachos role's models when this is a Promachos chat (toolboxmd/chromeria#115). */
+  readonly promachosModels?: ReadonlyArray<unknown> | null;
 }
 
 /**
@@ -334,6 +337,7 @@ export function useComposerSend(input: ComposerSendInput) {
     sideChatDisabledReason,
     handleNewThreadInActiveProject,
     persistThreadSettingsForNextTurn,
+    promachosModels,
   } = input;
   const linkedEnvironments = useLinkedEnvironments(environmentId);
   const handleNewThread = useNewThreadHandler();
@@ -1344,7 +1348,10 @@ export function useComposerSend(input: ComposerSendInput) {
           ? scopeThreadRef(environmentId, threadIdForSend)
           : null;
       if (backgroundThreadRef) beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
-      const startPromise = startThreadTurn({
+      const startPromise = withPromachosStart(
+        startThreadTurn,
+        promachosModels ?? null,
+      )({
         environmentId,
         input: {
           threadId: threadIdForSend,

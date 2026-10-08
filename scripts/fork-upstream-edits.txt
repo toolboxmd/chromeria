@@ -159,3 +159,10 @@ apps/web/src/components/settings/ProviderInstanceCard.tsx
 docs/user/thread-sidebar.md
 packages/contracts/src/providerInstance.ts
 packages/shared/src/serverSettings.ts
+
+# Promachos mode (#175)
+apps/server/src/auth/RpcAuthorization.test.ts
+apps/web/src/components/AppSidebarLayout.tsx
+apps/web/src/components/chat/ChatComposer.tsx
+packages/client-runtime/src/operations/commands.test.ts
+packages/client-runtime/src/operations/commands.ts
