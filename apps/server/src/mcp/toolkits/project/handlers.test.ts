@@ -597,3 +597,99 @@ it.effect(
       expect(launched).toHaveLength(1);
     }),
 );
+
+it.effect.each(["unavailable", "missing-model", "recovered"] as const)(
+  "launch rechecks a registered stale provider before selection: %s",
+  (outcome) =>
+    Effect.gen(function* () {
+      const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+      const { projectId, dependencies } = clientLaunchHarness({
+        runtimeModeCeiling: "auto-accept-edits",
+        launched,
+      });
+      const codex = ProviderInstanceId.make("codex");
+      const claude = ProviderInstanceId.make("claude");
+      const providers = yield* ProviderRegistry.ProviderRegistry.pipe(
+        Effect.flatMap((registry) => registry.getProviders),
+        Effect.provide(prismDependencies),
+      );
+      const stale = providers.map((provider) =>
+        provider.instanceId === codex
+          ? { ...provider, availability: "unavailable" as const, models: [] }
+          : provider,
+      );
+      const refreshed = providers.map((provider) =>
+        provider.instanceId === codex
+          ? outcome === "unavailable"
+            ? stale[0]!
+            : outcome === "missing-model"
+              ? { ...provider, models: [{ ...provider.models[0]!, slug: "different-model" }] }
+              : provider
+          : provider,
+      );
+      const probes: string[] = [];
+      const routing = Layer.mergeAll(
+        prismDependencies,
+        ServerSettings.layerTest({
+          prismRoles: {
+            planner: {
+              models: [
+                { instanceId: codex, model: "gpt-5" },
+                { instanceId: claude, model: "claude-opus", effort: "high" },
+              ],
+            },
+          },
+        }),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.succeed(stale),
+          refreshInstance: (instanceId) =>
+            Effect.sync(() => {
+              probes.push(instanceId);
+              return refreshed;
+            }),
+        }),
+      );
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(routing),
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      const handle = (params: Parameters<typeof toolkit.handle<"t3_thread_launch">>[1]) =>
+        toolkit
+          .handle("t3_thread_launch", params)
+          .pipe(
+            Stream.unwrap,
+            Stream.runCollect,
+            Effect.provide(Layer.mergeAll(dependencies, routing)),
+          );
+      const result = yield* handle({ title: "Fix", projectId, message: "Fix the bug" });
+      expect(probes).toEqual([codex]);
+      expect(result.at(-1)?.result).toMatchObject({
+        modelSelection:
+          outcome === "recovered"
+            ? { instanceId: codex, model: "gpt-5" }
+            : {
+                instanceId: claude,
+                model: "claude-opus",
+                options: [{ id: "effort", value: "high" }],
+              },
+      });
+      expect(launched).toHaveLength(1);
+      expect(launched[0]?.runtimeMode).toBe("auto-accept-edits");
+      if (outcome !== "recovered") {
+        const refused = yield* handle({
+          title: "Explicit",
+          projectId,
+          modelSelection: { instanceId: codex, model: "gpt-5" },
+        });
+        expect(refused.at(-1)?.result).toMatchObject({
+          code: outcome === "unavailable" ? "provider_unavailable" : "model_unavailable",
+        });
+        expect(launched).toHaveLength(1);
+        expect(probes).toEqual([codex, codex]);
+      }
+    }),
+);

@@ -1,3 +1,4 @@
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as Prism from "../../../prism/PrismService.ts";
 import { ProviderAdapterRegistryV2 } from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
@@ -118,6 +119,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           undefined;
         const prism = yield* Prism.PrismService;
         const adapters = yield* ProviderAdapterRegistryV2;
+        const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
         const { modelSelection, kitText } = yield* prism.resolve({
           projectId,
           role: input.prismRole ?? "planner",
@@ -127,6 +129,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           validate: (selection) =>
             Prism.validateLaunchSelection(selection).pipe(
               Effect.provideService(ProviderAdapterRegistryV2, adapters),
+              Effect.provideService(ProviderRegistry.ProviderRegistry, providerRegistry),
             ),
         });
         if (modelSelection === undefined)

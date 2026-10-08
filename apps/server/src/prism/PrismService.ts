@@ -1,5 +1,6 @@
 import {
   DEFAULT_PRISM_LANE,
+  isProviderAvailable,
   OrchestratorMcpFailure,
   prismRoleModels,
   type ModelSelection,
@@ -28,7 +29,39 @@ export const validateLaunchSelection = Effect.fn("Prism.validateLaunchSelection"
       code: "provider_unavailable",
       message: `No V2 provider adapter is registered for ${selection.instanceId}.`,
     });
-  return selection;
+  const registry = yield* ProviderRegistry.ProviderRegistry;
+  const eligible = (provider: ServerProvider | undefined) =>
+    provider !== undefined &&
+    provider.enabled &&
+    provider.installed &&
+    isProviderAvailable(provider) &&
+    provider.status !== "error" &&
+    provider.status !== "disabled" &&
+    provider.auth.status !== "unauthenticated";
+  let provider = (yield* registry.getProviders).find(
+    (candidate) => candidate.instanceId === selection.instanceId,
+  );
+  // An unattended caller can retain a stale unavailable snapshot after a provider is repaired.
+  if (!eligible(provider)) {
+    provider = (yield* registry.refreshInstance(selection.instanceId)).find(
+      (candidate) => candidate.instanceId === selection.instanceId,
+    );
+  }
+  if (!provider || !eligible(provider))
+    return yield* new OrchestratorMcpFailure({
+      code: "provider_unavailable",
+      message: `Provider ${selection.instanceId} is unavailable for launch.`,
+    });
+  const model = provider.models.find(
+    (candidate) =>
+      candidate.slug === selection.model || candidate.aliases?.includes(selection.model),
+  );
+  if (!model)
+    return yield* new OrchestratorMcpFailure({
+      code: "model_unavailable",
+      message: `Model ${selection.model} is not advertised by provider ${selection.instanceId}.`,
+    });
+  return { ...selection, model: model.slug };
 });
 
 export function delegatedPrismRole(role?: OrchestratorMcpTaskRole): PrismRole {
