@@ -43,7 +43,7 @@ function isPromachosHome(
 }
 
 /** Whether a thread in `projectRef` renders as a Promachos chat right now. */
-export function usePromachosChat(projectRef: ScopedProjectRef | null): boolean {
+function usePromachosChat(projectRef: ScopedProjectRef | null): boolean {
   const [enabled] = usePromachosMode();
   const [home] = usePromachosHome();
   return enabled && isPromachosHome(projectRef, home);

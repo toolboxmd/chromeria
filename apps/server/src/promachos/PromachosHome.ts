@@ -25,7 +25,7 @@ import * as Path from "effect/Path";
 import { VcsDriverRegistry } from "../vcs/VcsDriverRegistry.ts";
 import { WorkspacePaths } from "../workspace/WorkspacePaths.ts";
 
-export const STARTER_AGENTS_MD = `# Promachos home
+const STARTER_AGENTS_MD = `# Promachos home
 
 This folder is the Promachos home. Every Promachos conversation runs here and reads this file.
 

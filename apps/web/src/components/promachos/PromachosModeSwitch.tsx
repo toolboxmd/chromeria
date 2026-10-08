@@ -9,7 +9,7 @@ import { usePromachosMode } from "./promachosMode";
  * Promachos mode. Its own full-width row, so it fits at the sidebar's minimum
  * width beside any titlebar inset.
  */
-export function PromachosModeSwitch() {
+function PromachosModeSwitch() {
   const onSettings = useLocation({
     select: (location) =>
       location.pathname === "/settings" || location.pathname.startsWith("/settings/"),
