@@ -222,6 +222,28 @@ describe("webhook scheduled tasks", () => {
   });
 });
 
+describe("fork scheduled triggers", () => {
+  it.each([
+    { type: "once", at: "2026-10-09T08:00:00.000Z" },
+    {
+      type: "weekly",
+      weekdays: [1, 4],
+      times: ["09:00"],
+      timeZone: "Europe/Warsaw",
+      windowMinutes: 20,
+      chosen: [{ requested: "09:00", offsetMinutes: -3 }],
+    },
+  ] as const)("saves a $type trigger back exactly as loaded, never converted", (schedule) => {
+    const draft = taskToDraft({ ...legacyTask, schedule });
+    expect(draft.scheduleMode).toBe("preserved");
+    expect(scheduleFromDraft(draft)).toEqual(schedule);
+    // Editing another field keeps the trigger as it was.
+    expect(scheduleFromDraft({ ...draft, title: "Renamed", intervalMinutes: "5" })).toEqual(
+      schedule,
+    );
+  });
+});
+
 describe("scheduled task model defaults", () => {
   const instanceId = ProviderInstanceId.make("codex");
   const projectId = ProjectId.make("project");
