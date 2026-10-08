@@ -130,6 +130,7 @@ are evidence for review, not proof that a feature has been adopted upstream.
     ".github/workflows/mobile-fingerprint-check.yml",
     "AGENTS.md",
     "apps/server/src/auth/PairingGrantStore.test.ts",
+    "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts",
     "apps/server/src/orchestration-v2/V1ImportBoundary.test.ts",
     "apps/server/src/persistence/AuthPairingLinks.ts",
     "apps/server/src/vcs/GitVcsDriverCore.test.ts",
