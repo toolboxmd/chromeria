@@ -1098,7 +1098,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             ),
           ),
         );
-  const threads = useQuietThreadShells();
+  const allThreads = useQuietThreadShells();
+  const threads = usePersonViewThreads(allThreads);
   const routeRowThreadKey =
     routeThreadRef === null
       ? null

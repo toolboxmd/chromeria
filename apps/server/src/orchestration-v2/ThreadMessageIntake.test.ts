@@ -32,6 +32,9 @@ import {
   OrchestratorCommandPreviouslyRejectedError,
   OrchestratorDispatchError,
 } from "./Orchestrator.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as ProjectStore from "./ProjectStore.ts";
+import * as ThreadLaunch from "./ThreadLaunchService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import { dispatchCommand } from "./ThreadMessageIntake.ts";
 
@@ -40,6 +43,13 @@ const layerIntakeTest = ServerConfig.layerTest(process.cwd(), {
 }).pipe(
   Layer.provideMerge(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
   Layer.provideMerge(ServerSettings.layerTest()),
+  Layer.merge(
+    Layer.mergeAll(
+      Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+      Layer.mock(ProjectStore.ProjectStoreV2)({}),
+      Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
+    ),
+  ),
 );
 
 const layerFailingDispatchHandler =
