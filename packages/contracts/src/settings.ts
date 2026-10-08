@@ -1220,7 +1220,6 @@ export type ProjectScopedServerSettingKey = (typeof PROJECT_SCOPED_SERVER_SETTIN
  */
 export const ProjectSettingsOverrides = Schema.Struct({
   ...forkOpaqueSettingsFields,
-  wightModes: Schema.optionalKey(Schema.Unknown),
   worktreeCleanup: Schema.optionalKey(WorktreeCleanup),
   defaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
@@ -1280,10 +1279,10 @@ export const StorageCleanupSettings = Schema.Struct({
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
 export const ServerSettings = Schema.Struct({
+  ...forkOpaqueSettingsFields,
   wightModes: Schema.Record(ThreadId, WightMode).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
-  ...forkOpaqueSettingsFields,
   autoUpdateProviders: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   prismRoles: PrismRoleKits.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   worktreeCleanup: WorktreeCleanup.pipe(Schema.withDecodingDefault(Effect.succeed(null))),

@@ -801,3 +801,45 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "keywords": ["StaleTurnMonitor", "makeStaleTurnDetectorState", "queue_after_active", "silence"]
 }
 ```
+
+## wight-mode
+
+```json
+{
+  "id": "wight-mode",
+  "purpose": "Continue idle threads until their timer or instance quota pauses them, preserving retirement and stored effort.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/173"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/173-wight-v2"],
+  "newFiles": [
+    "apps/server/src/wight/AdmissionHooks.ts",
+    "apps/server/src/wight/WightService.ts",
+    "apps/server/src/wight/admission.integration.test.ts",
+    "apps/server/src/wight/admission.ts",
+    "apps/server/src/wight/wightMode.test.ts",
+    "apps/server/src/wight/wightMode.ts",
+    "apps/web/src/components/chat/WightModeControl.tsx",
+    "apps/web/src/components/settings/WightLimitSetting.tsx",
+    "apps/web/src/wightMode.test.ts",
+    "apps/web/src/wightMode.ts",
+    "packages/contracts/src/wight.test.ts",
+    "packages/contracts/src/wight.ts",
+    "packages/shared/src/wightSettings.test.ts"
+  ],
+  "upstreamFiles": [
+    "apps/web/src/components/settings/ProviderInstanceCard.tsx",
+    "docs/user/thread-sidebar.md",
+    "packages/contracts/src/providerInstance.ts",
+    "packages/shared/src/serverSettings.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "apps/server/src/orchestration-v2/runtimeLayer.ts",
+    "apps/server/src/serverSettings.test.ts",
+    "apps/web/src/components/chat/ChatHeader.tsx",
+    "packages/contracts/src/index.ts",
+    "packages/contracts/src/orchestrationV2.ts",
+    "packages/contracts/src/settings.ts"
+  ],
+  "keywords": ["Wight", "wightModes", "wightLimitPercent", "wightAdmission"]
+}
+```

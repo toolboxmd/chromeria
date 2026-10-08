@@ -98,7 +98,7 @@ const recordProviderUsage = (provider: string, instanceId: string | null = provi
 
 it.layer(NodeServices.layer)("server settings", (it) => {
   it.effect(
-    "preserves saved V1 Prism kits and Wight settings through unrelated writes",
+    "preserves saved V1 Prism kits and opaque Wight settings through unrelated writes",
     () =>
       Effect.gen(function* () {
         const config = yield* ServerConfig.ServerConfig;

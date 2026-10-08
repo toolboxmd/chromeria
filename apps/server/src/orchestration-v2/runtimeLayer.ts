@@ -223,7 +223,6 @@ const layerPrismRecoveryHooksProvided = PrismRecoveryHooks.layer.pipe(
 );
 
 const layerOrchestratorProvided = Orchestrator.layer.pipe(
-  Layer.provide(WightAdmission.layer),
   Layer.provide(
     Layer.mergeAll(
       layerCheckpointServiceProvided,
@@ -401,4 +400,8 @@ export const layerProduction = Layer.mergeAll(
   layerProviderContinuationWorkerProvided,
   layerAgentSessionImporterProvided,
   EffectOutbox.layerPruneWorker.pipe(Layer.provide(EffectOutbox.layer)),
-).pipe(Layer.provide(Scheduler.layer), Layer.provideMerge(layerEventInfrastructure));
+).pipe(
+  Layer.provide(WightAdmission.layer),
+  Layer.provide(Scheduler.layer),
+  Layer.provideMerge(layerEventInfrastructure),
+);

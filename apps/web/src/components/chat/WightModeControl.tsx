@@ -77,7 +77,7 @@ export function WightModeControl({
   const validDuration =
     duration === null || (Number.isFinite(duration) && duration > 0 && duration <= MAX_WIGHT_HOURS);
   const usage = wightUsageStatus(provider, limit);
-  const wait = thread ? wightThreadWait(thread) : null;
+  const wait = thread ? wightThreadWait(thread.source) : null;
   const state = !enabled ? "off" : usage.paused ? "paused" : wait !== null ? "waiting" : "on";
 
   const setEnabled = (checked: boolean) => {

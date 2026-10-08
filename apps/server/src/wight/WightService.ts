@@ -1,4 +1,8 @@
-import { CommandId, MessageId, ThreadId } from "@t3tools/contracts";
+import { CommandId, MessageId, ThreadId, type ServerSettingsError } from "@t3tools/contracts";
+import { randomUuidV4 } from "../orchestration-v2/RandomUuid.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import type { SqlError } from "effect/sql/SqlError";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -17,20 +21,32 @@ export class WightMode extends Context.Service<
   {
     readonly reconcile: Effect.Effect<void>;
   }
->()("t3/wight/WightMode") {}
+>()("t3/wight/WightService/WightMode") {}
 
 const make = Effect.gen(function* () {
   const settings = yield* ServerSettings.ServerSettingsService;
   const registry = yield* ProviderRegistry.ProviderRegistry;
   const threads = yield* ThreadManagement.ThreadManagementService;
-  const runtime = yield* makeWightMode({
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const sql = yield* SqlClient.SqlClient;
+  const runtime = yield* makeWightMode<
+    ServerSettingsError | ProjectionStore.ProjectionStoreV2Error | SqlError,
+    never
+  >({
     settings: settings.getSettings,
     providers: registry.getProviders,
-    retired: (id) => isThreadRetired(ThreadId.make(id)),
-    thread: (id) => readWightThread(ThreadId.make(id)),
+    retired: (id) =>
+      isThreadRetired(ThreadId.make(id)).pipe(
+        Effect.provideService(ProjectionStore.ProjectionStoreV2, projections),
+      ),
+    thread: (id) =>
+      readWightThread(ThreadId.make(id)).pipe(
+        Effect.provideService(ProjectionStore.ProjectionStoreV2, projections),
+        Effect.provideService(SqlClient.SqlClient, sql),
+      ),
     resume: Effect.fn("Wight.resume")(function* (thread, text, activation, admission) {
       if (!(yield* admission)) return;
-      const id = `server:wight:${crypto.randomUUID()}`;
+      const id = `server:wight:${yield* randomUuidV4}`;
       yield* threads
         .dispatch({
           type: "message.dispatch",
@@ -65,8 +81,8 @@ const make = Effect.gen(function* () {
   yield* forkParked(
     Stream.mergeAll(
       [
-        changes,
-        registry.streamChanges,
+        changes.pipe(Stream.map(() => undefined)),
+        registry.streamChanges.pipe(Stream.map(() => undefined)),
         threads.streamDomainEvents.pipe(
           Stream.filter(
             (event) =>
@@ -75,6 +91,7 @@ const make = Effect.gen(function* () {
               event.type === "thread.metadata-updated" ||
               event.type === "runtime-request.updated",
           ),
+          Stream.map(() => undefined),
         ),
       ],
       { concurrency: "unbounded" },

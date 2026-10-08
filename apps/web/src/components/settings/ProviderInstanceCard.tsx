@@ -1,5 +1,6 @@
+"use client";
+
 import { WightLimitSetting } from "./WightLimitSetting";
-("use client");
 
 import { Spinner } from "~/components/ui/spinner";
 
