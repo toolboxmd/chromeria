@@ -53,6 +53,7 @@ import {
   workEntryIconName,
 } from "./TimelineWorkEntryRow.logic";
 import { formatWorkingTimerNow } from "./TimelineWorkGroupRows.logic";
+import { PromachosWorkingBubble } from "../promachos/PromachosChat";
 
 export const WorkGroupSection = memo(function WorkGroupSection({
   anchorKey,
@@ -275,8 +276,10 @@ function ExpandedWorkGroupEntries({
 const workEntryKey = (entry: TimelineWorkEntry) => entry.id;
 
 export function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
+  const promachos = use(TimelineRowCtx).promachos;
   const { isCompacting, isPreparingWorktree, backgroundWorktreeSetup } =
     use(TimelineRowActivityCtx);
+  if (promachos) return <PromachosWorkingBubble />;
   const compacting = row.compacting === true || isCompacting;
   const shimmer = isPreparingWorktree || compacting;
   const label = isPreparingWorktree ? (

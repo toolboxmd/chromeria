@@ -1,3 +1,4 @@
+import { PromachosHomeRpcGroup } from "./promachosHome.ts";
 import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
@@ -2133,5 +2134,6 @@ export const WsRpcGroup = RpcGroup.make(
   ...IssueRpcs,
 )
   // Fork: Issue links (toolboxmd/t3code#28).
+  .merge(PromachosHomeRpcGroup)
   .merge(IssueLinksRpcGroup)
   .middleware(RpcScopeAuthorization);

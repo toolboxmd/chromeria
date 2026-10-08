@@ -1,3 +1,4 @@
+import { PromachosInlineCard } from "../promachos/PromachosChat";
 import { useComposerTypingGuard } from "./useComposerTypingGuard";
 import { insertAttachmentReferencesForDraft } from "./composerAttachmentReferences";
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
@@ -346,6 +347,7 @@ export interface ChatComposerHandle {
 }
 
 export interface ChatComposerProps {
+  inlineCardHost?: HTMLElement | null;
   composerDraftTarget: ScopedThreadRef | DraftId;
   environmentId: EnvironmentId;
   canOperateThread: boolean;
@@ -529,6 +531,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     isCompacting,
     environmentUnavailable,
     activePendingApproval: incomingPendingApproval,
+    inlineCardHost = null,
     pendingApprovals,
     onHeldRequestIdsChange,
     pendingUserInputs: incomingPendingUserInputs,
@@ -1148,6 +1151,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeComposerMenuItemRef.current = activeComposerMenuItem;
   });
 
+  const inlineTopDrawer = inlineCardHost !== null && pendingUserInputs.length > 0;
   const isComposerApprovalState = activePendingApproval !== null;
   // A send declines the approvals shown here to redirect the agent, so it steers the waiting
   // turn instead of queueing behind it. Approvals the typing guard holds stay unseen and pending.
@@ -3143,6 +3147,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           <ComposerBannerStack items={shelfItems} />
           {showComposerTopDrawer ? (
             <ComposerBanner.Attachment>
+            <PromachosInlineCard host={inlineTopDrawer ? inlineCardHost : null}>
               <ComposerBanner.Root data-chat-composer-top-drawer="true" variant="info">
                 {pendingUserInputs.length > 0 ? (
                   <ComposerPendingUserInputPanel
@@ -3168,7 +3173,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   />
                 ) : null}
               </ComposerBanner.Root>
-            </ComposerBanner.Attachment>
+            </PromachosInlineCard>
           ) : null}
         </ComposerBanner.Column>
         <ComposerStashBadge

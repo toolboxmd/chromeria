@@ -2,6 +2,11 @@ import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import type { ToolCallDiffTarget } from "../../diffPanelStore";
 import { AudioPreviewUnmountContext } from "../files/AudioPreview";
+import { PromachosInlineCardHost, usePromachosScrollFollow } from "../promachos/PromachosChat";
+import {
+  promachosTimelineRows,
+  usePromachosTimelineDisclosures,
+} from "../promachos/promachosTimeline";
 import { ThreadFindTimelineContext } from "./ThreadFindProvider";
 import { MarkdownFindContext } from "./markdownFindContext";
 import { useChatCanvas } from "./ChatCanvasContext";
@@ -154,7 +159,9 @@ function TimelineListFooter({
   composerInset,
   onGrow,
   children,
+  onInlineCardHost,
 }: {
+  readonly onInlineCardHost?: (element: HTMLDivElement | null) => void;
   readonly composerInset: number;
   readonly onGrow: (() => void) | undefined;
   readonly children?: ReactNode;
@@ -173,6 +180,7 @@ function TimelineListFooter({
   }, [onGrow]);
   return (
     <div>
+      {onInlineCardHost ? <PromachosInlineCardHost hostRef={onInlineCardHost} /> : null}
       <div ref={contentRef}>{children}</div>
       <div aria-hidden style={{ height: composerInset }} />
       <div aria-hidden className="h-3 sm:h-4" />
@@ -211,6 +219,8 @@ interface MessagesTimelineProps {
   respondingRequestIds?: TimelineRowSharedState["respondingRequestIds"];
   canOperateThread?: boolean;
   onRespondToApproval?: TimelineRowSharedState["onRespondToApproval"];
+  presentation?: "standard" | "promachos";
+  onInlineCardHost?: (element: HTMLDivElement | null) => void;
   citationRequest?: AssistantCitationRequest | null;
   citationHistory?: CitedHistory;
   onCiteAssistantText?: (
@@ -322,6 +332,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
   respondingRequestIds = EMPTY_RESPONDING_REQUEST_IDS,
   canOperateThread = false,
   onRespondToApproval,
+  presentation = "standard",
+  onInlineCardHost,
   citationRequest = null,
   citationHistory = CITED_HISTORY_LOADING,
   onCiteAssistantText,
@@ -665,13 +677,23 @@ const ConversationTimeline = memo(function ConversationTimeline({
       .map((approval) => [approval.requestId, approval]),
   );
   const pendingApprovalRequestIds = new Set(pendingApprovalsByRequestId.keys());
-  const rawRows = useIncrementalTimelineRows(`${listIdentityKey}\0${workspaceRoot ?? ""}`, {
+  const promachos = presentation === "promachos";
+  const scrollFollow = usePromachosScrollFollow(
+    promachos,
+    TIMELINE_MAINTAIN_SCROLL_AT_END,
+    TIMELINE_MAINTAIN_SCROLL_AT_END_SMOOTH,
+  );
+  const promachosDisclosures = usePromachosTimelineDisclosures(
+    { timelineEntries, latestRun, isWorking, runlessWorkActive, runningRunId },
+    promachos,
+  );
+  const projectedRows = useIncrementalTimelineRows(`${listIdentityKey}\0${workspaceRoot ?? ""}`, {
     timelineEntries,
     pendingApprovalRequestIds,
     latestRun,
     runningRunId,
-    expandedRunIds: visibleExpandedRunIds,
-    expandedAttemptIds: visibleExpandedAttemptIds,
+    expandedRunIds: promachosDisclosures?.runs ?? visibleExpandedRunIds,
+    expandedAttemptIds: promachosDisclosures?.attempts ?? visibleExpandedAttemptIds,
     expandedWorkGroupIds,
     isWorking,
     runlessWorkActive,
@@ -682,6 +704,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     availableRevertTurnCounts,
     worktreeSetup,
   });
+  const rawRows = promachos ? promachosTimelineRows(projectedRows) : projectedRows;
   const rows = useStableRows(rawRows, listIdentityKey);
   const unmatchedPendingApprovals = new Map(pendingApprovalsByRequestId);
   if (unmatchedPendingApprovals.size > 0) {
@@ -1005,6 +1028,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     respondingRequestIds,
     canOperateThread,
     onRespondToApproval,
+    promachos,
     citationRequest: readyCitationRequest,
     listRef,
     timestampFormat,
@@ -1324,8 +1348,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
                 disclosureToggleSettling
                   ? false
                   : isWorking && !prefersReducedMotion && settlingListIdentity === null
-                    ? TIMELINE_MAINTAIN_SCROLL_AT_END_SMOOTH
-                    : TIMELINE_MAINTAIN_SCROLL_AT_END
+                    ? scrollFollow.smooth
+                    : scrollFollow.normal
               }
               maintainVisibleContentPosition={
                 findActive ||

@@ -28,6 +28,9 @@ import { type TerminalLaunchContext, useChatTerminalActions } from "./chat/useCh
 import { useComposerSend } from "./chat/useComposerSend";
 import { useComposerResume } from "./chat/useComposerResume";
 import { useImplementPlanInNewThread } from "./chat/useProposedPlanSend";
+import { usePromachosInlineCardHost } from "./promachos/PromachosChat";
+import { usePromachosPresentation } from "./promachos/promachosMode";
+import { promachosPicksModel, withPromachosStart } from "./promachos/promachosStart";
 import { ThreadFind, ThreadFindCanvas } from "./chat/ThreadFindProvider";
 import { closeThreadFind, openThreadFind, useThreadFindOpen } from "./chat/threadFindStore";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
@@ -1080,6 +1083,15 @@ export default function ChatView(props: ChatViewProps) {
     activeProject ?? undefined,
   );
   const activeProjectScripts = activeProject ? resolveProjectScripts(settings, activeProject) : [];
+  const {
+    enabled: promachosChat,
+    models: promachosModels,
+    multipleModels: viewMultipleModelSelections,
+  } = usePromachosPresentation(
+    activeProjectRef,
+    activeProjectSettings.settings.prismRoles.promachos.models,
+    multipleModelSelections,
+  );
   const { projectCloneBannerItem, projectCloneSendBlockReason } =
     useProjectCloneBanner(activeProjectRef);
   const activeProjectDefaultModelSelection =
@@ -1533,6 +1545,11 @@ export default function ChatView(props: ChatViewProps) {
   const timelineEmpty = timelineEntries.length === 0 && !hasStreamedTimelineRows;
   const displayedTimelineKey = activeThreadKey ?? routeThreadKey;
   const displayedThreadRef = parseScopedThreadKey(displayedTimelineKey);
+  const promachosCardHost = usePromachosInlineCardHost({
+    enabled: promachosChat,
+    activeThreadKey,
+    displayedThreadKey: displayedTimeline.displayThreadKey,
+  });
   const {
     worktreeSetup,
     isPreparingWorktree,
@@ -2457,7 +2474,7 @@ export default function ChatView(props: ChatViewProps) {
     !nativeResumeCompactionDismissed &&
     !compactDisabled &&
     !hasHeldQueuedRuns &&
-    multipleModelSelections === null &&
+    viewMultipleModelSelections === null &&
     shouldOfferResumeCompaction({
       provider: selectedProvider,
       usedTokens: activeContextWindow.usedTokens,
@@ -2754,7 +2771,7 @@ export default function ChatView(props: ChatViewProps) {
     providerStatuses,
     lockedProvider,
     supportsProviderSwitchingViaHandoff,
-    multipleModelSelections,
+    multipleModelSelections: viewMultipleModelSelections,
     runtimeMode,
     interactionMode,
     interactionModeEnabled,
@@ -2872,6 +2889,7 @@ export default function ChatView(props: ChatViewProps) {
     handleInteractionModeChange,
     handleNewThreadInActiveProject,
     persistThreadSettingsForNextTurn,
+    promachosModels,
   });
   const onImplementPlanInNewThreadStable = useStableCallback(onImplementPlanInNewThread);
 
@@ -3153,6 +3171,7 @@ export default function ChatView(props: ChatViewProps) {
       }}
     />
   ) : null;
+
   const panelToggleControlProps = {
     terminalAvailable: activeProject !== null,
     terminalOpen: terminalUiState.terminalOpen,
@@ -3301,6 +3320,12 @@ export default function ChatView(props: ChatViewProps) {
                 respondingRequestIds={respondingRequestIds}
                 onRespondToApproval={onRespondToApprovalStable}
                 canOperateThread={canOperateThread}
+                {...(promachosChat
+                  ? {
+                      presentation: "promachos" as const,
+                      onInlineCardHost: promachosCardHost.timelineHostRef,
+                    }
+                  : {})}
                 threadDetailRef={routeThreadDetailRef}
                 entriesInput={timelineEntriesInput}
                 draftEntries={isServerThread ? null : draftTimelineEntries}
@@ -3469,12 +3494,13 @@ export default function ChatView(props: ChatViewProps) {
                           ) : null}
                           {!composerMounted ? null : (
                             <ChatComposer
+                              inlineCardHost={promachosCardHost.composerHost}
                               canOperateThread={canOperateThread}
                               reportedModelSelection={reportedModelSelection}
-                              multipleModelSelections={multipleModelSelections}
+                              multipleModelSelections={viewMultipleModelSelections}
                               supportsMultipleModels={
                                 serverConfig?.environment.capabilities.requiredWorktreeBootstrap ===
-                                true
+                                  true && !promachosPicksModel(promachosModels)
                               }
                               onMultipleModelSelectionsChange={setMultipleModelSelectionsStable}
                               composerRef={composerRef}
@@ -3633,7 +3659,7 @@ export default function ChatView(props: ChatViewProps) {
                           {showComposerContextStrip && (
                             <div className="pointer-events-auto">
                               <BranchToolbar
-                                forceNewWorktree={multipleModelSelections !== null}
+                                forceNewWorktree={viewMultipleModelSelections !== null}
                                 ref={branchToolbarRef}
                                 environmentId={activeThread.environmentId}
                                 threadId={activeThread.id}
