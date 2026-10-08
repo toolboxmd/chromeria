@@ -680,26 +680,37 @@ it.effect("a command whose task is deleted while its workspace is found never st
 );
 
 it.effect(
-  "a report still waiting when an admitted send's turn comes keeps the send for redelivery",
+  "a send held for a waiting report stays unsent through later steps and a restart, then goes out once unchanged",
   () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const h = yield* harness();
       yield* h.save({ checkCommand: "check", checkReason: "outcome" });
       // Admitted while its reports were released; one is waiting when the send's turn comes.
-      const waiting = yield* h.decide("scheduled");
+      const admitted = yield* h.decide("scheduled");
       h.reports({ kind: "waiting" });
-      if (waiting._tag === "fork") yield* waiting.dispatch;
-      assert.deepEqual(h.sent, []);
-      const kept = (yield* h.state()).runs[0]!;
-      assert.equal(kept.stage, "running");
-      assert.equal(kept.sends.length, 1);
-      h.reports({ kind: "released" });
+      if (admitted._tag === "fork") yield* admitted.dispatch;
+      const recorded = (yield* h.state()).runs[0]!.sends[0]!;
+      // The next step, and a restarted engine, meet the same waiting report.
       h.set({ landed: false, busy: false });
       yield* h.runs.drive(task());
+      const restarted = yield* harness();
+      restarted.reports({ kind: "waiting" });
+      restarted.set({ landed: false, busy: false });
+      yield* restarted.runs.drive(task());
+      assert.deepEqual(h.sent, []);
+      assert.deepEqual(restarted.sent, []);
+      const held = (yield* restarted.state()).runs[0]!;
+      assert.equal(held.stage, "running");
+      assert.deepEqual(held.sends, [recorded]);
+      // Once it releases, the recorded send goes out once, unchanged by an edit meanwhile.
+      restarted.reports({ kind: "released" });
+      yield* restarted.runs.drive(task({ prompt: "An edited prompt" }));
+      restarted.set({ landed: true });
+      yield* restarted.runs.drive(task());
       assert.deepEqual(
-        h.sent.map((sent) => sent.commandId),
-        [kept.sends[0]!.commandId],
+        restarted.sent.map((sent) => [sent.commandId, sent.messageId, sent.text]),
+        [[recorded.commandId, recorded.messageId, recorded.payload!.text]],
       );
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

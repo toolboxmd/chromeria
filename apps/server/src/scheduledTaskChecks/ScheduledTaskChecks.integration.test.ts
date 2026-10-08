@@ -1443,3 +1443,90 @@ it.effect(
       );
     }).pipe(Effect.scoped),
 );
+
+it.effect(
+  "a send held for a waiting report stays unsent through reconcile and a restart, then lands once with its recorded id and text",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      yield* TestClock.setTime(Date.parse(CANONICAL));
+      const id = "scheduled-task:waiting";
+      const runId = `${id}:${CANONICAL}`;
+      const sentMessage = `scheduled-task-check-message:${runId}:0`;
+      const heldMessage = `scheduled-task-check-message:${runId}:1`;
+      const barrier = {
+        admitted: yield* Deferred.make<void>(),
+        proceed: yield* Deferred.make<void>(),
+      };
+      const spectrumThreadId = "spectrum:waiting";
+      // Before the restart: Run now admits a send while a bound Spectrum still works on its report.
+      yield* Effect.gen(function* () {
+        yield* ensureSpectraFixture;
+        yield* createThread;
+        yield* insertTask({ id, schedule: { type: "interval", everyMs: 3_600_000 }, next: null });
+        yield* persist("waiting:work", [
+          runEvent("run.created", threadRun("run:waiting:work", sentMessage, "completed"), "ww"),
+        ]);
+        yield* writeCheckState(
+          null,
+          checkState(id, [
+            { ...sentRun(runId, sentMessage), stage: "needs-you", error: "Outcome check failed" },
+          ]),
+        );
+        yield* bindSpectrum({
+          callerThreadId: threadId,
+          schedulerRunId: runId,
+          status: "active",
+          report: "first",
+          spectrumThreadId,
+        });
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const resuming = yield* service
+          .runNow({ id: ScheduledTaskId.make(id) })
+          .pipe(Effect.exit, Effect.forkScoped);
+        yield* Deferred.await(barrier.admitted);
+        yield* Deferred.succeed(barrier.proceed, undefined);
+        yield* Fiber.join(resuming);
+        const checks = yield* ScheduledTaskChecks.ScheduledTaskChecks;
+        yield* checks.reconcile;
+        assert.notInclude(yield* messagesOf, heldMessage);
+      }).pipe(
+        Effect.provide(runtime(database, { spectra: fixtureSpectra(), dispatchBarrier: barrier })),
+        Effect.scoped,
+      );
+      // After the restart: still held until the report's turn completes, then sent once.
+      yield* Effect.gen(function* () {
+        const checks = yield* ScheduledTaskChecks.ScheduledTaskChecks;
+        yield* checks.reconcile;
+        assert.notInclude(yield* messagesOf, heldMessage);
+        const held = yield* runOf(id);
+        assert.equal(held.stage, "running");
+        assert.equal(held.sends.length, 2);
+        const recorded = held.sends[1]!;
+        assert.equal(recorded.messageId, heldMessage);
+        yield* bindSpectrum({
+          callerThreadId: threadId,
+          schedulerRunId: runId,
+          status: "settled",
+          report: "first",
+          spectrumThreadId,
+        });
+        yield* reportReceipt(threadId, "first", "accepted");
+        yield* persist("waiting:report", [
+          runEvent(
+            "run.created",
+            threadRun("run:waiting:report", "report-message:first", "completed", 2),
+            "wr",
+          ),
+        ]);
+        yield* checks.reconcile;
+        yield* checks.reconcile;
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        const landed = projection.messages.filter((message) => message.id === heldMessage);
+        assert.equal(landed.length, 1);
+        assert.equal(landed[0]?.text, recorded.payload?.text);
+        assert.deepEqual((yield* runOf(id)).sends, held.sends);
+      }).pipe(Effect.provide(runtime(database, { spectra: fixtureSpectra() })), Effect.scoped);
+    }).pipe(Effect.scoped),
+);

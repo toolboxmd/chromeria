@@ -388,11 +388,10 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
     });
 
   /**
-   * A send admitted earlier goes out only if the task still owns it when its
-   * turn comes: a deleted task, or a run that moved on, sends nothing. A bound
-   * report that came to need you since admission makes the run need you, and
-   * one still waiting keeps the recorded send for redelivery (D40). Callers
-   * hold the task's lock.
+   * Every send goes out through here, and only if the task still owns it when
+   * its turn comes: a deleted task, or a run that moved on, sends nothing. A
+   * bound report that needs you makes the run need you, and one still waiting
+   * keeps the recorded send until it releases (D40). Callers hold the task's lock.
    */
   const deliverIfOwned = (taskId: ScheduledTaskId, runId: string, send: RunSend) =>
     Effect.gen(function* () {
@@ -615,9 +614,10 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
         );
         if (fence.kind === "needs-you") return;
         const last = run.sends.at(-1);
-        // A send recorded before a crash or a failed dispatch is resent with its own identity.
+        // A send recorded before a crash, a failed dispatch or a waiting report is resent
+        // with its own identity, once its reports release.
         if (run.stage === "running" && last !== undefined && !observation.landed) {
-          yield* deliver(task.id, state, run, last).pipe(Effect.ignore);
+          yield* deliverIfOwned(task.id, run.id, last).pipe(Effect.ignore);
           return;
         }
         if (observation.started && !run.hasWork) {
@@ -697,7 +697,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
         if (run.stage === "retry" && run.retryAt !== null && Date.parse(run.retryAt) > now) return;
         const started = yield* startSend(task, state, run, now, observation.threadMissing);
         if (started._tag === "recorded")
-          yield* deliver(task.id, started.state, started.run, started.send).pipe(Effect.ignore);
+          yield* deliverIfOwned(task.id, started.run.id, started.send).pipe(Effect.ignore);
       }),
     );
 
