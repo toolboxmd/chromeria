@@ -103,9 +103,11 @@ export function materializeReplayTranscriptRuntimeInstructions(
       ? "Cursor"
       : runtime.driver === "grok"
         ? "Grok"
-        : runtime.driver === "acpRegistry"
-          ? "acpRegistry"
-          : undefined;
+        : runtime.driver === "muse"
+          ? "Muse Code"
+          : runtime.driver === "acpRegistry"
+            ? "acpRegistry"
+            : undefined;
   if (harness === undefined) return transcript;
   const instructions = buildRuntimeInstructions({ harness, model: runtime.model });
 
@@ -115,6 +117,50 @@ export function materializeReplayTranscriptRuntimeInstructions(
       if (entry.type !== "expect_outbound") return entry;
       const frame = entry.frame;
       if (typeof frame !== "object" || frame === null) return entry;
+      if (
+        runtime.driver === "muse" &&
+        "method" in frame &&
+        frame.method === "turn/start" &&
+        "params" in frame &&
+        typeof frame.params === "object" &&
+        frame.params !== null &&
+        "input" in frame.params &&
+        Array.isArray(frame.params.input)
+      ) {
+        const [context, ...input] = frame.params.input;
+        if (
+          typeof context !== "object" ||
+          context === null ||
+          context.type !== "text" ||
+          typeof context.text !== "string" ||
+          !context.text.startsWith("<runtime_info>")
+        )
+          return entry;
+        const reasoningEffort =
+          "reasoningEffort" in frame.params && typeof frame.params.reasoningEffort === "string"
+            ? frame.params.reasoningEffort
+            : undefined;
+        return {
+          ...entry,
+          frame: {
+            ...frame,
+            params: {
+              ...frame.params,
+              input: [
+                {
+                  ...context,
+                  text: buildRuntimeInstructions({
+                    harness,
+                    model: runtime.model,
+                    reasoningEffort,
+                  }),
+                },
+                ...input,
+              ],
+            },
+          },
+        };
+      }
       if (
         runtime.driver === "cursor" &&
         "type" in frame &&

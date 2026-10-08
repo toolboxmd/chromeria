@@ -729,11 +729,15 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "purpose": "Give every provider runtime consistent visible T3 delegation and Prism routing/recovery guidance.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/169"],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/183"],
-  "newFiles": ["apps/server/src/mcp/toolInstructions.ts"],
+  "newFiles": [
+    "apps/server/src/mcp/toolInstructions.ts",
+    "apps/server/src/prism/ReplayInstructions.test.ts"
+  ],
   "upstreamFiles": [
     "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
     "apps/server/src/provider/RuntimeInstructions.ts",
-    "apps/server/src/provider/T3OrchestrationInstructions.ts"
+    "apps/server/src/provider/T3OrchestrationInstructions.ts",
+    "apps/server/src/orchestration-v2/testkit/ReplayTranscriptNdjson.ts"
   ],
   "sharedFiles": [
     "apps/server/src/mcp/toolkits/project/tools.ts",
