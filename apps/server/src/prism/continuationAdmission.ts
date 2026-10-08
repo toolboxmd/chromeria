@@ -1,4 +1,5 @@
 import type { OrchestrationV2DomainEvent, OrchestrationV2ServerCommand } from "@t3tools/contracts";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Effect from "effect/Effect";
 import { ForkCommitGuardRejected, type ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
 import * as Projection from "../orchestration-v2/ProjectionStore.ts";
@@ -20,6 +21,11 @@ export function continuationAdmission(
   const reject = (kind: "invalid_transition" | "storage_failure") =>
     new ForkCommitGuardRejected({ threadId: command.threadId, kind });
   const guard = Effect.gen(function* () {
+    if (successor === undefined) return yield* reject("invalid_transition");
+    const sql = yield* SqlClient.SqlClient;
+    const existing =
+      yield* sql`SELECT 1 FROM orchestration_v2_projection_runs WHERE run_id=${successor.id}`;
+    if (existing.length > 0) return yield* reject("invalid_transition");
     const projections = yield* Projection.ProjectionStoreV2;
     const records = yield* projections.getThreadRecords(command.threadId, ["runs"], {
       runIds: [sourceRunId],

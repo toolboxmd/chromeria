@@ -452,7 +452,7 @@ describe("Prism exact-source recovery history", () => {
     }).pipe(Effect.provide(dependencies)),
   );
 
-  it.effect.each(["wrong_source", "wrong_model"] as const)(
+  it.effect.each(["wrong_source", "wrong_model", "existing_run_id"] as const)(
     "refuses %s before events or facts commit",
     (variant) =>
       Effect.gen(function* () {

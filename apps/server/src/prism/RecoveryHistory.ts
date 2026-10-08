@@ -1,7 +1,7 @@
 import {
-  OrchestrationV2AppThread,
-  OrchestrationV2Run,
-  OrchestrationV2TurnItem,
+  OrchestrationV2AppThreadJson,
+  OrchestrationV2RunJson,
+  OrchestrationV2TurnItemJson,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -105,9 +105,9 @@ export type RecoveryState = {
     readonly reason: "retry" | "reset";
   } | null;
 };
-const decodeRun = Schema.decodeUnknownSync(Schema.fromJsonString(OrchestrationV2Run));
-const decodeThread = Schema.decodeUnknownSync(Schema.fromJsonString(OrchestrationV2AppThread));
-const decodeItem = Schema.decodeUnknownSync(Schema.fromJsonString(OrchestrationV2TurnItem));
+const decodeRun = Schema.decodeUnknownSync(Schema.fromJsonString(OrchestrationV2RunJson));
+const decodeThread = Schema.decodeUnknownSync(Schema.fromJsonString(OrchestrationV2AppThreadJson));
+const decodeItem = Schema.decodeUnknownSync(Schema.fromJsonString(OrchestrationV2TurnItemJson));
 
 /** Admissions outrank historical decisions. Pending recovery is read from current persisted intent. */
 export const readRecoveryState = Effect.fn("Prism.readRecoveryState")(function* (

@@ -57,7 +57,7 @@ export const layer = Layer.effect(
           }>`SELECT run_id FROM orchestration_v2_projection_runs
             WHERE thread_id=${threadId} AND status <> 'queued'
               AND NOT (status='cancelled' AND json_extract(payload_json,'$.startedAt') IS NULL)
-            ORDER BY (completed_at IS NULL) DESC,completed_at DESC,ordinal DESC LIMIT 1`;
+            ORDER BY (completed_at IS NULL) DESC,completed_at DESC,ordinal DESC,run_id DESC LIMIT 1`;
           const runIds = [
             RunId.make(candidate.source_run_id),
             ...(latest[0] === undefined ? [] : [RunId.make(latest[0].run_id)]),

@@ -43,11 +43,10 @@ const make = Effect.gen(function* () {
     "RecoveryCoordinator.observe",
   )(function* (projection, retiredOrIncomplete) {
     const run = latestExecutedRun(projection.runs);
-    if (!run) return null;
     const autoResume = (yield* settings.getSettings).autoResumeLimitedThreads;
     const failure = latestRootProviderFailure(run, projection.turnItems);
     const stopped = projection.turnItems.some(
-      (item) => item.type === "run_interrupt_request" && item.runId === run.id,
+      (item) => item.type === "run_interrupt_request" && item.runId === run?.id,
     );
     const blocked =
       retiredOrIncomplete ||
@@ -56,14 +55,14 @@ const make = Effect.gen(function* () {
       projection.thread.deletedAt !== null ||
       projection.thread.settledOverride === "settled" ||
       projection.runtimeRequests.some((request) => request.status === "pending") ||
-      !sameModelSelection(projection.thread.modelSelection, run.modelSelection);
+      (run !== null && !sameModelSelection(projection.thread.modelSelection, run.modelSelection));
     const recovery = projection.thread.limitRecovery;
     const persistedResetChoice =
-      recovery?.runId === run.id && recovery.resetAt === failure?.resetAt
+      run !== null && recovery?.runId === run.id && recovery.resetAt === failure?.resetAt
         ? recovery.autoResume
         : undefined;
     const record =
-      projection.thread.creationSource === "mcp"
+      run !== null && projection.thread.creationSource === "mcp"
         ? yield* store.reconcile({
             previous: null,
             run,
