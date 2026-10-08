@@ -1869,6 +1869,9 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
         }
         yield* git(cwd, ["add", "."]);
         yield* git(cwd, ["update-index", "--chmod=+x", "mode-only.sh"]);
+        const fileSystem = yield* FileSystem.FileSystem;
+        const pathService = yield* Path.Path;
+        yield* fileSystem.chmod(pathService.join(cwd, "mode-only.sh"), 0o755);
         yield* git(cwd, ["commit", "-m", "rename and add files"]);
         const preview = yield* driver.getReviewDiffPreview({
           cwd,
@@ -3409,6 +3412,27 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
         });
         assert.equal(addedForFork, "octocat");
         assert.equal(yield* git(cwd, ["remote"]), "octocat\norigin");
+      }),
+    );
+
+    it.effect("ensureRemote reuses a partial-clone remote whose fetch line carries a filter", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        yield* git(cwd, ["remote", "add", "origin", "https://github.com/pingdotgg/t3code.git"]);
+        yield* git(cwd, ["config", "remote.origin.promisor", "true"]);
+        yield* git(cwd, ["config", "remote.origin.partialclonefilter", "blob:none"]);
+        assert.include(yield* git(cwd, ["remote", "-v"]), "(fetch) [blob:none]");
+
+        const reused = yield* driver.ensureRemote({
+          cwd,
+          preferredName: "pingdotgg",
+          url: "git@github.com:pingdotgg/t3code.git",
+        });
+        assert.equal(reused, "origin");
+        assert.equal(yield* git(cwd, ["remote"]), "origin");
       }),
     );
   });
