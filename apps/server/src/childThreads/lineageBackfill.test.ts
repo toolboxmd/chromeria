@@ -9,6 +9,11 @@ import { ThreadId } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Layer from "effect/Layer";
+import * as IssueLinks from "../issueLinks/IssueLinks.ts";
+import * as ClosingReferences from "../issueLinks/closingReferences.ts";
+import { readLayer } from "../issueLinks/IssueLinks.testFixtures.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
@@ -48,6 +53,12 @@ it.effect(
             sql`INSERT INTO projection_threads (thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode, created_at, updated_at)
           VALUES (${id}, 'project', 'Imported', '{"instanceId":"codex","model":"gpt-5.4"}', 'full-access', 'default', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
         );
+        yield* sql`CREATE TABLE fork_thread_issue_links (
+          thread_id TEXT NOT NULL, host TEXT NOT NULL, repository TEXT NOT NULL,
+          number INTEGER NOT NULL, url TEXT NOT NULL, source TEXT NOT NULL, linked_at TEXT NOT NULL,
+          PRIMARY KEY (thread_id, host, repository, number))`;
+        yield* sql`INSERT INTO fork_thread_issue_links VALUES ('sub.sub.root.child.grandchild', 'github.com', 'fixture/project', 42,
+          'https://github.com/fixture/project/issues/42', 'agent', '2026-01-01T00:00:00.000Z')`;
         yield* sql`INSERT INTO projection_thread_messages (message_id, thread_id, role, text, is_streaming, created_at, updated_at)
         VALUES ('message', 'sub.root.child', 'user', 'Transcript fixture', 0, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`;
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: sourcePath })));
@@ -60,6 +71,11 @@ it.effect(
         const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
         const projections = yield* ProjectionStoreV2;
         yield* importer.reconcileShells;
+        const links = yield* IssueLinks.IssueLinks;
+        assert.lengthOf(
+          yield* links.forThread(ThreadId.make("root"), { includeDescendants: true }),
+          0,
+        );
         yield* sql`CREATE TRIGGER fail_lineage BEFORE INSERT ON orchestration_events
         WHEN NEW.event_id = 'migration:fork-v1:child-lineage:sub.sub.root.child.grandchild'
         BEGIN SELECT RAISE(ABORT, 'lineage fixture failure'); END`;
@@ -83,6 +99,16 @@ it.effect(
           relationshipToParent: "subagent",
           rootThreadId: ThreadId.make("root"),
         });
+        const rolledUp = yield* links.forThread(ThreadId.make("root"), {
+          includeDescendants: true,
+        });
+        assert.deepEqual(
+          rolledUp.map((link) => ({
+            number: link.number,
+            linkedByThreadId: link.linkedByThreadId,
+          })),
+          [{ number: 42, linkedByThreadId: grandchild.id }],
+        );
         assert.deepEqual(grandchild.lineage, {
           parentThreadId: ThreadId.make("sub.root.child"),
           relationshipToParent: "subagent",
@@ -109,6 +135,10 @@ it.effect(
         assert.deepEqual((yield* projections.getThread(child.id)).lineage, child.lineage);
         assert.deepEqual((yield* projections.getThread(grandchild.id)).lineage, grandchild.lineage);
         assert.deepEqual(
+          yield* links.forThread(ThreadId.make("root"), { includeDescendants: true }),
+          rolledUp,
+        );
+        assert.deepEqual(
           yield* sql`SELECT imported_message_count FROM orchestration_v2_legacy_imports WHERE thread_id = 'sub.root.child'`,
           [{ imported_message_count: 1 }],
         );
@@ -132,7 +162,20 @@ it.effect(
           ]),
           0,
         );
-      }).pipe(Effect.provide(forkV1SnapshotLayer(snapshotPath)));
+      }).pipe(
+        Effect.provide(
+          IssueLinks.layer.pipe(
+            Layer.provide(
+              Layer.succeed(ClosingReferences.IssueClosingReferences, {
+                issuesClosedBy: () => Effect.succeed([]),
+              }),
+            ),
+            Layer.provideMerge(readLayer({})),
+            Layer.provideMerge(ProjectStore.layer),
+            Layer.provideMerge(forkV1SnapshotLayer(snapshotPath)),
+          ),
+        ),
+      );
       assert.deepEqual(NodeFS.readFileSync(sourcePath), original);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
