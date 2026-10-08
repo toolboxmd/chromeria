@@ -1,0 +1,275 @@
+import {
+  type IssueStateEntry,
+  type ScopedThreadRef,
+  type ThreadIssueLink,
+  issueKeyString,
+} from "@t3tools/contracts";
+import {
+  BotIcon,
+  CircleHelpIcon,
+  CircleIcon,
+  MessageSquarePlusIcon,
+  PlusIcon,
+  XIcon,
+} from "lucide-react";
+import { useState } from "react";
+
+import { cn } from "~/lib/utils";
+import { useRightPanelStore } from "~/rightPanelStore";
+import { issueLinkEnvironment } from "~/state/issueLinks";
+import { useDescendantThreadShells } from "~/state/threadDescendants";
+import { useAtomCommand } from "~/state/use-atom-command";
+import { formatRelativeTimeLabel } from "~/timestampFormat";
+import {
+  PULL_REQUEST_ROW_CLASS,
+  PULL_REQUEST_ROW_NUMBER_CLASS,
+  PullRequestRowAuthor,
+  PullRequestRowLines,
+} from "../pullRequest/PullRequestListRow";
+import { Button } from "../ui/button";
+import { Input } from "../ui/input";
+import { MiddleTruncate } from "../ui/middle-truncate";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import {
+  ISSUE_LINK_SOURCE_LABELS,
+  type LinkedIssueState,
+  parseIssueReferenceInput,
+} from "./issueLinks.logic";
+import { IssueStateGlyph } from "./issuePresentation";
+import { useStartThreadFromIssue } from "./useStartThreadFromIssue";
+import { useThreadIssueLinks } from "./useThreadIssueLinks";
+
+function IssueRow({
+  link,
+  linkedByTitle,
+  state,
+  entry,
+  startDisabledReason,
+  onOpen,
+  onStart,
+  onUnlink,
+}: {
+  link: ThreadIssueLink;
+  /** The title of the child thread holding the link, when this thread does not. */
+  linkedByTitle: string | null;
+  state: LinkedIssueState;
+  entry: IssueStateEntry | undefined;
+  startDisabledReason: string | null;
+  onOpen: (link: ThreadIssueLink) => void;
+  onStart: (link: ThreadIssueLink) => void;
+  onUnlink: (link: ThreadIssueLink) => void;
+}) {
+  return (
+    <div className={cn(PULL_REQUEST_ROW_CLASS, "group/issue-row relative pl-2 hover:bg-accent/60")}>
+      <span className="flex w-4 shrink-0 justify-center">
+        {state === "pending" ? (
+          <CircleIcon aria-label="State not read yet" className="size-4 text-muted-foreground" />
+        ) : state === "unknown" ? (
+          <CircleHelpIcon
+            aria-label="State unknown: GitHub could not be read or did not return this Issue"
+            className="size-4 text-muted-foreground"
+          />
+        ) : (
+          <IssueStateGlyph state={state} />
+        )}
+      </span>
+      <button
+        type="button"
+        aria-label={`Open ${link.repository}#${link.number} in the right panel`}
+        className="flex min-w-0 flex-1 text-left"
+        onClick={() => onOpen(link)}
+      >
+        <PullRequestRowLines
+          number={
+            <Tooltip>
+              <TooltipTrigger render={<span className={PULL_REQUEST_ROW_NUMBER_CLASS} />}>
+                #{link.number}
+              </TooltipTrigger>
+              <TooltipPopup>
+                {[
+                  ...(linkedByTitle === null ? [] : [`Child thread ${linkedByTitle}`]),
+                  ...link.sources.map((source) => ISSUE_LINK_SOURCE_LABELS[source]),
+                  ...(link.linkedAt === null ? [] : [formatRelativeTimeLabel(link.linkedAt)]),
+                ].join(" · ")}
+              </TooltipPopup>
+            </Tooltip>
+          }
+          title={entry?.title ?? link.repository}
+          meta={
+            <>
+              {linkedByTitle !== null ? (
+                <span className="inline-flex min-w-0 max-w-28 items-center gap-0.5">
+                  <BotIcon aria-hidden className="size-3 shrink-0" />
+                  <span className="truncate">{linkedByTitle}</span>
+                </span>
+              ) : null}
+              {entry?.author !== undefined ? (
+                <PullRequestRowAuthor
+                  actor={entry.author}
+                  className="shrink-0"
+                  labelClassName="max-w-28"
+                />
+              ) : null}
+              <span className="flex min-w-0 max-w-40 font-mono">
+                <MiddleTruncate value={link.repository} />
+              </span>
+            </>
+          }
+          updatedAt={entry?.updatedAt}
+        />
+      </button>
+      {/* As on the pull request rows: over the right end of the second line, shown on hover. */}
+      <span
+        className={cn(
+          "absolute right-0 bottom-0.5 flex items-center rounded-r-md bg-background pr-1 pl-5",
+          "[mask-image:linear-gradient(to_right,transparent,black_1rem)]",
+          "pointer-events-none opacity-0 group-hover/issue-row:pointer-events-auto group-hover/issue-row:opacity-100",
+          "has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:opacity-100",
+        )}
+      >
+        <span aria-hidden className="absolute inset-0 bg-accent/60" />
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="icon-micro"
+                aria-label={`Start another thread from #${link.number}`}
+                className="relative"
+                disabled={startDisabledReason !== null}
+                onClick={() => onStart(link)}
+              />
+            }
+          >
+            <MessageSquarePlusIcon />
+          </TooltipTrigger>
+          <TooltipPopup>
+            {startDisabledReason ?? `Start another thread from #${link.number}`}
+          </TooltipPopup>
+        </Tooltip>
+        <Button
+          variant="ghost"
+          size="icon-micro"
+          aria-label={`Unlink #${link.number} from ${linkedByTitle === null ? "thread" : "child thread"}`}
+          className="relative"
+          onClick={() => onUnlink(link)}
+        >
+          <XIcon />
+        </Button>
+      </span>
+    </div>
+  );
+}
+
+/**
+ * The thread's linked GitHub Issues, above its pull requests and laid out like them, each
+ * removable. `states` holds each Issue's current GitHub state and `entries` what GitHub returned
+ * for it, both by `issueKeyString`.
+ */
+export function ThreadIssueLinks({
+  threadRef,
+  states,
+  entries,
+}: {
+  threadRef: ScopedThreadRef;
+  states: ReadonlyMap<string, LinkedIssueState>;
+  entries: ReadonlyMap<string, IssueStateEntry>;
+}) {
+  const { links, error } = useThreadIssueLinks(threadRef);
+  const descendants = useDescendantThreadShells(threadRef);
+  const titleOf = (threadId: string) =>
+    descendants.find((descendant) => descendant.id === threadId)?.title ?? "Child thread";
+  const link = useAtomCommand(issueLinkEnvironment.link, { reportFailure: true });
+  const unlink = useAtomCommand(issueLinkEnvironment.unlink, { reportFailure: true });
+  const startThread = useStartThreadFromIssue();
+  // Beside the thread, read through this thread's server.
+  const openIssue = (issue: ThreadIssueLink) =>
+    useRightPanelStore
+      .getState()
+      .openIssue(threadRef, { environmentId: threadRef.environmentId, url: issue.url });
+  // Null while the link field is closed.
+  const [reference, setReference] = useState<string | null>(null);
+  const target = reference === null ? null : parseIssueReferenceInput(reference);
+
+  const submit = async () => {
+    if (target === null) return;
+    const result = await link({
+      environmentId: threadRef.environmentId,
+      input: { threadId: threadRef.threadId, target, source: "manual" },
+    });
+    if (result._tag === "Success") setReference(null);
+  };
+  const handleUnlink = (issue: ThreadIssueLink) => {
+    void unlink({
+      environmentId: threadRef.environmentId,
+      input: {
+        threadId: issue.linkedByThreadId ?? threadRef.threadId,
+        host: issue.host,
+        repository: issue.repository,
+        number: issue.number,
+      },
+    });
+  };
+
+  return (
+    <section className="flex flex-col border-b border-border/60 p-1.5">
+      <header className="flex h-6 items-center justify-between px-2 text-2xs text-muted-foreground">
+        <span>Issues{links.length > 0 ? ` · ${links.length}` : ""}</span>
+        {reference === null ? (
+          <Button size="micro" variant="ghost" onClick={() => setReference("")}>
+            <PlusIcon />
+            Link
+          </Button>
+        ) : null}
+      </header>
+      {links.map((issue) => (
+        <IssueRow
+          key={`${issue.host}/${issue.repository}#${issue.number}`}
+          link={issue}
+          linkedByTitle={
+            issue.linkedByThreadId === undefined ? null : titleOf(issue.linkedByThreadId)
+          }
+          state={states.get(issueKeyString(issue)) ?? "pending"}
+          entry={entries.get(issueKeyString(issue))}
+          startDisabledReason={(() => {
+            const target = startThread.resolve(issue);
+            return "reason" in target ? target.reason : null;
+          })()}
+          // Only the link is known here, so the new thread's composer starts with its URL.
+          onStart={(link) => void startThread.start({ ...link, title: null, body: null })}
+          onOpen={openIssue}
+          onUnlink={handleUnlink}
+        />
+      ))}
+      {links.length === 0 && reference === null ? (
+        <p className="px-2 pb-1 text-xs text-muted-foreground">
+          {error ?? "No linked Issues. Branches named <type>/<number>-<slug> link theirs."}
+        </p>
+      ) : null}
+      {reference !== null ? (
+        <form
+          className="flex items-center gap-1 px-1 pt-1"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submit();
+          }}
+        >
+          <Input
+            autoFocus
+            size="compact"
+            aria-label="Issue URL or number"
+            placeholder="#12 or Issue URL"
+            value={reference}
+            onChange={(event) => setReference(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setReference(null);
+            }}
+          />
+          <Button type="submit" size="compact" variant="outline" disabled={target === null}>
+            Link
+          </Button>
+        </form>
+      ) : null}
+    </section>
+  );
+}

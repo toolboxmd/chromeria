@@ -26,6 +26,8 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { IssueRpcs } from "./issues.ts";
+import { IssueLinksRpcGroup } from "./issueLinks.ts";
 import {
   CodexAuthCallbackInput,
   CodexAuthCallbackState,
@@ -1986,4 +1988,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2SubscribeArchivedShellRpc,
   WsOrchestrationV2SubscribeShellRpc,
   WsOrchestrationV2SubscribeThreadRpc,
-).middleware(RpcScopeAuthorization);
+  // Fork: GitHub Issues (toolboxmd/t3code#27).
+  ...IssueRpcs,
+)
+  // Fork: Issue links (toolboxmd/t3code#28).
+  .merge(IssueLinksRpcGroup)
+  .middleware(RpcScopeAuthorization);

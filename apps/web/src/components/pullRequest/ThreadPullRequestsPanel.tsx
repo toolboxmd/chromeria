@@ -1,11 +1,9 @@
 import type { ProjectId, ScopedThreadRef, ThreadPullRequestLink } from "@t3tools/contracts";
 import { detectSourceControlProviderFromRemoteUrl } from "@t3tools/shared/sourceControl";
-import {
-  resolveThreadPullRequestChains,
-  visibleThreadPullRequests,
-} from "@t3tools/shared/threadPullRequests";
+import { resolveThreadPullRequestChains } from "@t3tools/shared/threadPullRequests";
 import {
   ArrowUpRightIcon,
+  BotIcon,
   EyeIcon,
   EyeOffIcon,
   LinkIcon,
@@ -20,6 +18,7 @@ import { cn } from "~/lib/utils";
 import { useShortcutModifierState } from "~/shortcutModifierState";
 import { useProjects, useServerConfigs, useThreadShell } from "~/state/entities";
 import { PullRequestsUnavailableState } from "./PullRequestsUnavailableState";
+import { useDescendantThreadShells } from "~/state/threadDescendants";
 import { threadEnvironment } from "~/state/threads";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
@@ -45,6 +44,11 @@ import {
 } from "./pullRequestPresentation";
 import { PullRequestGlyph } from "./pullRequestIcons";
 import { PullRequestSpeedActions } from "./PullRequestSpeedActions";
+import {
+  type DescendantShell,
+  linkedByOf,
+  rollUpThreadPullRequests,
+} from "../threadDescendants.logic";
 
 const SOURCE_LABELS: Record<ThreadPullRequestLink["source"], string> = {
   manual: "Linked by you",
@@ -79,6 +83,7 @@ function LinkRow({
   threadRef,
   projectId,
   speedMode,
+  linkedBy,
   onUnlink,
   onSetWatching,
 }: {
@@ -86,7 +91,9 @@ function LinkRow({
   threadRef: ScopedThreadRef;
   projectId: ProjectId | null;
   speedMode: boolean;
-  onUnlink: (link: ThreadPullRequestLink) => void;
+  /** The child thread holding the link, when this thread does not. */
+  linkedBy: DescendantShell | null;
+  onUnlink: (link: ThreadPullRequestLink, linkedBy: DescendantShell | null) => void;
   /** Null when the environment cannot watch pull requests. */
   onSetWatching: ((link: ThreadPullRequestLink, watching: boolean) => void) | null;
 }) {
@@ -160,7 +167,8 @@ function LinkRow({
                 #{link.number}
               </TooltipTrigger>
               <TooltipPopup>
-                {SOURCE_LABELS[link.source]} · {formatRelativeTimeLabel(link.linkedAt)}
+                {linkedBy === null ? SOURCE_LABELS[link.source] : `Linked by ${linkedBy.title}`} ·{" "}
+                {formatRelativeTimeLabel(link.linkedAt)}
               </TooltipPopup>
             </Tooltip>
           }
@@ -198,6 +206,17 @@ function LinkRow({
           }
           meta={
             <>
+              {linkedBy !== null ? (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={<span className="inline-flex min-w-0 max-w-28 items-center gap-0.5" />}
+                  >
+                    <BotIcon aria-hidden className="size-3 shrink-0" />
+                    <span className="truncate">{linkedBy.title}</span>
+                  </TooltipTrigger>
+                  <TooltipPopup>Linked by child thread {linkedBy.title}</TooltipPopup>
+                </Tooltip>
+              ) : null}
               {stack ? (
                 <Tooltip>
                   <TooltipTrigger
@@ -303,9 +322,10 @@ function LinkRow({
                 {watching ? "Stop watching" : "Watch for changes"}
               </MenuItem>
             ) : null}
-            <MenuItem onClick={() => onUnlink(link)}>
+            <MenuItem onClick={() => onUnlink(link, linkedBy)}>
               <PullRequestGlyph.unlink className="size-3.5" />
-              {link.source === "stack" ? "Dismiss from thread" : "Unlink from thread"}
+              {link.source === "stack" ? "Dismiss from " : "Unlink from "}
+              {linkedBy === null ? "thread" : "child thread"}
             </MenuItem>
           </MenuPopup>
         </Menu>
@@ -314,7 +334,19 @@ function LinkRow({
   );
 }
 
-export function ThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThreadRef }) {
+/** Linked Issue counts the footer adds to the pull requests', where the panel shows Issues. */
+interface LinkedIssueCounts {
+  readonly open: number;
+  readonly linked: number;
+}
+
+export function ThreadPullRequestsPanel({
+  threadRef,
+  issues,
+}: {
+  threadRef: ScopedThreadRef;
+  issues?: LinkedIssueCounts | undefined;
+}) {
   const configs = useServerConfigs();
   if (configs.get(threadRef.environmentId)?.environment.capabilities.threadPullRequests !== true) {
     return (
@@ -324,10 +356,16 @@ export function ThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThread
       />
     );
   }
-  return <EnabledThreadPullRequestsPanel threadRef={threadRef} />;
+  return <EnabledThreadPullRequestsPanel threadRef={threadRef} issues={issues} />;
 }
 
-function EnabledThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThreadRef }) {
+function EnabledThreadPullRequestsPanel({
+  threadRef,
+  issues,
+}: {
+  threadRef: ScopedThreadRef;
+  issues: LinkedIssueCounts | undefined;
+}) {
   const thread = useThreadShell(threadRef);
   const projects = useProjects();
   const environmentProjects = useMemo(
@@ -347,14 +385,19 @@ function EnabledThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThread
   const watch = useAtomCommand(threadEnvironment.watchPullRequest, { reportFailure: true });
   const capabilities = useServerConfigs().get(threadRef.environmentId)?.environment.capabilities;
   const supportsWatch = capabilities?.threadPullRequestWatch === true;
-  const links = useMemo(() => visibleThreadPullRequests(thread?.pullRequests ?? []), [thread]);
+  const descendants = useDescendantThreadShells(threadRef);
+  const rolledUp = useMemo(
+    () => rollUpThreadPullRequests(thread?.pullRequests ?? [], descendants),
+    [thread, descendants],
+  );
+  const links = rolledUp.links;
   const lines = useMemo(() => pullRequestListLines(resolveThreadPullRequestChains(links)), [links]);
   const handleUnlink = useCallback(
-    (link: ThreadPullRequestLink) => {
+    (link: ThreadPullRequestLink, linkedBy: DescendantShell | null) => {
       void unlink({
         environmentId: threadRef.environmentId,
         input: {
-          threadId: threadRef.threadId,
+          threadId: linkedBy?.id ?? threadRef.threadId,
           host: link.host,
           repository: link.repository,
           number: link.number,
@@ -412,28 +455,32 @@ function EnabledThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThread
     <div className="flex h-full min-h-0 flex-col">
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col p-1.5">
-          {lines.map((line) => (
-            <LinkRow
-              key={`${line.link.host}/${line.link.repository}#${line.link.number}`}
-              line={line}
-              threadRef={threadRef}
-              projectId={
-                capabilities?.pullRequests === true
-                  ? (findProjectForChangeRequest(environmentProjects, line.link)?.id ??
-                    thread?.projectId ??
-                    null)
-                  : null
-              }
-              speedMode={speedMode}
-              onUnlink={handleUnlink}
-              onSetWatching={supportsWatch ? handleSetWatching : null}
-            />
-          ))}
+          {lines.map((line) => {
+            const linkedBy = linkedByOf(rolledUp, line.link);
+            return (
+              <LinkRow
+                key={`${line.link.host}/${line.link.repository}#${line.link.number}`}
+                line={line}
+                threadRef={threadRef}
+                linkedBy={linkedBy}
+                projectId={
+                  capabilities?.pullRequests === true
+                    ? (findProjectForChangeRequest(environmentProjects, line.link)?.id ??
+                      thread?.projectId ??
+                      null)
+                    : null
+                }
+                speedMode={speedMode}
+                onUnlink={handleUnlink}
+                onSetWatching={supportsWatch ? handleSetWatching : null}
+              />
+            );
+          })}
         </div>
       </ScrollArea>
       <footer className="flex items-center justify-between border-t border-border/60 px-2 py-1.5 text-2xs text-muted-foreground">
         <span>
-          {openCount} open · {links.length} linked
+          {openCount + (issues?.open ?? 0)} open · {links.length + (issues?.linked ?? 0)} linked
           {lastSynced ? ` · synced ${formatRelativeTimeLabel(lastSynced)}` : ""}
         </span>
         <Button size="xs" variant="ghost" onClick={openLinkDialog}>
