@@ -75,6 +75,7 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "apps/web/src/branding.ts",
     "apps/web/src/bundledDev.test.ts",
     "apps/web/src/components/T3Wordmark.tsx",
+    "apps/web/src/components/chat/MessagesTimeline.test.tsx",
     "apps/web/src/components/chat/MessagesTimeline.tsx",
     "apps/web/src/components/onboarding/WelcomeWizard.tsx",
     "apps/web/src/components/settings/IntegrationsSettings.tsx",
