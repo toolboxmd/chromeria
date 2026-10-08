@@ -5,7 +5,7 @@ import {
   ProviderInstanceId,
   RunId,
   ThreadId,
-  type OrchestrationV2Command,
+  type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -46,7 +46,7 @@ it.effect("an agent's fork belongs to its caller's owner, not the source thread'
       [callerId, shell(callerId, "Pauli")],
       [sourceId, shell(sourceId, "Luke")],
     ]);
-    const dispatched: Array<OrchestrationV2Command> = [];
+    const dispatched: Array<OrchestrationV2ServerCommand> = [];
     const layerDependencies = Layer.mergeAll(
       NodeCrypto.layer,
       Layer.succeed(McpInvocationContext.McpInvocationContext, {

@@ -7,6 +7,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { EventId, ThreadId } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -219,8 +220,6 @@ it.effect(
 
 it.effect.each([
   { payload: "{}", typedError: true },
-  // People fields present but the thread record itself invalid, with no completion marker.
-  { payload: '{"owner":"Pauli","coOwners":[]}', typedError: true },
   { payload: "not json", typedError: false },
 ])("stops startup when an imported thread payload is $payload", ({ payload, typedError }) =>
   Effect.gen(function* () {
@@ -335,8 +334,9 @@ const realSource = process.env.CHROMERIA_V1_SNAPSHOT_SOURCE;
             readonly count: number;
           }>`SELECT COUNT(*) AS count FROM orchestration_events`,
         );
-        // Counts only: no thread ids, titles or payloads leave the snapshot.
-        console.info(
+        // Counts only: no thread ids, titles or payloads leave the snapshot. The test
+        // runtime swallows Console output, so this proof line uses the real console.
+        yield* Console.info(
           JSON.stringify({
             imported,
             missing,
@@ -345,7 +345,7 @@ const realSource = process.env.CHROMERIA_V1_SNAPSHOT_SOURCE;
             hydrated,
             rerunEvents: after - before,
           }),
-        );
+        ).pipe(Effect.provideService(Console.Console, globalThis.console));
         assert.isAbove(imported, 0);
         assert.equal(yield* markerCount, imported);
         assert.equal(missing, 0);

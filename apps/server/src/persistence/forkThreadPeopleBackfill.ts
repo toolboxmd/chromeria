@@ -20,7 +20,11 @@ const decodeFrozenCoOwners = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Array(TrimmedNonEmptyString)),
 );
 
-/** An imported thread whose stored v2 payload no longer decodes; startup stops until it is repaired. */
+/**
+ * An imported thread payload this migration reads, because it still lacks
+ * people fields, no longer decodes. Startup stops until it is repaired.
+ * Payloads the migration does not read are not validated here.
+ */
 export class ThreadPeopleBackfillPayloadError extends Schema.TaggedError<ThreadPeopleBackfillPayloadError>()(
   "ThreadPeopleBackfillPayloadError",
   { threadId: Schema.String },
@@ -50,7 +54,8 @@ interface FrozenPeopleRow {
  * A malformed needed value becomes null or [] and is recorded in
  * `fork_thread_people_backfill_issues` (thread id and reason kind only). Each
  * thread is one transaction whose stable event id marks it done, so reruns and
- * partial failures converge. A payload that no longer decodes stops startup.
+ * partial failures converge. A payload it reads that no longer decodes stops
+ * startup.
  */
 export const backfillThreadPeople = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -90,6 +95,7 @@ export const backfillThreadPeople = Effect.gen(function* () {
     ORDER BY thread.created_at ASC, thread.thread_id ASC
   `;
   for (const row of rows) {
+    // Only payloads this migration consumes are validated; it rewrites the whole record.
     const decoded = decodeStoredThread(row.payload_json);
     if (Option.isNone(decoded)) {
       return yield* new ThreadPeopleBackfillPayloadError({ threadId: row.thread_id });
