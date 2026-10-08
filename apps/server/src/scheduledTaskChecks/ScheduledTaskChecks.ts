@@ -229,10 +229,22 @@ const makeEngine = Effect.gen(function* () {
         const threadId = run.threadId!;
         const shell = yield* shellOf(threadId);
         if (shell === null) {
-          // A new-thread run whose first launch never landed is launched again.
-          const firstLaunch = task.threadId === null && !run.hasWork && run.sends.length <= 1;
+          // A new-thread run's thread exists once any of its sends was accepted, so
+          // missing after that it was deleted. Missing before, it was never created
+          // (a rejected or failed launch) and is launched again.
+          const accepted =
+            run.sends.length === 0
+              ? []
+              : yield* sql`
+                  SELECT 1 FROM orchestration_v2_command_receipts
+                  WHERE command_id IN ${sql.in(run.sends.map((send) => send.commandId))}
+                    AND status = 'accepted'
+                  LIMIT 1
+                `.pipe(Effect.mapError(checkError("Could not read the run's receipts")));
+          const neverCreated = task.threadId === null && !run.hasWork && accepted.length === 0;
           return {
-            unavailable: !firstLaunch,
+            unavailable: !neverCreated,
+            threadMissing: neverCreated,
             landed: false,
             started: false,
             busy: false,
@@ -272,6 +284,7 @@ const makeEngine = Effect.gen(function* () {
               );
         return {
           unavailable: retired,
+          threadMissing: false,
           landed:
             last !== undefined && sendRuns.some((entry) => entry.userMessageId === last.messageId),
           started: sendRuns.some((entry) => entry.startedAt !== null),

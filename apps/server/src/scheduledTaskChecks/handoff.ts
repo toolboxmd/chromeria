@@ -176,14 +176,20 @@ const spectrumFence = Effect.fnUntraced(function* (
   spectrum: BoundSpectrum,
 ) {
   const waiting: ReportFence = { kind: "waiting" };
-  if (spectrum.status === "active") return waiting;
   const report = spectrum.report;
+  // Only the current report's command counts; a null report or an older attempt is ignored.
+  const needsYou =
+    report !== null && spectrum.reportNeedsYou?.commandId === report.commandId
+      ? ({ kind: "needs-you", reason: spectrum.reportNeedsYou.reason } satisfies ReportFence)
+      : null;
+  // An unsettled Spectrum never releases the run, though a report that needs you says so.
+  if (spectrum.status === "active") return needsYou ?? waiting;
   if (report === null)
     return spectrum.status === "retired" ? ({ kind: "released" } satisfies ReportFence) : waiting;
+  // The user's abandonment of the current report is the way out, needs-you included.
   if (spectrum.reportAbandonment?.commandId === report.commandId)
     return { kind: "released" } satisfies ReportFence;
-  if (spectrum.reportNeedsYou?.commandId === report.commandId)
-    return { kind: "needs-you", reason: spectrum.reportNeedsYou.reason } satisfies ReportFence;
+  if (needsYou !== null) return needsYou;
   if (report.inOutbox) return waiting;
   const receipts = yield* sql<{ readonly status: string }>`
     SELECT status FROM orchestration_v2_command_receipts WHERE command_id = ${report.commandId}

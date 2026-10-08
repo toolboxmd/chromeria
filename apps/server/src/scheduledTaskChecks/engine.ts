@@ -51,6 +51,11 @@ export class ScheduledTaskCheckError extends Schema.TaggedError<ScheduledTaskChe
 export interface RunObservation {
   /** The thread is missing, archived or retired; only the user can recover it. */
   readonly unavailable: boolean;
+  /**
+   * A new-thread run's thread was never created: no shell, and none of its
+   * sends was accepted. Its next send launches the thread again.
+   */
+  readonly threadMissing: boolean;
   /** The latest send produced a v2 run (matched by its message id). */
   readonly landed: boolean;
   /** A run started by one of this run's sends reached the provider. */
@@ -242,11 +247,18 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
    * server. Prism's pick and the text are fixed here; a role that cannot be
    * honored becomes a delayed retry and records no send.
    */
-  const startSend = (task: ScheduledTask, state: CheckState, run: CheckedRun, now: number) =>
+  const startSend = (
+    task: ScheduledTask,
+    state: CheckState,
+    run: CheckedRun,
+    now: number,
+    threadMissing = false,
+  ) =>
     Effect.gen(function* () {
       const index = run.sends.length;
       const kind = run.hasWork ? "continue" : "start";
-      const launching = task.threadId === null && index === 0;
+      // A new-thread run launches until its thread exists, each time as a new send.
+      const launching = task.threadId === null && (index === 0 || threadMissing);
       const picked = yield* deps.role(state, task, launching).pipe(Effect.result);
       if (picked._tag === "Failure") {
         const failed = yield* retry(state, run, picked.failure.message, now);
@@ -441,6 +453,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
                 state,
                 { ...current, attempt: 0, hasWork: current.hasWork || observation.started },
                 now,
+                observation.threadMissing,
               );
               return resumed._tag === "refused"
                 ? fork(Effect.fail(resumed.error))
@@ -630,7 +643,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
           return;
         }
         if (run.stage === "retry" && run.retryAt !== null && Date.parse(run.retryAt) > now) return;
-        const started = yield* startSend(task, state, run, now);
+        const started = yield* startSend(task, state, run, now, observation.threadMissing);
         if (started._tag === "recorded")
           yield* deliver(task.id, started.state, started.run, started.send).pipe(Effect.ignore);
       }),

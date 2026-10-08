@@ -254,6 +254,39 @@ it.effect("a report releases only on its completed turn or the user's abandonmen
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
+it.effect("an active Spectrum never releases, but its current report needing you is surfaced", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    yield* ensureSpectraFixture;
+    const reason = "Spectrum could not deliver its report after 3 attempts";
+    // Active with a current report that needs you: the run needs you, with the reason.
+    yield* bind("scheduler:active-needs", { status: "active", report: "current" });
+    assert.deepEqual(
+      yield* fence("scheduler:active-needs", new Map([["report:current", reason]])),
+      { kind: "needs-you", reason },
+    );
+    // Needs-you for an older attempt does not count for the current report.
+    yield* bind("scheduler:active-stale", { status: "active", report: "newer" });
+    assert.deepEqual(
+      yield* fence("scheduler:active-stale", new Map([["report:current", reason]])),
+      waiting,
+    );
+    // Abandoning the current report never releases a Spectrum that is still active.
+    yield* bind("scheduler:active-abandoned", {
+      status: "active",
+      report: "abandoned",
+      abandoned: "abandoned",
+    });
+    assert.deepEqual(yield* fence("scheduler:active-abandoned"), waiting);
+    // With no report, needs-you entries are ignored.
+    yield* bind("scheduler:active-empty", { status: "active" });
+    assert.deepEqual(
+      yield* fence("scheduler:active-empty", new Map([["report:current", reason]])),
+      waiting,
+    );
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
 const schedulerState = (stage: "running" | "done"): CheckState => ({
   version: 1,
   taskId: ScheduledTaskId.make("task:bound"),

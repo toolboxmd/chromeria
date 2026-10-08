@@ -21,6 +21,7 @@ import {
   type OrchestrationV2ServerCommand,
   type ScheduledTask,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Exit from "effect/Exit";
@@ -106,6 +107,11 @@ const runtime = (
     /** Each outcome check's exit code; checks fail by default. */
     readonly check?: Effect.Effect<number>;
     readonly spectra?: ReturnType<typeof fixtureSpectra>;
+    /** A thread launch built on the real orchestrator; launches die without one. */
+    readonly launch?: (services: {
+      readonly sink: EventSink.EventSinkV2["Service"];
+      readonly orchestrator: Orchestrator.OrchestratorV2["Service"];
+    }) => ThreadLaunchService.ThreadLaunchService["Service"]["launch"];
   } = {},
 ) => {
   const orchestration = Harness.layerWithRegistry(
@@ -117,9 +123,19 @@ const runtime = (
     database,
     orchestration,
     ProjectStore.layer.pipe(Layer.provide(database)),
-    Layer.mock(ThreadLaunchService.ThreadLaunchService)({
-      launch: () => Effect.die("These tasks post to a bound thread"),
-    }),
+    options.launch === undefined
+      ? Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+          launch: () => Effect.die("These tasks post to a bound thread"),
+        })
+      : Layer.unwrap(
+          Effect.gen(function* () {
+            const sink = yield* EventSink.EventSinkV2;
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            return Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+              launch: options.launch!({ sink, orchestrator }),
+            });
+          }),
+        ).pipe(Layer.provide(orchestration)),
     Layer.mock(SecretRequests.SecretRequests)({}),
     Layer.succeed(ProcessRunner, {
       run: () => (options.check ?? Effect.succeed(1)).pipe(Effect.map(checkResult)),
@@ -171,6 +187,8 @@ const insertTask = (input: {
   readonly next: string | null;
   readonly status?: string;
   readonly createdAt?: string;
+  /** Null for a task that launches a new thread per run. */
+  readonly threadId?: string | null;
 }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -181,7 +199,7 @@ const insertTask = (input: {
       enabled: 1,
       schedule_json: toJson(input.schedule),
       project_id: projectId,
-      thread_id: threadId,
+      thread_id: input.threadId === undefined ? threadId : input.threadId,
       workspace_strategy_json: '{"type":"root"}',
       model_selection_json: toJson(selection),
       runtime_mode: "full-access",
@@ -196,6 +214,13 @@ const insertTask = (input: {
       last_run_error: null,
       run_count: 0,
     })}`;
+  });
+
+const messagesOfThread = (id: ThreadId) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projection = yield* orchestrator.getThreadProjection(id);
+    return projection.messages.map((message) => message.id as string);
   });
 
 const messagesOf = Effect.gen(function* () {
@@ -931,5 +956,188 @@ it.effect(
           [{ requested: "09:00", offsetMinutes: 0 }],
         );
       }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+    }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "a new-thread launch the orchestrator rejected before its thread existed is launched again after a restart, once",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      yield* TestClock.setTime(Date.parse(CANONICAL));
+      const id = ScheduledTaskId.make("scheduled-task:relaunch");
+      const runId = `${id}:${CANONICAL}`;
+      const runThread = ThreadId.make(`scheduled-run:${runId}`);
+      const attempts: Array<{
+        readonly commandId: string;
+        readonly threadId: string | undefined;
+        readonly launch: unknown;
+        readonly message: unknown;
+      }> = [];
+      // The real launch's receipt contract on the real orchestrator: its first
+      // `thread.create` is refused before any shell exists, the next succeeds.
+      const launch =
+        ({
+          sink,
+          orchestrator,
+        }: {
+          readonly sink: EventSink.EventSinkV2["Service"];
+          readonly orchestrator: Orchestrator.OrchestratorV2["Service"];
+        }): ThreadLaunchService.ThreadLaunchService["Service"]["launch"] =>
+        (input) =>
+          Effect.gen(function* () {
+            const threadId = input.threadId!;
+            attempts.push({
+              commandId: input.commandId,
+              threadId: input.threadId,
+              launch: {
+                projectId: input.projectId,
+                title: input.title,
+                modelSelection: input.modelSelection,
+                runtimeMode: input.runtimeMode,
+                interactionMode: input.interactionMode,
+                workspaceStrategy: input.workspaceStrategy,
+              },
+              message: {
+                text: input.initialMessage?.text,
+                messageId: input.initialMessage?.messageId,
+              },
+            });
+            if (attempts.length === 1) {
+              yield* sink
+                .commitRejectedCommand({
+                  commandId: input.commandId,
+                  threadId,
+                  commandType: "thread.create",
+                  rejectedAt: yield* DateTime.now,
+                  error: "The orchestrator refused the thread.",
+                })
+                .pipe(Effect.orDie);
+              return yield* new ThreadLaunchService.ThreadLaunchError({
+                operation: "create-thread",
+                commandId: input.commandId,
+                projectId: input.projectId,
+                threadId,
+                cause: "The orchestrator refused the thread.",
+              });
+            }
+            yield* orchestrator
+              .dispatch({
+                type: "thread.create",
+                commandId: input.commandId,
+                threadId,
+                projectId: input.projectId,
+                title: input.title,
+                modelSelection: input.modelSelection,
+                runtimeMode: input.runtimeMode,
+                interactionMode: input.interactionMode,
+                branch: null,
+                worktreePath: null,
+                createdBy: input.createdBy,
+                creationSource: input.creationSource,
+              })
+              .pipe(Effect.orDie);
+            yield* orchestrator
+              .dispatch({
+                type: "message.dispatch",
+                commandId: CommandId.make(`${input.commandId}:initial-message`),
+                threadId,
+                messageId: input.initialMessage!.messageId!,
+                text: input.initialMessage!.text,
+                ...(input.initialMessage!.scheduledTaskId === undefined
+                  ? {}
+                  : { scheduledTaskId: input.initialMessage!.scheduledTaskId }),
+                attachments: [],
+                modelSelection: input.modelSelection,
+                dispatchMode: { type: "defer_start" },
+                createdBy: input.createdBy,
+                creationSource: input.creationSource,
+              })
+              .pipe(Effect.orDie);
+            return {
+              threadId,
+              projection: yield* orchestrator.getThreadProjection(threadId).pipe(Effect.orDie),
+              resumed: false,
+            };
+          });
+      const receiptOf = (commandId: string) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const rows = yield* sql<{ readonly status: string }>`
+            SELECT status FROM orchestration_v2_command_receipts WHERE command_id = ${commandId}`;
+          return rows[0]?.status ?? null;
+        });
+      const shellExists = Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql`
+          SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id = ${runThread}`;
+        return rows.length > 0;
+      });
+      // First server: Run now launches a new thread, and the orchestrator refuses it.
+      yield* Effect.gen(function* () {
+        yield* insertTask({
+          id,
+          schedule: { type: "interval", everyMs: 3_600_000 },
+          next: null,
+          threadId: null,
+        });
+        yield* writeCheckState(null, checkState(id));
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        yield* Effect.exit(service.runNow({ id }));
+        const refused = yield* runOf(id);
+        assert.equal(refused.stage, "retry");
+        assert.equal(refused.threadId, runThread);
+        assert.equal(refused.sends.length, 1);
+        assert.equal(yield* receiptOf(refused.sends[0]!.commandId), "rejected");
+        assert.isFalse(yield* shellExists);
+      }).pipe(Effect.provide(runtime(database, { launch })), Effect.scoped);
+      // Restart after the retry delay: the thread was never created, so it is launched again.
+      yield* TestClock.adjust("31 seconds");
+      yield* Effect.gen(function* () {
+        const checks = yield* ScheduledTaskChecks.ScheduledTaskChecks;
+        yield* checks.reconcile;
+        const relaunched = yield* runOf(id);
+        assert.equal(relaunched.stage, "running", "a never-created thread is not unavailable");
+        assert.equal(relaunched.sends.length, 2);
+        const [first, second] = relaunched.sends;
+        assert.notEqual(second!.commandId, first!.commandId);
+        assert.notEqual(second!.messageId, first!.messageId);
+        assert.equal(yield* receiptOf(first!.commandId), "rejected");
+        assert.equal(yield* receiptOf(second!.commandId), "accepted");
+        assert.isTrue(yield* shellExists);
+        // Both attempts launched the same thread with the same launch fields.
+        assert.equal(attempts.length, 2);
+        assert.deepEqual(
+          attempts.map((attempt) => attempt.threadId),
+          [runThread, runThread],
+        );
+        assert.deepEqual(attempts[1]!.launch, attempts[0]!.launch);
+        assert.deepEqual(
+          attempts.map((attempt) => attempt.commandId),
+          [first!.commandId, second!.commandId],
+        );
+        assert.deepEqual(yield* messagesOfThread(runThread), [second!.messageId]);
+      }).pipe(Effect.provide(runtime(database, { launch })), Effect.scoped);
+      // Another restart replays nothing: no second launch and no duplicate message.
+      yield* Effect.gen(function* () {
+        const checks = yield* ScheduledTaskChecks.ScheduledTaskChecks;
+        yield* checks.reconcile;
+        yield* checks.reconcile;
+        assert.equal(attempts.length, 2);
+        assert.equal((yield* runOf(id)).sends.length, 2);
+        assert.equal((yield* messagesOfThread(runThread)).length, 1);
+        // Once the thread existed, losing it is not a missing launch: the run needs you.
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        yield* orchestrator.dispatch({
+          type: "thread.delete",
+          commandId: CommandId.make("relaunch:delete"),
+          threadId: runThread,
+        });
+        yield* checks.reconcile;
+        const lost = yield* runOf(id);
+        assert.equal(lost.stage, "needs-you");
+        assert.equal(lost.sends.length, 2);
+        assert.equal(attempts.length, 2);
+      }).pipe(Effect.provide(runtime(database, { launch })), Effect.scoped);
     }).pipe(Effect.scoped),
 );

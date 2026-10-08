@@ -57,6 +57,7 @@ const task = (overrides: Partial<ScheduledTask> = {}): ScheduledTask => ({
 
 const idle: RunObservation = {
   unavailable: false,
+  threadMissing: false,
   landed: true,
   started: true,
   busy: false,
@@ -749,6 +750,49 @@ it.effect("a fire that read an older definition is not acted on", () =>
       SELECT next_run_at FROM scheduled_tasks WHERE task_id = ${taskId}`;
     assert.isNull(row?.next_run_at ?? null);
     assert.equal(h.sent.length, 0);
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("a launch that failed before its thread existed is launched again as a new send", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    const h = yield* harness();
+    const fresh = task({ threadId: null });
+    yield* h.save({ checkCommand: "check", checkReason: "outcome" });
+    // The first launch is refused before any thread exists.
+    h.failDispatch(true);
+    yield* h.fire("scheduled", NOW, fresh);
+    const refused = (yield* h.state()).runs[0]!;
+    assert.equal(refused.stage, "retry");
+    assert.equal(refused.sends.length, 1);
+    const firstLaunch = refused.sends[0]!.payload!.launch;
+    assert.isNotNull(firstLaunch);
+    // No shell and no accepted send: the thread was never created.
+    h.set({ unavailable: false, threadMissing: true, landed: false, started: false, busy: false });
+    h.failDispatch(false);
+    yield* TestClock.adjust(30_000);
+    yield* h.runs.drive(fresh);
+    const relaunched = (yield* h.state()).runs[0]!;
+    assert.equal(relaunched.stage, "running", "a missing thread is launched, not given up on");
+    assert.equal(relaunched.threadId, refused.threadId, "the same deterministic thread");
+    assert.equal(relaunched.sends.length, 2);
+    const second = relaunched.sends[1]!;
+    assert.notEqual(second.commandId, refused.sends[0]!.commandId);
+    assert.notEqual(second.messageId, refused.sends[0]!.messageId);
+    assert.deepEqual(
+      second.payload?.launch,
+      firstLaunch,
+      "it launches again, with the same thread",
+    );
+    // Once the thread exists, a later send posts to it instead.
+    h.set({ threadMissing: false, landed: true });
+    h.pass(false);
+    yield* h.runs.drive(fresh);
+    yield* TestClock.adjust(60_000);
+    yield* h.runs.drive(fresh);
+    const posted = (yield* h.state()).runs[0]!.sends.at(-1)!;
+    assert.equal(posted.index, 2);
+    assert.isNull(posted.payload?.launch ?? null);
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
