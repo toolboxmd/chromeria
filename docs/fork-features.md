@@ -885,13 +885,13 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "packages/contracts/src/promachosHome.ts"
   ],
   "upstreamFiles": [
+    "apps/server/src/auth/RpcAuthorization.test.ts",
     "apps/web/src/components/AppSidebarLayout.tsx",
     "apps/web/src/components/chat/ChatComposer.tsx",
     "packages/client-runtime/src/operations/commands.test.ts",
     "packages/client-runtime/src/operations/commands.ts"
   ],
   "sharedFiles": [
-    "apps/server/src/auth/RpcAuthorization.test.ts",
     "apps/server/src/observability/RpcInstrumentation.ts",
     "docs/README.md",
     "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
