@@ -4,5 +4,4 @@ import * as Schema from "effect/Schema";
 // importing its schemas or enabling its implementation.
 export const forkOpaqueSettingsFields = {
   prismRoles: Schema.optionalKey(Schema.Unknown),
-  wightModes: Schema.optionalKey(Schema.Unknown),
 };
