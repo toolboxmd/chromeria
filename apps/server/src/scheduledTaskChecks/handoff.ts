@@ -21,7 +21,7 @@ import { listCheckStates } from "./store.ts";
  * recovery state #169 records; it never guesses by thread or time.
  */
 
-/** A Spectrum bound to a scheduler run, as #176's Spectrum state reports it (D32). */
+/** A Spectrum bound to a scheduler run, as #176's Spectrum state reports it (D32, D40). */
 export interface BoundSpectrum {
   readonly status: "active" | "settled" | "retired";
   /** The identity of the current report's `message.dispatch`; null while none was written. */
@@ -32,9 +32,22 @@ export interface BoundSpectrum {
     /** Still in Spectrum's outbox, not yet dispatched. */
     readonly inOutbox: boolean;
   } | null;
-  /** The user's abandonment of a report; it counts only for the current report's command. */
+  /** The user's explicit abandonment of a report; it counts only for the current report's command. */
   readonly reportAbandonment: { readonly commandId: CommandId } | null;
+  /**
+   * The current report attempt Spectrum will not deliver again on its own: its
+   * last allowed attempt failed after recovery concluded, it failed without
+   * retry, or it was explicitly stopped. `reason` is shown to the user. It
+   * counts only for the current report's command.
+   */
+  readonly reportNeedsYou: { readonly commandId: CommandId; readonly reason: string } | null;
 }
+
+/** Where the reports bound to a scheduler run leave it (D40). */
+export type ReportFence =
+  | { readonly kind: "released" }
+  | { readonly kind: "waiting" }
+  | { readonly kind: "needs-you"; readonly reason: string };
 
 /** #176 provides the Spectrums bound to a scheduler run; without Spectrum there are none. */
 export class ScheduledTaskSpectra extends Context.Reference<{
@@ -73,25 +86,6 @@ const readRunByMessage = (sql: SqlClient.SqlClient, threadId: string, messageId:
     LIMIT 1
   `.pipe(Effect.map((rows) => rows[0]?.run_id));
 
-/**
- * Whether any of these runs reached its provider, by upstream's delivery rule
- * (ProviderTurnStartService): a provider turn recorded for one of the run's
- * attempts. Adapters record it only as the provider takes the prompt; a run's
- * `startedAt` is set before delivery and a failed start records no turn. A
- * pending turn never started.
- */
-export const reachedProvider = (sql: SqlClient.SqlClient, runIds: ReadonlyArray<string>) =>
-  runIds.length === 0
-    ? Effect.succeed(false)
-    : sql`
-        SELECT 1 FROM orchestration_v2_projection_provider_turns AS turn
-        JOIN orchestration_v2_projection_run_attempts AS attempt
-          ON attempt.attempt_id = turn.run_attempt_id
-        WHERE attempt.run_id IN ${sql.in(runIds)}
-          AND turn.status <> 'pending' AND turn.started_at IS NOT NULL
-        LIMIT 1
-      `.pipe(Effect.map((rows) => rows.length > 0));
-
 /** Upstream's own restart continuation of a run, linked on the successor. */
 const restartSuccessor = (sql: SqlClient.SqlClient, runId: string) =>
   sql<{ readonly run_id: string }>`
@@ -105,26 +99,20 @@ const restartSuccessor = (sql: SqlClient.SqlClient, runId: string) =>
  * - `waiting`: it or a continuation is not finished, or recovery is undecided;
  * - `completed`: it or an exact continuation completed;
  * - `ended`: it ended without completing and nothing will continue it.
- *
- * `started` says whether the provider took any run along the chain; a terminal
- * status alone, completed included, is no proof of delivery.
  */
 export type RunEnd =
   | { readonly kind: "waiting" }
-  | { readonly kind: "completed"; readonly runId: string; readonly started: boolean }
-  | { readonly kind: "ended"; readonly runId: string; readonly started: boolean };
+  | { readonly kind: "completed"; readonly runId: string }
+  | { readonly kind: "ended"; readonly runId: string };
 
 export const followRun = Effect.fn("ScheduledTaskChecks.followRun")(function* (runId: string) {
   const sql = yield* SqlClient.SqlClient;
   let current = runId;
-  let started = false;
   for (let hop = 0; hop < MAX_HOPS; hop += 1) {
     const run = yield* readRun(sql, { runId: current });
     if (run === undefined) return { kind: "waiting" } satisfies RunEnd;
     if (!TERMINAL.has(run.status)) return { kind: "waiting" } satisfies RunEnd;
-    started ||= yield* reachedProvider(sql, [current]);
-    if (run.status === "completed")
-      return { kind: "completed", runId: current, started } satisfies RunEnd;
+    if (run.status === "completed") return { kind: "completed", runId: current } satisfies RunEnd;
     const restarted = yield* restartSuccessor(sql, current);
     if (restarted !== undefined) {
       current = restarted;
@@ -147,7 +135,7 @@ export const followRun = Effect.fn("ScheduledTaskChecks.followRun")(function* (r
     // A retry is admitted with its run, so a decided retry without one is not done yet.
     if (decision.outcome === "retried") return { kind: "waiting" } satisfies RunEnd;
     // Not retryable, or recovery abandoned it on its own: the scheduler decides now.
-    return { kind: "ended", runId: current, started } satisfies RunEnd;
+    return { kind: "ended", runId: current } satisfies RunEnd;
   }
   return { kind: "waiting" } satisfies RunEnd;
 });
@@ -163,35 +151,48 @@ export const followSend = Effect.fn("ScheduledTaskChecks.followSend")(function* 
 });
 
 /**
- * The completion fence (D32): whether any Spectrum bound to the scheduler run
- * still holds it. A run settles only when every bound Spectrum settled and its
- * report's turn ended; the caller reruns its check afterwards.
+ * The completion fence (D32, D40): where the Spectra bound to a scheduler run
+ * leave it. Each releases only when its current report's turn completed through
+ * its exact continuations, or the user abandoned that report; Spectrum owns
+ * delivery and its bounded new attempts. A report that needs the user makes the
+ * run need the user. The caller runs its check only once every Spectrum released.
  */
-export const reportsHold = Effect.fn("ScheduledTaskChecks.reportsHold")(function* (
+export const reportsFence = Effect.fn("ScheduledTaskChecks.reportsFence")(function* (
   schedulerRunId: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const spectra = yield* ScheduledTaskSpectra;
+  let fence: ReportFence = { kind: "released" };
   for (const spectrum of yield* spectra.boundTo(schedulerRunId)) {
-    if (spectrum.status === "active") return true;
-    const report = spectrum.report;
-    if (report === null) {
-      if (spectrum.status === "retired") continue;
-      return true;
-    }
-    if (report.inOutbox) return true;
-    const receipts = yield* sql<{ readonly status: string }>`
-      SELECT status FROM orchestration_v2_command_receipts WHERE command_id = ${report.commandId}
-    `;
-    // No receipt yet, or a rejected one: Spectrum still owes this or a new attempt.
-    if (receipts[0]?.status !== "accepted") return true;
-    const end = yield* followSend(report.threadId, report.messageId);
-    if (end.kind === "waiting") return true;
-    // A report that never reached a provider, however its run ended, holds
-    // until a new attempt or the user abandons this exact report.
-    if (!end.started && spectrum.reportAbandonment?.commandId !== report.commandId) return true;
+    const held = yield* spectrumFence(sql, spectrum);
+    if (held.kind === "needs-you") return held;
+    if (held.kind === "waiting") fence = held;
   }
-  return false;
+  return fence;
+});
+
+const spectrumFence = Effect.fnUntraced(function* (
+  sql: SqlClient.SqlClient,
+  spectrum: BoundSpectrum,
+) {
+  const waiting: ReportFence = { kind: "waiting" };
+  if (spectrum.status === "active") return waiting;
+  const report = spectrum.report;
+  if (report === null)
+    return spectrum.status === "retired" ? ({ kind: "released" } satisfies ReportFence) : waiting;
+  if (spectrum.reportAbandonment?.commandId === report.commandId)
+    return { kind: "released" } satisfies ReportFence;
+  if (spectrum.reportNeedsYou?.commandId === report.commandId)
+    return { kind: "needs-you", reason: spectrum.reportNeedsYou.reason } satisfies ReportFence;
+  if (report.inOutbox) return waiting;
+  const receipts = yield* sql<{ readonly status: string }>`
+    SELECT status FROM orchestration_v2_command_receipts WHERE command_id = ${report.commandId}
+  `;
+  // No receipt yet, or a rejected one: Spectrum still owes this or a new attempt.
+  if (receipts[0]?.status !== "accepted") return waiting;
+  // Only a completed report turn delivers it; an ended one waits for Spectrum's next attempt.
+  const end = yield* followSend(report.threadId, report.messageId);
+  return end.kind === "completed" ? ({ kind: "released" } satisfies ReportFence) : waiting;
 });
 
 /**

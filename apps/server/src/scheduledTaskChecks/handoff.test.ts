@@ -16,7 +16,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as Recovery from "../prism/RecoveryHistory.ts";
 import {
   followRun,
-  reportsHold,
+  reportsFence,
   resolveSchedulerRun,
   ScheduledTaskSpectra,
   schedulerRunOpenGuard,
@@ -29,14 +29,10 @@ const toJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const threadId = ThreadId.make("thread:handoff");
 let ordinal = 0;
 
-/**
- * A projection run row as the follower reads it; links live in its payload.
- * `startedAt` is the run's own timestamp, which upstream sets before delivery.
- */
+/** A projection run row as the follower reads it; links live in its payload. */
 const run = (input: {
   readonly id: string;
   readonly status: string;
-  readonly startedAt?: boolean;
   readonly userMessageId?: string;
   readonly restartOf?: string;
   readonly prismSourceOf?: string;
@@ -57,43 +53,11 @@ const run = (input: {
         id: input.id,
         threadId,
         userMessageId: input.userMessageId ?? `message:${input.id}`,
-        startedAt: input.startedAt === true ? "2026-10-08T12:00:01.000Z" : null,
         ...(input.restartOf === undefined ? {} : { restartContinuationOfRunId: input.restartOf }),
         ...(input.prismSourceOf === undefined
           ? {}
           : { forkPrismContinuationSourceRunId: input.prismSourceOf }),
       }),
-    })}`;
-  });
-
-/** A provider turn recorded for the run's attempt, as adapters do once the provider takes the prompt. */
-const providerTurn = (runId: string, status: string) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    ordinal += 1;
-    yield* sql`INSERT OR IGNORE INTO orchestration_v2_projection_run_attempts ${sql.insert({
-      attempt_id: `attempt:${runId}`,
-      thread_id: threadId,
-      run_id: runId,
-      attempt_ordinal: 1,
-      root_node_id: `node:${runId}`,
-      provider: "codex",
-      provider_thread_id: "provider-thread",
-      provider_turn_id: null,
-      status: "running",
-      payload_json: "{}",
-    })}`;
-    yield* sql`INSERT INTO orchestration_v2_projection_provider_turns ${sql.insert({
-      provider_turn_id: `turn:${runId}:${ordinal}`,
-      thread_id: threadId,
-      provider_thread_id: "provider-thread",
-      node_id: `node:${runId}`,
-      run_attempt_id: `attempt:${runId}`,
-      ordinal,
-      status,
-      started_at: "2026-10-08T12:00:02.000Z",
-      completed_at: null,
-      payload_json: "{}",
     })}`;
   });
 
@@ -105,8 +69,7 @@ const setup = Effect.gen(function* () {
 it.effect("a failed run holds until its recovery decision is conclusive", () =>
   Effect.gen(function* () {
     yield* setup;
-    yield* run({ id: "run:failed", status: "failed", startedAt: true });
-    yield* providerTurn("run:failed", "failed");
+    yield* run({ id: "run:failed", status: "failed" });
     // No fact yet is undecided, never terminal.
     assert.deepEqual(yield* followRun("run:failed"), { kind: "waiting" });
     yield* Recovery.writeRecoveryOutcome({
@@ -123,19 +86,14 @@ it.effect("a failed run holds until its recovery decision is conclusive", () =>
       outcome: "not_retryable",
       reason: "non_retryable",
     });
-    assert.deepEqual(yield* followRun("run:failed"), {
-      kind: "ended",
-      runId: "run:failed",
-      started: true,
-    });
+    assert.deepEqual(yield* followRun("run:failed"), { kind: "ended", runId: "run:failed" });
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
 it.effect("an automatic abandon ends the work for the scheduler to decide", () =>
   Effect.gen(function* () {
     yield* setup;
-    // The run's own startedAt is set before delivery; without a provider turn it never started.
-    yield* run({ id: "run:stopped", status: "failed", startedAt: true });
+    yield* run({ id: "run:stopped", status: "failed" });
     yield* Recovery.writeRecoveryOutcome({
       sourceRunId: RunId.make("run:stopped"),
       threadId,
@@ -143,18 +101,14 @@ it.effect("an automatic abandon ends the work for the scheduler to decide", () =
       outcome: "abandoned",
       reason: "stopped_or_retired",
     });
-    assert.deepEqual(yield* followRun("run:stopped"), {
-      kind: "ended",
-      runId: "run:stopped",
-      started: false,
-    });
+    assert.deepEqual(yield* followRun("run:stopped"), { kind: "ended", runId: "run:stopped" });
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
 it.effect("a retry is followed only to the exact successor that names its source", () =>
   Effect.gen(function* () {
     yield* setup;
-    yield* run({ id: "run:source", status: "failed", startedAt: true });
+    yield* run({ id: "run:source", status: "failed" });
     yield* Recovery.writeRecoveryOutcome({
       sourceRunId: RunId.make("run:source"),
       threadId,
@@ -174,14 +128,6 @@ it.effect("a retry is followed only to the exact successor that names its source
     assert.deepEqual(yield* followRun("run:source"), {
       kind: "completed",
       runId: "run:successor",
-      started: false,
-    });
-    // Delivery anywhere along the chain counts.
-    yield* providerTurn("run:source", "failed");
-    assert.deepEqual(yield* followRun("run:source"), {
-      kind: "completed",
-      runId: "run:successor",
-      started: true,
     });
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
@@ -189,17 +135,15 @@ it.effect("a retry is followed only to the exact successor that names its source
 it.effect("upstream's restart continuation is followed before any recovery fact", () =>
   Effect.gen(function* () {
     yield* setup;
-    yield* run({ id: "run:cancelled", status: "cancelled", startedAt: true });
+    yield* run({ id: "run:cancelled", status: "cancelled" });
     yield* run({ id: "run:restart", status: "running", restartOf: "run:cancelled" });
     assert.deepEqual(yield* followRun("run:cancelled"), { kind: "waiting" });
     const sql = yield* SqlClient.SqlClient;
     yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'completed'
       WHERE run_id = 'run:restart'`;
-    yield* providerTurn("run:restart", "completed");
     assert.deepEqual(yield* followRun("run:cancelled"), {
       kind: "completed",
       runId: "run:restart",
-      started: true,
     });
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
@@ -208,7 +152,9 @@ it.effect("upstream's restart continuation is followed before any recovery fact"
  * #176's published Spectrum storage (toolboxmd/chromeria 7cb115d306,
  * `spectrum/store.ts` and `spectrum/state.ts`): its exact table, and payloads
  * written as its encoder writes them. #176 owns the real adapter; this fixture
- * maps the same rows onto the fence's port.
+ * maps the same rows onto the fence's port. Needs-you is not stored: #176's
+ * adapter derives it from its bounded attempts and recovery facts, so a test
+ * supplies it per report command.
  */
 const ensureSpectraFixture = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -247,7 +193,7 @@ const decodeFixtureSpectrum = Schema.decodeUnknownSync(
   ),
 );
 
-const fixtureSpectra = {
+const fixtureSpectra = (needsYou: ReadonlyMap<string, string>) => ({
   boundTo: (schedulerRunId: string) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -272,10 +218,16 @@ const fixtureSpectra = {
             state.reportAbandonment === null
               ? null
               : { commandId: state.reportAbandonment.commandId },
+          reportNeedsYou: (() => {
+            const reason = report === null ? undefined : needsYou.get(report.commandId);
+            return report === null || reason === undefined
+              ? null
+              : { commandId: report.commandId, reason };
+          })(),
         };
       });
     }),
-};
+});
 
 const encodeCommand = Schema.encodeSync(OrchestrationV2Command);
 /** A report attempt as Spectrum dispatches it to the caller's thread. */
@@ -358,8 +310,12 @@ const bindSpectrum = (
     })}`;
   });
 
-const holds = (schedulerRunId: string) =>
-  reportsHold(schedulerRunId).pipe(Effect.provideService(ScheduledTaskSpectra, fixtureSpectra));
+const fence = (schedulerRunId: string, needsYou: ReadonlyMap<string, string> = new Map()) =>
+  reportsFence(schedulerRunId).pipe(
+    Effect.provideService(ScheduledTaskSpectra, fixtureSpectra(needsYou)),
+  );
+const released = { kind: "released" } as const;
+const waiting = { kind: "waiting" } as const;
 
 const receipt = (id: string, status: "accepted" | "rejected") =>
   Effect.gen(function* () {
@@ -375,105 +331,97 @@ const receipt = (id: string, status: "accepted" | "rejected") =>
     })}`;
   });
 
-it.effect("the completion fence holds through Spectrum, dispatch and the report's turn", () =>
+it.effect("the fence waits through Spectrum, dispatch and the report's turn", () =>
   Effect.gen(function* () {
     yield* setup;
     yield* ensureSpectraFixture;
-    assert.isFalse(yield* holds("scheduler:none"));
+    assert.deepEqual(yield* fence("scheduler:none"), released);
     yield* bindSpectrum("scheduler:active", { status: "active" });
-    assert.isTrue(yield* holds("scheduler:active"));
-    // A retired Spectrum that wrote no report does not hold, nor does a row from before reports.
+    assert.deepEqual(yield* fence("scheduler:active"), waiting);
+    // A retired Spectrum that wrote no report releases, as does a row from before reports.
     yield* bindSpectrum("scheduler:retired", { status: "retired" });
     yield* bindSpectrum("scheduler:retired", { status: "retired", legacy: true });
-    assert.isFalse(yield* holds("scheduler:retired"));
+    assert.deepEqual(yield* fence("scheduler:retired"), released);
     yield* bindSpectrum("scheduler:outbox", {
       status: "settled",
       report: "outbox",
       inOutbox: true,
     });
-    assert.isTrue(yield* holds("scheduler:outbox"));
+    assert.deepEqual(yield* fence("scheduler:outbox"), waiting);
     // Drained from the outbox with no receipt yet, or rejected awaiting Spectrum's next attempt.
     yield* bindSpectrum("scheduler:pending", { status: "settled", report: "pending" });
-    assert.isTrue(yield* holds("scheduler:pending"));
+    assert.deepEqual(yield* fence("scheduler:pending"), waiting);
     yield* receipt("rejected", "rejected");
     yield* bindSpectrum("scheduler:rejected", { status: "settled", report: "rejected" });
-    assert.isTrue(yield* holds("scheduler:rejected"));
-    // Accepted: the report's own run decides, and only a provider turn proves delivery.
+    assert.deepEqual(yield* fence("scheduler:rejected"), waiting);
+    // Accepted: the report's own run decides, and only its completion delivers it.
     yield* receipt("turn", "accepted");
     yield* bindSpectrum("scheduler:turn", { status: "settled", report: "turn" });
-    assert.isTrue(yield* holds("scheduler:turn"));
-    yield* run({
-      id: "run:report",
-      status: "running",
-      startedAt: true,
-      userMessageId: "report-message:turn",
-    });
-    yield* providerTurn("run:report", "running");
-    assert.isTrue(yield* holds("scheduler:turn"));
+    assert.deepEqual(yield* fence("scheduler:turn"), waiting);
+    yield* run({ id: "run:report", status: "running", userMessageId: "report-message:turn" });
+    assert.deepEqual(yield* fence("scheduler:turn"), waiting);
     const sql = yield* SqlClient.SqlClient;
     yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'completed' WHERE run_id = 'run:report'`;
-    assert.isFalse(yield* holds("scheduler:turn"));
-    // Every bound Spectrum must release: a second, still active one holds the run.
+    assert.deepEqual(yield* fence("scheduler:turn"), released);
+    // Every bound Spectrum must release: a second, still active one keeps the run waiting.
     yield* bindSpectrum("scheduler:turn", { status: "active" });
-    assert.isTrue(yield* holds("scheduler:turn"));
+    assert.deepEqual(yield* fence("scheduler:turn"), waiting);
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
-it.effect("a report whose run ended before any provider turn holds, completed or not", () =>
+it.effect("a report releases only on its completed turn or the user's abandonment", () =>
   Effect.gen(function* () {
     yield* setup;
     yield* ensureSpectraFixture;
-    // Failed before the prompt reached the provider: startedAt is set, no provider turn, and
-    // recovery concluded. The run's own timestamp never releases the fence.
-    yield* receipt("prestart", "accepted");
+    // The report's run failed and recovery concluded: no delivery, and Spectrum may try again.
+    yield* receipt("failed", "accepted");
     yield* run({
-      id: "run:prestart",
+      id: "run:failed-report",
       status: "failed",
-      startedAt: true,
-      userMessageId: "report-message:prestart",
+      userMessageId: "report-message:failed",
     });
     yield* Recovery.writeRecoveryOutcome({
-      sourceRunId: RunId.make("run:prestart"),
+      sourceRunId: RunId.make("run:failed-report"),
       threadId,
       status: "decided",
       outcome: "not_retryable",
       reason: "non_retryable",
     });
-    yield* bindSpectrum("scheduler:prestart", { status: "settled", report: "prestart" });
-    assert.isTrue(yield* holds("scheduler:prestart"));
-    // Completed with no provider turn is no delivery either.
-    yield* receipt("silent", "accepted");
-    yield* run({
-      id: "run:silent",
-      status: "completed",
-      startedAt: true,
-      userMessageId: "report-message:silent",
+    yield* bindSpectrum("scheduler:failed", { status: "settled", report: "failed" });
+    assert.deepEqual(yield* fence("scheduler:failed"), waiting);
+    // Spectrum will not try again, so the report needs you, and so does the run.
+    const reason = "Spectrum could not deliver its report after 3 attempts";
+    assert.deepEqual(yield* fence("scheduler:failed", new Map([["report:failed", reason]])), {
+      kind: "needs-you",
+      reason,
     });
-    yield* bindSpectrum("scheduler:silent", { status: "settled", report: "silent" });
-    assert.isTrue(yield* holds("scheduler:silent"));
-    // A pending provider turn never started.
-    yield* providerTurn("run:silent", "pending");
-    assert.isTrue(yield* holds("scheduler:silent"));
-    // Abandoning an earlier report attempt does not release the current one.
+    // Needs-you or an abandonment of an earlier attempt does not count for the current one.
+    assert.deepEqual(
+      yield* fence("scheduler:failed", new Map([["report:earlier", reason]])),
+      waiting,
+    );
     yield* bindSpectrum("scheduler:stale", {
       status: "settled",
-      report: "silent",
+      report: "failed",
       abandoned: "earlier",
     });
-    assert.isTrue(yield* holds("scheduler:stale"));
-    // The user abandoning this exact report releases it, for either run.
+    assert.deepEqual(yield* fence("scheduler:stale"), waiting);
+    // The user abandoning this exact report releases it, even while it needs them.
     yield* bindSpectrum("scheduler:abandoned", {
       status: "settled",
-      report: "silent",
-      abandoned: "silent",
+      report: "failed",
+      abandoned: "failed",
     });
-    assert.isFalse(yield* holds("scheduler:abandoned"));
-    yield* bindSpectrum("scheduler:abandoned-prestart", {
-      status: "settled",
-      report: "prestart",
-      abandoned: "prestart",
+    assert.deepEqual(
+      yield* fence("scheduler:abandoned", new Map([["report:failed", reason]])),
+      released,
+    );
+    // A report that needs you outranks another Spectrum still waiting.
+    yield* bindSpectrum("scheduler:failed", { status: "active" });
+    assert.deepEqual(yield* fence("scheduler:failed", new Map([["report:failed", reason]])), {
+      kind: "needs-you",
+      reason,
     });
-    assert.isFalse(yield* holds("scheduler:abandoned-prestart"));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 

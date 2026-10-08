@@ -21,6 +21,7 @@ import {
   type CommandOutcome,
   type RunObservation,
 } from "./engine.ts";
+import type { ReportFence } from "./handoff.ts";
 import { checkedRunStatus, outcomeCheckSummary, type CheckState } from "./state.ts";
 import { ensureCheckSchema, readCheckState, writeCheckState } from "./store.ts";
 
@@ -113,13 +114,13 @@ const harness = (options: { readonly role?: string } = {}) =>
     let observation: RunObservation = { ...idle, landed: false, started: false };
     let passes = false;
     let dispatchFails = false;
-    let reportsPending = false;
+    let fence: ReportFence = { kind: "released" };
     let workIsOpen = false;
     let reopenOnCheck = false;
     const runs = yield* makeCheckedRuns({
       changed: Effect.void,
       workOpen: () => Effect.sync(() => workIsOpen),
-      reportsHold: () => Effect.sync(() => reportsPending),
+      reportsFence: () => Effect.sync(() => fence),
       observe: () => Effect.sync(() => observation),
       dispatch: ({ send }) =>
         Effect.suspend(() =>
@@ -217,8 +218,8 @@ const harness = (options: { readonly role?: string } = {}) =>
       failDispatch: (value: boolean) => {
         dispatchFails = value;
       },
-      holdReports: (value: boolean) => {
-        reportsPending = value;
+      reports: (next: ReportFence) => {
+        fence = next;
       },
       openWork: (value: boolean) => {
         workIsOpen = value;
@@ -774,6 +775,46 @@ it.effect("a pass never settles when the run's work resumed during its check", (
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
+it.effect(
+  "a report that needs you makes the run need you, and only its release resumes the check",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const h = yield* harness();
+      yield* h.save({ checkCommand: "check", checkReason: "outcome" });
+      yield* h.fire("scheduled");
+      h.set({ landed: true, started: true, busy: false });
+      h.pass(true);
+      h.reports({
+        kind: "needs-you",
+        reason: "Spectrum could not deliver its report after 3 attempts",
+      });
+      yield* h.runs.drive(task());
+      const needsYou = yield* h.state();
+      assert.equal(needsYou.runs[0]?.stage, "needs-you");
+      assert.deepEqual(checkedRunStatus(needsYou), {
+        status: "failed",
+        error: "Needs you: Spectrum report: Spectrum could not deliver its report after 3 attempts",
+      });
+      // It is never driven, so the check does not run again and nothing is sent.
+      yield* h.runs.drive(task());
+      assert.equal(h.checks.length, 1);
+      const sends = h.sent.length;
+      // Run now re-reads the reports; while they still need you it is refused.
+      const refused = yield* Effect.exit(h.decide("manual", NOW + 1_000));
+      assert.isTrue(Exit.isFailure(refused));
+      assert.include(String(refused), "The Spectrum report still needs you");
+      // After the user abandons that report, Run now resumes the run without messaging the agent.
+      h.reports({ kind: "released" });
+      assert.equal((yield* h.decide("manual", NOW + 2_000))._tag, "skip");
+      assert.equal((yield* h.state()).runs[0]?.stage, "running");
+      yield* h.runs.drive(task());
+      assert.equal(h.checks.length, 2, "the pinned check decides once the reports release");
+      assert.equal((yield* h.state()).runs[0]?.stage, "done");
+      assert.equal(h.sent.length, sends);
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
 it.effect("a passed check waits for bound reports, then reruns before it settles", () =>
   Effect.gen(function* () {
     yield* TestClock.setTime(NOW);
@@ -782,7 +823,7 @@ it.effect("a passed check waits for bound reports, then reruns before it settles
     yield* h.fire("scheduled");
     h.set({ landed: true, started: true, busy: false });
     h.pass(true);
-    h.holdReports(true);
+    h.reports({ kind: "waiting" });
     yield* h.runs.drive(task());
     const held = yield* h.state();
     assert.equal(held.runs[0]?.stage, "running");
@@ -791,7 +832,7 @@ it.effect("a passed check waits for bound reports, then reruns before it settles
     // While reports hold, the check is not run again.
     yield* h.runs.drive(task());
     assert.equal(h.checks.length, 1);
-    h.holdReports(false);
+    h.reports({ kind: "released" });
     yield* h.runs.drive(task());
     assert.equal(h.checks.length, 2, "the check reruns after the reports' turns ended");
     assert.equal((yield* h.state()).runs[0]?.stage, "done");

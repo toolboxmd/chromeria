@@ -39,7 +39,7 @@ import * as Scheduler from "../scheduling/Scheduler.ts";
 import { COMMAND_TIMEOUT_MS, runShellCommand } from "./commandRunner.ts";
 import { ScheduledTaskDispatchPolicy } from "./DispatchPolicy.ts";
 import { makeCheckedRuns, ScheduledTaskCheckError, type CheckedRuns } from "./engine.ts";
-import { followSend, reachedProvider, reportsHold } from "./handoff.ts";
+import { followSend, reportsFence } from "./handoff.ts";
 import { chooseWeeklyMinutes, forkSameSchedule, occupiedMinutes } from "./schedules.ts";
 import {
   CHECK_OUTPUT_BYTES,
@@ -216,8 +216,8 @@ const makeEngine = Effect.gen(function* () {
             Effect.mapError(checkError("Could not follow the scheduled run")),
           );
     },
-    reportsHold: (schedulerRunId) =>
-      reportsHold(schedulerRunId).pipe(
+    reportsFence: (schedulerRunId) =>
+      reportsFence(schedulerRunId).pipe(
         Effect.mapError(checkError("Could not read the run's bound reports")),
       ),
     observe: (task, run) =>
@@ -266,15 +266,11 @@ const makeEngine = Effect.gen(function* () {
             : yield* followSend(threadId, last.messageId).pipe(
                 Effect.mapError(checkError("Could not follow the scheduled run")),
               );
-        const started = yield* reachedProvider(
-          sql,
-          sendRuns.map((entry) => entry.id),
-        ).pipe(Effect.mapError(checkError("Could not read provider turns")));
         return {
           unavailable: retired,
           landed:
             last !== undefined && sendRuns.some((entry) => entry.userMessageId === last.messageId),
-          started,
+          started: sendRuns.some((entry) => entry.startedAt !== null),
           busy:
             shell.activeRunId !== null ||
             BUSY_STATUSES.has(shell.status) ||

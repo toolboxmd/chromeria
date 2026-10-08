@@ -135,11 +135,7 @@ it.effect(
             outcome: "not_retryable",
             reason: "opted_out",
           });
-          assert.deepEqual(yield* followRun(run.id), {
-            kind: "ended",
-            runId: run.id,
-            started: false,
-          });
+          assert.deepEqual(yield* followRun(run.id), { kind: "ended", runId: run.id });
         }),
       );
       // The user re-enables the reset: pending recovery holds over the recorded opt-out.
@@ -199,11 +195,10 @@ it.effect(
               "successor:completed",
             ),
           ]);
-          // Completed through the exact chain; no provider turn was recorded for it.
+          // Completed through the exact chain.
           assert.deepEqual(yield* followRun(run.id), {
             kind: "completed",
             runId: successor.id,
-            started: false,
           });
         }),
       );

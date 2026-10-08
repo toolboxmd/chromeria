@@ -21,6 +21,7 @@ import {
   ScheduledTaskDispatchRefused,
   type ScheduledTaskDispatchDecision,
 } from "./DispatchPolicy.ts";
+import type { ReportFence } from "./handoff.ts";
 import { forkScheduledSlot } from "./schedules.ts";
 import {
   RECOVERY_DELAYS_MS,
@@ -133,10 +134,10 @@ export interface CheckedRunDeps {
   readonly workOpen: (
     run: CheckedRun,
   ) => Effect.Effect<boolean, ScheduledTaskCheckError, SqlClient.SqlClient>;
-  /** Whether bound Spectrum reports still hold this run (the D32 fence), read in the caller's transaction. */
-  readonly reportsHold: (
+  /** Where bound Spectrum reports leave this run (the D32/D40 fence), read in the caller's transaction. */
+  readonly reportsFence: (
     schedulerRunId: string,
-  ) => Effect.Effect<boolean, ScheduledTaskCheckError, SqlClient.SqlClient>;
+  ) => Effect.Effect<ReportFence, ScheduledTaskCheckError, SqlClient.SqlClient>;
   readonly changed: Effect.Effect<void>;
 }
 
@@ -194,6 +195,21 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
   const executing = new Set<string>();
   const store = (previous: CheckState, next: CheckState) =>
     writeCheckState(previous, compact(next)).pipe(Effect.tap(() => deps.changed));
+
+  /** A bound report needs the user, so the run does (D40); its check is not run until it releases. */
+  const reportNeedsYou = (state: CheckState, run: CheckedRun, reason: string) => {
+    const error = `Spectrum report: ${reason}`;
+    return store(state, {
+      ...replaceRun(state, {
+        ...run,
+        stage: "needs-you",
+        awaitingReports: true,
+        retryAt: null,
+        error,
+      }),
+      lastError: error,
+    });
+  };
 
   const retry = (state: CheckState, run: CheckedRun, error: string, now: number) => {
     const delay = RECOVERY_DELAYS_MS[run.attempt];
@@ -397,6 +413,18 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
               if (state.kind === "command") return yield* refuse("This command is still running.");
               if (current.stage !== "needs-you")
                 return yield* refuse("This task already has unfinished work.");
+              // Its check passed and a bound report needs you: resuming reads the
+              // reports again and never messages the agent.
+              if (current.awaitingReports === true) {
+                const fence = yield* deps.reportsFence(current.id);
+                if (fence.kind === "needs-you")
+                  return yield* refuse(`The Spectrum report still needs you: ${fence.reason}`);
+                yield* store(
+                  state,
+                  replaceRun(state, { ...current, stage: "running", error: null }),
+                );
+                return skipDecision;
+              }
               const observation = yield* deps.observe(task, current);
               if (observation.unavailable)
                 return yield* refuse(
@@ -542,7 +570,18 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
           return;
         } else if (run.stage === "running" || run.stage === "usage-limit") {
           // A passed check waits for bound reports before it is run again.
-          if (run.awaitingReports === true && (yield* deps.reportsHold(run.id))) return;
+          if (run.awaitingReports === true) {
+            const waitingRun = run;
+            const fence = yield* sql.withTransaction(
+              Effect.gen(function* () {
+                const fence = yield* deps.reportsFence(waitingRun.id);
+                if (fence.kind === "needs-you")
+                  yield* reportNeedsYou(state, waitingRun, fence.reason);
+                return fence;
+              }),
+            );
+            if (fence.kind !== "released") return;
+          }
           const { result, cwd } = yield* check(task, state, run, now);
           if (result.passed) {
             const checked = state;
@@ -552,17 +591,18 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
             yield* sql.withTransaction(
               Effect.gen(function* () {
                 if (yield* deps.workOpen(passedRun)) return;
-                const holding = yield* deps.reportsHold(passedRun.id);
+                const fence = yield* deps.reportsFence(passedRun.id);
+                const checkedRun = { ...passedRun, checkCwd: cwd, check: result, retryAt: null };
+                if (fence.kind === "needs-you")
+                  return yield* reportNeedsYou(checked, checkedRun, fence.reason);
+                const released = fence.kind === "released";
                 yield* store(checked, {
                   ...replaceRun(checked, {
-                    ...passedRun,
-                    checkCwd: cwd,
-                    check: result,
-                    stage: holding ? passedRun.stage : "done",
-                    awaitingReports: holding,
-                    retryAt: null,
+                    ...checkedRun,
+                    stage: released ? "done" : passedRun.stage,
+                    awaitingReports: !released,
                   }),
-                  ...(holding ? {} : { failureStreak: 0, lastError: null }),
+                  ...(released ? { failureStreak: 0, lastError: null } : {}),
                 });
               }),
             );
