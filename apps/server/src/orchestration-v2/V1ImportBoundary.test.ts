@@ -34,7 +34,10 @@ function productionTypeScriptFiles(directory: string): ReadonlyArray<string> {
   return NodeFS.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = NodePath.join(directory, entry.name);
     if (entry.isDirectory()) return productionTypeScriptFiles(path);
-    return entry.isFile() && entry.name.endsWith(".ts") && !entry.name.includes(".test.")
+    return entry.isFile() &&
+      entry.name.endsWith(".ts") &&
+      !entry.name.includes(".test.") &&
+      !entry.name.endsWith(".testFixtures.ts")
       ? [path]
       : [];
   });
@@ -88,4 +91,13 @@ it("keeps the legacy importer out of reach of new code", () => {
     "project/ProjectService.ts",
     "serverRuntimeStartup.ts",
   ]);
+});
+
+it("keeps test fixture helpers out of production imports", () => {
+  const fixtureImports = relativeSources
+    .filter(({ source }) =>
+      /(?:from\s*|import\s*\()["'][^"']*\.testFixtures(?:\.ts)?["']/.test(source),
+    )
+    .map(({ path }) => path);
+  assert.deepEqual(fixtureImports, []);
 });
