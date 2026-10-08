@@ -753,3 +753,51 @@ Child creation paths are owned by child-threads and shared with thread-people.
   ]
 }
 ```
+
+## prism-stream-clock
+
+```json
+{
+  "id": "prism-stream-clock",
+  "purpose": "Measure attempt-owned provider activity in memory and persist one idempotent healthy sample per finished provider turn across restarts, without importing v1 activities.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/172"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/184"],
+  "newFiles": [
+    "apps/server/src/prism/ProviderEventIngestor.ts",
+    "apps/server/src/prism/StreamStatsStore.ts",
+    "apps/server/src/prism/StreamStatsStore.test.ts",
+    "apps/server/src/prism/streamClock.ts",
+    "apps/server/src/prism/streamClock.test.ts",
+    "apps/server/src/prism/streamClock.integration.test.ts"
+  ],
+  "upstreamFiles": ["apps/server/src/orchestration-v2/RunExecutionService.ts"],
+  "sharedFiles": ["apps/server/src/orchestration-v2/runtimeLayer.ts"],
+  "keywords": [
+    "StreamClock",
+    "StreamStatsStore",
+    "fork_prism_stream_stats",
+    "StreamClockAttempt",
+    "StreamClockHooks"
+  ]
+}
+```
+
+## prism-stale-turn-detector
+
+```json
+{
+  "id": "prism-stale-turn-detector",
+  "purpose": "Send one advisory parent notice for a silent active child; exclude host suspension, open tools and retired or waiting work. V2 and Prism recovery retain terminal failure delivery.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/172"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/184"],
+  "newFiles": [
+    "apps/server/src/prism/staleTurnDetector.ts",
+    "apps/server/src/prism/staleTurnDetector.test.ts",
+    "apps/server/src/prism/staleTurnMonitor.ts",
+    "apps/server/src/prism/staleTurnMonitor.integration.test.ts"
+  ],
+  "upstreamFiles": [],
+  "sharedFiles": ["apps/server/src/orchestration-v2/runtimeLayer.ts"],
+  "keywords": ["StaleTurnMonitor", "makeStaleTurnDetectorState", "queue_after_active", "silence"]
+}
+```
