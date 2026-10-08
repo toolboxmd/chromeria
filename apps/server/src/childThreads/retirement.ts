@@ -160,6 +160,43 @@ export function retirementAdmission(input: {
   };
 }
 
+export type PropagatedStop = {
+  readonly ancestorThreadId: ThreadId;
+  readonly originalToken: CommandId;
+};
+
+/** A delayed internal Stop cannot revoke a later explicit admission or replace a newer Stop. */
+export function propagatedStopAdmission(
+  threadId: ThreadId,
+  provenance: PropagatedStop,
+): ForkCommitPlan {
+  return {
+    guards: [
+      Effect.gen(function* () {
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const ancestor = yield* projections
+          .getThread(provenance.ancestorThreadId)
+          .pipe(
+            Effect.map(Option.some),
+            Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeedNone }),
+          );
+        const child = yield* projections.getThread(threadId);
+        const state = yield* readRetirementState(threadId);
+        if (
+          Option.isNone(ancestor) ||
+          ancestor.value.forkRetirement?.token !== provenance.originalToken ||
+          !state.tokens.includes(provenance.originalToken) ||
+          child.forkResumedRetirements?.includes(provenance.originalToken)
+        )
+          return "accept_noop" as const;
+      }).pipe(
+        Effect.mapError(() => new ForkCommitGuardRejected({ threadId, kind: "storage_failure" })),
+      ),
+    ],
+    mutations: [],
+  };
+}
+
 export function subagentDescendants(
   threadId: ThreadId,
   threads: ReadonlyArray<Pick<RetirementThread, "id" | "lineage">>,

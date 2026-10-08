@@ -22,10 +22,15 @@ export class ForkCommitGuardRejected extends Schema.TaggedError<ForkCommitGuardR
   }
 }
 
-/** Domain-owned plans run inside the event/receipt transaction, never on receipt replay. */
+/** Domain-owned plans run inside the event/receipt transaction, never on receipt replay.
+ * An accept_noop guard records only the receipt and skips every remaining plan and side effect. */
 export interface ForkCommitPlan {
   readonly guards: ReadonlyArray<
-    Effect.Effect<void, ForkCommitGuardRejected, SqlClient.SqlClient | ProjectionStoreV2>
+    Effect.Effect<
+      void | "accept_noop",
+      ForkCommitGuardRejected,
+      SqlClient.SqlClient | ProjectionStoreV2
+    >
   >;
   readonly mutations: ReadonlyArray<
     Effect.Effect<void, ForkCommitGuardRejected, SqlClient.SqlClient | ProjectionStoreV2>

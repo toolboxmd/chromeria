@@ -473,6 +473,7 @@ export const layerExecutor: Layer.Layer<
                 threadId: effect.threadId,
                 commandId: effect.commandId,
                 reason: effect.request.reason,
+                forkRetirementStop: effect.request.forkRetirementStop,
               })
               .pipe(
                 Effect.mapError(

@@ -374,6 +374,9 @@ export interface ThreadManagementServiceShape {
     readonly threadId: ThreadId;
     readonly commandId: CommandId;
     readonly reason?: string | undefined;
+    readonly forkRetirementStop?:
+      | { readonly ancestorThreadId: ThreadId; readonly originalToken: CommandId }
+      | undefined;
   }) => Effect.Effect<void, Orchestrator.OrchestratorV2Error>;
   readonly getThreadEventSequence: Orchestrator.OrchestratorV2["Service"]["getThreadEventSequence"];
   readonly recoverDelegatedTask: Orchestrator.OrchestratorV2["Service"]["recoverDelegatedTask"];
@@ -858,6 +861,10 @@ const make = Effect.gen(function* () {
           type: "thread.stop",
           commandId: CommandId.make(`${input.commandId}:stop:${threadId}`),
           threadId,
+          forkRetirementStop: input.forkRetirementStop ?? {
+            ancestorThreadId: input.threadId,
+            originalToken: input.commandId,
+          },
           ...(input.reason === undefined ? {} : { reason: input.reason }),
         }).pipe(
           Effect.catch((error) =>

@@ -19,6 +19,7 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import { EventSinkV2 } from "../orchestration-v2/EventSink.ts";
+import { EffectOutboxV2 } from "../orchestration-v2/EffectOutbox.ts";
 import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import type {
@@ -27,6 +28,8 @@ import type {
 } from "../orchestration-v2/ProviderAdapter.ts";
 import * as Registry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as Sessions from "../orchestration-v2/ProviderSessionManager.ts";
+import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
+import { isThreadRetired } from "./retirement.ts";
 import * as Harness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
 
 it.effect.each([
@@ -36,6 +39,7 @@ it.effect.each([
   ["startTurn", "ancestor", "none"],
   ["startTurn", "self", "newer-owner"],
   ["startTurn", "self", "background"],
+  ["startTurn", "resumed-grandchild", "none"],
 ] as const)(
   "normal Stop with adapter %s blocked, target %s, protection %s",
   ([blocked, stopTarget, protection]) =>
@@ -136,7 +140,8 @@ it.effect.each([
         });
         const sink = yield* EventSinkV2;
         const parentId = ThreadId.make(`parent:${blocked}`);
-        if (stopTarget === "ancestor") {
+        const revivedGrandchild = stopTarget === "resumed-grandchild";
+        if (stopTarget === "ancestor" || revivedGrandchild) {
           yield* orchestrator.dispatch({
             type: "thread.create",
             commandId: CommandId.make(`create-parent:${blocked}`),
@@ -151,6 +156,44 @@ it.effect.each([
             createdBy: "user",
             creationSource: "web",
           });
+          let directParentId = parentId;
+          if (revivedGrandchild) {
+            directParentId = ThreadId.make("unresumed-native-intermediate");
+            yield* orchestrator.dispatch({
+              type: "thread.create",
+              commandId: CommandId.make("create-native-intermediate"),
+              threadId: directParentId,
+              projectId: ProjectId.make("project:production-stop"),
+              title: "Intermediate",
+              modelSelection: { instanceId, model: "gpt-5.1-codex" },
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+              createdBy: "user",
+              creationSource: "web",
+            });
+            const middle = (yield* orchestrator.getThreadProjection(directParentId)).thread;
+            yield* sink.write({
+              events: [
+                {
+                  id: EventId.make("native-intermediate-lineage"),
+                  type: "thread.metadata-updated",
+                  threadId: directParentId,
+                  providerInstanceId: instanceId,
+                  occurredAt: yield* DateTime.now,
+                  payload: {
+                    ...middle,
+                    lineage: {
+                      parentThreadId: parentId,
+                      rootThreadId: parentId,
+                      relationshipToParent: "subagent",
+                    },
+                  },
+                },
+              ],
+            });
+          }
           const child = yield* orchestrator.getThreadProjection(threadId);
           yield* sink.write({
             events: [
@@ -163,7 +206,7 @@ it.effect.each([
                 payload: {
                   ...child.thread,
                   lineage: {
-                    parentThreadId: parentId,
+                    parentThreadId: directParentId,
                     rootThreadId: parentId,
                     relationshipToParent: "subagent",
                   },
@@ -172,6 +215,25 @@ it.effect.each([
             ],
           });
           assert.lengthOf((yield* orchestrator.getThreadProjection(parentId)).subagents, 0);
+        }
+        const outbox = yield* EffectOutboxV2;
+        let delayedEffectId: string | undefined;
+        const rootStopId = CommandId.make("stop-before-grandchild-revival");
+        if (revivedGrandchild) {
+          yield* orchestrator.dispatch({
+            type: "thread.stop",
+            commandId: rootStopId,
+            threadId: parentId,
+          });
+          // Hold the real durable root effect while another worker starts the explicit turn.
+          const delayed = yield* outbox.claimNext({
+            workerId: "delayed-root-stop",
+            leaseDurationMs: 60_000,
+          });
+          assert.isTrue(Option.isSome(delayed));
+          if (Option.isNone(delayed)) return;
+          assert.equal(delayed.value.request.type, "delegated-tasks.stop");
+          delayedEffectId = delayed.value.id;
         }
         yield* orchestrator.dispatch({
           type: "message.dispatch",
@@ -190,6 +252,44 @@ it.effect.each([
         assert.lengthOf(before.runs, 1);
         assert.lengthOf(before.attempts, 1);
         assert.include(["starting", "running"], before.runs[0]!.status);
+        if (revivedGrandchild) {
+          const threads = yield* ThreadManagementService;
+          yield* threads.stopDelegatedTasks({ threadId: parentId, commandId: rootStopId });
+          assert.isFalse(yield* Deferred.isDone(cancelled));
+          assert.isFalse(yield* isThreadRetired(threadId));
+          assert.equal(
+            (yield* orchestrator.getThreadProjection(threadId)).runs[0]!.status,
+            "running",
+          );
+          const launch = (yield* outbox.listByCommandId(CommandId.make(`start:${blocked}`))).find(
+            (effect) => effect.request.type === "provider-turn.start",
+          );
+          assert.equal(launch?.status, "running");
+          const intermediate = yield* orchestrator.getThreadProjection(
+            ThreadId.make("unresumed-native-intermediate"),
+          );
+          assert.equal(intermediate.thread.forkRetirement?.token, rootStopId);
+          assert.lengthOf(intermediate.subagents, 0);
+          assert.isTrue(yield* isThreadRetired(intermediate.thread.id));
+          assert.lengthOf(
+            yield* outbox.listByCommandId(
+              CommandId.make(`${rootStopId}:stop:${intermediate.thread.id}`),
+            ),
+            0,
+          );
+          yield* Deferred.succeed(released, undefined);
+          yield* Fiber.join(execution);
+          assert.equal(yield* Ref.get(acceptedTurns), 1);
+          assert.equal(
+            (yield* orchestrator.getThreadProjection(threadId)).runs[0]!.status,
+            "running",
+          );
+          assert.isFalse(yield* isThreadRetired(threadId));
+          assert.isTrue(
+            yield* outbox.succeed({ effectId: delayedEffectId!, workerId: "delayed-root-stop" }),
+          );
+          return;
+        }
         if (protection !== "none") {
           const providerThread = before.providerThreads[0]!;
           yield* sink.write({

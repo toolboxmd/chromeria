@@ -552,11 +552,30 @@ const layerBase: Layer.Layer<
           }
 
           for (const plan of input.forkPlans ?? []) {
-            for (const guard of plan.guards)
-              yield* guard.pipe(
+            for (const guard of plan.guards) {
+              const decision = yield* guard.pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
                 Effect.provideService(ProjectionStore.ProjectionStoreV2, projectionStore),
               );
+              if (decision === "accept_noop") {
+                const receipt: CommandReceiptStore.CommandReceiptV2 = {
+                  commandId: input.commandId,
+                  threadId: input.threadId,
+                  commandType: input.commandType,
+                  acceptedAt: input.acceptedAt,
+                  resultSequence: yield* eventStore.latestSequence({ threadId: input.threadId }),
+                  status: "accepted",
+                  error: null,
+                };
+                yield* commandReceipts.upsert(receipt);
+                return {
+                  receipt,
+                  storedEvents: [],
+                  committed: true as const,
+                  cancelledEffectIds: [],
+                };
+              }
+            }
           }
           for (const plan of input.forkPlans ?? []) {
             for (const mutation of plan.mutations)
@@ -616,7 +635,7 @@ const layerBase: Layer.Layer<
               result.cancelledEffectIds,
               input.cancelUnsettledEffects?.drain,
             );
-            if (result.committed && input.effects.length > 0) {
+            if (result.committed && result.storedEvents.length > 0 && input.effects.length > 0) {
               yield* effectOutbox.notifyAvailable(input.effects.length);
             }
             if (result.committed) yield* publishStoredEvents(result.storedEvents);

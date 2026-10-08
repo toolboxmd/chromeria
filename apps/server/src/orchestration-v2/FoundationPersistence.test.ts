@@ -1477,6 +1477,114 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       }),
   );
 
+  it.effect(
+    "accept_noop commits only its accepted receipt and skips every later fork plan and side effect",
+    () =>
+      Effect.gen(function* () {
+        const sink = yield* EventSink.EventSinkV2;
+        const sql = yield* SqlClient.SqlClient;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread:fork-noop");
+        const commandId = CommandId.make("command:fork-noop");
+        yield* sink.write({
+          events: [
+            threadCreatedEvent({
+              id: "event:fork-noop:seed",
+              thread: makeThread(threadId, now),
+              now,
+            }),
+          ],
+        });
+        yield* outbox.enqueue([
+          {
+            id: "effect:fork-noop:existing",
+            commandId: CommandId.make("command:fork-noop:seed"),
+            threadId,
+            request: { type: "terminal.cleanup" },
+          },
+        ]);
+        yield* sql`CREATE TABLE fork_noop_proof (id TEXT PRIMARY KEY)`;
+        const beforeThread = yield* projections.getThread(threadId);
+        const beforeEffects = yield* sql`SELECT * FROM orchestration_v2_effect_outbox`;
+        const beforeSequence = yield* sink.latestSequence({ threadId });
+        const mutation = Effect.gen(function* () {
+          const transactionSql = yield* SqlClient.SqlClient;
+          yield* transactionSql`INSERT INTO fork_noop_proof (id) VALUES ('unexpected')`.pipe(
+            Effect.mapError(
+              () => new ForkCommitGuardRejected({ threadId, kind: "storage_failure" }),
+            ),
+          );
+        });
+        const input = {
+          commandId,
+          threadId,
+          commandType: "thread.stop",
+          acceptedAt: now,
+          events: [
+            threadCreatedEvent({
+              id: "event:fork-noop:unexpected",
+              thread: { ...beforeThread, title: "Must not change" },
+              now,
+            }),
+          ],
+          effects: [
+            {
+              id: "effect:fork-noop:unexpected",
+              commandId,
+              threadId,
+              request: { type: "terminal.cleanup" as const },
+            },
+          ],
+          cancelUnsettledEffects: {
+            effectTypes: ["terminal.cleanup" as const],
+            reason: "Must not cancel",
+            drain: true,
+          },
+        };
+        const result = yield* sink.commitCommand({
+          ...input,
+          forkPlans: [
+            { guards: [Effect.succeed("accept_noop" as const)], mutations: [mutation] },
+            {
+              guards: [
+                Effect.fail(new ForkCommitGuardRejected({ threadId, kind: "state_conflict" })),
+              ],
+              mutations: [mutation],
+            },
+          ],
+        });
+        assert.equal(result.receipt.status, "accepted");
+        assert.equal(result.receipt.resultSequence, beforeSequence);
+        assert.isTrue(result.committed);
+        assert.lengthOf(result.storedEvents, 0);
+        assert.equal(result.cancelledEffectCount, 0);
+        assert.deepEqual(yield* projections.getThread(threadId), beforeThread);
+        assert.deepEqual(yield* sql`SELECT * FROM orchestration_v2_effect_outbox`, beforeEffects);
+        assert.lengthOf(yield* sql`SELECT id FROM fork_noop_proof`, 0);
+        assert.equal(yield* sink.latestSequence({ threadId }), beforeSequence);
+        const replay = yield* sink.commitCommand({
+          ...input,
+          forkPlans: [
+            {
+              guards: [Effect.die("No-op receipt replay must not evaluate guards")],
+              mutations: [mutation],
+            },
+          ],
+        });
+        assert.isFalse(replay.committed);
+        assert.equal(replay.receipt.status, "accepted");
+        assert.lengthOf(replay.storedEvents, 0);
+        // This suite shares its store; leave no pending proof effect for later worker tests.
+        yield* outbox.cancelUnsettled({
+          threadId,
+          effectTypes: ["terminal.cleanup"],
+          reason: "No-op proof complete",
+        });
+      }),
+  );
+
   it.effect("does not evaluate fork guards or mutations on accepted receipt replay", () =>
     Effect.gen(function* () {
       const sink = yield* EventSink.EventSinkV2;

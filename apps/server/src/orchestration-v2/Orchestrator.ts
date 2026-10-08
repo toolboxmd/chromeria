@@ -95,6 +95,7 @@ import { isUndeliveredMailboxSteer } from "./NotificationMailbox.ts";
 import {
   explicitMessage,
   humanMessage,
+  propagatedStopAdmission,
   readRetirementState,
   retirementAdmission,
 } from "../childThreads/retirement.ts";
@@ -10449,6 +10450,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               threadId: command.threadId,
               request: {
                 type: "delegated-tasks.stop",
+                forkRetirementStop: {
+                  ancestorThreadId: command.threadId,
+                  originalToken: command.commandId,
+                },
                 ...(command.reason === undefined ? {} : { reason: command.reason }),
               },
             } satisfies PendingOrchestrationEffectV2,
@@ -10654,6 +10659,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const stopping =
       command.type === "thread.stop" ||
       (command.type === "run.interrupt" && command.holdQueue === true);
+    const propagatedStop = command.type === "thread.stop" ? command.forkRetirementStop : undefined;
     const state = needsAdmission
       ? yield* retirement(admissionThreadId).pipe(
           Effect.mapError(
@@ -10677,6 +10683,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 : {}),
             }),
           ];
+    if (command.type === "thread.stop" && command.forkRetirementStop !== undefined)
+      forkPlans.push(propagatedStopAdmission(command.threadId, command.forkRetirementStop));
     const plan = yield* dispatchOnce(command).pipe(
       Effect.flatMap((planned) =>
         Effect.gen(function* () {
@@ -10706,7 +10714,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           const updatedThread: OrchestrationV2AppThread = stopping
             ? {
                 ...thread,
-                forkRetirement: { token: command.commandId },
+                forkRetirement: { token: propagatedStop?.originalToken ?? command.commandId },
                 forkResumedRetirements: [],
                 updatedAt: now,
               }
@@ -10730,20 +10738,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             occurredAt: now,
             payload: updatedThread,
           });
-          const effects = stopping
-            ? [
-                ...planned.effects,
-                {
-                  id: `effect:${command.commandId}:delegated-tasks.stop`,
-                  commandId: command.commandId,
-                  threadId: thread.id,
-                  request: { type: "delegated-tasks.stop" as const },
-                },
-              ].filter(
-                (effect, index, all) =>
-                  all.findIndex((candidate) => candidate.id === effect.id) === index,
-              )
-            : planned.effects;
+          const effects =
+            stopping && propagatedStop === undefined
+              ? [
+                  ...planned.effects,
+                  {
+                    id: `effect:${command.commandId}:delegated-tasks.stop`,
+                    commandId: command.commandId,
+                    threadId: thread.id,
+                    request: {
+                      type: "delegated-tasks.stop" as const,
+                      forkRetirementStop: {
+                        ancestorThreadId: thread.id,
+                        originalToken: command.commandId,
+                      },
+                    },
+                  },
+                ].filter(
+                  (effect, index, all) =>
+                    all.findIndex((candidate) => candidate.id === effect.id) === index,
+                )
+              : planned.effects;
           return {
             ...planned,
             events: [...planned.events, event],
@@ -10754,7 +10769,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   cancelUnsettledEffects: {
                     effectTypes: ["provider-turn.start", "provider-turn.restart"] as const,
                     reason: "Thread subtree stopped.",
-                    includeSubagentDescendants: true,
+                    includeSubagentDescendants: propagatedStop === undefined,
                     drain: true,
                   },
                 }
