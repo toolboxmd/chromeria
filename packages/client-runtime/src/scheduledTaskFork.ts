@@ -4,6 +4,8 @@ import type {
   ScheduledTaskForkSchedule,
   ScheduledTaskOutcomeCheck,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 
 /**
  * Fork (toolboxmd/chromeria#174): what web and mobile show for the fork's
@@ -28,17 +30,18 @@ export function forkScheduleLabel(
   options: { readonly locale?: string; readonly timeZone?: string } = {},
 ): string {
   if (schedule.type === "once") {
-    const instant = new Date(schedule.at);
-    if (Number.isNaN(instant.getTime())) return `Once at ${schedule.at}`;
+    const instant = DateTime.make(schedule.at);
+    if (Option.isNone(instant)) return `Once at ${schedule.at}`;
     const formatted = new Intl.DateTimeFormat(options.locale, {
       dateStyle: "medium",
       timeStyle: "short",
       ...(options.timeZone === undefined ? {} : { timeZone: options.timeZone }),
-    }).format(instant);
+    }).format(DateTime.toEpochMillis(instant.value));
     return `Once at ${formatted}`;
   }
+  // Hermes lacks Array#toSorted; the spread is already a copy.
   const days = [...new Set(schedule.weekdays)]
-    .toSorted((a, b) => ((a + 6) % 7) - ((b + 6) % 7))
+    .sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7))
     .map((day) => WEEKDAYS[day] ?? String(day))
     .join(", ");
   // The server may move each time within its window; show by how much.

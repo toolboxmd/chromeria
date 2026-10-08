@@ -39,8 +39,8 @@ const ClockTime = Schema.String.check(Schema.isPattern(/^([01]\d|2[0-3]):[0-5]\d
 
 const isTimeZone = (value: string) => {
   try {
-    new Intl.DateTimeFormat("en-US", { timeZone: value });
-    return true;
+    // Intl throws a RangeError for a zone it does not know.
+    return new Intl.DateTimeFormat("en-US", { timeZone: value }).resolvedOptions().timeZone !== "";
   } catch {
     return false;
   }

@@ -23,10 +23,14 @@ import { CheckState } from "./state.ts";
  * ACTUAL-DATA SUBSET of a v1 database (toolboxmd/chromeria#174): every
  * scheduler event plus the exact projects and threads they reference, copied
  * read-only into a private file. Never a full snapshot. Runs only when
- * `CHROMERIA_V1_SUBSET_DB` names such a file; it works on a copy and logs
- * counts only, never ids or text. Nothing imported is ever run.
+ * `CHROMERIA_V1_SUBSET_DB` names such a file; it works on a copy and records
+ * counts only, never ids or text, in `CHROMERIA_V1_SUBSET_SUMMARY` when set.
+ * Nothing imported is ever run.
  */
 const subset = process.env.CHROMERIA_V1_SUBSET_DB;
+/** Where to write the sanitized counts, when set. */
+const summaryPath = process.env.CHROMERIA_V1_SUBSET_SUMMARY;
+const toJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const boot = (dbPath: string) => {
   const database = SqlitePersistence.layerFromPath(dbPath).pipe(Layer.provide(NodeServices.layer));
@@ -84,9 +88,10 @@ const imported = Effect.gen(function* () {
      FROM scheduled_tasks ORDER BY task_id`;
   const states = yield* sql<{ readonly task_id: string; readonly state_json: string }>`
     SELECT task_id, state_json FROM fork_scheduled_task_checks ORDER BY task_id`;
-  const [v2] = yield* sql<{ readonly threads: number; readonly events: number }>`
+  // A COUNT query always returns one row.
+  const v2 = (yield* sql<{ readonly threads: number; readonly events: number }>`
     SELECT (SELECT COUNT(*) FROM orchestration_v2_projection_threads) AS threads,
-           (SELECT COUNT(*) FROM orchestration_v2_events) AS events`;
+           (SELECT COUNT(*) FROM orchestration_v2_events) AS events`)[0]!;
   return { streams, markers, tasks, states, v2 };
 });
 
@@ -153,23 +158,26 @@ it.effect.skipIf(subset === undefined)(
             after.markers.filter((marker) => key(marker) === value).length,
           ]),
         );
+      // Counts only: the proof's sanitized record.
+      const summary = {
+        v1Tasks: after.streams.length,
+        outcomes: tally((marker) => marker.outcome),
+        kinds: tally((marker) => marker.kind),
+        unsupportedReasons: tally((marker) => marker.reason ?? "none"),
+        importedDisabled: after.tasks.filter(
+          (task) => importedIds.has(task.task_id) && task.enabled === 0,
+        ).length,
+        boundToImportedThread: after.tasks.filter((task) => task.bound_thread_in_v2 === 1).length,
+        inertRuns: runs.length,
+        pendingThreadsAtStart: first.ran.pending,
+        threadShellsImported: first.ran.shells.importedThreadCount,
+        v2Threads: after.v2.threads,
+        rerunAndRestartChanges: 0,
+      };
       yield* Effect.logInfo("ACTUAL-DATA SUBSET v1 scheduled-task import").pipe(
-        Effect.annotateLogs({
-          v1Tasks: after.streams.length,
-          outcomes: tally((marker) => marker.outcome),
-          kinds: tally((marker) => marker.kind),
-          unsupportedReasons: tally((marker) => marker.reason ?? "none"),
-          importedDisabled: after.tasks.filter(
-            (task) => importedIds.has(task.task_id) && task.enabled === 0,
-          ).length,
-          boundToImportedThread: after.tasks.filter((task) => task.bound_thread_in_v2 === 1).length,
-          inertRuns: runs.length,
-          pendingThreadsAtStart: first.ran.pending,
-          threadShellsImported: first.ran.shells.importedThreadCount,
-          v2Threads: after.v2.threads,
-          rerunAndRestartChanges: 0,
-        }),
+        Effect.annotateLogs(summary),
       );
+      if (summaryPath !== undefined) NodeFS.writeFileSync(summaryPath, toJson(summary));
     }).pipe(
       Effect.ensuring(
         Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
