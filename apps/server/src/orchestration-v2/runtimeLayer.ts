@@ -1,4 +1,8 @@
 import * as PrismRecovery from "../prism/RecoveryCoordinator.ts";
+import * as PrismStreamClock from "../prism/streamClock.ts";
+import * as PrismStreamStats from "../prism/StreamStatsStore.ts";
+import * as PrismProviderEventIngestor from "../prism/ProviderEventIngestor.ts";
+import * as PrismStaleTurnMonitor from "../prism/staleTurnMonitor.ts";
 import * as PrismRecoveryHooks from "../prism/RecoveryHooks.ts";
 import * as PrismRecoveryReactor from "../prism/RecoveryReactor.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
@@ -103,7 +107,10 @@ export const layerProjectService = ProjectService.layer.pipe(
   ),
 );
 
-const layerProviderEventIngestorProvided = ProviderEventIngestor.layer.pipe(
+const layerPrismStreamClockProvided = PrismStreamClock.layer.pipe(
+  Layer.provide(PrismStreamStats.layer),
+);
+const layerProviderEventIngestorBase = ProviderEventIngestor.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
       layerEventSinkProvided,
@@ -112,6 +119,9 @@ const layerProviderEventIngestorProvided = ProviderEventIngestor.layer.pipe(
       ThreadCommandExecutor.layer,
     ),
   ),
+);
+const layerProviderEventIngestorProvided = PrismProviderEventIngestor.layer.pipe(
+  Layer.provide(Layer.mergeAll(layerProviderEventIngestorBase, layerPrismStreamClockProvided)),
 );
 
 const layerCheckpointServiceProvided = CheckpointService.layer.pipe(
@@ -151,6 +161,7 @@ const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
       layerEventSinkProvided,
       IdAllocator.layer,
       layerProviderEventIngestorProvided,
+      layerPrismStreamClockProvided,
     ),
   ),
 );
@@ -358,6 +369,15 @@ export const layerProduction = Layer.mergeAll(
   layerThreadLifecycleProvided,
   layerScheduledTaskProvided,
   layerSecretRequestsProvided,
+  PrismStaleTurnMonitor.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerPrismStreamClockProvided,
+        ProjectionStore.layer,
+        layerThreadManagementProvided,
+      ),
+    ),
+  ),
   PrismRecoveryReactor.layer.pipe(
     Layer.provide(
       Layer.mergeAll(

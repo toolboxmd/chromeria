@@ -1,4 +1,5 @@
 import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
+import * as StreamClock from "../prism/streamClock.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   isOrchestrationV2WorkActive,
@@ -556,6 +557,7 @@ export const layer: Layer.Layer<
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const mcpAppModelContext = yield* McpAppModelContext.McpAppModelContext;
     const finalizationObserver = yield* RunFinalizationService.RunFinalizationObserver;
+    const streamClock = yield* StreamClock.StreamClockHooks;
 
     const writeFinalRunEvents = (input: {
       readonly run: OrchestrationV2Run;
@@ -1181,6 +1183,16 @@ export const layer: Layer.Layer<
             }
             return true;
           });
+          yield* streamClock.beginAttempt({
+            threadId: input.run.threadId,
+            runId: input.run.id,
+            runOrdinal: input.run.ordinal,
+            attemptId: input.attempt.id,
+            attemptOrdinal: input.attempt.attemptOrdinal,
+            providerThreadId: input.providerThread.id,
+            provider: input.session.driver,
+            model: input.modelSelection.model,
+          });
           const filterAssistantEvent = makeAssistantStreamingFilter(responseStreamingMode);
           const providerEventFiber = yield* eventSubscription.events.pipe(
             Stream.filterEffect((event) =>
@@ -1203,37 +1215,39 @@ export const layer: Layer.Layer<
                   const isRootProviderThreadUpdate =
                     event.type === "provider_thread.updated" &&
                     event.providerThread.id === input.providerThread.id;
-                  const storedEvents = yield* providerEventIngestor.ingestNormalized({
-                    analyticsContext: {
-                      modelSelection: input.modelSelection,
-                      runtimeMode: input.runtimePolicy.runtimeMode,
-                      interactionMode: input.runtimePolicy.interactionMode,
-                    },
-                    providerSessionId: input.providerSessionId,
-                    providerInstanceId: input.run.providerInstanceId,
-                    threadId: input.run.threadId,
-                    runId: input.run.id,
-                    nodeId: input.rootNode.id,
-                    event: deliveredEvent,
-                    ...(isRootProviderThreadUpdate
-                      ? rootTerminalAlreadySeen
-                        ? {
-                            writeIfProviderThreadOwner: {
-                              providerThreadId: input.providerThread.id,
-                              runId: input.run.id,
-                              activeAttemptId: input.attempt.id,
-                              expectedLastRunOrdinal: input.run.ordinal,
-                            },
-                          }
-                        : {
-                            writeIfRunCurrent: {
-                              runId: input.run.id,
-                              activeAttemptId: input.attempt.id,
-                              expectedStatus: "running" as const,
-                            },
-                          }
-                      : {}),
-                  });
+                  const storedEvents = yield* providerEventIngestor
+                    .ingestNormalized({
+                      analyticsContext: {
+                        modelSelection: input.modelSelection,
+                        runtimeMode: input.runtimePolicy.runtimeMode,
+                        interactionMode: input.runtimePolicy.interactionMode,
+                      },
+                      providerSessionId: input.providerSessionId,
+                      providerInstanceId: input.run.providerInstanceId,
+                      threadId: input.run.threadId,
+                      runId: input.run.id,
+                      nodeId: input.rootNode.id,
+                      event: deliveredEvent,
+                      ...(isRootProviderThreadUpdate
+                        ? rootTerminalAlreadySeen
+                          ? {
+                              writeIfProviderThreadOwner: {
+                                providerThreadId: input.providerThread.id,
+                                runId: input.run.id,
+                                activeAttemptId: input.attempt.id,
+                                expectedLastRunOrdinal: input.run.ordinal,
+                              },
+                            }
+                          : {
+                              writeIfRunCurrent: {
+                                runId: input.run.id,
+                                activeAttemptId: input.attempt.id,
+                                expectedStatus: "running" as const,
+                              },
+                            }
+                        : {}),
+                    })
+                    .pipe(Effect.provideService(StreamClock.StreamClockAttempt, input.attempt.id));
                   storedEventCount = storedEvents.length;
                   if (
                     isRootProviderThreadUpdate &&
@@ -1244,6 +1258,19 @@ export const layer: Layer.Layer<
                     // stream on this run's background probe.
                     yield* Ref.set(providerThreadOwnerLost, true);
                   }
+                }
+                if (deliveredEvent === null) {
+                  // Presentation buffering must not turn healthy provider text into silence.
+                  yield* streamClock.observe(
+                    {
+                      threadId: input.run.threadId,
+                      runId: input.run.id,
+                      providerSessionId: input.providerSessionId,
+                      providerInstanceId: input.run.providerInstanceId,
+                      event,
+                    },
+                    input.attempt.id,
+                  );
                 }
                 if (event.type === "provider_thread.updated") {
                   if (event.providerThread.id === input.providerThread.id && storedEventCount > 0) {
@@ -1337,6 +1364,9 @@ export const layer: Layer.Layer<
               ),
             ),
             Effect.ensuring(eventSubscription.close),
+            Effect.ensuring(
+              streamClock.endAttempt(input.run.threadId, input.run.id, input.attempt.id),
+            ),
             Effect.forkDetach,
           );
 
