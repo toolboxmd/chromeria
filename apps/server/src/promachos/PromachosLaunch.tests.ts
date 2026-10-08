@@ -16,7 +16,7 @@ import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.t
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import type * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import type * as AdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
-import type * as ServerSettings from "../serverSettings.ts";
+import * as ServerSettings from "../serverSettings.ts";
 
 type Services =
   | ThreadLaunch.ThreadLaunchService
@@ -107,6 +107,72 @@ export function registerPromachosLaunchTests<E>({
       }).pipe(Effect.provide(layerPromachos.pipe(Layer.provideMerge(harness.layer))));
     },
   );
+  it.effect("Promachos launch retains the kit after only its create receipt commits", () => {
+    const harness = makeHarness({
+      providers: [promachosProvider],
+      serverSettings: {
+        prismRoles: {
+          promachos: { models: [modelSelection], instructions: "Read the home persona." },
+        },
+      },
+    });
+    return Effect.gen(function* () {
+      const promachos = yield* PromachosLaunch.PromachosLaunch;
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const input = {
+        ...launchInput({
+          command: "promachos:partial",
+          thread: "promachos:partial",
+          message: "Hello",
+        }),
+        modelSelection: { ...modelSelection, model: "placeholder" },
+        prismRole: "promachos" as const,
+      };
+      const prepared = yield* promachos.prepare(input);
+      // Reach the real durable create boundary without an initial-message receipt.
+      const creation = { ...prepared };
+      delete creation.initialMessage;
+      const created = yield* launches.launch(creation);
+      expect(created.projection.messages).toHaveLength(0);
+      const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2.pipe(
+        Effect.provide(CommandReceiptStore.layer),
+      );
+      const createReceipt = yield* receipts.getByCommandId(input.commandId);
+      expect(createReceipt).toMatchObject({
+        value: { status: "accepted", commandType: "thread.create" },
+      });
+      const messageReceipt = yield* receipts.getByCommandId(
+        CommandId.make(`${input.commandId}:initial-message`),
+      );
+      expect(messageReceipt).toMatchObject({ _tag: "None" });
+      const settings = yield* ServerSettings.ServerSettingsService;
+      yield* settings.updateSettings({
+        prismRoles: {
+          promachos: {
+            models: [{ ...modelSelection, model: "new-preference-must-not-reroute" }],
+            instructions: "Current home persona.",
+          },
+        },
+      });
+      const retried = yield* launches.launch(yield* promachos.prepare(input));
+      expect(retried.projection.thread.modelSelection).toEqual(modelSelection);
+      expect(retried.projection.messages.map((message) => message.text)).toEqual([
+        "Current home persona.\n\nHello",
+      ]);
+      yield* settings.updateSettings({
+        prismRoles: { promachos: { instructions: "Must not reload." } },
+      });
+      const replay = yield* promachos.prepare(input);
+      expect(replay.initialMessage?.text).toBe("Hello");
+      const acceptedRetry = yield* launches.launch(replay);
+      expect(acceptedRetry.projection.messages.map((message) => message.text)).toEqual([
+        "Current home persona.\n\nHello",
+      ]);
+      expect(acceptedRetry.projection.thread.modelSelection).toEqual(modelSelection);
+      expect(acceptedRetry.projection.messages).toHaveLength(1);
+      expect(acceptedRetry.projection.runs).toHaveLength(1);
+    }).pipe(Effect.provide(layerPromachos.pipe(Layer.provideMerge(harness.layer))));
+  });
   it.effect(
     "Promachos launch falls through an unavailable first adapter before creating a thread",
     () => {

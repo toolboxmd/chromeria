@@ -1,3 +1,4 @@
+import { CommandId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -69,7 +70,7 @@ const make = Effect.gen(function* () {
               ),
             );
     if (existing !== null) {
-      // A transport retry replays the upstream launch receipt, never today's kit/settings.
+      // A transport retry keeps the model committed by upstream thread creation.
       if (
         Option.isSome(receipt) &&
         receipt.value.status === "accepted" &&
@@ -78,7 +79,31 @@ const make = Effect.gen(function* () {
         existing.projectId === input.projectId &&
         existing.lineage.relationshipToParent !== "subagent"
       ) {
-        return { ...launch, modelSelection: existing.modelSelection };
+        const messageReceipt = yield* receipts
+          .getByCommandId(CommandId.make(`${input.commandId}:initial-message`))
+          .pipe(
+            Effect.mapError((cause) => new PromachosLaunchError({ reason: "read-thread", cause })),
+          );
+        if (Option.isSome(messageReceipt) && messageReceipt.value.status === "accepted") {
+          return { ...launch, modelSelection: existing.modelSelection };
+        }
+        // Creation can commit before the first message. Its retry keeps the stored model
+        // and reads the current launch kit until that message has its own accepted receipt.
+        const selected = yield* prism
+          .resolve({
+            projectId: input.projectId,
+            role: "promachos",
+            explicit: existing.modelSelection,
+          })
+          .pipe(Effect.mapError((cause) => new PromachosLaunchError({ reason: "routing", cause })));
+        return {
+          ...launch,
+          modelSelection: existing.modelSelection,
+          initialMessage: {
+            ...input.initialMessage,
+            text: [selected.kitText, input.initialMessage.text].filter(Boolean).join("\n\n"),
+          },
+        };
       }
       return yield* new PromachosLaunchError({ reason: "initial-only" });
     }
