@@ -1064,7 +1064,7 @@ it.effect(
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
           const rows = yield* sql<{ readonly status: string }>`
-            SELECT status FROM orchestration_v2_command_receipts WHERE command_id = ${commandId}`;
+            SELECT status FROM orchestration_command_receipts WHERE command_id = ${commandId}`;
           return rows[0]?.status ?? null;
         });
       const shellExists = Effect.gen(function* () {

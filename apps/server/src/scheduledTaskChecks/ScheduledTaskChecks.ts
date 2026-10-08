@@ -236,7 +236,7 @@ const makeEngine = Effect.gen(function* () {
             run.sends.length === 0
               ? []
               : yield* sql`
-                  SELECT 1 FROM orchestration_v2_command_receipts
+                  SELECT 1 FROM orchestration_command_receipts
                   WHERE command_id IN ${sql.in(run.sends.map((send) => send.commandId))}
                     AND status = 'accepted'
                   LIMIT 1
