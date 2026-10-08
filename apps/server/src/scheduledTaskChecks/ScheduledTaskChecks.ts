@@ -1,6 +1,6 @@
 import {
   isForkScheduledTaskSchedule,
-  OrchestrationV2Run,
+  OrchestrationV2RunJson,
   ScheduledTaskError,
   ScheduledTaskId,
   type ModelSelection,
@@ -39,7 +39,7 @@ import * as Scheduler from "../scheduling/Scheduler.ts";
 import { COMMAND_TIMEOUT_MS, runShellCommand } from "./commandRunner.ts";
 import { ScheduledTaskDispatchPolicy } from "./DispatchPolicy.ts";
 import { makeCheckedRuns, ScheduledTaskCheckError, type CheckedRuns } from "./engine.ts";
-import { followSend, reportsFence } from "./handoff.ts";
+import { followSend, reportsFence, ScheduledTaskSpectra } from "./handoff.ts";
 import { chooseWeeklyMinutes, forkSameSchedule, occupiedMinutes } from "./schedules.ts";
 import {
   CHECK_OUTPUT_BYTES,
@@ -156,7 +156,8 @@ class Engine extends Context.Service<
   }
 >()("t3/scheduledTaskChecks/ScheduledTaskChecks/Engine") {}
 
-const decodeRun = Schema.decodeUnknownOption(Schema.fromJsonString(OrchestrationV2Run));
+// Stored payloads are JSON-encoded: dates are ISO strings, so the JSON codec decodes them.
+const decodeRun = Schema.decodeUnknownOption(Schema.fromJsonString(OrchestrationV2RunJson));
 const isCheckError = Schema.is(ScheduledTaskCheckError);
 const BUSY_STATUSES = new Set(["preparing", "queued", "starting", "running", "waiting"]);
 // Server-generated values only. Inert inside single quotes, double quotes or none at all.
@@ -199,6 +200,8 @@ const makeEngine = Effect.gen(function* () {
   const prism = yield* Prism.PrismService;
   const adapters = yield* ProviderAdapterRegistryV2;
   const providers = yield* ProviderRegistry.ProviderRegistry;
+  // #176 provides its Spectra here once Spectrum is wired; without it no run has any.
+  const spectra = yield* ScheduledTaskSpectra;
   const changes = yield* PubSub.sliding<void>(1);
   yield* ensureCheckSchema;
 
@@ -218,6 +221,7 @@ const makeEngine = Effect.gen(function* () {
     },
     reportsFence: (schedulerRunId) =>
       reportsFence(schedulerRunId).pipe(
+        Effect.provideService(ScheduledTaskSpectra, spectra),
         Effect.mapError(checkError("Could not read the run's bound reports")),
       ),
     observe: (task, run) =>

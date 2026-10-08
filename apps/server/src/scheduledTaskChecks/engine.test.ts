@@ -117,6 +117,7 @@ const harness = (options: { readonly role?: string } = {}) =>
     let fence: ReportFence = { kind: "released" };
     let workIsOpen = false;
     let reopenOnCheck = false;
+    let fenceOnCheck: ReportFence | null = null;
     const runs = yield* makeCheckedRuns({
       changed: Effect.void,
       workOpen: () => Effect.sync(() => workIsOpen),
@@ -146,8 +147,9 @@ const harness = (options: { readonly role?: string } = {}) =>
         Effect.sync(() => {
           // The creation test is a separate record from run verdicts.
           (runId.endsWith(":creation") ? creationTests : checks).push(`${command}@${cwd}`);
-          // Recovery may resume the run's work while its check runs.
+          // Recovery may resume the run's work, or a report change, while its check runs.
           if (reopenOnCheck) workIsOpen = true;
+          if (fenceOnCheck !== null) fence = fenceOnCheck;
           return { passed: passes, output: passes ? "ok" : "still missing" };
         }),
       workspace: ({ threadId: bound }) => Effect.succeed(bound === null ? "/project" : "/worktree"),
@@ -226,6 +228,9 @@ const harness = (options: { readonly role?: string } = {}) =>
       },
       reopenDuringCheck: (value: boolean) => {
         reopenOnCheck = value;
+      },
+      reportsDuringCheck: (next: ReportFence | null) => {
+        fenceOnCheck = next;
       },
     };
   });
@@ -776,6 +781,56 @@ it.effect("a pass never settles when the run's work resumed during its check", (
 );
 
 it.effect(
+  "a report that needs you before any pass makes the run need you, never a check or retry",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const h = yield* harness();
+      yield* h.save({ checkCommand: "check", checkReason: "outcome" });
+      yield* h.fire("scheduled");
+      const sends = h.sent.length;
+      // The work ended idle and its check would fail, but the report already needs you.
+      h.set({ landed: true, started: true, busy: false });
+      h.pass(false);
+      const reason = "The Spectrum report run failed and will not be retried";
+      h.reports({ kind: "needs-you", reason });
+      yield* h.runs.drive(task());
+      const needsYou = yield* h.state();
+      assert.equal(needsYou.runs[0]?.stage, "needs-you");
+      assert.equal(needsYou.runs[0]?.error, `Spectrum report: ${reason}`);
+      assert.equal(needsYou.runs[0]?.attempt, 0);
+      assert.equal(h.checks.length, 0, "no check runs");
+      assert.equal(h.sent.length, sends, "nothing is resent");
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect(
+  "a report that comes to need you during a failing check is what follows, not a retry",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const h = yield* harness();
+      yield* h.save({ checkCommand: "check", checkReason: "outcome" });
+      yield* h.fire("scheduled");
+      const sends = h.sent.length;
+      h.set({ landed: true, started: true, busy: false });
+      h.pass(false);
+      h.reports({ kind: "waiting" });
+      const reason = "Spectrum could not deliver its report after 3 attempts";
+      h.reportsDuringCheck({ kind: "needs-you", reason });
+      yield* h.runs.drive(task());
+      assert.equal(h.checks.length, 1);
+      const needsYou = yield* h.state();
+      assert.equal(needsYou.runs[0]?.stage, "needs-you");
+      assert.equal(needsYou.runs[0]?.error, `Spectrum report: ${reason}`);
+      assert.equal(needsYou.runs[0]?.attempt, 0, "no retry was recorded");
+      yield* TestClock.adjust(3_600_000);
+      yield* h.runs.drive(task());
+      assert.equal(h.sent.length, sends, "nothing is resent");
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect(
   "a report that needs you makes the run need you, and only its release resumes the check",
   () =>
     Effect.gen(function* () {
@@ -785,11 +840,13 @@ it.effect(
       yield* h.fire("scheduled");
       h.set({ landed: true, started: true, busy: false });
       h.pass(true);
-      h.reports({
+      // The check passes, but its report comes to need you before the run settles.
+      h.reportsDuringCheck({
         kind: "needs-you",
         reason: "Spectrum could not deliver its report after 3 attempts",
       });
       yield* h.runs.drive(task());
+      h.reportsDuringCheck(null);
       const needsYou = yield* h.state();
       assert.equal(needsYou.runs[0]?.stage, "needs-you");
       assert.deepEqual(checkedRunStatus(needsYou), {

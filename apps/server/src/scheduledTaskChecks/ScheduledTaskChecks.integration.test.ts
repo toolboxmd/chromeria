@@ -8,11 +8,17 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  EventId,
+  MessageId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  RunId,
   ScheduledTaskId,
   ThreadId,
+  type OrchestrationV2DomainEvent,
+  type OrchestrationV2Run,
+  type OrchestrationV2ServerCommand,
   type ScheduledTask,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -29,11 +35,17 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import type { ProviderAdapterV2Shape } from "../orchestration-v2/ProviderAdapter.ts";
 import * as Registry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import { continuationAdmission } from "../prism/continuationAdmission.ts";
 import * as Prism from "../prism/PrismService.ts";
+import { errorFor, recoveryRun } from "../prism/recovery.testkit.ts";
+import * as History from "../prism/RecoveryHistory.ts";
+import { continuationRunFields } from "../prism/RecoveryHooks.ts";
+import * as RecoveryStore from "../prism/RecoveryStore.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as Harness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
@@ -42,7 +54,14 @@ import { ProcessRunner } from "../processRunner.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import { ScheduledTaskSpectra } from "./handoff.ts";
 import * as ScheduledTaskChecks from "./ScheduledTaskChecks.ts";
+import {
+  bindSpectrum,
+  ensureSpectraFixture,
+  fixtureSpectra,
+  reportReceipt,
+} from "./spectra.testkit.ts";
 import type { CheckState } from "./state.ts";
 import { readCheckState, writeCheckState } from "./store.ts";
 
@@ -70,7 +89,25 @@ type Database = Layer.Layer<
   MigrationError | PlatformError.PlatformError | SqlError
 >;
 
-const runtime = (database: Database) => {
+const checkResult = (code: number) => ({
+  stdout: "",
+  stderr: code === 0 ? "" : "not yet",
+  code: code as never,
+  timedOut: false,
+  stdoutTruncated: false,
+  stderrTruncated: false,
+  stdoutInvalidUtf8: false,
+  stderrInvalidUtf8: false,
+});
+
+const runtime = (
+  database: Database,
+  options: {
+    /** Each outcome check's exit code; checks fail by default. */
+    readonly check?: Effect.Effect<number>;
+    readonly spectra?: ReturnType<typeof fixtureSpectra>;
+  } = {},
+) => {
   const orchestration = Harness.layerWithRegistry(
     { name: "scheduled-task-checks" },
     Registry.layerFromAdapters([adapter]),
@@ -85,18 +122,13 @@ const runtime = (database: Database) => {
     }),
     Layer.mock(SecretRequests.SecretRequests)({}),
     Layer.succeed(ProcessRunner, {
-      run: () =>
-        Effect.succeed({
-          stdout: "",
-          stderr: "not yet",
-          code: 1 as never,
-          timedOut: false,
-          stdoutTruncated: false,
-          stderrTruncated: false,
-          stdoutInvalidUtf8: false,
-          stderrInvalidUtf8: false,
-        }),
+      run: () => (options.check ?? Effect.succeed(1)).pipe(Effect.map(checkResult)),
     }),
+    // #169's recovery history and controller tables, as production starts them.
+    RecoveryStore.layer.pipe(Layer.provide(database)),
+    ...(options.spectra === undefined
+      ? []
+      : [Layer.succeed(ScheduledTaskSpectra, options.spectra)]),
     NodeCrypto.layer,
     NodeServices.layer,
     Scheduler.layer,
@@ -113,23 +145,25 @@ const runtime = (database: Database) => {
   );
 };
 
-const createThread = Effect.gen(function* () {
-  const orchestrator = yield* Orchestrator.OrchestratorV2;
-  yield* orchestrator.dispatch({
-    type: "thread.create",
-    commandId: CommandId.make("checks:create"),
-    threadId,
-    projectId,
-    title: "Checked work",
-    modelSelection: selection,
-    runtimeMode: "full-access",
-    interactionMode: "default",
-    branch: null,
-    worktreePath: null,
-    createdBy: "user",
-    creationSource: "web",
+const createThreadIn = (worktreePath: string | null) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("checks:create"),
+      threadId,
+      projectId,
+      title: "Checked work",
+      modelSelection: selection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath,
+      createdBy: "user",
+      creationSource: "web",
+    });
   });
-});
+const createThread = createThreadIn(null);
 
 const insertTask = (input: {
   readonly id: string;
@@ -416,5 +450,424 @@ it.effect(
         assert.include(String(busy), "busy or waiting on you");
         assert.equal((yield* messagesOf).length, 1);
       }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+    }).pipe(Effect.scoped),
+);
+
+const runEvent = (
+  type: "run.created" | "run.updated",
+  payload: OrchestrationV2Run,
+  suffix: string,
+): OrchestrationV2DomainEvent => ({
+  id: EventId.make(`event:${suffix}`),
+  type,
+  threadId: payload.threadId,
+  occurredAt: payload.requestedAt,
+  payload,
+});
+
+const persist = (id: string, events: ReadonlyArray<OrchestrationV2DomainEvent>) =>
+  Effect.gen(function* () {
+    yield* (yield* EventSink.EventSinkV2).commitCommand({
+      commandId: CommandId.make(id),
+      commandType: "fixture",
+      threadId,
+      acceptedAt: recoveryRun.requestedAt,
+      events,
+      effects: [],
+    });
+  });
+
+/** A run on the checked thread, recorded as the orchestrator records it. */
+const threadRun = (
+  id: string,
+  userMessageId: string,
+  status: OrchestrationV2Run["status"],
+  ordinal = 1,
+) =>
+  ({
+    ...recoveryRun,
+    id: RunId.make(id),
+    ordinal,
+    threadId,
+    providerInstanceId: instanceId,
+    modelSelection: selection,
+    userMessageId: MessageId.make(userMessageId),
+    status,
+  }) satisfies OrchestrationV2Run;
+
+/** A checked run whose one send started the given run. */
+const sentRun = (id: string, messageId: string): CheckState["runs"][number] => ({
+  id,
+  slot: CANONICAL,
+  checkVersion: 1,
+  threadId,
+  checkCwd: null,
+  stage: "running",
+  attempt: 0,
+  retryAt: null,
+  hasWork: true,
+  sends: [
+    {
+      index: 0,
+      commandId: CommandId.make(`scheduled-task-check:${id}:0`),
+      messageId: MessageId.make(messageId),
+      kind: "start",
+      createdAt: CANONICAL,
+    },
+  ],
+  error: null,
+  check: null,
+});
+
+const runOf = (id: string) =>
+  readCheckState(ScheduledTaskId.make(id)).pipe(Effect.map((state) => state!.runs[0]!));
+
+it.effect(
+  "a pass never settles when recovery resumes the run's work during its check, and settles once that work completes",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      const worktree = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "chromeria-checks-wt-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(worktree, { recursive: true, force: true })),
+      );
+      yield* TestClock.setTime(Date.parse(CANONICAL));
+      const id = "scheduled-task:race";
+      const runId = `${id}:${CANONICAL}`;
+      const sentMessage = `scheduled-task-check-message:${runId}:0`;
+      // What happens while a check runs; the check passes either way.
+      let duringCheck: Effect.Effect<void> = Effect.void;
+      const check = Effect.suspend(() => duringCheck).pipe(Effect.as(0));
+      yield* Effect.gen(function* () {
+        yield* createThreadIn(worktree);
+        yield* insertTask({ id, schedule: { type: "interval", everyMs: 3_600_000 }, next: null });
+        // The scheduler's send started a run that failed, and recovery concluded.
+        const source = threadRun("run:race:source", sentMessage, "failed");
+        yield* persist("race:source", [
+          runEvent("run.created", source, "race:source"),
+          {
+            id: EventId.make("event:race:failure"),
+            type: "turn-item.updated",
+            threadId,
+            occurredAt: source.requestedAt,
+            payload: errorFor(source),
+          },
+        ]);
+        yield* History.writeRecoveryOutcome({
+          sourceRunId: source.id,
+          threadId,
+          status: "decided",
+          outcome: "not_retryable",
+          reason: "non_mcp",
+        });
+        yield* writeCheckState(null, checkState(id, [sentRun(runId, sentMessage)]));
+        // While the check runs, recovery admits a continuation of that failed run.
+        const command: OrchestrationV2ServerCommand = {
+          type: "message.dispatch",
+          commandId: CommandId.make("race:retry"),
+          messageId: MessageId.make("race:retry:message"),
+          threadId,
+          forkPrismRetryOfRunId: source.id,
+          text: "Continue",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "system",
+          creationSource: "server",
+        };
+        const successor: OrchestrationV2Run = {
+          ...source,
+          ...continuationRunFields(command),
+          id: RunId.make("run:race:successor"),
+          ordinal: 2,
+          userMessageId: command.messageId,
+          status: "running",
+          completedAt: null,
+        };
+        const admitted = [runEvent("run.created", successor, "race:successor")];
+        const sink = yield* EventSink.EventSinkV2;
+        duringCheck = sink
+          .commitCommand({
+            commandId: command.commandId,
+            commandType: command.type,
+            threadId,
+            acceptedAt: source.requestedAt,
+            events: admitted,
+            effects: [],
+            forkPlans: [continuationAdmission(command, admitted)!],
+          })
+          .pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                duringCheck = Effect.void;
+              }),
+            ),
+            Effect.orDie,
+          );
+        const checks = yield* ScheduledTaskChecks.ScheduledTaskChecks;
+        yield* checks.reconcile;
+        // The settle transaction saw the resumed work and wrote nothing.
+        const resumed = yield* runOf(id);
+        assert.equal(resumed.stage, "running");
+        assert.isNull(resumed.check);
+        assert.notEqual(resumed.awaitingReports, true);
+        // While the continuation runs, the check is not run again.
+        yield* checks.reconcile;
+        assert.equal((yield* runOf(id)).stage, "running");
+        yield* persist("race:successor:completed", [
+          runEvent(
+            "run.updated",
+            { ...successor, status: "completed", completedAt: source.completedAt },
+            "race:successor:completed",
+          ),
+        ]);
+        yield* checks.reconcile;
+        const done = yield* runOf(id);
+        assert.equal(done.stage, "done");
+        assert.isTrue(done.check?.passed === true);
+      }).pipe(Effect.provide(runtime(database, { check })), Effect.scoped);
+    }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "a passed check waits for its bound report, a report that needs you makes the run need you, and the user's abandonment lets the check decide",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      const worktree = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "chromeria-checks-wt-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(worktree, { recursive: true, force: true })),
+      );
+      yield* TestClock.setTime(Date.parse(CANONICAL));
+      const id = "scheduled-task:reports";
+      const runId = `${id}:${CANONICAL}`;
+      const sentMessage = `scheduled-task-check-message:${runId}:0`;
+      const reason = "Spectrum could not deliver its report after 3 attempts";
+      const needsYou = new Map<string, string>();
+      yield* Effect.gen(function* () {
+        yield* ensureSpectraFixture;
+        yield* createThreadIn(worktree);
+        yield* insertTask({ id, schedule: { type: "interval", everyMs: 3_600_000 }, next: null });
+        // The scheduler's own work completed.
+        yield* persist("reports:work", [
+          runEvent("run.created", threadRun("run:reports:work", sentMessage, "completed"), "work"),
+        ]);
+        yield* writeCheckState(null, checkState(id, [sentRun(runId, sentMessage)]));
+        // A Spectrum the run started is still deliberating.
+        const spectrum = yield* bindSpectrum({
+          callerThreadId: threadId,
+          schedulerRunId: runId,
+          status: "active",
+        });
+        const checks = yield* ScheduledTaskChecks.ScheduledTaskChecks;
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        yield* checks.reconcile;
+        const waiting = yield* runOf(id);
+        assert.equal(waiting.stage, "running");
+        assert.isTrue(waiting.awaitingReports === true);
+        // Its report's last attempt failed and recovery concluded: Spectrum will not try again.
+        yield* bindSpectrum({
+          callerThreadId: threadId,
+          schedulerRunId: runId,
+          status: "settled",
+          report: "a3",
+          spectrumThreadId: spectrum,
+        });
+        yield* reportReceipt(threadId, "a3", "accepted");
+        const report = threadRun("run:reports:a3", "report-message:a3", "failed", 2);
+        yield* persist("reports:a3", [runEvent("run.created", report, "a3")]);
+        yield* History.writeRecoveryOutcome({
+          sourceRunId: report.id,
+          threadId,
+          status: "decided",
+          outcome: "not_retryable",
+          reason: "non_mcp",
+        });
+        needsYou.set("report:a3", reason);
+        yield* checks.reconcile;
+        const needs = yield* runOf(id);
+        assert.equal(needs.stage, "needs-you");
+        assert.equal(needs.error, `Spectrum report: ${reason}`);
+        const listed = (yield* service.list()).tasks.find((task) => task.id === id);
+        assert.equal(listed?.outcomeCheck?.run?.stage, "needs-you");
+        assert.equal(listed?.lastRunError, `Needs you: Spectrum report: ${reason}`);
+        // Run now while the report still needs you is refused, and nothing is sent.
+        const before = (yield* messagesOf).length;
+        const refused = yield* Effect.exit(service.runNow({ id: ScheduledTaskId.make(id) }));
+        assert.isTrue(Exit.isFailure(refused));
+        assert.include(String(refused), "The Spectrum report still needs you");
+        // The user abandons that report; Run now resumes without messaging the agent.
+        yield* bindSpectrum({
+          callerThreadId: threadId,
+          schedulerRunId: runId,
+          status: "settled",
+          report: "a3",
+          abandoned: "a3",
+          spectrumThreadId: spectrum,
+        });
+        yield* service.runNow({ id: ScheduledTaskId.make(id) });
+        assert.equal((yield* runOf(id)).stage, "running");
+        yield* checks.reconcile;
+        assert.equal((yield* runOf(id)).stage, "done");
+        assert.equal((yield* messagesOf).length, before);
+      }).pipe(
+        Effect.provide(
+          runtime(database, { check: Effect.succeed(0), spectra: fixtureSpectra(needsYou) }),
+        ),
+        Effect.scoped,
+      );
+    }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "a report that needs you before any passing check makes the run need you without running the failing check",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      const worktree = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "chromeria-checks-wt-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(worktree, { recursive: true, force: true })),
+      );
+      yield* TestClock.setTime(Date.parse(CANONICAL));
+      const id = "scheduled-task:early-report";
+      const runId = `${id}:${CANONICAL}`;
+      const sentMessage = `scheduled-task-check-message:${runId}:0`;
+      const reason = "The Spectrum report run failed and will not be retried";
+      let checksRun = 0;
+      // The check would fail, so a check would lead to a retry.
+      const check = Effect.sync(() => {
+        checksRun += 1;
+        return 1;
+      });
+      yield* Effect.gen(function* () {
+        yield* ensureSpectraFixture;
+        yield* createThreadIn(worktree);
+        yield* insertTask({ id, schedule: { type: "interval", everyMs: 3_600_000 }, next: null });
+        // The scheduler's own work ended idle, with no check run yet.
+        yield* persist("early:work", [
+          runEvent("run.created", threadRun("run:early:work", sentMessage, "completed"), "work"),
+        ]);
+        yield* writeCheckState(null, checkState(id, [sentRun(runId, sentMessage)]));
+        yield* bindSpectrum({
+          callerThreadId: threadId,
+          schedulerRunId: runId,
+          status: "settled",
+          report: "early",
+        });
+        yield* reportReceipt(threadId, "early", "accepted");
+        yield* persist("early:report", [
+          runEvent(
+            "run.created",
+            threadRun("run:early:report", "report-message:early", "failed", 2),
+            "report",
+          ),
+        ]);
+        const before = (yield* messagesOf).length;
+        const checks = yield* ScheduledTaskChecks.ScheduledTaskChecks;
+        yield* checks.reconcile;
+        const needs = (yield* readCheckState(ScheduledTaskId.make(id)))!.runs[0]!;
+        assert.equal(needs.stage, "needs-you");
+        assert.equal(needs.error, `Spectrum report: ${reason}`);
+        assert.equal(needs.attempt, 0);
+        assert.equal(checksRun, 0, "the failing check never ran");
+        yield* checks.reconcile;
+        assert.equal(checksRun, 0);
+        assert.equal((yield* messagesOf).length, before, "nothing was resent");
+      }).pipe(
+        Effect.provide(
+          runtime(database, {
+            check,
+            spectra: fixtureSpectra(new Map([["report:early", reason]])),
+          }),
+        ),
+        Effect.scoped,
+      );
+    }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "after a crash, a recorded retry send is never redelivered over a report that needs you",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      const worktree = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "chromeria-checks-wt-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(worktree, { recursive: true, force: true })),
+      );
+      yield* TestClock.setTime(Date.parse(CANONICAL));
+      const id = "scheduled-task:crash-report";
+      const runId = `${id}:${CANONICAL}`;
+      const firstMessage = `scheduled-task-check-message:${runId}:0`;
+      const retryMessage = `scheduled-task-check-message:${runId}:1`;
+      const reason = "Spectrum could not deliver its report after 3 attempts";
+      let checksRun = 0;
+      const check = Effect.sync(() => {
+        checksRun += 1;
+        return 1;
+      });
+      const spectra = fixtureSpectra(new Map([["report:crash", reason]]));
+      // Before the crash: the first send's run started a Spectrum and ended; a failed
+      // check recorded a retry send that was never submitted.
+      yield* Effect.gen(function* () {
+        yield* ensureSpectraFixture;
+        yield* createThreadIn(worktree);
+        yield* insertTask({ id, schedule: { type: "interval", everyMs: 3_600_000 }, next: null });
+        yield* persist("crash:work", [
+          runEvent("run.created", threadRun("run:crash:work", firstMessage, "completed"), "work"),
+        ]);
+        const first = sentRun(runId, firstMessage);
+        yield* writeCheckState(
+          null,
+          checkState(id, [
+            {
+              ...first,
+              attempt: 1,
+              sends: [
+                ...first.sends,
+                {
+                  index: 1,
+                  commandId: CommandId.make(`scheduled-task-check:${runId}:1`),
+                  messageId: MessageId.make(retryMessage),
+                  kind: "continue",
+                  createdAt: CANONICAL,
+                  payload: {
+                    text: "Keep working: the check still fails.",
+                    modelSelection: null,
+                    launch: null,
+                    projectId,
+                  },
+                },
+              ],
+            },
+          ]),
+        );
+        yield* bindSpectrum({
+          callerThreadId: threadId,
+          schedulerRunId: runId,
+          status: "settled",
+          report: "crash",
+        });
+        yield* reportReceipt(threadId, "crash", "accepted");
+        yield* persist("crash:report", [
+          runEvent(
+            "run.created",
+            threadRun("run:crash:report", "report-message:crash", "failed", 2),
+            "report",
+          ),
+        ]);
+      }).pipe(Effect.provide(runtime(database, { check, spectra })), Effect.scoped);
+      // Restart: the report needs you, so the run does; the recorded send stays unsent.
+      yield* Effect.gen(function* () {
+        const before = yield* messagesOf;
+        const checks = yield* ScheduledTaskChecks.ScheduledTaskChecks;
+        yield* checks.reconcile;
+        yield* checks.reconcile;
+        const needs = (yield* readCheckState(ScheduledTaskId.make(id)))!.runs[0]!;
+        assert.equal(needs.stage, "needs-you");
+        assert.equal(needs.error, `Spectrum report: ${reason}`);
+        assert.equal(checksRun, 0, "no check ran");
+        const after = yield* messagesOf;
+        assert.deepEqual(after, before);
+        assert.notInclude(after, retryMessage);
+      }).pipe(Effect.provide(runtime(database, { check, spectra })), Effect.scoped);
     }).pipe(Effect.scoped),
 );

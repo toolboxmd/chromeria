@@ -413,12 +413,13 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
               if (state.kind === "command") return yield* refuse("This command is still running.");
               if (current.stage !== "needs-you")
                 return yield* refuse("This task already has unfinished work.");
-              // Its check passed and a bound report needs you: resuming reads the
-              // reports again and never messages the agent.
+              // A bound report that needs you is resolved first; nothing is sent over it.
+              const fence = yield* deps.reportsFence(current.id);
+              if (fence.kind === "needs-you")
+                return yield* refuse(`The Spectrum report still needs you: ${fence.reason}`);
+              // Its next check waits on its reports: resuming reads them again and
+              // never messages the agent.
               if (current.awaitingReports === true) {
-                const fence = yield* deps.reportsFence(current.id);
-                if (fence.kind === "needs-you")
-                  return yield* refuse(`The Spectrum report still needs you: ${fence.reason}`);
                 yield* store(
                   state,
                   replaceRun(state, { ...current, stage: "running", error: null }),
@@ -535,6 +536,19 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
           });
           return;
         }
+        // A bound report that needs you makes the run need you before any check,
+        // retry, resend or redelivery, whether or not a check passed before (D40).
+        const fenceState = state;
+        const fenceRun = run;
+        const fence = yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const fence = yield* deps.reportsFence(fenceRun.id);
+            if (fence.kind === "needs-you")
+              yield* reportNeedsYou(fenceState, fenceRun, fence.reason);
+            return fence;
+          }),
+        );
+        if (fence.kind === "needs-you") return;
         const last = run.sends.at(-1);
         // A send recorded before a crash or a failed dispatch is resent with its own identity.
         if (run.stage === "running" && last !== undefined && !observation.landed) {
@@ -570,19 +584,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
           return;
         } else if (run.stage === "running" || run.stage === "usage-limit") {
           // A passed check waits for bound reports before it is run again.
-          if (run.awaitingReports === true) {
-            const waitingState = state;
-            const waitingRun = run;
-            const fence = yield* sql.withTransaction(
-              Effect.gen(function* () {
-                const fence = yield* deps.reportsFence(waitingRun.id);
-                if (fence.kind === "needs-you")
-                  yield* reportNeedsYou(waitingState, waitingRun, fence.reason);
-                return fence;
-              }),
-            );
-            if (fence.kind !== "released") return;
-          }
+          if (run.awaitingReports === true && fence.kind !== "released") return;
           const { result, cwd } = yield* check(task, state, run, now);
           if (result.passed) {
             const checked = state;
@@ -609,11 +611,21 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
             );
             return;
           }
-          yield* retry(
-            state,
-            { ...run, checkCwd: cwd, check: result },
-            observation.runError ?? `Outcome check failed:\n${result.output}`,
-            now,
+          const failedState = state;
+          const failedRun = { ...run, checkCwd: cwd, check: result };
+          // A report that came to need you during the check is what follows, never a retry.
+          yield* sql.withTransaction(
+            Effect.gen(function* () {
+              const fence = yield* deps.reportsFence(failedRun.id);
+              if (fence.kind === "needs-you")
+                return yield* reportNeedsYou(failedState, failedRun, fence.reason);
+              yield* retry(
+                failedState,
+                failedRun,
+                observation.runError ?? `Outcome check failed:\n${result.output}`,
+                now,
+              );
+            }),
           );
           return;
         }
