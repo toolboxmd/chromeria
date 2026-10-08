@@ -1,12 +1,18 @@
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { CommandId, type EnvironmentId, type ThreadId } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  CommandId,
+  type EnvironmentId,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { UsersIcon } from "lucide-react";
 import { useMemo } from "react";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 
 import { runtime } from "../../lib/runtime";
+import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { useThreadShell } from "../../state/entities";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Badge } from "../ui/badge";
@@ -44,12 +50,13 @@ export function ThreadSharingControl({
   const person = useEnvironmentPerson(environmentId);
   useRefreshDevicePeopleOnFocus();
   const dispatch = useAtomCommand(threadSharingCommand);
-  const canShare = useAtomValue(threadSharingCommand.permissionAtom(environmentId));
+  const canDispatch = useAtomValue(threadSharingCommand.permissionAtom(environmentId));
+  const canOperate = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
   if (thread === null) return null;
 
   const coOwners = thread.source.coOwners ?? [];
   const shared = coOwners.length > 0;
-  const action = canShare ? threadSharingAction(thread.source, person) : null;
+  const action = canOperate && canDispatch ? threadSharingAction(thread.source, person) : null;
   if (action === null) {
     return shared ? (
       <Badge size="sm" variant="secondary">
@@ -76,7 +83,8 @@ export function ThreadSharingControl({
       </MenuTrigger>
       <MenuPopup align="end">
         <MenuItem
-          onClick={() =>
+          onClick={() => {
+            if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
             void runtime
               .runPromise(
                 Crypto.Crypto.pipe(
@@ -89,8 +97,8 @@ export function ThreadSharingControl({
                   environmentId,
                   input: { ...action, threadId, actor: person, commandId: CommandId.make(id) },
                 }),
-              )
-          }
+              );
+          }}
         >
           {actionLabel(action)}
         </MenuItem>
