@@ -506,7 +506,10 @@ child-threads when #168 lands, and thread-people will watch it as a shared path.
     "https://github.com/toolboxmd/chromeria/issues/121",
     "https://github.com/toolboxmd/chromeria/issues/170"
   ],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/131"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/131",
+    "https://github.com/toolboxmd/chromeria/pull/180"
+  ],
   "newFiles": [
     "apps/server/src/mcp/toolkits/thread/handlers.test.ts",
     "apps/server/src/orchestration-v2/ThreadPeople.test.ts",
