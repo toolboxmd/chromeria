@@ -38,6 +38,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import { subagentDescendants } from "../childThreads/retirement.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import { projectTurnItemForDetail } from "./WireProjection.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
@@ -844,18 +845,21 @@ const make = Effect.gen(function* () {
 
   const stopDelegatedTasks: ThreadManagementServiceShape["stopDelegatedTasks"] = (input) =>
     Effect.gen(function* () {
+      const snapshot = yield* orchestrator.getShellSnapshot();
       const { subagents } = yield* orchestrator.getThreadRecords(input.threadId, ["subagents"]);
       const failures: Array<Orchestrator.OrchestratorV2Error> = [];
-      for (const task of subagents) {
-        if (task.origin !== "app_owned" || task.childThreadId === null) continue;
-        const threadId = task.childThreadId;
+      for (const threadId of new Set([
+        ...subagentDescendants(input.threadId, snapshot.threads),
+        ...subagents.flatMap((task) =>
+          task.origin === "app_owned" && task.childThreadId !== null ? [task.childThreadId] : [],
+        ),
+      ])) {
         yield* dispatch({
           type: "thread.stop",
           commandId: CommandId.make(`${input.commandId}:stop:${threadId}`),
           threadId,
           ...(input.reason === undefined ? {} : { reason: input.reason }),
         }).pipe(
-          Effect.andThen(stopDelegatedTasks({ ...input, threadId })),
           Effect.catch((error) =>
             Effect.logWarning("Unable to stop a delegated task", {
               parentThreadId: input.threadId,

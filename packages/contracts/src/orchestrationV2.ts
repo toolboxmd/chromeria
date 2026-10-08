@@ -384,6 +384,9 @@ export const OrchestrationV2AppThread = Schema.Struct({
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   lineage: OrchestrationV2AppThreadLineage,
+  forkRetirement: Schema.optional(Schema.Struct({ token: CommandId })),
+  forkResumedRetirements: Schema.optional(Schema.Array(CommandId)),
+  forkLineageOverride: Schema.optional(Schema.Struct({ commandId: CommandId, runId: RunId })),
   forkedFrom: Schema.NullOr(
     Schema.Union([
       Schema.Struct({ type: Schema.Literal("run"), threadId: ThreadId, runId: RunId }),

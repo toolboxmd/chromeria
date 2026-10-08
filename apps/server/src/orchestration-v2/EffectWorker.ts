@@ -675,7 +675,13 @@ export const layerWithOptions = (
               return true;
             }
             return false;
-          }).pipe(Effect.onError((cause) => requeueClaim(effect, cause)));
+          }).pipe(
+            Effect.onError((cause) =>
+              requeueClaim(effect, cause).pipe(
+                Effect.ensuring(outbox.clearCancellation(effect.id)),
+              ),
+            ),
+          );
           if (cancelledBeforeExecution) return true;
 
           const execution = executor

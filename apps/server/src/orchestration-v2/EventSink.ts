@@ -22,6 +22,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { subagentDescendants } from "../childThreads/retirement.ts";
 import { ForkCommitGuardRejected, type ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
 
 import { replayAndBufferProjectedLiveEvents } from "./LiveStreamBudget.ts";
@@ -132,6 +133,8 @@ export interface EventSinkV2Shape {
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
     readonly effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
     readonly cancelUnsettledEffects?: {
+      readonly includeSubagentDescendants?: boolean;
+      readonly drain?: boolean;
       readonly effectTypes: ReadonlyArray<EffectOutbox.OrchestrationEffectRequestV2["type"]>;
       readonly reason: string;
     };
@@ -585,18 +588,34 @@ const layerBase: Layer.Layer<
             error: null,
           };
           yield* commandReceipts.upsert(receipt);
-          const cancelledEffectIds =
-            input.cancelUnsettledEffects === undefined
-              ? []
-              : yield* effectOutbox.cancelUnsettled({
-                  threadId: input.threadId,
+          const cancelledEffectIds: string[] = [];
+          if (input.cancelUnsettledEffects !== undefined) {
+            const threadIds = [
+              input.threadId,
+              ...(input.cancelUnsettledEffects.includeSubagentDescendants
+                ? subagentDescendants(
+                    input.threadId,
+                    (yield* projectionStore.getShellSnapshot()).threads,
+                  )
+                : []),
+            ];
+            for (const threadId of threadIds) {
+              cancelledEffectIds.push(
+                ...(yield* effectOutbox.cancelUnsettled({
+                  threadId,
                   ...input.cancelUnsettledEffects,
-                });
+                })),
+              );
+            }
+          }
           return { receipt, storedEvents, committed: true as const, cancelledEffectIds };
         }),
         (result) =>
           Effect.gen(function* () {
-            yield* effectOutbox.signalCancellations(result.cancelledEffectIds);
+            yield* effectOutbox.signalCancellations(
+              result.cancelledEffectIds,
+              input.cancelUnsettledEffects?.drain,
+            );
             if (result.committed && input.effects.length > 0) {
               yield* effectOutbox.notifyAvailable(input.effects.length);
             }

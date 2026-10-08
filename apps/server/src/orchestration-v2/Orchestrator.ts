@@ -28,7 +28,7 @@ import {
   type OrchestrationV2ServerCommand,
   type ThreadPullRequestLink,
   type ThreadPullRequestWatch,
-  type OrchestrationV2AppThread,
+  OrchestrationV2AppThread,
   type OrchestrationV2ContextHandoff,
   type OrchestrationV2ContextSourcePoint,
   type OrchestrationV2ContextTransfer,
@@ -88,6 +88,15 @@ import { ContextHandoffServiceV2 } from "./ContextHandoffService.ts";
 import { notificationTurnItem } from "./Notification.ts";
 import { isRestartNoteSource } from "./RestartBackgroundNote.ts";
 import { isUndeliveredMailboxSteer } from "./NotificationMailbox.ts";
+import {
+  explicitMessage,
+  humanMessage,
+  readRetirementState,
+  retirementAdmission,
+} from "../childThreads/retirement.ts";
+import type { ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
+const isAppThread = Schema.is(OrchestrationV2AppThread);
+
 import { EventSinkV2 } from "./EventSink.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
@@ -808,6 +817,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const projects = yield* ProjectStore.ProjectStoreV2;
   const projectionStore = yield* ProjectionStoreV2;
   const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
+  const retirement = (threadId: ThreadId) =>
+    readRetirementState(threadId).pipe(Effect.provideService(ProjectionStoreV2, projectionStore));
   const nextTurnItemOrdinal = (
     projection: Pick<OrchestrationV2ThreadProjection, "thread"> &
       Partial<Pick<OrchestrationV2ThreadProjection, "turnItems">>,
@@ -1018,7 +1029,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const withIds = yield* Effect.forEach(events, (event) =>
         makeSystemEvent(event as Omit<OrchestrationV2DomainEvent, "id">),
       );
-      yield* eventSink.writeWithEffects({ events: withIds, effects });
+      const start = effects.find((effect) => effect.request.type === "provider-turn.start");
+      if (start === undefined) {
+        yield* eventSink.writeWithEffects({ events: withIds, effects });
+      } else {
+        yield* eventSink.commitCommand({
+          commandId: start.commandId,
+          threadId: start.threadId,
+          commandType: "fork.queued-start",
+          acceptedAt: yield* DateTime.now,
+          events: withIds,
+          effects,
+          forkPlans: [
+            retirementAdmission({
+              threadId: start.threadId,
+              ...(start.request.type === "provider-turn.start"
+                ? { admittedHumanRunId: start.request.runId }
+                : {}),
+            }),
+          ],
+        });
+      }
     });
 
   const completionDeliveryRun = (
@@ -1272,6 +1303,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // Every terminal run checks the queue. Only a deliverable queued run
       // needs the transcript for provider handoff and legacy import context.
       if (!(yield* projectionStore.canStartQueuedRun(threadId))) return;
+      const retirementState = yield* retirement(threadId);
+      if (retirementState.retired) return;
       const projection = yield* readCommandProjection(threadId);
       if (
         projection.thread.archivedAt !== null ||
@@ -1295,6 +1328,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return;
       }
       const queuedRun = nextQueuedRun(projection);
+      if (
+        !retirementState.complete &&
+        projection.thread.forkLineageOverride?.runId !== queuedRun?.id
+      )
+        return;
       if (queuedRun === undefined) {
         return;
       }
@@ -1871,7 +1909,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           },
         ],
       );
-    }).pipe(Effect.catch((cause) => failQueuedRunStart(threadId, cause)));
+    }).pipe(
+      Effect.catch((cause) =>
+        cause._tag === "ForkCommitGuardRejected" &&
+        (cause.kind === "retired" || cause.kind === "lineage_incomplete")
+          ? Effect.void
+          : failQueuedRunStart(threadId, cause),
+      ),
+    );
 
   const resumeQueuedRuns = Effect.gen(function* () {
     const threadIds = yield* projectionStore.getRecoveryThreadIds("queued-runs");
@@ -10157,6 +10202,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     {
       readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
       readonly effects: ReadonlyArray<PendingOrchestrationEffectV2>;
+      readonly forkPlans?: ReadonlyArray<ForkCommitPlan>;
       readonly cancelUnsettledEffects?: {
         readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
         readonly reason: string;
@@ -10527,7 +10573,121 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (shell !== null) yield* refuseAboveDispatchModeLimit(command, threadId, shell);
     }
 
+    const admissionThreadId =
+      command.type === "delegated_task.request" ? command.parentThreadId : commandThreadId(command);
+    const needsAdmission =
+      command.type === "message.dispatch" ||
+      command.type === "delegated_task.request" ||
+      command.type === "prepared-run.release" ||
+      command.type === "prepared-run.retry" ||
+      command.type === "queue.resume";
+    const stopping =
+      command.type === "thread.stop" ||
+      (command.type === "run.interrupt" && command.holdQueue === true);
+    const state = needsAdmission
+      ? yield* mapDispatchError(command)(retirement(admissionThreadId))
+      : undefined;
+    const resume = command.type === "message.dispatch" && explicitMessage(command);
+    const humanOverride = command.type === "message.dispatch" && humanMessage(command);
+    const forkPlans =
+      state === undefined
+        ? []
+        : [
+            retirementAdmission({
+              threadId: admissionThreadId,
+              expectedTokens: state.tokens,
+              resume,
+              humanOverride,
+              ...(command.type === "prepared-run.release"
+                ? { admittedHumanRunId: command.runId }
+                : {}),
+            }),
+          ];
     const plan = yield* dispatchOnce(command).pipe(
+      Effect.flatMap((planned) =>
+        Effect.gen(function* () {
+          const cancelledRestart =
+            command.type === "message.dispatch" &&
+            command.restartContinuationOfRunId !== undefined &&
+            planned.events.every(
+              (event) => event.type !== "run.created" || event.payload.status === "cancelled",
+            ) &&
+            !planned.effects.some(
+              (effect) =>
+                effect.request.type === "provider-turn.start" ||
+                effect.request.type === "provider-turn.restart",
+            );
+          if (!stopping && !resume)
+            return { ...planned, forkPlans: cancelledRestart ? [] : forkPlans };
+          let thread = yield* projectionStore
+            .getThread(commandThreadId(command))
+            .pipe(mapDispatchError(command));
+          for (const event of planned.events) {
+            if (event.threadId === thread.id && isAppThread(event.payload)) thread = event.payload;
+          }
+          const now = yield* DateTime.now;
+          const started = planned.events.find(
+            (event) => event.type === "run.created" && event.threadId === thread.id,
+          );
+          const updatedThread: OrchestrationV2AppThread = stopping
+            ? {
+                ...thread,
+                forkRetirement: { token: command.commandId },
+                forkResumedRetirements: [],
+                updatedAt: now,
+              }
+            : {
+                ...thread,
+                forkResumedRetirements: state?.tokens ?? [],
+                ...(humanOverride && state?.complete === false && started?.type === "run.created"
+                  ? {
+                      forkLineageOverride: {
+                        commandId: command.commandId,
+                        runId: started.payload.id,
+                      },
+                    }
+                  : {}),
+                updatedAt: now,
+              };
+          const event = yield* makeEvent(command, {
+            type: "thread.metadata-updated",
+            threadId: thread.id,
+            providerInstanceId: thread.providerInstanceId,
+            occurredAt: now,
+            payload: updatedThread,
+          });
+          const effects = stopping
+            ? [
+                ...planned.effects,
+                {
+                  id: `effect:${command.commandId}:delegated-tasks.stop`,
+                  commandId: command.commandId,
+                  threadId: thread.id,
+                  request: { type: "delegated-tasks.stop" as const },
+                },
+              ].filter(
+                (effect, index, all) =>
+                  all.findIndex((candidate) => candidate.id === effect.id) === index,
+              )
+            : planned.effects;
+          return {
+            ...planned,
+            events: [...planned.events, event],
+            effects,
+            forkPlans,
+            ...(stopping
+              ? {
+                  cancelUnsettledEffects: {
+                    effectTypes: ["provider-turn.start", "provider-turn.restart"] as const,
+                    reason: "Thread subtree stopped.",
+                    includeSubagentDescendants: true,
+                    drain: true,
+                  },
+                }
+              : {}),
+          };
+        }),
+      ),
       Effect.flatMap((planned) =>
         // A settle that finds the provider already ended everything, or a
         // stop that finds nothing running, has nothing to record. That is
@@ -10620,6 +10780,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         acceptedAt,
         events: plan.events,
         effects: plan.effects,
+        forkPlans: plan.forkPlans,
         ...(plan.cancelUnsettledEffects === undefined
           ? {}
           : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),

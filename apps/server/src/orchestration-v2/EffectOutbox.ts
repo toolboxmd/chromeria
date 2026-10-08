@@ -214,7 +214,10 @@ export interface EffectOutboxV2Shape {
     readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
     readonly reason: string;
   }) => Effect.Effect<ReadonlyArray<string>, EffectOutboxError>;
-  readonly signalCancellations: (effectIds: ReadonlyArray<string>) => Effect.Effect<void>;
+  readonly signalCancellations: (
+    effectIds: ReadonlyArray<string>,
+    drain?: boolean,
+  ) => Effect.Effect<void>;
   readonly awaitCancellation: (effectId: string) => Effect.Effect<void>;
   readonly clearCancellation: (effectId: string) => Effect.Effect<void>;
   readonly reconcileAfterProcessLoss: Effect.Effect<
@@ -300,6 +303,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
     // for distinct threads without allowing notifications to grow unbounded.
     const available = yield* Queue.dropping<void>(64);
     const cancellationSignals = new Map<string, Deferred.Deferred<void>>();
+    const cancellationDrains = new Map<string, Deferred.Deferred<void>>();
     const notifyAvailable = (count = 1) =>
       Queue.offerAll(
         available,
@@ -460,8 +464,14 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             (cause) => new EffectOutboxError({ operation: "cancel-unsettled", cause }),
           ),
         ),
-      signalCancellations: (effectIds) =>
+      signalCancellations: (effectIds, drain = false) =>
         Effect.gen(function* () {
+          const drains = drain
+            ? effectIds.flatMap((id) => {
+                const done = cancellationDrains.get(id);
+                return done === undefined ? [] : [done];
+              })
+            : [];
           yield* Effect.forEach(
             effectIds,
             (effectId) => {
@@ -474,11 +484,20 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           // This method is deliberately post-commit, so it is also the safe
           // place to wake claimers after the durable status change.
           if (effectIds.length > 0) yield* notifyAvailable(effectIds.length);
+          yield* Effect.forEach(drains, Deferred.await, { discard: true });
         }),
-      awaitCancellation: (effectId) => Deferred.await(cancellationSignal(effectId)),
+      awaitCancellation: (effectId) => {
+        // Registration precedes the worker's durable recheck and external execution.
+        if (!cancellationDrains.has(effectId))
+          cancellationDrains.set(effectId, Deferred.makeUnsafe<void>());
+        return Deferred.await(cancellationSignal(effectId));
+      },
       clearCancellation: (effectId) =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
+          const drained = cancellationDrains.get(effectId);
           cancellationSignals.delete(effectId);
+          cancellationDrains.delete(effectId);
+          if (drained !== undefined) yield* Deferred.succeed(drained, undefined);
         }),
       reconcileAfterProcessLoss: Effect.gen(function* () {
         const now = DateTime.formatIso(yield* DateTime.now);

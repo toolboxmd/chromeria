@@ -1,3 +1,4 @@
+import { retirementAdmission } from "../childThreads/retirement.ts";
 import { ForkCommitGuardRejected, type ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { assert, it } from "@effect/vitest";
@@ -129,7 +130,7 @@ function threadCreatedEvent(input: {
   readonly id: string;
   readonly thread: OrchestrationV2AppThread;
   readonly now: DateTime.Utc;
-}): OrchestrationV2DomainEvent {
+}): Extract<OrchestrationV2DomainEvent, { type: "thread.created" }> {
   return {
     id: EventId.make(input.id),
     type: "thread.created",
@@ -1506,6 +1507,170 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       });
       assert.isFalse(replay.committed);
       assert.lengthOf(replay.storedEvents, 1);
+    }),
+  );
+
+  it.effect("Stop drains a blocked native descendant provider start before returning", () =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const now = yield* DateTime.now;
+      const rootId = ThreadId.make("thread:fork-drain:root");
+      const childId = ThreadId.make("thread:fork-drain:child");
+      const root = makeThread(rootId, now);
+      const child = {
+        ...makeThread(childId, now),
+        lineage: {
+          parentThreadId: rootId,
+          rootThreadId: rootId,
+          relationshipToParent: "subagent" as const,
+        },
+      };
+      yield* sink.write({
+        events: [
+          threadCreatedEvent({ id: "event:fork-drain:root", thread: root, now }),
+          threadCreatedEvent({ id: "event:fork-drain:child", thread: child, now }),
+        ],
+      });
+      const commandId = CommandId.make("command:fork-drain:start");
+      const effectId = "effect:fork-drain:start";
+      yield* outbox.enqueue([
+        {
+          id: effectId,
+          commandId,
+          threadId: childId,
+          request: { type: "provider-turn.start", runId: RunId.make("run:fork-drain") },
+        },
+      ]);
+      const entered = yield* Deferred.make<void>();
+      const interrupted = yield* Deferred.make<void>();
+      const releaseCleanup = yield* Deferred.make<void>();
+      const cleanupDone = yield* Ref.make(false);
+      const executor = Layer.succeed(
+        EffectWorker.OrchestrationEffectExecutorV2,
+        EffectWorker.OrchestrationEffectExecutorV2.of({
+          execute: () =>
+            Effect.gen(function* () {
+              yield* Deferred.succeed(entered, undefined);
+              return yield* Effect.never;
+            }).pipe(
+              Effect.ensuring(
+                Effect.gen(function* () {
+                  yield* Deferred.succeed(interrupted, undefined);
+                  yield* Deferred.await(releaseCleanup);
+                  yield* Ref.set(cleanupDone, true);
+                }),
+              ),
+            ),
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const execution = yield* worker.runOnce.pipe(Effect.forkChild);
+        yield* Deferred.await(entered);
+        const stopId = CommandId.make("command:fork-drain:stop");
+        const stop = yield* sink
+          .commitCommand({
+            commandId: stopId,
+            threadId: rootId,
+            commandType: "thread.stop",
+            acceptedAt: now,
+            events: [
+              {
+                ...threadCreatedEvent({
+                  id: "event:fork-drain:stop",
+                  thread: { ...root, forkRetirement: { token: stopId } },
+                  now,
+                }),
+                type: "thread.metadata-updated",
+              },
+            ],
+            effects: [],
+            cancelUnsettledEffects: {
+              effectTypes: ["provider-turn.start", "provider-turn.restart"],
+              reason: "Stop",
+              includeSubagentDescendants: true,
+              drain: true,
+            },
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(interrupted);
+        assert.isUndefined(stop.pollUnsafe());
+        assert.isFalse(yield* Ref.get(cleanupDone));
+        yield* Deferred.succeed(releaseCleanup, undefined);
+        yield* Fiber.join(stop);
+        yield* Fiber.join(execution);
+        assert.isTrue(yield* Ref.get(cleanupDone));
+        const stored = yield* outbox.get(effectId);
+        assert.equal(Option.getOrThrow(stored).status, "cancelled");
+      }).pipe(
+        Effect.provide(
+          EffectWorker.layerWithOptions({ workerId: "fork-drain" }).pipe(
+            Layer.provide(
+              Layer.merge(Layer.succeed(EffectOutbox.EffectOutboxV2, outbox), executor),
+            ),
+          ),
+        ),
+      );
+    }).pipe(Effect.provide(Layer.fresh(layerTest))),
+  );
+
+  it.effect("checks the ancestor retirement token in the child admission transaction", () =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const rootId = ThreadId.make("thread:fork-admission:root");
+      const childId = ThreadId.make("thread:fork-admission:child");
+      const root = makeThread(rootId, now);
+      const child = {
+        ...makeThread(childId, now),
+        lineage: {
+          rootThreadId: rootId,
+          parentThreadId: rootId,
+          relationshipToParent: "subagent" as const,
+        },
+      };
+      yield* sink.write({
+        events: [
+          threadCreatedEvent({ id: "event:fork-admission:root", thread: root, now }),
+          threadCreatedEvent({ id: "event:fork-admission:child", thread: child, now }),
+        ],
+      });
+      // The child plan is constructed before Stop wins, then evaluated in its actual commit.
+      const guard = retirementAdmission({ threadId: childId, expectedTokens: [] });
+      yield* sink.write({
+        events: [
+          {
+            ...threadCreatedEvent({
+              id: "event:fork-admission:stop",
+              thread: { ...root, forkRetirement: { token: CommandId.make("stop:fork-admission") } },
+              now,
+            }),
+            type: "thread.metadata-updated",
+          },
+        ],
+      });
+      const commandId = CommandId.make("command:fork-admission:late");
+      const result = yield* sink
+        .commitCommand({
+          commandId,
+          threadId: childId,
+          commandType: "message.dispatch",
+          acceptedAt: now,
+          events: [
+            {
+              ...threadCreatedEvent({ id: "event:fork-admission:late", thread: child, now }),
+              type: "thread.metadata-updated",
+            },
+          ],
+          effects: [],
+          forkPlans: [guard],
+        })
+        .pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") assert.equal(result.failure._tag, "ForkCommitGuardRejected");
+      const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+      assert.isTrue(Option.isNone(yield* receipts.getByCommandId(commandId)));
     }),
   );
 

@@ -233,7 +233,14 @@ it.effect(
         commandId: CommandId.make("stop-idle-again"),
         threadId,
       });
-      assert.lengthOf(again.storedEvents, 0);
+      assert.isTrue(
+        again.storedEvents.some(
+          (stored) =>
+            stored.event.type === "thread.metadata-updated" &&
+            stored.event.payload.forkRetirement?.token === CommandId.make("stop-idle-again"),
+        ),
+      );
+      assert.deepEqual(yield* threadState(threadId), { runs: [], watched: [] });
     }).pipe(Effect.provide(layerTest)),
 );
 
@@ -581,4 +588,157 @@ it.effect("thread.stop marks a turn it cannot interrupt so a late agent watch is
     assert.isTrue(Exit.isFailure(yield* Effect.exit(watch(threadId, 12))));
     assert.deepEqual(yield* threadState(threadId), { runs: ["running"], watched: [] });
   }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
+  "explicit messages resume only their named descendant while automatic reset messages stay retired",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+      const parentId = ThreadId.make("thread:retirement-resume:root");
+      yield* createWatchingThread(parentId, 80);
+      yield* send(parentId, "parent work", "start_immediately");
+      const childId = yield* delegate(parentId, "resume child");
+      const grandchildId = yield* delegate(childId, "resume grandchild");
+      yield* orchestrator.dispatch({
+        type: "thread.stop",
+        commandId: CommandId.make("stop:retirement-resume"),
+        threadId: parentId,
+      });
+      yield* threads.stopDelegatedTasks({
+        threadId: parentId,
+        commandId: CommandId.make("stop:retirement-resume"),
+      });
+      const child = yield* orchestrator.getThreadProjection(childId);
+      const reset = {
+        type: "message.dispatch" as const,
+        commandId: CommandId.make("reset:retirement-resume"),
+        threadId: childId,
+        messageId: MessageId.make("reset:retirement-resume"),
+        text: "Continue after limit reset",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" as const },
+        createdBy: "user" as const,
+        creationSource: "server" as const,
+        usageLimitContinuationOfRunId: child.runs[0]!.id,
+      };
+      assert.equal((yield* orchestrator.dispatch(reset).pipe(Effect.result))._tag, "Failure");
+      assert.deepEqual(
+        (yield* orchestrator.getThreadProjection(childId)).thread.forkResumedRetirements,
+        [],
+      );
+      yield* send(childId, "explicit resume", "start_immediately");
+      const resumed = yield* orchestrator.getThreadProjection(childId);
+      assert.equal(resumed.runs.at(-1)?.status, "starting");
+      assert.isAbove(resumed.thread.forkResumedRetirements?.length ?? 0, 0);
+      const grandchild = yield* orchestrator.getThreadProjection(grandchildId);
+      assert.deepEqual(grandchild.thread.forkResumedRetirements, []);
+      assert.equal(
+        (yield* orchestrator
+          .dispatch({
+            ...reset,
+            commandId: CommandId.make("reset:grandchild"),
+            messageId: MessageId.make("reset:grandchild"),
+            threadId: grandchildId,
+            usageLimitContinuationOfRunId: grandchild.runs[0]!.id,
+          })
+          .pipe(Effect.result))._tag,
+        "Failure",
+      );
+      yield* orchestrator.dispatch({
+        type: "thread.stop",
+        commandId: CommandId.make("stop:retirement-resume:again"),
+        threadId: parentId,
+      });
+      assert.equal(
+        (yield* orchestrator
+          .dispatch({
+            ...reset,
+            commandId: CommandId.make("reset:after-new-stop"),
+            messageId: MessageId.make("reset:after-new-stop"),
+          })
+          .pipe(Effect.result))._tag,
+        "Failure",
+      );
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
+  "incomplete native ancestry refuses MCP and recovery but records a human turn override without unknown exemptions",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const childId = ThreadId.make("thread:incomplete:child");
+      const missingId = ThreadId.make("thread:incomplete:missing");
+      yield* createWatchingThread(childId, 81);
+      const child = (yield* orchestrator.getThreadProjection(childId)).thread;
+      const now = yield* DateTime.now;
+      yield* projections.apply({
+        id: EventId.make("event:incomplete:link"),
+        type: "thread.metadata-updated",
+        threadId: childId,
+        providerInstanceId: instanceId,
+        occurredAt: now,
+        payload: {
+          ...child,
+          lineage: {
+            rootThreadId: missingId,
+            parentThreadId: missingId,
+            relationshipToParent: "subagent",
+          },
+        },
+      });
+      const message = {
+        type: "message.dispatch" as const,
+        commandId: CommandId.make("message:incomplete:mcp"),
+        threadId: childId,
+        messageId: MessageId.make("message:incomplete:mcp"),
+        text: "Work",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" as const },
+        createdBy: "agent" as const,
+        creationSource: "mcp" as const,
+      };
+      assert.equal((yield* orchestrator.dispatch(message).pipe(Effect.result))._tag, "Failure");
+      assert.equal(
+        (yield* orchestrator
+          .dispatch({
+            ...message,
+            commandId: CommandId.make("message:incomplete:server"),
+            messageId: MessageId.make("message:incomplete:server"),
+            createdBy: "user",
+            creationSource: "server",
+          })
+          .pipe(Effect.result))._tag,
+        "Failure",
+      );
+      yield* send(childId, "authenticated human", "start_immediately");
+      const admitted = yield* orchestrator.getThreadProjection(childId);
+      assert.equal(admitted.thread.forkLineageOverride?.runId, admitted.runs.at(-1)?.id);
+      assert.deepEqual(admitted.thread.forkResumedRetirements, []);
+      // Repair discovers an ancestor that the override could never acknowledge.
+      yield* createWatchingThread(missingId, 82);
+      yield* orchestrator.dispatch({
+        type: "thread.stop",
+        commandId: CommandId.make("stop:incomplete:discovered"),
+        threadId: missingId,
+      });
+      assert.equal(
+        (yield* orchestrator
+          .dispatch({
+            ...message,
+            commandId: CommandId.make("message:incomplete:after-repair"),
+            messageId: MessageId.make("message:incomplete:after-repair"),
+            creationSource: "server",
+          })
+          .pipe(Effect.result))._tag,
+        "Failure",
+      );
+      assert.deepEqual(
+        (yield* orchestrator.getThreadProjection(childId)).thread.forkResumedRetirements,
+        [],
+      );
+    }).pipe(Effect.provide(layerTest)),
 );
