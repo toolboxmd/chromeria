@@ -7,6 +7,7 @@ import type {
   ProjectionRecordFilter,
   ProjectionRecords,
 } from "./ProjectionStore.ts";
+import { ProjectionStoreThreadNotFoundError } from "./ProjectionStore.ts";
 import {
   type ChatAttachment,
   CommandId,
@@ -47,6 +48,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
+import { readStopDescendants } from "../childThreads/stopDescendants.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { projectedRowEncodedBytes } from "./threadHistoryPaging.ts";
@@ -453,7 +455,7 @@ export interface ThreadManagementServiceShape {
     input: OrchestrationV2StopWorkflowInput,
   ) => Effect.Effect<void, OrchestrationV2StopWorkflowError>;
   /**
-   * Sends `thread.stop` to every delegated task under a thread, depth first. Their command IDs
+   * Sends the originating `thread.stop` to every descendant and delegated task. Their command IDs
    * derive from `commandId`, so a retry repeats nothing that already stopped. A task that
    * cannot be stopped does not keep the others running: all are tried, then it fails.
    */
@@ -461,6 +463,9 @@ export interface ThreadManagementServiceShape {
     readonly threadId: ThreadId;
     readonly commandId: CommandId;
     readonly reason?: string | undefined;
+    readonly forkRetirementStop?:
+      | { readonly ancestorThreadId: ThreadId; readonly originalToken: CommandId }
+      | undefined;
   }) => Effect.Effect<
     void,
     // Dispatches thread.stop, a command the enablement chokepoint never
@@ -545,6 +550,7 @@ function latestSteerableRun(
 }
 
 const SETTLE_AFTER_RUN_WAIT_MS = 24 * 60 * 60 * 1_000;
+const isProjectionThreadNotFound = Schema.is(ProjectionStoreThreadNotFoundError);
 
 const make = Effect.gen(function* () {
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
@@ -1143,20 +1149,37 @@ const make = Effect.gen(function* () {
 
   const stopDelegatedTasks: ThreadManagementServiceShape["stopDelegatedTasks"] = (input) =>
     Effect.gen(function* () {
+      const snapshot = yield* orchestrator.getShellSnapshot();
       const { subagents } = yield* orchestrator.getThreadRecords(input.threadId, ["subagents"]);
-      const failures: Array<
-        Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
-      > = [];
-      for (const task of subagents) {
-        if (task.origin !== "app_owned" || task.childThreadId === null) continue;
-        const threadId = task.childThreadId;
+      const descendants = yield* readStopDescendants(
+        input.threadId,
+        [...snapshot.threads, ...snapshot.archivedThreads],
+        (id) =>
+          orchestrator.getThreadRecords(id, []).pipe(
+            Effect.map(({ thread }) => Option.some(thread)),
+            Effect.catchTags({
+              OrchestratorProjectionError: (error) =>
+                isProjectionThreadNotFound(error.cause) ? Effect.succeedNone : Effect.fail(error),
+            }),
+          ),
+      );
+      const failures: Array<Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError> = [];
+      for (const threadId of new Set([
+        ...descendants,
+        ...subagents.flatMap((task) =>
+          task.origin === "app_owned" && task.childThreadId !== null ? [task.childThreadId] : [],
+        ),
+      ])) {
         yield* dispatch({
           type: "thread.stop",
           commandId: CommandId.make(`${input.commandId}:stop:${threadId}`),
           threadId,
+          forkRetirementStop: input.forkRetirementStop ?? {
+            ancestorThreadId: input.threadId,
+            originalToken: input.commandId,
+          },
           ...(input.reason === undefined ? {} : { reason: input.reason }),
         }).pipe(
-          Effect.andThen(stopDelegatedTasks({ ...input, threadId })),
           Effect.catch((error) =>
             Effect.logWarning("Unable to stop a delegated task", {
               parentThreadId: input.threadId,

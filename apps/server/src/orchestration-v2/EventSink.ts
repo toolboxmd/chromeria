@@ -23,6 +23,9 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { readStopDescendants } from "../childThreads/stopDescendants.ts";
+import { ForkCommitGuardRejected, type ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
+
 import { replayAndBufferProjectedLiveEvents } from "./LiveStreamBudget.ts";
 import type { UnsequencedProjectEvent } from "../persistence/OrchestrationEventStore.ts";
 import { projectDomainEventForWire } from "./WireProjection.ts";
@@ -33,6 +36,8 @@ import * as EventStore from "./EventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
+
+const isForkCommitGuardRejected = Schema.is(ForkCommitGuardRejected);
 
 /**
  * ERRORS
@@ -137,6 +142,7 @@ export interface EventSinkV2Shape {
     EventSinkV2Error
   >;
   readonly commitCommand: (input: {
+    readonly forkPlans?: ReadonlyArray<ForkCommitPlan>;
     readonly commandId: CommandId;
     readonly threadId: ThreadId;
     readonly commandType: string;
@@ -144,6 +150,8 @@ export interface EventSinkV2Shape {
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
     readonly effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
     readonly cancelUnsettledEffects?: {
+      readonly includeSubagentDescendants?: boolean;
+      readonly drain?: boolean;
       readonly effectTypes: ReadonlyArray<EffectOutbox.OrchestrationEffectRequestV2["type"]>;
       readonly reason: string;
     };
@@ -154,7 +162,7 @@ export interface EventSinkV2Shape {
       readonly committed: boolean;
       readonly cancelledEffectCount: number;
     },
-    EventSinkV2Error
+    EventSinkV2Error | ForkCommitGuardRejected
   >;
   readonly commitRejectedCommand: (input: {
     readonly commandId: CommandId;
@@ -598,6 +606,39 @@ const layerBase: Layer.Layer<
             return { ...existing, committed: false as const, cancelledEffectIds: [] };
           }
 
+          for (const plan of input.forkPlans ?? []) {
+            for (const guard of plan.guards) {
+              const decision = yield* guard.pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.provideService(ProjectionStore.ProjectionStoreV2, projectionStore),
+              );
+              if (decision === "accept_noop") {
+                const receipt: CommandReceiptStore.CommandReceiptV2 = {
+                  commandId: input.commandId,
+                  threadId: input.threadId,
+                  commandType: input.commandType,
+                  acceptedAt: input.acceptedAt,
+                  resultSequence: yield* eventStore.latestSequence({ threadId: input.threadId }),
+                  status: "accepted",
+                  error: null,
+                };
+                yield* commandReceipts.upsert(receipt);
+                return {
+                  receipt,
+                  storedEvents: [],
+                  committed: true as const,
+                  cancelledEffectIds: [],
+                };
+              }
+            }
+          }
+          for (const plan of input.forkPlans ?? []) {
+            for (const mutation of plan.mutations)
+              yield* mutation.pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.provideService(ProjectionStore.ProjectionStoreV2, projectionStore),
+              );
+          }
           const normalized = yield* normalizeEvents(input.events);
           const storedEvents = yield* eventStore.append({
             commandId: input.commandId,
@@ -621,19 +662,49 @@ const layerBase: Layer.Layer<
             error: null,
           };
           yield* commandReceipts.upsert(receipt);
-          const cancelledEffectIds =
-            input.cancelUnsettledEffects === undefined
-              ? []
-              : yield* effectOutbox.cancelUnsettled({
-                  threadId: input.threadId,
+          const cancelledEffectIds: string[] = [];
+          if (input.cancelUnsettledEffects !== undefined) {
+            const threadIds = [
+              input.threadId,
+              ...(input.cancelUnsettledEffects.includeSubagentDescendants
+                ? yield* readStopDescendants(
+                    input.threadId,
+                    yield* projectionStore
+                      .getShellSnapshot()
+                      .pipe(
+                        Effect.map((snapshot) => [
+                          ...snapshot.threads,
+                          ...snapshot.archivedThreads,
+                        ]),
+                      ),
+                    (id) =>
+                      projectionStore.getThread(id).pipe(
+                        Effect.map(Option.some),
+                        Effect.catchTags({
+                          ProjectionStoreThreadNotFoundError: () => Effect.succeedNone,
+                        }),
+                      ),
+                  )
+                : []),
+            ];
+            for (const threadId of threadIds) {
+              cancelledEffectIds.push(
+                ...(yield* effectOutbox.cancelUnsettled({
+                  threadId,
                   ...input.cancelUnsettledEffects,
-                });
+                })),
+              );
+            }
+          }
           return { receipt, storedEvents, committed: true as const, cancelledEffectIds };
         }),
         (result) =>
           Effect.gen(function* () {
-            yield* effectOutbox.signalCancellations(result.cancelledEffectIds);
-            if (result.committed && input.effects.length > 0) {
+            yield* effectOutbox.signalCancellations(
+              result.cancelledEffectIds,
+              input.cancelUnsettledEffects?.drain,
+            );
+            if (result.committed && result.storedEvents.length > 0 && input.effects.length > 0) {
               yield* effectOutbox.notifyAvailable(input.effects.length);
             }
             if (result.committed) yield* publishStoredEvents(result.storedEvents);
@@ -867,13 +938,14 @@ const layerBase: Layer.Layer<
         ),
       commitCommand: (input) =>
         commitCommandEffect(input).pipe(
-          Effect.mapError(
-            (cause) =>
-              new EventSinkWriteError({
-                commandId: input.commandId,
-                eventCount: input.events.length,
-                cause,
-              }),
+          Effect.mapError((cause) =>
+            isForkCommitGuardRejected(cause)
+              ? cause
+              : new EventSinkWriteError({
+                  commandId: input.commandId,
+                  eventCount: input.events.length,
+                  cause,
+                }),
           ),
         ),
       commitRejectedCommand: (input) =>
