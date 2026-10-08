@@ -1,5 +1,6 @@
 import type {
   OrchestrationV2ServerCommand,
+  OrchestrationV2DomainEvent,
   RunId,
   ServerSettingsError,
   ThreadId,
@@ -13,6 +14,7 @@ import type { ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
 import * as Projection from "../orchestration-v2/ProjectionStore.ts";
 import * as Coordinator from "./RecoveryCoordinator.ts";
 import { readRetirementState } from "../childThreads/retirement.ts";
+import { continuationAdmission } from "./continuationAdmission.ts";
 import { retryAdmission } from "./recoveryAdmission.ts";
 
 /** Optional fork behavior; upstream orchestration retains its ordinary finalization. */
@@ -21,7 +23,10 @@ export class RecoveryHooks extends Context.Reference<{
     threadId: ThreadId,
     expectedRunId: RunId,
   ) => Effect.Effect<boolean, SqlError | ServerSettingsError | Projection.ProjectionStoreV2Error>;
-  readonly commitPlans: (command: OrchestrationV2ServerCommand) => ReadonlyArray<ForkCommitPlan>;
+  readonly commitPlans: (
+    command: OrchestrationV2ServerCommand,
+    events?: ReadonlyArray<OrchestrationV2DomainEvent>,
+  ) => ReadonlyArray<ForkCommitPlan>;
 }>("t3/prism/RecoveryHooks", {
   defaultValue: () => ({ holdsFinalization: () => Effect.succeed(false), commitPlans: () => [] }),
 }) {}
@@ -52,10 +57,21 @@ export const layer = Layer.effect(
             (yield* coordinator.holdsResult(threadId))
           );
         }),
-      commitPlans: (command: OrchestrationV2ServerCommand) => {
+      commitPlans: (
+        command: OrchestrationV2ServerCommand,
+        events: ReadonlyArray<OrchestrationV2DomainEvent> = [],
+      ) => {
         const plan = command.type === "message.dispatch" ? retryAdmission(command) : null;
-        return plan === null ? [] : [plan];
+        const continuation = continuationAdmission(command, events);
+        return [plan, continuation].filter((entry): entry is ForkCommitPlan => entry !== null);
       },
     };
   }),
 );
+
+/** Preserve explicit server source identity on every continuation run, never infer it from messages. */
+export function continuationRunFields(command: OrchestrationV2ServerCommand) {
+  if (command.type !== "message.dispatch") return {};
+  const source = command.forkPrismRetryOfRunId ?? command.usageLimitContinuationOfRunId;
+  return source === undefined ? {} : { forkPrismContinuationSourceRunId: source };
+}

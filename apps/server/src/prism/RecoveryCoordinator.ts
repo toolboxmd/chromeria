@@ -13,6 +13,9 @@ import * as Layer from "effect/Layer";
 import type { SqlError } from "effect/sql/SqlError";
 import * as Settings from "../serverSettings.ts";
 import * as Store from "./RecoveryStore.ts";
+import * as History from "./RecoveryHistory.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import { recoveryOutcomeFor } from "./recoveryOutcomePolicy.ts";
 import { sameModelSelection, type RecoveryRecord } from "./recoveryPolicy.ts";
 
 export type RecoveryProjection = Pick<
@@ -35,11 +38,13 @@ export class RecoveryCoordinator extends Context.Service<
 const make = Effect.gen(function* () {
   const store = yield* Store.RecoveryStore;
   const settings = yield* Settings.ServerSettingsService;
+  const sql = yield* SqlClient.SqlClient;
   const observe: RecoveryCoordinator["Service"]["observe"] = Effect.fn(
     "RecoveryCoordinator.observe",
   )(function* (projection, retiredOrIncomplete) {
     const run = latestExecutedRun(projection.runs);
-    if (!run || projection.thread.creationSource !== "mcp") return null;
+    if (!run) return null;
+    const autoResume = (yield* settings.getSettings).autoResumeLimitedThreads;
     const failure = latestRootProviderFailure(run, projection.turnItems);
     const stopped = projection.turnItems.some(
       (item) => item.type === "run_interrupt_request" && item.runId === run.id,
@@ -57,13 +62,36 @@ const make = Effect.gen(function* () {
       recovery?.runId === run.id && recovery.resetAt === failure?.resetAt
         ? recovery.autoResume
         : undefined;
-    return yield* store.reconcile({
-      previous: null,
-      run,
-      failure,
-      stoppedOrRetired: blocked,
-      autoResume: persistedResetChoice ?? (yield* settings.getSettings).autoResumeLimitedThreads,
-    });
+    const record =
+      projection.thread.creationSource === "mcp"
+        ? yield* store.reconcile({
+            previous: null,
+            run,
+            failure,
+            stoppedOrRetired: blocked,
+            autoResume: persistedResetChoice ?? autoResume,
+          })
+        : null;
+    yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          for (const source of projection.runs) {
+            const existing = yield* History.readRecoveryOutcome(source.id);
+            if (existing?.status === "decided") continue;
+            const outcome = recoveryOutcomeFor({
+              projection,
+              run: source,
+              latest: run,
+              record,
+              retiredOrIncomplete,
+              autoResume,
+            });
+            if (outcome !== null) yield* History.writeRecoveryOutcome(outcome);
+          }
+        }),
+      )
+      .pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    return record;
   });
   const holdsResult = Effect.fn("RecoveryCoordinator.holdsResult")(function* (threadId: ThreadId) {
     const record = yield* store.get(threadId);

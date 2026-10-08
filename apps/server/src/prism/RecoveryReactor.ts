@@ -1,7 +1,8 @@
-import { ThreadId } from "@t3tools/contracts";
+import { RunId, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -33,28 +34,40 @@ export const layer = Layer.effect(
     const sink = yield* EventSink.EventSinkV2;
     const scheduler = yield* Scheduler.Scheduler;
     const permit = yield* Semaphore.make(1);
+    const afterRunId = yield* Ref.make("");
     const reconcile = Effect.gen(function* () {
-      // Closed failures are not polled again; a new original run gets a new opportunity.
-      const candidates = yield* sql<{ thread_id: string }>`
-      SELECT thread_id FROM fork_prism_recovery WHERE state <> 'closed'
-      UNION
-      SELECT t.thread_id FROM orchestration_v2_projection_threads t
-      JOIN orchestration_v2_projection_runs r ON r.run_id = (
-        SELECT candidate.run_id FROM orchestration_v2_projection_runs candidate
-        WHERE candidate.thread_id=t.thread_id AND candidate.status <> 'queued'
-          AND NOT (candidate.status='cancelled' AND json_extract(candidate.payload_json,'$.startedAt') IS NULL)
-        ORDER BY (candidate.completed_at IS NULL) DESC, candidate.completed_at DESC, candidate.ordinal DESC LIMIT 1
-      )
-      LEFT JOIN fork_prism_recovery recovery ON recovery.thread_id=t.thread_id
-      WHERE json_extract(t.payload_json,'$.creationSource')='mcp' AND r.status='failed'
-        AND (recovery.source_run_id IS NULL OR recovery.source_run_id <> r.run_id)`;
+      // A fair keyset batch covers every unresolved exact source, including old/non-MCP failures.
+      // Neither a pending controller nor a newer thread run can starve historical decisions.
+      const after = yield* Ref.get(afterRunId);
+      const candidates = yield* sql<{ thread_id: string; source_run_id: string }>`
+      SELECT thread_id,source_run_id FROM (
+        SELECT r.thread_id,r.run_id AS source_run_id FROM orchestration_v2_projection_runs r
+        LEFT JOIN fork_prism_recovery_outcomes h ON h.source_run_id=r.run_id
+        WHERE h.source_run_id IS NULL AND (r.status='failed' OR
+          (r.status IN ('interrupted','cancelled','rolled_back') AND json_extract(r.payload_json,'$.forkPrismContinuationSourceRunId') IS NOT NULL))
+        UNION SELECT thread_id,source_run_id FROM fork_prism_recovery_outcomes WHERE status='pending'
+        UNION SELECT thread_id,source_run_id FROM fork_prism_recovery WHERE state <> 'closed'
+      ) WHERE source_run_id > ${after} ORDER BY source_run_id LIMIT 128`;
+      yield* Ref.set(afterRunId, candidates.length === 128 ? candidates.at(-1)!.source_run_id : "");
       for (const candidate of candidates) {
         const threadId = ThreadId.make(candidate.thread_id);
         yield* Effect.gen(function* () {
+          const latest = yield* sql<{
+            run_id: string;
+          }>`SELECT run_id FROM orchestration_v2_projection_runs
+            WHERE thread_id=${threadId} AND status <> 'queued'
+              AND NOT (status='cancelled' AND json_extract(payload_json,'$.startedAt') IS NULL)
+            ORDER BY (completed_at IS NULL) DESC,completed_at DESC,ordinal DESC LIMIT 1`;
+          const runIds = [
+            RunId.make(candidate.source_run_id),
+            ...(latest[0] === undefined ? [] : [RunId.make(latest[0].run_id)]),
+          ];
           const projection = yield* projections.getThreadRecords(
             threadId,
             ["runs", "turnItems", "runtimeRequests"],
             {
+              runIds,
+              turnItemRunIds: runIds,
               turnItemTypes: ["error", "run_interrupt_request"],
             },
           );
