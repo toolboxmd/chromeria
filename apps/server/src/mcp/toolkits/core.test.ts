@@ -1,5 +1,6 @@
 import * as AssetSigner from "../../assets/AssetSigner.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
+import * as PrismServerSettings from "../../serverSettings.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -64,6 +65,7 @@ import * as PeerLinkRequests from "../../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
 
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
+  Layer.provide(PrismServerSettings.layerTest()),
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
 );
@@ -648,6 +650,7 @@ it.effect("refuses act-as-caller tools to a client caller", () =>
   }).pipe(
     Effect.provide(
       layerOrchestratorToolkit.pipe(
+        Layer.provide(PrismServerSettings.layerTest()),
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
@@ -693,6 +696,7 @@ it.effect("a caller cannot rewrite a scheduled task that runs above its own mode
   }).pipe(
     Effect.provide(
       layerOrchestratorToolkit.pipe(
+        Layer.provide(PrismServerSettings.layerTest()),
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
@@ -832,6 +836,7 @@ it.effect.each(["t3_thread_interrupt", "t3_workflow_stop"])(
     }).pipe(
       Effect.provide(
         layerOrchestratorToolkit.pipe(
+          Layer.provide(PrismServerSettings.layerTest()),
           Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
           Layer.provide(NodeCrypto.layer),
           Layer.provide(
@@ -940,6 +945,7 @@ it.effect("discovers workflow stop targets and requires orchestration capability
   }).pipe(
     Effect.provide(
       layerOrchestratorToolkit.pipe(
+        Layer.provide(PrismServerSettings.layerTest()),
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(

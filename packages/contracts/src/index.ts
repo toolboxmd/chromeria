@@ -75,3 +75,4 @@ export * from "./secretReference.ts";
 export * from "./settingsSecretValue.ts";
 export * from "./clientRpcPermissions.ts";
 export * from "./people.ts";
+export * from "./prism.ts";
