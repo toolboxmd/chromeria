@@ -21,7 +21,8 @@ import { pullRequestPanelContext } from "../pullRequest/pullRequestDetail.logic"
 import { PullRequestDetailPanel } from "../pullRequest/PullRequestDetailPanel";
 import { PullRequestDetailGhost } from "../pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "../pullRequest/PullRequestsUnavailableState";
-import { ThreadPullRequestsPanel } from "../pullRequest/ThreadPullRequestsPanel";
+import { ThreadIssuePanel } from "../issues/ThreadIssuePanel";
+import { ThreadLinksPanel } from "../issues/ThreadLinksPanel";
 
 const PreviewPanel = lazy(() =>
   import("../preview/PreviewPanel").then((module) => ({ default: module.PreviewPanel })),
@@ -38,6 +39,7 @@ type RightPanelTerminalProps = Omit<
 >;
 
 interface RightPanelPullRequestProps {
+  readonly issueLinks: boolean;
   readonly capabilityKnown: boolean;
   readonly supported: boolean;
   readonly projectId: ProjectId | null;
@@ -164,7 +166,9 @@ export function RightPanelSurfaceContent(props: {
       );
     }
     case "pull-requests":
-      return <ThreadPullRequestsPanel threadRef={threadRef} />;
+      return <ThreadLinksPanel threadRef={threadRef} issueLinks={props.pullRequest.issueLinks} />;
+    case "issue":
+      return <ThreadIssuePanel environmentId={surface.environmentId} url={surface.url} />;
     case "device":
       return (
         <Suspense fallback={null}>

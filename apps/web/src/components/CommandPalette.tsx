@@ -54,6 +54,7 @@ import {
   ArrowLeftIcon,
   BugIcon,
   ChartNoAxesColumnIcon,
+  CircleDotIcon,
   CheckIcon,
   ChevronRightIcon,
   CornerLeftUpIcon,
@@ -240,6 +241,9 @@ import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { readPullRequestListPreferences } from "~/components/pullRequest/pullRequestListPreferences";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
 import { threadRecentUse } from "@t3tools/shared/paletteSearch";
+import { withIssuePaletteGroup } from "~/components/issues/issuePaletteItems";
+import { useIssuePaletteSource } from "~/components/issues/issuePaletteStore";
+import { usePaletteIssueThreads } from "~/components/issues/issuePaletteThreads";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 const ADD_PROJECT_ENTRY_GROUP = "add-project";
@@ -433,6 +437,7 @@ function OpenCommandPaletteDialog(props: {
     useHandleNewThread();
   const paletteRouteTarget = useThreadRouteTarget();
   const projects = useProjects();
+  const issuePaletteSource = useIssuePaletteSource();
   const referenceThreadRef =
     pathname === "/pull-requests"
       ? environments.some((environment) => environment.serverConfig !== null)
@@ -820,6 +825,28 @@ function OpenCommandPaletteDialog(props: {
         (left.threadSearch ? threadRecentUse(left.threadSearch) : 0),
     )
     .slice(0, RECENT_THREAD_LIMIT);
+  // Fork: `#N`, `owner/repo#N` or an Issue URL also finds its linked threads (toolboxmd/t3code#25).
+  const issueLinkedThreads = usePaletteIssueThreads(threadSearchQuery);
+  const threadItemsWithIssueLinks = useMemo(() => {
+    if (issueLinkedThreads.length === 0) return allThreadItems;
+    const linkedItems = issueLinkedThreads.flatMap((linked) =>
+      buildLinkedThreadActionItems({
+        ...linked,
+        query: threadSearchQuery,
+        icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
+        runThread: async (thread) => {
+          await navigate({
+            to: "/$environmentId/$threadId",
+            params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, thread.id)),
+          });
+        },
+      }),
+    );
+    const linkedIds = new Set(
+      issueLinkedThreads.flatMap((linked) => linked.threads.map((thread) => `thread:${thread.id}`)),
+    );
+    return [...linkedItems, ...allThreadItems.filter((item) => !linkedIds.has(item.value))];
+  }, [allThreadItems, issueLinkedThreads, navigate, threadSearchQuery]);
 
   const pushPaletteView = useStableCallback((view: CommandPaletteView): void => {
     browseNavigation.invalidate();
@@ -1314,9 +1341,11 @@ function OpenCommandPaletteDialog(props: {
     actionItems.push({
       kind: "action",
       value: "action:open-thread-pull-requests",
-      searchTerms: ["pull requests", "linked", "stack", "prs"],
-      title: "Show linked pull requests",
-      disabled: visibleThreadPullRequests(activeThread.pullRequests).length === 0,
+      searchTerms: ["pull requests", "linked", "stack", "prs", "issues"],
+      title: "Show linked PRs and Issues",
+      disabled:
+        visibleThreadPullRequests(activeThread.pullRequests).length === 0 &&
+        activeThreadServerConfig?.environment.capabilities.issueLinks !== true,
       icon: <PullRequestGlyph.link className={ITEM_ICON_CLASS} />,
       run: async () => {
         useRightPanelStore.getState().open(threadRef, "pull-requests");
@@ -1493,6 +1522,27 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
+  // Fork: only servers that list Issues (toolboxmd/t3code#25).
+  if (
+    environments.some(
+      (environment) => environment.serverConfig?.environment.capabilities.issues === true,
+    )
+  ) {
+    actionItems.push({
+      kind: "action",
+      value: "action:issues",
+      searchTerms: ["issues", "github", "tasks", "sub-issues", "parent"],
+      title: "Open issues",
+      icon: <CircleDotIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({
+          to: "/pull-requests",
+          search: { ...readPullRequestListPreferences(), view: "issues" },
+        });
+      },
+    });
+  }
+
   actionItems.push({
     kind: "action",
     value: "action:usage",
@@ -1568,7 +1618,12 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
-  const rootGroups = buildRootGroups({ actionItems, recentThreadItems });
+  // Fork: typed searches also match the open Issues list, after Actions (toolboxmd/t3code#27).
+  const rootGroups = withIssuePaletteGroup(
+    buildRootGroups({ actionItems, recentThreadItems }),
+    issuePaletteSource,
+    deferredQuery,
+  );
   // Every setting goes to the palette's own matcher, so settings get the same
   // word starts and typo tolerance as threads.
   const settingsSearchItems: CommandPaletteActionItem[] = settingsForThisPlatform(
@@ -1639,7 +1694,7 @@ function OpenCommandPaletteDialog(props: {
               });
             },
           })
-        : allThreadItems,
+        : threadItemsWithIssueLinks,
     threadMessageItems: isLinkedThreadSearch ? [] : threadMessageItems,
     now: searchNow,
   });

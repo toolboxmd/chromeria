@@ -1,0 +1,359 @@
+import type { EnvironmentId } from "@t3tools/contracts";
+import { describe, expect, it } from "vite-plus/test";
+
+import { ThreadId, issueKeyString } from "@t3tools/contracts";
+
+import {
+  issueLinkChangesMatch,
+  issueMarkdownCwd,
+  issueStartPrompt,
+  issueStateChunks,
+  linkedIssueEntries,
+  linkedIssueStates,
+  openLinkedIssueCount,
+  parseIssueReferenceInput,
+  resolveIssuePanelEnvironment,
+  resolveIssueProject,
+  startThreadFromIssue,
+} from "./issueLinks.logic";
+
+const identity = (canonicalKey: string, provider = "github") => ({
+  repositoryIdentity: { canonicalKey, provider },
+});
+
+describe("parseIssueReferenceInput", () => {
+  it("reads URLs, qualified and bare numbers", () => {
+    expect(parseIssueReferenceInput(" https://github.com/acme/web/issues/12 ")).toEqual({
+      url: "https://github.com/acme/web/issues/12",
+    });
+    expect(parseIssueReferenceInput("acme/web#12")).toEqual({ repository: "acme/web", number: 12 });
+    expect(parseIssueReferenceInput("#12")).toEqual({ number: 12 });
+    expect(parseIssueReferenceInput("12")).toEqual({ number: 12 });
+  });
+
+  it("rejects pull request URLs and noise", () => {
+    expect(parseIssueReferenceInput("https://github.com/acme/web/pull/12")).toBeNull();
+    expect(parseIssueReferenceInput("#0")).toBeNull();
+    expect(parseIssueReferenceInput("twelve")).toBeNull();
+    expect(parseIssueReferenceInput("")).toBeNull();
+  });
+});
+
+describe("issueStartPrompt", () => {
+  const issue = {
+    host: "github.com",
+    repository: "acme/web",
+    number: 12,
+    title: " Fix login ",
+    url: "https://github.com/acme/web/issues/12",
+  };
+  it("is just the URL when only the link is known", () => {
+    expect(issueStartPrompt({ ...issue, title: null, body: null })).toBe(
+      "https://github.com/acme/web/issues/12",
+    );
+  });
+  it("puts the title, URL and body in that order", () => {
+    expect(issueStartPrompt({ ...issue, body: "Steps\n1. log in\n" })).toBe(
+      "Fix login\n\nhttps://github.com/acme/web/issues/12\n\nSteps\n1. log in",
+    );
+  });
+  it("leaves out an empty body", () => {
+    expect(issueStartPrompt({ ...issue, body: "  " })).toBe(
+      "Fix login\n\nhttps://github.com/acme/web/issues/12",
+    );
+  });
+});
+
+describe("resolveIssueProject", () => {
+  const issue = { host: "github.com", repository: "Acme/Web", number: 1 };
+  it("picks the first GitHub checkout of the Issue's repository", () => {
+    const projects = [
+      { id: "gitlab", ...identity("github.com/acme/web", "gitlab") },
+      { id: "other", ...identity("github.com/acme/api") },
+      { id: "web", ...identity("github.com/acme/web") },
+      { id: "web-2", ...identity("github.com/acme/web") },
+    ];
+    expect(resolveIssueProject(projects, issue)).toEqual({ project: projects[2] });
+  });
+  it("prefers a checkout on a server that keeps Issue links", () => {
+    const projects = [
+      { id: "old-server", environmentId: "old", ...identity("github.com/acme/web") },
+      { id: "links-server", environmentId: "new", ...identity("github.com/acme/web") },
+    ];
+    const keepsLinks = (project: { environmentId: string }) => project.environmentId === "new";
+    expect(resolveIssueProject(projects, issue, keepsLinks)).toEqual({ project: projects[1] });
+    // With no such server, the first checkout still starts the thread.
+    expect(resolveIssueProject(projects, issue, () => false)).toEqual({ project: projects[0] });
+  });
+  it("starts a fork's Issue in the fork checkout, not in one of the upstream it tracks", () => {
+    const fork = {
+      id: "fork",
+      repositoryIdentity: {
+        canonicalKey: "github.com/upstream/web",
+        provider: "github",
+        origin: { canonicalKey: "github.com/acme/web" },
+      },
+    };
+    const projects = [{ id: "upstream", ...identity("github.com/upstream/web") }, fork];
+    expect(resolveIssueProject(projects, issue)).toEqual({ project: fork });
+    expect(resolveIssueProject(projects, { ...issue, repository: "upstream/web" })).toEqual({
+      project: projects[0],
+    });
+  });
+  it("explains why no project can start a thread", () => {
+    expect(resolveIssueProject([{ repositoryIdentity: null }], issue)).toEqual({
+      reason: "No project is a checkout of Acme/Web. Add one to start a thread.",
+    });
+  });
+});
+
+describe("startThreadFromIssue", () => {
+  const issue = {
+    host: "github.com",
+    repository: "acme/web",
+    number: 7,
+    url: "https://github.com/acme/web/issues/7",
+    title: "Crash on save",
+    body: "Stack trace",
+  };
+  const projects = [
+    { id: "api", ...identity("github.com/acme/api") },
+    { id: "web", ...identity("github.com/acme/web") },
+  ];
+
+  it("opens a draft in the matching project, prefills it and links its thread", async () => {
+    const steps: string[] = [];
+    const opened = await startThreadFromIssue(issue, {
+      projects,
+      openDraft: async (project) => {
+        steps.push(`open ${project.id}`);
+        return { draftId: "draft-1", threadId: "thread-1" };
+      },
+      writePrompt: (draftId, prompt) => steps.push(`prompt ${draftId} ${JSON.stringify(prompt)}`),
+      link: async (project, threadId, url) => steps.push(`link ${project.id} ${threadId} ${url}`),
+    });
+    expect(opened).toEqual({ draftId: "draft-1", threadId: "thread-1" });
+    expect(steps).toEqual([
+      "open web",
+      `prompt draft-1 ${JSON.stringify("Crash on save\n\nhttps://github.com/acme/web/issues/7\n\nStack trace")}`,
+      "link web thread-1 https://github.com/acme/web/issues/7",
+    ]);
+  });
+
+  it("does nothing without a matching project or when no draft opens", async () => {
+    const steps: string[] = [];
+    const record = {
+      writePrompt: () => steps.push("prompt"),
+      link: async () => steps.push("link"),
+    };
+    expect(
+      await startThreadFromIssue(issue, {
+        projects: [projects[0]!],
+        openDraft: async () => ({ draftId: "d", threadId: "t" }),
+        ...record,
+      }),
+    ).toBeNull();
+    expect(
+      await startThreadFromIssue(issue, { projects, openDraft: async () => null, ...record }),
+    ).toBeNull();
+    expect(steps).toEqual([]);
+  });
+});
+
+describe("issueLinkChangesMatch", () => {
+  const change = (threadId: string, number: number) => ({
+    threadId: ThreadId.make(threadId),
+    issues: [{ host: "github.com", repository: "acme/web", number }],
+  });
+  it("matches when any change in a batch delivered together names the target", () => {
+    const batch = [change("thread-a", 1), change("thread-b", 2)];
+    expect(issueLinkChangesMatch(batch, { threadId: "thread-b", issues: [] })).toBe(true);
+    expect(
+      issueLinkChangesMatch(batch, { threadId: null, issues: ["github.com/acme/web#2"] }),
+    ).toBe(true);
+    expect(
+      issueLinkChangesMatch(batch, { threadId: "thread-c", issues: ["github.com/acme/web#3"] }),
+    ).toBe(false);
+  });
+  it("matches a child thread's change only when asked for descendants", () => {
+    const batch = [change("grandchild-of-a", 1)];
+    const descendantsOfA = () => new Set(["child-of-a", "grandchild-of-a"]);
+    expect(issueLinkChangesMatch(batch, { threadId: "thread-a", issues: [] })).toBe(false);
+    expect(
+      issueLinkChangesMatch(batch, {
+        threadId: "thread-a",
+        issues: [],
+        descendants: descendantsOfA,
+      }),
+    ).toBe(true);
+    expect(
+      issueLinkChangesMatch(batch, {
+        threadId: "thread-b",
+        issues: [],
+        descendants: () => new Set(),
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("resolveIssuePanelEnvironment", () => {
+  const issue = { host: "github.com", repository: "acme/web", number: 1 };
+  const projects = [
+    { environmentId: "upstream" as EnvironmentId, ...identity("github.com/acme/web") },
+    { environmentId: "issues-only" as EnvironmentId, ...identity("github.com/acme/web") },
+    { environmentId: "fork" as EnvironmentId, ...identity("github.com/acme/web") },
+  ];
+  const servers = {
+    issues: ["issues-only", "fork"] as EnvironmentId[],
+    issueLinks: ["fork"] as EnvironmentId[],
+  };
+
+  it("keeps the server the link names when it lists Issues", () => {
+    expect(
+      resolveIssuePanelEnvironment(issue, "issues-only" as EnvironmentId, projects, servers),
+    ).toBe("issues-only");
+  });
+
+  it("never reads through a server without Issues, preferring one with Issue links", () => {
+    expect(
+      resolveIssuePanelEnvironment(issue, "upstream" as EnvironmentId, projects, servers),
+    ).toBe("fork");
+    expect(resolveIssuePanelEnvironment(issue, undefined, projects, servers)).toBe("fork");
+    expect(
+      resolveIssuePanelEnvironment(issue, undefined, projects, { issues: [], issueLinks: [] }),
+    ).toBeNull();
+  });
+});
+
+describe("linked Issue state", () => {
+  const linked = { host: "github.com", repository: "acme/web", number: 12 };
+  const other = { host: "github.com", repository: "acme/web", number: 13 };
+  const links = [linked, other];
+  const stateOf = (states: ReadonlyMap<string, unknown>, key: typeof linked) =>
+    states.get(issueKeyString(key));
+
+  it("moves an Issue closed after linking from open to closed on the next read", () => {
+    // Before the first read the rows are pending and nothing counts as open.
+    const pending = linkedIssueStates(links, []);
+    expect(stateOf(pending, linked)).toBe("pending");
+    expect(openLinkedIssueCount(links, pending)).toBe(0);
+
+    const atLink = linkedIssueStates(links, [
+      {
+        _tag: "read",
+        issues: [
+          { ...linked, state: "open" },
+          { ...other, state: "open" },
+        ],
+      },
+    ]);
+    expect(stateOf(atLink, linked)).toBe("open");
+    expect(openLinkedIssueCount(links, atLink)).toBe(2);
+
+    // The next read returns GitHub's current state, with the repository in its own case.
+    const afterClose = linkedIssueStates(links, [
+      {
+        _tag: "read",
+        issues: [
+          { ...linked, repository: "Acme/Web", state: "done" },
+          { ...other, state: "open" },
+        ],
+      },
+    ]);
+    expect(stateOf(afterClose, linked)).toBe("done");
+    expect(openLinkedIssueCount(links, afterClose)).toBe(1);
+  });
+
+  it("shows a failed read as unknown and does not count it open", () => {
+    const failed = linkedIssueStates(links, [{ _tag: "failed" }]);
+    expect(stateOf(failed, linked)).toBe("unknown");
+    expect(stateOf(failed, other)).toBe("unknown");
+    expect(openLinkedIssueCount(links, failed)).toBe(0);
+  });
+
+  it("shows an Issue GitHub did not return, or was not asked for, as unknown", () => {
+    const partial = linkedIssueStates(links, [
+      {
+        _tag: "read",
+        issues: [{ ...linked, state: null }],
+      },
+    ]);
+    expect(stateOf(partial, linked)).toBe("unknown");
+    expect(stateOf(partial, other)).toBe("unknown");
+    expect(openLinkedIssueCount(links, partial)).toBe(0);
+  });
+
+  it("reads more than one request's worth of Issues in chunks, each on its own", () => {
+    const many = Array.from({ length: 120 }, (_, index) => ({
+      host: "github.com",
+      repository: "acme/web",
+      number: index + 1,
+    }));
+    const chunks = issueStateChunks(many);
+    expect(chunks.map((chunk) => chunk.length)).toEqual([50, 50, 20]);
+    expect(chunks.flat()).toEqual(many);
+
+    const states = linkedIssueStates(many, [
+      { _tag: "read", issues: chunks[0]!.map((issue) => ({ ...issue, state: "open" as const })) },
+      { _tag: "failed" },
+      { _tag: "read", issues: chunks[2]!.map((issue) => ({ ...issue, state: "done" as const })) },
+    ]);
+    expect(stateOf(states, many[0]!)).toBe("open");
+    expect(stateOf(states, many[50]!)).toBe("unknown");
+    expect(stateOf(states, many[119]!)).toBe("done");
+    expect(openLinkedIssueCount(many, states)).toBe(50);
+  });
+
+  it("keeps what GitHub returned for each read Issue, and nothing for missing or failed ones", () => {
+    const returned = { ...linked, state: "open" as const, title: "Fix it" };
+    const entries = linkedIssueEntries([
+      { _tag: "read", issues: [returned, { ...other, state: null }] },
+      { _tag: "failed" },
+    ]);
+    expect(entries.get(issueKeyString(linked))).toEqual(returned);
+    expect(entries.has(issueKeyString(other))).toBe(false);
+  });
+});
+
+describe("issueMarkdownCwd", () => {
+  const issue = { host: "github.com", repository: "Acme/Web", number: 1 };
+  const projects = [
+    {
+      environmentId: "other" as EnvironmentId,
+      workspaceRoot: "/other/web",
+      ...identity("github.com/acme/web"),
+    },
+    {
+      environmentId: "selected" as EnvironmentId,
+      workspaceRoot: "/selected/api",
+      ...identity("github.com/acme/api"),
+    },
+    {
+      environmentId: "selected" as EnvironmentId,
+      workspaceRoot: "/selected/web",
+      ...identity("github.com/acme/web"),
+    },
+  ];
+  it("uses the repository checkout on the read server, ignoring other servers", () => {
+    expect(issueMarkdownCwd(projects, "selected" as EnvironmentId, issue)).toBe("/selected/web");
+  });
+  it("finds a fork checkout by its own repository", () => {
+    const fork = {
+      environmentId: "selected" as EnvironmentId,
+      workspaceRoot: "/selected/fork",
+      repositoryIdentity: {
+        canonicalKey: "github.com/upstream/web",
+        origin: { canonicalKey: "github.com/acme/web" },
+      },
+    };
+    expect(issueMarkdownCwd([projects[1]!, fork], "selected" as EnvironmentId, issue)).toBe(
+      "/selected/fork",
+    );
+  });
+  it("falls back to any checkout on that server and never another server", () => {
+    expect(issueMarkdownCwd(projects.slice(0, 2), "selected" as EnvironmentId, issue)).toBe(
+      "/selected/api",
+    );
+    expect(issueMarkdownCwd(projects, "absent" as EnvironmentId, issue)).toBeNull();
+  });
+});

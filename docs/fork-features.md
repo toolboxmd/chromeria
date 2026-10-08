@@ -1,6 +1,6 @@
 # Fork feature map
 
-Only seven carried features and the V2 data foundation belong to this integration stack.
+Only the carried features below and the V2 data foundation belong to this integration stack.
 Each JSON entry assigns actual carried edits one primary owner. Shared paths are
 watched by other carried features; deferred features are excluded. Keyword matches
 are evidence for review, not proof that a feature has been adopted upstream.
@@ -250,6 +250,245 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "identity.origin",
     "prismRoles",
     "wightModes"
+  ]
+}
+```
+
+## issues-browse
+
+```json
+{
+  "id": "issues-browse",
+  "purpose": "List GitHub Issues of all project repositories beside PRs, with filters, parent tree and a side panel.",
+  "issues": [
+    "https://github.com/toolboxmd/t3code/issues/27",
+    "https://github.com/toolboxmd/t3code/issues/42",
+    "https://github.com/toolboxmd/chromeria/issues/171"
+  ],
+  "prs": [
+    "https://github.com/toolboxmd/t3code/pull/32",
+    "https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/171-issues-v2"
+  ],
+  "newFiles": [
+    "apps/server/src/issues/IssueService.live.test.ts",
+    "apps/server/src/issues/IssueService.test.ts",
+    "apps/server/src/issues/IssueService.ts",
+    "apps/server/src/issues/gitHubIssues.test.ts",
+    "apps/server/src/issues/gitHubIssues.ts",
+    "apps/server/src/issues/issueRpcAuthorization.test.ts",
+    "apps/server/src/issues/issueRpcHandlers.ts",
+    "apps/web/src/components/issues/IssueDetailPanel.tsx",
+    "apps/web/src/components/issues/IssueFiltersMenu.tsx",
+    "apps/web/src/components/issues/IssuesView.tsx",
+    "apps/web/src/components/issues/ListModeToggle.tsx",
+    "apps/web/src/components/issues/issueList.logic.test.ts",
+    "apps/web/src/components/issues/issueList.logic.ts",
+    "apps/web/src/components/issues/issuePaletteItems.tsx",
+    "apps/web/src/components/issues/issuePaletteStore.ts",
+    "apps/web/src/components/issues/issuePresentation.tsx",
+    "apps/web/src/components/pullRequest/pullRequestFilterSearch.logic.test.ts",
+    "apps/web/src/components/pullRequest/pullRequestFilterSearch.logic.ts",
+    "apps/web/src/state/issues.ts",
+    "packages/client-runtime/src/state/issueCommandPermissions.test.ts",
+    "packages/contracts/src/issues.test.ts",
+    "packages/contracts/src/issues.ts"
+  ],
+  "upstreamFiles": [
+    "apps/server/src/auth/RpcAuthorization.ts",
+    "apps/server/src/observability/RpcInstrumentation.ts",
+    "apps/web/src/components/CommandPalette.tsx",
+    "apps/web/src/components/pullRequest/PullRequestListFilters.tsx",
+    "apps/web/src/routes/_chat.pull-requests.tsx",
+    "apps/web/src/state/pullRequests.ts",
+    "docs/user/source-control.md",
+    "packages/contracts/src/clientRpcPermissions.ts",
+    "packages/contracts/src/index.ts",
+    "packages/contracts/src/rpc.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/server.ts",
+    "apps/server/src/ws.ts",
+    "apps/web/src/components/sidebar/SidebarChrome.tsx"
+  ],
+  "keywords": [
+    "issues",
+    "sub-issue",
+    "subIssues",
+    "is:issue",
+    "WsRpcGroup",
+    "RPC_REQUIRED_SCOPES",
+    "pull-requests route",
+    "command palette",
+    "GitHubApi",
+    "readGraphQlPages",
+    "source-control:write"
+  ]
+}
+```
+
+## issues-links
+
+```json
+{
+  "id": "issues-links",
+  "purpose": "Link GitHub Issues to threads, show them beside PRs and start a linked thread from an Issue.",
+  "issues": [
+    "https://github.com/toolboxmd/t3code/issues/28",
+    "https://github.com/toolboxmd/chromeria/issues/171"
+  ],
+  "prs": [
+    "https://github.com/toolboxmd/t3code/pull/34",
+    "https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/171-issues-v2"
+  ],
+  "newFiles": [
+    "apps/server/src/issueLinks/IssueLinks.carryover.test.ts",
+    "apps/server/src/issueLinks/IssueLinks.test.ts",
+    "apps/server/src/issueLinks/IssueLinks.testFixtures.ts",
+    "apps/server/src/issueLinks/IssueLinks.ts",
+    "apps/server/src/issueLinks/closingReferences.test.ts",
+    "apps/server/src/issueLinks/closingReferences.ts",
+    "apps/server/src/issueLinks/rpcHandlers.ts",
+    "apps/server/src/issueLinks/rpcScopes.ts",
+    "apps/server/src/issueLinks/threadIssueLinks.ts",
+    "apps/server/src/mcp/toolkits/issues/handlers.ts",
+    "apps/server/src/mcp/toolkits/issues/tools.ts",
+    "apps/web/src/components/issues/ThreadIssueLinks.tsx",
+    "apps/web/src/components/issues/ThreadIssuePanel.tsx",
+    "apps/web/src/components/issues/ThreadLinksPanel.tsx",
+    "apps/web/src/components/issues/issueLinks.logic.test.ts",
+    "apps/web/src/components/issues/issueLinks.logic.ts",
+    "apps/web/src/components/issues/useStartThreadFromIssue.ts",
+    "apps/web/src/components/issues/useThreadIssueLinks.ts",
+    "apps/web/src/components/threadDescendants.logic.test.ts",
+    "apps/web/src/components/threadDescendants.logic.ts",
+    "apps/web/src/state/issueLinks.ts",
+    "apps/web/src/state/threadDescendants.ts",
+    "packages/contracts/src/issueLinks.test.ts",
+    "packages/contracts/src/issueLinks.ts"
+  ],
+  "upstreamFiles": [
+    "apps/server/src/environment/ServerEnvironment.ts",
+    "apps/server/src/mcp/McpHttpServer.ts",
+    "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
+    "apps/web/src/components/ChatView.tsx",
+    "apps/web/src/components/RightPanelTabs.keyboard.test.tsx",
+    "apps/web/src/components/RightPanelTabs.tsx",
+    "apps/web/src/components/pullRequest/ThreadPullRequestsPanel.tsx",
+    "apps/web/src/reopenClosedView.test.ts",
+    "apps/web/src/reopenClosedView.ts",
+    "apps/web/src/rightPanelStore.test.ts",
+    "apps/web/src/rightPanelStore.ts",
+    "packages/client-runtime/src/rpc/client.ts",
+    "packages/contracts/src/environment.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/auth/RpcAuthorization.ts",
+    "apps/server/src/observability/RpcInstrumentation.ts",
+    "apps/server/src/server.ts",
+    "apps/server/src/ws.ts",
+    "apps/web/src/components/CommandPalette.tsx",
+    "packages/contracts/src/index.ts",
+    "packages/contracts/src/rpc.ts"
+  ],
+  "keywords": [
+    "issue link",
+    "fork_thread_issue_links",
+    "link_issue",
+    "closingIssuesReferences",
+    "WsRpcGroup",
+    "RPC_REQUIRED_SCOPES",
+    "ThreadPullRequestsPanel",
+    "pullRequestsAvailable",
+    "capabilities",
+    "Linked pull requests",
+    "parentThreadId",
+    "relationshipToParent",
+    "orchestration_v2_projection_threads",
+    "McpToolAccess"
+  ]
+}
+```
+
+## issues-status
+
+```json
+{
+  "id": "issues-status",
+  "purpose": "Compute each Issue's status from GitHub, links and thread activity; group and filter the Issues view by it and wire linked threads and Start thread.",
+  "issues": [
+    "https://github.com/toolboxmd/t3code/issues/29",
+    "https://github.com/toolboxmd/chromeria/issues/171"
+  ],
+  "prs": [
+    "https://github.com/toolboxmd/t3code/pull/36",
+    "https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/171-issues-v2"
+  ],
+  "newFiles": [
+    "apps/server/src/issues/reviewMark.test.ts",
+    "apps/web/src/components/issues/issuePaletteThreads.logic.test.ts",
+    "apps/web/src/components/issues/issuePaletteThreads.logic.ts",
+    "apps/web/src/components/issues/issuePaletteThreads.ts",
+    "apps/web/src/components/issues/issueStatus.logic.test.ts",
+    "apps/web/src/components/issues/issueStatus.logic.ts",
+    "apps/web/src/components/issues/useIssueRowThreads.ts",
+    "packages/contracts/src/issueStatus.test.ts",
+    "packages/contracts/src/issueStatus.ts"
+  ],
+  "upstreamFiles": [],
+  "sharedFiles": [
+    "apps/server/src/environment/ServerEnvironment.ts",
+    "apps/web/src/components/CommandPalette.tsx",
+    "apps/web/src/components/sidebar/SidebarChrome.tsx",
+    "apps/web/src/routes/_chat.pull-requests.tsx",
+    "docs/user/source-control.md",
+    "packages/contracts/src/environment.ts"
+  ],
+  "keywords": [
+    "review/independent",
+    "closedByPullRequestsReferences",
+    "issueDependenciesSummary",
+    "blockedBy",
+    "statuses",
+    "pull-requests route",
+    "pendingBackgroundTasks"
+  ]
+}
+```
+
+## issues-open-links
+
+```json
+{
+  "id": "issues-open-links",
+  "purpose": "Open GitHub /issues/N links and an Issue's pull requests in the app: the PR panel for pull requests, the Issues panel for Issues, the browser otherwise.",
+  "issues": [
+    "https://github.com/toolboxmd/t3code/issues/40",
+    "https://github.com/toolboxmd/chromeria/issues/171"
+  ],
+  "prs": [
+    "https://github.com/toolboxmd/t3code/pull/41",
+    "https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/171-issues-v2"
+  ],
+  "newFiles": [
+    "apps/web/src/components/issues/issueLinkOpening.logic.test.ts",
+    "apps/web/src/components/issues/issueLinkOpening.logic.ts",
+    "apps/web/src/components/issues/useOpenIssueOrPullRequestLink.ts"
+  ],
+  "upstreamFiles": [
+    "apps/web/src/components/ChatMarkdown.tsx",
+    "apps/web/src/lib/openPullRequestLink.ts"
+  ],
+  "sharedFiles": [
+    "apps/web/src/reopenClosedView.ts",
+    "apps/web/src/rightPanelStore.ts",
+    "docs/user/source-control.md"
+  ],
+  "keywords": [
+    "pullRequestCandidateUrlFromReferenceAutolink",
+    "useOpenChangeRequestLink",
+    "PullRequestLinkPreview",
+    "MarkdownAnchor",
+    "isPullRequestNotFound"
   ]
 }
 ```

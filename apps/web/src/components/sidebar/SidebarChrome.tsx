@@ -1,4 +1,4 @@
-import { ArrowLeftIcon, ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
+import { ArrowLeftIcon, ChartNoAxesColumnIcon, CircleDotIcon, SettingsIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { memo } from "react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
@@ -6,6 +6,7 @@ import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import { usePullRequestsSupported } from "../../state/environments";
+import { useIssuesSupported } from "../../state/issues";
 import { T3Wordmark } from "../T3Wordmark";
 import { APP_BASE_NAME } from "../../branding";
 import {
@@ -166,6 +167,7 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
     select: (location) => isSidebarUtilityPage(location.pathname),
   });
   const pullRequestsSupported = usePullRequestsSupported();
+  const issuesSupported = useIssuesSupported();
   const closeMobileSidebar = () => {
     if (isMobile) {
       setOpenMobile(false);
@@ -176,6 +178,13 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
     void navigate({
       to: "/pull-requests",
       search: readPullRequestListPreferences(),
+    });
+  };
+  const handleIssuesClick = () => {
+    closeMobileSidebar();
+    void navigate({
+      to: "/pull-requests",
+      search: { ...readPullRequestListPreferences(), view: "issues" },
     });
   };
   const handleSettingsClick = () => {
@@ -216,6 +225,14 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
               icon={<PullRequestGlyph.pullRequest />}
               label="Pull requests"
               onClick={handlePullRequestsClick}
+            />
+          ) : null}
+          {/* Fork: GitHub Issues (toolboxmd/t3code#27). */}
+          {issuesSupported ? (
+            <SidebarUtilityItem
+              icon={<CircleDotIcon />}
+              label="Issues"
+              onClick={handleIssuesClick}
             />
           ) : null}
           <SidebarUtilityItem
