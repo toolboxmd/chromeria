@@ -2879,6 +2879,9 @@ export const OrchestrationV2Command = Schema.Union([
     titleSeed: Schema.optional(TrimmedNonEmptyString),
     modelSelection: Schema.optional(ModelSelection),
     sourcePlanRef: Schema.optional(Schema.Struct({ threadId: ThreadId, planId: PlanId })),
+    /** Fork retry identity; automatic delivery never acknowledges retirement. */
+    forkPrismRetryOfRunId: Schema.optional(RunId),
+    forkPrismOriginalRunId: Schema.optional(RunId),
     restartContinuationOfRunId: Schema.optional(RunId),
     usageLimitContinuationOfRunId: Schema.optional(RunId),
     manualContinuationOfRunId: Schema.optional(RunId),

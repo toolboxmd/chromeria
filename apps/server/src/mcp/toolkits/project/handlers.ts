@@ -1,3 +1,6 @@
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
+import * as Prism from "../../../prism/PrismService.ts";
+import { ProviderAdapterRegistryV2 } from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
   MessageId,
   ThreadId,
@@ -109,11 +112,26 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             });
           yield* assertProjectWorktree(project.workspaceRoot, input.workspaceStrategy.worktreePath);
         }
-        const modelSelection =
+        const inherited =
           input.modelSelection ??
           caller?.modelSelection ??
           (yield* readProject)?.defaultModelSelection ??
           undefined;
+        const prism = yield* Prism.PrismService;
+        const adapters = yield* ProviderAdapterRegistryV2;
+        const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+        const { modelSelection, kitText } = yield* prism.resolve({
+          projectId,
+          role: input.prismRole ?? "planner",
+          lane: input.lane,
+          explicit: input.modelSelection,
+          inherited,
+          validate: (selection) =>
+            Prism.validateLaunchSelection(selection).pipe(
+              Effect.provideService(ProviderAdapterRegistryV2, adapters),
+              Effect.provideService(ProviderRegistry.ProviderRegistry, providerRegistry),
+            ),
+        });
         if (modelSelection === undefined)
           return yield* new OrchestratorMcpFailure({
             code: "invalid_request",
@@ -135,7 +153,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 initialMessage: {
                   messageId,
                   ...(caller === undefined ? {} : { senderThreadId: caller.id }),
-                  text: input.message ?? "",
+                  text: [kitText, input.message ?? ""].filter(Boolean).join("\n\n"),
                   attachments,
                 },
               }),
@@ -159,7 +177,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           runId: run?.id ?? null,
           status: run?.status ?? null,
         };
-      }),
+      }).pipe(Effect.provide(Prism.layer)),
   ),
   t3_project_list: McpToolAccess.reads((input) =>
     Effect.gen(function* () {

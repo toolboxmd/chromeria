@@ -1,3 +1,4 @@
+import * as PrismServerSettings from "../serverSettings.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -679,6 +680,7 @@ describe("orchestrator MCP toolkit", () => {
             McpHttpServer.layerOrchestratorToolkit,
             McpHttpServer.layerThreadToolkit,
           ).pipe(
+            Layer.provide(PrismServerSettings.layerTest()),
             Layer.provideMerge(McpServer.McpServer.layer),
             Layer.provideMerge(layerOrchestration),
             Layer.provide(layerRegistry),
@@ -3822,6 +3824,7 @@ describe("orchestrator MCP toolkit", () => {
           }),
         ]);
         const layerTest = McpHttpServer.layerOrchestratorToolkit.pipe(
+          Layer.provide(PrismServerSettings.layerTest()),
           Layer.provideMerge(McpServer.McpServer.layer),
           Layer.provideMerge(layerOrchestration),
           Layer.provide(

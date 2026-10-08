@@ -11,6 +11,7 @@ import {
 } from "react";
 import {
   ArchiveIcon,
+  RouteIcon,
   BlocksIcon,
   BotIcon,
   createLucideIcon,
@@ -83,6 +84,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/keybindings": KeyboardIcon,
   "/settings/snap-shot": SnapShotIcon,
   "/settings/providers": BotIcon,
+  "/settings/prism": RouteIcon,
   "/settings/integrations": BlocksIcon,
   "/settings/scheduled-tasks": CalendarClockIcon,
   "/settings/source-control": GitBranchIcon,
