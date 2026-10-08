@@ -934,6 +934,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/scheduledTaskChecks/spectra.testkit.ts",
     "apps/server/src/scheduledTaskChecks/state.ts",
     "apps/server/src/scheduledTaskChecks/store.ts",
+    "apps/server/src/scheduledTaskChecks/v1Import.actual.integration.test.ts",
     "apps/server/src/scheduledTaskChecks/v1Import.test.ts",
     "apps/server/src/scheduledTaskChecks/v1Import.ts",
     "apps/web/src/components/ScheduledCommandNotifications.tsx",
