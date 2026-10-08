@@ -178,6 +178,7 @@ import { resolvePullRequestPreviewTarget } from "@t3tools/client-runtime/change-
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { useOpenChangeRequestLink } from "~/lib/openPullRequestLink";
 import { useOpenLink } from "../browser/useOpenLink";
+import { useOpenIssueOrPullRequestLink } from "./issues/useOpenIssueOrPullRequestLink";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { isPreviewAvailableFor } from "../browser/previewRuntime";
 import {
@@ -664,6 +665,11 @@ function useChatMarkdownState({
   };
   const openChangeRequestLink = useOpenChangeRequestLink(threadRef, pullRequestPanelRef);
   const openDeferredMarkdownLink = useOpenLink(threadRef);
+  const openIssueLink = useOpenIssueOrPullRequestLink(
+    openChangeRequestLink,
+    openDeferredMarkdownLink,
+    threadRef,
+  );
   // Subscribe so hydrated settings apply before the anchor synchronously decides whether to intercept _blank.
   const linkTargetPreference = useClientSettings((settings) => settings.browserLinkTarget);
   const mathEnabled = useClientSettings((settings) => settings.mathRenderingEnabled);
@@ -907,6 +913,7 @@ function useChatMarkdownState({
     openChangeRequestLink,
     openDeferredMarkdownLink,
     openExternalLinkInPreview,
+    openIssueLink,
     openMarkdownMedia,
     projects,
     linkedThreadPullRequestFor,
@@ -1062,6 +1069,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       openDeferredMarkdownLink,
       linkTargetPreference,
       openExternalLinkInPreview,
+      openIssueLink,
       projects,
       linkedThreadPullRequestFor,
       resolveThreadPullRequest,
@@ -1166,6 +1174,22 @@ const CHAT_MARKDOWN_COMPONENTS = {
               );
               return;
             }
+            // GitHub numbers Issues and pull requests together, so `/issues/N` is resolved on
+            // click to the pull request panel, the Issues panel or the browser.
+            if (
+              href &&
+              !event.defaultPrevented &&
+              !event.metaKey &&
+              !event.ctrlKey &&
+              openIssueLink(href, environmentId ?? null) !== null
+            ) {
+              event.preventDefault();
+              event.stopPropagation();
+              return;
+            }
+            // A link to a change request in a workspace project opens beside the
+            // conversation instead of in a browser: it is the thing being talked about, and
+            // the panel it opens offers the browser as one of its actions.
             if (
               !href ||
               openChangeRequestLink(event, href, undefined, environmentId ?? undefined)
@@ -1292,7 +1316,10 @@ const CHAT_MARKDOWN_COMPONENTS = {
                 environmentId ?? undefined,
               )
             }
-            onOpenFallback={openDeferredMarkdownLink}
+            onOpenFallback={async (url) => {
+              await (openIssueLink(url, environmentId ?? null, { pullRequestRead: true }) ??
+                openDeferredMarkdownLink(url));
+            }}
           />
         );
       }

@@ -129,6 +129,10 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   localServerStop: Schema.optionalKey(Schema.Boolean),
   threadPullRequests: Schema.optionalKey(Schema.Boolean),
   threadPullRequestWatch: Schema.optionalKey(Schema.Boolean),
+  /** Fork: server lists and edits GitHub Issues (`issues.*`, toolboxmd/t3code#27). */
+  issues: Schema.optionalKey(Schema.Boolean),
+  /** Fork: server serves thread ↔ GitHub Issue links (`issueLinks.*`, toolboxmd/t3code#28). */
+  issueLinks: Schema.optionalKey(Schema.Boolean),
   pullRequestStackActions: Schema.optionalKey(Schema.Boolean),
   serverSelfUpdate: Schema.optionalKey(ServerSelfUpdateCapability),
   /** Server answers server.getNpmRelease using its configured npm registry. */
