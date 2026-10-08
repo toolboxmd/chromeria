@@ -615,7 +615,11 @@ child-threads when #168 lands, and thread-people will watch it as a shared path.
     "packages/contracts/src/orchestrationV2.ts",
     "packages/contracts/src/orchestratorMcp.ts"
   ],
-  "sharedFiles": ["apps/server/src/persistence/forkV1Backfills.ts", "apps/server/src/mcp/toolkits/worktree/registration.test.ts", "apps/server/src/ws.ts"],
+  "sharedFiles": [
+    "apps/server/src/persistence/forkV1Backfills.ts",
+    "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
+    "apps/server/src/ws.ts"
+  ],
   "keywords": [
     "delegate_task",
     "delegated_task.request",
