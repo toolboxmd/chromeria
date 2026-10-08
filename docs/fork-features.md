@@ -228,6 +228,7 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "packages/contracts/src/forkSettings.ts"
   ],
   "upstreamFiles": [
+    "apps/server/src/persistence/initializeV2Database.test.ts",
     "apps/server/src/cli/config.test.ts",
     "apps/server/src/config.ts",
     "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts",
