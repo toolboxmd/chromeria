@@ -21,6 +21,7 @@ import * as ServerSettingsModule from "../serverSettings.ts";
 import * as ProviderAutoUpdate from "./providerAutoUpdate.ts";
 import { makeProviderAutoUpdater } from "./providerAutoUpdate.ts";
 import * as ProviderMaintenanceRunner from "./providerMaintenanceRunner.ts";
+import type { ProviderMaintenanceCommandAction } from "./providerMaintenance.ts";
 import { ProviderRegistry } from "./ProviderRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -60,11 +61,24 @@ function outdated(
   };
 }
 
+const sharedAction: ProviderMaintenanceCommandAction = {
+  command: "brew upgrade codex",
+  executable: "/opt/homebrew/bin/brew",
+  args: ["upgrade", "codex"],
+  lockKey: "homebrew",
+};
+const maintenanceCapabilities = (driver: ServerProvider["driver"], action = sharedAction) => ({
+  provider: driver,
+  packageName: "fixture-package",
+  update: action,
+});
+
 function harness(input: {
   readonly settings?: Partial<ServerSettings>;
   readonly providers: Array<ServerProvider>;
   readonly busyDrivers?: Array<string>;
   readonly fail?: boolean;
+  readonly actions?: Readonly<Record<string, ProviderMaintenanceCommandAction>>;
 }) {
   const state = {
     settings: { ...DEFAULT_SERVER_SETTINGS, autoUpdateProviders: true, ...input.settings },
@@ -76,6 +90,8 @@ function harness(input: {
     getSettings: Effect.sync(() => state.settings),
     getProviders: Effect.sync(() => state.providers),
     getBusyDrivers: Effect.sync(() => new Set(state.busyDrivers)),
+    getMaintenanceCapabilities: (instanceId, driver) =>
+      Effect.succeed(maintenanceCapabilities(driver, input.actions?.[instanceId] ?? sharedAction)),
     updateProvider: (target) =>
       Effect.suspend(() => {
         if (typeof target === "string") return Effect.die("expected an instance target");
@@ -194,6 +210,45 @@ describe("providerAutoUpdate", () => {
     }),
   );
 
+  it.effect.each([
+    {
+      name: "Homebrew prefixes with the same display label",
+      change: { executable: "/usr/local/bin/brew" },
+    },
+    { name: "arguments", change: { args: ["upgrade", "--cask", "codex"] } },
+    { name: "environment", change: { env: { CODEX_HOME: "/other/install" } } },
+    { name: "install target", change: { lockKey: "other-install" } },
+  ])("skips distinct resolved $name", ({ change }) =>
+    Effect.gen(function* () {
+      const { state, updater } = harness({
+        providers: [outdated(CODEX), outdated(CODEX, {}, "codex-work")],
+        actions: { codex: sharedAction, "codex-work": { ...sharedAction, ...change } },
+      });
+      yield* updater.evaluate;
+      yield* updater.evaluate;
+      assert.deepStrictEqual(state.calls, []);
+    }),
+  );
+
+  it.effect("updates identical resolved targets exactly once despite environment key order", () =>
+    Effect.gen(function* () {
+      const { state, updater } = harness({
+        providers: [outdated(CODEX), outdated(CODEX, {}, "codex-work")],
+        actions: {
+          codex: { ...sharedAction, env: { CODEX_HOME: "/shared/install", PATH: "/shared/bin" } },
+          "codex-work": {
+            ...sharedAction,
+            env: { PATH: "/shared/bin", CODEX_HOME: "/shared/install" },
+          },
+        },
+      });
+      yield* updater.evaluate;
+      state.providers = [outdated(CODEX, {}, "codex-work")];
+      yield* updater.evaluate;
+      assert.deepStrictEqual(state.calls, ["codex"]);
+    }),
+  );
+
   it.effect("skips a driver whose instances need different update commands", () =>
     Effect.gen(function* () {
       const { state, updater } = harness({
@@ -223,6 +278,8 @@ describe("providerAutoUpdate", () => {
           getProviders: Effect.succeed([outdated(CODEX)]).pipe(
             Effect.tap(() => Deferred.succeed(firstPass, undefined)),
           ),
+          getProviderMaintenanceCapabilitiesForInstance: (_instanceId, driver) =>
+            Effect.succeed(maintenanceCapabilities(driver)),
           streamChanges: Stream.never,
         }),
         Layer.mock(EventSink.EventSinkV2)({ stream: () => Stream.fromQueue(events) }),

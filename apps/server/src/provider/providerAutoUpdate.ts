@@ -1,6 +1,5 @@
 // Fork: opt-in automatic provider updates (toolboxmd/chromeria#159).
 import type { ServerProvider, ServerSettings, ServerSettingsError } from "@t3tools/contracts";
-import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
@@ -16,6 +15,10 @@ import type { SqlError } from "effect/sql/SqlError";
 import { ServerProviderUpdateError } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as ProviderMaintenanceRunner from "./providerMaintenanceRunner.ts";
+import type {
+  ProviderMaintenanceCapabilities,
+  ProviderMaintenanceCommandAction,
+} from "./providerMaintenance.ts";
 
 const isProviderUpdateError = Schema.is(ServerProviderUpdateError);
 
@@ -37,6 +40,7 @@ function selectProviderAutoUpdateTargets(input: {
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly busyDrivers: ReadonlySet<string>;
   readonly attempted: ReadonlySet<string>;
+  readonly updateActions: ReadonlyMap<string, ProviderMaintenanceCommandAction | null>;
 }): Array<ProviderAutoUpdateTarget> {
   if (!input.settings.autoUpdateProviders || !input.settings.enableProviderUpdateChecks) {
     return [];
@@ -80,7 +84,24 @@ function selectProviderAutoUpdateTargets(input: {
     ) {
       continue;
     }
-    const attemptKey = `${driver}:${updateCommand}@${latestVersion}`;
+    const identities = outdated.map((provider) => {
+      const action = input.updateActions.get(provider.instanceId);
+      if (!action) return null;
+      // Display commands can hide distinct installer prefixes. Keep this identity
+      // internal: environment values must never reach logs.
+      return JSON.stringify([
+        driver,
+        action.executable,
+        action.args,
+        Object.entries(action.env ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+        action.lockKey,
+        provider.versionAdvisory?.latestVersion,
+      ]);
+    });
+    if (identities.some((identity) => identity === null) || new Set(identities).size !== 1) {
+      continue;
+    }
+    const attemptKey = identities[0]!;
     if (input.attempted.has(attemptKey) || input.busyDrivers.has(driver)) {
       continue;
     }
@@ -98,23 +119,49 @@ export function makeProviderAutoUpdater(deps: {
   readonly getSettings: Effect.Effect<ServerSettings, ServerSettingsError>;
   readonly getProviders: Effect.Effect<ReadonlyArray<ServerProvider>>;
   readonly getBusyDrivers: Effect.Effect<ReadonlySet<string>, SqlError>;
+  readonly getMaintenanceCapabilities: (
+    instanceId: ServerProvider["instanceId"],
+    driver: ServerProvider["driver"],
+  ) => Effect.Effect<ProviderMaintenanceCapabilities>;
   readonly updateProvider: ProviderMaintenanceRunner.ProviderMaintenanceRunnerShape["updateProvider"];
 }) {
   const attempted = new Set<string>();
   const evaluate = Effect.gen(function* () {
     const settings = yield* deps.getSettings;
-    if (!settings.autoUpdateProviders) return;
+    if (!settings.autoUpdateProviders || !settings.enableProviderUpdateChecks) return;
+    const providers = yield* deps.getProviders;
+    const busyDrivers = yield* deps.getBusyDrivers;
+    const updateActions = new Map<string, ProviderMaintenanceCommandAction | null>();
+    for (const provider of providers) {
+      if (
+        provider.enabled &&
+        provider.installed &&
+        provider.versionAdvisory?.status === "behind_latest" &&
+        provider.versionAdvisory.canUpdate &&
+        !busyDrivers.has(provider.driver)
+      ) {
+        const capabilities = yield* deps.getMaintenanceCapabilities(
+          provider.instanceId,
+          provider.driver,
+        );
+        updateActions.set(provider.instanceId, capabilities.update);
+      }
+    }
     const targets = selectProviderAutoUpdateTargets({
       settings,
-      providers: yield* deps.getProviders,
-      busyDrivers: yield* deps.getBusyDrivers,
+      providers,
+      busyDrivers,
+      updateActions,
       attempted,
     });
     yield* Effect.forEach(
       targets,
       ({ provider, attemptKey }) => {
         attempted.add(attemptKey);
-        return Effect.logInfo("Updating provider automatically", { attemptKey }).pipe(
+        return Effect.logInfo("Updating provider automatically", {
+          driver: provider.driver,
+          instanceId: provider.instanceId,
+        }).pipe(
           Effect.andThen(
             deps.updateProvider({ provider: provider.driver, instanceId: provider.instanceId }),
           ),
@@ -125,21 +172,17 @@ export function makeProviderAutoUpdater(deps: {
             }
             return Effect.fail(error);
           }),
-          Effect.catchCause((cause) =>
+          Effect.catchCause(() =>
             Effect.logWarning("Automatic provider update failed", {
-              attemptKey,
-              cause: Cause.pretty(cause),
+              driver: provider.driver,
+              instanceId: provider.instanceId,
             }),
           ),
         );
       },
       { discard: true },
     );
-  }).pipe(
-    Effect.catchCause((cause) =>
-      Effect.logWarning("Automatic provider update check failed", { cause: Cause.pretty(cause) }),
-    ),
-  );
+  }).pipe(Effect.catchCause(() => Effect.logWarning("Automatic provider update check failed")));
   return { evaluate };
 }
 
@@ -167,6 +210,7 @@ export const layer = Layer.effectDiscard(
       getSettings: serverSettings.getSettings,
       getProviders: providerRegistry.getProviders,
       getBusyDrivers: readBusyProviderDrivers.pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      getMaintenanceCapabilities: providerRegistry.getProviderMaintenanceCapabilitiesForInstance,
       updateProvider: runner.updateProvider,
     });
 
