@@ -81,13 +81,14 @@ continues it in the same thread. A task can also start each run with a Prism
 role, or run a shell command instead of an agent; on desktop and web,
 Chromeria alerts you when a scheduled command starts failing.
 
-When a scheduled run asks a Spectrum, the run finishes only after the
-Spectrum's report has reached the thread. If the report can't be delivered,
-the task shows **Needs you** with the reason; once you've dealt with the
-report, **Run now** picks the run up again.
+When a scheduled run asks a Spectrum, the run finishes only after the turn
+that delivers the Spectrum's report has completed in its thread. If that
+delivery can't finish, the task shows **Needs you** with the reason; once
+you've dealt with the report, **Run now** picks the run up again.
 
-Tasks brought over from Chromeria 1 start paused. Turn one on when you stop
-using it in Chromeria 1.
+Tasks brought over from Chromeria 1 start paused, and their earlier runs stay
+as history that never resumes; **Run now** starts a new run. Turn a task on
+when you stop using it in Chromeria 1.
 
 ## Webhook automations
 

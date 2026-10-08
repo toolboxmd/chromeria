@@ -871,3 +871,65 @@ it.effect(
       }).pipe(Effect.provide(runtime(database, { check, spectra })), Effect.scoped);
     }).pipe(Effect.scoped),
 );
+
+it.effect(
+  "a direct upsert never turns a checked task into a webhook, refuses a past one-shot, and places weekly times",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      yield* TestClock.setTime(Date.parse(CANONICAL));
+      const id = ScheduledTaskId.make("scheduled-task:rpc");
+      yield* Effect.gen(function* () {
+        yield* createThread;
+        yield* insertTask({ id, schedule: { type: "interval", everyMs: 3_600_000 }, next: null });
+        yield* writeCheckState(null, checkState(id));
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const input = {
+          id,
+          title: "Checked work",
+          prompt: "Do the scheduled work",
+          enabled: true,
+          projectId,
+          threadId,
+          workspaceStrategy: { type: "root" as const },
+          modelSelection: selection,
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+        };
+        const sql = yield* SqlClient.SqlClient;
+        const scheduleOf = sql<{ readonly schedule_json: string }>`
+          SELECT schedule_json FROM scheduled_tasks WHERE task_id = ${id}`.pipe(
+          Effect.map((rows) => rows[0]?.schedule_json),
+        );
+        const before = yield* scheduleOf;
+        // The RPC path cannot strip a task's check by making it a webhook.
+        const webhook = yield* Effect.exit(
+          service.upsert({ ...input, schedule: { type: "webhook", signature: null } }),
+        );
+        assert.isTrue(Exit.isFailure(webhook));
+        assert.include(String(webhook), "Webhook tasks cannot have an outcome check");
+        assert.equal(yield* scheduleOf, before);
+        const past = yield* Effect.exit(
+          service.upsert({ ...input, schedule: { type: "once", at: "2026-10-08T11:00:00Z" } }),
+        );
+        assert.isTrue(Exit.isFailure(past));
+        assert.include(String(past), "The one-shot time is in the past.");
+        assert.equal(yield* scheduleOf, before);
+        const future = yield* service.upsert({
+          ...input,
+          schedule: { type: "once", at: "2026-10-09T09:00:00+02:00" },
+        });
+        assert.equal(future.task.schedule.type, "once");
+        assert.equal(future.task.nextRunAt, "2026-10-09T07:00:00.000Z");
+        // The server places each weekly time and reports its pick.
+        const weekly = yield* service.upsert({
+          ...input,
+          schedule: { type: "weekly", weekdays: [1], times: ["09:00"], timeZone: "UTC" },
+        });
+        assert.deepEqual(
+          weekly.task.schedule.type === "weekly" ? weekly.task.schedule.chosen : undefined,
+          [{ requested: "09:00", offsetMinutes: 0 }],
+        );
+      }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+    }).pipe(Effect.scoped),
+);
