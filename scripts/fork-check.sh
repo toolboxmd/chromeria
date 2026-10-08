@@ -73,7 +73,7 @@ while IFS= read -r path; do
   else
     echo "fork-check: new fork file: $path"
   fi
-done < <(git diff --name-only "$BASE"..HEAD)
+done < <(git diff --no-renames --name-only "$BASE"..HEAD)
 
 if [[ "$FAIL" -ne 0 ]]; then
   echo "fork-check: FAIL: list the file in scripts/fork-upstream-edits.txt and assign its owner in docs/fork-features.md, or move the change to a new file." >&2

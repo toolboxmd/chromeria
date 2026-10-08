@@ -123,6 +123,31 @@ describe("fork-check", () => {
     expect(allowed.output).toContain("modified (allowlisted): upstream-owned.txt");
   });
 
+  it("requires the removed upstream path to be allowlisted for a rename", () => {
+    const root = makeFixture();
+    const base = baseOf(root);
+    git(root, "mv", "upstream-owned.txt", "new-capability.txt");
+    git(root, "commit", "-qm", "fork: rename upstream file");
+    // Confirm this is a similarity-detected rename, not just an ordinary edit.
+    expect(git(root, "diff", "--name-status", "-M", base, "HEAD")).toContain("R100");
+    const denied = runCheck(root, "--base", base);
+    expect(denied.status).toBe(1);
+    expect(denied.output).toContain("not allowlisted: upstream-owned.txt");
+    NodeFS.appendFileSync(
+      NodePath.join(root, "scripts/fork-upstream-edits.txt"),
+      "upstream-owned.txt\ndocs/fork-features.md\n",
+    );
+    writeMap(root, [
+      "scripts/fork-upstream-edits.txt",
+      "upstream-owned.txt",
+      "docs/fork-features.md",
+    ]);
+    git(root, "add", "-A");
+    git(root, "commit", "-qm", "fork: own the removed upstream path");
+    const allowed = runCheck(root, "--base", base);
+    expect(allowed.status, allowed.output).toBe(0);
+  });
+
   it("fails on merge commits in the stack", () => {
     const root = makeFixture();
     const base = baseOf(root);
