@@ -33,7 +33,6 @@ export function planTranscriptAppend(
   const entryId = TurnItemId.make(`spectrum:transcript:${command.messageId}`);
   const base = {
     threadId: state.threadId,
-    providerInstanceId: thread.providerInstanceId,
     occurredAt: now,
   };
   return {

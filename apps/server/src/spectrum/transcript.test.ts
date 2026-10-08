@@ -76,6 +76,10 @@ it.effect(
       const { events } = planTranscriptAppend(makeState(), thread, { ...APPEND, text }, NOW);
       for (const event of events) {
         const parsed = yield* decodeEvent(event);
+        assert.strictEqual(parsed.providerInstanceId, undefined);
+        assert.strictEqual(parsed.runId, undefined);
+        assert.strictEqual(parsed.nodeId, undefined);
+        assert.strictEqual(parsed.driver, undefined);
         yield* store.apply(
           parsed.type === "turn-item.updated"
             ? { ...parsed, payload: yield* positions.normalize(parsed.payload) }
