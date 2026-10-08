@@ -1179,6 +1179,8 @@ const layerWsRpc = (
       const intakeContext = yield* Effect.context<
         | ThreadManagementService.ThreadManagementService
         | ThreadLaunchService.ThreadLaunchService
+        | ProjectStore.ProjectStoreV2
+        | GitVcsDriver.GitVcsDriver
         | FileSystem.FileSystem
         | ServerConfig.ServerConfig
         | ServerSettings.ServerSettingsService

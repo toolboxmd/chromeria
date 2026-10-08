@@ -113,6 +113,12 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("delegated-tasks.stop"),
     reason: Schema.optional(Schema.String),
+    forkRetirementStop: Schema.optional(
+      Schema.Struct({
+        ancestorThreadId: ThreadId,
+        originalToken: CommandId,
+      }),
+    ),
   }),
 ]);
 export type OrchestrationEffectRequestV2 = typeof OrchestrationEffectRequestV2.Type;
@@ -212,7 +218,10 @@ export interface EffectOutboxV2Shape {
     readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
     readonly reason: string;
   }) => Effect.Effect<ReadonlyArray<string>, EffectOutboxError>;
-  readonly signalCancellations: (effectIds: ReadonlyArray<string>) => Effect.Effect<void>;
+  readonly signalCancellations: (
+    effectIds: ReadonlyArray<string>,
+    drain?: boolean,
+  ) => Effect.Effect<void>;
   readonly awaitCancellation: (effectId: string) => Effect.Effect<void>;
   readonly clearCancellation: (effectId: string) => Effect.Effect<void>;
   /** Resolves once the effect is neither pending nor running, or right away when it does not exist. */
@@ -308,6 +317,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         },
         { discard: true },
       );
+    const cancellationDrains = new Map<string, Deferred.Deferred<void>>();
     const notifyAvailable = (count = 1) =>
       Queue.offerAll(
         available,
@@ -462,8 +472,14 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             (cause) => new EffectOutboxError({ operation: "cancel-unsettled", cause }),
           ),
         ),
-      signalCancellations: (effectIds) =>
+      signalCancellations: (effectIds, drain = false) =>
         Effect.gen(function* () {
+          const drains = drain
+            ? effectIds.flatMap((id) => {
+                const done = cancellationDrains.get(id);
+                return done === undefined ? [] : [done];
+              })
+            : [];
           yield* Effect.forEach(
             effectIds,
             (effectId) => {
@@ -474,11 +490,20 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           );
           yield* signalSettled(effectIds);
           if (effectIds.length > 0) yield* notifyAvailable(effectIds.length);
+          yield* Effect.forEach(drains, Deferred.await, { discard: true });
         }),
-      awaitCancellation: (effectId) => Deferred.await(cancellationSignal(effectId)),
+      awaitCancellation: (effectId) => {
+        // Registration precedes the worker's durable recheck and external execution.
+        if (!cancellationDrains.has(effectId))
+          cancellationDrains.set(effectId, Deferred.makeUnsafe<void>());
+        return Deferred.await(cancellationSignal(effectId));
+      },
       clearCancellation: (effectId) =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
+          const drained = cancellationDrains.get(effectId);
           cancellationSignals.delete(effectId);
+          cancellationDrains.delete(effectId);
+          if (drained !== undefined) yield* Deferred.succeed(drained, undefined);
         }),
       awaitSettled: (effectId) =>
         Effect.gen(function* () {
