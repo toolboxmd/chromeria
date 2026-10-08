@@ -10,6 +10,8 @@ import {
 import {
   ArchiveIcon,
   FlaskConicalIcon,
+  RouteIcon,
+  BlocksIcon,
   BotIcon,
   createLucideIcon,
   CalendarClockIcon,
@@ -97,6 +99,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/threads": MessagesSquareIcon,
   "/settings/browser": GlobeIcon,
   "/settings/devices": SmartphoneIcon,
+  "/settings/prism": RouteIcon,
   "/settings/scheduled-tasks": CalendarClockIcon,
   "/settings/source-control": GitBranchIcon,
   "/settings/worktrees": FolderTreeIcon,

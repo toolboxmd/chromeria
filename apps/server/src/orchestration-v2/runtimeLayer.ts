@@ -1,4 +1,7 @@
 import * as GuestShareService from "../guest/GuestShareService.ts";
+import * as PrismRecovery from "../prism/RecoveryCoordinator.ts";
+import * as PrismRecoveryHooks from "../prism/RecoveryHooks.ts";
+import * as PrismRecoveryReactor from "../prism/RecoveryReactor.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Layer from "effect/Layer";
@@ -209,6 +212,11 @@ const layerRunFinalizationServiceProvided = RunFinalizationService.layer.pipe(
   Layer.provide(Layer.merge(layerCheckpointCaptureServiceProvided, ProjectionStore.layer)),
 );
 
+const layerPrismRecoveryProvided = PrismRecovery.layer;
+const layerPrismRecoveryHooksProvided = PrismRecoveryHooks.layer.pipe(
+  Layer.provide(Layer.mergeAll(layerPrismRecoveryProvided, ProjectionStore.layer)),
+);
+
 const layerOrchestratorProvided = Orchestrator.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -229,6 +237,7 @@ const layerOrchestratorProvided = Orchestrator.layer.pipe(
       layerProviderSwitchServiceProvided,
       layerRunExecutionServiceProvided,
       ThreadForkService.layer,
+      layerPrismRecoveryHooksProvided,
     ),
   ),
 );
@@ -365,6 +374,17 @@ export const layerProduction = Layer.mergeAll(
   layerSecretRequestsProvided,
   GuestShareService.layer.pipe(
     Layer.provide(Layer.merge(layerOrchestratorProvided, layerCommandOutputHubProvided)),
+  ),
+  PrismRecoveryReactor.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerPrismRecoveryProvided,
+        ProjectionStore.layer,
+        layerThreadManagementProvided,
+        layerOrchestratorProvided,
+        layerEventSinkProvided,
+      ),
+    ),
   ),
   UsageLimitRecoveryWorker.layer.pipe(
     Layer.provide(

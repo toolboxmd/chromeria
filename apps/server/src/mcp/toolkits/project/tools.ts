@@ -1,3 +1,7 @@
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
+import { ProviderAdapterRegistryV2 } from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as ServerSettings from "../../../serverSettings.ts";
+import { PrismLane, PrismRole } from "@t3tools/contracts";
 import { McpAttachmentInput } from "../attachment/input.ts";
 import {
   NonNegativeInt,
@@ -121,7 +125,7 @@ const ProjectCloneTool = Tool.make("t3_project_clone", {
 const ThreadLaunchTool = Tool.make("t3_thread_launch", {
   ...shared,
   description:
-    "Create one new top-level thread, bound to its workspace before the agent starts. Task in `message`. Omit `projectId`, model and modes to inherit yours (outside a thread, pass `projectId` or `scratch`); modes cannot exceed yours. After an error or lost reply, retry with the same `clientRequestId`. Follow it with `t3_thread_read` or `t3_thread_wait`. Mention it with its `link`.",
+    "Create one new top-level thread, bound to its workspace before the agent starts. Task in `message`. Omit `modelSelection` for Prism routing: `prismRole` picks the kit (planner by default, including dispatcher/promachos) and `lane` worker difficulty; an explicit `modelSelection` wins, and unconfigured roles inherit the caller or project default model. Omit `projectId` and modes to inherit yours (outside a thread, pass `projectId` or `scratch`); modes cannot exceed yours. After an error or lost reply, retry with the same `clientRequestId`. Follow it with `t3_thread_read` or `t3_thread_wait`. Mention it with its `link`.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     projectId: Schema.optional(ProjectId),
@@ -133,6 +137,8 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     ),
     title: TrimmedNonEmptyString,
     modelSelection: Schema.optional(ModelSelection),
+    lane: Schema.optional(PrismLane),
+    prismRole: Schema.optional(PrismRole),
     runtimeMode: Schema.optional(RuntimeMode),
     interactionMode: Schema.optional(ProviderInteractionMode),
     workspaceStrategy: Schema.optional(
@@ -162,6 +168,9 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
   dependencies: [
     ...shared.dependencies,
     ThreadLaunchService.ThreadLaunchService,
+    ProviderRegistry.ProviderRegistry,
+    ProviderAdapterRegistryV2,
+    ServerSettings.ServerSettingsService,
     ManagedProjectFolders.ManagedProjectFolders,
     GitVcsDriver.GitVcsDriver,
     FileSystem.FileSystem,

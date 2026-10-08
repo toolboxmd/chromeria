@@ -137,6 +137,7 @@ it("readThread prefers activity-run status over a newer cancelled queued run", a
   } as unknown as OrchestrationV2ThreadProjection;
 
   const layer = layerOrchestratorService.pipe(
+    Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -262,6 +263,7 @@ it("taskStatus returns task.providerInstanceId rather than the driver kind", asy
   } as unknown as OrchestrationV2ThreadProjection;
 
   const layer = layerOrchestratorService.pipe(
+    Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -363,6 +365,7 @@ it("readThread and sendToThread reach threads in other projects", async () => {
     }) as unknown as OrchestrationV2ThreadProjection;
 
   const layer = layerOrchestratorService.pipe(
+    Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ThreadManagementService.ThreadManagementService)({

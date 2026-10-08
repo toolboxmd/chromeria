@@ -52,6 +52,7 @@ import * as PeerLinkRequests from "../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
+  Layer.provide(PrismServerSettings.layerTest()),
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
 );
@@ -229,6 +230,7 @@ describe("orchestrator MCP toolkit", () => {
           }),
         ]);
         const layerTest = layerOrchestratorToolkit.pipe(
+          Layer.provide(PrismServerSettings.layerTest()),
           Layer.provideMerge(McpServer.McpServer.layer),
           Layer.provideMerge(layerOrchestration),
           Layer.provide(

@@ -24,6 +24,7 @@ export type SettingsPath =
   | "/settings/diffs"
   | "/settings/keybindings"
   | "/settings/snap-shot"
+  | "/settings/prism"
   | "/settings/providers"
   | "/settings/threads"
   | "/settings/browser"
@@ -104,6 +105,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/maintenance": "Maintenance",
   "/settings/labs": "Labs",
   "/settings/about": "About",
+  "/settings/prism": "Prism",
   "/settings/archived": "Archive",
 };
 
@@ -222,6 +224,22 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/maintenance",
     scope: "environment-defaults",
     searchTerms: ["storage cleanup run now results report removed kept failed"],
+  },
+  {
+    id: "prism-roles",
+    title: "Prism role preferences",
+    to: "/settings/prism",
+    targetId: "prism-roles",
+    scope: "project-defaults",
+    searchTerms: ["model", "routing", "worker", "lane", "kit", "effort"],
+  },
+  {
+    id: "prism-capacity",
+    title: "Prism live capacity",
+    to: "/settings/prism",
+    targetId: "prism-capacity",
+    scope: "environment",
+    searchTerms: ["usage", "limits", "provider"],
   },
   {
     id: "storage-worktrees",
@@ -1172,6 +1190,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/threads": null,
   "/settings/browser": null,
   "/settings/devices": null,
+  "/settings/prism": "project-defaults",
   "/settings/source-control": "environment-defaults",
   "/settings/worktrees": "project-defaults",
   "/settings/connections": "connections",
