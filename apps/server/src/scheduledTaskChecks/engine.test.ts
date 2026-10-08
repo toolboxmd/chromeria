@@ -114,8 +114,11 @@ const harness = (options: { readonly role?: string } = {}) =>
     let passes = false;
     let dispatchFails = false;
     let reportsPending = false;
+    let workIsOpen = false;
+    let reopenOnCheck = false;
     const runs = yield* makeCheckedRuns({
       changed: Effect.void,
+      workOpen: () => Effect.sync(() => workIsOpen),
       reportsHold: () => Effect.sync(() => reportsPending),
       observe: () => Effect.sync(() => observation),
       dispatch: ({ send }) =>
@@ -142,6 +145,8 @@ const harness = (options: { readonly role?: string } = {}) =>
         Effect.sync(() => {
           // The creation test is a separate record from run verdicts.
           (runId.endsWith(":creation") ? creationTests : checks).push(`${command}@${cwd}`);
+          // Recovery may resume the run's work while its check runs.
+          if (reopenOnCheck) workIsOpen = true;
           return { passed: passes, output: passes ? "ok" : "still missing" };
         }),
       workspace: ({ threadId: bound }) => Effect.succeed(bound === null ? "/project" : "/worktree"),
@@ -214,6 +219,12 @@ const harness = (options: { readonly role?: string } = {}) =>
       },
       holdReports: (value: boolean) => {
         reportsPending = value;
+      },
+      openWork: (value: boolean) => {
+        workIsOpen = value;
+      },
+      reopenDuringCheck: (value: boolean) => {
+        reopenOnCheck = value;
       },
     };
   });
@@ -732,6 +743,34 @@ it.effect("a fire that read an older definition is not acted on", () =>
       SELECT next_run_at FROM scheduled_tasks WHERE task_id = ${taskId}`;
     assert.isNull(row?.next_run_at ?? null);
     assert.equal(h.sent.length, 0);
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("a pass never settles when the run's work resumed during its check", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    const h = yield* harness();
+    yield* h.save({ checkCommand: "check", checkReason: "outcome" });
+    yield* h.fire("scheduled");
+    h.set({ landed: true, started: true, busy: false });
+    h.pass(true);
+    // A re-enabled reset or an admitted continuation lands while the check runs.
+    h.reopenDuringCheck(true);
+    yield* h.runs.drive(task());
+    assert.equal(h.checks.length, 1);
+    const resumed = yield* h.state();
+    assert.equal(resumed.runs[0]?.stage, "running");
+    assert.isNull(resumed.runs[0]?.check ?? null, "the settle transaction wrote nothing");
+    h.reopenDuringCheck(false);
+    // While the resumed work runs, the run waits and the check does not run.
+    h.set({ busy: true });
+    yield* h.runs.drive(task());
+    assert.equal(h.checks.length, 1);
+    h.openWork(false);
+    h.set({ busy: false });
+    yield* h.runs.drive(task());
+    assert.equal(h.checks.length, 2, "the check reruns after the resumed work ended");
+    assert.equal((yield* h.state()).runs[0]?.stage, "done");
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 

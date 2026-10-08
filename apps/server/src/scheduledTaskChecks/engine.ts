@@ -126,6 +126,13 @@ export interface CheckedRunDeps {
     { readonly modelSelection: ModelSelection; readonly kitText: string | null } | null,
     ScheduledTaskCheckError
   >;
+  /**
+   * Whether the run's latest send's work is still continuing or undecided, such
+   * as an admitted continuation or pending recovery; read in the caller's transaction.
+   */
+  readonly workOpen: (
+    run: CheckedRun,
+  ) => Effect.Effect<boolean, ScheduledTaskCheckError, SqlClient.SqlClient>;
   /** Whether bound Spectrum reports still hold this run (the D32 fence), read in the caller's transaction. */
   readonly reportsHold: (
     schedulerRunId: string,
@@ -540,9 +547,11 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
           if (result.passed) {
             const checked = state;
             const passedRun = run;
-            // Settle only in one transaction that re-evaluates every bound report.
+            // Settle only in one transaction that re-evaluates the run's own work,
+            // which may have resumed during the check, and every bound report.
             yield* sql.withTransaction(
               Effect.gen(function* () {
+                if (yield* deps.workOpen(passedRun)) return;
                 const holding = yield* deps.reportsHold(passedRun.id);
                 yield* store(checked, {
                   ...replaceRun(checked, {

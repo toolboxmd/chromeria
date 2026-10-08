@@ -207,6 +207,15 @@ const makeEngine = Effect.gen(function* () {
 
   const runs = yield* makeCheckedRuns({
     changed: PubSub.publish(changes, undefined).pipe(Effect.asVoid),
+    workOpen: (run) => {
+      const last = run.sends.at(-1);
+      return last === undefined || run.threadId === null
+        ? Effect.succeed(false)
+        : followSend(run.threadId, last.messageId).pipe(
+            Effect.map((end) => end.kind === "waiting"),
+            Effect.mapError(checkError("Could not follow the scheduled run")),
+          );
+    },
     reportsHold: (schedulerRunId) =>
       reportsHold(schedulerRunId).pipe(
         Effect.mapError(checkError("Could not read the run's bound reports")),

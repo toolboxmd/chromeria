@@ -16,9 +16,9 @@ import { holdsTask } from "./state.ts";
 import { listCheckStates } from "./store.ts";
 
 /**
- * Exact run handoffs for scheduled tasks (toolboxmd/chromeria#174, D32/D35).
+ * Exact run handoffs for scheduled tasks (toolboxmd/chromeria#174, D32/D38).
  * The scheduler follows a run only through links persisted on runs and the
- * conclusive recovery facts #169 records; it never guesses by thread or time.
+ * recovery state #169 records; it never guesses by thread or time.
  */
 
 /** A Spectrum bound to a scheduler run, as #176's Spectrum state reports it (D32). */
@@ -130,18 +130,22 @@ export const followRun = Effect.fn("ScheduledTaskChecks.followRun")(function* (r
       current = restarted;
       continue;
     }
-    // #169's conclusive fact for this failed run (D35); missing or pending is undecided.
-    const outcome = yield* Recovery.readRecoveryOutcome(RunId.make(current));
-    if (outcome === null || outcome.status === "pending")
-      return { kind: "waiting" } satisfies RunEnd;
-    if (outcome.outcome === "retried") {
-      // The fact names the successor; the successor must name this source back.
-      const successor = yield* readRun(sql, { runId: outcome.successorRunId });
-      if (successor === undefined || successor.prism_source !== current)
-        return { kind: "waiting" } satisfies RunEnd;
-      current = successor.run_id;
+    // #169's recovery state for this run (D38). An admitted continuation, linked
+    // from the successor run itself, is followed first; the index admits at most
+    // one, so more is never chosen between. Pending recovery, such as a
+    // re-enabled reset, holds even over a recorded opt-out, as does no decision.
+    const recovery = yield* Recovery.readRecoveryState(RunId.make(current));
+    const [admitted, ...more] = recovery.admittedContinuations;
+    if (admitted !== undefined) {
+      if (more.length > 0) return { kind: "waiting" } satisfies RunEnd;
+      current = admitted.successorRunId;
       continue;
     }
+    const decision = recovery.decision;
+    if (recovery.pendingRecovery !== null || decision === null || decision.status === "pending")
+      return { kind: "waiting" } satisfies RunEnd;
+    // A retry is admitted with its run, so a decided retry without one is not done yet.
+    if (decision.outcome === "retried") return { kind: "waiting" } satisfies RunEnd;
     // Not retryable, or recovery abandoned it on its own: the scheduler decides now.
     return { kind: "ended", runId: current, started } satisfies RunEnd;
   }
