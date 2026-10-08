@@ -14,7 +14,7 @@ import { ProviderInstanceId } from "./providerInstance.ts";
  * project like any key in `PROJECT_SCOPED_SERVER_SETTING_KEYS`;
  * `delegate_task` and `t3_thread_launch` apply them through Prism.
  */
-export const PRISM_ROLES = [
+const PRISM_ROLES = [
   "promachos",
   "planner",
   "dispatcher",
@@ -30,7 +30,7 @@ export type PrismRole = typeof PrismRole.Type;
  * Keys Retry and Escalation had before they were renamed. Settings and
  * child thread ids saved with them still read as the new roles.
  */
-export const LEGACY_PRISM_ROLE_KEYS: Readonly<Record<string, PrismRole>> = {
+const LEGACY_PRISM_ROLE_KEYS: Readonly<Record<string, PrismRole>> = {
   correction: "retry",
   recovery: "escalation",
 };
@@ -65,7 +65,7 @@ export const PrismLaneModels = Schema.Struct({
 export type PrismLaneModels = typeof PrismLaneModels.Type;
 
 /** Roles with legacy enabled flags retained for saved-settings compatibility. */
-export const PRISM_SWITCHABLE_ROLES = ["retry", "escalation"] as const;
+const PRISM_SWITCHABLE_ROLES = ["retry", "escalation"] as const;
 export type PrismSwitchableRole = (typeof PRISM_SWITCHABLE_ROLES)[number];
 
 /** Names shown to people. */
@@ -203,12 +203,6 @@ export const PrismRoleKitsPatch = Schema.Struct({
   escalation: Schema.optionalKey(switchableKitPatch),
 });
 export type PrismRoleKitsPatch = typeof PrismRoleKitsPatch.Type;
-
-/**
- * Thread activity recorded at each turn end with the turn's provider stream
- * statistics (toolboxmd/t3code#55). Measurement only: clients hide it.
- */
-export const PRISM_STREAM_STATS_ACTIVITY_KIND = "prism.stream-stats";
 
 export const PrismStaleReason = Schema.Literals(["silence", "provider-dead", "provider-error"]);
 export type PrismStaleReason = typeof PrismStaleReason.Type;

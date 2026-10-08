@@ -638,7 +638,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "id": "prism-toolkit",
   "purpose": "Route upstream delegation and top-level launches through one Prism service and coordinate persisted same-provider/model recovery. Own Chromeria autoResumeLimitedThreads=true; Wight consumes it and saved false overrides remain respected.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/169"],
-  "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/169-prism-service-v2"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/183"],
   "newFiles": [
     "apps/server/src/prism/PrismService.test.ts",
     "apps/server/src/prism/PrismService.ts",
@@ -659,6 +659,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "packages/contracts/src/prism.ts"
   ],
   "upstreamFiles": [
+    "apps/web/src/components/settings/SettingsPanels.restore.test.tsx",
     "apps/server/src/mcp/toolkits/project/tools.ts",
     "apps/server/src/orchestration-v2/runtimeLayer.ts"
   ],
@@ -696,7 +697,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "id": "prism-settings",
   "purpose": "Keep scoped Prism kits, ordered model lists and worker lanes editable with saved settings replay and honest explicit retry/escalation kit semantics.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/169"],
-  "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/169-prism-service-v2"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/183"],
   "newFiles": [
     "apps/web/src/components/settings/PrismSettings.logic.test.ts",
     "apps/web/src/components/settings/PrismSettings.logic.ts",
@@ -727,7 +728,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "id": "tool-instructions",
   "purpose": "Give every provider runtime consistent visible T3 delegation and Prism routing/recovery guidance.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/169"],
-  "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/169-prism-service-v2"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/183"],
   "newFiles": ["apps/server/src/mcp/toolInstructions.ts"],
   "upstreamFiles": [
     "apps/server/src/mcp/toolkits/orchestrator/tools.ts",

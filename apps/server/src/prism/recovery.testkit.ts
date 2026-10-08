@@ -38,7 +38,7 @@ export const recoveryRun: OrchestrationV2Run = {
   contextHandoffId: null,
 };
 
-export const database = Persistence.layerMemory;
+const database = Persistence.layerMemory;
 const stores = Layer.mergeAll(
   database,
   EventStore.layer.pipe(Layer.provide(database)),

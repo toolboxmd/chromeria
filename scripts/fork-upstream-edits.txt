@@ -147,3 +147,4 @@ apps/server/src/provider/T3OrchestrationInstructions.ts
 apps/web/src/components/settings/SettingsSidebarNav.tsx
 apps/web/src/routeTree.gen.ts
 packages/contracts/src/index.ts
+apps/web/src/components/settings/SettingsPanels.restore.test.tsx
