@@ -117,6 +117,7 @@ const claudeAdapter = {
 interface HarnessOptions {
   readonly closeTerminal?: TerminalManager.TerminalManager["Service"]["close"];
   readonly adapters?: ReadonlyArray<ProviderAdapter.ProviderAdapterV2["Service"]>;
+  readonly otherWorkspaceRoot?: string;
   readonly managedFolders?: Layer.Layer<ManagedProjectFolders.ManagedProjectFolders>;
   readonly createWorktree?: GitWorkflow.GitWorkflowService["Service"]["createWorktree"];
   readonly fetchWorktreeBaseCommit?: GitWorkflow.GitWorkflowService["Service"]["fetchWorktreeBaseCommit"];
@@ -186,7 +187,10 @@ function makeHarness(options: HarnessOptions = {}) {
           id === projectId
             ? Option.some(project)
             : id === otherProjectId
-              ? Option.some(otherProject)
+              ? Option.some({
+                  ...otherProject,
+                  workspaceRoot: options.otherWorkspaceRoot ?? otherProject.workspaceRoot,
+                })
               : Option.none(),
         ),
       getByWorkspaceRoot: () => Effect.succeedSome(project),
@@ -268,6 +272,7 @@ function makeHarness(options: HarnessOptions = {}) {
       layerOutbox,
       layerDatabase,
       layerExternalServices,
+      ProjectStore.layer.pipe(Layer.provide(layerDatabase)),
     ),
     createWorktree,
     removeWorktree,
@@ -1830,6 +1835,7 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
   const harness = makeHarness();
   const layerFiles = ServerConfig.layerTest(process.cwd(), { prefix: "t3-message-intake-" }).pipe(
     Layer.provideMerge(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+    Layer.merge(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
   );
   return Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
@@ -2290,3 +2296,264 @@ it.effect("replays an accepted send after the project disables the instance", ()
     }
   }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerFiles)));
 });
+
+
+it.effect(
+  "prepares an accepted delegated destination once through the existing workspace pipeline",
+  () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const harness = makeHarness({
+        runSetup: () =>
+          Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.as({ status: "no-script" as const }),
+          ),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const threadId = ThreadId.make("delegated-destination");
+        yield* threads.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("delegated-create"),
+          threadId,
+          projectId: otherProjectId,
+          title: "Delegated destination",
+          modelSelection,
+          runtimeMode: "approval-required",
+          interactionMode: "plan",
+          branch: null,
+          worktreePath: null,
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+        yield* threads.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("delegated-message"),
+          threadId,
+          messageId: MessageId.make("delegated-message"),
+          text: "Destination task",
+          attachments: [],
+          modelSelection,
+          dispatchMode: {
+            type: "defer_start",
+            workspaceStrategy: { type: "worktree", baseRef: "main" },
+          },
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+        const before = yield* threads.getThreadProjection(threadId);
+        const run = before.runs[0]!;
+        const released = yield* threads.streamStoredEvents.pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.threadId === threadId &&
+              stored.event.type === "run.updated" &&
+              stored.event.payload.id === run.id &&
+              stored.event.payload.status === "starting",
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        const input = {
+          commandId: CommandId.make("delegated-prepare"),
+          threadId,
+          runId: run.id,
+          projectId: otherProjectId,
+        };
+        yield* Effect.all(
+          [launches.prepareRun(input), launches.prepareRun(input)],
+          { concurrency: "unbounded" },
+        );
+        yield* Deferred.await(entered);
+        assert.equal(harness.createWorktree.mock.calls.length, 1);
+        assert.equal(harness.runSetup.mock.calls.length, 1);
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(released);
+        const after = yield* threads.getThreadProjection(threadId);
+        assert.equal(after.runs[0]!.status, "starting");
+        assert.equal(after.thread.projectId, otherProjectId);
+        assert.equal(after.thread.worktreePath, "/repo-worktrees/feature");
+        assert.equal(after.thread.runtimeMode, "approval-required");
+        assert.equal(after.thread.interactionMode, "plan");
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
+it.effect.each([false, true])(
+  "direct intake validates destination, prepares once on replay, and honors Stop during preparation: %s",
+  (stopDuringPreparation) =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const harness = makeHarness({
+        otherWorkspaceRoot: "/destination",
+        runSetup: () =>
+          Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.as({ status: "no-script" as const }),
+          ),
+      });
+      yield* Effect.gen(function* () {
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, default_thread_env_mode, created_at, updated_at)
+        VALUES (${otherProjectId}, 'Destination', '/destination', '[]', 'local', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`;
+        const parentId = ThreadId.make("direct-parent");
+        yield* threads.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("direct-create"),
+          threadId: parentId,
+          projectId,
+          title: "Parent",
+          modelSelection,
+          runtimeMode: "approval-required",
+          interactionMode: "plan",
+          branch: null,
+          worktreePath: null,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* threads.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("direct-parent-work"),
+          threadId: parentId,
+          messageId: MessageId.make("direct-parent-work"),
+          text: "Work",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const parent = yield* threads.getThreadProjection(parentId);
+        const command = {
+          type: "delegated_task.request" as const,
+          commandId: CommandId.make("direct-delegate"),
+          parentThreadId: parentId,
+          parentRunId: parent.runs[0]!.id,
+          parentNodeId: parent.runs[0]!.rootNodeId!,
+          projectId: otherProjectId,
+          workspaceStrategy: stopDuringPreparation
+            ? { type: "worktree" as const, baseRef: "main" }
+            : {
+                type: "existing_worktree" as const,
+                worktreePath: "/destination-worktree",
+              },
+          task: "Child work",
+          modelSelection,
+          runtimeMode: "approval-required" as const,
+          interactionMode: "plan" as const,
+          createdBy: "user" as const,
+          creationSource: "web" as const,
+        };
+        const before = yield* sql<{
+          count: number;
+        }>`SELECT COUNT(*) AS count FROM projection_threads`;
+        for (const invalid of [
+          {
+            ...command,
+            commandId: CommandId.make("direct-unregistered"),
+            workspaceStrategy: {
+              type: "existing_worktree" as const,
+              worktreePath: "/other-project-worktree",
+            },
+          },
+          {
+            ...command,
+            commandId: CommandId.make("direct-missing"),
+            projectId: ProjectId.make("missing"),
+          },
+        ]) {
+          const failure = yield* ThreadMessageIntake.dispatchCommand(invalid).pipe(Effect.flip);
+          assert.equal(failure._tag, "OrchestratorMcpFailure");
+          if (failure._tag === "OrchestratorMcpFailure")
+            assert.equal(failure.code, "invalid_request");
+          assert.deepEqual(
+            yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM projection_threads`,
+            before,
+          );
+          assert.lengthOf((yield* threads.getThreadProjection(parentId)).subagents, 0);
+        }
+        const result = yield* ThreadMessageIntake.dispatchCommand(command);
+        yield* Deferred.await(entered);
+        const task = (yield* threads.getThreadProjection(parentId)).subagents[0]!;
+        const childId = task.childThreadId!;
+        assert.equal((yield* threads.getThreadProjection(childId)).runs[0]!.status, "preparing");
+        assert.equal(harness.runSetup.mock.calls[0]![0].projectCwd, "/destination");
+        assert.equal(
+          harness.runSetup.mock.calls[0]![0].worktreePath,
+          stopDuringPreparation ? "/repo-worktrees/feature" : "/destination-worktree",
+        );
+        const replay = yield* ThreadMessageIntake.dispatchCommand(command);
+        assert.equal(replay.sequence, result.sequence);
+        assert.equal(harness.runSetup.mock.calls.length, 1);
+        if (stopDuringPreparation) {
+          const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+          const settled = yield* tracker.stream(childId).pipe(
+            Stream.filter((snapshot) => snapshot !== null && snapshot.phase !== "running"),
+            Stream.runHead,
+            Effect.forkChild,
+          );
+          yield* threads.dispatch({
+            type: "thread.stop",
+            commandId: CommandId.make("direct-stop-preparing"),
+            threadId: childId,
+          });
+          yield* Deferred.succeed(release, undefined);
+          assert.isTrue(Option.isSome(yield* Fiber.join(settled)));
+          const releaseReceipts = yield* sql<{
+            status: string;
+          }>`SELECT status FROM orchestration_command_receipts WHERE command_id = 'direct-delegate:release'`;
+          assert.deepEqual(releaseReceipts, [{ status: "rejected" }]);
+          const stopped = yield* threads.getThreadProjection(childId);
+          assert.equal(stopped.runs[0]!.status, "interrupted");
+          assert.equal(harness.runSetup.mock.calls.length, 1);
+          return;
+        }
+        const started = yield* threads.streamStoredEvents.pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.threadId === childId &&
+              stored.event.type === "run.updated" &&
+              stored.event.payload.status === "starting",
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* Deferred.succeed(release, undefined);
+        assert.isTrue(Option.isSome(yield* Fiber.join(started)));
+        const child = yield* threads.getThreadProjection(childId);
+        assert.equal(child.thread.projectId, otherProjectId);
+        assert.equal(child.thread.lineage.parentThreadId, parentId);
+        assert.equal(child.thread.runtimeMode, "approval-required");
+        assert.equal(child.thread.interactionMode, "plan");
+        yield* threads.dispatch({
+          type: "thread.stop",
+          commandId: CommandId.make("direct-stop"),
+          threadId: childId,
+        });
+        assert.equal((yield* threads.getThreadProjection(childId)).runs[0]!.status, "interrupted");
+      }).pipe(
+        Effect.provide(
+          harness.layer.pipe(
+            Layer.provideMerge(
+              Layer.mergeAll(
+                ProjectStore.layer,
+                Layer.mock(GitVcsDriver.GitVcsDriver)({
+                  listWorktreePaths: (cwd) => {
+                    assert.equal(cwd, "/destination");
+                    return Effect.succeed(["/destination", "/destination-worktree"]);
+                  },
+                }),
+                ServerConfig.layerTest(process.cwd(), { prefix: "t3-delegated-intake-" }).pipe(
+                  Layer.provideMerge(NodeServices.layer),
+                ),
+              ).pipe(Layer.provide(harness.layer)),
+            ),
+          ),
+        ),
+      );
+    }),
+);

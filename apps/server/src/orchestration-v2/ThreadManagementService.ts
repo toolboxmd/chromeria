@@ -8,6 +8,7 @@ import type {
   ProjectionRecords,
   ShellSnapshotOptions,
 } from "./ProjectionStore.ts";
+import { ProjectionStoreThreadNotFoundError } from "./ProjectionStore.ts";
 import {
   type ChatAttachment,
   CommandId,
@@ -49,6 +50,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
+import { readStopDescendants } from "../childThreads/stopDescendants.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { projectedRowEncodedBytes } from "./threadHistoryPaging.ts";
@@ -461,6 +463,9 @@ export interface ThreadManagementServiceShape {
     readonly threadId: ThreadId;
     readonly commandId: CommandId;
     readonly reason?: string | undefined;
+    readonly forkRetirementStop?:
+      | { readonly ancestorThreadId: ThreadId; readonly originalToken: CommandId }
+      | undefined;
   }) => Effect.Effect<
     void,
     Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
@@ -542,6 +547,7 @@ function latestSteerableRun(
 }
 
 const SETTLE_AFTER_RUN_WAIT_MS = 24 * 60 * 60 * 1_000;
+const isProjectionThreadNotFound = Schema.is(ProjectionStoreThreadNotFoundError);
 
 const make = Effect.gen(function* () {
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
@@ -1205,11 +1211,26 @@ const make = Effect.gen(function* () {
   const stopDelegatedTasks: ThreadManagementServiceShape["stopDelegatedTasks"] = Effect.fn(
     "ThreadManagementService.stopDelegatedTasks",
   )(function* (input) {
+    const snapshot = yield* orchestrator.getShellSnapshot();
     const { subagents } = yield* orchestrator.getThreadRecords(input.threadId, ["subagents"]);
+    // Fork: one flat walk covers every subagent descendant, including those whose parent was
+    // deleted, so each stopped child skips its own delegated-task walk.
+    const descendants = yield* readStopDescendants(
+      input.threadId,
+      [...snapshot.threads, ...snapshot.archivedThreads],
+      (id) =>
+        orchestrator.getThreadRecords(id, []).pipe(
+          Effect.map(({ thread }) => Option.some(thread)),
+          Effect.catchTags({
+            OrchestratorProjectionError: (error) =>
+              isProjectionThreadNotFound(error.cause) ? Effect.succeedNone : Effect.fail(error),
+          }),
+        ),
+    );
     const failures: Array<
       Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
     > = [];
-    const stoppedChildThreadIds = new Set<ThreadId>();
+    const stoppedChildThreadIds = new Set<ThreadId>(descendants);
     for (const task of subagents) {
       if (task.origin !== "app_owned") continue;
       if (task.childThreadId === null) {
@@ -1247,18 +1268,20 @@ const make = Effect.gen(function* () {
         );
         continue;
       }
-      const threadId = task.childThreadId;
-      // Follow-up tasks reuse a child thread; walk its subtree only once.
-      if (stoppedChildThreadIds.has(threadId)) continue;
-      stoppedChildThreadIds.add(threadId);
+      stoppedChildThreadIds.add(task.childThreadId);
+    }
+    for (const threadId of stoppedChildThreadIds) {
       yield* dispatch({
         type: "thread.stop",
         commandId: CommandId.make(`${input.commandId}:stop:${threadId}`),
         threadId,
         stopDelegatedTasks: false,
+        forkRetirementStop: input.forkRetirementStop ?? {
+          ancestorThreadId: input.threadId,
+          originalToken: input.commandId,
+        },
         ...(input.reason === undefined ? {} : { reason: input.reason }),
       }).pipe(
-        Effect.andThen(stopDelegatedTasks({ ...input, threadId })),
         Effect.catch((error) =>
           Effect.logWarning("Unable to stop a delegated task", {
             parentThreadId: input.threadId,
