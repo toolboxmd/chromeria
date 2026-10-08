@@ -77,6 +77,8 @@ The most common defect in this repo is a change that works on the path you teste
 
 ## Dev servers
 
+- In a worktree or agent shell where `vp` is not on PATH, run it as `pnpm exec vp`.
+
 - `vp i` installs. Worktrees get this from the t3.json setup script; if module resolution looks broken, it probably did not run.
 - Setup runs in the background. While `.t3/setup-running` names a live PID, wait for it and do not run `vp i`. It ends with `.t3/setup-done` or `.t3/setup-failed` (with the error tail). With no marker at all, setup never ran here, so run `vp i` yourself.
 - `vp run dev` starts server and web. In a worktree, state defaults to that worktree's gitignored `.t3`, which deliberately outranks an ambient `T3CODE_HOME` so you cannot land on shared state by accident. An explicit `--home-dir` still wins.
@@ -92,7 +94,7 @@ An empty database is a bad test. Seed your worktree's `.t3` with a copy of real 
 
 - The first `vp run dev` in a worktree does this for you when its database is missing and the source is at most 500 MiB. Larger sources warn and dev starts with an empty database. `--no-seed` or `T3CODE_DEV_SEED=0` skips seeding. Manual migration still accepts larger sources and may use substantial disk space before pruning.
 - Run `vp run migrate-dev-db` with your dev server stopped to refresh. It rebuilds `<worktree>/.t3/userdata/statev2.sqlite` from a read-only snapshot of `~/.t3/userdata/statev2.sqlite`, the developer's real data. It keeps recent projects and their stopped threads, and drops scheduled tasks, pending work, and auth sessions, so your dev server never runs the developer's agents. Raise `--projects` and `--threads-per-project` for more data.
-- Refresh `statev2.sqlite`, not `state.sqlite`. The server copies the V1 `state.sqlite` only when `statev2.sqlite` is missing.
+- Chromeria uses `chromeria-v2.sqlite`, seeded from a read-only sibling `state.sqlite` when missing. The upstream dev migration command above writes `statev2.sqlite`; for the fork import proof, use the read-only snapshot harness documented in `docs/fork.md`, never a server against live state.
 - Bring `secrets` and `settings.json` only if the flow under test needs them.
 - Copy in, never symlink. Data flows one way: into your sandbox, never back out.
 
@@ -145,10 +147,15 @@ For mobile verification, a missing or outdated native client is an install step,
 
 `evals/` checks how real models behave with T3 Code's model-facing text: agent instructions, MCP tool descriptions and schemas, and generated titles. Before you change that text, read [evals/README.md](evals/README.md) and run the evals it names. When you fix a model behavior bug, add a case that fails before the fix.
 
+## Upstream first
+
+Before fixing a bug or building a feature, search `pingdotgg/t3code` main, open PRs, and Issues, and record what you found in the Issue. Prefer a merged commit over an open PR, read its complete diff, and verify it against the fork's reproduction. A ported fix needs the same proof and independent review as fork code; link its upstream source in the PR.
+
 ## Pull requests
 
-- Never make a PR unless the developer explicitly asks you to do so.
-- If `origin` is git.cafe, follow [GitCafe mirror](docs/operations/development.md#gitcafe-mirror-optional): push to `origin`, open and track PRs with `cafe` and their git.cafe URLs, and keep `gh` for merging.
+- Open a PR when the work is ready; merging needs the developer's approval.
+- Do not bump versions. Package versions belong to upstream releases; a Chromeria build is identified by its embedded `t3codeCommitHash`.
+- If `origin` is git.cafe, follow [GitCafe mirror](docs/operations/development.md#gitcafe-mirror-optional): use `cafe` for existing PRs, issues, comments and labels, but push and open PRs on GitHub, where CI runs.
 - Conventional commit titles, plain language: `fix(web): new threads no longer spike CPU`.
 - Body: the problem in a sentence or two, then how you fixed it. End with the model and harness that did the work.
 - UI changes need before/after images. Motion or timing needs a short video.

@@ -957,6 +957,139 @@ describe("environment query lifecycle", () => {
       }),
     ),
   );
+  it.effect("reads again when the server interrupts a query this client did not cancel", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let executions = 0;
+        // The server answers with an interrupt when the read joined a shared lookup that another
+        // request's cancellation tore down.
+        const execute = Effect.suspend(() => {
+          executions += 1;
+          return executions === 1
+            ? Effect.failCause(Cause.interrupt())
+            : Effect.succeed("recovered");
+        });
+        const harness = yield* makeEnvironmentQueryHarness(execute);
+        const registry = yield* mountEnvironmentQuery(harness.atom);
+
+        expect(
+          yield* AtomRegistry.getResult(registry, harness.atom, {
+            suspendOnWaiting: true,
+          }),
+        ).toBe("recovered");
+        expect(executions).toBe(2);
+      }),
+    ),
+  );
+});
+
+describe("Atom.fn mutation semantics", () => {
+  it.effect("interrupts the previous invocation when the same mutation atom is written again", () =>
+    Effect.gen(function* () {
+      const firstLatch = Latch.makeUnsafe();
+      const secondLatch = Latch.makeUnsafe();
+      const interrupted: string[] = [];
+      const mutation = Atom.fn((id: "first" | "second") =>
+        (id === "first" ? firstLatch : secondLatch).await.pipe(
+          Effect.as(id),
+          Effect.onInterrupt(() =>
+            Effect.sync(() => {
+              interrupted.push(id);
+            }),
+          ),
+        ),
+      );
+      const registry = AtomRegistry.make();
+      const unmount = registry.mount(mutation);
+
+      registry.set(mutation, "first");
+      registry.set(mutation, "second");
+      yield* Effect.yieldNow;
+
+      expect(interrupted).toEqual(["first"]);
+
+      secondLatch.openUnsafe();
+      expect(
+        yield* AtomRegistry.getResult(registry, mutation, {
+          suspendOnWaiting: true,
+        }),
+      ).toBe("second");
+
+      unmount();
+      registry.dispose();
+    }),
+  );
+
+  it.effect("keeps stream mutations waiting until the final emitted value", () =>
+    Effect.gen(function* () {
+      const completionLatch = Latch.makeUnsafe();
+      const mutation = Atom.fn(() =>
+        Stream.make("progress").pipe(
+          Stream.concat(Stream.fromEffect(completionLatch.await.pipe(Effect.as("done")))),
+        ),
+      );
+      const registry = AtomRegistry.make();
+      const unmount = registry.mount(mutation);
+
+      registry.set(mutation, undefined);
+
+      const progress = registry.get(mutation);
+      expect(AsyncResult.isSuccess(progress)).toBe(true);
+      if (AsyncResult.isSuccess(progress)) {
+        expect(progress.value).toBe("progress");
+        expect(progress.waiting).toBe(true);
+      }
+
+      completionLatch.openUnsafe();
+      expect(
+        yield* AtomRegistry.getResult(registry, mutation, {
+          suspendOnWaiting: true,
+        }),
+      ).toBe("done");
+
+      unmount();
+      registry.dispose();
+    }),
+  );
+
+  it.effect(
+    "allows concurrent effects to finish but does not correlate results to individual writes",
+    () =>
+      Effect.gen(function* () {
+        const firstLatch = Latch.makeUnsafe();
+        const secondLatch = Latch.makeUnsafe();
+        const mutation = Atom.fn<never, "first" | "second", "first" | "second">(
+          (id: "first" | "second") =>
+            (id === "first" ? firstLatch : secondLatch).await.pipe(Effect.as(id)),
+          { concurrent: true },
+        );
+        const registry = AtomRegistry.make();
+        const unmount = registry.mount(mutation);
+
+        registry.set(mutation, "first");
+        const firstResult = yield* AtomRegistry.getResult(registry, mutation, {
+          suspendOnWaiting: true,
+        }).pipe(Effect.forkChild({ startImmediately: true }));
+        registry.set(mutation, "second");
+        const secondResult = yield* AtomRegistry.getResult(registry, mutation, {
+          suspendOnWaiting: true,
+        }).pipe(Effect.forkChild({ startImmediately: true }));
+
+        secondLatch.openUnsafe();
+        yield* Effect.yieldNow;
+
+        const stillWaiting = registry.get(mutation);
+        expect(stillWaiting.waiting).toBe(true);
+
+        firstLatch.openUnsafe();
+
+        expect(yield* Fiber.join(firstResult)).toBe("first");
+        expect(yield* Fiber.join(secondResult)).toBe("first");
+
+        unmount();
+        registry.dispose();
+      }),
+  );
 });
 
 describe("executeAtomQuery", () => {

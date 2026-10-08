@@ -1,3 +1,4 @@
+import { forkPullRequestIdentity } from "./forkRepositoryIdentity.ts";
 import { isSshRemoteUrl } from "@t3tools/shared/sourceControl";
 import { parseDiffFilePaths } from "@t3tools/source-control-core/server/diffFileRevisions";
 import * as Cache from "effect/Cache";
@@ -714,7 +715,7 @@ export const make = Effect.gen(function* () {
     const candidatesByKey = new Map<string, Candidate[]>();
     for (const project of projects) {
       if (filter.projectId !== undefined && project.id !== filter.projectId) continue;
-      const identity = project.repositoryIdentity;
+      const identity = forkPullRequestIdentity(project.repositoryIdentity);
       if (
         !identity ||
         identity.provider === undefined ||
@@ -868,10 +869,10 @@ export const make = Effect.gen(function* () {
         for (const project of projects) {
           if (filter.projectId !== undefined && project.id !== filter.projectId) continue;
           if (filter.projectIds !== undefined && !filter.projectIds.includes(project.id)) continue;
-          const identity = project.repositoryIdentity;
+          const identity = forkPullRequestIdentity(project.repositoryIdentity);
           let kind = identity?.provider;
           const repository = sourceControlDefinitions.repositorySelector(
-            project.repositoryIdentity,
+            identity,
           );
           if (!identity || kind === undefined || repository === null) continue;
           const recognized = sourceControlDefinitions.recognizeRemote(identity.locator.remoteUrl);
