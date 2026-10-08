@@ -1,3 +1,5 @@
+import * as ForkProviderStartAdmission from "../provider/forkProviderStartAdmission.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as NetAddress from "effect/net/NetAddress";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -560,6 +562,14 @@ function layerTest(input: {
       Layer.provide(
         Layer.mergeAll(
           layerRegistry.pipe(Layer.provideMerge(McpProviderSessions.layer)),
+          ForkProviderStartAdmission.layer.pipe(
+            Layer.provide(
+              Layer.mock(ProviderRegistry.ProviderRegistry)({
+                getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
+                  Effect.succeed({ provider, packageName: null, update: null }),
+              }),
+            ),
+          ),
           layerConfiguredEventSink,
           IdAllocator.layer,
           layerProviderEventIngestorTest,

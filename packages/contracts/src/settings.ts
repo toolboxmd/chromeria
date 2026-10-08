@@ -1,3 +1,4 @@
+import { forkOpaqueSettingsFields } from "./forkSettings.ts";
 import { SshDeviceHostConfigs } from "./device.ts";
 import {
   AuthOrchestrationOperateScope,
@@ -1022,6 +1023,7 @@ export type ProjectProviderInstanceOverride = typeof ProjectProviderInstanceOver
  * `resolveProjectProviderInstanceEnabled` for the combined resolution.
  */
 export const ProjectSettingsOverrides = Schema.Struct({
+  ...forkOpaqueSettingsFields,
   worktreeCleanup: Schema.optionalKey(WorktreeCleanup),
   defaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   defaultRuntimeMode: Schema.optionalKey(RuntimeMode),
@@ -1121,6 +1123,8 @@ export const ServerSettings = Schema.Struct({
   providerModelPreferences: Schema.NullOr(ProviderModelPreferences).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  ...forkOpaqueSettingsFields,
+  autoUpdateProviders: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   worktreeCleanup: WorktreeCleanup.pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   storageCleanup: StorageCleanupSettings.pipe(
     Schema.withDecodingDefault(Effect.succeed(Schema.decodeSync(StorageCleanupSettings)({}))),
@@ -1559,6 +1563,7 @@ export const ServerSettingsPatch = Schema.Struct({
   // Server settings
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
+  autoUpdateProviders: Schema.optionalKey(Schema.Boolean),
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   projectAgentBrowserAccessOverrides: Schema.optionalKey(
