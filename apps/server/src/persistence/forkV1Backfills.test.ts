@@ -127,6 +127,9 @@ const realSource = process.env.CHROMERIA_V1_SNAPSHOT_SOURCE;
         assert.isAbove(pending, 0);
         const result = yield* importer.reconcileShells;
         assert.equal(result.importedThreadCount, pending);
+        // Exercise registered feature backfills during the same shell-only phase
+        // as startup, before transcript import or the idempotence baseline.
+        yield* runForkV1Backfills();
         yield* runForkV1Backfills([
           {
             id: "snapshot-shell-proof",
