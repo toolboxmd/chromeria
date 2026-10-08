@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { MessageId } from "@t3tools/contracts";
+import { CommandId, MessageId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -7,6 +7,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { APPEND, makeState } from "./testFixtures.ts";
+import { NOW } from "./testFixtures.ts";
 import {
   applySpectrumMutation,
   ensureSpectrumSchema,
@@ -24,6 +25,38 @@ const prepared = Effect.gen(function* () {
 const read = Effect.gen(function* () {
   return Option.getOrThrow(yield* readSpectrum(APPEND.threadId));
 });
+
+it.effect("retains the exact narrowed report and human abandonment after outbox consumption", () =>
+  Effect.gen(function* () {
+    yield* ensureSpectrumSchema;
+    const state = makeState();
+    const report = {
+      type: "message.dispatch" as const,
+      commandId: CommandId.make("report:attempt:1"),
+      threadId: state.callerThreadId,
+      messageId: MessageId.make("report:message:1"),
+      createdBy: "system" as const,
+      creationSource: "server" as const,
+      text: "Immutable report\n🟦",
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" as const },
+    };
+    yield* insertSpectrum({ ...state, outbox: [report], report });
+    const stored = yield* read;
+    const next = {
+      ...stored,
+      revision: 1,
+      outbox: [],
+      reportAbandonment: {
+        commandId: report.commandId,
+        person: "alice",
+        abandonedAt: NOW,
+      },
+    };
+    yield* applySpectrumMutation({ expectedRevision: 0, expectedGeneration: 0, state: next });
+    assert.deepStrictEqual(yield* read, next);
+  }).pipe(Effect.provide(database)),
+);
 
 it.effect(
   "refuses duplicate participant threads before persisting colliding barrier identities",

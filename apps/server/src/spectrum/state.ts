@@ -10,11 +10,20 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import * as Effect from "effect/Effect";
+
+export const SpectrumReport = OrchestrationV2Command.pipe(
+  Schema.refine(
+    (command): command is Extract<OrchestrationV2Command, { type: "message.dispatch" }> =>
+      command.type === "message.dispatch",
+  ),
+);
 
 const Participant = Schema.Struct({
   threadId: ThreadId,
   label: Schema.String,
   selection: ModelSelection,
+  instructions: Schema.optional(Schema.String),
 });
 
 export const SpectrumSlot = Schema.Struct({
@@ -65,6 +74,14 @@ export const SpectrumState = Schema.Struct({
   transcript: Schema.Array(MessageId),
   inbox: Schema.Array(MessageId),
   outbox: Schema.Array(OutboxCommand),
+  report: Schema.NullOr(SpectrumReport).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  reportAbandonment: Schema.NullOr(
+    Schema.Struct({
+      commandId: CommandId,
+      person: Schema.String,
+      abandonedAt: Schema.DateTimeUtcFromString,
+    }),
+  ).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
 });
 export type SpectrumState = typeof SpectrumState.Type;
 

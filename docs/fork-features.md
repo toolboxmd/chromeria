@@ -26,7 +26,12 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "apps/server/src/spectrum/testFixtures.ts",
     "apps/server/src/spectrum/transcript.ts",
     "apps/server/src/spectrum/transcript.test.ts",
-    "packages/contracts/src/spectrum.ts"
+    "packages/contracts/src/spectrum.ts",
+    "apps/server/src/spectrum/LaunchService.ts",
+    "apps/server/src/spectrum/RoundService.ts",
+    "apps/server/src/spectrum/registrationPlan.ts",
+    "apps/server/src/spectrum/launchAdmission.ts",
+    "apps/server/src/spectrum/Launch.integration.test.ts"
   ],
   "upstreamFiles": [],
   "sharedFiles": [
@@ -34,7 +39,12 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "apps/server/src/persistence/forkV1Backfills.ts",
     "apps/server/src/orchestration-v2/EventSink.ts",
     "apps/server/src/childThreads/ForkCommitPlan.ts",
-    "apps/server/src/childThreads/retirement.ts"
+    "apps/server/src/childThreads/retirement.ts",
+    "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "apps/server/src/prism/PrismService.ts",
+    "apps/server/src/fork/ForkDispatchPlans.ts",
+    "apps/server/src/fork/commitSequence.ts",
+    "apps/server/src/fork/commitSequence.test.ts"
   ],
   "keywords": [
     "Spectrum",
@@ -629,7 +639,10 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/childThreads/retirement.test.ts",
     "apps/server/src/childThreads/retirement.ts",
     "apps/server/src/childThreads/stopDescendants.ts",
-    "apps/server/src/childThreads/workspaceAccess.ts"
+    "apps/server/src/childThreads/workspaceAccess.ts",
+    "apps/server/src/fork/ForkDispatchPlans.ts",
+    "apps/server/src/fork/commitSequence.ts",
+    "apps/server/src/fork/commitSequence.test.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/mcp/OrchestratorMcpService.activity.test.ts",

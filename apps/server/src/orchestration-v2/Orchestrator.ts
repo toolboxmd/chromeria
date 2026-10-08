@@ -5,6 +5,7 @@ import {
   reconcilePendingChildRequests,
 } from "../childThreads/requestWake.ts";
 import * as PrismRecovery from "../prism/RecoveryHooks.ts";
+import { ForkDispatchPlans } from "../fork/ForkDispatchPlans.ts";
 import type {
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -10912,7 +10913,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         acceptedAt,
         events: plan.events,
         effects: plan.effects,
-        forkPlans: [...(plan.forkPlans ?? []), ...prismRecovery.commitPlans(command, plan.events)],
+        forkPlans: [
+          ...(plan.forkPlans ?? []),
+          ...prismRecovery.commitPlans(command, plan.events),
+          ...(yield* ForkDispatchPlans),
+        ],
         ...(plan.cancelUnsettledEffects === undefined
           ? {}
           : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),
