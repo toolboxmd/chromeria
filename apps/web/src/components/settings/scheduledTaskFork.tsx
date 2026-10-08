@@ -77,6 +77,15 @@ function CommandOutput({
   useEffect(() => {
     refresh();
   }, [refresh, runKey]);
+  if (query.error !== null)
+    return (
+      <span className="text-destructive">
+        Could not load the output: {query.error}{" "}
+        <Button variant="link" size="compact" onClick={refresh}>
+          Retry
+        </Button>
+      </span>
+    );
   if (query.data === null) return <span className="text-muted-foreground">Loading output…</span>;
   const output = query.data.tasks.find((entry) => entry.id === taskId)?.command?.run?.output;
   return output === undefined || output === "" ? (
