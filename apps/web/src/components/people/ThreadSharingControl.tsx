@@ -1,8 +1,12 @@
+import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { CommandId, type EnvironmentId, type ThreadId } from "@t3tools/contracts";
 import { UsersIcon } from "lucide-react";
 import { useMemo } from "react";
+import * as Crypto from "effect/Crypto";
+import * as Effect from "effect/Effect";
 
+import { runtime } from "../../lib/runtime";
 import { useThreadShell } from "../../state/entities";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Badge } from "../ui/badge";
@@ -40,11 +44,12 @@ export function ThreadSharingControl({
   const person = useEnvironmentPerson(environmentId);
   useRefreshDevicePeopleOnFocus();
   const dispatch = useAtomCommand(threadSharingCommand);
+  const canShare = useAtomValue(threadSharingCommand.permissionAtom(environmentId));
   if (thread === null) return null;
 
   const coOwners = thread.source.coOwners ?? [];
   const shared = coOwners.length > 0;
-  const action = threadSharingAction(thread.source, person);
+  const action = canShare ? threadSharingAction(thread.source, person) : null;
   if (action === null) {
     return shared ? (
       <Badge size="sm" variant="secondary">
@@ -72,7 +77,19 @@ export function ThreadSharingControl({
       <MenuPopup align="end">
         <MenuItem
           onClick={() =>
-            void dispatch({ environmentId, input: { ...action, threadId, actor: person } })
+            void runtime
+              .runPromise(
+                Crypto.Crypto.pipe(
+                  Effect.flatMap((crypto) => crypto.randomUUIDv4),
+                  Effect.orDie,
+                ),
+              )
+              .then((id) =>
+                dispatch({
+                  environmentId,
+                  input: { ...action, threadId, actor: person, commandId: CommandId.make(id) },
+                }),
+              )
           }
         >
           {actionLabel(action)}

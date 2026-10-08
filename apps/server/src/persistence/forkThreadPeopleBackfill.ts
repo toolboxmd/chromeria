@@ -83,10 +83,12 @@ export const backfillThreadPeople = Effect.gen(function* () {
       ON thread.thread_id = legacy_import.thread_id
     INNER JOIN orchestration_v2_projection_threads AS projection
       ON projection.thread_id = legacy_import.thread_id
-    WHERE (
-        json_type(projection.payload_json, '$.owner') IS NULL
-        OR json_type(projection.payload_json, '$.coOwners') IS NULL
-      )
+    WHERE CASE
+        WHEN json_valid(projection.payload_json) THEN
+          json_type(projection.payload_json, '$.owner') IS NULL
+          OR json_type(projection.payload_json, '$.coOwners') IS NULL
+        ELSE TRUE
+      END
       AND NOT EXISTS (
         SELECT 1
         FROM orchestration_events AS event

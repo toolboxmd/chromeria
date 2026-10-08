@@ -218,35 +218,37 @@ it.effect(
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.effect.each([
-  { payload: "{}", typedError: true },
-  { payload: "not json", typedError: false },
-])("stops startup when an imported thread payload is $payload", ({ payload, typedError }) =>
-  Effect.gen(function* () {
-    const snapshotPath = yield* v1Snapshot([{ id: "broken", owner: "Pauli", coOwnersJson: "[]" }]);
-    yield* Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
-      yield* importer.reconcileShells;
-      yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = ${payload}
+it.effect.each([{ payload: "{}" }, { payload: "not json" }])(
+  "stops startup when an imported thread payload is $payload",
+  ({ payload }) =>
+    Effect.gen(function* () {
+      const snapshotPath = yield* v1Snapshot([
+        { id: "broken", owner: "Pauli", coOwnersJson: "[]" },
+      ]);
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+        yield* importer.reconcileShells;
+        yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = ${payload}
       WHERE thread_id = 'broken'`;
-      // Valid JSON of the wrong shape is the feature's own error; malformed JSON fails in SQL.
-      const direct = yield* backfillThreadPeople.pipe(Effect.exit);
-      assert.isTrue(Exit.isFailure(direct));
-      if (Exit.isFailure(direct)) {
-        assert.equal(String(direct.cause).includes("ThreadPeopleBackfillPayloadError"), typedError);
-      }
-      const failed = yield* runForkV1Backfills().pipe(Effect.exit);
-      assert.isTrue(Exit.isFailure(failed));
-      if (Exit.isFailure(failed)) {
-        assert.include(String(failed.cause), "ForkV1BackfillError");
-        assert.include(String(failed.cause), "thread-people");
-        assert.notInclude(String(failed.cause), payload);
-      }
-      assert.equal(yield* markerCount, 0);
-      assert.lengthOf(yield* sql`SELECT * FROM fork_thread_people_backfill_issues`, 0);
-    }).pipe(Effect.provide(forkV1SnapshotLayer(snapshotPath)));
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+        // Both malformed JSON and the wrong shape retain the feature-owned corruption error.
+        const direct = yield* backfillThreadPeople.pipe(Effect.exit);
+        assert.isTrue(Exit.isFailure(direct));
+        if (Exit.isFailure(direct)) {
+          assert.include(String(direct.cause), "ThreadPeopleBackfillPayloadError");
+          assert.include(String(direct.cause), "broken");
+        }
+        const failed = yield* runForkV1Backfills().pipe(Effect.exit);
+        assert.isTrue(Exit.isFailure(failed));
+        if (Exit.isFailure(failed)) {
+          assert.include(String(failed.cause), "ForkV1BackfillError");
+          assert.include(String(failed.cause), "thread-people");
+          assert.notInclude(String(failed.cause), payload);
+        }
+        assert.equal(yield* markerCount, 0);
+        assert.lengthOf(yield* sql`SELECT * FROM fork_thread_people_backfill_issues`, 0);
+      }).pipe(Effect.provide(forkV1SnapshotLayer(snapshotPath)));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 it.effect("leaves threads untouched when the v1 database never had people", () =>
