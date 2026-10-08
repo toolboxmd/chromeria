@@ -6628,6 +6628,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.title === undefined ? {} : { title: command.title }),
         ordinal: parentProjection.subagents.length + 1,
       });
+      const destinationProjectId = command.projectId ?? parentProjection.thread.projectId;
+      const destination =
+        command.projectId === undefined && command.workspaceStrategy === undefined
+          ? undefined
+          : yield* projects.getShell(destinationProjectId).pipe(mapDispatchError(command));
+      if (destination !== undefined && Option.isNone(destination)) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Destination project was not found.",
+        });
+      }
+      const independentWorkspace =
+        command.workspaceStrategy !== undefined ||
+        destinationProjectId !== parentProjection.thread.projectId;
+      const workspaceStrategy = independentWorkspace
+        ? (command.workspaceStrategy ??
+          (destination !== undefined &&
+          Option.isSome(destination) &&
+          destination.value.defaultThreadEnvMode === "worktree"
+            ? { type: "worktree" as const, baseRef: "HEAD" }
+            : { type: "root" as const }))
+        : undefined;
       const childThread: OrchestrationV2AppThread = {
         ...makeSubagentChildThread({
           parentThread: parentProjection.thread,
@@ -6641,6 +6664,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           createdBy: command.createdBy,
           creationSource: command.creationSource,
         }),
+        projectId: destinationProjectId,
+        ...(workspaceStrategy === undefined
+          ? {}
+          : {
+              branch: workspaceStrategy.branch ?? null,
+              worktreePath:
+                workspaceStrategy.type === "existing_worktree"
+                  ? workspaceStrategy.worktreePath
+                  : null,
+            }),
         runtimeMode: command.runtimeMode,
         interactionMode: command.interactionMode,
       };
@@ -6760,7 +6793,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         text: command.task,
         attachments: [],
         modelSelection: command.modelSelection,
-        dispatchMode: { type: "start_immediately" },
+        dispatchMode:
+          workspaceStrategy === undefined
+            ? { type: "start_immediately" }
+            : { type: "defer_start", workspaceStrategy },
       } satisfies Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>;
       yield* dispatchMessage(childMessageCommand, events, effects);
 

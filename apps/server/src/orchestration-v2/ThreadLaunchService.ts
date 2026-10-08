@@ -155,6 +155,10 @@ export class ThreadLaunchService extends Context.Service<
     readonly launch: (
       input: ThreadLaunchInput,
     ) => Effect.Effect<ThreadLaunchResult, ThreadLaunchError>;
+    /** Prepare the durable first run of a delegated child through normal launch setup. */
+    readonly prepareDelegatedRun: (
+      input: ThreadLaunchRetryInput & { readonly projectId: ProjectId },
+    ) => Effect.Effect<void, ThreadLaunchError>;
     /** Dispatches prepared-run.retry and prepares the run's workspace again. */
     readonly retryPreparation: (
       input: ThreadLaunchRetryInput,
@@ -980,7 +984,22 @@ const make = Effect.gen(function* () {
     );
   };
 
-  return ThreadLaunchService.of({ launch, retryPreparation });
+  const prepareDelegatedRun: ThreadLaunchService["Service"]["prepareDelegatedRun"] = Effect.fn(
+    "ThreadLaunchService.prepareDelegatedRun",
+  )(function* (input) {
+    const scheduled = yield* Effect.gen(function* () {
+      const projection = yield* threads.getThreadProjection(input.threadId);
+      const run = projection.runs.find((candidate) => candidate.id === input.runId);
+      if (run?.status !== "preparing" || run.workspacePreparation === undefined) return;
+      if (!(yield* reservePreparation(input.commandId))) return;
+      yield* scheduleRetriedPreparation(input, projection, run, run.workspacePreparation).pipe(
+        Effect.onError(() => releasePreparation(input.commandId)),
+      );
+    }).pipe(Effect.exit);
+    if (Exit.isFailure(scheduled))
+      yield* failPreparedRun(input, input.threadId, input.runId, Cause.squash(scheduled.cause));
+  });
+  return ThreadLaunchService.of({ launch, retryPreparation, prepareDelegatedRun });
 });
 
 export const layer = Layer.effect(ThreadLaunchService, make);

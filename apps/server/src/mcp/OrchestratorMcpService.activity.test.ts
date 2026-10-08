@@ -1,3 +1,6 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import {
   EnvironmentId,
   NodeId,
@@ -129,6 +132,9 @@ it("readThread prefers activity-run status over a newer cancelled queued run", a
   const layer = OrchestratorMcpService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
+        Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
           getThreadRecords: (threadId) =>
@@ -194,6 +200,9 @@ it("readThread prefers waiting activity status over a newer cancelled queued run
   const layer = OrchestratorMcpService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
+        Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
           getThreadRecords: (threadId) =>
@@ -316,6 +325,9 @@ it("taskStatus returns task.providerInstanceId rather than the driver kind", asy
   const layer = OrchestratorMcpService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
+        Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
           getThreadRecords: (threadId) => {
@@ -414,6 +426,9 @@ it("readThread and sendToThread reach threads in other projects", async () => {
   const layer = OrchestratorMcpService.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
+        Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) => {
             if (threadId === parentThreadId) return Effect.succeed(parentProjection);

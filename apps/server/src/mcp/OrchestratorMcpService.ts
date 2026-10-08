@@ -83,6 +83,10 @@ import {
 } from "../orchestration-v2/DispatchModeLimit.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
+import * as FileSystem from "effect/FileSystem";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
+import { assertProjectWorktree } from "../childThreads/workspaceAccess.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
@@ -836,6 +840,9 @@ const make = Effect.gen(function* () {
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
   const projects = yield* ProjectService.ProjectService;
+  const threadLaunch = yield* ThreadLaunch.ThreadLaunchService;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const git = yield* GitVcsDriver.GitVcsDriver;
 
   /** A caller-named project, which must exist before anything is recorded against it. */
   const requireProject = (projectId: ProjectId) =>
@@ -1829,6 +1836,18 @@ const make = Effect.gen(function* () {
             "Delegated tasks require an active run owned by this MCP provider session.",
           );
         }
+        if (input.projectId !== undefined || input.workspaceStrategy !== undefined) {
+          const destination = yield* requireProject(input.projectId ?? parent.thread.projectId);
+          if (input.workspaceStrategy?.type === "existing_worktree") {
+            yield* assertProjectWorktree(
+              destination.workspaceRoot,
+              input.workspaceStrategy.worktreePath,
+            ).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(GitVcsDriver.GitVcsDriver, git),
+            );
+          }
+        }
         const providers = yield* loadProviders;
         const target = yield* resolveTargetRechecking({
           parent,
@@ -1855,6 +1874,10 @@ const make = Effect.gen(function* () {
             parentThreadId: scope.thread.threadId,
             parentRunId: parentRun.id,
             parentNodeId: parentRun.rootNodeId,
+            ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
+            ...(input.workspaceStrategy === undefined
+              ? {}
+              : { workspaceStrategy: input.workspaceStrategy }),
             task: taskPrompt(input),
             ...(input.title === undefined ? {} : { title: input.title }),
             modelSelection: target.modelSelection,
@@ -1884,6 +1907,27 @@ const make = Effect.gen(function* () {
           );
         }
         const taskId = taskEvent.event.payload.id;
+        const childThreadId = taskEvent.event.payload.childThreadId;
+        if (input.projectId !== undefined || input.workspaceStrategy !== undefined) {
+          const child = result.storedEvents.find(
+            (stored) =>
+              stored.event.type === "run.created" && stored.event.threadId === childThreadId,
+          );
+          if (child?.event.type === "run.created" && childThreadId !== null) {
+            yield* threadLaunch
+              .prepareDelegatedRun({
+                commandId,
+                threadId: childThreadId,
+                runId: child.event.payload.id,
+                projectId: input.projectId ?? parent.thread.projectId,
+              })
+              .pipe(
+                Effect.mapError(() =>
+                  failure("orchestration_error", "Unable to prepare delegated workspace."),
+                ),
+              );
+          }
+        }
 
         if (input.mode !== "wait") {
           return yield* readTask(scope, taskId, false, true);
@@ -2497,6 +2541,9 @@ export const layer: Layer.Layer<
   OrchestratorMcpService,
   never,
   | Crypto.Crypto
+  | FileSystem.FileSystem
+  | GitVcsDriver.GitVcsDriver
+  | ThreadLaunch.ThreadLaunchService
   | ThreadManagementService.ThreadManagementService
   | ProviderRegistry.ProviderRegistry
   | ProviderAdapterRegistry.ProviderAdapterRegistryV2
