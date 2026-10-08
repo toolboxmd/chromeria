@@ -614,7 +614,14 @@ const layerBase: Layer.Layer<
               ...(input.cancelUnsettledEffects.includeSubagentDescendants
                 ? subagentDescendants(
                     input.threadId,
-                    (yield* projectionStore.getShellSnapshot()).threads,
+                    yield* projectionStore
+                      .getShellSnapshot()
+                      .pipe(
+                        Effect.map((snapshot) => [
+                          ...snapshot.threads,
+                          ...snapshot.archivedThreads,
+                        ]),
+                      ),
                   )
                 : []),
             ];

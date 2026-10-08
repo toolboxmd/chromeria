@@ -366,7 +366,7 @@ export interface ThreadManagementServiceShape {
     input: ThreadManagementInterruptInput,
   ) => Effect.Effect<ThreadManagementInterruptResult, ThreadManagementFailure>;
   /**
-   * Sends `thread.stop` to every delegated task under a thread, depth first. Their command IDs
+   * Sends the originating `thread.stop` to every descendant and delegated task. Their command IDs
    * derive from `commandId`, so a retry repeats nothing that already stopped. A task that
    * cannot be stopped does not keep the others running: all are tried, then it fails.
    */
@@ -852,7 +852,7 @@ const make = Effect.gen(function* () {
       const { subagents } = yield* orchestrator.getThreadRecords(input.threadId, ["subagents"]);
       const failures: Array<Orchestrator.OrchestratorV2Error> = [];
       for (const threadId of new Set([
-        ...subagentDescendants(input.threadId, snapshot.threads),
+        ...subagentDescendants(input.threadId, [...snapshot.threads, ...snapshot.archivedThreads]),
         ...subagents.flatMap((task) =>
           task.origin === "app_owned" && task.childThreadId !== null ? [task.childThreadId] : [],
         ),

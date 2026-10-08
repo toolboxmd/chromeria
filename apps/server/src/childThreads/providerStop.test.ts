@@ -40,6 +40,7 @@ it.effect.each([
   ["startTurn", "self", "newer-owner"],
   ["startTurn", "self", "background"],
   ["startTurn", "resumed-grandchild", "none"],
+  ["startTurn", "archived-intermediate", "none"],
 ] as const)(
   "normal Stop with adapter %s blocked, target %s, protection %s",
   ([blocked, stopTarget, protection]) =>
@@ -141,7 +142,8 @@ it.effect.each([
         const sink = yield* EventSinkV2;
         const parentId = ThreadId.make(`parent:${blocked}`);
         const revivedGrandchild = stopTarget === "resumed-grandchild";
-        if (stopTarget === "ancestor" || revivedGrandchild) {
+        const archivedIntermediate = stopTarget === "archived-intermediate";
+        if (stopTarget === "ancestor" || revivedGrandchild || archivedIntermediate) {
           yield* orchestrator.dispatch({
             type: "thread.create",
             commandId: CommandId.make(`create-parent:${blocked}`),
@@ -157,7 +159,7 @@ it.effect.each([
             creationSource: "web",
           });
           let directParentId = parentId;
-          if (revivedGrandchild) {
+          if (revivedGrandchild || archivedIntermediate) {
             directParentId = ThreadId.make("unresumed-native-intermediate");
             yield* orchestrator.dispatch({
               type: "thread.create",
@@ -193,6 +195,14 @@ it.effect.each([
                 },
               ],
             });
+            if (archivedIntermediate) {
+              yield* orchestrator.dispatch({
+                type: "thread.archive",
+                commandId: CommandId.make("archive-native-intermediate"),
+                threadId: directParentId,
+              });
+              yield* worker.drain();
+            }
           }
           const child = yield* orchestrator.getThreadProjection(threadId);
           yield* sink.write({
@@ -321,13 +331,17 @@ it.effect.each([
           .dispatch({
             type: "thread.stop",
             commandId: CommandId.make(`stop:${blocked}`),
-            threadId: stopTarget === "ancestor" ? parentId : threadId,
+            threadId: stopTarget === "ancestor" || archivedIntermediate ? parentId : threadId,
           })
           .pipe(Effect.forkChild);
+        if (archivedIntermediate) {
+          yield* Fiber.join(stopped);
+          assert.isTrue(yield* Deferred.isDone(cancelled));
+        }
         yield* Deferred.await(cancelled);
         yield* Fiber.join(stopped);
         yield* Fiber.join(execution);
-        if (stopTarget === "ancestor") yield* worker.drain();
+        if (stopTarget === "ancestor" || archivedIntermediate) yield* worker.drain();
         const after = yield* orchestrator.getThreadProjection(threadId);
         assert.equal(after.runs[0]!.status, "interrupted");
         assert.equal(after.attempts[0]!.status, "interrupted");
