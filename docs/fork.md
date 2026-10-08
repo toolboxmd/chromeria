@@ -1,6 +1,6 @@
 # Fork maintenance
 
-This repo (`toolboxmd/t3code`) is a thin, rebasable layer on upstream
+This repo (`toolboxmd/t3code`) is a personal, rebasable layer on upstream
 `pingdotgg/t3code`. Upstream `main` is the base; fork work is a small stack of
 topic commits kept on top of it. This document describes the model, the
 maintenance routine, and the upstream extension points that would shrink the
@@ -19,8 +19,8 @@ patch set further.
   new hashes and break the stack. An absorption is proven on its own branch
   and then lands with `--force-with-lease` (see Routine). That push is a
   human-approved step.
-- **New files first.** Features go in new files and new packages. Edits to
-  upstream-owned files stay minimal and every edited file has a primary owner
+- **Modules first.** Features live in their own files and packages. Upstream-owned
+  files carry only the hooks those modules need, and every edited file has a primary owner
   in [the feature map](fork-features.md) and an entry in the machine-checked
   allowlist `scripts/fork-upstream-edits.txt` (one path per line).
 - **Remotes.** `origin` is `toolboxmd/t3code`; `upstream` is
