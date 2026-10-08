@@ -506,9 +506,10 @@ export const layer = HttpApiBuilder.group(
               ),
             };
           },
-          Effect.catchTag("ServerAuthForbiddenOperationError", () =>
-            failEnvironmentOperationForbidden("unknown_person"),
-          ),
+          Effect.catchTags({
+            ServerAuthForbiddenOperationError: () =>
+              failEnvironmentOperationForbidden("unknown_person"),
+          }),
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
             failEnvironmentInternal("client_session_person_update_failed", error),
           ),
