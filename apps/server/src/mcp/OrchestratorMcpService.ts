@@ -56,6 +56,7 @@ import {
   type ScheduledTaskUpsertInput,
   type ServerProvider,
   ThreadId,
+  threadOwner,
 } from "@t3tools/contracts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as Clock from "effect/Clock";
@@ -2140,6 +2141,8 @@ const make = Effect.gen(function* () {
                   type: "thread.create",
                   createdBy: "agent",
                   creationSource: "mcp",
+                  // Fork: an agent's thread belongs to its caller's owner (toolboxmd/chromeria#170).
+                  owner: threadOwner(parent.thread),
                   commandId: stableCommandId({
                     scope,
                     requestKey: key,

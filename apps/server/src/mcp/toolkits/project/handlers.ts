@@ -1,4 +1,10 @@
-import { MessageId, ThreadId, OrchestratorMcpFailure, ProjectId } from "@t3tools/contracts";
+import {
+  MessageId,
+  ThreadId,
+  OrchestratorMcpFailure,
+  ProjectId,
+  threadOwner,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -135,6 +141,8 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               }),
           createdBy: "agent",
           creationSource: "mcp",
+          // Fork: an agent's thread belongs to its caller's owner (toolboxmd/chromeria#170).
+          ...(caller === undefined ? {} : { owner: threadOwner(caller) }),
         }).pipe(
           Effect.mapError((error) =>
             error._tag === "AttachmentClaimError"

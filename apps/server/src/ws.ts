@@ -121,6 +121,7 @@ import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
+import { sessionPerson, stampSessionPerson } from "./orchestration-v2/ThreadPeople.ts";
 import * as IdAllocator from "./orchestration-v2/IdAllocator.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
@@ -1820,6 +1821,26 @@ const layerWsRpc = (
         return result;
       });
 
+      // Fork: client-created threads and sharing changes carry the device's person
+      // (toolboxmd/chromeria#170).
+      const dispatchAsSessionPerson = (command: OrchestrationV2Command) =>
+        stampSessionPerson(sessions, currentSessionId, command).pipe(
+          Effect.flatMap(ThreadMessageIntake.dispatchCommand),
+        );
+      const launchThreadAsSessionPerson = (input: ThreadLaunchService.ThreadLaunchInput) =>
+        sessionPerson(sessions, currentSessionId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestrationV2ThreadLaunchError({
+                commandId: input.commandId,
+                projectId: input.projectId,
+                message: "Could not read this device's person.",
+                cause,
+              }),
+          ),
+          Effect.flatMap((owner) => ThreadMessageIntake.launchThread({ ...input, owner })),
+        );
+
       const handlers = ServerWsRpcGroup.of({
         // Fork: GitHub Issues (toolboxmd/t3code#27).
         ...makeIssueRpcHandlers(issues),
@@ -1849,7 +1870,7 @@ const layerWsRpc = (
                   // A retry also restarts the preparation work the launch owns.
                   (command.type === "prepared-run.retry"
                     ? threadLaunch.retryPreparation(command)
-                    : ThreadMessageIntake.dispatchCommand(
+                    : dispatchAsSessionPerson(
                         ThreadManagementService.withCreationProvenance(command, {
                           createdBy: "user",
                           creationSource:
@@ -1964,7 +1985,7 @@ const layerWsRpc = (
             Effect.andThen(
               startup
                 .enqueueCommand(
-                  ThreadMessageIntake.launchThread({
+                  launchThreadAsSessionPerson({
                     commandId: input.commandId,
                     ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
                     ...(input.reuseExistingThread === undefined

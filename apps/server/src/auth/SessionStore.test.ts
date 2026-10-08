@@ -90,6 +90,7 @@ const repositoryFailure = new PersistenceSqlError({
 });
 
 const layerFailingSessionLookupRepository = Layer.succeed(AuthSessions.AuthSessionRepository, {
+  setPerson: () => Effect.void,
   create: () => Effect.void,
   createReplacingActive: () => Effect.succeed([]),
   createIfAbsent: () => Effect.void,

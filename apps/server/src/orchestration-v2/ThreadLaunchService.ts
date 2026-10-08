@@ -94,6 +94,8 @@ export interface ThreadLaunchInput {
   };
   readonly createdBy: OrchestrationV2Actor;
   readonly creationSource: OrchestrationV2CreationSource;
+  /** Fork: the person who owns the new thread (toolboxmd/chromeria#170). */
+  readonly owner?: string;
 }
 
 /** What workspace preparation reads from a launch; a retry rebuilds it from the run. */
@@ -786,6 +788,7 @@ const make = Effect.gen(function* () {
                 ...(input.importedNativeThread === undefined
                   ? {}
                   : { importedNativeThread: input.importedNativeThread }),
+                ...(input.owner === undefined ? {} : { owner: input.owner }),
                 createdBy: input.createdBy,
                 creationSource: input.creationSource,
               });
