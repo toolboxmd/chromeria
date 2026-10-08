@@ -355,6 +355,9 @@ export type OrchestrationV2LimitRecoveryUpdate = typeof OrchestrationV2LimitReco
 
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
+  // Fork: thread people (toolboxmd/chromeria#170). Unset owner is the default person.
+  owner: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  coOwners: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   id: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -1791,6 +1794,9 @@ export type OrchestrationV2LatestVisibleMessageSummary =
 
 export const OrchestrationV2ThreadShell = Schema.Struct({
   ...OrchestrationV2CreationFields,
+  // Fork: thread people (toolboxmd/chromeria#170). Unset owner is the default person.
+  owner: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  coOwners: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   id: ThreadId,
   projectId: ProjectId,
   title: Schema.String,
@@ -2547,6 +2553,8 @@ export const OrchestrationV2Command = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("thread.create"),
     ...OrchestrationV2CreationFields,
+    /** Fork: the person who owns the new thread, stamped by the server (toolboxmd/chromeria#170). */
+    owner: Schema.optional(TrimmedNonEmptyString),
     commandId: CommandId,
     threadId: ThreadId,
     projectId: ProjectId,
@@ -2657,6 +2665,26 @@ export const OrchestrationV2Command = Schema.Union([
     type: Schema.Literal("thread.mark-unread"),
     commandId: CommandId,
     threadId: ThreadId,
+  }),
+  // Fork: thread sharing (toolboxmd/chromeria#170). The server stamps the acting person.
+  Schema.Struct({
+    type: Schema.Literal("thread.share"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    coOwner: TrimmedNonEmptyString,
+    actor: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.unshare"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    actor: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.leave"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    actor: TrimmedNonEmptyString,
   }),
   Schema.Struct({
     type: Schema.Literal("thread.metadata.update"),
@@ -2901,6 +2929,8 @@ export const OrchestrationV2Command = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("thread.fork"),
     ...OrchestrationV2CreationFields,
+    /** Fork: the forking person, stamped by the server (toolboxmd/chromeria#170). */
+    owner: Schema.optional(TrimmedNonEmptyString),
     commandId: CommandId,
     sourceThreadId: ThreadId,
     targetThreadId: ThreadId,
