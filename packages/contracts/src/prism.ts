@@ -64,7 +64,7 @@ export const PrismLaneModels = Schema.Struct({
 }).pipe(Schema.withDecodingDefault(Effect.succeed({})));
 export type PrismLaneModels = typeof PrismLaneModels.Type;
 
-/** Roles the user may switch off in Prism; the router then skips that step. */
+/** Roles with legacy enabled flags retained for saved-settings compatibility. */
 export const PRISM_SWITCHABLE_ROLES = ["retry", "escalation"] as const;
 export type PrismSwitchableRole = (typeof PRISM_SWITCHABLE_ROLES)[number];
 
@@ -122,7 +122,7 @@ const singleListKit = <Fields extends Schema.Struct.Fields>(extra: Fields) => {
 };
 
 const switchable = {
-  /** Off: the router skips this step of its ladder. */
+  /** Legacy preference only; explicit kit requests and automatic recovery ignore it. */
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 };
 

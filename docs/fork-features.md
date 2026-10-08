@@ -630,3 +630,121 @@ Child creation paths are owned by child-threads and shared with thread-people.
   ]
 }
 ```
+
+## prism-toolkit
+
+```json
+{
+  "id": "prism-toolkit",
+  "purpose": "Route upstream delegation and top-level launches through one Prism service and coordinate persisted same-provider/model recovery. Own Chromeria autoResumeLimitedThreads=true; Wight consumes it and saved false overrides remain respected.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/169"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/169-prism-service-v2"],
+  "newFiles": [
+    "apps/server/src/prism/PrismService.test.ts",
+    "apps/server/src/prism/PrismService.ts",
+    "apps/server/src/prism/Recovery.integration.test.ts",
+    "apps/server/src/prism/RecoveryCoordinator.test.ts",
+    "apps/server/src/prism/RecoveryCoordinator.ts",
+    "apps/server/src/prism/RecoveryHooks.ts",
+    "apps/server/src/prism/RecoveryReactor.test.ts",
+    "apps/server/src/prism/RecoveryReactor.ts",
+    "apps/server/src/prism/RecoverySettings.test.ts",
+    "apps/server/src/prism/RecoveryStore.test.ts",
+    "apps/server/src/prism/RecoveryStore.ts",
+    "apps/server/src/prism/recovery.testkit.ts",
+    "apps/server/src/prism/recoveryAdmission.test.ts",
+    "apps/server/src/prism/recoveryAdmission.ts",
+    "apps/server/src/prism/recoveryPolicy.ts",
+    "packages/contracts/src/prism.test.ts",
+    "packages/contracts/src/prism.ts"
+  ],
+  "upstreamFiles": [
+    "apps/server/src/mcp/toolkits/project/tools.ts",
+    "apps/server/src/orchestration-v2/runtimeLayer.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/mcp/toolkits/project/handlers.test.ts",
+    "apps/server/src/mcp/toolkits/project/handlers.ts",
+    "packages/contracts/src/index.ts",
+    "apps/server/src/mcp/OrchestratorMcpService.activity.test.ts",
+    "apps/server/src/mcp/OrchestratorMcpService.test.ts",
+    "apps/server/src/mcp/OrchestratorMcpService.ts",
+    "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+    "apps/server/src/mcp/toolkits/core.test.ts",
+    "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "packages/contracts/src/orchestrationV2.ts",
+    "packages/contracts/src/orchestratorMcp.ts",
+    "packages/contracts/src/settings.ts"
+  ],
+  "keywords": [
+    "Prism",
+    "delegate_task",
+    "t3_thread_launch",
+    "prismRole",
+    "forkPrismRetryOfRunId",
+    "autoResumeLimitedThreads",
+    "limitRecovery",
+    "forkRetirement"
+  ]
+}
+```
+
+## prism-settings
+
+```json
+{
+  "id": "prism-settings",
+  "purpose": "Keep scoped Prism kits, ordered model lists and worker lanes editable with saved settings replay and honest explicit retry/escalation kit semantics.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/169"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/169-prism-service-v2"],
+  "newFiles": [
+    "apps/web/src/components/settings/PrismSettings.logic.test.ts",
+    "apps/web/src/components/settings/PrismSettings.logic.ts",
+    "apps/web/src/components/settings/PrismSettings.state.test.ts",
+    "apps/web/src/components/settings/PrismSettings.state.ts",
+    "apps/web/src/components/settings/PrismSettings.tsx",
+    "apps/web/src/routes/settings.prism.tsx"
+  ],
+  "upstreamFiles": [
+    "apps/web/src/components/settings/SettingsSidebarNav.tsx",
+    "apps/web/src/routeTree.gen.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/serverSettings.test.ts",
+    "apps/web/src/components/settings/settingsSearch.ts",
+    "packages/contracts/src/settings.ts",
+    "packages/contracts/src/prism.ts",
+    "packages/contracts/src/prism.test.ts"
+  ],
+  "keywords": ["prismRoles", "PrismSettings", "worker lanes", "prismRole", "Retry", "Escalation"]
+}
+```
+
+## tool-instructions
+
+```json
+{
+  "id": "tool-instructions",
+  "purpose": "Give every provider runtime consistent visible T3 delegation and Prism routing/recovery guidance.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/169"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/169-prism-service-v2"],
+  "newFiles": ["apps/server/src/mcp/toolInstructions.ts"],
+  "upstreamFiles": [
+    "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+    "apps/server/src/provider/RuntimeInstructions.ts",
+    "apps/server/src/provider/T3OrchestrationInstructions.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/mcp/toolkits/project/tools.ts",
+    "packages/contracts/src/orchestratorMcp.ts"
+  ],
+  "keywords": [
+    "t3_code_tool_use",
+    "delegate_task",
+    "t3_thread_launch",
+    "Prism",
+    "prismRole",
+    "shell agent"
+  ]
+}
+```

@@ -136,3 +136,14 @@ packages/contracts/src/auth.ts
 packages/contracts/src/environmentHttp.ts
 packages/contracts/src/orchestrationV2.ts
 apps/server/src/orchestration-v2/SubagentProjection.ts
+# Prism routing, settings and shared runtime guidance (#169)
+apps/server/src/mcp/toolkits/orchestrator/tools.ts
+apps/server/src/mcp/toolkits/project/handlers.test.ts
+apps/server/src/mcp/toolkits/project/handlers.ts
+apps/server/src/mcp/toolkits/project/tools.ts
+apps/server/src/orchestration-v2/runtimeLayer.ts
+apps/server/src/provider/RuntimeInstructions.ts
+apps/server/src/provider/T3OrchestrationInstructions.ts
+apps/web/src/components/settings/SettingsSidebarNav.tsx
+apps/web/src/routeTree.gen.ts
+packages/contracts/src/index.ts

@@ -97,35 +97,68 @@ const recordProviderUsage = (provider: string, instanceId: string | null = provi
   });
 
 it.layer(NodeServices.layer)("server settings", (it) => {
-  it.effect("preserves opaque fork settings and project overrides through unrelated writes", () =>
-    Effect.gen(function* () {
-      const config = yield* ServerConfig.ServerConfig;
-      const fs = yield* FileSystem.FileSystem;
-      const service = yield* ServerSettingsModule.ServerSettingsService;
-      const opaque = {
-        prismRoles: { future: ["role", { version: 99 }] },
-        wightModes: { future: [null, false, "mode"] },
-      };
-      const project = { ...opaque, defaultAutoPull: true };
-      yield* fs.writeFileString(
-        config.settingsPath,
-        JSON.stringify({
-          ...opaque,
-          autoUpdateProviders: true,
-          projectSettingsOverrides: { legacy: project },
-        }),
-      );
-      const initial = yield* service.getSettings;
-      assert.deepEqual(initial.prismRoles, opaque.prismRoles);
-      assert.deepEqual(initial.wightModes, opaque.wightModes);
-      assert.deepEqual(initial.projectSettingsOverrides[ProjectId.make("legacy")], project);
-      yield* service.updateSettings({ responseStreamingMode: "turn" });
-      const persisted = JSON.parse(yield* fs.readFileString(config.settingsPath));
-      assert.deepEqual(persisted.prismRoles, opaque.prismRoles);
-      assert.deepEqual(persisted.wightModes, opaque.wightModes);
-      assert.isTrue(persisted.autoUpdateProviders);
-      assert.deepEqual(persisted.projectSettingsOverrides.legacy, project);
-    }).pipe(Effect.provide(layerServerSettings())),
+  it.effect(
+    "preserves saved V1 Prism kits and opaque Wight settings through unrelated writes",
+    () =>
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const savedKits = (scope: string) => {
+          const models = [
+            { instanceId: "codex", model: "gpt-5.4", effort: "high" },
+            { instanceId: "claude", model: "claude-sonnet-4-6" },
+          ];
+          const kit = (role: string) => ({
+            instructions: `${scope} ${role} instructions.\nPreserve the complete saved kit.`,
+            skills: ["operations", `${scope}-${role}`],
+            models,
+          });
+          return {
+            promachos: kit("promachos"),
+            planner: kit("planner"),
+            dispatcher: kit("dispatcher"),
+            reviewer: kit("reviewer"),
+            worker: {
+              instructions: `${scope} worker instructions.`,
+              skills: ["operations", `${scope}-worker`],
+              lanes: {
+                easy: [{ instanceId: "codex", model: "gpt-5.4-mini", effort: "low" }],
+                medium: models,
+                hard: [
+                  { instanceId: "claude", model: "claude-opus-4-6", effort: "high" },
+                  { instanceId: "codex", model: "gpt-5.4", effort: "xhigh" },
+                ],
+              },
+            },
+            retry: { ...kit("retry"), enabled: false },
+            escalation: { ...kit("escalation"), enabled: false },
+          };
+        };
+        const opaque = {
+          prismRoles: savedKits("environment"),
+          wightModes: { future: [null, false, "mode"] },
+        };
+        const project = { ...opaque, prismRoles: savedKits("project"), defaultAutoPull: true };
+        yield* fs.writeFileString(
+          config.settingsPath,
+          JSON.stringify({
+            ...opaque,
+            autoUpdateProviders: true,
+            projectSettingsOverrides: { legacy: project },
+          }),
+        );
+        const initial = yield* service.getSettings;
+        assert.deepEqual(initial.prismRoles, opaque.prismRoles);
+        assert.deepEqual(initial.wightModes, opaque.wightModes);
+        assert.deepEqual(initial.projectSettingsOverrides[ProjectId.make("legacy")], project);
+        yield* service.updateSettings({ responseStreamingMode: "turn" });
+        const persisted = JSON.parse(yield* fs.readFileString(config.settingsPath));
+        assert.deepEqual(persisted.prismRoles, opaque.prismRoles);
+        assert.deepEqual(persisted.wightModes, opaque.wightModes);
+        assert.isTrue(persisted.autoUpdateProviders);
+        assert.deepEqual(persisted.projectSettingsOverrides.legacy, project);
+      }).pipe(Effect.provide(layerServerSettings())),
   );
 
   it.effect("migrates saved token delivery to paragraph buffering without resetting settings", () =>
