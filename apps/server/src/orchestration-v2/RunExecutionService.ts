@@ -1,4 +1,5 @@
 import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
+import * as StreamClock from "../prism/streamClock.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   isOrchestrationV2WorkActive,
@@ -617,6 +618,7 @@ export const layer: Layer.Layer<
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
     const finalizationObserver = yield* RunFinalizationService.RunFinalizationObserver;
     const turnAnalytics = yield* ProviderUsageAnalytics.ProviderTurnAnalytics;
+    const streamClock = yield* StreamClock.StreamClockHooks;
 
     const writeFinalRunEvents = Effect.fn("RunExecutionService.writeFinalRunEvents")(
       function* (input: {
@@ -1315,6 +1317,7 @@ export const layer: Layer.Layer<
           }
           return true;
         });
+        yield* StreamClock.beginExecutionAttempt(streamClock, input);
         const filterAssistantEvent = makeAssistantStreamingFilter(responseStreamingMode);
         // Held text writes nothing, so its item would take a position only
         // when finally written, behind every item that began after it.
@@ -1491,6 +1494,9 @@ export const layer: Layer.Layer<
                 });
                 reservedHeldTurnItemIds.add(event.turnItem.id);
               }
+              if (deliveredEvent === null) {
+                yield* StreamClock.observeFilteredEvent(streamClock, input, event);
+              }
               if (event.type === "provider_thread.updated") {
                 if (event.providerThread.id === input.providerThread.id && storedEventCount > 0) {
                   yield* Ref.set(latestProviderThread, event.providerThread);
@@ -1526,6 +1532,7 @@ export const layer: Layer.Layer<
             }),
           ),
           Stream.takeUntilEffect(() => shouldStopProviderEventIngestion),
+          Stream.provideService(StreamClock.StreamClockAttempt, input.attempt.id),
           Stream.runDrain,
           Effect.mapError((cause) => new RunExecutionIngestError({ runId: input.run.id, cause })),
           Effect.flatMap(() =>
@@ -1664,6 +1671,7 @@ export const layer: Layer.Layer<
           ),
           Effect.ensuring(endPreviewActivity),
           Effect.ensuring(eventSubscription.close),
+          Effect.ensuring(streamClock.endAttempt(input.run.threadId, input.run.id, input.attempt.id)),
           Effect.forkDetach,
         );
 

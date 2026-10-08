@@ -149,3 +149,6 @@ apps/web/src/routeTree.gen.ts
 packages/contracts/src/index.ts
 apps/web/src/components/settings/SettingsPanels.restore.test.tsx
 apps/server/src/orchestration-v2/testkit/ReplayTranscriptNdjson.ts
+
+# Attempt-owned stream observation before presentation buffering (#172)
+apps/server/src/orchestration-v2/RunExecutionService.ts
