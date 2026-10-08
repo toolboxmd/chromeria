@@ -400,6 +400,9 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-shell-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright_version.outputs.version }}
 
+      - uses: ./.github/actions/setup-apt-mirrors
+        if: steps.changes.outputs.test_server != 'false'
+
       - name: Install Chromium for server browser integration tests
         if: steps.changes.outputs.test_server != 'false' && steps.chromium_cache.outputs.cache-hit != 'true'
         run: node apps/server/node_modules/playwright-core/cli.js install --only-shell chromium
