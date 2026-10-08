@@ -97,6 +97,37 @@ const recordProviderUsage = (provider: string, instanceId: string | null = provi
   });
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect("preserves opaque fork settings and project overrides through unrelated writes", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      const opaque = {
+        prismRoles: { future: ["role", { version: 99 }] },
+        wightModes: { future: [null, false, "mode"] },
+      };
+      const project = { ...opaque, defaultAutoPull: true };
+      yield* fs.writeFileString(
+        config.settingsPath,
+        JSON.stringify({
+          ...opaque,
+          autoUpdateProviders: true,
+          projectSettingsOverrides: { legacy: project },
+        }),
+      );
+      const initial = yield* service.getSettings;
+      assert.deepEqual(initial.prismRoles, opaque.prismRoles);
+      assert.deepEqual(initial.wightModes, opaque.wightModes);
+      assert.deepEqual(initial.projectSettingsOverrides[ProjectId.make("legacy")], project);
+      yield* service.updateSettings({ responseStreamingMode: "turn" });
+      const persisted = JSON.parse(yield* fs.readFileString(config.settingsPath));
+      assert.deepEqual(persisted.prismRoles, opaque.prismRoles);
+      assert.deepEqual(persisted.wightModes, opaque.wightModes);
+      assert.isTrue(persisted.autoUpdateProviders);
+      assert.deepEqual(persisted.projectSettingsOverrides.legacy, project);
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
   it.effect("migrates saved token delivery to paragraph buffering without resetting settings", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;

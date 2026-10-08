@@ -7299,3 +7299,49 @@ it.effect.each([
       assert.deepStrictEqual(calls, [expected]);
     }),
 );
+
+it.effect("lists and reads the fork origin while preserving the canonical project identity", () =>
+  Effect.gen(function* () {
+    const canonical = project({
+      id: "fork",
+      title: "Chromeria",
+      workspaceRoot: "/fork",
+      repository: "pingdotgg/t3code",
+    });
+    const fork = {
+      ...canonical,
+      repositoryIdentity: {
+        ...canonical.repositoryIdentity!,
+        origin: {
+          canonicalKey: "github.com/toolboxmd/chromeria",
+          displayName: "toolboxmd/chromeria",
+        },
+      },
+    };
+    const requested: string[] = [];
+    const service = yield* makeService({
+      projects: [fork],
+      providers: [
+        fakeProvider("github", {
+          listChangeRequests: ({ repository }) => {
+            requested.push(repository);
+            return Effect.succeed({
+              items: [changeRequest(167, "2026-07-02T00:00:00Z")],
+              truncated: false,
+              continues: true,
+            });
+          },
+          getChangeRequestPreview: ({ repository }) => {
+            requested.push(repository);
+            return Effect.succeed(changeRequest(167, "2026-07-02T00:00:00Z"));
+          },
+        }),
+      ],
+    });
+    const result = yield* service.list({ state: "open" });
+    assert.equal(result.entries[0]?.repository, "toolboxmd/chromeria");
+    yield* service.preview({ projectId: fork.id, repository: "toolboxmd/chromeria", number: 167 });
+    assert.deepEqual(requested, ["toolboxmd/chromeria", "toolboxmd/chromeria"]);
+    assert.equal(fork.repositoryIdentity.canonicalKey, "github.com/pingdotgg/t3code");
+  }),
+);
