@@ -5,6 +5,45 @@ Each JSON entry assigns actual carried edits one primary owner. Shared paths are
 watched by other carried features; deferred features are excluded. Keyword matches
 are evidence for review, not proof that a feature has been adopted upstream.
 
+## spectrum
+
+```json
+{
+  "id": "spectrum",
+  "purpose": "Run council and free Spectrum conversations with durable server-authored transcripts and exact-run barriers.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/176"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/176-spectrum-v2"],
+  "newFiles": [
+    "apps/server/src/spectrum/TranscriptService.ts",
+    "apps/server/src/spectrum/TranscriptService.test.ts",
+    "apps/server/src/spectrum/barrier.ts",
+    "apps/server/src/spectrum/barrier.test.ts",
+    "apps/server/src/spectrum/spectrumPlan.ts",
+    "apps/server/src/spectrum/spectrumPlan.test.ts",
+    "apps/server/src/spectrum/state.ts",
+    "apps/server/src/spectrum/store.ts",
+    "apps/server/src/spectrum/store.test.ts",
+    "apps/server/src/spectrum/testFixtures.ts",
+    "apps/server/src/spectrum/transcript.ts",
+    "apps/server/src/spectrum/transcript.test.ts",
+    "packages/contracts/src/spectrum.ts"
+  ],
+  "upstreamFiles": [],
+  "sharedFiles": [
+    "packages/contracts/src/index.ts",
+    "apps/server/src/persistence/forkV1Backfills.ts",
+    "apps/server/src/orchestration-v2/EventSink.ts",
+    "apps/server/src/childThreads/ForkCommitPlan.ts"
+  ],
+  "keywords": [
+    "Spectrum",
+    "fork_spectra",
+    "spectrum.transcript.append",
+    "server-authored transcript append"
+  ]
+}
+```
+
 ## direction
 
 ```json

@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
 
 import { ForkCommitGuardRejected, type ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
+import { retirementAdmission } from "../childThreads/retirement.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import type { SpectrumMutation } from "./state.ts";
 import { applySpectrumMutation, checkSpectrumMutation } from "./store.ts";
@@ -42,5 +43,8 @@ export function spectrumPlan(mutation: SpectrumMutation): ForkCommitPlan {
       SpectrumStoreError: () => new ForkCommitGuardRejected({ threadId, kind: "storage_failure" }),
     }),
   );
-  return { guards: [threadGuard, stateGuard], mutations: [mutationEffect] };
+  return {
+    guards: [...retirementAdmission({ threadId }).guards, threadGuard, stateGuard],
+    mutations: [mutationEffect],
+  };
 }
