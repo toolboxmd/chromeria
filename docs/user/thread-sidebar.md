@@ -43,6 +43,23 @@ in a new thread's model picker to add or remove them. A regular click returns to
 single model. Choose a base branch and send. Each selection starts a separate thread
 and worktree while you stay in the new thread composer. This requires a Git project.
 
+## Keep a thread working with Wight mode
+
+On web or desktop, open Wight mode in a thread's chat header and turn it on.
+It sends “continue” with the current time whenever the thread becomes idle.
+Leave the hours timer empty to run until turned off. To change the timer, turn
+Wight off and on again. Time spent paused counts toward the timer; expiry and
+turning off let the current turn finish.
+
+Set **Wight usage limit** for each instance in **Settings > Providers**. Any
+reported usage window at or above that percentage pauses new Wight turns until
+it drops below. The default is 80%; 0% pauses them. Providers without reported
+usage windows run without an enforceable quota limit, which the control shows.
+Approvals, unanswered questions, plans, interrupts and other errors wait for your
+input. Existing user messages, child reports and answers keep their normal delivery.
+Usage-limit failures wait for reset recovery; Wight never resumes them early.
+Native mobile has no Wight controls yet.
+
 ## Pin and reorder threads
 
 Pin a thread from its menu to keep it above your active work.
