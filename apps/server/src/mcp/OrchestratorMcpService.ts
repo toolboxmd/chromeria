@@ -91,6 +91,7 @@ import { assertProjectWorktree } from "../childThreads/workspaceAccess.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ScheduledTaskChecks from "../scheduledTaskChecks/ScheduledTaskChecks.ts";
 import {
   clientRuntimeModeCeiling,
   type McpInvocationScope,
@@ -260,6 +261,7 @@ function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): Orchestrato
     ...(task.webhook === undefined
       ? {}
       : { webhookSignature: task.webhook.hasSecret ? "set" : "none" }),
+    ...ScheduledTaskChecks.forkSummaryFields(task),
   };
 }
 
@@ -840,6 +842,10 @@ const make = Effect.gen(function* () {
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
+  // Fork (#174): outcome checks and command tasks; refused where the service is absent.
+  const scheduledTaskChecks = ScheduledTaskChecks.orRefuse(
+    yield* Effect.serviceOption(ScheduledTaskChecks.ScheduledTaskChecks),
+  );
   const projects = yield* ProjectService.ProjectService;
   const threadLaunch = yield* ThreadLaunch.ThreadLaunchService;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -1549,13 +1555,18 @@ const make = Effect.gen(function* () {
                 }),
               }),
         };
-        const { task } = yield* scheduledTasks
-          .upsert(upsertInput)
-          .pipe(
-            Effect.mapError((error) =>
-              failure("orchestration_error", `Could not schedule task: ${error.message}`),
-            ),
-          );
+        const { task } = yield* scheduledTaskChecks.schedule(
+          { input, projectId, parent, bindToCurrentThread, scope },
+          (id) =>
+            scheduledTasks
+              .upsert(id === null ? upsertInput : { ...upsertInput, id })
+              .pipe(
+                Effect.mapError((error) =>
+                  failure("orchestration_error", `Could not schedule task: ${error.message}`),
+                ),
+              ),
+          (message) => failure("invalid_request", message),
+        );
         return yield* summarizeScheduledTask(scope, { parent, limits }, task);
       }),
     listScheduledTasks: (scope, input) =>
@@ -1620,13 +1631,17 @@ const make = Effect.gen(function* () {
           createdBy: existing.createdBy,
           creationSource: existing.creationSource,
         };
-        const { task } = yield* scheduledTasks
-          .upsert(upsertInput)
-          .pipe(
-            Effect.mapError((error) =>
-              failure("orchestration_error", `Could not update scheduled task: ${error.message}`),
+        const { task } = yield* scheduledTaskChecks.update(
+          { input, existing, threadId, parent },
+          scheduledTasks
+            .upsert(upsertInput)
+            .pipe(
+              Effect.mapError((error) =>
+                failure("orchestration_error", `Could not update scheduled task: ${error.message}`),
+              ),
             ),
-          );
+          (message) => failure("invalid_request", message),
+        );
         return yield* summarizeScheduledTask(scope, { parent, limits }, task);
       }),
     deleteScheduledTask: (scope, input) =>
@@ -1634,6 +1649,9 @@ const make = Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope);
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
+        yield* scheduledTaskChecks
+          .beforeDelete({ existing, parent })
+          .pipe(Effect.mapError((error) => failure("invalid_request", error.message)));
         yield* scheduledTasks
           .delete({ id: existing.id })
           .pipe(
