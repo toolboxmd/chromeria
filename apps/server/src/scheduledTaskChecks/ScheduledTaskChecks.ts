@@ -7,6 +7,7 @@ import {
   type ScheduledTask,
   type ScheduledTaskOutcomeCheckUpdate,
   type ScheduledTaskSchedule,
+  type ScheduledTaskUpsertInput,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -88,12 +89,11 @@ export class ScheduledTaskChecks extends Context.Service<
   ScheduledTaskChecks,
   {
     /**
-     * Wraps `schedule_task`'s save: a new task's fork fields and its upstream
-     * row commit in one transaction, so the task never fires without them and
-     * a failed save leaves neither. `save` receives the id to use, or null
-     * when the call sets no fork field.
+     * Wraps `schedule_task`'s save in place: a new task's fork fields and its
+     * upstream row commit in one transaction, so the task never fires without
+     * them and a failed save leaves neither.
      */
-    readonly schedule: <A, E, R, E2>(
+    readonly schedule: <A, E, R>(
       hook: {
         readonly input: ScheduledTaskOutcomeCheckUpdate & {
           readonly schedule: { readonly type: ScheduledTaskSchedule["type"] };
@@ -104,15 +104,14 @@ export class ScheduledTaskChecks extends Context.Service<
         readonly bindToCurrentThread: boolean;
         readonly scope: { readonly requestNamespace: string };
       },
-      save: (id: ScheduledTaskId | null) => Effect.Effect<A, E, R>,
-      refuse: (message: string) => E2,
-    ) => Effect.Effect<A, E | E2, R>;
+      save: (input: ScheduledTaskUpsertInput) => Effect.Effect<A, E, R>,
+    ) => (input: ScheduledTaskUpsertInput) => Effect.Effect<A, E | ScheduledTaskError, R>;
     /**
      * Wraps `update_scheduled_task`'s save the same way, under the task's lock
      * so no fire sees the new fork fields with the old definition. Refuses a
      * judged thread changing its own task.
      */
-    readonly update: <A, E, R, E2>(
+    readonly update: <A, E, R>(
       hook: {
         readonly input: ScheduledTaskOutcomeCheckUpdate & {
           readonly schedule?: { readonly type: ScheduledTaskSchedule["type"] } | undefined;
@@ -121,25 +120,28 @@ export class ScheduledTaskChecks extends Context.Service<
         readonly threadId: ThreadId | null;
         readonly parent: Caller;
       },
-      save: Effect.Effect<A, E, R>,
-      refuse: (message: string) => E2,
-    ) => Effect.Effect<A, E | E2, R>;
-    /** Refuses a judged thread deleting its own task. */
-    readonly beforeDelete: (input: {
-      readonly existing: ScheduledTask;
-      readonly parent: Caller;
-    }) => Effect.Effect<void, ScheduledTaskCheckError>;
+      save: (input: ScheduledTaskUpsertInput) => Effect.Effect<A, E, R>,
+    ) => (input: ScheduledTaskUpsertInput) => Effect.Effect<A, E | ScheduledTaskError, R>;
+    /** Wraps `delete_scheduled_task`'s delete: a judged thread cannot delete its own task. */
+    readonly delete: <I, A, E, R>(
+      hook: { readonly existing: ScheduledTask; readonly parent: Caller },
+      remove: (input: I) => Effect.Effect<A, E, R>,
+    ) => (input: I) => Effect.Effect<A, E | ScheduledTaskError, R>;
     /** Advances every unfinished fork run one step; the shared scheduler runs it each tick. */
     readonly reconcile: Effect.Effect<void, ScheduledTaskError>;
   }
 >()("t3/scheduledTaskChecks/ScheduledTaskChecks") {}
+
+/** A fork refusal as upstream's scheduled task error, so tool handlers report it unchanged. */
+const toToolError = (taskId: ScheduledTaskId) => (error: ScheduledTaskCheckError) =>
+  new ScheduledTaskError({ message: error.message, taskId });
 
 /** A transaction that cannot begin or commit is a defect, not a caller error. */
 const rethrowSql = <A, E, R>(effect: Effect.Effect<A, E | SqlError, R>) =>
   effect.pipe(Effect.catchIf(isSqlError, (error) => Effect.die(error)));
 
 const unavailableHere = () =>
-  new ScheduledTaskCheckError({
+  new ScheduledTaskError({
     message: "Outcome checks and command tasks are not available in this environment.",
   });
 
@@ -148,11 +150,11 @@ export const orRefuse = (
   checks: Option.Option<ScheduledTaskChecks["Service"]>,
 ): ScheduledTaskChecks["Service"] =>
   Option.getOrElse(checks, () => ({
-    schedule: ({ input }, save, refuse) =>
-      hasOutcomeCheckFields(input) ? Effect.fail(refuse(unavailableHere().message)) : save(null),
-    update: ({ input }, save, refuse) =>
-      hasOutcomeCheckFields(input) ? Effect.fail(refuse(unavailableHere().message)) : save,
-    beforeDelete: () => Effect.void,
+    schedule: (hook, save) => (input) =>
+      hasOutcomeCheckFields(hook.input) ? Effect.fail(unavailableHere()) : save(input),
+    update: (hook, save) => (input) =>
+      hasOutcomeCheckFields(hook.input) ? Effect.fail(unavailableHere()) : save(input),
+    delete: (_hook, remove) => remove,
     reconcile: Effect.void,
   }));
 
@@ -169,24 +171,28 @@ const decodeRun = Schema.decodeUnknownOption(Schema.fromJsonString(Orchestration
 const isCheckError = Schema.is(ScheduledTaskCheckError);
 const BUSY_STATUSES = new Set(["preparing", "queued", "starting", "running", "waiting"]);
 // Server-generated values only. Inert inside single quotes, double quotes or none at all.
-const SAFE_VALUE = /^[A-Za-z0-9._:+-]+$/;
+const SAFE_VALUE = /^[A-Za-z0-9._:-]+$/;
 
-/** Fills `{date}`, `{run_id}` and `{task_id}`; refuses any value a shell could interpret. */
+/**
+ * Fills `{date}`, `{run_id}` and `{task_id}`; refuses, before anything runs,
+ * a referenced value a shell could interpret.
+ */
 export const expandCheckCommand = (
   command: string,
   variables: { readonly date: string; readonly runId: string; readonly taskId: string },
-): Effect.Effect<string, ScheduledTaskCheckError> =>
-  [variables.date, variables.runId, variables.taskId].every((value) => SAFE_VALUE.test(value))
-    ? Effect.succeed(
-        command.replace(/\{(date|run_id|task_id)\}/g, (_, key: string) =>
-          key === "date" ? variables.date : key === "run_id" ? variables.runId : variables.taskId,
-        ),
-      )
+): Effect.Effect<string, ScheduledTaskCheckError> => {
+  const valueOf = (key: string | undefined) =>
+    key === "date" ? variables.date : key === "run_id" ? variables.runId : variables.taskId;
+  const placeholders = /\{(date|run_id|task_id)\}/g;
+  const used = [...command.matchAll(placeholders)].map((match) => valueOf(match[1]));
+  return used.every((value) => SAFE_VALUE.test(value))
+    ? Effect.succeed(command.replace(placeholders, (_, key: string) => valueOf(key)))
     : Effect.fail(
         new ScheduledTaskCheckError({
           message: "Refusing to substitute a value with shell syntax.",
         }),
       );
+};
 
 const checkError = (message: string) => (cause: unknown) =>
   new ScheduledTaskCheckError({
@@ -571,59 +577,69 @@ const checksLayer = Layer.effect(
     });
     yield* scheduler.register("scheduled-task-checks", reconcile);
     return ScheduledTaskChecks.of({
-      schedule: ({ input, projectId, parent, bindToCurrentThread, scope }, save, refuse) =>
-        Effect.gen(function* () {
-          if (!hasOutcomeCheckFields(input)) return yield* save(null);
-          // A retried call with the same request key reaches the same task.
-          const key =
-            input.clientRequestId === undefined
-              ? yield* crypto.randomUUIDv4.pipe(Effect.orDie)
-              : `${scope.requestNamespace}:${input.clientRequestId}`;
-          const id = ScheduledTaskId.make(`scheduled-task:${key}`);
-          return yield* runs.withTaskLock(
-            id,
-            sql.withTransaction(
-              Effect.gen(function* () {
-                yield* withSql(
-                  runs.saveUnlocked({
-                    taskId: id,
-                    projectId,
-                    threadId: bindToCurrentThread && parent !== undefined ? parent.thread.id : null,
-                    schedule: input.schedule,
-                    fields: input,
-                    actor: parent?.thread.id ?? "agent",
-                    actorThreadId: null,
-                  }),
-                ).pipe(Effect.mapError((error) => refuse(error.message)));
-                return yield* save(id);
-              }),
-            ),
-          );
-        }).pipe(rethrowSql),
-      update: ({ input, existing, threadId, parent }, save, refuse) =>
-        runs
-          .withTaskLock(
-            existing.id,
-            sql.withTransaction(
-              Effect.gen(function* () {
-                yield* withSql(
-                  runs.saveUnlocked({
-                    taskId: existing.id,
-                    projectId: existing.projectId,
-                    threadId,
-                    schedule: input.schedule ?? existing.schedule,
-                    fields: input,
-                    actor: parent?.thread.id ?? "agent",
-                    actorThreadId: parent?.thread.id ?? null,
-                  }),
-                ).pipe(Effect.mapError((error) => refuse(error.message)));
-                return yield* save;
-              }),
-            ),
-          )
-          .pipe(rethrowSql),
-      beforeDelete: ({ existing, parent }) =>
-        withSql(runs.assertMayChange(existing.id, parent?.thread.id ?? null)),
+      schedule:
+        ({ input: fields, projectId, parent, bindToCurrentThread, scope }, save) =>
+        (input) =>
+          Effect.gen(function* () {
+            if (!hasOutcomeCheckFields(fields)) return yield* save(input);
+            // A retried call with the same request key reaches the same task.
+            const key =
+              fields.clientRequestId === undefined
+                ? yield* crypto.randomUUIDv4.pipe(Effect.orDie)
+                : `${scope.requestNamespace}:${fields.clientRequestId}`;
+            const id = ScheduledTaskId.make(`scheduled-task:${key}`);
+            return yield* runs.withTaskLock(
+              id,
+              sql.withTransaction(
+                Effect.gen(function* () {
+                  yield* withSql(
+                    runs.saveUnlocked({
+                      taskId: id,
+                      projectId,
+                      threadId:
+                        bindToCurrentThread && parent !== undefined ? parent.thread.id : null,
+                      schedule: fields.schedule,
+                      fields,
+                      actor: parent?.thread.id ?? "agent",
+                      actorThreadId: null,
+                    }),
+                  ).pipe(Effect.mapError(toToolError(id)));
+                  return yield* save({ ...input, id });
+                }),
+              ),
+            );
+          }).pipe(rethrowSql),
+      update:
+        ({ input: fields, existing, threadId, parent }, save) =>
+        (input) =>
+          runs
+            .withTaskLock(
+              existing.id,
+              sql.withTransaction(
+                Effect.gen(function* () {
+                  yield* withSql(
+                    runs.saveUnlocked({
+                      taskId: existing.id,
+                      projectId: existing.projectId,
+                      threadId,
+                      schedule: fields.schedule ?? existing.schedule,
+                      fields,
+                      actor: parent?.thread.id ?? "agent",
+                      actorThreadId: parent?.thread.id ?? null,
+                    }),
+                  ).pipe(Effect.mapError(toToolError(existing.id)));
+                  return yield* save(input);
+                }),
+              ),
+            )
+            .pipe(rethrowSql),
+      delete:
+        ({ existing, parent }, remove) =>
+        (input) =>
+          withSql(runs.assertMayChange(existing.id, parent?.thread.id ?? null)).pipe(
+            Effect.mapError(toToolError(existing.id)),
+            Effect.andThen(remove(input)),
+          ),
       reconcile,
     });
   }),

@@ -41,7 +41,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
-import { ScheduledTaskDispatchPolicy } from "../scheduledTaskChecks/DispatchPolicy.ts";
+import { dispatchVia, ScheduledTaskDispatchPolicy } from "../scheduledTaskChecks/DispatchPolicy.ts";
 import { forkFireKey } from "../scheduledTaskChecks/schedules.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -803,44 +803,48 @@ export const layer = Layer.effect(
         // dispatch are also captured and recorded as a failed run instead of
         // aborting before markCompleted.
         const result =
-          decision._tag === "fork"
-            ? yield* Effect.exit(decision.dispatch)
-            : active.threadId === null
-              ? yield* Effect.exit(
-                  threadLaunch.launch({
-                    commandId,
-                    projectId: active.projectId,
-                    title: active.title,
-                    modelSelection: active.modelSelection,
-                    runtimeMode: active.runtimeMode,
-                    interactionMode: active.interactionMode,
-                    workspaceStrategy: active.workspaceStrategy,
-                    initialMessage: {
-                      messageId,
-                      scheduledTaskId: active.id,
-                      text: prompt,
-                      attachments: [],
-                    },
-                    createdBy: active.createdBy,
-                    creationSource: active.creationSource,
-                  }),
-                )
-              : yield* Effect.exit(
-                  threadManagement.sendToThread({
-                    projectId: active.projectId,
-                    commandId,
-                    threadId: ThreadId.make(active.threadId),
+          active.threadId === null
+            ? yield* Effect.exit(
+                dispatchVia(
+                  decision,
+                  threadLaunch.launch,
+                )({
+                  commandId,
+                  projectId: active.projectId,
+                  title: active.title,
+                  modelSelection: active.modelSelection,
+                  runtimeMode: active.runtimeMode,
+                  interactionMode: active.interactionMode,
+                  workspaceStrategy: active.workspaceStrategy,
+                  initialMessage: {
                     messageId,
                     scheduledTaskId: active.id,
                     text: prompt,
                     attachments: [],
-                    modelSelection: active.modelSelection,
-                    // Scheduled prompts must not interrupt tools in the bound thread.
-                    mode: "queue",
-                    createdBy: active.createdBy,
-                    creationSource: active.creationSource,
-                  }),
-                );
+                  },
+                  createdBy: active.createdBy,
+                  creationSource: active.creationSource,
+                }),
+              )
+            : yield* Effect.exit(
+                dispatchVia(
+                  decision,
+                  threadManagement.sendToThread,
+                )({
+                  projectId: active.projectId,
+                  commandId,
+                  threadId: ThreadId.make(active.threadId),
+                  messageId,
+                  scheduledTaskId: active.id,
+                  text: prompt,
+                  attachments: [],
+                  modelSelection: active.modelSelection,
+                  // Scheduled prompts must not interrupt tools in the bound thread.
+                  mode: "queue",
+                  createdBy: active.createdBy,
+                  creationSource: active.creationSource,
+                }),
+              );
 
         const completedAt = yield* localNow;
         const runSucceeded = result._tag === "Success";

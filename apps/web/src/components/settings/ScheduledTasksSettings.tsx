@@ -24,7 +24,9 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import { DEFAULT_WEBHOOK_PROMPT } from "@t3tools/client-runtime/scheduled-task-webhook";
+import * as ScheduledTaskFork from "./scheduledTaskFork";
 import {
+  isForkScheduledTaskSchedule,
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
   MIN_SCHEDULED_TASK_INTERVAL_MS,
   ProviderInstanceId,
@@ -136,6 +138,7 @@ const EMPTY_DRAFT: DraftState = {
   ...WEBHOOK_SIGNATURE_DEFAULTS,
   signatureSecret: "",
   maxDeliveryAgeMinutes: "",
+  preservedSchedule: null,
 };
 
 /** Labelled field: a caption sitting above its control. */
@@ -174,6 +177,7 @@ function splitModelKey(value: string): ModelSelection | null {
 
 export function scheduleLabel(schedule: ScheduledTaskSchedule): string {
   if (schedule.type === "webhook") return "On webhook";
+  if (isForkScheduledTaskSchedule(schedule)) return ScheduledTaskFork.forkScheduleLabel(schedule);
   if (schedule.type === "interval") {
     const minutes = schedule.everyMs / 60_000;
     return Number.isInteger(minutes)
@@ -464,6 +468,7 @@ function ScheduledTaskRow({
             <Badge variant={statusVariant(task.lastRunStatus)}>{task.lastRunStatus}</Badge>
           ) : null}
           {task.lastRunError ? <span className="text-destructive">{task.lastRunError}</span> : null}
+          <ScheduledTaskFork.ForkTaskSummary task={task} />
         </div>
       }
       control={
@@ -1146,7 +1151,9 @@ function ScheduledTaskEditorDialog({
               ) : null}
               <div className="flex items-center justify-between gap-2">
                 <Label>Schedule</Label>
+                <ScheduledTaskFork.PreservedScheduleNote schedule={draft.preservedSchedule} />
                 <ToggleGroup
+                  disabled={draft.preservedSchedule !== null}
                   aria-label="Schedule type"
                   value={[draft.scheduleMode]}
                   onValueChange={(values) => {
@@ -1168,7 +1175,7 @@ function ScheduledTaskEditorDialog({
                 </ToggleGroup>
               </div>
 
-              {draft.scheduleMode === "webhook" ? (
+              {draft.scheduleMode === "preserved" ? null : draft.scheduleMode === "webhook" ? (
                 <div className="space-y-4">
                   <WebhookEndpointField environmentId={environmentId} task={liveTask} />
                   <p className="text-xs text-muted-foreground">

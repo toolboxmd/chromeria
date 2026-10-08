@@ -39,3 +39,13 @@ export class ScheduledTaskDispatchPolicy extends Context.Reference<ScheduledTask
   "t3/scheduledTaskChecks/ScheduledTaskDispatchPolicy",
   { defaultValue: () => ({ decide: () => Effect.succeed(upstreamDecision) }) },
 ) {}
+
+/**
+ * Upstream's launch or send for one fire, or the fork's own dispatch when the
+ * policy took the fire; wraps the upstream call in place so its arguments and
+ * fallback stay upstream's.
+ */
+export const dispatchVia =
+  <I, A, E>(decision: ScheduledTaskDispatchDecision, upstream: (input: I) => Effect.Effect<A, E>) =>
+  (input: I): Effect.Effect<A | void, E | ScheduledTaskDispatchFailed> =>
+    decision._tag === "fork" ? decision.dispatch : upstream(input);
