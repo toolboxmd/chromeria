@@ -2,6 +2,7 @@ import {
   reconcileChildRequests,
   reconcilePendingChildRequests,
 } from "../childThreads/requestWake.ts";
+import * as PrismRecovery from "../prism/RecoveryHooks.ts";
 import type {
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -841,6 +842,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const projects = yield* ProjectStore.ProjectStoreV2;
   const projectionStore = yield* ProjectionStoreV2;
+  const prismRecovery = yield* PrismRecovery.RecoveryHooks;
   const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
   const retirement = (threadId: ThreadId) =>
     readRetirementState(threadId).pipe(Effect.provideService(ProjectionStoreV2, projectionStore));
@@ -10362,6 +10364,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (existingResultTransfer !== undefined) {
         return;
       }
+      if (yield* prismRecovery.holdsFinalization(childThreadId, childRun.id)) return;
 
       const now = yield* DateTime.now;
       const result = subagentResultForRun(childProjection, { ...childRun, status: outcome });
@@ -11551,7 +11554,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         acceptedAt,
         events: plan.events,
         effects: plan.effects,
-        forkPlans: plan.forkPlans,
+        forkPlans: [...(plan.forkPlans ?? []), ...prismRecovery.commitPlans(command)],
         ...(plan.cancelUnsettledEffects === undefined
           ? {}
           : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),

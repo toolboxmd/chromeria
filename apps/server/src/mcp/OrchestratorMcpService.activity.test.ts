@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import {
   EnvironmentId,
   NodeId,
@@ -138,6 +139,7 @@ it("readThread prefers activity-run status over a newer cancelled queued run", a
   } as unknown as OrchestrationV2ThreadProjection;
 
   const layer = layerOrchestratorService.pipe(
+    Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
         NodeServices.layer,
@@ -207,6 +209,7 @@ it("readThread prefers waiting activity status over a newer cancelled queued run
   } as unknown as OrchestrationV2ThreadProjection;
 
   const layer = layerOrchestratorService.pipe(
+    Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
         NodeServices.layer,
@@ -333,6 +336,7 @@ it("taskStatus returns task.providerInstanceId rather than the driver kind", asy
   } as unknown as OrchestrationV2ThreadProjection;
 
   const layer = layerOrchestratorService.pipe(
+    Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
         NodeServices.layer,
@@ -435,6 +439,7 @@ it("readThread and sendToThread reach threads in other projects", async () => {
     }) as unknown as OrchestrationV2ThreadProjection;
 
   const layer = layerOrchestratorService.pipe(
+    Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
         NodeServices.layer,
