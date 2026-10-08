@@ -1,3 +1,4 @@
+import { PromachosSidebarHeader } from "../promachos/PromachosModeSwitch";
 import { ArrowLeftIcon, ChartNoAxesColumnIcon, CircleDotIcon, SettingsIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { memo, useCallback } from "react";
@@ -50,7 +51,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
 
   return (
     // The titlebar row, not a padded SidebarHeader: it aligns to the window controls.
-    <div
+    <PromachosSidebarHeader
       className={cn(
         "relative flex h-[var(--workspace-topbar-height)] shrink-0 flex-row items-center gap-2 px-3 md:pl-0",
         isElectron && "drag-region",
@@ -74,7 +75,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
           </div>
         ) : null}
       </div>
-    </div>
+    </PromachosSidebarHeader>
   );
 });
 

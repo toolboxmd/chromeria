@@ -1,3 +1,6 @@
+import type * as PromachosLaunch from "./promachos/PromachosLaunch.ts";
+import * as PromachosRpc from "./promachos/PromachosRpc.ts";
+import { PROMACHOS_HOME_WS_METHODS } from "@t3tools/contracts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -1211,6 +1214,7 @@ const layerWsRpc = (
       const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
       const projectStore = yield* ProjectStore.ProjectStoreV2;
       const projectService = yield* ProjectService.ProjectService;
+      const promachos = yield* PromachosRpc.makeHandlers;
       const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
       const threadSearch = yield* ThreadSearch.ThreadSearch;
 
@@ -1829,7 +1833,7 @@ const layerWsRpc = (
         stampSessionPerson(sessions, currentSessionId, command).pipe(
           Effect.flatMap(ThreadMessageIntake.dispatchCommand),
         );
-      const launchThreadAsSessionPerson = (input: ThreadLaunchService.ThreadLaunchInput) =>
+      const launchThreadAsSessionPerson = (input: PromachosLaunch.PromachosLaunchInput) =>
         sessionPerson(sessions, currentSessionId).pipe(
           Effect.mapError(
             (cause) =>
@@ -1840,7 +1844,11 @@ const layerWsRpc = (
                 cause,
               }),
           ),
-          Effect.flatMap((owner) => ThreadMessageIntake.launchThread({ ...input, owner })),
+          Effect.flatMap((owner) =>
+            promachos
+              .prepareLaunch({ ...input, owner })
+              .pipe(Effect.flatMap(ThreadMessageIntake.launchThread)),
+          ),
         );
 
       const handlers = ServerWsRpcGroup.of({
@@ -1988,6 +1996,7 @@ const layerWsRpc = (
               startup
                 .enqueueCommand(
                   launchThreadAsSessionPerson({
+                    ...(input.prismRole === undefined ? {} : { prismRole: input.prismRole }),
                     commandId: input.commandId,
                     ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
                     ...(input.reuseExistingThread === undefined
@@ -2617,6 +2626,7 @@ const layerWsRpc = (
               (cause) => new OrchestrationDispatchCommandError({ message: cause.message, cause }),
             ),
           ),
+        [PROMACHOS_HOME_WS_METHODS.create]: (input) => promachos.createHome(input),
         [WS_METHODS.projectsCreateNew]: (input) =>
           managedFolders
             .createNamedProject(input)

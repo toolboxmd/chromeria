@@ -1,3 +1,4 @@
+import { registerPromachosLaunchTests } from "../promachos/PromachosLaunch.tests.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -236,6 +237,7 @@ function makeHarness(options: HarnessOptions = {}) {
   );
   return {
     layer: Layer.mergeAll(
+      layerRegistry,
       layerLaunch,
       layerThreadManagement,
       layerTitleRegeneration,
@@ -2539,3 +2541,5 @@ it.effect.each([false, true])(
       );
     }),
 );
+
+registerPromachosLaunchTests({ makeHarness, launchInput, modelSelection });
