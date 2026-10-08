@@ -34,6 +34,13 @@ export function promachosTimelineRows(rows: MessagesTimelineRow[]): MessagesTime
       case "event":
         if (row.projectedItem.item.type === "error") conversation.push(row);
         break;
+      case "work": {
+        const errors = row.groupedEntries.filter(
+          (entry) => entry.itemType === "error" || entry.sourceActivityKind === "runtime.error",
+        );
+        if (errors.length > 0) conversation.push({ ...row, groupedEntries: errors });
+        break;
+      }
       case "work-live":
         working ||= row.active;
         break;

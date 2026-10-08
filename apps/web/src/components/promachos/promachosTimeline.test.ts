@@ -1,6 +1,15 @@
-import { MessageId, RunId, RunAttemptId, NodeId } from "@t3tools/contracts";
+import {
+  MessageId,
+  RunId,
+  RunAttemptId,
+  NodeId,
+  ThreadId,
+  TurnItemId,
+  type OrchestrationV2TurnItem,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
-import type { TimelineEntry } from "../../session-logic";
+import { deriveTimelineEntriesFromVisibleTurnItems, type TimelineEntry } from "../../session-logic";
 import {
   deriveMessagesTimelineRows,
   type MessagesTimelineRow,
@@ -115,27 +124,59 @@ describe("Promachos V2 timeline", () => {
     );
     expect(rows.some((row) => row.kind === "attempt-fold")).toBe(false);
   });
-  it("preserves outputs and provider errors while collapsing active technical work", () => {
+  it.each(["provider_error", "usage_limit"] as const)(
+    "keeps real projected %s notices visible outside technical work",
+    (failureClass) => {
+      const now = DateTime.makeUnsafe(at(3));
+      const error = {
+        id: TurnItemId.make("error"),
+        threadId: ThreadId.make("chat"),
+        runId: RunId.make("failed"),
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 1,
+        status: "failed",
+        title: null,
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        type: "error",
+        failure: { class: failureClass, message: "Provider stopped", code: null, retryable: false },
+      } satisfies OrchestrationV2TurnItem;
+      const timelineEntries = deriveTimelineEntriesFromVisibleTurnItems({
+        visibleTurnItems: [
+          {
+            item: error,
+            position: 0,
+            visibility: "local",
+            sourceThreadId: error.threadId,
+            sourceItemId: error.id,
+          },
+        ],
+        optimisticMessages: [],
+      });
+      const rows = chat({ ...base, timelineEntries });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        kind: "work",
+        groupedEntries: [{ projectedItem: { item: error } }],
+      });
+    },
+  );
+  it("preserves outputs while collapsing active technical work", () => {
     const outputRows = [
       { kind: "html-render", id: "html", createdAt: at(1) },
       { kind: "mcp-app", id: "app", createdAt: at(2) },
-      {
-        kind: "event",
-        id: "error",
-        createdAt: at(3),
-        projectedItem: { item: { type: "error", failure: { class: "usage_limit" } } },
-      },
     ] as MessagesTimelineRow[];
     const rows = promachosTimelineRows([
       ...outputRows,
       { kind: "thinking", id: "thought", createdAt: null },
       { kind: "working", id: "work", createdAt: null },
     ]);
-    expect(rows.map((row) => row.id)).toEqual(["html", "app", "error", "promachos-working"]);
-    expect(promachosTimelineRows(outputRows).map((row) => row.id)).toEqual([
-      "html",
-      "app",
-      "error",
-    ]);
+    expect(rows.map((row) => row.id)).toEqual(["html", "app", "promachos-working"]);
+    expect(promachosTimelineRows(outputRows).map((row) => row.id)).toEqual(["html", "app"]);
   });
 });
