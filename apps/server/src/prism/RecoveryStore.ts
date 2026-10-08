@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
+import * as History from "./RecoveryHistory.ts";
 import { decideRecovery, RecoveryRecord } from "./recoveryPolicy.ts";
 
 const RecordJson = Schema.fromJsonString(RecoveryRecord);
@@ -26,6 +27,7 @@ export class RecoveryStore extends Context.Service<
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  yield* History.initializeRecoveryHistory;
   yield* sql`CREATE TABLE IF NOT EXISTS fork_prism_recovery (
     thread_id TEXT PRIMARY KEY, original_run_id TEXT NOT NULL, source_run_id TEXT NOT NULL,
     state TEXT NOT NULL, payload_json TEXT NOT NULL

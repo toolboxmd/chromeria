@@ -637,7 +637,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
 ```json
 {
   "id": "prism-toolkit",
-  "purpose": "Route upstream delegation and top-level launches through one Prism service and coordinate persisted same-provider/model recovery. Own Chromeria autoResumeLimitedThreads=true; Wight consumes it and saved false overrides remain respected.",
+  "purpose": "Route upstream delegation and top-level launches through one Prism service and coordinate persisted same-provider/model recovery with immutable per-run outcomes, indexed admitted continuation sources and current recovery intent. Own Chromeria autoResumeLimitedThreads=true; Wight consumes it and saved false overrides remain respected.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/169"],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/183"],
   "newFiles": [
@@ -647,6 +647,12 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/prism/RecoveryCoordinator.test.ts",
     "apps/server/src/prism/RecoveryCoordinator.ts",
     "apps/server/src/prism/RecoveryHooks.ts",
+    "apps/server/src/prism/RecoveryHistory.ts",
+    "apps/server/src/prism/RecoveryHistory.integration.test.ts",
+    "apps/server/src/prism/continuationAdmission.ts",
+    "apps/server/src/prism/continuationProjection.ts",
+    "apps/server/src/prism/recoveryOutcomePolicy.ts",
+    "apps/server/src/prism/recoveryProjection.ts",
     "apps/server/src/prism/RecoveryReactor.test.ts",
     "apps/server/src/prism/RecoveryReactor.ts",
     "apps/server/src/prism/RecoverySettings.test.ts",
@@ -674,6 +680,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
     "apps/server/src/mcp/toolkits/core.test.ts",
     "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "apps/server/src/orchestration-v2/ProjectionStore.ts",
     "packages/contracts/src/orchestrationV2.ts",
     "packages/contracts/src/orchestratorMcp.ts",
     "packages/contracts/src/settings.ts"
@@ -684,6 +691,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "t3_thread_launch",
     "prismRole",
     "forkPrismRetryOfRunId",
+    "forkPrismContinuationSourceRunId",
+    "readRecoveryState",
     "autoResumeLimitedThreads",
     "limitRecovery",
     "forkRetirement"
