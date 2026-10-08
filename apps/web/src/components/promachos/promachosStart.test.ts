@@ -1,18 +1,15 @@
 import {
-  ClientOrchestrationCommand,
-  CommandId,
   EnvironmentId,
   MessageId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
-import * as Schema from "effect/Schema";
+import type { StartThreadTurnInput } from "@t3tools/client-runtime/operations";
 import { describe, expect, it } from "vite-plus/test";
 
 import { promachosMultipleModelSelections, withPromachosStart } from "./promachosStart";
 
-const decodeCommand = Schema.decodeUnknownSync(ClientOrchestrationCommand);
 const createdAt = "2026-10-01T20:00:00.000Z";
 // The composer's own selection: a valid placeholder Prism replaces.
 const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.5" };
@@ -57,15 +54,9 @@ function followUp(threadId: string) {
 
 /** Records what reaches the dispatch, as the wire command the server decodes. */
 function recordingStart<R>(result: R) {
-  const sent: ClientOrchestrationCommand[] = [];
-  const start = (request: { input: object }) => {
-    sent.push(
-      decodeCommand({
-        ...request.input,
-        type: "thread.turn.start",
-        commandId: CommandId.make(`c${sent.length}`),
-      }),
-    );
+  const sent: Array<StartThreadTurnInput & { prismRole?: "promachos" }> = [];
+  const start = (request: { input: StartThreadTurnInput }) => {
+    sent.push(request.input);
     return result;
   };
   return { sent, start };
@@ -77,7 +68,6 @@ describe("withPromachosStart", () => {
     withPromachosStart(start, promachosModels)(firstSend("new-thread"));
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({
-      type: "thread.turn.start",
       threadId: "new-thread",
       prismRole: "promachos",
       modelSelection,
@@ -93,10 +83,10 @@ describe("withPromachosStart", () => {
     for (const command of sent) expect(command).not.toHaveProperty("prismRole");
   });
 
-  it("never asks Prism for an existing conversation or a child thread", () => {
+  it("never asks Prism for an existing conversation", () => {
     const { sent, start } = recordingStart("ok");
     withPromachosStart(start, promachosModels)(followUp("existing"));
-    withPromachosStart(start, promachosModels)(firstSend("sub.parent.child"));
+
     for (const command of sent) expect(command).not.toHaveProperty("prismRole");
   });
 

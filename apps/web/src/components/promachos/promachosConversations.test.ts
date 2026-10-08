@@ -18,7 +18,10 @@ function thread(
 ) {
   return {
     id: ThreadId.make(id),
-    lineage: overrides.lineage ?? { parentThreadId: null, relationshipToParent: null },
+    lineage: {
+      rootThreadId: ThreadId.make("root"),
+      ...(overrides.lineage ?? { parentThreadId: null, relationshipToParent: null }),
+    },
     environmentId: EnvironmentId.make(overrides.environmentId ?? "env-a"),
     projectId: ProjectId.make(overrides.projectId ?? "home"),
     archivedAt: overrides.archivedAt ?? null,

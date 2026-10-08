@@ -1,41 +1,41 @@
-import { TurnId } from "@t3tools/contracts";
+import { RunAttemptId, RunId } from "@t3tools/contracts";
 import { useMemo } from "react";
+import {
+  timelineTurnFoldRunIdsByEntryId,
+  type MessagesTimelineRow,
+  type deriveMessagesTimelineRows,
+} from "../chat/MessagesTimeline.logic";
 
-import type { TimelineEntry } from "../../session-logic";
-import type { MessagesTimelineRow } from "../chat/MessagesTimeline.logic";
-
-const WORKING_ROW: Extract<MessagesTimelineRow, { kind: "working" }> = {
+type FoldInput = Pick<
+  Parameters<typeof deriveMessagesTimelineRows>[0],
+  "timelineEntries" | "latestRun" | "isWorking" | "runlessWorkActive" | "runningRunId"
+>;
+const WORKING_ROW: MessagesTimelineRow = {
   kind: "working",
-  id: "working-indicator-row",
+  id: "promachos-working",
   createdAt: null,
 };
 
-/**
- * The timeline as a Promachos chat: the conversation, plans and setup cards,
- * with tool activity, reasoning and turn folds collapsed into one working
- * indicator after the latest message while the turn runs.
- */
+/** The conversation and outputs, with technical activity collapsed into one static indicator. */
 export function promachosTimelineRows(rows: MessagesTimelineRow[]): MessagesTimelineRow[] {
   const conversation: MessagesTimelineRow[] = [];
-  const queued: MessagesTimelineRow[] = [];
   let working = false;
   for (const row of rows) {
     switch (row.kind) {
       case "message":
-        if (row.message.role !== "reasoning") conversation.push(row);
+        conversation.push(row);
         break;
       case "proposed-plan":
       case "worktree-setup":
+      case "html-render":
+      case "mcp-app":
         conversation.push(row);
         break;
-      case "work":
-        // Sharing changes stay in the chat (toolboxmd/chromeria#121).
-        if (row.groupedEntries.every((entry) => entry.sourceActivityKind === "thread.sharing")) {
-          conversation.push(row);
-        }
+      case "event":
+        if (row.projectedItem.item.type === "error") conversation.push(row);
         break;
-      case "queued-message":
-        queued.push(row);
+      case "work-live":
+        working ||= row.active;
         break;
       case "working":
       case "thinking":
@@ -45,37 +45,42 @@ export function promachosTimelineRows(rows: MessagesTimelineRow[]): MessagesTime
         break;
     }
   }
-  return working ? [...conversation, WORKING_ROW, ...queued] : [...conversation, ...queued];
+  return working ? [...conversation, WORKING_ROW] : conversation;
 }
 
-function entryTurnId(entry: TimelineEntry): TurnId | null {
-  if (entry.kind === "message") return entry.message.turnId ?? null;
-  if (entry.kind === "proposed-plan") return entry.proposedPlan.turnId;
-  return entry.entry.turnId ?? null;
+/** Imported V1 turns use synthetic fold keys; attempt folds can also hide interim replies. */
+export function promachosTimelineDisclosures(input: FoldInput) {
+  return {
+    runs: new Set(timelineTurnFoldRunIdsByEntryId(input).values()),
+    attempts: new Set(
+      input.timelineEntries.flatMap((entry) => (entry.attempt ? [entry.attempt.id] : [])),
+    ),
+  };
 }
 
-/**
- * Every turn in the timeline, so a Promachos chat never folds a finished
- * turn: his interim replies stay where they were written. Keyed by the ids,
- * not the entries, so streamed text keeps the timeline's fast path.
- */
-export function usePromachosExpandedTurnIds(
-  timelineEntries: ReadonlyArray<TimelineEntry>,
-  enabled: boolean,
-): ReadonlySet<TurnId> | null {
-  const key = enabled
-    ? [...new Set(timelineEntries.map(entryTurnId).filter((id) => id !== null))].join("\n")
-    : null;
+/** Stable sets keep streamed text from invalidating the timeline's disclosure fast path. */
+export function usePromachosTimelineDisclosures(input: FoldInput, enabled: boolean) {
+  const disclosures = enabled ? promachosTimelineDisclosures(input) : null;
+  const runsKey = disclosures ? [...disclosures.runs].join("\n") : null;
+  const attemptsKey = disclosures ? [...disclosures.attempts].join("\n") : null;
   return useMemo(
     () =>
-      key === null
+      runsKey === null || attemptsKey === null
         ? null
-        : new Set(
-            key
-              .split("\n")
-              .filter(Boolean)
-              .map((id) => TurnId.make(id)),
-          ),
-    [key],
+        : {
+            runs: new Set(
+              runsKey
+                .split("\n")
+                .filter(Boolean)
+                .map((id) => RunId.make(id)),
+            ),
+            attempts: new Set(
+              attemptsKey
+                .split("\n")
+                .filter(Boolean)
+                .map((id) => RunAttemptId.make(id)),
+            ),
+          },
+    [runsKey, attemptsKey],
   );
 }

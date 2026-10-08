@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import {
   createEnvironmentRpcCommand,
   isAtomCommandInterrupted,
@@ -37,6 +38,7 @@ export function PromachosNewHome({
   onCreated: (home: ScopedProjectRef) => void;
 }) {
   const create = useAtomCommand(createHome, { reportFailure: false });
+  const canCreate = useAtomValue(createHome.permissionAtom(environmentId));
   // Null while the form is closed.
   const [path, setPath] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -45,7 +47,10 @@ export function PromachosNewHome({
   if (path === null) {
     return (
       <SidebarMenuItem>
-        <SidebarMenuButton onClick={() => setPath(DEFAULT_PROMACHOS_HOME_PATH)}>
+        <SidebarMenuButton
+          disabled={!canCreate}
+          onClick={() => setPath(DEFAULT_PROMACHOS_HOME_PATH)}
+        >
           <PlusIcon />
           <span>{label}</span>
         </SidebarMenuButton>
@@ -54,7 +59,7 @@ export function PromachosNewHome({
   }
 
   const submit = async () => {
-    if (path.trim().length === 0 || pending) return;
+    if (!canCreate || path.trim().length === 0 || pending) return;
     setPending(true);
     setError(null);
     const result = await create({ environmentId, input: { path: path.trim() } });
@@ -90,7 +95,11 @@ export function PromachosNewHome({
         />
         {error === null ? null : <p className="text-destructive text-xs">{error}</p>}
         <div className="flex gap-1">
-          <Button size="sm" type="submit" disabled={pending || path.trim().length === 0}>
+          <Button
+            size="sm"
+            type="submit"
+            disabled={!canCreate || pending || path.trim().length === 0}
+          >
             {pending ? "Creating…" : "Create"}
           </Button>
           <Button

@@ -1,3 +1,6 @@
+import * as CommandReceiptStore from "./orchestration-v2/CommandReceiptStore.ts";
+import * as PromachosLaunch from "./promachos/PromachosLaunch.ts";
+import * as Prism from "./prism/PrismService.ts";
 import * as PromachosHome from "./promachos/PromachosHome.ts";
 import { PROMACHOS_HOME_WS_METHODS } from "@t3tools/contracts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
@@ -1213,6 +1216,14 @@ const layerWsRpc = (
       const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
       const projectStore = yield* ProjectStore.ProjectStoreV2;
       const projectService = yield* ProjectService.ProjectService;
+      const promachosLaunch = yield* PromachosLaunch.PromachosLaunch.pipe(
+        Effect.provide(
+          PromachosLaunch.layer.pipe(
+            Layer.provide(Prism.layer),
+            Layer.provide(CommandReceiptStore.layer),
+          ),
+        ),
+      );
       const promachosHome = yield* PromachosHome.PromachosHome.pipe(
         Effect.provide(PromachosHome.layer),
       );
@@ -1834,7 +1845,7 @@ const layerWsRpc = (
         stampSessionPerson(sessions, currentSessionId, command).pipe(
           Effect.flatMap(ThreadMessageIntake.dispatchCommand),
         );
-      const launchThreadAsSessionPerson = (input: ThreadLaunchService.ThreadLaunchInput) =>
+      const launchThreadAsSessionPerson = (input: PromachosLaunch.PromachosLaunchInput) =>
         sessionPerson(sessions, currentSessionId).pipe(
           Effect.mapError(
             (cause) =>
@@ -1845,7 +1856,11 @@ const layerWsRpc = (
                 cause,
               }),
           ),
-          Effect.flatMap((owner) => ThreadMessageIntake.launchThread({ ...input, owner })),
+          Effect.flatMap((owner) =>
+            promachosLaunch
+              .prepare({ ...input, owner })
+              .pipe(Effect.flatMap(ThreadMessageIntake.launchThread)),
+          ),
         );
 
       const handlers = ServerWsRpcGroup.of({
@@ -1993,6 +2008,7 @@ const layerWsRpc = (
               startup
                 .enqueueCommand(
                   launchThreadAsSessionPerson({
+                    ...(input.prismRole === undefined ? {} : { prismRole: input.prismRole }),
                     commandId: input.commandId,
                     ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
                     ...(input.reuseExistingThread === undefined
@@ -2043,6 +2059,13 @@ const layerWsRpc = (
                     projection: projectThreadProjectionForWire(result.projection),
                   })),
                   Effect.catchTags({
+                    PromachosLaunchError: (cause) =>
+                      new OrchestrationV2ThreadLaunchError({
+                        commandId: input.commandId,
+                        projectId: input.projectId,
+                        message: cause.message,
+                        cause,
+                      }),
                     AttachmentClaimError: (cause) =>
                       new OrchestrationV2ThreadLaunchError({
                         commandId: input.commandId,

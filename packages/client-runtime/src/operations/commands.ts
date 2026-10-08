@@ -164,6 +164,7 @@ interface StartThreadBootstrap {
 }
 
 export interface StartThreadTurnInput extends ThreadCommandInput {
+  readonly prismRole?: "promachos";
   readonly manualContinuationOfRunId?: RunId;
   readonly message: {
     readonly messageId: MessageId;
@@ -666,6 +667,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
                 : { branch: bootstrap.branch }),
             };
     return yield* request(ORCHESTRATION_V2_WS_METHODS.launchThread, {
+      ...(input.prismRole === undefined ? {} : { prismRole: input.prismRole }),
       commandId,
       creationSource: input.creationSource ?? "web",
       threadId: input.threadId,
