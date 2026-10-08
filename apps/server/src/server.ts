@@ -1,4 +1,6 @@
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
+import * as ForkProviderMaintenance from "./provider/forkProviderMaintenance.ts";
+import * as ProviderAutoUpdate from "./provider/providerAutoUpdate.ts";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Clock from "effect/Clock";
 import * as Random from "effect/Random";
@@ -582,6 +584,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ).pipe(Layer.provide(DelegatedTaskQuestionReactor.layer), Layer.provide(ProjectionStoreV2.layer)),
   ProviderUsageLimitsIngestion.layer,
   layerProviderInstallationRefresh,
+  ProviderAutoUpdate.layer.pipe(Layer.provide(RuntimeLayer.layerEventSink)),
   ReplayMarkers.layer,
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
 ).pipe(
@@ -597,6 +600,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.provideMerge(
     Layer.mergeAll(Keybindings.layer, EnvironmentTheme.layer, UsageLimitSources.layer),
   ),
+  Layer.provideMerge(ForkProviderMaintenance.layer),
   Layer.provideMerge(ProviderRegistry.layer),
   Layer.provideMerge(ProviderInstanceRegistryHydration.layer),
   Layer.provideMerge(

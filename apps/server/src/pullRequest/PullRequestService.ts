@@ -1,3 +1,4 @@
+import { forkPullRequestIdentity } from "./forkRepositoryIdentity.ts";
 import {
   canonicalRepositoryKey,
   isSshRemoteUrl,
@@ -599,11 +600,12 @@ export const make = Effect.gen(function* () {
     const refinements = new Map<string, RefinementCandidate[]>();
     for (const project of projects) {
       if (filter.projectId !== undefined && project.id !== filter.projectId) continue;
-      const identity = project.repositoryIdentity;
+      const identity = forkPullRequestIdentity(project.repositoryIdentity);
       if (
         (identity?.provider !== "unknown" &&
           !(identity?.provider === "forgejo" && isSshRemoteUrl(identity.locator.remoteUrl))) ||
-        sourceControlRepositorySelector(project.repositoryIdentity) === null
+        sourceControlRepositorySelector(forkPullRequestIdentity(project.repositoryIdentity)) ===
+          null
       )
         continue;
       const host = pullRequestHostOf(identity, SourceControlProviderKind.make("unknown"));
@@ -709,9 +711,11 @@ export const make = Effect.gen(function* () {
         for (const project of projects) {
           if (filter.projectId !== undefined && project.id !== filter.projectId) continue;
           if (filter.projectIds !== undefined && !filter.projectIds.includes(project.id)) continue;
-          const identity = project.repositoryIdentity;
+          const identity = forkPullRequestIdentity(project.repositoryIdentity);
           let kind = identity?.provider as SourceControlProviderKind | undefined;
-          const repository = sourceControlRepositorySelector(project.repositoryIdentity);
+          const repository = sourceControlRepositorySelector(
+            forkPullRequestIdentity(project.repositoryIdentity),
+          );
           if (!identity || kind === undefined || repository === null) continue;
           let refinedProvider: SourceControlProviderInfo | null | undefined;
           if (

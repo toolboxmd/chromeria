@@ -1,3 +1,6 @@
+import * as SqlClient from "effect/sql/SqlClient";
+import * as ProviderAdmissionGate from "./providerAdmissionGate.ts";
+import { readBusyProviderDrivers, PROVIDER_UPDATE_BUSY_REASON } from "./providerAutoUpdateState.ts";
 import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
@@ -277,6 +280,8 @@ function makeUpdateState(input: {
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+  const admission = yield* ProviderAdmissionGate.ProviderAdmissionGate;
+  const sql = yield* SqlClient.SqlClient;
   const manifestService = yield* ModelManifest.ModelManifest;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const httpClient = yield* HttpClient.HttpClient;
@@ -568,7 +573,40 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
         targetKey,
         lockKey: update.lockKey,
         onQueued: setQueuedState,
-        run: runProviderUpdate(),
+        run: admission
+          .withUpdate({
+            installKey: `${provider}:${update.lockKey}`,
+            isBusy: readBusyProviderDrivers.pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.map((drivers) => drivers.has(provider)),
+              Effect.mapError(
+                () =>
+                  new ServerProviderUpdateError({
+                    provider,
+                    reason: "Could not check active provider work.",
+                  }),
+              ),
+            ),
+            install: runProviderUpdate(),
+          })
+          .pipe(
+            Effect.flatMap(
+              Option.match({
+                onNone: () =>
+                  setUpdateState(null).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new ServerProviderUpdateError({
+                          provider,
+                          reason: PROVIDER_UPDATE_BUSY_REASON,
+                        }),
+                      ),
+                    ),
+                  ),
+                onSome: Effect.succeed,
+              }),
+            ),
+          ),
       })
       .pipe(
         Effect.mapError((error) =>
@@ -587,4 +625,6 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
   });
 });
 
-export const layer = Layer.effect(ProviderMaintenanceRunner, make());
+export const layer = Layer.effect(ProviderMaintenanceRunner, make()).pipe(
+  Layer.provide(ProviderAdmissionGate.layer),
+);

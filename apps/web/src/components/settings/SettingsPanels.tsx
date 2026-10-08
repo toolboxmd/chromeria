@@ -1,3 +1,4 @@
+import { AutoUpdateProvidersSetting } from "./AutoUpdateProvidersSetting";
 import { SettingsGroup } from "./SettingsGroup";
 import { settingsScopeEnvironmentLabels } from "./settingsScopeAxis";
 import { useScopedSettingsWriteAllowed } from "./useScopedSettings";
@@ -2798,6 +2799,12 @@ export function GeneralSettingsPanel() {
               aria-label="Check provider versions"
             />
           }
+        />
+
+        <AutoUpdateProvidersSetting
+          value={settings.autoUpdateProviders}
+          checksEnabled={settings.enableProviderUpdateChecks}
+          onChange={(autoUpdateProviders) => updateSettings({ autoUpdateProviders })}
         />
 
         <SettingsRow
