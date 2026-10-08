@@ -55,7 +55,14 @@ function CommandOutputToggle(props: {
       <Button variant="link" size="compact" onClick={() => setOpen((value) => !value)}>
         {open ? "Hide output" : "Show output"}
       </Button>
-      {open ? <CommandOutput {...props} /> : null}
+      {/* A new run remounts it, so it fetches the output again. */}
+      {open ? (
+        <CommandOutput
+          key={props.runKey}
+          environmentId={props.environmentId}
+          taskId={props.taskId}
+        />
+      ) : null}
     </>
   );
 }
@@ -63,20 +70,18 @@ function CommandOutputToggle(props: {
 function CommandOutput({
   environmentId,
   taskId,
-  runKey,
 }: {
   readonly environmentId: EnvironmentId;
   readonly taskId: ScheduledTask["id"];
-  readonly runKey: string;
 }) {
   const query = useEnvironmentQuery(
     serverEnvironment.scheduledTasksList({ environmentId, input: {} }),
   );
   const { refresh } = query;
-  // Fetched on opening, and again when the run it shows changes.
+  // Fetched on opening.
   useEffect(() => {
     refresh();
-  }, [refresh, runKey]);
+  }, [refresh]);
   if (query.error !== null)
     return (
       <span className="text-destructive">
