@@ -414,6 +414,7 @@ export function applyServerSettingsPatch(
     backgroundActivity,
     worktreeCleanup: worktreeCleanupPatch,
     // Merged per entry below; its `null` removals must not reach deepMerge.
+    wightModes: wightModesPatch,
     usageLimitSources: usageLimitSourcesPatch,
     sourceControlHosts: sourceControlHostsPatch,
     usagePriceOverrides: usagePriceOverridesPatch,
@@ -596,6 +597,9 @@ export function applyServerSettingsPatch(
       : {}),
     ...(patch.defaultProjectScripts !== undefined
       ? { defaultProjectScripts: patch.defaultProjectScripts }
+      : {}),
+    ...(wightModesPatch !== undefined
+      ? { wightModes: mergeSettingsEntries(current.wightModes, wightModesPatch) }
       : {}),
     ...(usageLimitSourcesPatch !== undefined
       ? {
