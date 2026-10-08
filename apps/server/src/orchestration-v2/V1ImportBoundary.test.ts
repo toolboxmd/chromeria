@@ -19,6 +19,9 @@ const legacyReaders = ["orchestration-v2/legacy/", "persistence/Migrations/"] as
 const legacyReaderFiles: Record<string, string> = {
   // Provider history for settings migration reads V1 thread sessions once at load.
   "serverSettings.ts": "one-time provider history for settings migration",
+  // Fork: thread people (toolboxmd/chromeria#170).
+  "persistence/forkThreadPeopleBackfill.ts":
+    "one-time migration of frozen V1 thread owners and co-owners",
 };
 const retiredPaths = [
   "orchestration",

@@ -6,6 +6,7 @@ import {
   type RunId,
   OrchestratorMcpFailure,
   type OrchestrationV2Command,
+  threadOwner,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
@@ -116,7 +117,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
   ),
   t3_thread_fork: writesThread((input) =>
     Effect.gen(function* () {
-      const { threads, projection } = yield* readThread(input.threadId);
+      const { threads, projection, caller } = yield* readThread(input.threadId);
       const commandId = yield* newCommandId();
       const targetThreadId = ThreadId.make(`${commandId}:fork`);
       const result = yield* threads
@@ -129,6 +130,8 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           ...(input.title === undefined ? {} : { title: input.title }),
           createdBy: "agent",
           creationSource: "mcp",
+          // Fork: an agent's fork belongs to its caller's owner (toolboxmd/chromeria#170).
+          ...(caller === undefined ? {} : { owner: threadOwner(caller) }),
         })
         .pipe(Effect.mapError(dispatchFailure));
       return { sequence: result.sequence, targetThreadId };

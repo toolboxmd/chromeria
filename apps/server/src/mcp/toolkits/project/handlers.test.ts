@@ -45,8 +45,10 @@ it.effect("attributes a launched thread's first message to the calling thread", 
       activeRunId: "active-run",
       archivedAt: null,
       deletedAt: null,
+      owner: "Pauli",
     } as OrchestrationV2ThreadShell;
     let launchedSender: ThreadId | undefined;
+    let launchedOwner: string | undefined;
     const layerDependencies = Layer.mergeAll(
       ServerSettings.layerTest(),
       NodeCrypto.layer,
@@ -68,6 +70,7 @@ it.effect("attributes a launched thread's first message to the calling thread", 
       Layer.mock(ThreadLaunch.ThreadLaunchService)({
         launch: (input) => {
           launchedSender = input.initialMessage?.senderThreadId;
+          launchedOwner = input.owner;
           return Effect.succeed({
             threadId: input.threadId,
             projection: {
@@ -98,6 +101,8 @@ it.effect("attributes a launched thread's first message to the calling thread", 
       .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(layerDependencies));
     expect(result.at(-1)?.result).toMatchObject({ projectId, modelSelection });
     expect(launchedSender).toBe(sourceThreadId);
+    // Fork: a launched thread belongs to the caller's owner (toolboxmd/chromeria#170).
+    expect(launchedOwner).toBe("Pauli");
   }),
 );
 
