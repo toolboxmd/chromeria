@@ -1,9 +1,10 @@
 # Mission
 
-The toolboxmd fork of T3 Code is the user's working surface. It stays a thin,
-rebasable layer on upstream `pingdotgg/t3code`: features live in new files and
-packages, upstream files carry the smallest possible edits, and generic
-extension points are offered upstream so the patch set shrinks over time.
+The toolboxmd fork of T3 Code is the user's personal working surface, shaped
+around their own tools and habits. It tracks upstream `pingdotgg/t3code` and
+absorbs every update by rebasing: fork features live in their own modules and
+reach upstream code through small hooks, so no feature is cut to keep the fork
+small.
 
 On T3's core the fork adds what the user's tools need instead of rebuilding
 harness plumbing: Prism, the fork's router, chooses the model, harness and
