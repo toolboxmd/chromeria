@@ -23,7 +23,7 @@ import {
 } from "./engine.ts";
 import type { ReportFence } from "./handoff.ts";
 import { checkedRunStatus, outcomeCheckSummary, type CheckState } from "./state.ts";
-import { ensureCheckSchema, readCheckState, writeCheckState } from "./store.ts";
+import { deleteCheckState, ensureCheckSchema, readCheckState, writeCheckState } from "./store.ts";
 
 const toJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const NOW = Date.parse("2026-10-08T12:00:00.000Z");
@@ -500,7 +500,7 @@ it.effect("a Prism pick selects the model of a new thread only and prefixes its 
     assert.match(wired.sent[0]!.text, /KIT\n\nDo the work$/);
     // Posting to a bound thread keeps that thread's stored model and effort.
     const bound = yield* harness({ role: "picked-model" });
-    yield* bound.runs.forget(taskId);
+    yield* bound.runs.removeTask(taskId, null, Effect.void);
     yield* bound.save({ checkCommand: "check", checkReason: "outcome", role: "worker" });
     yield* bound.fire("manual", NOW + 1);
     assert.equal(bound.sent.length, 1);
@@ -563,12 +563,97 @@ it.effect("a judged thread cannot edit, pause or delete its own task", () =>
       h.save({ checkCommand: "true", checkReason: "cheat" }, threadId),
     );
     assert.isTrue(Exit.isFailure(edit));
-    const guard = yield* Effect.exit(h.runs.assertMayChange(taskId, threadId));
-    assert.isTrue(Exit.isFailure(guard));
-    yield* h.runs.assertMayChange(taskId, ThreadId.make("someone-else"));
     yield* h.save({ checkCommand: "check-v2", checkReason: "user edit" }, ThreadId.make("other"));
     assert.equal((yield* h.state()).checks.length, 2);
+    // The delete's guard refuses before upstream's delete runs; anyone else removes both.
+    let upstreamDeletes = 0;
+    const deleteUpstream = Effect.sync(() => {
+      upstreamDeletes += 1;
+    });
+    const guard = yield* Effect.exit(h.runs.removeTask(taskId, threadId, deleteUpstream));
+    assert.isTrue(Exit.isFailure(guard));
+    assert.equal(upstreamDeletes, 0);
+    assert.isNotNull(yield* readCheckState(taskId));
+    yield* h.runs.removeTask(taskId, ThreadId.make("someone-else"), deleteUpstream);
+    assert.equal(upstreamDeletes, 1);
+    assert.isNull(yield* readCheckState(taskId));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("a send admitted before its task was deleted sends nothing", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    const h = yield* harness();
+    yield* h.save({ checkCommand: "check", checkReason: "outcome" });
+    // Upstream runs an admitted dispatch after marking the task running; the delete lands first.
+    const send = yield* h.decide("scheduled");
+    assert.equal(send._tag, "fork");
+    assert.equal((yield* h.state()).runs[0]?.sends.length, 1);
+    yield* deleteCheckState(taskId);
+    if (send._tag === "fork") yield* send.dispatch;
+    assert.deepEqual(h.sent, []);
+    assert.isNull(yield* readCheckState(taskId));
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("a command admitted before its task was deleted runs nothing", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    const h = yield* harness();
+    const command = task({ threadId: null });
+    yield* h.save({ command: "backup" });
+    const spawn = yield* h.decide("scheduled", NOW, command);
+    assert.equal(spawn._tag, "fork");
+    yield* deleteCheckState(taskId);
+    if (spawn._tag === "fork") yield* spawn.dispatch;
+    // Any process started would finish here and be counted.
+    yield* h.finishCommand({ exitCode: 0, output: "ok", timedOut: false, failure: null });
+    assert.deepEqual(h.executed, []);
+    assert.isNull(yield* readCheckState(taskId));
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("a report that comes to need you after a send is admitted holds the send", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    const h = yield* harness();
+    yield* h.save({ checkCommand: "check", checkReason: "outcome" });
+    const reason = "The Spectrum report run failed and will not be retried";
+    // Admitted while its reports were released; one needs you before the send goes out.
+    const held = yield* h.decide("scheduled");
+    h.reports({ kind: "needs-you", reason });
+    if (held._tag === "fork") yield* held.dispatch;
+    assert.deepEqual(h.sent, []);
+    const needsYou = (yield* h.state()).runs[0]!;
+    assert.equal(needsYou.stage, "needs-you");
+    assert.equal(needsYou.error, `Spectrum report: ${reason}`);
+    assert.equal(needsYou.sends.length, 1);
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect(
+  "a report still waiting when an admitted send's turn comes keeps the send for redelivery",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const h = yield* harness();
+      yield* h.save({ checkCommand: "check", checkReason: "outcome" });
+      // Admitted while its reports were released; one is waiting when the send's turn comes.
+      const waiting = yield* h.decide("scheduled");
+      h.reports({ kind: "waiting" });
+      if (waiting._tag === "fork") yield* waiting.dispatch;
+      assert.deepEqual(h.sent, []);
+      const kept = (yield* h.state()).runs[0]!;
+      assert.equal(kept.stage, "running");
+      assert.equal(kept.sends.length, 1);
+      h.reports({ kind: "released" });
+      h.set({ landed: false, busy: false });
+      yield* h.runs.drive(task());
+      assert.deepEqual(
+        h.sent.map((sent) => sent.commandId),
+        [kept.sends[0]!.commandId],
+      );
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
 it.effect("check edits require a reason and reverts copy an earlier version", () =>

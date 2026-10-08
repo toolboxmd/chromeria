@@ -22,6 +22,7 @@ import {
   type ScheduledTask,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Exit from "effect/Exit";
@@ -55,6 +56,10 @@ import { ProcessRunner } from "../processRunner.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import {
+  ScheduledTaskDispatchPolicy,
+  type ScheduledTaskDispatchPolicyShape,
+} from "./DispatchPolicy.ts";
 import { ScheduledTaskSpectra } from "./handoff.ts";
 import * as ScheduledTaskChecks from "./ScheduledTaskChecks.ts";
 import {
@@ -101,6 +106,39 @@ const checkResult = (code: number) => ({
   stderrInvalidUtf8: false,
 });
 
+/** Where a fork dispatch waits once admitted, until the test releases it. */
+interface DispatchBarrier {
+  readonly admitted: Deferred.Deferred<void>;
+  readonly proceed: Deferred.Deferred<void>;
+}
+
+/** Upstream's service with the fork's policy, its admitted dispatches held at a barrier. */
+const withDispatchBarrier = (barrier: DispatchBarrier) =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const policy = yield* ScheduledTaskDispatchPolicy;
+      const held: ScheduledTaskDispatchPolicyShape = {
+        decide: (input) =>
+          policy.decide(input).pipe(
+            Effect.map((decision) =>
+              decision._tag === "fork"
+                ? {
+                    _tag: "fork" as const,
+                    dispatch: Deferred.succeed(barrier.admitted, undefined).pipe(
+                      Effect.andThen(Deferred.await(barrier.proceed)),
+                      Effect.andThen(decision.dispatch),
+                    ),
+                  }
+                : decision,
+            ),
+          ),
+      };
+      return ScheduledTaskService.layer.pipe(
+        Layer.provide(Layer.succeed(ScheduledTaskDispatchPolicy, held)),
+      );
+    }),
+  );
+
 const runtime = (
   database: Database,
   options: {
@@ -112,6 +150,7 @@ const runtime = (
       readonly sink: EventSink.EventSinkV2["Service"];
       readonly orchestrator: Orchestrator.OrchestratorV2["Service"];
     }) => ThreadLaunchService.ThreadLaunchService["Service"]["launch"];
+    readonly dispatchBarrier?: DispatchBarrier;
   } = {},
 ) => {
   const orchestration = Harness.layerWithRegistry(
@@ -155,9 +194,11 @@ const runtime = (
   );
   return Layer.mergeAll(
     dependencies,
-    ScheduledTaskChecks.withOutcomeChecks(ScheduledTaskService.layer).pipe(
-      Layer.provide(dependencies),
-    ),
+    ScheduledTaskChecks.withOutcomeChecks(
+      options.dispatchBarrier === undefined
+        ? ScheduledTaskService.layer
+        : withDispatchBarrier(options.dispatchBarrier),
+    ).pipe(Layer.provide(dependencies)),
   );
 };
 
@@ -1255,5 +1296,150 @@ it.effect(
         assert.equal(listed.command?.run?.output, marker);
         assert.include(toJson(ScheduledTaskChecks.forkSummaryFields(listed)), marker);
       }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+    }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "a task deleted between admitting a run and sending it sends nothing, and its fork state goes with it",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      yield* TestClock.setTime(Date.parse(CANONICAL));
+      const id = ScheduledTaskId.make("scheduled-task:deleted");
+      const barrier = {
+        admitted: yield* Deferred.make<void>(),
+        proceed: yield* Deferred.make<void>(),
+      };
+      yield* Effect.gen(function* () {
+        yield* createThread;
+        yield* insertTask({ id, schedule: { type: "interval", everyMs: 3_600_000 }, next: null });
+        yield* writeCheckState(null, checkState(id));
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const starting = yield* service.runNow({ id }).pipe(Effect.exit, Effect.forkScoped);
+        // Admitted and recorded with its send, which has not gone out.
+        yield* Deferred.await(barrier.admitted);
+        assert.equal((yield* readCheckState(id))?.runs[0]?.sends.length, 1);
+        yield* service.delete({ id });
+        yield* Deferred.succeed(barrier.proceed, undefined);
+        yield* Fiber.join(starting);
+        assert.deepEqual(yield* messagesOf, []);
+        assert.isNull(yield* readCheckState(id));
+        const sql = yield* SqlClient.SqlClient;
+        assert.deepEqual(yield* sql`SELECT task_id FROM scheduled_tasks WHERE task_id = ${id}`, []);
+      }).pipe(Effect.provide(runtime(database, { dispatchBarrier: barrier })), Effect.scoped);
+    }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "a judged thread's delete that races its run's start is refused, and anyone else's removes the task with its fork state",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      yield* TestClock.setTime(Date.parse(CANONICAL));
+      const id = ScheduledTaskId.make("scheduled-task:guarded");
+      yield* Effect.gen(function* () {
+        yield* createThread;
+        yield* insertTask({ id, schedule: { type: "interval", everyMs: 3_600_000 }, next: null });
+        yield* writeCheckState(null, checkState(id));
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const checks = yield* ScheduledTaskChecks.ScheduledTaskChecks;
+        const existing = (yield* service.list()).tasks.find((task) => task.id === id)!;
+        const reached = yield* Deferred.make<void>();
+        const proceed = yield* Deferred.make<void>();
+        // The tool's delete, held after its hook began and before upstream's delete.
+        const remove = (input: { readonly id: ScheduledTaskId }) =>
+          Deferred.succeed(reached, undefined).pipe(
+            Effect.andThen(Deferred.await(proceed)),
+            Effect.andThen(service.delete(input)),
+          );
+        const deleting = yield* checks
+          .delete(
+            { existing, parent: { thread: { id: threadId } } },
+            remove,
+          )({ id })
+          .pipe(Effect.exit, Effect.forkScoped);
+        yield* Deferred.await(reached);
+        // Meanwhile the task's run starts on that same thread.
+        yield* service.runNow({ id });
+        assert.equal((yield* readCheckState(id))?.runs[0]?.threadId, threadId);
+        yield* Deferred.succeed(proceed, undefined);
+        const refused = yield* Fiber.join(deleting);
+        assert.isTrue(Exit.isFailure(refused));
+        assert.include(String(refused), "A judged thread cannot change its own scheduled task");
+        assert.isNotNull(yield* readCheckState(id));
+        assert.isDefined((yield* service.list()).tasks.find((task) => task.id === id));
+        yield* checks.delete(
+          { existing, parent: { thread: { id: ThreadId.make("thread:other") } } },
+          service.delete,
+        )({ id });
+        assert.isNull(yield* readCheckState(id));
+        assert.isUndefined((yield* service.list()).tasks.find((task) => task.id === id));
+      }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+    }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "a report that comes to need you after Run now admits a send holds that send, and the run needs you",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      yield* TestClock.setTime(Date.parse(CANONICAL));
+      const id = "scheduled-task:boundary";
+      const runId = `${id}:${CANONICAL}`;
+      const sentMessage = `scheduled-task-check-message:${runId}:0`;
+      const reason = "The Spectrum report run failed and will not be retried";
+      const barrier = {
+        admitted: yield* Deferred.make<void>(),
+        proceed: yield* Deferred.make<void>(),
+      };
+      const bind = (report: string) =>
+        bindSpectrum({
+          callerThreadId: threadId,
+          schedulerRunId: runId,
+          status: "active",
+          report,
+          spectrumThreadId: "spectrum:boundary",
+        });
+      yield* Effect.gen(function* () {
+        yield* ensureSpectraFixture;
+        yield* createThread;
+        yield* insertTask({ id, schedule: { type: "interval", everyMs: 3_600_000 }, next: null });
+        // The run's work ended and its checks gave out, so it needs you.
+        yield* persist("boundary:work", [
+          runEvent("run.created", threadRun("run:boundary:work", sentMessage, "completed"), "bw"),
+        ]);
+        yield* writeCheckState(
+          null,
+          checkState(id, [
+            { ...sentRun(runId, sentMessage), stage: "needs-you", error: "Outcome check failed" },
+          ]),
+        );
+        // A bound Spectrum is still working on its first report.
+        yield* bind("first");
+        const before = yield* messagesOf;
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const resuming = yield* service
+          .runNow({ id: ScheduledTaskId.make(id) })
+          .pipe(Effect.exit, Effect.forkScoped);
+        yield* Deferred.await(barrier.admitted);
+        assert.equal((yield* runOf(id)).sends.length, 2);
+        // Its next report needs you before the admitted send goes out.
+        yield* bind("second");
+        yield* Deferred.succeed(barrier.proceed, undefined);
+        yield* Fiber.join(resuming);
+        assert.deepEqual(yield* messagesOf, before);
+        const held = yield* runOf(id);
+        assert.equal(held.stage, "needs-you");
+        assert.equal(held.error, `Spectrum report: ${reason}`);
+        assert.equal(held.sends.length, 2, "the recorded send is kept");
+      }).pipe(
+        Effect.provide(
+          runtime(database, {
+            spectra: fixtureSpectra(new Map([["report:second", reason]])),
+            dispatchBarrier: barrier,
+          }),
+        ),
+        Effect.scoped,
+      );
     }).pipe(Effect.scoped),
 );

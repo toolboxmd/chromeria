@@ -363,6 +363,43 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
       );
     });
 
+  /**
+   * A send admitted earlier goes out only if the task still owns it when its
+   * turn comes: a deleted task, or a run that moved on, sends nothing. A bound
+   * report that came to need you since admission makes the run need you, and
+   * one still waiting keeps the recorded send for redelivery (D40). Callers
+   * hold the task's lock.
+   */
+  const deliverIfOwned = (taskId: ScheduledTaskId, runId: string, send: RunSend) =>
+    Effect.gen(function* () {
+      const state = yield* readCheckState(taskId);
+      const run = state?.runs.find((entry) => entry.id === runId);
+      if (
+        state === null ||
+        run === undefined ||
+        run.stage !== "running" ||
+        run.sends.at(-1)?.commandId !== send.commandId
+      )
+        return;
+      const fence = yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const fence = yield* deps.reportsFence(run.id);
+          if (fence.kind === "needs-you") yield* reportNeedsYou(state, run, fence.reason);
+          return fence;
+        }),
+      );
+      if (fence.kind === "released") yield* deliver(taskId, state, run, send);
+    });
+  /** A command run admitted earlier starts only if its task still owns it. Callers hold the lock. */
+  const launchIfOwned = (task: ScheduledTask, runId: string) =>
+    Effect.gen(function* () {
+      const state = yield* readCheckState(task.id);
+      const run = state?.runs.find((entry) => entry.id === runId);
+      if (state === null || run === undefined || run.stage !== "running" || executing.has(runId))
+        return;
+      yield* launchCommand(task, state, run);
+    });
+
   const newRun = (state: CheckState, task: ScheduledTask, slot: string): CheckedRun => ({
     id: `${task.id}:${slot}`,
     slot,
@@ -457,7 +494,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
               );
               return resumed._tag === "refused"
                 ? fork(Effect.fail(resumed.error))
-                : fork(locked(task.id, deliver(task.id, resumed.state, resumed.run, resumed.send)));
+                : fork(locked(task.id, deliverIfOwned(task.id, resumed.run.id, resumed.send)));
             }
             // A scheduled fork trigger is identified by its slot, so a replayed fire is the same run.
             const slot = forkScheduledSlot(task, trigger) ?? iso(now);
@@ -472,13 +509,13 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
             const withRun: CheckState = { ...state, runs: [...state.runs, run] };
             if (state.kind === "command") {
               // Stored as running before anything is spawned: a restart never runs it twice.
-              const stored = yield* store(state, withRun);
-              return fork(launchCommand(task, stored, run));
+              yield* store(state, withRun);
+              return fork(locked(task.id, launchIfOwned(task, run.id)));
             }
             const started = yield* startSend(task, withRun, run, now);
             return started._tag === "refused"
               ? fork(Effect.fail(started.error))
-              : fork(locked(task.id, deliver(task.id, started.state, started.run, started.send)));
+              : fork(locked(task.id, deliverIfOwned(task.id, started.run.id, started.send)));
           }),
         ).pipe(
           Effect.catchTags({
@@ -790,12 +827,28 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
   const save = (input: Parameters<typeof saveUnlocked>[0]) =>
     locked(input.taskId, saveUnlocked(input));
 
-  /** Pause, delete and plain edits by an agent run the same judged-thread guard. */
-  const assertMayChange = (taskId: ScheduledTaskId, actorThreadId: ThreadId | null) =>
-    readCheckState(taskId).pipe(Effect.flatMap((state) => judgedGuard(state, actorThreadId)));
-
-  const forget = (taskId: ScheduledTaskId) =>
-    locked(taskId, deleteCheckState(taskId).pipe(Effect.tap(() => deps.changed)));
+  /**
+   * Deletes a task under its lock, in one transaction: the judged-thread guard,
+   * upstream's delete and the fork state, so no fire, step or admitted send
+   * lands in between. A judged thread cannot delete its own task.
+   */
+  const removeTask = <A, E, R>(
+    taskId: ScheduledTaskId,
+    actorThreadId: ThreadId | null,
+    deleteUpstream: Effect.Effect<A, E, R>,
+  ) =>
+    locked(
+      taskId,
+      sql.withTransaction(
+        Effect.gen(function* () {
+          yield* judgedGuard(yield* readCheckState(taskId), actorThreadId);
+          const deleted = yield* deleteUpstream;
+          yield* deleteCheckState(taskId);
+          yield* deps.changed;
+          return deleted;
+        }),
+      ),
+    );
 
   /** Completes when every command this engine started has recorded its result. */
   const drainCommands = FiberSet.awaitEmpty(commands);
@@ -809,8 +862,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
     save,
     saveUnlocked,
     withTaskLock,
-    assertMayChange,
-    forget,
+    removeTask,
     drainCommands,
   };
 });

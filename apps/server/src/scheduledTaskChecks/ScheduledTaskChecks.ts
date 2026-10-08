@@ -111,7 +111,10 @@ export class ScheduledTaskChecks extends Context.Service<
       },
       save: (input: ScheduledTaskUpsertInput) => Effect.Effect<A, E, R>,
     ) => (input: ScheduledTaskUpsertInput) => Effect.Effect<A, E | ScheduledTaskError, R>;
-    /** Wraps `delete_scheduled_task`'s delete: a judged thread cannot delete its own task. */
+    /**
+     * Wraps `delete_scheduled_task`'s delete: a judged thread cannot delete its
+     * own task. The guard runs inside the decorated delete, under the task's lock.
+     */
     readonly delete: <I, A, E, R>(
       hook: { readonly existing: ScheduledTask; readonly parent: Caller },
       remove: (input: I) => Effect.Effect<A, E, R>,
@@ -120,6 +123,12 @@ export class ScheduledTaskChecks extends Context.Service<
     readonly reconcile: Effect.Effect<void, ScheduledTaskError>;
   }
 >()("t3/scheduledTaskChecks/ScheduledTaskChecks") {}
+
+/** The agent thread deleting a task through its tools, for the judged-thread guard; null otherwise. */
+export class ScheduledTaskDeleteActor extends Context.Reference<ThreadId | null>(
+  "t3/scheduledTaskChecks/ScheduledTaskDeleteActor",
+  { defaultValue: () => null },
+) {}
 
 /** A fork refusal as upstream's scheduled task error, so tool handlers report it unchanged. */
 const toToolError = (taskId: ScheduledTaskId) => (error: ScheduledTaskCheckError) =>
@@ -577,14 +586,17 @@ const decoratedLayer = Layer.effect(
           Effect.flatMap((result) => attach(result.task)),
           Effect.map((task) => ({ task })),
         ),
+      // The guard, upstream's delete and the fork state share the task's lock and one transaction.
       delete: (input) =>
-        inner
-          .delete(input)
-          .pipe(
-            Effect.tap(() =>
-              withSql(runs.forget(input.id)).pipe(Effect.mapError(toTaskError(input.id))),
-            ),
+        Effect.gen(function* () {
+          const actorThreadId = yield* ScheduledTaskDeleteActor;
+          return yield* runs.removeTask(input.id, actorThreadId, inner.delete(input));
+        }).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError((error) =>
+            error._tag === "ScheduledTaskError" ? error : toTaskError(input.id)(error),
           ),
+        ),
       runNow: (input) =>
         inner.runNow(input).pipe(
           Effect.flatMap((result) => attach(result.task)),
@@ -698,11 +710,10 @@ const checksLayer = Layer.effect(
             )
             .pipe(rethrowSql),
       delete:
-        ({ existing, parent }, remove) =>
+        ({ parent }, remove) =>
         (input) =>
-          withSql(runs.assertMayChange(existing.id, parent?.thread.id ?? null)).pipe(
-            Effect.mapError(toToolError(existing.id)),
-            Effect.andThen(remove(input)),
+          remove(input).pipe(
+            Effect.provideService(ScheduledTaskDeleteActor, parent?.thread.id ?? null),
           ),
       reconcile,
     });
