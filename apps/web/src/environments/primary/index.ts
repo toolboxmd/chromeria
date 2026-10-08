@@ -15,6 +15,7 @@ export {
   revokeOtherServerClientSessions,
   revokeServerClientSession,
   revokeServerPairingLink,
+  setServerClientSessionPerson,
   stripPairingTokenFromUrl,
   submitServerAuthCredential,
   takePairingTokenFromUrl,

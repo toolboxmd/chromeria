@@ -6,6 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { runMigrations } from "./Migrations.ts";
+import { ensureThreadPeopleSchema } from "./forkThreadPeopleSchema.ts";
 import { initializeV2Database } from "./initializeV2Database.ts";
 import * as ServerConfig from "../config.ts";
 
@@ -37,6 +38,7 @@ const layerSetup = Layer.effectDiscard(
     // analyzes tables whose indexes lack stats or whose row count changed 10x,
     // under a temporary analysis_limit. Otherwise it only checks table sizes.
     yield* sql`PRAGMA optimize = 0x10012;`;
+    yield* ensureThreadPeopleSchema;
   }),
 );
 
