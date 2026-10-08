@@ -1,6 +1,6 @@
 import type { EnvironmentId, PullRequestRef, ScopedThreadRef } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouter } from "@tanstack/react-router";
 import { type MouseEvent, useCallback, useMemo } from "react";
 
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
@@ -147,6 +147,7 @@ export function useOpenChangeRequestLink(
   targetEnvironmentId?: EnvironmentId,
 ) => boolean {
   const navigate = useNavigate();
+  const router = useRouter();
   const allProjects = useProjects();
   const serverConfigs = useServerConfigs();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -215,9 +216,12 @@ export function useOpenChangeRequestLink(
           number: parsed.number,
         });
         if (!resolvedThreadRef) {
+          // Leaving the Issues view is a new page, so Back returns to the Issue being read.
+          const leavesIssues = "view" in router.state.location.search;
           void navigate({
             to: "/pull-requests",
-            search: (previous) => ({
+            // Drops the Issues view, whose side panel would otherwise stay in front.
+            search: ({ view: _view, issue: _issue, ...previous }) => ({
               ...previous,
               involvement: previous.involvement ?? "all",
               state: previous.state ?? "all",
@@ -227,7 +231,7 @@ export function useOpenChangeRequestLink(
               selectedProjectId: project.id,
               selectedEnvironmentId: project.environmentId,
             }),
-            replace: true,
+            replace: !leavesIssues,
           });
         }
         return true;
@@ -249,7 +253,7 @@ export function useOpenChangeRequestLink(
       });
       return true;
     },
-    [allProjects, navigate, openInApp, panelRef, primaryEnvironmentId, serverConfigs, threadRef],
+    [allProjects, navigate, openInApp, panelRef, primaryEnvironmentId, router, serverConfigs, threadRef],
   );
 }
 
