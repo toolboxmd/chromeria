@@ -64,6 +64,7 @@ const replay = Harness.layerWithRegistry(
 const dependencies = Layer.mergeAll(
   foundation,
   recovery,
+  hooks,
   replay,
   Threads.layer.pipe(Layer.provide(replay)),
   Layer.mock(Scheduler.Scheduler)({ register: () => Effect.void }),
@@ -321,4 +322,114 @@ it.effect("Stop while waiting for reset releases finalization without resuming a
       1,
     );
   }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "stale propagated Stop preserves a resumed child's recovery; a newer Stop releases it",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threads = yield* Threads.ThreadManagementService;
+      const projections = yield* Projection.ProjectionStoreV2;
+      const sql = yield* SqlClient.SqlClient;
+      const hooks = yield* Hooks.RecoveryHooks;
+      const rootId = ThreadId.make("root:delayed-recovery-stop");
+      const childId = ThreadId.make("child:delayed-recovery-stop");
+      for (const threadId of [rootId, childId]) {
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`create:${threadId}`),
+          threadId,
+          projectId: ProjectId.make("project:recovery"),
+          title: threadId,
+          modelSelection: selection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+      }
+      const child = (yield* orchestrator.getThreadProjection(childId)).thread;
+      yield* projections.apply({
+        id: EventId.make("delayed-recovery-lineage"),
+        type: "thread.metadata-updated",
+        threadId: childId,
+        occurredAt: yield* DateTime.now,
+        payload: {
+          ...child,
+          lineage: {
+            rootThreadId: rootId,
+            parentThreadId: rootId,
+            relationshipToParent: "subagent",
+          },
+        },
+      });
+      const oldToken = CommandId.make("delayed-recovery-stop:old");
+      yield* orchestrator.dispatch({ type: "thread.stop", commandId: oldToken, threadId: rootId });
+      const resumeId = CommandId.make("delayed-recovery:human-resume");
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: resumeId,
+        threadId: childId,
+        messageId: MessageId.make("delayed-recovery:human-message"),
+        text: "Resume explicitly",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const resumed = yield* orchestrator.getThreadProjection(childId);
+      assert.include(resumed.thread.forkResumedRetirements ?? [], oldToken);
+      const run = resumed.runs[0]!;
+      yield* finish(run, failure);
+      assert.strictEqual(yield* hooks.holdsFinalization(childId, run.id), true);
+      const recoveryBefore =
+        yield* sql`SELECT * FROM fork_prism_recovery WHERE thread_id=${childId}`;
+      const effectsBefore =
+        yield* sql`SELECT effect_id,status FROM orchestration_v2_effect_outbox WHERE command_id=${resumeId}`;
+      assert.isNotEmpty(effectsBefore);
+      yield* threads.stopDelegatedTasks({ threadId: rootId, commandId: oldToken });
+      const propagatedId = CommandId.make(`${oldToken}:stop:${childId}`);
+      assert.deepStrictEqual(
+        yield* sql`SELECT status FROM orchestration_command_receipts WHERE command_id=${propagatedId}`,
+        [{ status: "accepted" }],
+      );
+      assert.lengthOf(
+        yield* sql`SELECT event_id FROM orchestration_events WHERE command_id=${propagatedId}`,
+        0,
+      );
+      assert.lengthOf(
+        yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE command_id=${propagatedId}`,
+        0,
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM fork_prism_recovery WHERE thread_id=${childId}`,
+        recoveryBefore,
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT effect_id,status FROM orchestration_v2_effect_outbox WHERE command_id=${resumeId}`,
+        effectsBefore,
+      );
+      assert.strictEqual(yield* hooks.holdsFinalization(childId, run.id), true);
+      const afterStale = yield* orchestrator.getThreadProjection(childId);
+      assert.deepStrictEqual(
+        afterStale.thread.forkResumedRetirements,
+        resumed.thread.forkResumedRetirements,
+      );
+      assert.strictEqual(
+        afterStale.thread.forkRetirement?.token,
+        resumed.thread.forkRetirement?.token,
+      );
+      const newToken = CommandId.make("delayed-recovery-stop:new");
+      yield* orchestrator.dispatch({ type: "thread.stop", commandId: newToken, threadId: rootId });
+      assert.strictEqual(yield* hooks.holdsFinalization(childId, run.id), false);
+      assert.deepStrictEqual(
+        yield* sql`SELECT state FROM fork_prism_recovery WHERE thread_id=${childId}`,
+        [{ state: "closed" }],
+      );
+      yield* (yield* Reactor.RecoveryReactor).sweep;
+      assert.lengthOf((yield* orchestrator.getThreadProjection(childId)).runs, 1);
+    }).pipe(Effect.provide(layer)),
 );
