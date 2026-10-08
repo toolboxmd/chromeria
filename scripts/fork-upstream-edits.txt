@@ -36,6 +36,8 @@ apps/server/src/orchestration-v2/ProviderSessionManager.ts
 apps/server/src/orchestration-v2/ThreadLaunchService.test.ts
 apps/server/src/orchestration-v2/ThreadLaunchService.ts
 apps/server/src/orchestration-v2/ThreadManagementService.ts
+apps/server/src/orchestration-v2/ThreadMessageIntake.test.ts
+apps/server/src/orchestration-v2/ThreadMessageIntake.ts
 apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts
 apps/server/src/orchestration-v2/ThreadPullRequestService.ts
 apps/server/src/orchestration-v2/ThreadStop.test.ts
