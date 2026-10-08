@@ -680,6 +680,7 @@ describe("orchestrator MCP toolkit", () => {
             McpHttpServer.layerOrchestratorToolkit,
             McpHttpServer.layerThreadToolkit,
           ).pipe(
+            Layer.provide(PrismServerSettings.layerTest()),
             Layer.provideMerge(McpServer.McpServer.layer),
             Layer.provideMerge(layerOrchestration),
             Layer.provide(layerRegistry),

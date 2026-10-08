@@ -106,8 +106,8 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         const service = yield* ServerSettingsModule.ServerSettingsService;
         const savedKits = (scope: string) => {
           const models = [
-            { instanceId: "codex", model: "gpt-5.4", effort: "high" },
-            { instanceId: "claude", model: "claude-sonnet-4-6" },
+            { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4", effort: "high" },
+            { instanceId: ProviderInstanceId.make("claude"), model: "claude-sonnet-4-6" },
           ];
           const kit = (role: string) => ({
             instructions: `${scope} ${role} instructions.\nPreserve the complete saved kit.`,
@@ -123,11 +123,25 @@ it.layer(NodeServices.layer)("server settings", (it) => {
               instructions: `${scope} worker instructions.`,
               skills: ["operations", `${scope}-worker`],
               lanes: {
-                easy: [{ instanceId: "codex", model: "gpt-5.4-mini", effort: "low" }],
+                easy: [
+                  {
+                    instanceId: ProviderInstanceId.make("codex"),
+                    model: "gpt-5.4-mini",
+                    effort: "low",
+                  },
+                ],
                 medium: models,
                 hard: [
-                  { instanceId: "claude", model: "claude-opus-4-6", effort: "high" },
-                  { instanceId: "codex", model: "gpt-5.4", effort: "xhigh" },
+                  {
+                    instanceId: ProviderInstanceId.make("claude"),
+                    model: "claude-opus-4-6",
+                    effort: "high",
+                  },
+                  {
+                    instanceId: ProviderInstanceId.make("codex"),
+                    model: "gpt-5.4",
+                    effort: "xhigh",
+                  },
                 ],
               },
             },
