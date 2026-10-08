@@ -566,3 +566,60 @@ child-threads when #168 lands, and thread-people will watch it as a shared path.
   "keywords": ["thread ownership", "coOwners", "person picker", "thread.share"]
 }
 ```
+
+## child-threads
+
+```json
+{
+  "id": "child-threads",
+  "purpose": "Create native children in any project, handle descendant requests and preserve durable subtree Stop.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/168"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/168-child-threads-v2"],
+  "newFiles": [
+    "apps/server/src/childThreads/ForkCommitPlan.ts",
+    "apps/server/src/childThreads/crossProject.test.ts",
+    "apps/server/src/childThreads/lineageBackfill.test.ts",
+    "apps/server/src/childThreads/lineageBackfill.ts",
+    "apps/server/src/childThreads/pendingRequests.test.ts",
+    "apps/server/src/childThreads/pendingRequests.ts",
+    "apps/server/src/childThreads/providerStop.test.ts",
+    "apps/server/src/childThreads/requestWake.test.ts",
+    "apps/server/src/childThreads/requestWake.ts",
+    "apps/server/src/childThreads/retirement.test.ts",
+    "apps/server/src/childThreads/retirement.ts",
+    "apps/server/src/childThreads/stopDescendants.ts",
+    "apps/server/src/childThreads/workspaceAccess.ts"
+  ],
+  "upstreamFiles": [
+    "apps/server/src/mcp/OrchestratorMcpService.activity.test.ts",
+    "apps/server/src/mcp/OrchestratorMcpService.test.ts",
+    "apps/server/src/mcp/OrchestratorMcpService.ts",
+    "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+    "apps/server/src/mcp/threadAccess.ts",
+    "apps/server/src/mcp/toolkits/core.test.ts",
+    "apps/server/src/mcp/toolkits/thread/handlers.ts",
+    "apps/server/src/mcp/toolkits/thread/tools.ts",
+    "apps/server/src/orchestration-v2/EffectOutbox.ts",
+    "apps/server/src/orchestration-v2/EffectWorker.ts",
+    "apps/server/src/orchestration-v2/EventSink.ts",
+    "apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
+    "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+    "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+    "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+    "apps/server/src/orchestration-v2/ThreadStop.test.ts",
+    "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts",
+    "packages/contracts/src/orchestrationV2.ts",
+    "packages/contracts/src/orchestratorMcp.ts"
+  ],
+  "sharedFiles": ["apps/server/src/persistence/forkV1Backfills.ts", "apps/server/src/mcp/toolkits/worktree/registration.test.ts"],
+  "keywords": [
+    "delegate_task",
+    "delegated_task.request",
+    "forkRetirement",
+    "forkResumedRetirements",
+    "subagent_result",
+    "lineageBackfill"
+  ]
+}
+```
