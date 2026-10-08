@@ -89,6 +89,32 @@ describe("Prism recovery finalization coordination", () => {
         assert.strictEqual(yield* coordinator.holdsResult(run.threadId), false);
       }).pipe(Effect.provide(layer)),
   );
+  it.effect("a persisted reset opt-out releases finalization despite the global default", () =>
+    Effect.gen(function* () {
+      const coordinator = yield* Coordinator.RecoveryCoordinator;
+      const item = errorFor(run);
+      if (item.type !== "error") throw new Error("fixture");
+      const resetAt = "2026-10-08T11:00:00Z";
+      const limited = {
+        ...projection,
+        turnItems: [
+          { ...item, failure: { ...item.failure, class: "usage_limit" as const, resetAt } },
+        ],
+      };
+      assert.strictEqual((yield* coordinator.observe(limited, false))?.state, "reset_wait");
+      yield* coordinator.observe(
+        {
+          ...limited,
+          thread: {
+            ...limited.thread,
+            limitRecovery: { runId: run.id, resetAt, autoResume: false, snooze: false },
+          },
+        },
+        false,
+      );
+      assert.strictEqual(yield* coordinator.holdsResult(run.threadId), false);
+    }).pipe(Effect.provide(layer)),
+  );
   it.effect(
     "retirement or incomplete ancestry releases a held failure without creating another retry",
     () =>

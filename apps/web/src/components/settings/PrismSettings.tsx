@@ -1,11 +1,4 @@
-import {
-  PRISM_ROLE_LABELS,
-  PRISM_SWITCHABLE_ROLES,
-  PrismLane,
-  type PrismModelPreference,
-  type PrismRole,
-  type PrismSwitchableRole,
-} from "@t3tools/contracts";
+import { PRISM_ROLE_LABELS, PrismLane, type PrismModelPreference } from "@t3tools/contracts";
 import {
   closestCenter,
   DndContext,
@@ -109,18 +102,15 @@ const ROLE_DETAILS: Record<
   },
   retry: {
     icon: <RotateCcwIcon />,
-    description: "Takes over a failed worker turn on another model.",
+    description: 'Model list used when the planner requests prismRole: "retry".',
   },
   escalation: {
     icon: <ChevronsUpIcon />,
-    description: "Moves stuck work to a stronger model before asking the planner.",
+    description: 'Model list used when the planner requests prismRole: "escalation".',
   },
 };
 
 const LANE_LABELS: Record<PrismLane, string> = { easy: "Easy", medium: "Medium", hard: "Hard" };
-
-const isSwitchable = (role: PrismRole): role is PrismSwitchableRole =>
-  (PRISM_SWITCHABLE_ROLES as readonly PrismRole[]).includes(role);
 
 type DraftPreference = PrismModelPreference & { entryId: number };
 const editablePreference = (model: PrismModelPreference, entryId: number): DraftPreference => ({
@@ -368,18 +358,12 @@ function ModelList({
 
 function RoleRow({
   role,
-  enabled,
   selected,
-  disabled,
   onSelect,
-  onEnabledChange,
 }: {
   role: PageRole;
-  enabled: boolean;
   selected: boolean;
-  disabled: boolean;
   onSelect: () => void;
-  onEnabledChange: (enabled: boolean) => void;
 }) {
   const { icon, description, lockedReason } = ROLE_DETAILS[role];
   const name = PRISM_ROLE_LABELS[role];
@@ -391,12 +375,7 @@ function RoleRow({
         selected ? "bg-muted/45" : "hover:bg-muted/25",
       )}
     >
-      <div
-        className={cn(
-          "pointer-events-none relative flex min-w-0 flex-1 items-start gap-3 rounded-md text-left transition-opacity",
-          !enabled && !selected && "opacity-60 group-hover:opacity-100",
-        )}
-      >
+      <div className="pointer-events-none relative flex min-w-0 flex-1 items-start gap-3 rounded-md text-left">
         <button
           type="button"
           className="pointer-events-auto absolute inset-0 cursor-pointer rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -414,9 +393,9 @@ function RoleRow({
           </span>
         </span>
       </div>
-      <span className="flex h-5 shrink-0 items-center gap-1.5">
-        {lockedReason ? <LockIcon aria-hidden className="size-3.5 text-muted-foreground" /> : null}
-        {lockedReason ? (
+      {lockedReason && (
+        <span className="flex h-5 shrink-0 items-center gap-1.5">
+          <LockIcon aria-hidden className="size-3.5 text-muted-foreground" />
           <Tooltip>
             <TooltipTrigger
               render={
@@ -427,15 +406,8 @@ function RoleRow({
             />
             <TooltipPopup side="top">{lockedReason}</TooltipPopup>
           </Tooltip>
-        ) : (
-          <Switch
-            checked={enabled}
-            disabled={disabled}
-            onCheckedChange={(checked) => onEnabledChange(Boolean(checked))}
-            aria-label={`Enable ${name}`}
-          />
-        )}
-      </span>
+        </span>
+      )}
     </div>
   );
 }
@@ -483,8 +455,6 @@ export function PrismSettings() {
     });
   const [selectedRole, setSelectedRole] = useState<PageRole>("dispatcher");
   const [workerLane, setWorkerLane] = useState<PrismLane>("medium");
-  const roleEnabled = (role: PageRole) =>
-    isSwitchable(role) ? settings.prismRoles[role].enabled : true;
 
   const providers = environment?.serverConfig?.providers ?? EMPTY_SERVER_PROVIDERS;
   const entries = applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings);
@@ -551,14 +521,8 @@ export function PrismSettings() {
               <RoleRow
                 key={role}
                 role={role}
-                enabled={roleEnabled(role)}
                 selected={selectedRole === role}
-                disabled={!target || pendingWrite !== null}
                 onSelect={() => setSelectedRole(role)}
-                onEnabledChange={(enabled) => {
-                  if (isSwitchable(role))
-                    void saveRole({ kind: "enabled", role, enabled }).catch(() => {});
-                }}
               />
             ))}
           </div>
@@ -572,13 +536,16 @@ export function PrismSettings() {
                 <p className="text-xs text-muted-foreground">
                   {ROLE_DETAILS[selectedRole].description}
                 </p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {ROLE_DETAILS[selectedRole].lockedReason
-                    ? `Always on. ${ROLE_DETAILS[selectedRole].lockedReason}`
-                    : roleEnabled(selectedRole)
-                      ? "On. Switch it off to skip this step."
-                      : "Off. Prism skips this step."}
-                </p>
+                {ROLE_DETAILS[selectedRole].lockedReason ? (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Always on. {ROLE_DETAILS[selectedRole].lockedReason}
+                  </p>
+                ) : (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Automatic recovery retries once on the same provider and model, independently of
+                    these lists.
+                  </p>
+                )}
               </div>
               {pendingWrite && (
                 <span role="status" className="shrink-0 text-xs text-muted-foreground">

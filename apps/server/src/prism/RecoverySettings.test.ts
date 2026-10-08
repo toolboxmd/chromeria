@@ -10,6 +10,7 @@ import * as Config from "../config.ts";
 import * as Persistence from "../persistence/Sqlite.ts";
 import * as Settings from "../serverSettings.ts";
 
+const decodeSettingsJson = Schema.decodeUnknownEffect(Schema.fromJsonString(ServerSettings));
 const settingsLayer = Settings.layer.pipe(
   Layer.provide(Secrets.layer),
   Layer.provideMerge(Persistence.layerMemory),
@@ -26,10 +27,19 @@ it.effect("Prism settings writes preserve a saved reset-recovery opt-out", () =>
     yield* settings.updateSettings({
       prismRoles: { planner: { instructions: "Use the project plan." } },
     });
-    const persisted = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(ServerSettings))(
-      yield* fs.readFileString(config.settingsPath),
-    );
+    const persisted = yield* decodeSettingsJson(yield* fs.readFileString(config.settingsPath));
     assert.strictEqual(persisted.autoResumeLimitedThreads, false);
     assert.strictEqual(persisted.prismRoles.planner.instructions, "Use the project plan.");
+  }).pipe(Effect.provide(settingsLayer)),
+);
+
+it.effect("fresh Chromeria settings enable reset recovery by default", () =>
+  Effect.gen(function* () {
+    const settings = yield* Settings.ServerSettingsService;
+    assert.strictEqual((yield* settings.getSettings).autoResumeLimitedThreads, true);
+    yield* settings.updateSettings({
+      prismRoles: { planner: { instructions: "Keep the default." } },
+    });
+    assert.strictEqual((yield* settings.getSettings).autoResumeLimitedThreads, true);
   }).pipe(Effect.provide(settingsLayer)),
 );

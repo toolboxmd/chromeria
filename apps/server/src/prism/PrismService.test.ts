@@ -195,6 +195,43 @@ describe("PrismService", () => {
       assert.strictEqual(error.code, "invalid_request");
     }),
   );
+  it.effect("explicit retry and escalation kits still route with legacy enabled false", () =>
+    Effect.gen(function* () {
+      const p = yield* provider;
+      yield* Effect.gen(function* () {
+        const service = yield* Prism.PrismService;
+        for (const role of ["retry", "escalation"] as const) {
+          const result = yield* service.resolve({ projectId, role });
+          assert.strictEqual(result.modelSelection.model, "configured");
+          assert.strictEqual(result.kitText, "Planner requested kit.");
+        }
+      }).pipe(
+        Effect.provide(
+          Prism.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                registry([p]),
+                Settings.layerTest({
+                  prismRoles: {
+                    retry: {
+                      enabled: false,
+                      models: [selection],
+                      instructions: "Planner requested kit.",
+                    },
+                    escalation: {
+                      enabled: false,
+                      models: [selection],
+                      instructions: "Planner requested kit.",
+                    },
+                  },
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+    }),
+  );
   it("maps every upstream role to the fixed kit", () => {
     assert.strictEqual(Prism.delegatedPrismRole("implementation"), "worker");
     assert.strictEqual(Prism.delegatedPrismRole("test"), "worker");

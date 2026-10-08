@@ -52,12 +52,17 @@ const make = Effect.gen(function* () {
       projection.thread.settledOverride === "settled" ||
       projection.runtimeRequests.some((request) => request.status === "pending") ||
       !sameModelSelection(projection.thread.modelSelection, run.modelSelection);
+    const recovery = projection.thread.limitRecovery;
+    const persistedResetChoice =
+      recovery?.runId === run.id && recovery.resetAt === failure?.resetAt
+        ? recovery.autoResume
+        : undefined;
     return yield* store.reconcile({
       previous: null,
       run,
       failure,
       stoppedOrRetired: blocked,
-      autoResume: (yield* settings.getSettings).autoResumeLimitedThreads,
+      autoResume: persistedResetChoice ?? (yield* settings.getSettings).autoResumeLimitedThreads,
     });
   });
   const holdsResult = Effect.fn("RecoveryCoordinator.holdsResult")(function* (threadId: ThreadId) {

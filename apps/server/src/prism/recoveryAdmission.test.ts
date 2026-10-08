@@ -3,6 +3,8 @@ import { CommandId, EventId, RunId } from "@t3tools/contracts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Effect from "effect/Effect";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
+import { retirementAdmission, explicitMessage } from "../childThreads/retirement.ts";
+import { threadFor } from "./recovery.testkit.ts";
 import * as Store from "./RecoveryStore.ts";
 import {
   recoveryTestLayer,
@@ -39,6 +41,52 @@ const setup = Effect.gen(function* () {
   return { sink, store, armed, command, plan };
 });
 describe("Prism atomic retry admission", () => {
+  it.effect(
+    "a Stop committed after recovery planning rejects both composed plans without acknowledgement",
+    () =>
+      Effect.gen(function* () {
+        const { sink, store, command, plan } = yield* setup;
+        const ancestry = retirementAdmission({ threadId: run.threadId });
+        assert.strictEqual(explicitMessage(command), false);
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("event:stop:after-plan"),
+              type: "thread.metadata-updated",
+              threadId: run.threadId,
+              occurredAt: run.requestedAt,
+              payload: {
+                ...threadFor(run),
+                forkRetirement: { token: CommandId.make("stop:after-plan") },
+              },
+            },
+          ],
+        });
+        const result = yield* sink
+          .commitCommand({
+            commandId: command.commandId,
+            threadId: command.threadId,
+            commandType: command.type,
+            acceptedAt: run.requestedAt,
+            events: [],
+            effects: [],
+            forkPlans: [ancestry, plan],
+          })
+          .pipe(Effect.flip);
+        assert.strictEqual(result._tag, "ForkCommitGuardRejected");
+        if (result._tag === "ForkCommitGuardRejected") assert.strictEqual(result.kind, "retired");
+        assert.strictEqual((yield* store.get(run.threadId))?.state, "retry_pending");
+        const sql = yield* SqlClient.SqlClient;
+        assert.strictEqual(
+          (yield* sql<{
+            count: number;
+          }>`SELECT COUNT(*) AS count FROM orchestration_v2_effect_outbox WHERE command_id=${command.commandId}`)[0]
+            ?.count,
+          0,
+        );
+      }).pipe(Effect.provide(recoveryTestLayer)),
+  );
+
   it.effect(
     "duplicate dispatch commits one retry and receipt replay bypasses consumed eligibility",
     () =>

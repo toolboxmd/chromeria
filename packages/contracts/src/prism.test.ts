@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { DEFAULT_PRISM_ROLE_KITS, PrismRoleKits, PrismRoleKitsPatch } from "./prism.ts";
 import { ProjectSettingsOverrides, ServerSettings } from "./settings.ts";
 
+const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeServerSettings = Schema.decodeSync(ServerSettings);
 const decodeProjectOverrides = Schema.decodeSync(ProjectSettingsOverrides);
 const decodeKitsPatch = Schema.decodeSync(PrismRoleKitsPatch);
@@ -15,7 +16,7 @@ describe("Prism role kits", () => {
     const saved = decodeServerSettings({ autoResumeLimitedThreads: false });
     expect(saved.autoResumeLimitedThreads).toBe(false);
     const updated = decodeServerSettings({
-      ...Schema.encodeSync(ServerSettings)(saved),
+      ...encodeServerSettings(saved),
       prismRoles: { planner: { instructions: "Plan." } },
     });
     expect(updated.autoResumeLimitedThreads).toBe(false);
