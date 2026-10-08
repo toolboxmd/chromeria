@@ -1,3 +1,4 @@
+import { ForkCommitGuardRejected, type ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { assert, it } from "@effect/vitest";
 import {
@@ -1406,6 +1407,105 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         expectedSequences,
       );
       assert.deepEqual(pageLimits, [500, 500, 500]);
+    }),
+  );
+
+  it.effect.each(["guard", "mutation", "event-write"] as const)(
+    "rolls back the complete fork command transaction on %s failure",
+    (failure) =>
+      Effect.gen(function* () {
+        const sink = yield* EventSink.EventSinkV2;
+        const sql = yield* SqlClient.SqlClient;
+        const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make(`thread:fork-rollback:${failure}`);
+        const commandId = CommandId.make(`command:fork-rollback:${failure}`);
+        yield* sql`CREATE TABLE IF NOT EXISTS fork_commit_proof (id TEXT PRIMARY KEY)`;
+        const rejected = new ForkCommitGuardRejected({ threadId, kind: "state_conflict" });
+        const mutation = Effect.gen(function* () {
+          const transactionSql = yield* SqlClient.SqlClient;
+          yield* transactionSql`INSERT INTO fork_commit_proof (id) VALUES (${commandId})`.pipe(
+            Effect.mapError(
+              () => new ForkCommitGuardRejected({ threadId, kind: "storage_failure" }),
+            ),
+          );
+        });
+        const event = threadCreatedEvent({
+          id: `event:fork-rollback:${failure}`,
+          thread: makeThread(threadId, now),
+          now,
+        });
+        const plans: ReadonlyArray<ForkCommitPlan> = [
+          {
+            guards: failure === "guard" ? [Effect.fail(rejected)] : [],
+            mutations: failure === "mutation" ? [mutation, Effect.fail(rejected)] : [mutation],
+          },
+        ];
+        const outcome = yield* sink
+          .commitCommand({
+            commandId,
+            threadId,
+            commandType: "fork.proof",
+            acceptedAt: now,
+            events: failure === "event-write" ? [event, event] : [event],
+            effects: [
+              {
+                id: `effect:fork-rollback:${failure}`,
+                commandId,
+                threadId,
+                request: { type: "terminal.cleanup" },
+              },
+            ],
+            forkPlans: plans,
+          })
+          .pipe(Effect.result);
+        assert.equal(outcome._tag, "Failure");
+        if (outcome._tag === "Failure" && failure !== "event-write") {
+          assert.instanceOf(outcome.failure, ForkCommitGuardRejected);
+        }
+        assert.lengthOf(yield* sql`SELECT id FROM fork_commit_proof WHERE id = ${commandId}`, 0);
+        assert.isTrue(Option.isNone(yield* receipts.getByCommandId(commandId)));
+        assert.lengthOf(yield* outbox.listByCommandId(commandId), 0);
+        assert.lengthOf(
+          Array.from(yield* sink.readByCommandId({ commandId }).pipe(Stream.runCollect)),
+          0,
+        );
+        assert.equal((yield* projections.getThread(threadId).pipe(Effect.result))._tag, "Failure");
+      }),
+  );
+
+  it.effect("does not evaluate fork guards or mutations on accepted receipt replay", () =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:fork-plan-replay");
+      const commandId = CommandId.make("command:fork-plan-replay");
+      const input = {
+        commandId,
+        threadId,
+        commandType: "fork.proof",
+        acceptedAt: now,
+        events: [
+          threadCreatedEvent({
+            id: "event:fork-plan-replay",
+            thread: makeThread(threadId, now),
+            now,
+          }),
+        ],
+        effects: [],
+      };
+      assert.isTrue((yield* sink.commitCommand(input)).committed);
+      const rejection = Effect.fail(
+        new ForkCommitGuardRejected({ threadId, kind: "state_conflict" }),
+      );
+      const replay = yield* sink.commitCommand({
+        ...input,
+        forkPlans: [{ guards: [rejection], mutations: [rejection] }],
+      });
+      assert.isFalse(replay.committed);
+      assert.lengthOf(replay.storedEvents, 1);
     }),
   );
 

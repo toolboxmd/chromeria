@@ -22,6 +22,8 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { ForkCommitGuardRejected, type ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
+
 import { replayAndBufferProjectedLiveEvents } from "./LiveStreamBudget.ts";
 import type { UnsequencedProjectEvent } from "../persistence/OrchestrationEventStore.ts";
 import { projectDomainEventForWire } from "./WireProjection.ts";
@@ -32,6 +34,8 @@ import * as EventStore from "./EventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
+
+const isForkCommitGuardRejected = Schema.is(ForkCommitGuardRejected);
 
 /**
  * ERRORS
@@ -120,6 +124,7 @@ export interface EventSinkV2Shape {
     EventSinkV2Error
   >;
   readonly commitCommand: (input: {
+    readonly forkPlans?: ReadonlyArray<ForkCommitPlan>;
     readonly commandId: CommandId;
     readonly threadId: ThreadId;
     readonly commandType: string;
@@ -137,7 +142,7 @@ export interface EventSinkV2Shape {
       readonly committed: boolean;
       readonly cancelledEffectCount: number;
     },
-    EventSinkV2Error
+    EventSinkV2Error | ForkCommitGuardRejected
   >;
   readonly commitRejectedCommand: (input: {
     readonly commandId: CommandId;
@@ -543,6 +548,20 @@ const layerBase: Layer.Layer<
             return { ...existing, committed: false as const, cancelledEffectIds: [] };
           }
 
+          for (const plan of input.forkPlans ?? []) {
+            for (const guard of plan.guards)
+              yield* guard.pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.provideService(ProjectionStore.ProjectionStoreV2, projectionStore),
+              );
+          }
+          for (const plan of input.forkPlans ?? []) {
+            for (const mutation of plan.mutations)
+              yield* mutation.pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.provideService(ProjectionStore.ProjectionStoreV2, projectionStore),
+              );
+          }
           const normalized = yield* normalizeEvents(input.events);
           const storedEvents = yield* eventStore.append({
             commandId: input.commandId,
@@ -806,13 +825,14 @@ const layerBase: Layer.Layer<
         ),
       commitCommand: (input) =>
         commitCommandEffect(input).pipe(
-          Effect.mapError(
-            (cause) =>
-              new EventSinkWriteError({
-                commandId: input.commandId,
-                eventCount: input.events.length,
-                cause,
-              }),
+          Effect.mapError((cause) =>
+            isForkCommitGuardRejected(cause)
+              ? cause
+              : new EventSinkWriteError({
+                  commandId: input.commandId,
+                  eventCount: input.events.length,
+                  cause,
+                }),
           ),
         ),
       commitRejectedCommand: (input) =>
