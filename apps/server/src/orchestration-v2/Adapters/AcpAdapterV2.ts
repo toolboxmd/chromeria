@@ -3207,12 +3207,25 @@ export function makeAcpAdapterV2(
             const target =
               targetToolCallId !== undefined ? context.tools.get(targetToolCallId) : undefined;
             const targetStatus = target === undefined ? undefined : toolStatus(target.status);
-            // A row `task_completed` already finished holds the final output;
-            // the agent's later poll of the same task must not append it again.
+            const targetEnded = targetStatus === "completed" || targetStatus === "failed";
             if (
               target !== undefined &&
               target.toolCallId !== toolCall.toolCallId &&
-              (targetStatus === "pending" || targetStatus === "running")
+              targetEnded &&
+              backgroundCompletion.appendOutput.length > 0 &&
+              toolOutputText(target).trim() !== backgroundCompletion.appendOutput.trim()
+            ) {
+              // `task_completed` already ended the row without its final output
+              // (only the start ACK or partial stdout). The poll's result is the
+              // full output: replace, never append.
+              yield* emitTool(
+                context,
+                setToolOutputText(target, backgroundCompletion.appendOutput),
+              );
+            } else if (
+              target !== undefined &&
+              target.toolCallId !== toolCall.toolCallId &&
+              !targetEnded
             ) {
               const nextStatus =
                 backgroundCompletion.status === "running"

@@ -8,7 +8,6 @@ import {
   backgroundNotifications,
   projectionFor,
 } from "../shared.ts";
-import { GROK_BACKGROUND_BASH_POLLED_COMMANDS } from "./input.ts";
 
 export function assertGrokBackgroundBashPolledOutput(
   result: OrchestratorV2ScenarioResult,
@@ -26,10 +25,12 @@ export function assertGrokBackgroundBashPolledOutput(
       status: command.status,
       output: command.output,
     })),
-    GROK_BACKGROUND_BASH_POLLED_COMMANDS.map((command) => ({
+    // The lint command's task_completed carried no output, so its row shows
+    // the poll result, which Grok reports trimmed.
+    ["build ok\n", "lint ok", "test ok\n"].map((output) => ({
       runId: rootRun?.id ?? null,
       status: "completed" as const,
-      output: command.output,
+      output,
     })),
   );
   assert.include(
