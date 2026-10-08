@@ -22,7 +22,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { subagentDescendants } from "../childThreads/retirement.ts";
+import { readStopDescendants } from "../childThreads/stopDescendants.ts";
 import { ForkCommitGuardRejected, type ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
 
 import { replayAndBufferProjectedLiveEvents } from "./LiveStreamBudget.ts";
@@ -612,7 +612,7 @@ const layerBase: Layer.Layer<
             const threadIds = [
               input.threadId,
               ...(input.cancelUnsettledEffects.includeSubagentDescendants
-                ? subagentDescendants(
+                ? yield* readStopDescendants(
                     input.threadId,
                     yield* projectionStore
                       .getShellSnapshot()
@@ -621,6 +621,13 @@ const layerBase: Layer.Layer<
                           ...snapshot.threads,
                           ...snapshot.archivedThreads,
                         ]),
+                      ),
+                    (id) =>
+                      projectionStore.getThread(id).pipe(
+                        Effect.map(Option.some),
+                        Effect.catchTags({
+                          ProjectionStoreThreadNotFoundError: () => Effect.succeedNone,
+                        }),
                       ),
                   )
                 : []),

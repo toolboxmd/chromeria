@@ -41,6 +41,7 @@ it.effect.each([
   ["startTurn", "self", "background"],
   ["startTurn", "resumed-grandchild", "none"],
   ["startTurn", "archived-intermediate", "none"],
+  ["startTurn", "deleted-intermediate", "none"],
 ] as const)(
   "normal Stop with adapter %s blocked, target %s, protection %s",
   ([blocked, stopTarget, protection]) =>
@@ -143,7 +144,9 @@ it.effect.each([
         const parentId = ThreadId.make(`parent:${blocked}`);
         const revivedGrandchild = stopTarget === "resumed-grandchild";
         const archivedIntermediate = stopTarget === "archived-intermediate";
-        if (stopTarget === "ancestor" || revivedGrandchild || archivedIntermediate) {
+        const deletedIntermediate = stopTarget === "deleted-intermediate";
+        const hiddenIntermediate = archivedIntermediate || deletedIntermediate;
+        if (stopTarget === "ancestor" || revivedGrandchild || hiddenIntermediate) {
           yield* orchestrator.dispatch({
             type: "thread.create",
             commandId: CommandId.make(`create-parent:${blocked}`),
@@ -159,7 +162,7 @@ it.effect.each([
             creationSource: "web",
           });
           let directParentId = parentId;
-          if (revivedGrandchild || archivedIntermediate) {
+          if (revivedGrandchild || hiddenIntermediate) {
             directParentId = ThreadId.make("unresumed-native-intermediate");
             yield* orchestrator.dispatch({
               type: "thread.create",
@@ -224,6 +227,24 @@ it.effect.each([
               },
             ],
           });
+          if (deletedIntermediate) {
+            yield* orchestrator.dispatch({
+              type: "thread.delete",
+              commandId: CommandId.make("delete-native-intermediate"),
+              threadId: directParentId,
+            });
+            assert.isNotNull(
+              (yield* orchestrator.getThreadProjection(directParentId)).thread.deletedAt,
+            );
+            yield* worker.drain();
+            const snapshot = yield* orchestrator.getShellSnapshot();
+            assert.isFalse(
+              [...snapshot.threads, ...snapshot.archivedThreads].some(
+                (thread) => thread.id === directParentId,
+              ),
+            );
+            assert.isTrue(snapshot.threads.some((thread) => thread.id === threadId));
+          }
           assert.lengthOf((yield* orchestrator.getThreadProjection(parentId)).subagents, 0);
         }
         const outbox = yield* EffectOutboxV2;
@@ -331,17 +352,17 @@ it.effect.each([
           .dispatch({
             type: "thread.stop",
             commandId: CommandId.make(`stop:${blocked}`),
-            threadId: stopTarget === "ancestor" || archivedIntermediate ? parentId : threadId,
+            threadId: stopTarget === "ancestor" || hiddenIntermediate ? parentId : threadId,
           })
           .pipe(Effect.forkChild);
-        if (archivedIntermediate) {
+        if (hiddenIntermediate) {
           yield* Fiber.join(stopped);
           assert.isTrue(yield* Deferred.isDone(cancelled));
         }
         yield* Deferred.await(cancelled);
         yield* Fiber.join(stopped);
         yield* Fiber.join(execution);
-        if (stopTarget === "ancestor" || archivedIntermediate) yield* worker.drain();
+        if (stopTarget === "ancestor" || hiddenIntermediate) yield* worker.drain();
         const after = yield* orchestrator.getThreadProjection(threadId);
         assert.equal(after.runs[0]!.status, "interrupted");
         assert.equal(after.attempts[0]!.status, "interrupted");
@@ -350,6 +371,13 @@ it.effect.each([
           "interrupted",
         );
         assert.isDefined(after.thread.forkRetirement);
+        if (deletedIntermediate) {
+          const middle = yield* orchestrator.getThreadProjection(
+            ThreadId.make("unresumed-native-intermediate"),
+          );
+          assert.isNotNull(middle.thread.deletedAt);
+          assert.isUndefined(middle.thread.forkRetirement);
+        }
         assert.equal(yield* Ref.get(inFlightStarts), 0);
         assert.equal(yield* Ref.get(acceptedTurns), 0);
         // Releasing the adapter's gate after Stop cannot resurrect a cancelled launch.

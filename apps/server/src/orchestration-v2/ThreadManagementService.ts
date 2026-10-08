@@ -7,6 +7,7 @@ import type {
   ProjectionRecordFilter,
   ProjectionRecords,
 } from "./ProjectionStore.ts";
+import { ProjectionStoreThreadNotFoundError } from "./ProjectionStore.ts";
 import {
   type ChatAttachment,
   CommandId,
@@ -38,7 +39,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
-import { subagentDescendants } from "../childThreads/retirement.ts";
+import { readStopDescendants } from "../childThreads/stopDescendants.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import { projectTurnItemForDetail } from "./WireProjection.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
@@ -442,6 +443,7 @@ function latestSteerableRun(
 }
 
 const SETTLE_AFTER_RUN_WAIT_MS = 24 * 60 * 60 * 1_000;
+const isProjectionThreadNotFound = Schema.is(ProjectionStoreThreadNotFoundError);
 
 const make = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -850,9 +852,21 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const snapshot = yield* orchestrator.getShellSnapshot();
       const { subagents } = yield* orchestrator.getThreadRecords(input.threadId, ["subagents"]);
+      const descendants = yield* readStopDescendants(
+        input.threadId,
+        [...snapshot.threads, ...snapshot.archivedThreads],
+        (id) =>
+          orchestrator.getThreadRecords(id, []).pipe(
+            Effect.map(({ thread }) => Option.some(thread)),
+            Effect.catchTags({
+              OrchestratorProjectionError: (error) =>
+                isProjectionThreadNotFound(error.cause) ? Effect.succeedNone : Effect.fail(error),
+            }),
+          ),
+      );
       const failures: Array<Orchestrator.OrchestratorV2Error> = [];
       for (const threadId of new Set([
-        ...subagentDescendants(input.threadId, [...snapshot.threads, ...snapshot.archivedThreads]),
+        ...descendants,
         ...subagents.flatMap((task) =>
           task.origin === "app_owned" && task.childThreadId !== null ? [task.childThreadId] : [],
         ),
