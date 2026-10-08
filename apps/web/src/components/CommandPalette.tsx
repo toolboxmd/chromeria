@@ -59,6 +59,7 @@ import * as Option from "effect/Option";
 import {
   ArrowLeftIcon,
   ChartNoAxesColumnIcon,
+  CircleDotIcon,
   CheckIcon,
   ChevronRightIcon,
   CornerLeftUpIcon,
@@ -245,6 +246,9 @@ import {
 import type { Project } from "../types";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { readPullRequestListPreferences } from "~/components/pullRequest/pullRequestListPreferences";
+import { withIssuePaletteGroup } from "~/components/issues/issuePaletteItems";
+import { useIssuePaletteSource } from "~/components/issues/issuePaletteStore";
+import { usePaletteIssueThreads } from "~/components/issues/issuePaletteThreads";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 
@@ -651,6 +655,7 @@ function OpenCommandPaletteDialog(props: {
     select: (params) => resolveThreadRouteTarget(params),
   });
   const projects = useProjects();
+  const issuePaletteSource = useIssuePaletteSource();
   const referenceThreadRef =
     pathname === "/pull-requests"
       ? environments.some(
@@ -1413,6 +1418,28 @@ function OpenCommandPaletteDialog(props: {
     ],
   );
   const recentThreadItems = allThreadItems.slice(0, RECENT_THREAD_LIMIT);
+  // Fork: `#N`, `owner/repo#N` or an Issue URL also finds its linked threads (toolboxmd/t3code#25).
+  const issueLinkedThreads = usePaletteIssueThreads(threadSearchQuery);
+  const threadItemsWithIssueLinks = useMemo(() => {
+    if (issueLinkedThreads.length === 0) return allThreadItems;
+    const linkedItems = issueLinkedThreads.flatMap((linked) =>
+      buildLinkedThreadActionItems({
+        ...linked,
+        query: threadSearchQuery,
+        icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
+        runThread: async (thread) => {
+          await navigate({
+            to: "/$environmentId/$threadId",
+            params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, thread.id)),
+          });
+        },
+      }),
+    );
+    const linkedIds = new Set(
+      issueLinkedThreads.flatMap((linked) => linked.threads.map((thread) => `thread:${thread.id}`)),
+    );
+    return [...linkedItems, ...allThreadItems.filter((item) => !linkedIds.has(item.value))];
+  }, [allThreadItems, issueLinkedThreads, navigate, threadSearchQuery]);
 
   const pushPaletteView = useCallback(
     (view: CommandPaletteView): void => {
@@ -1953,9 +1980,12 @@ function OpenCommandPaletteDialog(props: {
       actionItems.push({
         kind: "action",
         value: "action:open-thread-pull-requests",
-        searchTerms: ["pull requests", "linked", "stack", "prs"],
-        title: "Show linked pull requests",
-        disabled: visibleThreadPullRequests(activeThread.pullRequests).length === 0,
+        // Fork: the surface also lists linked Issues (toolboxmd/t3code#28).
+        searchTerms: ["pull requests", "linked", "stack", "prs", "issues"],
+        title: "Show linked PRs and Issues",
+        disabled:
+          visibleThreadPullRequests(activeThread.pullRequests).length === 0 &&
+          activeThreadServerConfig.environment.capabilities.issueLinks !== true,
         icon: <PullRequestGlyph.link className={ITEM_ICON_CLASS} />,
         run: async () => {
           useRightPanelStore.getState().open(threadRef, "pull-requests");
@@ -2221,6 +2251,27 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
+  // Fork: only servers that list Issues (toolboxmd/t3code#25).
+  if (
+    environments.some(
+      (environment) => environment.serverConfig?.environment.capabilities.issues === true,
+    )
+  ) {
+    actionItems.push({
+      kind: "action",
+      value: "action:issues",
+      searchTerms: ["issues", "github", "tasks", "sub-issues", "parent"],
+      title: "Open issues",
+      icon: <CircleDotIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({
+          to: "/pull-requests",
+          search: { ...readPullRequestListPreferences(), view: "issues" },
+        });
+      },
+    });
+  }
+
   actionItems.push({
     kind: "action",
     value: "action:usage",
@@ -2282,7 +2333,12 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
-  const rootGroups = buildRootGroups({ actionItems, recentThreadItems });
+  // Fork: typed searches also match the open Issues list, after Actions (toolboxmd/t3code#27).
+  const rootGroups = withIssuePaletteGroup(
+    buildRootGroups({ actionItems, recentThreadItems }),
+    issuePaletteSource,
+    deferredQuery,
+  );
   const settingsSearchItems: CommandPaletteActionItem[] = searchSettings(
     deferredQuery,
     availableSettingsSearchItems,
@@ -2338,7 +2394,7 @@ function OpenCommandPaletteDialog(props: {
               });
             },
           })
-        : allThreadItems,
+        : threadItemsWithIssueLinks,
   });
 
   const handleAddProjectForEnvironment = useCallback(
