@@ -152,3 +152,9 @@ apps/server/src/orchestration-v2/testkit/ReplayTranscriptNdjson.ts
 
 # Attempt-owned stream observation before presentation buffering (#172)
 apps/server/src/orchestration-v2/RunExecutionService.ts
+
+# Wight mode (#173)
+apps/web/src/components/settings/ProviderInstanceCard.tsx
+docs/user/thread-sidebar.md
+packages/contracts/src/providerInstance.ts
+packages/shared/src/serverSettings.ts
