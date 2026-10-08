@@ -1,3 +1,6 @@
+import { usePromachosInlineCardHost } from "./promachos/PromachosChat";
+import { usePromachosPresentation } from "./promachos/promachosMode";
+import { promachosPicksModel, withPromachosStart } from "./promachos/promachosStart";
 import { ThreadFind, ThreadFindCanvas, type ThreadFindControls } from "./chat/ThreadFindProvider";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
@@ -1764,6 +1767,15 @@ export default function ChatView(props: ChatViewProps) {
     activeProject ?? undefined,
   );
   const activeProjectScripts = activeProject ? resolveProjectScripts(settings, activeProject) : [];
+  const {
+    enabled: promachosChat,
+    models: promachosModels,
+    multipleModels: viewMultipleModelSelections,
+  } = usePromachosPresentation(
+    activeProjectRef,
+    activeProjectSettings.settings.prismRoles.promachos.models,
+    multipleModelSelections,
+  );
   const activeProjectClone = useProjectClone(activeProjectRef);
   const cancelProjectClone = useAtomCommand(sourceControlEnvironment.cancelProjectClone, {
     reportFailure: false,
@@ -2808,6 +2820,11 @@ export default function ChatView(props: ChatViewProps) {
     activeThreadKey,
   );
   const displayedThreadRef = parseScopedThreadKey(displayedTimelineKey);
+  const promachosCardHost = usePromachosInlineCardHost({
+    enabled: promachosChat,
+    activeThreadKey,
+    displayedThreadKey: displayedTimeline.displayThreadKey,
+  });
   const {
     worktreeSetup,
     isPreparingWorktree,
@@ -5271,7 +5288,7 @@ export default function ChatView(props: ChatViewProps) {
     !nativeResumeCompactionDismissed &&
     !compactDisabled &&
     !hasHeldQueuedRuns &&
-    multipleModelSelections === null &&
+    viewMultipleModelSelections === null &&
     shouldOfferResumeCompaction({
       provider: selectedProvider,
       usedTokens: activeContextWindow.usedTokens,
@@ -6901,7 +6918,10 @@ export default function ChatView(props: ChatViewProps) {
           ? scopeThreadRef(environmentId, threadIdForSend)
           : null;
       if (backgroundThreadRef) beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
-      const startPromise = startThreadTurn({
+      const startPromise = withPromachosStart(
+        startThreadTurn,
+        promachosModels,
+      )({
         environmentId,
         input: {
           threadId: threadIdForSend,
@@ -7480,7 +7500,7 @@ export default function ChatView(props: ChatViewProps) {
   };
   const onProviderModelSelectStable = useStableCallback(onProviderModelSelect);
   const onEnvModeChange = (mode: DraftThreadEnvMode) => {
-    if (multipleModelSelections !== null) return;
+    if (viewMultipleModelSelections !== null) return;
     if (canOverrideServerThreadEnvMode) {
       if (activeThread) setPendingServerThreadEnvModeEntry({ threadId: activeThread.id, mode });
       scheduleComposerFocus();
@@ -7720,6 +7740,55 @@ export default function ChatView(props: ChatViewProps) {
       }}
     />
   ) : null;
+  const threadDetailsPanelProps: ThreadDetailsPanelProps = {
+    anchor: threadPanelPopoverAnchorRef,
+    handle: threadPanelPopoverHandle,
+    onPresentationChange: setThreadPanelPresentation,
+    forceNewWorktree: viewMultipleModelSelections !== null,
+    environmentId: activeThread.environmentId,
+    threadId: activeThread.id,
+    ...(draftId ? { draftId } : {}),
+    activeProjectName: activeProject?.title,
+    activeProjectScripts: activeProject ? activeProjectScripts : undefined,
+    preferredScriptId: activeProject
+      ? (lastInvokedScriptByProjectId[activeProject.id] ?? null)
+      : null,
+    keybindings,
+    availableEditors,
+    showOpenInPicker,
+    gitCwd,
+    isGitRepo,
+    envLocked,
+    availableEnvironments: logicalProjectEnvironments,
+    autoEnvironmentLabel,
+    onAutoEnvironment:
+      draftId &&
+      !envLocked &&
+      canAutoBalanceEnvironments &&
+      loadBalancingSettings.loadBalancingEnabled
+        ? onAutoEnvironmentStable
+        : undefined,
+    onEnvironmentChange: onEnvironmentChangeStable,
+    onEnvModeChange: onEnvModeChangeStable,
+    envMode,
+    ...(canOverrideServerThreadEnvMode
+      ? {
+          activeThreadBranchOverride: activeThreadBranch,
+          onActiveThreadBranchOverrideChange: setPendingServerThreadBranch,
+        }
+      : {}),
+    startFromOrigin,
+    onStartFromOriginChange,
+    ...(canCheckoutPullRequestIntoThread
+      ? { onCheckoutPullRequestRequest: openPullRequestDialogStable }
+      : {}),
+    onComposerFocusRequest: scheduleComposerFocusStable,
+    ...(isServerThread && isGitRepo ? { onOpenChanges: openChangesFromThreadPanelStable } : {}),
+    onRunProjectScript: runProjectScriptStable,
+    onAddProjectScript: saveProjectScriptStable,
+    onUpdateProjectScript: updateProjectScriptStable,
+    onDeleteProjectScript: deleteProjectScriptStable,
+  };
   const panelToggleControlProps = {
     terminalAvailable: activeProject !== null,
     terminalOpen: terminalUiState.terminalOpen,
@@ -7903,6 +7972,12 @@ export default function ChatView(props: ChatViewProps) {
             </div>
             <div className="relative flex min-h-0 flex-1 flex-col bg-background">
               <MessagesTimeline
+                {...(promachosChat
+                  ? {
+                      presentation: "promachos" as const,
+                      onInlineCardHost: promachosCardHost.timelineHostRef,
+                    }
+                  : {})}
                 citationRequest={paintOnlyDisplayedTimeline ? null : citationRequest}
                 citationHistoryLoading={threadDetailLoading}
                 {...(!paintOnlyDisplayedTimeline
@@ -8120,12 +8195,13 @@ export default function ChatView(props: ChatViewProps) {
                           ) : null}
                           {!composerMounted ? null : (
                             <ChatComposer
+                              inlineCardHost={promachosCardHost.composerHost}
                               canOperateThread={canOperateThread}
                               reportedModelSelection={reportedModelSelection}
-                              multipleModelSelections={multipleModelSelections}
+                              multipleModelSelections={viewMultipleModelSelections}
                               supportsMultipleModels={
                                 serverConfig?.environment.capabilities.requiredWorktreeBootstrap ===
-                                true
+                                  true && !promachosPicksModel(promachosModels)
                               }
                               onMultipleModelSelectionsChange={setMultipleModelSelectionsStable}
                               composerRef={composerRef}
@@ -8316,7 +8392,7 @@ export default function ChatView(props: ChatViewProps) {
                           {mountComposerContextStrip && (
                             <div className="pointer-events-auto">
                               <BranchToolbar
-                                forceNewWorktree={multipleModelSelections !== null}
+                                forceNewWorktree={viewMultipleModelSelections !== null}
                                 ref={branchToolbarRef}
                                 environmentId={activeThread.environmentId}
                                 threadId={activeThread.id}

@@ -1,3 +1,14 @@
+import {
+  PromachosInlineCardHost,
+  PromachosWorkingBubble,
+  usePromachosScrollFollow,
+  PROMACHOS_OUTBOUND_BUBBLE_CLASS_NAME,
+} from "../promachos/PromachosChat";
+import { PROMACHOS_BUBBLE_MARKDOWN } from "../promachos/promachosBubbles";
+import {
+  promachosTimelineRows,
+  usePromachosTimelineDisclosures,
+} from "../promachos/promachosTimeline";
 import { ThreadFindTimelineContext } from "./ThreadFindProvider";
 import { shallow } from "zustand/vanilla/shallow";
 import { shouldPreserveAssistantLineBreaks } from "@t3tools/shared/markdownPipeline";
@@ -306,6 +317,7 @@ import {
 } from "../../reviewCommentContext";
 
 interface TimelineRowSharedState {
+  promachos: boolean;
   citationRequest: AssistantCitationTarget | null;
   listRef: React.RefObject<LegendListRef | null>;
   timestampFormat: TimestampFormat;
@@ -396,12 +408,15 @@ const TIMELINE_LIST_FADE_HEADER = (
 function TimelineListFooter({
   composerInset,
   children,
+  onInlineCardHost,
 }: {
+  readonly onInlineCardHost?: (element: HTMLDivElement | null) => void;
   readonly composerInset: number;
   readonly children?: ReactNode;
 }) {
   return (
     <div>
+      {onInlineCardHost ? <PromachosInlineCardHost hostRef={onInlineCardHost} /> : null}
       {children}
       <div aria-hidden style={{ height: composerInset }} />
       <div aria-hidden className="h-3 sm:h-4" />
@@ -434,6 +449,8 @@ export interface MessagesTimelineHistoryControls {
 }
 
 interface MessagesTimelineProps {
+  presentation?: "standard" | "promachos";
+  onInlineCardHost?: (element: HTMLDivElement | null) => void;
   citationRequest?: AssistantCitationRequest | null;
   citationHistoryLoading?: boolean;
   onCiteAssistantText?: (
@@ -537,6 +554,8 @@ export function MessagesTimeline(props: MessagesTimelineProps) {
 }
 
 const ConversationTimeline = memo(function ConversationTimeline({
+  presentation = "standard",
+  onInlineCardHost,
   citationRequest = null,
   citationHistoryLoading = false,
   onCiteAssistantText,
@@ -835,12 +854,22 @@ const ConversationTimeline = memo(function ConversationTimeline({
       ? new Set(paintedExpandedAttemptIds).add(activeFindAttemptId)
       : paintedExpandedAttemptIds;
 
-  const rawRows = useIncrementalTimelineRows(`${listIdentityKey}\0${workspaceRoot ?? ""}`, {
+  const promachos = presentation === "promachos";
+  const scrollFollow = usePromachosScrollFollow(
+    promachos,
+    TIMELINE_MAINTAIN_SCROLL_AT_END,
+    TIMELINE_MAINTAIN_SCROLL_AT_END_SMOOTH,
+  );
+  const promachosDisclosures = usePromachosTimelineDisclosures(
+    { timelineEntries, latestRun, isWorking, runlessWorkActive, runningRunId },
+    promachos,
+  );
+  const projectedRows = useIncrementalTimelineRows(`${listIdentityKey}\0${workspaceRoot ?? ""}`, {
     timelineEntries,
     latestRun,
     runningRunId,
-    expandedRunIds: visibleExpandedRunIds,
-    expandedAttemptIds: visibleExpandedAttemptIds,
+    expandedRunIds: promachosDisclosures?.runs ?? visibleExpandedRunIds,
+    expandedAttemptIds: promachosDisclosures?.attempts ?? visibleExpandedAttemptIds,
     expandedWorkGroupIds,
     isWorking,
     runlessWorkActive,
@@ -849,6 +878,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     supportsConversationRollback,
     worktreeSetup,
   });
+  const rawRows = promachos ? promachosTimelineRows(projectedRows) : projectedRows;
   const rows = useStableRows(rawRows, listIdentityKey);
   // Run status/timestamps churn on every stream event; the shared row context
   // must not change with them or every timeline row re-renders per event.
@@ -1049,7 +1079,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     shouldRestorePosition: shouldRestoreVisibleContentPosition,
   };
   const timelineListFooter = (
-    <TimelineListFooter composerInset={anchoredEndSpace ? 0 : contentInsetEndAdjustment}>
+    <TimelineListFooter {...(onInlineCardHost === undefined ? {} : { onInlineCardHost })} composerInset={anchoredEndSpace ? 0 : contentInsetEndAdjustment}>
       {footer}
     </TimelineListFooter>
   );
@@ -1207,6 +1237,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   }, [timelineViewportElement, rows.length, reportContentOverflow, chatWidth]);
 
   const sharedState: TimelineRowSharedState = {
+    promachos,
     citationRequest: readyCitationRequest,
     listRef,
     timestampFormat,
@@ -1452,8 +1483,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
                 disclosureToggleSettling
                   ? false
                   : isWorking && !prefersReducedMotion && settlingListIdentity === null
-                    ? TIMELINE_MAINTAIN_SCROLL_AT_END_SMOOTH
-                    : TIMELINE_MAINTAIN_SCROLL_AT_END
+                    ? scrollFollow.smooth
+                    : scrollFollow.normal
               }
               maintainVisibleContentPosition={
                 findActive ||
@@ -2236,7 +2267,12 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       {row.message.inputIntent && row.message.inputIntent !== "turn_start" ? (
         <UserMessageIntentMarker intent={row.message.inputIntent} />
       ) : null}
-      <div className="relative max-w-[80%] rounded-2xl bg-message p-3 text-message-foreground">
+      <div
+        className={cn(
+          "relative max-w-[80%] rounded-2xl bg-message p-3 text-message-foreground",
+          ctx.promachos && PROMACHOS_OUTBOUND_BUBBLE_CLASS_NAME,
+        )}
+      >
         <MessageAuthorHeading>You</MessageAuthorHeading>
         {(regularImages.length > 0 || userVideos.length > 0) && (
           <div className="mb-2 grid max-w-[210px] grid-cols-2 gap-2">
@@ -2591,6 +2627,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
             listRef={ctx.listRef}
           >
             <ChatMarkdown
+              {...(ctx.promachos ? PROMACHOS_BUBBLE_MARKDOWN : {})}
               text={messageText}
               cwd={ctx.markdownCwd}
               threadRef={ctx.threadRef ?? undefined}
@@ -2604,13 +2641,15 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
             />
           </AssistantCitationSource>
         </div>
-        <AssistantChangedFilesSection
-          turnSummary={row.assistantTurnDiffSummary}
-          routeThreadKey={ctx.routeThreadKey}
-          resolvedTheme={ctx.resolvedTheme}
-          onOpenTurnDiff={ctx.onOpenTurnDiff}
-        />
-        {row.showAssistantMeta ? (
+        {ctx.promachos ? null : (
+          <AssistantChangedFilesSection
+            turnSummary={row.assistantTurnDiffSummary}
+            routeThreadKey={ctx.routeThreadKey}
+            resolvedTheme={ctx.resolvedTheme}
+            onOpenTurnDiff={ctx.onOpenTurnDiff}
+          />
+        )}
+        {!ctx.promachos && row.showAssistantMeta ? (
           <AssistantMessageMeta
             className="mt-1.5"
             projectedItem={row.projectedItem}
@@ -3504,8 +3543,12 @@ function toolIconAcceptsTint(toolIcon: ToolActivityIcon | undefined): boolean {
 }
 
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
+  const promachos = use(TimelineRowCtx).promachos;
   const { isCompacting, isPreparingWorktree, backgroundWorktreeSetup } =
     use(TimelineRowActivityCtx);
+  if (promachos) return <PromachosWorkingBubble />;
+  // One span for every label so the setup-to-working handoff swaps text in
+  // place instead of remounting the row.
   const shimmer = isPreparingWorktree || isCompacting;
   const label = isPreparingWorktree ? (
     "Setting up worktree…"
