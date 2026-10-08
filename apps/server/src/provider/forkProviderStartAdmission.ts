@@ -14,7 +14,7 @@ import type { ProviderRegistry } from "./ProviderRegistry.ts";
 import type { ProviderAdmissionGateShape } from "./providerAdmissionGate.ts";
 
 /** One production seam covers process opening and starts on already-open sessions. */
-export function admitProviderStarts(
+function admitProviderStarts(
   sessions: ProviderSessionManagerV2Shape,
   registry: ProviderAdapterRegistryV2Shape,
   admission: ProviderAdmissionGateShape,
