@@ -91,7 +91,9 @@ function CommandOutput({
         </Button>
       </span>
     );
-  if (query.data === null) return <span className="text-muted-foreground">Loading output…</span>;
+  // While fetching, the query still holds the previous result: never show it as this run's.
+  if (query.isPending || query.data === null)
+    return <span className="text-muted-foreground">Loading output…</span>;
   const output = query.data.tasks.find((entry) => entry.id === taskId)?.command?.run?.output;
   return output === undefined || output === "" ? (
     <span className="text-muted-foreground">No output was kept for this run.</span>
