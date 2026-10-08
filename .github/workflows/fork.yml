@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - fork/v2
 
 permissions:
   contents: read
