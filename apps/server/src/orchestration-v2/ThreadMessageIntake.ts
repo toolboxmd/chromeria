@@ -10,6 +10,7 @@ import * as Orchestrator from "./Orchestrator.ts";
 import * as AttachmentClaims from "./AttachmentClaims.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
+import { dispatchDelegatedRequest } from "../childThreads/delegatedIntake.ts";
 
 // These dispatcher failures occur in receipt validation or planning, before
 // commitCommand. Generic dispatch errors can follow a commit and remain uncertain.
@@ -54,6 +55,11 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
   command: OrchestrationV2Command,
 ) {
   const threads = yield* ThreadManagement.ThreadManagementService;
+  if (
+    command.type === "delegated_task.request" &&
+    (command.projectId !== undefined || command.workspaceStrategy !== undefined)
+  )
+    return yield* dispatchDelegatedRequest(command);
   if (command.type === "runtime-request.respond" && command.attachmentsByQuestionId) {
     const config = yield* ServerConfig.ServerConfig;
     const incomingByQuestionId = command.attachmentsByQuestionId;

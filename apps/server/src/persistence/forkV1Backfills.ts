@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import type * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
+import { backfillImportedLineage, lineageBackfillId } from "../childThreads/lineageBackfill.ts";
 import type * as EventSink from "../orchestration-v2/EventSink.ts";
 import { backfillThreadPeople } from "./forkThreadPeopleBackfill.ts";
 
@@ -47,6 +48,7 @@ export const forkV1Backfills: ReadonlyArray<ForkV1Backfill> = [
       }),
     ),
   },
+  { id: lineageBackfillId, run: backfillImportedLineage() },
 ];
 
 export const runForkV1Backfills = Effect.fn("forkV1Backfills.run")(function* (
