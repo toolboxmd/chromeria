@@ -107,6 +107,8 @@ export function isMissedFixedTimeRun(
 
 function describeSchedule(schedule: ScheduledTaskSchedule): string {
   if (schedule.type === "webhook") return "On webhook";
+  // Also narrows the union for the upstream branches below.
+  if (isForkScheduledTaskSchedule(schedule)) return ForkSchedules.forkScheduleLabel(schedule);
   if (schedule.type === "interval") {
     const minutes = schedule.everyMs / MINUTE_MS;
     if (Number.isInteger(minutes)) {

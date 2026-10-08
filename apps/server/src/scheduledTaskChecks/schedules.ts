@@ -101,6 +101,11 @@ export function forkSameSchedule(a: ScheduledTaskSchedule, b: ScheduledTaskSched
   return false;
 }
 
+export function forkScheduleLabel(schedule: ScheduledTaskForkSchedule): string {
+  if (schedule.type === "once") return `Once at ${schedule.at}`;
+  return `Weekly on ${schedule.weekdays.join(",")} at ${schedule.times.join(", ")} (${schedule.timeZone})`;
+}
+
 /**
  * The slot a scheduled fire of a fork trigger runs for, canonical so a replay
  * of the same slot is the same fire; null for every other fire.
