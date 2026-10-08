@@ -29,6 +29,7 @@ import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { ServerActivation } from "./serverActivation.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
+import * as SqlitePersistence from "./persistence/Sqlite.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
@@ -70,6 +71,7 @@ it.effect("parks automatic pull until activation without delaying command readin
       const dependencies: Layer.Layer<
         Layer.Services<ReturnType<typeof ServerRuntimeStartup.layerWithOptions>>
       > = Layer.mergeAll(
+        Layer.orDie(SqlitePersistence.layerMemory),
         Layer.mock(ServerConfig.ServerConfig)({
           ...(yield* ServerConfig.deriveServerPaths(cwd, undefined).pipe(
             Effect.provide(Path.layer),

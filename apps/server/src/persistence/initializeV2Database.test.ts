@@ -154,14 +154,14 @@ it.effect("includes committed WAL data and does not publish a failed snapshot", 
   );
 });
 
-it.effect("uses statev2.sqlite for default and explicit development paths", () =>
+it.effect("uses chromeria-v2.sqlite for default and explicit development paths", () =>
   Effect.gen(function* () {
     for (const devUrl of [undefined, new URL("http://localhost:5173")]) {
       for (const baseDirIsExplicit of [false, true]) {
         const paths = yield* ServerConfig.deriveServerPaths("/tmp/t3", devUrl, {
           baseDirIsExplicit,
         });
-        assert.equal(NodePath.basename(paths.dbPath), "statev2.sqlite");
+        assert.equal(NodePath.basename(paths.dbPath), "chromeria-v2.sqlite");
         assert.equal(paths.settingsPath, NodePath.join(paths.stateDir, "settings.json"));
       }
     }
