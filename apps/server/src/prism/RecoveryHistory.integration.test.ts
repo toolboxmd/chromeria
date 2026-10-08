@@ -9,6 +9,8 @@ import {
   EventId,
   MessageId,
   RunId,
+  NodeId,
+  RuntimeRequestId,
   type OrchestrationV2Run,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ServerCommand,
@@ -34,6 +36,7 @@ import * as Store from "./RecoveryStore.ts";
 import { continuationAdmission } from "./continuationAdmission.ts";
 import { continuationRunFields } from "./RecoveryHooks.ts";
 import * as Hooks from "./RecoveryHooks.ts";
+import { readRecoveryProjection } from "./recoveryProjection.ts";
 import { retryAdmission } from "./recoveryAdmission.ts";
 import { retryCommand } from "./recoveryPolicy.ts";
 import { ForkCommitGuardRejected } from "../childThreads/ForkCommitPlan.ts";
@@ -585,6 +588,68 @@ describe("Prism exact-source recovery history", () => {
   );
 
   it.effect(
+    "a pending request blocks automatic retry while resolved history does not block a new failure",
+    () =>
+      Effect.gen(function* () {
+        yield* persist("pending:seed", recoveryEvents(run));
+        const request = {
+          id: EventId.make("pending:request"),
+          type: "runtime-request.updated" as const,
+          threadId: run.threadId,
+          occurredAt: run.requestedAt,
+          payload: {
+            id: RuntimeRequestId.make("request:pending"),
+            nodeId: NodeId.make("node:pending"),
+            providerTurnId: null,
+            nativeRequestRef: null,
+            kind: "user_input" as const,
+            status: "pending" as const,
+            responseCapability: { type: "message" as const },
+            createdAt: run.requestedAt,
+            resolvedAt: null,
+          },
+        };
+        yield* persist("pending:create", [request]);
+        assert.strictEqual(
+          (yield* readRecoveryProjection(run.threadId, [run.id])).runtimeRequests.length,
+          1,
+        );
+        const holds = Effect.gen(function* () {
+          return yield* (yield* Hooks.RecoveryHooks).holdsFinalization(run.threadId, run.id);
+        });
+        assert.strictEqual(yield* holds.pipe(Effect.provide(Hooks.layer)), false);
+        yield* persist("pending:resolve", [
+          {
+            ...request,
+            id: EventId.make("pending:resolved"),
+            payload: { ...request.payload, status: "resolved", resolvedAt: run.completedAt },
+          },
+        ]);
+        assert.strictEqual(
+          (yield* readRecoveryProjection(run.threadId, [run.id])).runtimeRequests.length,
+          0,
+        );
+        const next = { ...run, id: RunId.make("run:after-request"), ordinal: 2 };
+        yield* persist("pending:new-failure", [
+          event(next, "after-request"),
+          {
+            id: EventId.make("pending:new-error"),
+            type: "turn-item.updated",
+            threadId: run.threadId,
+            occurredAt: next.requestedAt,
+            payload: errorFor(next),
+          },
+        ]);
+        assert.strictEqual(
+          yield* Effect.gen(function* () {
+            return yield* (yield* Hooks.RecoveryHooks).holdsFinalization(run.threadId, next.id);
+          }).pipe(Effect.provide(Hooks.layer)),
+          true,
+        );
+      }).pipe(Effect.provide(dependencies)),
+  );
+
+  it.effect(
     "bounded fair batches exclude history without starving old failures behind newer work",
     () =>
       Effect.gen(function* () {
@@ -620,7 +685,31 @@ describe("Prism exact-source recovery history", () => {
           completedAt: null,
         };
         events.push(event(newer, "batch:newer"));
+        for (let index = 0; index < 140; index++) {
+          events.push({
+            id: EventId.make(`batch:request:${index}`),
+            type: "runtime-request.updated",
+            threadId: run.threadId,
+            occurredAt: run.requestedAt,
+            payload: {
+              id: RuntimeRequestId.make(`request:resolved:${index}`),
+              nodeId: NodeId.make(`node:resolved:${index}`),
+              providerTurnId: null,
+              nativeRequestRef: null,
+              kind: "user_input",
+              status: "resolved",
+              responseCapability: { type: "message" },
+              createdAt: run.requestedAt,
+              resolvedAt: run.completedAt,
+            },
+          });
+        }
         yield* persist("batch:commit", events);
+        // Historical resolved requests must not enter the recovery eligibility projection.
+        assert.strictEqual(
+          (yield* readRecoveryProjection(run.threadId, [newer.id])).runtimeRequests.length,
+          0,
+        );
         // Delegated finalization must not conclude every historical failure synchronously.
         const held = yield* Effect.gen(function* () {
           return yield* (yield* Hooks.RecoveryHooks).holdsFinalization(run.threadId, newer.id);

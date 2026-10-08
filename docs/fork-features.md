@@ -652,6 +652,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/prism/continuationAdmission.ts",
     "apps/server/src/prism/continuationProjection.ts",
     "apps/server/src/prism/recoveryOutcomePolicy.ts",
+    "apps/server/src/prism/recoveryProjection.ts",
     "apps/server/src/prism/RecoveryReactor.test.ts",
     "apps/server/src/prism/RecoveryReactor.ts",
     "apps/server/src/prism/RecoverySettings.test.ts",

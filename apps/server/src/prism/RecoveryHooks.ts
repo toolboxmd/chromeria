@@ -14,6 +14,7 @@ import type { SqlError } from "effect/sql/SqlError";
 import type { ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
 import * as Projection from "../orchestration-v2/ProjectionStore.ts";
 import * as Coordinator from "./RecoveryCoordinator.ts";
+import { readRecoveryProjection } from "./recoveryProjection.ts";
 import { readRetirementState } from "../childThreads/retirement.ts";
 import { continuationAdmission } from "./continuationAdmission.ts";
 import { retryAdmission } from "./recoveryAdmission.ts";
@@ -51,14 +52,9 @@ export const layer = Layer.effect(
             expectedRunId,
             ...(latest[0] === undefined ? [] : [RunId.make(latest[0].run_id)]),
           ];
-          const projection = yield* projections.getThreadRecords(
-            threadId,
-            ["runs", "turnItems", "runtimeRequests"],
-            {
-              runIds,
-              turnItemRunIds: runIds,
-              turnItemTypes: ["error", "run_interrupt_request"],
-            },
+          const projection = yield* readRecoveryProjection(threadId, runIds).pipe(
+            Effect.provideService(Projection.ProjectionStoreV2, projections),
+            Effect.provideService(SqlClient.SqlClient, sql),
           );
           const retirement = yield* readRetirementState(threadId).pipe(
             Effect.provideService(Projection.ProjectionStoreV2, projections),

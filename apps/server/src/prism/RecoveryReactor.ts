@@ -14,6 +14,7 @@ import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.t
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as Coordinator from "./RecoveryCoordinator.ts";
+import { readRecoveryProjection } from "./recoveryProjection.ts";
 import { retryCommand } from "./recoveryPolicy.ts";
 
 export class RecoveryReactor extends Context.Service<
@@ -62,14 +63,9 @@ export const layer = Layer.effect(
             RunId.make(candidate.source_run_id),
             ...(latest[0] === undefined ? [] : [RunId.make(latest[0].run_id)]),
           ];
-          const projection = yield* projections.getThreadRecords(
-            threadId,
-            ["runs", "turnItems", "runtimeRequests"],
-            {
-              runIds,
-              turnItemRunIds: runIds,
-              turnItemTypes: ["error", "run_interrupt_request"],
-            },
+          const projection = yield* readRecoveryProjection(threadId, runIds).pipe(
+            Effect.provideService(Projection.ProjectionStoreV2, projections),
+            Effect.provideService(SqlClient.SqlClient, sql),
           );
           const retirement = yield* readRetirementState(threadId).pipe(
             Effect.provideService(Projection.ProjectionStoreV2, projections),
