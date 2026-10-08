@@ -1,4 +1,5 @@
 import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
+import * as StreamClock from "../prism/streamClock.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   isOrchestrationV2WorkActive,
@@ -579,6 +580,7 @@ export const layer: Layer.Layer<
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const mcpAppModelContext = yield* McpAppModelContext.McpAppModelContext;
     const finalizationObserver = yield* RunFinalizationService.RunFinalizationObserver;
+    const streamClock = yield* StreamClock.StreamClockHooks;
 
     const writeFinalRunEvents = (input: {
       readonly run: OrchestrationV2Run;
@@ -1223,6 +1225,7 @@ export const layer: Layer.Layer<
             }
             return true;
           });
+          yield* StreamClock.beginExecutionAttempt(streamClock, input);
           const filterAssistantEvent = makeAssistantStreamingFilter(responseStreamingMode);
           const providerEventFiber = yield* eventSubscription.events.pipe(
             Stream.filterEffect((event) =>
@@ -1287,6 +1290,9 @@ export const layer: Layer.Layer<
                     yield* Ref.set(providerThreadOwnerLost, true);
                   }
                 }
+                if (deliveredEvent === null) {
+                  yield* StreamClock.observeFilteredEvent(streamClock, input, event);
+                }
                 if (event.type === "provider_thread.updated") {
                   if (event.providerThread.id === input.providerThread.id && storedEventCount > 0) {
                     yield* Ref.set(latestProviderThread, event.providerThread);
@@ -1310,6 +1316,7 @@ export const layer: Layer.Layer<
               }),
             ),
             Stream.takeUntilEffect(() => shouldStopProviderEventIngestion),
+            Stream.provideService(StreamClock.StreamClockAttempt, input.attempt.id),
             Stream.runDrain,
             Effect.mapError((cause) => new RunExecutionIngestError({ runId: input.run.id, cause })),
             Effect.flatMap(() =>
@@ -1379,6 +1386,9 @@ export const layer: Layer.Layer<
               ),
             ),
             Effect.ensuring(eventSubscription.close),
+            Effect.ensuring(
+              streamClock.endAttempt(input.run.threadId, input.run.id, input.attempt.id),
+            ),
             Effect.forkDetach,
           );
 
