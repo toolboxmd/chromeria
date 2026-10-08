@@ -1,6 +1,6 @@
 # Fork maintenance
 
-Chromeria (`toolboxmd/chromeria`) stays a thin stack of topic commits on
+Chromeria (`toolboxmd/chromeria`) is a personal, rebasable stack of topic commits on
 `pingdotgg/t3code`. `origin` names the fork and `upstream` names the canonical
 repository. Never push fork commits to `upstream`.
 
@@ -12,8 +12,8 @@ that integration branch. The existing `main` is not the V2 integration base;
 changing it or cutting over the daily app requires a separate reviewed action.
 Use the approved pinned foundation even when a newer upstream commit exists.
 
-Keep a merge-free topic stack. Features belong in fork-owned files, with the
-smallest edits to upstream files. [The feature map](fork-features.md) assigns
+Keep a merge-free topic stack. Features live in fork-owned modules; upstream
+files carry only the hooks those modules need. [The feature map](fork-features.md) assigns
 every carried upstream edit one primary owner; other carried features may list
 it as shared. `scripts/fork-upstream-edits.txt` contains only those carried edits.
 Features deferred to separate integration Issues do not belong in this inventory.
