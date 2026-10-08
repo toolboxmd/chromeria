@@ -335,6 +335,149 @@ it.effect("live pending-request listener wakes an ancestor without invoking reco
   ),
 );
 
+it.effect("committed ancestor resume delivers one previously suppressed live request", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* OrchestratorV2;
+    const sink = yield* EventSinkV2;
+    const receipts = yield* CommandReceiptStoreV2;
+    const now = yield* DateTime.now;
+    const root = ThreadId.make("resume-root");
+    const child = ThreadId.make("resume-child");
+    const controlRoot = ThreadId.make("control-root");
+    const controlChild = ThreadId.make("control-child");
+    for (const id of [root, child, controlRoot, controlChild]) {
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`create:${id}`),
+        threadId: id,
+        projectId: ProjectId.make("project:request-resume"),
+        title: id,
+        modelSelection: { instanceId, model: "gpt-5.1-codex" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+    }
+    for (const [id, parentId] of [
+      [child, root],
+      [controlChild, controlRoot],
+    ] as const) {
+      const projection = yield* orchestrator.getThreadProjection(id);
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make(`lineage:${id}`),
+            type: "thread.metadata-updated",
+            threadId: id,
+            providerInstanceId: instanceId,
+            occurredAt: now,
+            payload: {
+              ...projection.thread,
+              lineage: {
+                parentThreadId: parentId,
+                rootThreadId: parentId,
+                relationshipToParent: "subagent",
+              },
+            },
+          },
+        ],
+      });
+    }
+    const resume = (id: ThreadId, suffix: string) =>
+      orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`resume:${suffix}`),
+        messageId: MessageId.make(`resume:${suffix}`),
+        threadId: id,
+        text: "Resume",
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+    const pending = (id: ThreadId, requestId: RuntimeRequestId) =>
+      sink.write({
+        events: [
+          {
+            id: EventId.make(`request:${requestId}`),
+            type: "runtime-request.updated",
+            threadId: id,
+            providerInstanceId: instanceId,
+            occurredAt: now,
+            payload: {
+              id: requestId,
+              nodeId: NodeId.make(`node:${requestId}`),
+              providerTurnId: null,
+              nativeRequestRef: null,
+              kind: "command",
+              status: "pending",
+              responseCapability: { type: "message" },
+              createdAt: now,
+              resolvedAt: null,
+            },
+          },
+        ],
+      });
+    // The listener is sequential. A later control request's durable wake proves
+    // it has consumed all earlier events, without polling or manual recovery.
+    const drainListener = Effect.fnUntraced(function* (suffix: string) {
+      const requestId = RuntimeRequestId.make(`control:${suffix}`);
+      const commandId = CommandId.make(
+        `command:child-request:${controlChild}:${requestId}:${controlRoot}:0`,
+      );
+      const cursor = yield* sink.latestSequence();
+      const observed = yield* sink.stream({ afterSequence: cursor }).pipe(
+        Stream.filter(
+          (stored) => stored.commandId === commandId && stored.event.type === "message.updated",
+        ),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      yield* pending(controlChild, requestId);
+      assert.isTrue(Option.isSome(yield* Fiber.join(observed)));
+    });
+    yield* orchestrator.dispatch({
+      type: "thread.stop",
+      threadId: root,
+      commandId: CommandId.make("stop:root"),
+    });
+    yield* resume(child, "child");
+    const requestId = RuntimeRequestId.make("suppressed-approval");
+    const wakeCommandId = CommandId.make(`command:child-request:${child}:${requestId}:${root}:0`);
+    yield* pending(child, requestId);
+    yield* drainListener("suppressed");
+    assert.isTrue(Option.isNone(yield* receipts.getByCommandId(wakeCommandId)));
+    yield* resume(root, "root");
+    yield* drainListener("resumed");
+    const receipt = yield* receipts.getByCommandId(wakeCommandId);
+    assert.isTrue(Option.isSome(receipt));
+    if (Option.isSome(receipt)) assert.equal(receipt.value.status, "accepted");
+    yield* resume(root, "root-again");
+    yield* drainListener("deduplicated");
+    const projection = yield* orchestrator.getThreadProjection(root);
+    assert.lengthOf(
+      projection.messages.filter(
+        (message) => message.id === MessageId.make(`child-request:${child}:${requestId}:${root}`),
+      ),
+      1,
+    );
+  }).pipe(
+    Effect.provide(
+      Layer.merge(
+        Harness.layerWithRegistry(
+          { name: "request-resume" },
+          Registry.layerFromAdapters([adapter]),
+          { databaseLayer, runEffectWorker: false },
+        ),
+        receiptLayer.pipe(Layer.provide(databaseLayer)),
+      ),
+    ),
+  ),
+);
+
 it.effect(
   "a recreated runtime recovers an offline pending request and a later boot deduplicates its accepted wake",
   () =>

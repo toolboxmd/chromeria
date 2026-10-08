@@ -11003,7 +11003,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       stored.event.type === "runtime-request.updated"
         ? requestWake(stored.event.threadId)
         : stored.event.type === "thread.metadata-updated" &&
-            stored.event.payload.forkRetirement?.token === stored.commandId
+            (stored.event.payload.forkRetirement?.token === stored.commandId ||
+              (stored.event.payload.forkResumedRetirements?.length ?? 0) > 0)
           ? requestWake()
           : Effect.void,
     ),
