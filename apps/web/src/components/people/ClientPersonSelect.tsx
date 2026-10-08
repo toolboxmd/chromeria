@@ -1,10 +1,15 @@
-import { DEFAULT_PERSON, PEOPLE, type AuthSessionId } from "@t3tools/contracts";
+import {
+  AuthAccessWriteScope,
+  DEFAULT_PERSON,
+  PEOPLE,
+  type AuthSessionId,
+} from "@t3tools/contracts";
 import { useState } from "react";
 
 import { setServerClientSessionPerson } from "../../environments/primary";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { usePrimaryEnvironmentId } from "../../state/environments";
-import { environmentSession } from "../../state/session";
+import { environmentSession, useEnvironmentScope } from "../../state/session";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { toastManager } from "../ui/toast";
 
@@ -23,10 +28,12 @@ export function ClientPersonSelect({
   readonly current: boolean;
 }) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const canEditPerson = useEnvironmentScope(primaryEnvironmentId, AuthAccessWriteScope);
   const [saving, setSaving] = useState(false);
   const value = person ?? DEFAULT_PERSON;
 
   const save = async (next: string) => {
+    if (!canEditPerson || saving) return;
     setSaving(true);
     try {
       await setServerClientSessionPerson(sessionId, next);
@@ -51,7 +58,7 @@ export function ClientPersonSelect({
         if (typeof next === "string" && next !== value) void save(next);
       }}
     >
-      <SelectTrigger size="xs" aria-label="Person" disabled={saving}>
+      <SelectTrigger size="xs" aria-label="Person" disabled={!canEditPerson || saving}>
         <SelectValue>{value}</SelectValue>
       </SelectTrigger>
       <SelectPopup align="end" alignItemWithTrigger={false}>
