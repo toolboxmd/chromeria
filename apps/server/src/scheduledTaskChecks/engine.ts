@@ -571,12 +571,13 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
         } else if (run.stage === "running" || run.stage === "usage-limit") {
           // A passed check waits for bound reports before it is run again.
           if (run.awaitingReports === true) {
+            const waitingState = state;
             const waitingRun = run;
             const fence = yield* sql.withTransaction(
               Effect.gen(function* () {
                 const fence = yield* deps.reportsFence(waitingRun.id);
                 if (fence.kind === "needs-you")
-                  yield* reportNeedsYou(state, waitingRun, fence.reason);
+                  yield* reportNeedsYou(waitingState, waitingRun, fence.reason);
                 return fence;
               }),
             );

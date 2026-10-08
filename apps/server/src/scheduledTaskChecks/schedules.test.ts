@@ -28,7 +28,9 @@ const weekly = (overrides: Partial<Weekly> = {}): Weekly => ({
 });
 const ms = (iso: string) => Date.parse(iso);
 const isoSlots = (schedule: Weekly, from: string, to: string) =>
-  weeklySlots(schedule, ms(from), ms(to)).map((slot) => new Date(slot).toISOString());
+  weeklySlots(schedule, ms(from), ms(to)).map((slot) =>
+    DateTime.formatIso(DateTime.makeUnsafe(slot)),
+  );
 const minuteOf = (iso: string) => Math.floor(ms(iso) / 60_000);
 
 describe("weekly slots", () => {
