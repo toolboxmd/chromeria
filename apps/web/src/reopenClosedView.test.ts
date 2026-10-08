@@ -68,6 +68,20 @@ describe("reopenClosedView", () => {
     expect(openPreview).not.toHaveBeenCalled();
   });
 
+  it("reopens a closed Issue tab on the server it was read through", async () => {
+    const surface = {
+      kind: "issue",
+      id: "issue",
+      environmentId: "remote",
+      url: "https://github.com/acme/web/issues/12",
+    } as const;
+    const options = { openPreview: vi.fn(), workspaceAvailable: false };
+    expect(await reopenClosedView({ kind: "panel-tab", threadRef, surface }, options)).toBe(true);
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, threadRef);
+    expect(state.surfaces).toEqual([surface]);
+    expect(state.activeSurfaceId).toBe("issue");
+  });
+
   it("does not reopen workspace tabs without an available project", async () => {
     const options = {
       openPreview: vi.fn(),

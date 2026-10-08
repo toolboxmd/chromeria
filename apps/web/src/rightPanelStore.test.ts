@@ -30,6 +30,59 @@ beforeEach(() => {
 });
 
 describe("rightPanelStore", () => {
+  it("opens an Issue beside a thread in one tab that the next Issue replaces", () => {
+    const store = useRightPanelStore.getState();
+    const pullRequest = { projectId: "project-1", repository: "acme/app", number: 7 };
+    const first = "https://github.com/acme/app/issues/120";
+    const second = "https://github.com/acme/app/issues/121";
+    store.openPullRequest(refA, pullRequest);
+    store.openIssue(refA, { environmentId: "env-1", url: first });
+    let state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.isOpen).toBe(true);
+    expect(state.activeSurfaceId).toBe("issue");
+    expect(state.surfaces.map((surface) => surface.kind)).toEqual(["pull-request", "issue"]);
+
+    store.openIssue(refA, { environmentId: "env-1", url: second });
+    state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces.filter((surface) => surface.kind === "issue")).toEqual([
+      { id: "issue", kind: "issue", environmentId: "env-1", url: second },
+    ]);
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refB)).toEqual(
+      expect.objectContaining({ surfaces: [] }),
+    );
+
+    store.closeSurface(refA, "issue");
+    state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces.map((surface) => surface.kind)).toEqual(["pull-request"]);
+    expect(state.activeSurfaceId).toBe(state.surfaces[0]!.id);
+  });
+
+  it("restores valid Issue tabs and discards malformed persisted targets", () => {
+    const valid = {
+      id: "issue",
+      kind: "issue",
+      environmentId: "env-1",
+      url: "https://github.com/acme/app/issues/120",
+    };
+    for (const surface of [
+      valid,
+      { ...valid, id: "other" },
+      { ...valid, environmentId: 3 },
+      { ...valid, environmentId: "" },
+      { ...valid, url: 3 },
+      { ...valid, url: "https://github.com/acme/app/pull/120" },
+    ]) {
+      const state = migratePersistedRightPanelState({
+        byThreadKey: { thread: { isOpen: true, activeSurfaceId: "issue", surfaces: [surface] } },
+      }).byThreadKey.thread;
+      expect(state).toEqual(
+        surface === valid
+          ? { isOpen: true, activeSurfaceId: "issue", surfaces: [valid] }
+          : { isOpen: false, activeSurfaceId: null, surfaces: [] },
+      );
+    }
+  });
+
   it("records single and bulk tab closes, newest first", () => {
     const store = useRightPanelStore.getState();
     const pr = pullRequestSurface({

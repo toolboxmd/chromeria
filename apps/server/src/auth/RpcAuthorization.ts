@@ -20,6 +20,7 @@ import {
   AuthRelayReadScope,
   AuthRelayWriteScope,
   AuthTerminalOperateScope,
+  ISSUE_WS_METHODS,
   ORCHESTRATION_V2_WS_METHODS,
   AuthTerminalReadScope,
   type AuthEnvironmentScope,
@@ -32,6 +33,8 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
+
+import { ISSUE_LINK_RPC_SCOPES } from "../issueLinks/rpcScopes.ts";
 
 type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 
@@ -205,6 +208,12 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.subscribeServerLifecycle]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeAuthAccess]: AuthAccessReadScope,
   [WS_METHODS.subscribeBackgroundPolicy]: AuthOrchestrationReadScope,
+  // Fork: GitHub Issues (toolboxmd/t3code#27); its writes are in CLIENT_GUARDED_RPC_SCOPES.
+  [ISSUE_WS_METHODS.issuesList]: AuthOrchestrationReadScope,
+  [ISSUE_WS_METHODS.issuesDetail]: AuthOrchestrationReadScope,
+  [ISSUE_WS_METHODS.issuesStates]: AuthOrchestrationReadScope,
+  // Fork: Issue links (toolboxmd/t3code#28).
+  ...ISSUE_LINK_RPC_SCOPES,
 } as const satisfies Readonly<Record<WsRpcMethod, AuthEnvironmentScope>>;
 
 export function requiredScopeForRpcMethod(method: string): AuthEnvironmentScope {

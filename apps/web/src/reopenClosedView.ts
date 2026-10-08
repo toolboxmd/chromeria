@@ -143,6 +143,10 @@ export async function reopenClosedView(
     case "pull-request":
       panels.openPullRequest(ref, surface);
       break;
+    // Fork: an Issue opened beside the thread (toolboxmd/t3code#40).
+    case "issue":
+      panels.openIssue(ref, surface);
+      break;
     default:
       panels.open(ref, surface.kind);
   }
