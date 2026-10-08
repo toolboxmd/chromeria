@@ -3611,8 +3611,13 @@ export default function ChatView(props: ChatViewProps) {
   const visiblePullRequestCount = visiblePullRequests.length;
   const pullRequestsSurfaceAvailable =
     isServerThread && supportsThreadPullRequests && visiblePullRequestCount > 0;
+  // Fork: the links tab also holds the thread's Issues and is where they are linked by hand
+  // (toolboxmd/t3code#28), so it opens without pull requests on servers that serve Issue links.
+  const linksSurfaceAvailable =
+    pullRequestsSurfaceAvailable ||
+    (isServerThread && serverConfig?.environment.capabilities.issueLinks === true);
   const addPullRequestsSurface = () => {
-    if (!activeThreadRef || !pullRequestsSurfaceAvailable) return;
+    if (!activeThreadRef || !linksSurfaceAvailable) return;
     useRightPanelStore.getState().open(activeThreadRef, "pull-requests");
   };
   const addPullRequestsSurfaceStable = useStableCallback(addPullRequestsSurface);
@@ -7693,6 +7698,7 @@ export default function ChatView(props: ChatViewProps) {
         closeShortcutLabel: closeTerminalShortcutLabel ?? undefined,
       }}
       pullRequest={{
+        issueLinks: serverConfig?.environment.capabilities.issueLinks === true,
         capabilityKnown: pullRequestsCapabilityKnown,
         supported: supportsPullRequests,
         projectId: activeThread.projectId,
@@ -8506,7 +8512,7 @@ export default function ChatView(props: ChatViewProps) {
           diffAvailable={isServerThread && isGitRepo}
           filesAvailable={activeProject !== null}
           pullRequestAvailable={pullRequestSurfaceAvailable}
-          pullRequestsAvailable={pullRequestsSurfaceAvailable}
+          pullRequestsAvailable={linksSurfaceAvailable}
           deviceAvailable={activeThreadRef !== null}
         >
           {rightPanelContent}
@@ -8561,7 +8567,7 @@ export default function ChatView(props: ChatViewProps) {
             diffAvailable={isServerThread && isGitRepo}
             filesAvailable={activeProject !== null}
             pullRequestAvailable={pullRequestSurfaceAvailable}
-            pullRequestsAvailable={pullRequestsSurfaceAvailable}
+            pullRequestsAvailable={linksSurfaceAvailable}
             deviceAvailable={activeThreadRef !== null}
           >
             {rightPanelContent}

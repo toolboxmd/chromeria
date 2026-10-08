@@ -1,6 +1,6 @@
 import type { EnvironmentId, PullRequestRef, ScopedThreadRef } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouter } from "@tanstack/react-router";
 import { type MouseEvent } from "react";
 
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
@@ -116,6 +116,7 @@ export function useOpenChangeRequestLink(
   targetEnvironmentId?: EnvironmentId,
 ) => boolean {
   const navigate = useNavigate();
+  const router = useRouter();
   const allProjects = useProjects();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const openInApp = useClientSettings((settings) => settings.pullRequestLinksOpenInApp);
@@ -183,7 +184,7 @@ export function useOpenChangeRequestLink(
       if (!resolvedThreadRef) {
         void navigate({
           to: "/pull-requests",
-          search: (previous) => ({
+          search: ({ view: _view, issue: _issue, ...previous }) => ({
             ...previous,
             involvement: previous.involvement ?? "all",
             state: previous.state ?? "all",
@@ -193,7 +194,7 @@ export function useOpenChangeRequestLink(
             selectedProjectId: project.id,
             selectedEnvironmentId: project.environmentId,
           }),
-          replace: true,
+          replace: !("view" in router.state.location.search),
         });
       }
       return true;

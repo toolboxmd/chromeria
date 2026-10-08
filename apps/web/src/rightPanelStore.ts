@@ -3,7 +3,7 @@ import {
   scopedThreadKey,
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
-import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
+import { EnvironmentId, parseIssueUrl, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
@@ -21,6 +21,7 @@ const RIGHT_PANEL_KINDS = [
   "terminal",
   "pull-request",
   "pull-requests",
+  "issue",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -77,7 +78,13 @@ export type RightPanelSurface =
       number: number;
       url?: string;
     }
-  | { id: "pull-requests"; kind: "pull-requests" };
+  /** The thread's linked pull requests, one singleton tab beside any number of `pull-request` tabs. */
+  | { id: "pull-requests"; kind: "pull-requests" }
+  /**
+   * Fork: a GitHub Issue opened beside a thread, read through `environmentId`. One tab, so
+   * opening another Issue replaces it.
+   */
+  | { id: "issue"; kind: "issue"; environmentId: string; url: string };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 const RIGHT_PANEL_STORAGE_VERSION = 14;
@@ -122,7 +129,7 @@ interface RightPanelStoreState {
   ) => boolean;
   open: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "issue">,
   ) => void;
   openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget, automatic?: boolean) => void;
   renameDevice: (ref: ScopedThreadRef, surfaceId: string, title: string) => void;
@@ -153,6 +160,7 @@ interface RightPanelStoreState {
       url?: string;
     },
   ) => void;
+  openIssue: (ref: ScopedThreadRef, target: { environmentId: string; url: string }) => void;
   openTerminal: (ref: ScopedThreadRef, terminalId: string) => void;
   splitTerminal: (
     ref: ScopedThreadRef,
@@ -180,7 +188,7 @@ interface RightPanelStoreState {
   toggleVisibility: (ref: ScopedThreadRef) => void;
   toggle: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "issue">,
   ) => void;
   setThreadPanelOpen: (
     ref: ScopedThreadRef,
@@ -203,7 +211,7 @@ const DEFAULT_THREAD_PANEL_VISIBILITY: ThreadPanelVisibility = {
 };
 
 const singletonSurface = (
-  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request">,
+  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request" | "issue">,
 ): RightPanelSurface => {
   switch (kind) {
     case "diff":
@@ -457,6 +465,17 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                       const { folderTrail: _invalid, ...rest } = surface;
                       surface = rest;
                     }
+                    if (surface.kind === "issue") {
+                      if (
+                        surface.id !== "issue" ||
+                        typeof surface.environmentId !== "string" ||
+                        surface.environmentId.length === 0 ||
+                        typeof surface.url !== "string" ||
+                        parseIssueUrl(surface.url) === null
+                      )
+                        return [];
+                      return [surface];
+                    }
                     if (surface.kind === "file") {
                       const revealLine =
                         typeof surface.revealLine === "number" &&
@@ -681,6 +700,17 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
                   ),
                 }
               : next;
+          }),
+        ),
+      openIssue: (ref, target) =>
+        set((state) =>
+          userAction(state, scopedThreadKey(ref), (current) => {
+            const surface: RightPanelSurface = { id: "issue", kind: "issue", ...target };
+            const next = upsertSurface(current, surface);
+            return {
+              ...next,
+              surfaces: next.surfaces.map((entry) => (entry.id === surface.id ? surface : entry)),
+            };
           }),
         ),
       openFile: (ref, requestedPath, line) =>

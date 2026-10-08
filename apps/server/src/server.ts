@@ -60,6 +60,8 @@ import * as AcpRegistrySupport from "@t3tools/provider-acp-registry/server/AcpRe
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as CheckpointStore from "./checkpointing/CheckpointStore.ts";
 import * as SourceControlBuiltInDrivers from "./sourceControl/builtInDrivers.ts";
+import * as IssueService from "./issues/IssueService.ts";
+import * as IssueLinks from "./issueLinks/IssueLinks.ts";
 import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as ProviderInstanceRegistryHydration from "./provider/ProviderInstanceRegistryHydration.ts";
 import * as ProjectSettingsOverrideSweep from "./provider/ProjectSettingsOverrideSweep.ts";
@@ -344,6 +346,9 @@ const layerPullRequestService = PullRequestService.layer.pipe(
   Layer.provide(layerSourceControlProviderRegistry),
   Layer.provide(SourceControlRateLimit.layer),
 );
+
+// Fork: GitHub Issues (toolboxmd/t3code#27) and their thread links (toolboxmd/t3code#28).
+const layerIssues = IssueService.layer.pipe(Layer.provideMerge(IssueLinks.layerLive));
 
 const layerGitManager = GitManager.layer.pipe(
   Layer.provide(Layer.merge(ProjectionStoreV2.layer, ProjectStore.layer)),
@@ -706,6 +711,8 @@ const layerMakeRoutes = Layer.mergeAll(
   // Both transports consume the same service instance, so caches single-flight across clients
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(layerPullRequestService),
+  Layer.provide(layerIssues),
+  // The stream route and the WebSocket RPCs share one browser.
   Layer.provide(ServerBrowser.layer.pipe(Layer.provide(DesktopBrowserChannel.layer))),
   Layer.provide(PreviewBrowser.layer),
   Layer.provide(PreviewAutomationBroker.layer),
