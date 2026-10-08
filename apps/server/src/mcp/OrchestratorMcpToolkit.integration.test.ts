@@ -711,6 +711,8 @@ describe("orchestrator MCP toolkit", () => {
               commandId: CommandId.make("command:mcp-parent:create"),
               threadId: parentThreadId,
               projectId,
+              // Fork: threads an agent creates belong to its owner (toolboxmd/chromeria#170).
+              owner: "Pauli",
               title: "MCP parent",
               modelSelection: codexSelection,
               runtimeMode: "full-access",
@@ -2105,6 +2107,8 @@ describe("orchestrator MCP toolkit", () => {
               senderThreadId: parentThreadId,
             });
             const emptyProjection = yield* orchestrator.getThreadProjection(emptyThread.threadId);
+            expect(emptyProjection.thread.owner).toBe("Pauli");
+            expect(createdSource.thread.owner).toBe("Pauli");
             expect(emptyProjection.thread.lineage).toEqual({
               parentThreadId: null,
               relationshipToParent: null,

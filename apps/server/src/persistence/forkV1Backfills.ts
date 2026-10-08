@@ -5,6 +5,7 @@ import type * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
 import type * as EventSink from "../orchestration-v2/EventSink.ts";
+import { backfillThreadPeople } from "./forkThreadPeopleBackfill.ts";
 
 export interface ForkV1Backfill {
   readonly id: string;
@@ -36,7 +37,17 @@ export class ForkV1BackfillError extends Schema.TaggedError<ForkV1BackfillError>
  * Features own their recovery markers in fork tables or supported V2 event IDs,
  * outside the upstream migration ledger. No provider work may start here.
  */
-export const forkV1Backfills: ReadonlyArray<ForkV1Backfill> = [];
+export const forkV1Backfills: ReadonlyArray<ForkV1Backfill> = [
+  {
+    id: "thread-people",
+    run: backfillThreadPeople.pipe(
+      Effect.catchTags({
+        ThreadPeopleBackfillPayloadError: () =>
+          Effect.fail(new ForkV1BackfillStepError({ backfillId: "thread-people" })),
+      }),
+    ),
+  },
+];
 
 export const runForkV1Backfills = Effect.fn("forkV1Backfills.run")(function* (
   backfills: ReadonlyArray<ForkV1Backfill> = forkV1Backfills,

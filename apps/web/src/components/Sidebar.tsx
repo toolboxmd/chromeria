@@ -273,6 +273,9 @@ import {
 } from "./ui/combobox";
 import { SidebarContent, SidebarGroup, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
+import { PersonPicker } from "./people/PersonPicker";
+import { SharedThreadLabel } from "./people/SharedThreadLabel";
+import { useDraftInPersonView, usePersonViewThreads } from "./people/usePersonView";
 import { SidebarHeaderIconButton, SidebarThreadHeader } from "./sidebar/SidebarThreadHeader";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuShortcut, MenuTrigger } from "./ui/menu";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
@@ -969,6 +972,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
 }) {
   const draftThreadsByThreadKey = useComposerDraftStore((store) => store.draftThreadsByThreadKey);
   const draftsByThreadKey = useComposerDraftStore((store) => store.draftsByThreadKey);
+  const draftInPersonView = useDraftInPersonView();
   // The open draft's row is FROZEN at the moment the draft became the route:
   // it stays visible (like a thread row) but never repaints while the user
   // types. A draft that was never navigated away from has no snapshot to
@@ -1008,6 +1012,9 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
       ) {
         continue;
       }
+      if (!draftInPersonView(session.environmentId)) {
+        continue;
+      }
       if (draftKey === props.routeDraftId) {
         // Open draft: render the frozen entry snapshot, or nothing for a
         // draft that has never been left. Gated on the LIVE session above so
@@ -1026,6 +1033,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
     rows.sort((left, right) => right.session.createdAt.localeCompare(left.session.createdAt));
     return rows;
   }, [
+    draftInPersonView,
     draftThreadsByThreadKey,
     draftsByThreadKey,
     frozenActive,
@@ -1833,6 +1841,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
             </span>
             {draftIndicator}
             {title}
+            <SharedThreadLabel coOwners={thread.source.coOwners} />
             {pinIndicator}
             {terminalStatusIcon}
             {isRegeneratingTitle ? (
@@ -2003,6 +2012,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               ) : (
                 <span className="flex-1" />
               )}
+              <SharedThreadLabel coOwners={thread.source.coOwners} />
               {pinIndicator}
               {/* The visible state owns this slot's width: status at rest,
                   actions on hover/keyboard focus or while the popover is open. Keeping
@@ -2385,6 +2395,8 @@ export default function Sidebar() {
   const projects = useProjects();
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const threads = useThreadShells();
+  // Fork: the roster lists the picked person's threads (toolboxmd/chromeria#170).
+  const personThreads = usePersonViewThreads(threads);
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -2780,7 +2792,7 @@ export default function Sidebar() {
     const preciseNow = new Date().toISOString();
     // Subagent child threads live in the parent's Agents surface, not the
     // sidebar roster (v2 models them as real threads with lineage).
-    const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys);
+    const visible = filterSidebarV2VisibleThreads(personThreads, scopedProjectKeys);
     inboxReturns.observe(workingShelfEnabled ? threads : null);
     const pinned: EnvironmentThreadShell[] = [];
     const active: EnvironmentThreadShell[] = [];
@@ -2883,6 +2895,7 @@ export default function Sidebar() {
   }, [
     nowMinute,
     optimisticDrop,
+    personThreads,
     scopedProjectKeys,
     serverConfigs,
     snoozeWakeTick,
@@ -4978,6 +4991,7 @@ export default function Sidebar() {
     <>
       <ThreadContextDragGhost />
       <SidebarChromeHeader isElectron={isElectron} />
+      <PersonPicker />
       <SidebarContent
         className="min-h-full"
         fixedHeader={
