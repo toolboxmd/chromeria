@@ -2,6 +2,7 @@
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeUtil from "node:util";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -110,6 +111,12 @@ const decodeV1 = Schema.decodeUnknownSync(
 );
 type V1 = ReturnType<typeof decodeV1>;
 
+/**
+ * Private data never reaches a failure message: comparisons yield booleans,
+ * and a failure names only the field that differed.
+ */
+const same = (a: unknown, b: unknown) => NodeUtil.isDeepStrictEqual(a, b);
+
 /** The v2 trigger a v1 schedule must become. */
 const expectedSchedule = (v1: V1) => {
   const schedule = v1.definition.schedule;
@@ -214,22 +221,28 @@ it.effect.skipIf(subset === undefined)(
         // A rerun in the same process changes nothing.
         const again = yield* startup;
         assert.equal(again.shells.importedThreadCount, 0);
-        assert.deepEqual(yield* imported, after);
+        assert.isTrue(same(yield* imported, after), "a rerun changed the import");
         return { ran, after };
       }).pipe(Effect.provide(boot(dbPath)));
       const { after } = first;
 
       // Every v1 task has exactly one marker.
-      assert.deepEqual(
-        after.markers.map((marker) => marker.task_id),
-        after.streams.map((stream) => stream.stream_id),
+      assert.isTrue(
+        same(
+          after.markers.map((marker) => marker.task_id),
+          after.streams.map((stream) => stream.stream_id),
+        ),
+        "markers do not match the v1 tasks one to one",
       );
       const importedIds = new Set(
         after.markers.filter((marker) => marker.outcome === "imported").map((m) => m.task_id),
       );
-      assert.deepEqual(
-        after.tasks.filter((task) => importedIds.has(task.task_id)).map((task) => task.task_id),
-        [...importedIds].toSorted(),
+      assert.isTrue(
+        same(
+          after.tasks.filter((task) => importedIds.has(task.task_id)).map((task) => task.task_id),
+          [...importedIds].toSorted(),
+        ),
+        "imported markers do not match the imported task rows",
       );
       // Only tasks left behind keep their payload, privately.
       for (const marker of after.markers)
@@ -246,7 +259,7 @@ it.effect.skipIf(subset === undefined)(
       const runs = after.states.flatMap((row) => decodeState(row.state_json).runs);
       for (const run of runs) {
         assert.isDefined(run.imported);
-        assert.deepEqual(run.sends, []);
+        assert.equal(run.sends.length, 0, "an imported run has a send to repeat");
       }
 
       // Each imported task kept exactly what v1 recorded; compared here, never printed.
@@ -257,47 +270,51 @@ it.effect.skipIf(subset === undefined)(
         after.states.map((row) => [row.task_id, decodeState(row.state_json)]),
       );
       let preservedFields = 0;
+      const mismatches = new Set<string>();
+      const expect = (label: string, matches: boolean) => {
+        if (!matches) mismatches.add(label);
+      };
       for (const task of after.tasks.filter((entry) => importedIds.has(entry.task_id))) {
-        const v1 = sourceOf.get(task.task_id)!;
-        const state = stateOf.get(task.task_id)!;
+        const v1 = sourceOf.get(task.task_id);
+        const state = stateOf.get(task.task_id);
+        if (v1 === undefined || state === undefined) {
+          mismatches.add("source or fork state missing");
+          continue;
+        }
         const command = v1.definition.kind === "command";
-        assert.deepEqual(fromJson(task.schedule_json), expectedSchedule(v1), "schedule");
-        if (!command) assert.equal(task.prompt, v1.definition.prompt, "prompt");
+        expect("schedule", same(fromJson(task.schedule_json), expectedSchedule(v1)));
+        if (!command) expect("prompt", task.prompt === v1.definition.prompt);
         if (v1.definition.target?.kind === "thread")
-          assert.equal(task.thread_id, v1.definition.target.threadId, "bound thread");
-        assert.equal(state.kind, command ? "command" : "agent", "kind");
-        assert.deepEqual(state.checks, command ? [] : v1.checks, "checks");
-        assert.equal(state.role, command ? null : (v1.definition.role ?? null), "role");
-        assert.equal(state.lane, command ? null : (v1.definition.lane ?? null), "lane");
-        assert.equal(state.runs.length, v1.runs.length, "run count");
+          expect("bound thread", task.thread_id === v1.definition.target.threadId);
+        expect("kind", state.kind === (command ? "command" : "agent"));
+        expect("checks", same(state.checks, command ? [] : v1.checks));
+        expect("role", state.role === (command ? null : (v1.definition.role ?? null)));
+        expect("lane", state.lane === (command ? null : (v1.definition.lane ?? null)));
+        expect("run count", state.runs.length === v1.runs.length);
         state.runs.forEach((run, index) => {
-          const original = v1.runs[index]!;
-          assert.deepEqual(
-            {
-              id: run.id,
-              slot: run.slot,
-              attempt: run.attempt,
-              hasWork: run.hasWork,
-              error: run.error,
-              checkCwd: run.checkCwd,
-              threadId: run.threadId,
-              status: run.imported?.status,
-            },
-            {
-              id: original.id,
-              slot: original.slot,
-              attempt: original.attempt,
-              hasWork: original.hasWork,
-              error: original.error,
-              checkCwd: original.checkCwd,
-              threadId: original.threadId,
-              status: original.status,
-            },
+          const original = v1.runs[index];
+          expect(
             "run",
+            original !== undefined &&
+              same(
+                [run.id, run.slot, run.attempt, run.hasWork, run.error, run.checkCwd, run.threadId],
+                [
+                  original.id,
+                  original.slot,
+                  original.attempt,
+                  original.hasWork,
+                  original.error,
+                  original.checkCwd,
+                  original.threadId,
+                ],
+              ) &&
+              run.imported?.status === original.status,
           );
         });
         preservedFields += 1;
       }
+      // Only the labels of fields that differed, never their values.
+      assert.deepEqual([...mismatches], [], "imported fields differ from v1");
 
       // A restart on the same file converges too.
       const restarted = yield* Effect.gen(function* () {
@@ -305,7 +322,7 @@ it.effect.skipIf(subset === undefined)(
         return { ran, after: yield* imported };
       }).pipe(Effect.provide(boot(dbPath)));
       assert.equal(restarted.ran.shells.importedThreadCount, 0);
-      assert.deepEqual(restarted.after, after);
+      assert.isTrue(same(restarted.after, after), "a restart changed the import");
 
       const tally = (key: (marker: (typeof after.markers)[number]) => string) =>
         Object.fromEntries(
