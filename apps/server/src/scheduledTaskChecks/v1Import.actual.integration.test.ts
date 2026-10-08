@@ -5,6 +5,7 @@ import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -31,6 +32,100 @@ const subset = process.env.CHROMERIA_V1_SUBSET_DB;
 /** Where to write the sanitized counts, when set. */
 const summaryPath = process.env.CHROMERIA_V1_SUBSET_SUMMARY;
 const toJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const fromJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+
+/**
+ * The positive oracle: what a read-only survey of the source says the subset
+ * holds, as JSON counts. The proof refuses to run without it, so an import
+ * that left everything unsupported cannot pass.
+ */
+const expectation = process.env.CHROMERIA_V1_SUBSET_EXPECT;
+const decodeExpectation = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      v1Tasks: Schema.Number,
+      imported: Schema.Number,
+      deleted: Schema.Number,
+      unsupported: Schema.Number,
+      kinds: Schema.Record(Schema.String, Schema.Number),
+      boundThreads: Schema.Number,
+      inertRuns: Schema.Number,
+    }),
+  ),
+);
+
+/** The v1 task fields the import must preserve, decoded independently of the importer. */
+const decodeV1 = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      deleted: Schema.Boolean,
+      definition: Schema.Struct({
+        kind: Schema.optionalKey(Schema.String),
+        prompt: Schema.optionalKey(Schema.String),
+        role: Schema.optionalKey(Schema.String),
+        lane: Schema.optionalKey(Schema.String),
+        target: Schema.optionalKey(
+          Schema.Struct({
+            kind: Schema.String,
+            threadId: Schema.optionalKey(Schema.String),
+          }),
+        ),
+        schedule: Schema.Struct({
+          kind: Schema.String,
+          minutes: Schema.optionalKey(Schema.Number),
+          at: Schema.optionalKey(Schema.String),
+          weekdays: Schema.optionalKey(Schema.Array(Schema.Number)),
+          times: Schema.optionalKey(Schema.Array(Schema.String)),
+          timeZone: Schema.optionalKey(Schema.String),
+          windowMinutes: Schema.optionalKey(Schema.Number),
+        }),
+      }),
+      choices: Schema.optionalKey(
+        Schema.Array(Schema.Struct({ requested: Schema.String, offsetMinutes: Schema.Number })),
+      ),
+      checks: Schema.Array(
+        Schema.Struct({
+          version: Schema.Number,
+          command: Schema.String,
+          actor: Schema.String,
+          reason: Schema.String,
+          createdAt: Schema.String,
+          revertedFrom: Schema.NullOr(Schema.Number),
+        }),
+      ),
+      runs: Schema.Array(
+        Schema.Struct({
+          id: Schema.String,
+          slot: Schema.String,
+          status: Schema.String,
+          attempt: Schema.Number,
+          hasWork: Schema.Boolean,
+          error: Schema.NullOr(Schema.String),
+          checkCwd: Schema.String,
+          threadId: Schema.NullOr(Schema.String),
+        }),
+      ),
+    }),
+  ),
+);
+type V1 = ReturnType<typeof decodeV1>;
+
+/** The v2 trigger a v1 schedule must become. */
+const expectedSchedule = (v1: V1) => {
+  const schedule = v1.definition.schedule;
+  if (schedule.kind === "interval")
+    return { type: "interval", everyMs: Math.round((schedule.minutes ?? 0) * 60_000) };
+  if (schedule.kind === "once")
+    return { type: "once", at: DateTime.formatIso(DateTime.makeUnsafe(Date.parse(schedule.at!))) };
+  return {
+    type: "weekly",
+    weekdays: schedule.weekdays,
+    times: schedule.times,
+    timeZone: schedule.timeZone,
+    ...(schedule.windowMinutes === undefined ? {} : { windowMinutes: schedule.windowMinutes }),
+    ...(v1.choices === undefined ? {} : { chosen: v1.choices }),
+  };
+};
 
 const boot = (dbPath: string) => {
   const database = SqlitePersistence.layerFromPath(dbPath).pipe(Layer.provide(NodeServices.layer));
@@ -74,13 +169,16 @@ const imported = Effect.gen(function* () {
      FROM fork_scheduled_task_v1_imports ORDER BY task_id`;
   const tasks = yield* sql<{
     readonly task_id: string;
+    readonly prompt: string;
+    readonly schedule_json: string;
     readonly enabled: number;
     readonly next_run_at: string | null;
     readonly last_run_status: string;
     readonly run_count: number;
     readonly thread_id: string | null;
     readonly bound_thread_in_v2: number;
-  }>`SELECT task_id, enabled, next_run_at, last_run_status, run_count, thread_id,
+  }>`SELECT task_id, prompt, schedule_json, enabled, next_run_at, last_run_status, run_count,
+       thread_id,
        thread_id IS NOT NULL AND EXISTS (
          SELECT 1 FROM orchestration_v2_projection_threads AS thread
          WHERE thread.thread_id = scheduled_tasks.thread_id
@@ -88,11 +186,17 @@ const imported = Effect.gen(function* () {
      FROM scheduled_tasks ORDER BY task_id`;
   const states = yield* sql<{ readonly task_id: string; readonly state_json: string }>`
     SELECT task_id, state_json FROM fork_scheduled_task_checks ORDER BY task_id`;
+  const sources = yield* sql<{ readonly stream_id: string; readonly payload_json: string }>`
+    SELECT stream_id, payload_json FROM orchestration_events
+    WHERE event_type = 'scheduler.state-set' AND sequence IN (
+      SELECT MAX(sequence) FROM orchestration_events
+      WHERE event_type = 'scheduler.state-set' GROUP BY stream_id
+    )`;
   // A COUNT query always returns one row.
   const v2 = (yield* sql<{ readonly threads: number; readonly events: number }>`
     SELECT (SELECT COUNT(*) FROM orchestration_v2_projection_threads) AS threads,
            (SELECT COUNT(*) FROM orchestration_v2_events) AS events`)[0]!;
-  return { streams, markers, tasks, states, v2 };
+  return { streams, markers, tasks, states, sources, v2 };
 });
 
 it.effect.skipIf(subset === undefined)(
@@ -102,6 +206,8 @@ it.effect.skipIf(subset === undefined)(
     const dbPath = NodePath.join(directory, "state.sqlite");
     NodeFS.copyFileSync(subset!, dbPath);
     return Effect.gen(function* () {
+      assert.isDefined(expectation, "CHROMERIA_V1_SUBSET_EXPECT states what the source holds");
+      const expected = decodeExpectation(expectation);
       const first = yield* Effect.gen(function* () {
         const ran = yield* startup;
         const after = yield* imported;
@@ -143,6 +249,56 @@ it.effect.skipIf(subset === undefined)(
         assert.deepEqual(run.sends, []);
       }
 
+      // Each imported task kept exactly what v1 recorded; compared here, never printed.
+      const sourceOf = new Map(
+        after.sources.map((row) => [row.stream_id, decodeV1(row.payload_json)]),
+      );
+      const stateOf = new Map(
+        after.states.map((row) => [row.task_id, decodeState(row.state_json)]),
+      );
+      let preservedFields = 0;
+      for (const task of after.tasks.filter((entry) => importedIds.has(entry.task_id))) {
+        const v1 = sourceOf.get(task.task_id)!;
+        const state = stateOf.get(task.task_id)!;
+        const command = v1.definition.kind === "command";
+        assert.deepEqual(fromJson(task.schedule_json), expectedSchedule(v1), "schedule");
+        if (!command) assert.equal(task.prompt, v1.definition.prompt, "prompt");
+        if (v1.definition.target?.kind === "thread")
+          assert.equal(task.thread_id, v1.definition.target.threadId, "bound thread");
+        assert.equal(state.kind, command ? "command" : "agent", "kind");
+        assert.deepEqual(state.checks, command ? [] : v1.checks, "checks");
+        assert.equal(state.role, command ? null : (v1.definition.role ?? null), "role");
+        assert.equal(state.lane, command ? null : (v1.definition.lane ?? null), "lane");
+        assert.equal(state.runs.length, v1.runs.length, "run count");
+        state.runs.forEach((run, index) => {
+          const original = v1.runs[index]!;
+          assert.deepEqual(
+            {
+              id: run.id,
+              slot: run.slot,
+              attempt: run.attempt,
+              hasWork: run.hasWork,
+              error: run.error,
+              checkCwd: run.checkCwd,
+              threadId: run.threadId,
+              status: run.imported?.status,
+            },
+            {
+              id: original.id,
+              slot: original.slot,
+              attempt: original.attempt,
+              hasWork: original.hasWork,
+              error: original.error,
+              checkCwd: original.checkCwd,
+              threadId: original.threadId,
+              status: original.status,
+            },
+            "run",
+          );
+        });
+        preservedFields += 1;
+      }
+
       // A restart on the same file converges too.
       const restarted = yield* Effect.gen(function* () {
         const ran = yield* startup;
@@ -173,11 +329,28 @@ it.effect.skipIf(subset === undefined)(
         threadShellsImported: first.ran.shells.importedThreadCount,
         v2Threads: after.v2.threads,
         rerunAndRestartChanges: 0,
+        importedTasksMatchingV1: preservedFields,
       };
       yield* Effect.logInfo("ACTUAL-DATA SUBSET v1 scheduled-task import").pipe(
         Effect.annotateLogs(summary),
       );
       if (summaryPath !== undefined) NodeFS.writeFileSync(summaryPath, toJson(summary));
+      // The positive oracle: exactly what the source survey said, not what the importer decided.
+      const count = (outcome: string) =>
+        after.markers.filter((marker) => marker.outcome === outcome).length;
+      assert.deepEqual(
+        {
+          v1Tasks: after.streams.length,
+          imported: count("imported"),
+          deleted: count("deleted"),
+          unsupported: count("unsupported"),
+          kinds: summary.kinds,
+          boundThreads: summary.boundToImportedThread,
+          inertRuns: runs.length,
+        },
+        expected,
+      );
+      assert.equal(preservedFields, expected.imported, "every imported task was compared");
     }).pipe(
       Effect.ensuring(
         Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
