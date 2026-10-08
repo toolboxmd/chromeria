@@ -1,6 +1,7 @@
 import {
   PromachosInlineCardHost,
   PromachosWorkingBubble,
+  usePromachosScrollFollow,
   PROMACHOS_OUTBOUND_BUBBLE_CLASS_NAME,
 } from "../promachos/PromachosChat";
 import { PROMACHOS_BUBBLE_MARKDOWN } from "../promachos/promachosBubbles";
@@ -440,10 +441,6 @@ const TIMELINE_MAINTAIN_SCROLL_AT_END = {
     layout: true,
   },
 } as const satisfies MaintainScrollAtEndOptions;
-const PROMACHOS_MAINTAIN_SCROLL_AT_END = {
-  ...TIMELINE_MAINTAIN_SCROLL_AT_END,
-  on: { ...TIMELINE_MAINTAIN_SCROLL_AT_END.on, footerLayout: true },
-} as const satisfies MaintainScrollAtEndOptions;
 const EMPTY_TIMELINE_RUNS: ReadonlyArray<HandoffTimelineRun> = [];
 const EMPTY_RUN_IDS: ReadonlySet<RunId> = new Set();
 // Streamed text lands a paragraph at a time. A smooth scroll to the end
@@ -451,11 +448,6 @@ const EMPTY_RUN_IDS: ReadonlySet<RunId> = new Set();
 // and layout settles keep the instant variant so nothing visibly travels.
 const TIMELINE_MAINTAIN_SCROLL_AT_END_SMOOTH = {
   ...TIMELINE_MAINTAIN_SCROLL_AT_END,
-  animated: true,
-} as const satisfies MaintainScrollAtEndOptions;
-
-const PROMACHOS_MAINTAIN_SCROLL_AT_END_SMOOTH = {
-  ...PROMACHOS_MAINTAIN_SCROLL_AT_END,
   animated: true,
 } as const satisfies MaintainScrollAtEndOptions;
 
@@ -906,6 +898,11 @@ const ConversationTimeline = memo(function ConversationTimeline({
     readonly projection: MessagesTimelineRowsProjection;
   } | null>(null);
   const promachos = presentation === "promachos";
+  const scrollFollow = usePromachosScrollFollow(
+    promachos,
+    TIMELINE_MAINTAIN_SCROLL_AT_END,
+    TIMELINE_MAINTAIN_SCROLL_AT_END_SMOOTH,
+  );
   const promachosDisclosures = usePromachosTimelineDisclosures(
     { timelineEntries, latestRun, isWorking, runlessWorkActive, runningRunId },
     promachos,
@@ -1643,12 +1640,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
                 disclosureToggleSettling
                   ? false
                   : isWorking && !prefersReducedMotion && settlingListIdentity === null
-                    ? promachos
-                      ? PROMACHOS_MAINTAIN_SCROLL_AT_END_SMOOTH
-                      : TIMELINE_MAINTAIN_SCROLL_AT_END_SMOOTH
-                    : promachos
-                      ? PROMACHOS_MAINTAIN_SCROLL_AT_END
-                      : TIMELINE_MAINTAIN_SCROLL_AT_END
+                    ? scrollFollow.smooth
+                    : scrollFollow.normal
               }
               maintainVisibleContentPosition={
                 findActive ||

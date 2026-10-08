@@ -1,3 +1,4 @@
+import type { ComponentProps } from "react";
 import { useLocation } from "@tanstack/react-router";
 
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
@@ -34,5 +35,15 @@ export function PromachosModeSwitch() {
         </Toggle>
       </ToggleGroup>
     </div>
+  );
+}
+
+/** Preserve the upstream titlebar DOM and attach the fork mode switch below it. */
+export function PromachosSidebarHeader(props: ComponentProps<"div">) {
+  return (
+    <>
+      <div {...props} />
+      <PromachosModeSwitch />
+    </>
   );
 }

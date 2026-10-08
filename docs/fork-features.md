@@ -866,6 +866,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/promachos/PromachosHome.test.ts",
     "apps/server/src/promachos/PromachosHome.ts",
     "apps/server/src/promachos/PromachosLaunch.ts",
+    "apps/server/src/promachos/PromachosLaunch.tests.ts",
+    "apps/server/src/promachos/PromachosRpc.ts",
     "apps/web/src/components/promachos/PromachosChat.tsx",
     "apps/web/src/components/promachos/PromachosModeSwitch.tsx",
     "apps/web/src/components/promachos/PromachosNewHome.tsx",

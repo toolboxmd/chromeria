@@ -8,6 +8,7 @@
  */
 import { ScopedProjectRef } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import { promachosMultipleModelSelections } from "./promachosStart";
 
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { useNewThreadHandler } from "../../hooks/useHandleNewThread";
@@ -56,4 +57,19 @@ export function usePromachosChat(projectRef: ScopedProjectRef | null): boolean {
 export function useStartPromachosConversation() {
   const startNewThread = useNewThreadHandler();
   return (home: ScopedProjectRef) => startNewThread(home);
+}
+
+/** Keep home/model and saved fanout presentation policy behind one chat-view hook. */
+export function usePromachosPresentation<T>(
+  projectRef: ScopedProjectRef | null,
+  configuredModels: ReadonlyArray<unknown>,
+  savedMultipleModels: T | null,
+) {
+  const enabled = usePromachosChat(projectRef);
+  const models = enabled ? configuredModels : null;
+  return {
+    enabled,
+    models,
+    multipleModels: promachosMultipleModelSelections(savedMultipleModels, models),
+  };
 }

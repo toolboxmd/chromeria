@@ -7,6 +7,8 @@ import * as Receipts from "../orchestration-v2/CommandReceiptStore.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as Prism from "../prism/PrismService.ts";
+import * as Adapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as Providers from "../provider/ProviderRegistry.ts";
 
 export class PromachosLaunchError extends Schema.TaggedError<PromachosLaunchError>()(
   "PromachosLaunchError",
@@ -43,6 +45,8 @@ const make = Effect.gen(function* () {
   const threads = yield* Threads.ThreadManagementService;
   const receipts = yield* Receipts.CommandReceiptStoreV2;
   const prism = yield* Prism.PrismService;
+  const adapters = yield* Adapters.ProviderAdapterRegistryV2;
+  const providers = yield* Providers.ProviderRegistry;
   const prepare = Effect.fn("PromachosLaunch.prepare")(function* (input: PromachosLaunchInput) {
     const { prismRole, ...launch } = input;
     if (prismRole === undefined) return launch;
@@ -79,7 +83,16 @@ const make = Effect.gen(function* () {
       return yield* new PromachosLaunchError({ reason: "initial-only" });
     }
     const selected = yield* prism
-      .resolve({ projectId: input.projectId, role: "promachos", inherited: input.modelSelection })
+      .resolve({
+        projectId: input.projectId,
+        role: "promachos",
+        inherited: input.modelSelection,
+        validate: (selection) =>
+          Prism.validateLaunchSelection(selection).pipe(
+            Effect.provideService(Adapters.ProviderAdapterRegistryV2, adapters),
+            Effect.provideService(Providers.ProviderRegistry, providers),
+          ),
+      })
       .pipe(Effect.mapError((cause) => new PromachosLaunchError({ reason: "routing", cause })));
     return {
       ...launch,

@@ -1,5 +1,4 @@
-import * as PromachosLaunch from "../promachos/PromachosLaunch.ts";
-import * as Prism from "../prism/PrismService.ts";
+import { registerPromachosLaunchTests } from "../promachos/PromachosLaunch.tests.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -11,7 +10,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as ServerConfig from "../config.ts";
 import { createPendingAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ThreadMessageIntake from "./ThreadMessageIntake.ts";
-import { assert, expect, it, vi } from "@effect/vitest";
+import { assert, it, vi } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
@@ -238,6 +237,7 @@ function makeHarness(options: HarnessOptions = {}) {
   );
   return {
     layer: Layer.mergeAll(
+      layerRegistry,
       layerLaunch,
       layerThreadManagement,
       layerTitleRegeneration,
@@ -2542,107 +2542,4 @@ it.effect.each([false, true])(
     }),
 );
 
-const promachosProvider: ServerProvider = {
-  instanceId: modelSelection.instanceId,
-  driver: ProviderDriverKind.make("codex"),
-  enabled: true,
-  installed: true,
-  version: null,
-  status: "ready",
-  auth: { status: "authenticated" },
-  checkedAt: "2026-10-08T00:00:00.000Z",
-  availability: "available",
-  models: [{ slug: modelSelection.model, name: "Promachos", isCustom: false, capabilities: null }],
-  slashCommands: [],
-  skills: [],
-};
-const layerPromachos = PromachosLaunch.layer.pipe(
-  Layer.provide(Prism.layer),
-  Layer.provide(CommandReceiptStore.layer),
-);
-it.effect(
-  "Promachos launch persists the Prism model and kit once, then replays its receipt",
-  () => {
-    const harness = makeHarness({
-      providers: [promachosProvider],
-      serverSettings: {
-        prismRoles: {
-          promachos: {
-            models: [{ ...modelSelection, effort: "high" }],
-            instructions: "Read the home persona.",
-          },
-        },
-      },
-    });
-    return Effect.gen(function* () {
-      const promachos = yield* PromachosLaunch.PromachosLaunch;
-      const launches = yield* ThreadLaunch.ThreadLaunchService;
-      const input = {
-        ...launchInput({ command: "promachos:first", thread: "promachos:first", message: "Hello" }),
-        modelSelection: { ...modelSelection, model: "placeholder" },
-        prismRole: "promachos" as const,
-      };
-      const first = yield* launches.launch(yield* promachos.prepare(input));
-      expect(first.projection.thread.modelSelection).toEqual({
-        ...modelSelection,
-        options: [{ id: "reasoningEffort", value: "high" }],
-      });
-      expect(first.projection.messages.map((message) => message.text)).toEqual([
-        "Read the home persona.\n\nHello",
-      ]);
-      const second = yield* launches.launch(yield* promachos.prepare(input));
-      expect(second.resumed).toBe(true);
-      expect(second.projection.messages).toHaveLength(1);
-      expect(second.projection.runs).toHaveLength(1);
-      expect(second.projection.thread.modelSelection).toEqual(
-        first.projection.thread.modelSelection,
-      );
-    }).pipe(Effect.provide(layerPromachos.pipe(Layer.provideMerge(harness.layer))));
-  },
-);
-it.effect(
-  "Promachos launch refuses an unavailable configured model without a normal launch",
-  () => {
-    const harness = makeHarness({
-      providers: [],
-      serverSettings: { prismRoles: { promachos: { models: [modelSelection] } } },
-    });
-    return Effect.gen(function* () {
-      const promachos = yield* PromachosLaunch.PromachosLaunch;
-      const threads = yield* ThreadManagement.ThreadManagementService;
-      const input = {
-        ...launchInput({
-          command: "promachos:refused",
-          thread: "promachos:refused",
-          message: "Hello",
-        }),
-        prismRole: "promachos" as const,
-      };
-      expect((yield* promachos.prepare(input).pipe(Effect.flip)).reason).toBe("routing");
-      expect(yield* threads.getThreadShell(input.threadId!)).toBeNull();
-    }).pipe(Effect.provide(layerPromachos.pipe(Layer.provideMerge(harness.layer))));
-  },
-);
-it.effect("Promachos launch cannot reroute an existing conversation or a reusable thread", () => {
-  const harness = makeHarness();
-  return Effect.gen(function* () {
-    const launches = yield* ThreadLaunch.ThreadLaunchService;
-    const promachos = yield* PromachosLaunch.PromachosLaunch;
-    const input = launchInput({
-      command: "ordinary:first",
-      thread: "ordinary:first",
-      message: "Hello",
-    });
-    yield* launches.launch(input);
-    const reroute = {
-      ...input,
-      commandId: CommandId.make("promachos:reroute"),
-      prismRole: "promachos" as const,
-    };
-    expect((yield* promachos.prepare(reroute).pipe(Effect.flip)).reason).toBe("initial-only");
-    expect(
-      (yield* promachos.prepare({ ...reroute, reuseExistingThread: true }).pipe(Effect.flip))
-        .reason,
-    ).toBe("initial-only");
-  }).pipe(Effect.provide(layerPromachos.pipe(Layer.provideMerge(harness.layer))));
-});
+registerPromachosLaunchTests({ makeHarness, launchInput, modelSelection });

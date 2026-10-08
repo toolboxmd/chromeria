@@ -1,7 +1,5 @@
-import * as CommandReceiptStore from "./orchestration-v2/CommandReceiptStore.ts";
-import * as PromachosLaunch from "./promachos/PromachosLaunch.ts";
-import * as Prism from "./prism/PrismService.ts";
-import * as PromachosHome from "./promachos/PromachosHome.ts";
+import type * as PromachosLaunch from "./promachos/PromachosLaunch.ts";
+import * as PromachosRpc from "./promachos/PromachosRpc.ts";
 import { PROMACHOS_HOME_WS_METHODS } from "@t3tools/contracts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
@@ -1216,17 +1214,7 @@ const layerWsRpc = (
       const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
       const projectStore = yield* ProjectStore.ProjectStoreV2;
       const projectService = yield* ProjectService.ProjectService;
-      const promachosLaunch = yield* PromachosLaunch.PromachosLaunch.pipe(
-        Effect.provide(
-          PromachosLaunch.layer.pipe(
-            Layer.provide(Prism.layer),
-            Layer.provide(CommandReceiptStore.layer),
-          ),
-        ),
-      );
-      const promachosHome = yield* PromachosHome.PromachosHome.pipe(
-        Effect.provide(PromachosHome.layer),
-      );
+      const promachos = yield* PromachosRpc.makeHandlers;
       const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
       const threadSearch = yield* ThreadSearch.ThreadSearch;
 
@@ -1857,8 +1845,8 @@ const layerWsRpc = (
               }),
           ),
           Effect.flatMap((owner) =>
-            promachosLaunch
-              .prepare({ ...input, owner })
+            promachos
+              .prepareLaunch({ ...input, owner })
               .pipe(Effect.flatMap(ThreadMessageIntake.launchThread)),
           ),
         );
@@ -2059,13 +2047,6 @@ const layerWsRpc = (
                     projection: projectThreadProjectionForWire(result.projection),
                   })),
                   Effect.catchTags({
-                    PromachosLaunchError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: cause.message,
-                        cause,
-                      }),
                     AttachmentClaimError: (cause) =>
                       new OrchestrationV2ThreadLaunchError({
                         commandId: input.commandId,
@@ -2645,7 +2626,7 @@ const layerWsRpc = (
               (cause) => new OrchestrationDispatchCommandError({ message: cause.message, cause }),
             ),
           ),
-        [PROMACHOS_HOME_WS_METHODS.create]: (input) => promachosHome.create(input),
+        [PROMACHOS_HOME_WS_METHODS.create]: (input) => promachos.createHome(input),
         [WS_METHODS.projectsCreateNew]: (input) =>
           managedFolders
             .createNamedProject(input)

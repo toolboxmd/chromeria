@@ -1,4 +1,5 @@
-import { useCallback, useState, type ReactNode } from "react";
+import type { MaintainScrollAtEndOptions } from "@legendapp/list/react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import { ComposerBanner } from "../chat/ComposerBanner";
@@ -81,4 +82,22 @@ export function usePromachosInlineCardHost(input: {
       ? host.element
       : null;
   return { timelineHostRef, composerHost };
+}
+
+/** Keep inline question/approval card growth visible while following the chat end. */
+export function usePromachosScrollFollow(
+  enabled: boolean,
+  normal: MaintainScrollAtEndOptions,
+  smooth: MaintainScrollAtEndOptions,
+) {
+  return useMemo(
+    () =>
+      enabled
+        ? {
+            normal: { ...normal, on: { ...normal.on, footerLayout: true } },
+            smooth: { ...smooth, on: { ...smooth.on, footerLayout: true } },
+          }
+        : { normal, smooth },
+    [enabled, normal, smooth],
+  );
 }

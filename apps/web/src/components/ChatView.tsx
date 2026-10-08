@@ -1,10 +1,6 @@
 import { usePromachosInlineCardHost } from "./promachos/PromachosChat";
-import { usePromachosChat } from "./promachos/promachosMode";
-import {
-  promachosMultipleModelSelections,
-  promachosPicksModel,
-  withPromachosStart,
-} from "./promachos/promachosStart";
+import { usePromachosPresentation } from "./promachos/promachosMode";
+import { promachosPicksModel, withPromachosStart } from "./promachos/promachosStart";
 import { ThreadFind, ThreadFindCanvas, type ThreadFindControls } from "./chat/ThreadFindProvider";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
@@ -2490,7 +2486,6 @@ export default function ChatView(props: ChatViewProps) {
     [activeThread?.environmentId, activeThread?.projectId],
   );
   const activeProject = useProject(activeProjectRef);
-  const promachosChat = usePromachosChat(activeProjectRef);
   // Environment settings with the active project's overrides applied.
   const activeProjectSettings = useMemo(
     () => resolveProjectSettings(settings, activeProject?.id ?? null, activeProject ?? undefined),
@@ -2503,12 +2498,14 @@ export default function ChatView(props: ChatViewProps) {
   // A project added by cloning exists before its files do. The draft stays
   // editable throughout; only sending waits for the clone, and a failed
   // clone offers its retry right where the user is looking.
-  const promachosModels = promachosChat
-    ? activeProjectSettings.settings.prismRoles.promachos.models
-    : null;
-  const viewMultipleModelSelections = promachosMultipleModelSelections(
+  const {
+    enabled: promachosChat,
+    models: promachosModels,
+    multipleModels: viewMultipleModelSelections,
+  } = usePromachosPresentation(
+    activeProjectRef,
+    activeProjectSettings.settings.prismRoles.promachos.models,
     multipleModelSelections,
-    promachosModels,
   );
   const activeProjectClone = useProjectClone(activeProjectRef);
   const cancelProjectClone = useAtomCommand(sourceControlEnvironment.cancelProjectClone, {
