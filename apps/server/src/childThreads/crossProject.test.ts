@@ -57,6 +57,14 @@ it.effect(
         worktreePath: "/tmp/parent-worktree",
         createdBy: "user",
         creationSource: "web",
+        owner: "Fixture Owner",
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.share",
+        commandId: CommandId.make("share:parent"),
+        threadId: parentId,
+        actor: "Fixture Owner",
+        coOwner: "Fixture Collaborator",
       });
       yield* orchestrator.dispatch({
         type: "message.dispatch",
@@ -102,6 +110,8 @@ it.effect(
       const task = (yield* orchestrator.getThreadProjection(parentId)).subagents[0]!;
       const child = yield* orchestrator.getThreadProjection(task.childThreadId!);
       assert.equal(child.thread.projectId, destinationId);
+      assert.equal(child.thread.owner, "Fixture Owner");
+      assert.deepEqual(child.thread.coOwners, []);
       assert.deepEqual(child.thread.lineage, {
         rootThreadId: parentId,
         parentThreadId: parentId,
@@ -145,6 +155,11 @@ it.effect(
       assert.equal(inherited.thread.worktreePath, "/tmp/parent-worktree");
       assert.equal(inherited.thread.branch, "parent-branch");
       assert.equal(inherited.thread.projectId, parent.thread.projectId);
+      assert.equal(inherited.thread.owner, "Fixture Owner");
+      assert.deepEqual(inherited.thread.coOwners, []);
+      const unchangedParent = (yield* orchestrator.getThreadProjection(parentId)).thread;
+      assert.equal(unchangedParent.owner, "Fixture Owner");
+      assert.deepEqual(unchangedParent.coOwners, ["Fixture Collaborator"]);
       assert.isUndefined(inherited.runs[0]!.workspacePreparation);
     }).pipe(Effect.provide(layer)),
 );

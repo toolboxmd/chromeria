@@ -495,8 +495,7 @@ are evidence for review, not proof that a feature has been adopted upstream.
 
 ## Thread people
 
-`SubagentProjection.ts` is temporarily owned here; primary ownership transfers to
-child-threads when #168 lands, and thread-people will watch it as a shared path.
+Child creation paths are owned by child-threads and shared with thread-people.
 
 ```json
 {
@@ -534,14 +533,9 @@ child-threads when #168 lands, and thread-people will watch it as a shared path.
     "apps/server/src/auth/SessionStore.test.ts",
     "apps/server/src/auth/SessionStore.ts",
     "apps/server/src/auth/http.ts",
-    "apps/server/src/mcp/OrchestratorMcpService.ts",
-    "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
     "apps/server/src/mcp/toolkits/project/handlers.test.ts",
     "apps/server/src/mcp/toolkits/project/handlers.ts",
-    "apps/server/src/mcp/toolkits/thread/handlers.ts",
-    "apps/server/src/orchestration-v2/Orchestrator.ts",
     "apps/server/src/orchestration-v2/ProjectionStore.ts",
-    "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
     "apps/server/src/orchestration-v2/testkit/OrchestratorScenario.ts",
     "apps/server/src/persistence/AuthSessions.ts",
     "apps/server/src/persistence/Sqlite.ts",
@@ -553,15 +547,20 @@ child-threads when #168 lands, and thread-people will watch it as a shared path.
     "apps/web/test/environmentHttpTest.ts",
     "docs/README.md",
     "packages/contracts/src/auth.ts",
-    "packages/contracts/src/environmentHttp.ts",
-    "packages/contracts/src/orchestrationV2.ts",
-    "apps/server/src/orchestration-v2/SubagentProjection.ts"
+    "packages/contracts/src/environmentHttp.ts"
   ],
   "sharedFiles": [
     "packages/contracts/src/index.ts",
     "apps/server/src/ws.ts",
     "apps/server/src/orchestration-v2/V1ImportBoundary.test.ts",
-    "apps/server/src/persistence/forkV1Backfills.ts"
+    "apps/server/src/persistence/forkV1Backfills.ts",
+    "apps/server/src/mcp/OrchestratorMcpService.ts",
+    "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+    "apps/server/src/mcp/toolkits/thread/handlers.ts",
+    "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+    "packages/contracts/src/orchestrationV2.ts",
+    "apps/server/src/orchestration-v2/SubagentProjection.ts"
   ],
   "keywords": ["thread ownership", "coOwners", "person picker", "thread.share"]
 }
@@ -613,7 +612,8 @@ child-threads when #168 lands, and thread-people will watch it as a shared path.
     "apps/server/src/orchestration-v2/ThreadStop.test.ts",
     "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts",
     "packages/contracts/src/orchestrationV2.ts",
-    "packages/contracts/src/orchestratorMcp.ts"
+    "packages/contracts/src/orchestratorMcp.ts",
+    "apps/server/src/orchestration-v2/SubagentProjection.ts"
   ],
   "sharedFiles": [
     "apps/server/src/persistence/forkV1Backfills.ts",
