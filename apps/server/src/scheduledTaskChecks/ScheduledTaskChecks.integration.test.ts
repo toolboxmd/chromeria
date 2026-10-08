@@ -1530,3 +1530,78 @@ it.effect(
       }).pipe(Effect.provide(runtime(database, { spectra: fixtureSpectra() })), Effect.scoped);
     }).pipe(Effect.scoped),
 );
+
+it.effect(
+  "the schedule tool's retried request id reaches the same task after a delete, and Run now at the same instant the same command run id",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      const workspace = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "chromeria-checks-cmd-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(workspace, { recursive: true, force: true })),
+      );
+      yield* TestClock.setTime(Date.parse(CANONICAL));
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO projection_projects ${sql.insert({
+          project_id: projectId,
+          title: "Checked project",
+          workspace_root: workspace,
+          default_model_selection_json: null,
+          default_thread_env_mode: null,
+          auto_pull: 0,
+          favicon_path: null,
+          project_icon_json: null,
+          scripts_json: "[]",
+          created_at: CANONICAL,
+          updated_at: CANONICAL,
+          deleted_at: null,
+        })}`;
+        const checks = yield* ScheduledTaskChecks.ScheduledTaskChecks;
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        // The schedule tool's own call under one stable request key.
+        const create = (command: string) =>
+          checks.schedule(
+            {
+              input: { command, schedule: { type: "interval" }, clientRequestId: "nightly" },
+              projectId,
+              parent: undefined,
+              bindToCurrentThread: false,
+              scope: { requestNamespace: "caller" },
+            },
+            service.upsert,
+          )({
+            title: "Nightly backup",
+            prompt: "Nightly backup",
+            enabled: false,
+            projectId,
+            threadId: null,
+            workspaceStrategy: { type: "root" },
+            modelSelection: selection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            schedule: { type: "interval", everyMs: 3_600_000 },
+          });
+        const runToEnd = (id: ScheduledTaskId) =>
+          Effect.gen(function* () {
+            const ended = yield* awaitTask(id, (task) => task.command?.run?.stage === "done").pipe(
+              Effect.forkScoped,
+            );
+            yield* service.runNow({ id });
+            yield* Fiber.join(ended);
+            return (yield* readCheckState(id))!.runs.at(-1)!;
+          });
+        const first = yield* create("printf first");
+        const firstRun = yield* runToEnd(first.task.id);
+        assert.equal(firstRun.commandResult?.output, "first");
+        yield* service.delete({ id: first.task.id });
+        assert.isNull(yield* readCheckState(first.task.id));
+        const second = yield* create("printf second");
+        assert.equal(second.task.id, first.task.id);
+        // The clock has not moved: the new run takes the old run's id.
+        const secondRun = yield* runToEnd(second.task.id);
+        assert.equal(secondRun.id, firstRun.id);
+        assert.equal(secondRun.commandResult?.output, "second");
+      }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+    }).pipe(Effect.scoped),
+);

@@ -11,6 +11,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Exit from "effect/Exit";
+import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -112,6 +113,8 @@ const harness = (options: { readonly role?: string } = {}) =>
     const creationTests: Array<string> = [];
     const executed: Array<string> = [];
     let commandDone = yield* Deferred.make<CommandOutcome>();
+    // Each process the engine spawned, in order.
+    const spawned = yield* Queue.unbounded<string>();
     let workspaceHold: {
       readonly reached: Deferred.Deferred<void>;
       readonly release: Deferred.Deferred<void>;
@@ -143,8 +146,10 @@ const harness = (options: { readonly role?: string } = {}) =>
               }),
         ),
       start: ({ command, cwd, runId }) =>
-        Effect.sync(() => {
-          executed.push(`${command}@${cwd}#${runId}`);
+        Effect.gen(function* () {
+          const process = `${command}@${cwd}#${runId}`;
+          executed.push(process);
+          yield* Queue.offer(spawned, process);
           // A command finishes only when the test releases it.
           return Effect.suspend(() => Deferred.await(commandDone));
         }),
@@ -207,6 +212,7 @@ const harness = (options: { readonly role?: string } = {}) =>
       checks,
       creationTests,
       executed,
+      spawned,
       finishCommand: (outcome: CommandOutcome) =>
         Deferred.succeed(commandDone, outcome).pipe(
           Effect.andThen(runs.drainCommands),
@@ -705,6 +711,115 @@ it.effect("a command edited while its run finds the workspace runs as admitted, 
       `backup --v2@/project#${taskId}:2026-10-08T13:00:00.000Z`,
     ]);
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect(
+  "a command suspended in its workspace lookup never starts after its task is deleted and recreated with a run of the same id",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const h = yield* harness();
+      const command = task({ threadId: null });
+      const sql = yield* SqlClient.SqlClient;
+      yield* h.save({ command: "backup --v1" });
+      const first = yield* h.decide("manual", NOW, command);
+      const runId = (yield* h.state()).runs[0]!.id;
+      const hold = yield* h.holdWorkspace;
+      if (first._tag === "fork") yield* first.dispatch;
+      yield* Deferred.await(hold.reached);
+      // Deleted and recreated under the same id; Run now at the same instant admits the same run id.
+      yield* h.runs.removeTask(
+        taskId,
+        null,
+        sql`DELETE FROM scheduled_tasks WHERE task_id = ${taskId}`,
+      );
+      yield* h.save({ command: "backup --v2" });
+      const second = yield* h.decide("manual", NOW, command);
+      assert.equal((yield* h.state()).runs[0]!.id, runId);
+      // The old admission's lookup ends, and its fiber with it, before the new run's dispatch.
+      yield* Deferred.succeed(hold.release, undefined);
+      yield* h.finishCommand({ exitCode: 7, output: "old", timedOut: false, failure: null });
+      assert.deepEqual(h.executed, []);
+      const waiting = (yield* h.state()).runs[0]!;
+      assert.equal(waiting.stage, "running");
+      assert.isUndefined(waiting.commandResult);
+      if (second._tag === "fork") yield* second.dispatch;
+      yield* h.finishCommand({ exitCode: 0, output: "new", timedOut: false, failure: null });
+      assert.deepEqual(h.executed, [`backup --v2@/project#${runId}`]);
+      const done = (yield* h.state()).runs[0]!;
+      assert.equal(done.stage, "done");
+      assert.equal(done.commandResult?.output, "new");
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect(
+  "a delete that fails leaves its command's admission, so the suspended command starts once",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const h = yield* harness();
+      const command = task({ threadId: null });
+      yield* h.save({ command: "backup --v1" });
+      const first = yield* h.decide("manual", NOW, command);
+      const runId = (yield* h.state()).runs[0]!.id;
+      const hold = yield* h.holdWorkspace;
+      if (first._tag === "fork") yield* first.dispatch;
+      yield* Deferred.await(hold.reached);
+      // Upstream's delete fails, so nothing is deleted and the admission stands.
+      const failed = yield* Effect.exit(
+        h.runs.removeTask(
+          taskId,
+          null,
+          Effect.fail(new ScheduledTaskCheckError({ message: "delete refused" })),
+        ),
+      );
+      assert.isTrue(Exit.isFailure(failed));
+      assert.isNotNull(yield* readCheckState(taskId));
+      yield* Deferred.succeed(hold.release, undefined);
+      yield* h.finishCommand({ exitCode: 0, output: "ok", timedOut: false, failure: null });
+      assert.deepEqual(h.executed, [`backup --v1@/project#${runId}`]);
+      assert.equal((yield* h.state()).runs[0]!.stage, "done");
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect(
+  "a running command whose task is deleted and recreated never records its result into the new run of the same id",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const h = yield* harness();
+      const command = task({ threadId: null });
+      const sql = yield* SqlClient.SqlClient;
+      yield* h.save({ command: "backup --v1" });
+      const first = yield* h.decide("manual", NOW, command);
+      const runId = (yield* h.state()).runs[0]!.id;
+      if (first._tag === "fork") yield* first.dispatch;
+      assert.equal(yield* Queue.take(h.spawned), `backup --v1@/project#${runId}`);
+      // Its process keeps running while the task is deleted, recreated and admits the same run id.
+      yield* h.runs.removeTask(
+        taskId,
+        null,
+        sql`DELETE FROM scheduled_tasks WHERE task_id = ${taskId}`,
+      );
+      yield* h.save({ command: "backup --v2" });
+      const second = yield* h.decide("manual", NOW, command);
+      assert.equal((yield* h.state()).runs[0]!.id, runId);
+      // The old process ends, and its fiber with it, before the new run's dispatch.
+      yield* h.finishCommand({ exitCode: 7, output: "old", timedOut: false, failure: null });
+      const waiting = (yield* h.state()).runs[0]!;
+      assert.equal(waiting.stage, "running");
+      assert.isUndefined(waiting.commandResult);
+      assert.equal((yield* h.state()).failureStreak, 0);
+      if (second._tag === "fork") yield* second.dispatch;
+      assert.equal(yield* Queue.take(h.spawned), `backup --v2@/project#${runId}`);
+      // While the new process runs, a step sees it as running, not as an orphan.
+      yield* h.runs.drive(command);
+      assert.equal((yield* h.state()).runs[0]!.stage, "running");
+      yield* h.finishCommand({ exitCode: 0, output: "new", timedOut: false, failure: null });
+      const done = (yield* h.state()).runs[0]!;
+      assert.equal(done.stage, "done");
+      assert.equal(done.commandResult?.output, "new");
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
 it.effect(
