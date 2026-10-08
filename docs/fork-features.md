@@ -492,3 +492,74 @@ are evidence for review, not proof that a feature has been adopted upstream.
   ]
 }
 ```
+
+## Thread people
+
+`SubagentProjection.ts` is temporarily owned here; primary ownership transfers to
+child-threads when #168 lands, and thread-people will watch it as a shared path.
+
+```json
+{
+  "id": "thread-people",
+  "purpose": "Label devices, filter threads by person and share threads, as views without access control.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/121",
+    "https://github.com/toolboxmd/chromeria/issues/170"
+  ],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/131"],
+  "newFiles": [
+    "apps/server/src/mcp/toolkits/thread/handlers.test.ts",
+    "apps/server/src/orchestration-v2/ThreadPeople.test.ts",
+    "apps/server/src/orchestration-v2/ThreadPeople.ts",
+    "apps/server/src/persistence/forkThreadPeopleBackfill.test.ts",
+    "apps/server/src/persistence/forkThreadPeopleBackfill.ts",
+    "apps/server/src/persistence/forkThreadPeopleSchema.ts",
+    "apps/web/src/components/people/ClientPersonSelect.tsx",
+    "apps/web/src/components/people/PersonPicker.tsx",
+    "apps/web/src/components/people/SharedThreadLabel.tsx",
+    "apps/web/src/components/people/ThreadSharingControl.tsx",
+    "apps/web/src/components/people/personView.test.ts",
+    "apps/web/src/components/people/personView.ts",
+    "apps/web/src/components/people/threadSharing.ts",
+    "apps/web/src/components/people/usePersonView.ts",
+    "docs/user/people.md",
+    "packages/contracts/src/people.ts"
+  ],
+  "upstreamFiles": [
+    "apps/server/src/auth/EnvironmentAuth.test.ts",
+    "apps/server/src/auth/EnvironmentAuth.ts",
+    "apps/server/src/auth/SessionStore.test.ts",
+    "apps/server/src/auth/SessionStore.ts",
+    "apps/server/src/auth/http.ts",
+    "apps/server/src/mcp/OrchestratorMcpService.ts",
+    "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+    "apps/server/src/mcp/toolkits/project/handlers.test.ts",
+    "apps/server/src/mcp/toolkits/project/handlers.ts",
+    "apps/server/src/mcp/toolkits/thread/handlers.ts",
+    "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "apps/server/src/orchestration-v2/ProjectionStore.ts",
+    "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+    "apps/server/src/orchestration-v2/testkit/OrchestratorScenario.ts",
+    "apps/server/src/persistence/AuthSessions.ts",
+    "apps/server/src/persistence/Sqlite.ts",
+    "apps/web/src/components/Sidebar.tsx",
+    "apps/web/src/components/chat/ChatHeader.tsx",
+    "apps/web/src/components/settings/ConnectionsSettings.tsx",
+    "apps/web/src/environments/primary/auth.ts",
+    "apps/web/src/environments/primary/index.ts",
+    "apps/web/test/environmentHttpTest.ts",
+    "docs/README.md",
+    "packages/contracts/src/auth.ts",
+    "packages/contracts/src/environmentHttp.ts",
+    "packages/contracts/src/orchestrationV2.ts",
+    "apps/server/src/orchestration-v2/SubagentProjection.ts"
+  ],
+  "sharedFiles": [
+    "packages/contracts/src/index.ts",
+    "apps/server/src/ws.ts",
+    "apps/server/src/orchestration-v2/V1ImportBoundary.test.ts",
+    "apps/server/src/persistence/forkV1Backfills.ts"
+  ],
+  "keywords": ["thread ownership", "coOwners", "person picker", "thread.share"]
+}
+```
