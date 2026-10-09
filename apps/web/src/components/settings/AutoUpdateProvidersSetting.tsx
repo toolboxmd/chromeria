@@ -1,6 +1,7 @@
 // Fork: opt-in automatic provider updates (toolboxmd/chromeria#159).
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts";
 
+import { ChromeriaTitle } from "../ChromeriaFeatureMark";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { SettingResetButton, SettingsRow } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
@@ -15,11 +16,13 @@ export function AutoUpdateProvidersSetting({
   readonly checksEnabled: boolean;
   readonly onChange: (value: boolean) => void;
 }) {
+  const { id, title } = searchableSetting("auto-update-providers");
   return (
     <SettingsRow
       serverScoped
       settingKeys={["autoUpdateProviders"]}
-      {...searchableSetting("auto-update-providers")}
+      id={id}
+      title={<ChromeriaTitle>{title}</ChromeriaTitle>}
       description="Install newer provider CLI versions without a click. Needs provider update checks. Waits while that provider is running a turn."
       resetAction={
         value !== DEFAULT_UNIFIED_SETTINGS.autoUpdateProviders ? (

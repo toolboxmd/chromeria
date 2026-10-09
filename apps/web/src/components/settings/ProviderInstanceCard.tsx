@@ -1,5 +1,6 @@
 "use client";
 
+import { ChromeriaFeatureMark } from "../ChromeriaFeatureMark";
 import { WightLimitSetting } from "./WightLimitSetting";
 
 import { Spinner } from "~/components/ui/spinner";
@@ -1183,7 +1184,7 @@ export function ProviderInstanceCard({
         />
       </SettingsSection>
 
-      <SettingsSection title="Wight mode">
+      <SettingsSection title="Wight mode" titleAction={<ChromeriaFeatureMark />}>
         <WightLimitSetting
           value={instance.wightLimitPercent}
           provider={liveProvider}
