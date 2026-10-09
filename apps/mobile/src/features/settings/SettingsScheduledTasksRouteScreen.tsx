@@ -1146,6 +1146,7 @@ function EnvironmentTasks({
     label: "scheduled task delete",
     reportFailure: false,
   });
+  const abandonReport = ScheduledTaskFork.useAbandonReport(environmentId);
   const failure = (title: string, result: AtomCommandResult<unknown, unknown>) => {
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       Alert.alert(title, String(squashAtomCommandFailure(result)));
@@ -1231,6 +1232,7 @@ function EnvironmentTasks({
                 ...(task.schedule.type === "webhook"
                   ? []
                   : [ScheduledTaskFork.runNowAction(task, canOperate)]),
+                ...abandonReport.actions(task),
                 {
                   id: "delete",
                   title: "Delete",
@@ -1252,6 +1254,8 @@ function EnvironmentTasks({
                   ]);
                 } else if (action === "toggle" || action === "run") {
                   void act(task, action);
+                } else {
+                  abandonReport.onAction(action, task);
                 }
               }}
             >
