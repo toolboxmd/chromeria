@@ -59,6 +59,9 @@ import * as ThreadLifecycleService from "./ThreadLifecycleService.ts";
 import * as ThreadForkService from "./ThreadForkService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ScheduledTaskChecks from "../scheduledTaskChecks/ScheduledTaskChecks.ts";
+import * as Prism from "../prism/PrismService.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 
 /** The shared application event log and its command receipts. */
@@ -288,12 +291,20 @@ const layerThreadLifecycleProvided = ThreadLifecycleService.layer.pipe(
 const layerSecretRequestsProvided = SecretRequests.layer.pipe(
   Layer.provide(layerThreadManagementProvided),
 );
-const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
+// Fork: outcome-checked scheduled tasks wrap upstream's one scheduler (#174).
+const layerScheduledTaskProvided = ScheduledTaskChecks.withOutcomeChecks(
+  ScheduledTaskService.layer,
+).pipe(
   Layer.provide(
     Layer.mergeAll(
       layerThreadLaunchProvided,
       layerThreadManagementProvided,
       layerSecretRequestsProvided,
+      ProjectionStore.layer,
+      ProjectStore.layer,
+      ProcessRunner.layer,
+      Prism.layer,
+      layerProviderAdapterRegistryProvided,
     ),
   ),
 );

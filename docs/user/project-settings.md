@@ -65,6 +65,31 @@ Webhook tasks only run when their URL is called, so they can't be run
 immediately.
 Leaving an edited form asks before discarding unsaved changes.
 
+## Agent-managed scheduled tasks
+
+Agents can schedule work for you with the scheduled task tools. Besides the
+schedules above, an agent can set a task to run once at a set time, or weekly
+on chosen days at one or more times in a named time zone. To spread load,
+Chromeria may move a weekly time by up to 30 minutes and shows the move, such
+as `09:00 (+4 min)`. These schedules appear in **Settings → Scheduled tasks**,
+but only an agent can change them.
+
+A task can carry an **outcome check**: a shell command that proves the work is
+done. The agent keeps working in the same thread until the check passes. If it
+still fails after a few retries, the task shows **Needs you**, and **Run now**
+continues it in the same thread. A task can also start each run with a Prism
+role, or run a shell command instead of an agent; on desktop and web,
+Chromeria alerts you when a scheduled command starts failing.
+
+When a scheduled run asks a Spectrum, the run finishes only after the turn
+that delivers the Spectrum's report has completed in its thread. If that
+delivery can't finish, the task shows **Needs you** with the reason; once
+you've dealt with the report, **Run now** picks the run up again.
+
+Tasks brought over from Chromeria 1 start paused, and their earlier runs stay
+as history that never resumes; **Run now** starts a new run. Turn a task on
+when you stop using it in Chromeria 1.
+
 ## Webhook automations
 
 In **Settings → Scheduled tasks**, choose **On webhook**

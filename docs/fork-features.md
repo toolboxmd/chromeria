@@ -907,3 +907,74 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "keywords": ["Promachos", "promachos", "PROMACHOS_BUBBLE_MARKDOWN", "prismRole"]
 }
 ```
+
+## scheduled-tasks
+
+```json
+{
+  "id": "scheduled-tasks",
+  "purpose": "Extend upstream's single scheduler with outcome checks that keep one thread working until a pinned check passes, one-shot and weekly triggers, Prism roles, shell command tasks with failure alerts, the Spectrum report completion fence, and the Chromeria v1 task import.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/174"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/174-scheduled-tasks-v2"],
+  "newFiles": [
+    "apps/mobile/src/features/settings/scheduledTaskDraftFork.test.ts",
+    "apps/mobile/src/features/settings/scheduledTaskFork.tsx",
+    "apps/server/src/scheduledTaskChecks/DispatchPolicy.ts",
+    "apps/server/src/scheduledTaskChecks/ScheduledTaskChecks.integration.test.ts",
+    "apps/server/src/scheduledTaskChecks/ScheduledTaskChecks.ts",
+    "apps/server/src/scheduledTaskChecks/commandRunner.test.ts",
+    "apps/server/src/scheduledTaskChecks/commandRunner.ts",
+    "apps/server/src/scheduledTaskChecks/engine.test.ts",
+    "apps/server/src/scheduledTaskChecks/engine.ts",
+    "apps/server/src/scheduledTaskChecks/handoff.integration.test.ts",
+    "apps/server/src/scheduledTaskChecks/handoff.test.ts",
+    "apps/server/src/scheduledTaskChecks/handoff.ts",
+    "apps/server/src/scheduledTaskChecks/schedules.test.ts",
+    "apps/server/src/scheduledTaskChecks/schedules.ts",
+    "apps/server/src/scheduledTaskChecks/spectra.testkit.ts",
+    "apps/server/src/scheduledTaskChecks/state.ts",
+    "apps/server/src/scheduledTaskChecks/store.ts",
+    "apps/server/src/scheduledTaskChecks/v1Import.actual.integration.test.ts",
+    "apps/server/src/scheduledTaskChecks/v1Import.test.ts",
+    "apps/server/src/scheduledTaskChecks/v1Import.ts",
+    "apps/web/src/components/ScheduledCommandNotifications.test.tsx",
+    "apps/web/src/components/ScheduledCommandNotifications.tsx",
+    "apps/web/src/components/settings/scheduledTaskFork.logic.test.ts",
+    "apps/web/src/components/settings/scheduledTaskFork.tsx",
+    "packages/client-runtime/src/scheduledTaskFork.test.ts",
+    "packages/client-runtime/src/scheduledTaskFork.ts",
+    "packages/contracts/src/scheduledTaskChecks.test.ts",
+    "packages/contracts/src/scheduledTaskChecks.ts"
+  ],
+  "upstreamFiles": [
+    "apps/mobile/src/features/settings/SettingsScheduledTasksRouteScreen.tsx",
+    "apps/mobile/src/features/settings/scheduledTaskDraft.ts",
+    "apps/server/src/scheduledTasks/Schedule.ts",
+    "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
+    "apps/web/src/components/ThreadNotificationCoordinator.badge.test.tsx",
+    "apps/web/src/components/ThreadNotificationCoordinator.test.tsx",
+    "apps/web/src/components/ThreadNotificationCoordinator.tsx",
+    "apps/web/src/components/settings/ScheduledTasksSettings.tsx",
+    "apps/web/src/components/settings/scheduledTasksSettings.logic.ts",
+    "docs/user/project-settings.md",
+    "packages/client-runtime/package.json",
+    "packages/client-runtime/src/state/server.ts",
+    "packages/contracts/src/scheduledTask.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/mcp/OrchestratorMcpService.ts",
+    "apps/server/src/orchestration-v2/runtimeLayer.ts",
+    "apps/server/src/persistence/forkV1Backfills.ts",
+    "packages/contracts/src/index.ts",
+    "packages/contracts/src/orchestratorMcp.ts"
+  ],
+  "keywords": [
+    "outcomeCheck",
+    "checkCommand",
+    "ScheduledTaskDispatchPolicy",
+    "fork_scheduled_task_checks",
+    "scheduler.state-set",
+    "reportsFence"
+  ]
+}
+```
