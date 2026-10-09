@@ -1,3 +1,6 @@
+import { stopSpectrum } from "./spectrum/humanStopRpc.ts";
+import { abandonScheduledReport } from "./spectrum/humanReportRpc.ts";
+import { SPECTRUM_WS_METHODS } from "@t3tools/contracts";
 import type * as PromachosLaunch from "./promachos/PromachosLaunch.ts";
 import * as PromachosRpc from "./promachos/PromachosRpc.ts";
 import { PROMACHOS_HOME_WS_METHODS } from "@t3tools/contracts";
@@ -2174,6 +2177,11 @@ export const layerWsRpc = (
               Effect.as(commandOutputHub.subscribe(input)),
             ),
           ),
+        [SPECTRUM_WS_METHODS.stop]: (input) => stopSpectrum(currentSession, input),
+        [SPECTRUM_WS_METHODS.abandonReport]: (input) =>
+          abandonScheduledReport(currentSession, input),
+        [WS_METHODS.scheduledTasksList]: (_input) =>
+          scheduledTasks.list().pipe(Effect.map(withVisibleWebhookUrls)),
         [WS_METHODS.scheduledTasksSubscribe]: (_input) =>
           scheduledTasks.subscribeList().pipe(Stream.map(withVisibleWebhookUrls)),
         [WS_METHODS.scheduledTasksUpsert]: (input) => scheduledTasks.upsert(input),

@@ -13,6 +13,7 @@ import {
 } from "./auth.ts";
 import { ORCHESTRATION_V2_WS_METHODS } from "./orchestrationV2.ts";
 import { ISSUE_WS_METHODS } from "./issues.ts";
+import { SPECTRUM_WS_METHODS } from "./spectrumRpc.ts";
 import { WS_METHODS } from "./rpc.ts";
 
 /** Incremental client enforcement; the server still authorizes every request. */
@@ -71,6 +72,9 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.peerLinksUnlink]: AuthAccessWriteScope,
   // A link lets every agent here reach the other environment: Settings' bar.
   [WS_METHODS.peerLinksAnswerRequest]: AuthAccessWriteScope,
+  // Fork: Spectrum report abandonment (toolboxmd/chromeria#176).
+  [SPECTRUM_WS_METHODS.abandonReport]: AuthOrchestrationOperateScope,
+  [SPECTRUM_WS_METHODS.stop]: AuthOrchestrationOperateScope,
 } as const;
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 

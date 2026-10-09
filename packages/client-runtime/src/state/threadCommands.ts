@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 
 import { createOptimisticThreadLifecycle } from "./threadLifecycle.ts";
+import { withGuardedRequests } from "../spectrumStop.ts";
 import * as DateTime from "effect/DateTime";
 
 import {
@@ -264,7 +265,9 @@ export function createThreadEnvironmentAtoms<R, E>(
     }),
     interruptTurn: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:interrupt-turn",
-      execute: interruptTurn,
+      // Fork (toolboxmd/chromeria#176): Stop may send the guarded Spectrum bridge.
+      execute: (input: InterruptThreadTurnInput, registry) =>
+        interruptTurn(input).pipe(withGuardedRequests(runtime, registry)),
       scheduler,
       concurrency,
     }),

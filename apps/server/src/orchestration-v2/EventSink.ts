@@ -32,6 +32,7 @@ import { projectDomainEventForWire } from "./WireProjection.ts";
 import { makeRunOutcomeRecorder, type RunOutcome } from "./RunMetrics.ts";
 
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
+import { forkCommitSequence, validateForkStateOnlyCommand } from "../fork/commitSequence.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventStore from "./EventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -662,6 +663,7 @@ const layerBase: Layer.Layer<
             return { ...existing, committed: false as const, cancelledEffectIds: [] };
           }
 
+          yield* validateForkStateOnlyCommand(input);
           for (const plan of input.forkPlans ?? []) {
             for (const guard of plan.guards) {
               const decision = yield* guard.pipe(
@@ -706,16 +708,11 @@ const layerBase: Layer.Layer<
             events: normalized,
           });
           // A Stop that changes nothing can still queue the stop of its delegated tasks.
-          const sequence =
-            storedEvents.at(-1)?.sequence ??
-            (input.effects.length === 0
-              ? undefined
-              : yield* eventStore.latestSequence({ threadId: input.threadId }));
-          if (sequence === undefined) {
-            return yield* Effect.die(
-              new Error(`Command ${input.commandId} produced no orchestration events.`),
-            );
-          }
+          const sequence = yield* forkCommitSequence(
+            input,
+            storedEvents,
+            eventStore.latestSequence({ threadId: input.threadId }),
+          );
           const outcomes = yield* applyStoredEvents(storedEvents);
           yield* effectOutbox.enqueue(input.effects);
           const receipt: CommandReceiptStore.CommandReceiptV2 = {

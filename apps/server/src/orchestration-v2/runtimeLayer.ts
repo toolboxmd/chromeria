@@ -1,4 +1,5 @@
 import * as GuestShareService from "../guest/GuestShareService.ts";
+import * as Spectrum from "../spectrum/runtimeLayer.ts";
 import * as PrismRecovery from "../prism/RecoveryCoordinator.ts";
 import * as PrismStreamClock from "../prism/streamClock.ts";
 import * as PrismStreamStats from "../prism/StreamStatsStore.ts";
@@ -389,7 +390,21 @@ export const layer = Layer.mergeAll(
   layerLegacyV1ThreadImporterProvided,
 );
 
+const layerSpectrumProvided = Spectrum.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      layerStores,
+      layerEventSinkProvided,
+      layerOrchestratorProvided,
+      Prism.layer,
+      layerProviderAdapterRegistryProvided,
+      ThreadCommandExecutor.layer,
+    ),
+  ),
+);
+
 export const layerProduction = Layer.mergeAll(
+  layerSpectrumProvided,
   WightMode.layer.pipe(
     Layer.provide(Layer.mergeAll(ProjectionStore.layer, layerThreadManagementProvided)),
   ),
@@ -436,6 +451,8 @@ export const layerProduction = Layer.mergeAll(
   EffectOutbox.layerPruneWorker.pipe(Layer.provide(EffectOutbox.layer)),
 ).pipe(
   Layer.provide(ResourceCleanupService.layer.pipe(Layer.provide(layerScheduledTaskProvided))),
+  Layer.provideMerge(Spectrum.layerAdmission),
+  Layer.provideMerge(Spectrum.layerSchedulerAdapter),
   Layer.provide(WightAdmission.layer),
   Layer.provide(Scheduler.layer),
   Layer.provideMerge(layerEventInfrastructure),

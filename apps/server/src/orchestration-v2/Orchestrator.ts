@@ -1,3 +1,5 @@
+import { ForkCommandInterceptor } from "../fork/ForkCommandInterceptor.ts";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as WightAdmission from "../wight/AdmissionHooks.ts";
 import { wightAdmissionPlan } from "../wight/admission.ts";
 import {
@@ -5,6 +7,7 @@ import {
   reconcilePendingChildRequests,
 } from "../childThreads/requestWake.ts";
 import * as PrismRecovery from "../prism/RecoveryHooks.ts";
+import { ForkDispatchPlans } from "../fork/ForkDispatchPlans.ts";
 import type {
   GuestShareId,
   OrchestrationV2SearchThreadInput,
@@ -970,6 +973,7 @@ function lastDeliveredRunForProviderThread(
 }
 
 const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(function* () {
+  const forkSql = yield* SqlClient.SqlClient;
   const requestWakeScope = yield* Effect.scope;
   const checkpointService = yield* CheckpointServiceV2;
   const commandPolicy = yield* CommandPolicyV2;
@@ -13008,7 +13012,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           commandType: command.type,
           cause: "Wight activation no longer permits continuation.",
         });
-      return yield* dispatchOnce(command);
+      const interceptor = yield* ForkCommandInterceptor;
+      const forkPlan = yield* interceptor
+        .plan(command)
+        .pipe(
+          Effect.provideService(SqlClient.SqlClient, forkSql),
+          Effect.provideService(ProjectionStoreV2, projectionStore),
+          mapDispatchError(command),
+        );
+      return forkPlan ?? (yield* dispatchOnce(command));
     }).pipe(
       Effect.flatMap((planned) =>
         Effect.gen(function* () {
@@ -13024,7 +13036,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 effect.request.type === "provider-turn.restart",
             );
           if (!stopping && !resume)
-            return { ...planned, forkPlans: cancelledRestart ? [] : forkPlans };
+            return {
+              ...planned,
+              forkPlans: [...(planned.forkPlans ?? []), ...(cancelledRestart ? [] : forkPlans)],
+            };
           const records = yield* projectionStore
             .getThreadRecords(commandThreadId(command), [])
             .pipe(mapDispatchError(command));
@@ -13111,7 +13126,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ...planned,
             events: [...planned.events, event],
             effects,
-            forkPlans,
+            forkPlans: [...(planned.forkPlans ?? []), ...forkPlans],
             ...(stopping
               ? {
                   cancelUnsettledEffects: {
@@ -13130,6 +13145,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         // stop that finds nothing running, has nothing to record. That is
         // its expected outcome, not a failure.
         planned.events.length > 0 ||
+        (planned.forkPlans?.length ?? 0) > 0 ||
         command.type === "thread.background-work.settle" ||
         command.type === "thread.stop" ||
         command.type === "subagent.stop" ||
@@ -13182,7 +13198,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     );
 
-    if (plan.events.length === 0 && plan.effects.length === 0) {
+    const commitPlans = [
+      ...(plan.forkPlans ?? []),
+      ...prismRecovery.commitPlans(command, plan.events),
+      ...(yield* ForkDispatchPlans),
+    ];
+    if (plan.events.length === 0 && plan.effects.length === 0 && commitPlans.length === 0) {
       // A settle that ended nothing still records its receipt: a replayed Stop
       // effect then finds it instead of settling work that appeared since.
       const { resultSequence, inserted } = yield* Effect.gen(function* () {
@@ -13222,7 +13243,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         acceptedAt,
         events: plan.events,
         effects: plan.effects,
-        forkPlans: [...(plan.forkPlans ?? []), ...prismRecovery.commitPlans(command, plan.events)],
+        forkPlans: commitPlans,
         ...(plan.cancelUnsettledEffects === undefined
           ? {}
           : { cancelUnsettledEffects: plan.cancelUnsettledEffects }),
@@ -13771,6 +13792,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 export const layer: Layer.Layer<
   OrchestratorV2,
   never,
+  | SqlClient.SqlClient
   | CheckpointServiceV2
   | FileSystem.FileSystem
   | Path.Path
