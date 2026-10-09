@@ -25,6 +25,10 @@ describe("orchestrator MCP tool guidance", () => {
       "a requested follow-up creates a fresh task",
     );
     assert.include(
+      OrchestratorToolkit.tools.t3_thread_send.description ?? "",
+      "To continue the same delegated job after it stopped",
+    );
+    assert.include(
       OrchestratorToolkit.tools.task_cancel.description ?? "",
       "This includes later child-thread runs, even after the task is terminal",
     );
