@@ -27,6 +27,26 @@ with its existing Electron `chromeria` profile. Development keeps upstream's
 identified by their embedded commit SHA; upstream package versions are unchanged.
 There is no Chromeria desktop update feed.
 
+`CHROMERIA_DESKTOP_VARIANT=v2` builds Chromeria V2, which installs and runs beside
+Chromeria on macOS. Its identity comes from one definition in
+`scripts/lib/chromeria-desktop-identity.ts`: bundle id
+`md.toolbox.chromeria.v2`, Electron profile `chromeria-v2`, only the
+`chromeria-v2://` scheme, and default T3 home `~/.t3-v2`, where an explicit
+`T3CODE_HOME` still wins. V2 imports no other profile and takes its own
+single-instance lock before the Clerk bridge registers its scheme. Other platforms
+and unknown variants fail the build. The packaged `package.json` records
+`chromeriaDesktopVariant` beside the commit SHA. The desktop pack writes
+`dist-electron/chromeria-desktop-identity.json` binding the variant to the
+SHA-256 of `main.cjs`, and the artifact script refuses a mismatch, so
+`--skip-build` cannot package a bundle built for another identity.
+
+The shared ChatGPT handoff reader and return allowlist accept `chromeria-v2://`
+beside `t3code://`, and V2 reads only handoffs addressed to its own scheme.
+Hosted app.t3.codes hands ChatGPT sign-in to the fixed `t3code://` scheme, so V2
+never receives it: the app that owns `t3code://` does, or the user pastes the
+redirect URL. Settings → Install `t3` command in either app points the shared
+`t3` link at that app's own launcher.
+
 The server uses `chromeria-v2.sqlite` in its userdata directory. When missing,
 upstream initialization seeds it from a read-only sibling `state.sqlite` and
 imports V1 data into V2. Backfills run after shell import and before recovery;

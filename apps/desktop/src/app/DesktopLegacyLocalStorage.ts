@@ -7,6 +7,7 @@ import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
+import { CHROMERIA_DESKTOP_IDENTITY } from "../../../../scripts/lib/chromeria-desktop-identity.ts";
 import { readChromiumLocalStorage } from "./chromiumLocalStorage.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 
@@ -82,8 +83,9 @@ const make = Effect.gen(function* () {
   });
 
   const load = Effect.fn("desktop.legacyLocalStorage.load")(function* (userDataPath: string) {
-    // Development already shares its profile between versions.
-    if (environment.isDevelopment) return;
+    // Development already shares its profile between versions. Chromeria
+    // (toolboxmd fork): a fixed identity profile never imports another app's storage.
+    if (environment.isDevelopment || CHROMERIA_DESKTOP_IDENTITY.userDataProfile !== null) return;
     const marker = path.join(userDataPath, MARKER_FILE_NAME);
     if (yield* fs.exists(marker).pipe(Effect.orElseSucceed(() => true))) return;
     yield* Ref.set(markerPath, Option.some(marker));

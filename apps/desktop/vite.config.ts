@@ -2,9 +2,13 @@ import "vite-plus/test/config";
 import { defineConfig } from "vite-plus";
 
 import { isDesktopRuntimeExternalDependency } from "../../scripts/lib/desktop-external-packages.ts";
+import { desktopIdentityMarkerPlugin } from "../../scripts/lib/desktop-identity-marker.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
+import { resolveChromeriaDesktopIdentity } from "../../scripts/lib/chromeria-desktop-identity.ts";
 
 const repoEnv = loadRepoEnv();
+// Chromeria (toolboxmd fork): the identity this bundle embeds; rejects unknown variants.
+const desktopIdentity = resolveChromeriaDesktopIdentity(process.env.CHROMERIA_DESKTOP_VARIANT);
 
 // The main process is bundled the same way the server CLI is: every JS
 // dependency is inlined and only packages Node must load from disk stay
@@ -18,6 +22,7 @@ const publicConfigDefine = {
   __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: JSON.stringify(
     repoEnv.T3CODE_CLERK_PUBLISHABLE_KEY?.trim() ?? "",
   ),
+  __CHROMERIA_DESKTOP_VARIANT__: JSON.stringify(desktopIdentity.variant),
 };
 
 export default defineConfig({
@@ -57,6 +62,7 @@ export default defineConfig({
       define: publicConfigDefine,
       outputOptions: { codeSplitting: false },
       entry: ["src/main.ts"],
+      plugins: [desktopIdentityMarkerPlugin(desktopIdentity.variant)],
       clean: true,
       deps: {
         alwaysBundle: (id) => !id.startsWith("node:") && !isMainProcessExternal(id),

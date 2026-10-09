@@ -29,6 +29,12 @@ import {
   type WebAssetBrand,
 } from "./lib/brand-assets.ts";
 import { getDefaultBuildArch } from "./lib/build-target-arch.ts";
+import { desktopIdentityMarkerMismatch } from "./lib/desktop-identity-marker.ts";
+import {
+  CHROMERIA_DESKTOP_IDENTITIES,
+  resolveChromeriaDesktopIdentity,
+  type ChromeriaDesktopIdentity,
+} from "./lib/chromeria-desktop-identity.ts";
 import {
   findInlinedExternalPackages,
   selectCliRuntimeExternalDependencies,
@@ -54,9 +60,6 @@ import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const LINUX_ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512] as const;
-// Chromeria (toolboxmd fork) uses its own bundle id so it installs beside
-// upstream T3 Code instead of replacing it.
-const DESKTOP_APP_ID = "md.toolbox.chromeria";
 const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
@@ -495,6 +498,17 @@ export class BundledClientAssetsMissingError extends Schema.TaggedError<BundledC
   }
 }
 
+// Chromeria (toolboxmd fork): an unknown or unsupported identity, or a prebuilt
+// bundle that does not carry the identity being packaged.
+export class DesktopIdentityBuildError extends Schema.TaggedError<DesktopIdentityBuildError>()(
+  "DesktopIdentityBuildError",
+  { detail: Schema.String },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
 export class UnsupportedDesktopBuildPlatformError extends Schema.TaggedError<UnsupportedDesktopBuildPlatformError>()(
   "UnsupportedDesktopBuildPlatformError",
   {
@@ -921,6 +935,7 @@ interface ResolvedBuildOptions {
   readonly mockUpdates: boolean;
   readonly mockUpdateServerPort: number | undefined;
   readonly wslRuntime: string | undefined;
+  readonly identity: ChromeriaDesktopIdentity;
 }
 
 interface StagePackageJson {
@@ -928,6 +943,7 @@ interface StagePackageJson {
   readonly version: string;
   readonly buildVersion: string;
   readonly t3codeCommitHash: string;
+  readonly chromeriaDesktopVariant: ChromeriaDesktopIdentity["variant"];
   readonly private: true;
   readonly packageManager: string;
   readonly description: string;
@@ -1240,6 +1256,7 @@ function normalizePasskeyRpDomain(value: string): string {
 
 export function resolveMacPasskeySigningConfiguration(
   env: Readonly<Record<string, string | undefined>>,
+  identity: ChromeriaDesktopIdentity = CHROMERIA_DESKTOP_IDENTITIES.default,
 ): MacPasskeySigningConfiguration {
   const teamId = env.T3CODE_APPLE_TEAM_ID?.trim().toUpperCase() ?? "";
   if (!APPLE_TEAM_ID_PATTERN.test(teamId)) {
@@ -1275,7 +1292,7 @@ export function resolveMacPasskeySigningConfiguration(
   }
 
   return {
-    appId: DESKTOP_APP_ID,
+    appId: identity.appId,
     teamId,
     rpDomains: uniqueRpDomains,
     provisioningProfilePath,
@@ -1586,6 +1603,7 @@ const BuildEnvConfig = Config.all({
   // by the build_linux_cli CI job. The Windows build embeds it verbatim as the
   // WSL runtime.
   wslRuntime: Config.String("T3CODE_DESKTOP_WSL_RUNTIME").pipe(Config.option),
+  desktopVariant: Config.String("CHROMERIA_DESKTOP_VARIANT").pipe(Config.option),
 });
 
 const MockUpdateServerPortSchema = Schema.NumberFromString.check(
@@ -1680,6 +1698,19 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   const wslRuntime =
     Option.getOrUndefined(input.wslRuntime) ?? Option.getOrUndefined(env.wslRuntime);
 
+  const identity = yield* Effect.try({
+    try: () => resolveChromeriaDesktopIdentity(Option.getOrUndefined(env.desktopVariant)),
+    catch: (cause) =>
+      new DesktopIdentityBuildError({
+        detail: cause instanceof Error ? cause.message : String(cause),
+      }),
+  });
+  if (identity.variant !== "default" && platform !== "mac") {
+    return yield* new DesktopIdentityBuildError({
+      detail: `${identity.productName} builds only for macOS, not '${platform}'.`,
+    });
+  }
+
   return {
     platform,
     target,
@@ -1693,6 +1724,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
     mockUpdates,
     mockUpdateServerPort,
     wslRuntime,
+    identity,
   } satisfies ResolvedBuildOptions;
 });
 
@@ -2645,7 +2677,11 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
   return `${trimmed.slice(0, versionSeparator)}/${trimmed.slice(versionSeparator + 1)}`;
 }
 
-export function resolveDesktopProductName(version: string): string {
+export function resolveDesktopProductName(
+  version: string,
+  identity: ChromeriaDesktopIdentity = CHROMERIA_DESKTOP_IDENTITIES.default,
+): string {
+  if (identity.variant !== "default") return identity.productName;
   return resolveDesktopUpdateChannel(version) === "nightly"
     ? "T3 Code (Nightly)"
     : (desktopPackageJson.productName ?? "T3 Code");
@@ -2669,11 +2705,13 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   // source file was never written fails the electron-builder step.
   wslRuntimeBundled = false,
   arch?: typeof BuildArch.Type,
+  identity: ChromeriaDesktopIdentity = CHROMERIA_DESKTOP_IDENTITIES.default,
 ) {
+  const productName = resolveDesktopProductName(version, identity);
   const buildConfig: Record<string, unknown> = {
-    appId: DESKTOP_APP_ID,
-    productName: resolveDesktopProductName(version),
-    artifactName: "Chromeria-${version}-${arch}.${ext}",
+    appId: identity.appId,
+    productName,
+    artifactName: `${identity.artifactPrefix}-\${version}-\${arch}.\${ext}`,
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],
     files: [
       ...DESKTOP_FILE_EXCLUSIONS,
@@ -2724,14 +2762,12 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
       extendInfo: {
-        NSScreenCaptureUsageDescription:
-          "Chromeria captures the active window when you use the window capture shortcut.",
+        NSScreenCaptureUsageDescription: `${identity.productName} captures the active window when you use the window capture shortcut.`,
       },
       protocols: [
-        {
-          name: "T3 Code",
-          schemes: ["t3code", "t3code-dev"],
-        },
+        identity.scheme === null
+          ? { name: "T3 Code", schemes: ["t3code", "t3code-dev"] }
+          : { name: identity.productName, schemes: [identity.scheme] },
       ],
       ...(signed ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") } : {}),
       ...(macPasskeySigning
@@ -2748,7 +2784,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       // Give the themed installer its own Finder volume name. Finder caches
       // DMG window backgrounds by volume name, so reusing a generic name can
       // make a newly built background look unchanged during testing.
-      title: `${resolveDesktopProductName(version)} ${version} Installer`,
+      title: `${productName} ${version} Installer`,
       background: `dmg/dmg-background-${updateChannel}.png`,
       window: {
         width: 640,
@@ -3510,6 +3546,15 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       });
     }
   }
+  const identityMismatch = desktopIdentityMarkerMismatch(
+    distDirs.desktopDist,
+    options.identity.variant,
+  );
+  if (identityMismatch !== undefined) {
+    return yield* new DesktopIdentityBuildError({
+      detail: `Cannot package ${options.identity.productName}: ${identityMismatch}. Rebuild with CHROMERIA_DESKTOP_VARIANT=${options.identity.variant} and without --skip-build.`,
+    });
+  }
 
   // Assert against the emitted bundle, not the bundler config. `alwaysBundle`
   // only forces packages IN, so a transitive dependency of an external package
@@ -3660,7 +3705,8 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const configuredMacPasskeySigning =
     options.platform === "mac" && options.signed
       ? yield* Effect.try({
-          try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot })),
+          try: () =>
+            resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot }), options.identity),
           catch: MacPasskeySigningConfigurationResolutionError.fromCause,
         })
       : undefined;
@@ -3712,6 +3758,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
+    chromeriaDesktopVariant: options.identity.variant,
     private: true,
     packageManager: rootPackageJson.packageManager,
     description:
@@ -3736,6 +3783,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
         : undefined,
       bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
       options.arch,
+      options.identity,
     ),
     dependencies: stageDependencies,
     devDependencies: {
