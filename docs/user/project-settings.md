@@ -65,6 +65,47 @@ Webhook tasks only run when their URL is called, so they can't be run
 immediately.
 Leaving an edited form asks before discarding unsaved changes.
 
+## Agent-managed scheduled tasks
+
+Agents can schedule work for you with the scheduled task tools. Besides the
+schedules above, an agent can set a task to run once at a set time, or weekly
+on chosen days at one or more times in a named time zone. To spread load,
+Chromeria may move a weekly time by up to 30 minutes and shows the move, such
+as `09:00 (+4 min)`. These schedules appear in **Settings → Scheduled tasks**,
+but only an agent can change them.
+
+A task can carry an **outcome check**: a shell command that proves the work is
+done. The agent keeps working in the same thread until the check passes. If it
+still fails after a few retries, the task shows **Needs you**, and **Run now**
+continues it in the same thread. A task can also start each run with a Prism
+role, or run a shell command instead of an agent; on desktop and web,
+Chromeria alerts you when a scheduled command starts failing.
+
+When a scheduled run asks a Spectrum, the run finishes only after the turn
+that delivers the Spectrum's report has completed in its thread. If that
+delivery fails, Spectrum may send the same report again, up to three attempts
+in total. A partially processed report can therefore be processed twice. Stop,
+explicit abandonment and a failure that cannot be retried end automatic retries.
+If delivery cannot finish, the task shows **Needs you** with the reason. Choose
+**Abandon report** in web settings or the mobile task menu to stop delivering it
+and continue to the task's check. An active Spectrum still holds that check.
+
+Tasks brought over from Chromeria 1 start paused, and their earlier runs stay
+as history that never resumes; **Run now** starts a new run. Turn a task on
+when you stop using it in Chromeria 1.
+
+## Spectrum conversations
+
+Ask your agent to start a Spectrum with a question and two to eight named
+Colors. Each Color is a Drafter selected through Prism, with an optional role
+or explicit model. **Council** collects independent answers, runs at least two
+relay rounds, then asks the moderator Color to synthesize. **Free** lets Colors
+speak in order for a fixed number of turns.
+
+The Spectrum thread shows the full discussion. Send a message there to join at
+the next barrier. **Stop** cancels its owned Drafter work. After the report
+finishes or you explicitly abandon it, reopen the thread to continue.
+
 ## Webhook automations
 
 In **Settings → Scheduled tasks**, choose **On webhook**

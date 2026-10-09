@@ -17,6 +17,7 @@ export type SettingsPath =
   | "/settings/appearance"
   | "/settings/keybindings"
   | "/settings/snap-shot"
+  | "/settings/prism"
   | "/settings/providers"
   | "/settings/integrations"
   | "/settings/scheduled-tasks"
@@ -93,6 +94,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/keybindings": "Keybindings",
   "/settings/snap-shot": "SnapShots",
   "/settings/providers": "Providers",
+  "/settings/prism": "Prism",
   "/settings/integrations": "Integrations",
   "/settings/scheduled-tasks": "Scheduled Tasks",
   "/settings/source-control": "Source Control",
@@ -134,6 +136,22 @@ const KEYBINDING_SEARCH_ITEMS = STATIC_KEYBINDING_COMMANDS.toSorted((left, right
  * that may not be mounted point at their nearest stable section instead.
  */
 export const SETTINGS_SEARCH_ITEMS = [
+  {
+    id: "prism-roles",
+    title: "Prism role preferences",
+    to: "/settings/prism",
+    targetId: "prism-roles",
+    scope: "project-defaults",
+    searchTerms: ["model", "routing", "worker", "lane", "kit", "effort"],
+  },
+  {
+    id: "prism-capacity",
+    title: "Prism live capacity",
+    to: "/settings/prism",
+    targetId: "prism-capacity",
+    scope: "environment",
+    searchTerms: ["usage", "limits", "provider"],
+  },
   {
     id: "storage-worktrees",
     title: "Worktree cleanup",
@@ -424,6 +442,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/general",
     searchTerms: ["installed cli versions newer available codex claude cursor grok opencode"],
     scope: "environment-defaults",
+  },
+  {
+    id: "auto-update-providers",
+    title: "Update providers automatically",
+    to: "/settings/general",
+    scope: "environment-defaults",
+    searchTerms: ["automatic provider updates cli install codex claude cursor grok opencode"],
   },
   {
     id: "continue-threads-after-server-update",
@@ -936,6 +961,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   // environment at any selection. Neither needs a particular scope to render.
   "/settings/keybindings": null,
   "/settings/providers": null,
+  "/settings/prism": "project-defaults",
   "/settings/integrations": null,
   "/settings/source-control": "environment-defaults",
   "/settings/storage": "project-defaults",

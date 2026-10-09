@@ -29,6 +29,59 @@ import * as Orchestrator from "./Orchestrator.ts";
 import * as ThreadPullRequestService from "./ThreadPullRequestService.ts";
 
 describe("ThreadPullRequestServiceV2 project guard", () => {
+  it.effect("discovers and matches origin PRs without replacing canonical upstream identity", () =>
+    Effect.gen(function* () {
+      const project: OrchestrationProjectShell = {
+        id: ProjectId.make("fork"),
+        title: "Chromeria",
+        workspaceRoot: "/fork",
+        defaultModelSelection: null,
+        scripts: [],
+        createdAt: "2026-08-01T00:00:00.000Z",
+        updatedAt: "2026-08-01T00:00:00.000Z",
+      };
+      const identity = {
+        canonicalKey: "github.com/pingdotgg/t3code",
+        provider: "github",
+        displayName: "pingdotgg/t3code",
+        locator: {
+          source: "git-remote" as const,
+          remoteName: "upstream",
+          remoteUrl: "https://github.com/pingdotgg/t3code.git",
+        },
+        origin: {
+          canonicalKey: "github.com/toolboxmd/chromeria",
+          displayName: "toolboxmd/chromeria",
+        },
+      };
+      const result = yield* ThreadPullRequestService.resolveProjectForPullRequestDiscovery(
+        project,
+        { resolve: () => Effect.succeed(identity) },
+      );
+      expect(result.repository).toBe("toolboxmd/chromeria");
+      expect(result.project.repositoryIdentity).toBe(identity);
+      const pr = {
+        repositoryKey: "github.com/toolboxmd/chromeria",
+        repository: "toolboxmd/chromeria",
+        number: 167,
+        url: "https://github.com/toolboxmd/chromeria/pull/167",
+        title: "Foundation",
+        state: "open" as const,
+        baseRef: "fork/v2",
+        headRef: "port/167-foundation",
+        updatedAt: null,
+        isDraft: false,
+      };
+      expect(ThreadPullRequestService.pullRequestMatchesProject(pr, result.project)).toBe(true);
+      expect(
+        ThreadPullRequestService.pullRequestMatchesProject(
+          { ...pr, repositoryKey: "github.com/pingdotgg/t3code" },
+          result.project,
+        ),
+      ).toBe(false);
+    }),
+  );
+
   it.effect("discovers a repository from a project shell without enrichment", () =>
     Effect.gen(function* () {
       const project: OrchestrationProjectShell = {

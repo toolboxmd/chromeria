@@ -23,6 +23,7 @@ import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -94,6 +95,8 @@ export interface ThreadLaunchInput {
   };
   readonly createdBy: OrchestrationV2Actor;
   readonly creationSource: OrchestrationV2CreationSource;
+  /** Fork: the person who owns the new thread (toolboxmd/chromeria#170). */
+  readonly owner?: string;
 }
 
 /** What workspace preparation reads from a launch; a retry rebuilds it from the run. */
@@ -153,6 +156,10 @@ export class ThreadLaunchService extends Context.Service<
     readonly launch: (
       input: ThreadLaunchInput,
     ) => Effect.Effect<ThreadLaunchResult, ThreadLaunchError>;
+    /** Prepare the durable first run of a delegated child through normal launch setup. */
+    readonly prepareDelegatedRun: (
+      input: ThreadLaunchRetryInput & { readonly projectId: ProjectId },
+    ) => Effect.Effect<void, ThreadLaunchError>;
     /** Dispatches prepared-run.retry and prepares the run's workspace again. */
     readonly retryPreparation: (
       input: ThreadLaunchRetryInput,
@@ -249,6 +256,7 @@ const make = Effect.gen(function* () {
     const tracked = input.workspaceStrategy.type === "worktree" || reused !== undefined;
     let createdWorktreePath: string | null = null;
     let setupTerminalId: string | null = null;
+    let branchRenameFiber: Fiber.Fiber<unknown, never> | null = null;
     let workspaceRecorded = false;
     if (input.workspaceStrategy.type === "worktree") {
       yield* setupTracker.begin({
@@ -437,7 +445,7 @@ const make = Effect.gen(function* () {
       ) {
         const oldBranch = branch;
         const worktreeCwd = worktreePath;
-        yield* generateBranchNameFor(worktreeCwd, initialMessage).pipe(
+        branchRenameFiber = yield* generateBranchNameFor(worktreeCwd, initialMessage).pipe(
           Effect.flatMap(({ branch: newBranch, exactName }) =>
             git.renameBranch({
               cwd: worktreeCwd,
@@ -564,6 +572,8 @@ const make = Effect.gen(function* () {
       Effect.onError((cause) =>
         Effect.gen(function* () {
           const cancelled = Cause.hasInterruptsOnly(cause);
+          // A late rename must not restore the workspace after cancellation removes it.
+          if (cancelled && branchRenameFiber !== null) yield* Fiber.interrupt(branchRenameFiber);
           yield* setupTracker.finish(
             threadId,
             cancelled ? "cancelled" : "failed",
@@ -786,6 +796,7 @@ const make = Effect.gen(function* () {
                 ...(input.importedNativeThread === undefined
                   ? {}
                   : { importedNativeThread: input.importedNativeThread }),
+                ...(input.owner === undefined ? {} : { owner: input.owner }),
                 createdBy: input.createdBy,
                 creationSource: input.creationSource,
               });
@@ -977,7 +988,22 @@ const make = Effect.gen(function* () {
     );
   };
 
-  return ThreadLaunchService.of({ launch, retryPreparation });
+  const prepareDelegatedRun: ThreadLaunchService["Service"]["prepareDelegatedRun"] = Effect.fn(
+    "ThreadLaunchService.prepareDelegatedRun",
+  )(function* (input) {
+    const scheduled = yield* Effect.gen(function* () {
+      const projection = yield* threads.getThreadProjection(input.threadId);
+      const run = projection.runs.find((candidate) => candidate.id === input.runId);
+      if (run?.status !== "preparing" || run.workspacePreparation === undefined) return;
+      if (!(yield* reservePreparation(input.commandId))) return;
+      yield* scheduleRetriedPreparation(input, projection, run, run.workspacePreparation).pipe(
+        Effect.onError(() => releasePreparation(input.commandId)),
+      );
+    }).pipe(Effect.exit);
+    if (Exit.isFailure(scheduled))
+      yield* failPreparedRun(input, input.threadId, input.runId, Cause.squash(scheduled.cause));
+  });
+  return ThreadLaunchService.of({ launch, retryPreparation, prepareDelegatedRun });
 });
 
 export const layer = Layer.effect(ThreadLaunchService, make);

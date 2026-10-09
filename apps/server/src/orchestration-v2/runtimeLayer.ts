@@ -1,3 +1,13 @@
+import * as Spectrum from "../spectrum/runtimeLayer.ts";
+import * as PrismRecovery from "../prism/RecoveryCoordinator.ts";
+import * as PrismStreamClock from "../prism/streamClock.ts";
+import * as PrismStreamStats from "../prism/StreamStatsStore.ts";
+import * as PrismProviderEventIngestor from "../prism/ProviderEventIngestor.ts";
+import * as PrismStaleTurnMonitor from "../prism/staleTurnMonitor.ts";
+import * as PrismRecoveryHooks from "../prism/RecoveryHooks.ts";
+import * as PrismRecoveryReactor from "../prism/RecoveryReactor.ts";
+import * as WightAdmission from "../wight/AdmissionHooks.ts";
+import * as WightMode from "../wight/WightService.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Layer from "effect/Layer";
@@ -50,6 +60,9 @@ import * as ThreadLifecycleService from "./ThreadLifecycleService.ts";
 import * as ThreadForkService from "./ThreadForkService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ScheduledTaskChecks from "../scheduledTaskChecks/ScheduledTaskChecks.ts";
+import * as Prism from "../prism/PrismService.ts";
+import * as ProcessRunner from "../processRunner.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 
 /** The shared application event log and its command receipts. */
@@ -100,7 +113,10 @@ export const layerProjectService = ProjectService.layer.pipe(
   ),
 );
 
-const layerProviderEventIngestorProvided = ProviderEventIngestor.layer.pipe(
+const layerPrismStreamClockProvided = PrismStreamClock.layer.pipe(
+  Layer.provide(PrismStreamStats.layer),
+);
+const layerProviderEventIngestorBase = ProviderEventIngestor.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
       layerEventSinkProvided,
@@ -109,6 +125,9 @@ const layerProviderEventIngestorProvided = ProviderEventIngestor.layer.pipe(
       ThreadCommandExecutor.layer,
     ),
   ),
+);
+const layerProviderEventIngestorProvided = PrismProviderEventIngestor.layer.pipe(
+  Layer.provide(Layer.mergeAll(layerProviderEventIngestorBase, layerPrismStreamClockProvided)),
 );
 
 const layerCheckpointServiceProvided = CheckpointService.layer.pipe(
@@ -148,6 +167,7 @@ const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
       layerEventSinkProvided,
       IdAllocator.layer,
       layerProviderEventIngestorProvided,
+      layerPrismStreamClockProvided,
     ),
   ),
 );
@@ -201,6 +221,11 @@ const layerRunFinalizationServiceProvided = RunFinalizationService.layer.pipe(
   Layer.provide(Layer.merge(layerCheckpointCaptureServiceProvided, ProjectionStore.layer)),
 );
 
+const layerPrismRecoveryProvided = PrismRecovery.layer;
+const layerPrismRecoveryHooksProvided = PrismRecoveryHooks.layer.pipe(
+  Layer.provide(Layer.mergeAll(layerPrismRecoveryProvided, ProjectionStore.layer)),
+);
+
 const layerOrchestratorProvided = Orchestrator.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -222,6 +247,7 @@ const layerOrchestratorProvided = Orchestrator.layer.pipe(
       layerProviderSwitchServiceProvided,
       layerRunExecutionServiceProvided,
       ThreadForkService.layer,
+      layerPrismRecoveryHooksProvided,
     ),
   ),
 );
@@ -266,12 +292,20 @@ const layerThreadLifecycleProvided = ThreadLifecycleService.layer.pipe(
 const layerSecretRequestsProvided = SecretRequests.layer.pipe(
   Layer.provide(layerThreadManagementProvided),
 );
-const layerScheduledTaskProvided = ScheduledTaskService.layer.pipe(
+// Fork: outcome-checked scheduled tasks wrap upstream's one scheduler (#174).
+const layerScheduledTaskProvided = ScheduledTaskChecks.withOutcomeChecks(
+  ScheduledTaskService.layer,
+).pipe(
   Layer.provide(
     Layer.mergeAll(
       layerThreadLaunchProvided,
       layerThreadManagementProvided,
       layerSecretRequestsProvided,
+      ProjectionStore.layer,
+      ProjectStore.layer,
+      ProcessRunner.layer,
+      Prism.layer,
+      layerProviderAdapterRegistryProvided,
     ),
   ),
 );
@@ -341,7 +375,24 @@ export const layer = Layer.mergeAll(
   layerLegacyV1ThreadImporterProvided,
 );
 
+const layerSpectrumProvided = Spectrum.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      layerStores,
+      layerEventSinkProvided,
+      layerOrchestratorProvided,
+      Prism.layer,
+      layerProviderAdapterRegistryProvided,
+      ThreadCommandExecutor.layer,
+    ),
+  ),
+);
+
 export const layerProduction = Layer.mergeAll(
+  layerSpectrumProvided,
+  WightMode.layer.pipe(
+    Layer.provide(Layer.mergeAll(ProjectionStore.layer, layerThreadManagementProvided)),
+  ),
   layer.pipe(Layer.provide(layerProjectService)),
   layerProjectService,
   layerManagedProjectFoldersProvided,
@@ -349,10 +400,36 @@ export const layerProduction = Layer.mergeAll(
   layerThreadLifecycleProvided,
   layerScheduledTaskProvided,
   layerSecretRequestsProvided,
+  PrismStaleTurnMonitor.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerPrismStreamClockProvided,
+        ProjectionStore.layer,
+        layerThreadManagementProvided,
+      ),
+    ),
+  ),
+  PrismRecoveryReactor.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerPrismRecoveryProvided,
+        ProjectionStore.layer,
+        layerThreadManagementProvided,
+        layerOrchestratorProvided,
+        layerEventSinkProvided,
+      ),
+    ),
+  ),
   UsageLimitRecoveryWorker.layer.pipe(
     Layer.provide(Layer.mergeAll(ProjectionStore.layer, layerThreadManagementProvided)),
   ),
   layerProviderContinuationWorkerProvided,
   layerAgentSessionImporterProvided,
   EffectOutbox.layerPruneWorker.pipe(Layer.provide(EffectOutbox.layer)),
-).pipe(Layer.provide(Scheduler.layer), Layer.provideMerge(layerEventInfrastructure));
+).pipe(
+  Layer.provideMerge(Spectrum.layerAdmission),
+  Layer.provideMerge(Spectrum.layerSchedulerAdapter),
+  Layer.provide(WightAdmission.layer),
+  Layer.provide(Scheduler.layer),
+  Layer.provideMerge(layerEventInfrastructure),
+);

@@ -1,3 +1,9 @@
+import { stopSpectrum } from "./spectrum/humanStopRpc.ts";
+import { abandonScheduledReport } from "./spectrum/humanReportRpc.ts";
+import { SPECTRUM_WS_METHODS } from "@t3tools/contracts";
+import type * as PromachosLaunch from "./promachos/PromachosLaunch.ts";
+import * as PromachosRpc from "./promachos/PromachosRpc.ts";
+import { PROMACHOS_HOME_WS_METHODS } from "@t3tools/contracts";
 import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
@@ -121,6 +127,7 @@ import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
+import { sessionPerson, stampSessionPerson } from "./orchestration-v2/ThreadPeople.ts";
 import * as IdAllocator from "./orchestration-v2/IdAllocator.ts";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
@@ -223,6 +230,10 @@ import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
+import * as IssueService from "./issues/IssueService.ts";
+import { makeIssueRpcHandlers } from "./issues/issueRpcHandlers.ts";
+import * as IssueLinks from "./issueLinks/IssueLinks.ts";
+import { makeIssueLinkRpcHandlers } from "./issueLinks/rpcHandlers.ts";
 import { listLinkedPullRequestThreads } from "./pullRequest/linkedThreads.ts";
 import { pullRequestSyncKey } from "./pullRequest/pullRequestSyncKey.ts";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -1198,12 +1209,15 @@ const layerWsRpc = (
       const intakeContext = yield* Effect.context<
         | ThreadManagementService.ThreadManagementService
         | ThreadLaunchService.ThreadLaunchService
+        | ProjectStore.ProjectStoreV2
+        | GitVcsDriver.GitVcsDriver
         | FileSystem.FileSystem
         | ServerConfig.ServerConfig
       >();
       const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
       const projectStore = yield* ProjectStore.ProjectStoreV2;
       const projectService = yield* ProjectService.ProjectService;
+      const promachos = yield* PromachosRpc.makeHandlers;
       const managedFolders = yield* ManagedProjectFolders.ManagedProjectFolders;
       const threadSearch = yield* ThreadSearch.ThreadSearch;
 
@@ -1227,6 +1241,8 @@ const layerWsRpc = (
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const pullRequests = yield* PullRequestService.PullRequestService;
+      const issues = yield* IssueService.IssueService;
+      const issueLinkHandlers = yield* makeIssueLinkRpcHandlers;
       const pullRequestSync = yield* PullRequestSyncReactor.PullRequestSyncReactor;
       const deviceService = yield* DeviceService.DeviceService;
       const deviceHostContext =
@@ -1814,7 +1830,35 @@ const layerWsRpc = (
         return result;
       });
 
+      // Fork: client-created threads and sharing changes carry the device's person
+      // (toolboxmd/chromeria#170).
+      const dispatchAsSessionPerson = (command: OrchestrationV2Command) =>
+        stampSessionPerson(sessions, currentSessionId, command).pipe(
+          Effect.flatMap(ThreadMessageIntake.dispatchCommand),
+        );
+      const launchThreadAsSessionPerson = (input: PromachosLaunch.PromachosLaunchInput) =>
+        sessionPerson(sessions, currentSessionId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestrationV2ThreadLaunchError({
+                commandId: input.commandId,
+                projectId: input.projectId,
+                message: "Could not read this device's person.",
+                cause,
+              }),
+          ),
+          Effect.flatMap((owner) =>
+            promachos
+              .prepareLaunch({ ...input, owner })
+              .pipe(Effect.flatMap(ThreadMessageIntake.launchThread)),
+          ),
+        );
+
       const handlers = ServerWsRpcGroup.of({
+        // Fork: GitHub Issues (toolboxmd/t3code#27).
+        ...makeIssueRpcHandlers(issues),
+        // Fork: Issue links (toolboxmd/t3code#28).
+        ...issueLinkHandlers,
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
           Effect.annotateCurrentSpan({
             "orchestration_v2.command_id": command.commandId,
@@ -1839,7 +1883,7 @@ const layerWsRpc = (
                   // A retry also restarts the preparation work the launch owns.
                   (command.type === "prepared-run.retry"
                     ? threadLaunch.retryPreparation(command)
-                    : ThreadMessageIntake.dispatchCommand(
+                    : dispatchAsSessionPerson(
                         ThreadManagementService.withCreationProvenance(command, {
                           createdBy: "user",
                           creationSource:
@@ -1954,7 +1998,8 @@ const layerWsRpc = (
             Effect.andThen(
               startup
                 .enqueueCommand(
-                  ThreadMessageIntake.launchThread({
+                  launchThreadAsSessionPerson({
+                    ...(input.prismRole === undefined ? {} : { prismRole: input.prismRole }),
                     commandId: input.commandId,
                     ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
                     ...(input.reuseExistingThread === undefined
@@ -2040,6 +2085,9 @@ const layerWsRpc = (
               Effect.andThen(subscribeOrchestrationV2Thread(input)),
             ),
           ),
+        [SPECTRUM_WS_METHODS.stop]: (input) => stopSpectrum(currentSession, input),
+        [SPECTRUM_WS_METHODS.abandonReport]: (input) =>
+          abandonScheduledReport(currentSession, input),
         [WS_METHODS.scheduledTasksList]: (_input) =>
           scheduledTasks.list().pipe(Effect.map(withVisibleWebhookUrls)),
         [WS_METHODS.scheduledTasksSubscribe]: (_input) =>
@@ -2584,6 +2632,7 @@ const layerWsRpc = (
               (cause) => new OrchestrationDispatchCommandError({ message: cause.message, cause }),
             ),
           ),
+        [PROMACHOS_HOME_WS_METHODS.create]: (input) => promachos.createHome(input),
         [WS_METHODS.projectsCreateNew]: (input) =>
           managedFolders
             .createNamedProject(input)
@@ -3131,6 +3180,8 @@ export const layer = Layer.unwrap(
     const serverBrowser = yield* ServerBrowser.ServerBrowser;
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
+    const issueService = yield* IssueService.IssueService;
+    const issueLinks = yield* IssueLinks.IssueLinks;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3192,11 +3243,12 @@ export const layer = Layer.unwrap(
               Layer.provide(DefectReporter.layer),
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
               Layer.provide(AgentSessionScanner.layer),
-              Layer.provide(ProviderMaintenanceRunner.layer),
               Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, serverSelfUpdate)),
               // One server-lifetime service means clients share the same PR caches, and a WS
               // mutation invalidates the HTTP diff cache that every client reads from.
               Layer.provide(Layer.succeed(PullRequestService.PullRequestService, pullRequests)),
+              Layer.provide(Layer.succeed(IssueService.IssueService, issueService)),
+              Layer.provide(Layer.succeed(IssueLinks.IssueLinks, issueLinks)),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(

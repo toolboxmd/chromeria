@@ -1,3 +1,6 @@
+import * as PrismServerSettings from "../../serverSettings.ts";
+import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
+import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -563,6 +566,14 @@ it.effect("refuses act-as-caller tools to a client caller", () =>
   }).pipe(
     Effect.provide(
       McpHttpServer.layerOrchestratorToolkit.pipe(
+        Layer.provide(PrismServerSettings.layerTest()),
+        Layer.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
+            Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+          ),
+        ),
         Layer.provideMerge(McpServer.McpServer.layer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
@@ -601,6 +612,14 @@ it.effect("a caller cannot rewrite a scheduled task that runs above its own mode
   }).pipe(
     Effect.provide(
       McpHttpServer.layerOrchestratorToolkit.pipe(
+        Layer.provide(PrismServerSettings.layerTest()),
+        Layer.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
+            Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+          ),
+        ),
         Layer.provideMerge(McpServer.McpServer.layer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
@@ -667,6 +686,14 @@ it.effect("a caller cannot interrupt a thread that runs above its own modes", ()
   }).pipe(
     Effect.provide(
       McpHttpServer.layerOrchestratorToolkit.pipe(
+        Layer.provide(PrismServerSettings.layerTest()),
+        Layer.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
+            Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+          ),
+        ),
         Layer.provideMerge(McpServer.McpServer.layer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(

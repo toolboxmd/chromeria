@@ -1,3 +1,4 @@
+import { WightModeControl } from "./WightModeControl";
 import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
@@ -30,6 +31,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { ProjectFavicon } from "../ProjectFavicon";
+import { ThreadSharingControl } from "../people/ThreadSharingControl";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
@@ -259,6 +261,9 @@ export const ChatHeader = memo(function ChatHeader({
       )}
       onContextMenu={handleHeaderContextMenu}
     >
+      {isServerThread ? (
+        <WightModeControl environmentId={activeThreadEnvironmentId} threadId={activeThreadId} />
+      ) : null}
       <WorkspaceBreadcrumb
         ariaLabel="Thread breadcrumb"
         className="flex-1 overflow-clip [overflow-clip-margin:2px]"
@@ -355,6 +360,9 @@ export const ChatHeader = memo(function ChatHeader({
           )}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
+      {isServerThread ? (
+        <ThreadSharingControl environmentId={activeThreadEnvironmentId} threadId={activeThreadId} />
+      ) : null}
     </div>
   );
 });

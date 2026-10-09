@@ -1,3 +1,6 @@
+import { SpectrumMcpInterrupt } from "../spectrum/mcpInterrupt.ts";
+import { SpectrumMcpSend } from "../spectrum/mcpSend.ts";
+import * as Prism from "../prism/PrismService.ts";
 import {
   CommandId,
   type RunId,
@@ -56,6 +59,7 @@ import {
   type ScheduledTaskUpsertInput,
   type ServerProvider,
   ThreadId,
+  threadOwner,
 } from "@t3tools/contracts";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as Clock from "effect/Clock";
@@ -82,9 +86,14 @@ import {
 } from "../orchestration-v2/DispatchModeLimit.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
+import * as FileSystem from "effect/FileSystem";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
+import { assertProjectWorktree } from "../childThreads/workspaceAccess.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ScheduledTaskChecks from "../scheduledTaskChecks/ScheduledTaskChecks.ts";
 import {
   clientRuntimeModeCeiling,
   type McpInvocationScope,
@@ -254,6 +263,7 @@ function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): Orchestrato
     ...(task.webhook === undefined
       ? {}
       : { webhookSignature: task.webhook.hasSecret ? "set" : "none" }),
+    ...ScheduledTaskChecks.forkSummaryFields(task),
   };
 }
 
@@ -834,7 +844,14 @@ const make = Effect.gen(function* () {
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
+  // Fork (#174): outcome checks and command tasks; refused where the service is absent.
+  const forkTasks = ScheduledTaskChecks.orRefuse(
+    yield* Effect.serviceOption(ScheduledTaskChecks.ScheduledTaskChecks),
+  );
   const projects = yield* ProjectService.ProjectService;
+  const threadLaunch = yield* ThreadLaunch.ThreadLaunchService;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const git = yield* GitVcsDriver.GitVcsDriver;
 
   /** A caller-named project, which must exist before anything is recorded against it. */
   const requireProject = (projectId: ProjectId) =>
@@ -1051,6 +1068,7 @@ const make = Effect.gen(function* () {
       return { parent, target, shell } as const;
     });
 
+  const prism = yield* Prism.PrismService;
   const loadProviders = providerRegistry.getProviders;
 
   /**
@@ -1539,8 +1557,11 @@ const make = Effect.gen(function* () {
                 }),
               }),
         };
-        const { task } = yield* scheduledTasks
-          .upsert(upsertInput)
+        const { task } = yield* forkTasks
+          .schedule(
+            { input, projectId, parent, bindToCurrentThread, scope },
+            scheduledTasks.upsert,
+          )(upsertInput)
           .pipe(
             Effect.mapError((error) =>
               failure("orchestration_error", `Could not schedule task: ${error.message}`),
@@ -1610,8 +1631,11 @@ const make = Effect.gen(function* () {
           createdBy: existing.createdBy,
           creationSource: existing.creationSource,
         };
-        const { task } = yield* scheduledTasks
-          .upsert(upsertInput)
+        const { task } = yield* forkTasks
+          .update(
+            { input, existing, threadId, parent },
+            scheduledTasks.upsert,
+          )(upsertInput)
           .pipe(
             Effect.mapError((error) =>
               failure("orchestration_error", `Could not update scheduled task: ${error.message}`),
@@ -1624,8 +1648,11 @@ const make = Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope);
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
-        yield* scheduledTasks
-          .delete({ id: existing.id })
+        yield* forkTasks
+          .delete(
+            { existing, parent },
+            scheduledTasks.delete,
+          )({ id: existing.id })
           .pipe(
             Effect.mapError((error) =>
               failure("orchestration_error", `Could not delete scheduled task: ${error.message}`),
@@ -1828,11 +1855,44 @@ const make = Effect.gen(function* () {
             "Delegated tasks require an active run owned by this MCP provider session.",
           );
         }
+        if (input.projectId !== undefined || input.workspaceStrategy !== undefined) {
+          const destination = yield* requireProject(input.projectId ?? parent.thread.projectId);
+          if (input.workspaceStrategy?.type === "existing_worktree") {
+            yield* assertProjectWorktree(
+              destination.workspaceRoot,
+              input.workspaceStrategy.worktreePath,
+            ).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(GitVcsDriver.GitVcsDriver, git),
+            );
+          }
+        }
         const providers = yield* loadProviders;
-        const target = yield* resolveTargetRechecking({
-          parent,
-          target: input.target,
-          providers,
+        // Explicit targets retain upstream validation and precedence.
+        const explicit =
+          input.target === undefined
+            ? undefined
+            : (yield* resolveTargetRechecking({ parent, target: input.target, providers }))
+                .modelSelection;
+        const target = yield* prism.resolve({
+          projectId: parent.thread.projectId,
+          role: input.prismRole ?? Prism.delegatedPrismRole(input.role),
+          lane: input.lane,
+          explicit,
+          inherited: parent.thread.modelSelection,
+          validate:
+            explicit === undefined
+              ? (selection) =>
+                  resolveTargetRechecking({
+                    parent,
+                    providers,
+                    target: {
+                      providerInstanceId: selection.instanceId,
+                      model: selection.model,
+                      options: selection.options,
+                    },
+                  }).pipe(Effect.map((target) => target.modelSelection))
+              : undefined,
         });
         const runtimeMode = yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode);
         const interactionMode = yield* resolveInteractionMode(
@@ -1854,7 +1914,11 @@ const make = Effect.gen(function* () {
             parentThreadId: scope.thread.threadId,
             parentRunId: parentRun.id,
             parentNodeId: parentRun.rootNodeId,
-            task: taskPrompt(input),
+            ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
+            ...(input.workspaceStrategy === undefined
+              ? {}
+              : { workspaceStrategy: input.workspaceStrategy }),
+            task: [target.kitText, taskPrompt(input)].filter(Boolean).join("\n\n"),
             ...(input.title === undefined ? {} : { title: input.title }),
             modelSelection: target.modelSelection,
             runtimeMode,
@@ -1883,6 +1947,27 @@ const make = Effect.gen(function* () {
           );
         }
         const taskId = taskEvent.event.payload.id;
+        const childThreadId = taskEvent.event.payload.childThreadId;
+        if (input.projectId !== undefined || input.workspaceStrategy !== undefined) {
+          const child = result.storedEvents.find(
+            (stored) =>
+              stored.event.type === "run.created" && stored.event.threadId === childThreadId,
+          );
+          if (child?.event.type === "run.created" && childThreadId !== null) {
+            yield* threadLaunch
+              .prepareDelegatedRun({
+                commandId,
+                threadId: childThreadId,
+                runId: child.event.payload.id,
+                projectId: input.projectId ?? parent.thread.projectId,
+              })
+              .pipe(
+                Effect.mapError(() =>
+                  failure("orchestration_error", "Unable to prepare delegated workspace."),
+                ),
+              );
+          }
+        }
 
         if (input.mode !== "wait") {
           return yield* readTask(scope, taskId, false, true);
@@ -2140,6 +2225,8 @@ const make = Effect.gen(function* () {
                   type: "thread.create",
                   createdBy: "agent",
                   creationSource: "mcp",
+                  // Fork: an agent's thread belongs to its caller's owner (toolboxmd/chromeria#170).
+                  owner: threadOwner(parent.thread),
                   commandId: stableCommandId({
                     scope,
                     requestKey: key,
@@ -2388,6 +2475,14 @@ const make = Effect.gen(function* () {
           requestKey: key,
           operation: "thread-send",
         });
+        const transcript = yield* (yield* SpectrumMcpSend).send(
+          threadManagement,
+          input,
+          stableCommandId({ scope, requestKey: key, operation: "thread-send" }),
+          messageId,
+          parent?.thread.id,
+        );
+        if (transcript !== null) return transcript;
         const result = yield* threadManagement
           .sendToThread({
             projectId: target.thread.projectId,
@@ -2452,6 +2547,12 @@ const make = Effect.gen(function* () {
         yield* resolveRuntimeMode(limits.runtimeMode, target.thread.runtimeMode);
         yield* resolveInteractionMode(limits.interactionMode, target.thread.interactionMode);
         const key = yield* requestKey(input.clientRequestId);
+        const spectrum = yield* (yield* SpectrumMcpInterrupt).interrupt(
+          threadManagement,
+          input,
+          stableCommandId({ scope, requestKey: key, operation: "thread-interrupt" }),
+        );
+        if (spectrum !== null) return spectrum;
         const result = yield* threadManagement
           .interruptThread({
             projectId: target.thread.projectId,
@@ -2494,10 +2595,14 @@ export const layer: Layer.Layer<
   OrchestratorMcpService,
   never,
   | Crypto.Crypto
+  | FileSystem.FileSystem
+  | GitVcsDriver.GitVcsDriver
+  | ThreadLaunch.ThreadLaunchService
+  | import("../serverSettings.ts").ServerSettingsService
   | ThreadManagementService.ThreadManagementService
   | ProviderRegistry.ProviderRegistry
   | ProviderAdapterRegistry.ProviderAdapterRegistryV2
   | ScheduledTaskService.ScheduledTaskService
   | ProjectService.ProjectService
   | SecretRequests.SecretRequests
-> = Layer.effect(OrchestratorMcpService, make);
+> = Layer.effect(OrchestratorMcpService, make).pipe(Layer.provide(Prism.layer));

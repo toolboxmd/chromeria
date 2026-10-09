@@ -19,6 +19,9 @@ const legacyReaders = ["orchestration-v2/legacy/", "persistence/Migrations/"] as
 const legacyReaderFiles: Record<string, string> = {
   // Provider history for settings migration reads V1 thread sessions once at load.
   "serverSettings.ts": "one-time provider history for settings migration",
+  // Fork: thread people (toolboxmd/chromeria#170).
+  "persistence/forkThreadPeopleBackfill.ts":
+    "one-time migration of frozen V1 thread owners and co-owners",
 };
 const retiredPaths = [
   "orchestration",
@@ -34,7 +37,10 @@ function productionTypeScriptFiles(directory: string): ReadonlyArray<string> {
   return NodeFS.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = NodePath.join(directory, entry.name);
     if (entry.isDirectory()) return productionTypeScriptFiles(path);
-    return entry.isFile() && entry.name.endsWith(".ts") && !entry.name.includes(".test.")
+    return entry.isFile() &&
+      entry.name.endsWith(".ts") &&
+      !entry.name.includes(".test.") &&
+      !entry.name.endsWith(".testFixtures.ts")
       ? [path]
       : [];
   });
@@ -88,4 +94,13 @@ it("keeps the legacy importer out of reach of new code", () => {
     "project/ProjectService.ts",
     "serverRuntimeStartup.ts",
   ]);
+});
+
+it("keeps test fixture helpers out of production imports", () => {
+  const fixtureImports = relativeSources
+    .filter(({ source }) =>
+      /(?:from\s*|import\s*\()["'][^"']*\.testFixtures(?:\.ts)?["']/.test(source),
+    )
+    .map(({ path }) => path);
+  assert.deepEqual(fixtureImports, []);
 });

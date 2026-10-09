@@ -33,6 +33,7 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 
 import { getInitialServerConfig, request } from "../rpc/client.ts";
+import { stopForkSpectrumThread } from "../spectrumStop.ts";
 
 interface CommandMetadata {
   readonly commandId?: CommandId;
@@ -164,6 +165,7 @@ interface StartThreadBootstrap {
 }
 
 export interface StartThreadTurnInput extends ThreadCommandInput {
+  readonly prismRole?: "promachos";
   readonly manualContinuationOfRunId?: RunId;
   readonly message: {
     readonly messageId: MessageId;
@@ -185,6 +187,8 @@ export interface InterruptThreadTurnInput extends ThreadCommandInput {
   readonly runId?: RunId;
   /** Temporary caller compatibility while UI naming moves from turns to runs. */
   readonly turnId?: string;
+  /** Fork (toolboxmd/chromeria#176): the shell reports a running Spectrum; see `spectrumStop.ts`. */
+  readonly forkSpectrumRunning?: boolean;
 }
 
 export interface RespondToThreadApprovalInput extends ThreadCommandInput {
@@ -666,6 +670,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
                 : { branch: bootstrap.branch }),
             };
     return yield* request(ORCHESTRATION_V2_WS_METHODS.launchThread, {
+      ...(input.prismRole === undefined ? {} : { prismRole: input.prismRole }),
       commandId,
       creationSource: input.creationSource ?? "web",
       threadId: input.threadId,
@@ -780,6 +785,10 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
 export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThreadTurn")(function* (
   input: InterruptThreadTurnInput,
 ) {
+  // Fork (toolboxmd/chromeria#176): the whole thread stops with its Spectrum, run or not.
+  if (input.forkSpectrumRunning === true) {
+    return yield* stopForkSpectrumThread(input.threadId, yield* allocateCommandId(input));
+  }
   let runId = input.runId ?? (input.turnId as RunId | undefined);
   if (runId === undefined) {
     const projection = yield* getProjection(input.threadId);

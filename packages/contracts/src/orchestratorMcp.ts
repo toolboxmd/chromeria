@@ -1,3 +1,4 @@
+import { PrismLane, PrismRole } from "./prism.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
@@ -23,9 +24,11 @@ import {
   ScheduledTaskUpsertSchedule,
 } from "./scheduledTask.ts";
 import { ProviderInteractionMode, RuntimeMode } from "./providerPolicy.ts";
+import * as ScheduledTaskFork from "./scheduledTaskChecks.ts";
 import { ThreadLinkedPullRequest } from "./threadPullRequest.ts";
 import { ThreadTitleRegeneration } from "./threadTitle.ts";
 import {
+  OrchestrationV2ThreadLaunchWorkspaceStrategy,
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
   OrchestrationV2RunStatus,
@@ -168,6 +171,10 @@ export type OrchestratorMcpTerminalDelegatedTaskStatus =
   typeof OrchestratorMcpTerminalDelegatedTaskStatus.Type;
 
 export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
+  projectId: Schema.optional(ProjectId),
+  workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
+  lane: Schema.optional(PrismLane),
+  prismRole: Schema.optional(PrismRole),
   task: OrchestratorMcpPrompt.annotate({
     description: "Self-contained task for one delegated child agent/subagent.",
   }),
@@ -430,13 +437,22 @@ export const OrchestratorMcpThreadSendInput = Schema.Struct({
 });
 export type OrchestratorMcpThreadSendInput = typeof OrchestratorMcpThreadSendInput.Type;
 
-export const OrchestratorMcpThreadSendResult = Schema.Struct({
-  threadId: ThreadId,
-  messageId: MessageId,
-  runId: RunId,
-  status: OrchestrationV2RunStatus,
-  delivery: Schema.Literals(["started", "queued", "steered", "restarted"]),
-});
+export const OrchestratorMcpThreadSendResult = Schema.Union([
+  Schema.Struct({
+    threadId: ThreadId,
+    messageId: MessageId,
+    runId: RunId,
+    status: OrchestrationV2RunStatus,
+    delivery: Schema.Literals(["started", "queued", "steered", "restarted"]),
+  }),
+  Schema.Struct({
+    threadId: ThreadId,
+    messageId: MessageId,
+    runId: Schema.Null,
+    status: Schema.Literal("idle"),
+    delivery: Schema.Literal("transcript"),
+  }),
+]);
 export type OrchestratorMcpThreadSendResult = typeof OrchestratorMcpThreadSendResult.Type;
 
 export const OrchestratorMcpThreadWaitInput = Schema.Struct({
@@ -535,6 +551,7 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
     }),
   ),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
+  ...ScheduledTaskFork.ScheduledTaskOutcomeCheckCreateFields,
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
 
@@ -557,6 +574,7 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   webhookSignature: Schema.optional(Schema.Literals(["none", "set"])).annotate({
     description: "Whether requests must carry a valid signature.",
   }),
+  ...ScheduledTaskFork.ScheduledTaskForkFields,
 });
 export type OrchestratorMcpScheduledTask = typeof OrchestratorMcpScheduledTask.Type;
 
@@ -587,6 +605,7 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   schedule: Schema.optional(OrchestratorMcpSchedule),
   enabled: Schema.optional(Schema.Boolean),
   bindToCurrentThread: Schema.optional(Schema.Boolean),
+  ...ScheduledTaskFork.ScheduledTaskOutcomeCheckUpdateFields,
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;

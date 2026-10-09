@@ -1,3 +1,4 @@
+import { PROMACHOS_HOME_WS_METHODS } from "./promachosHome.ts";
 import * as Schema from "effect/Schema";
 import { GitPreparePullRequestThreadInput } from "./git.ts";
 import {
@@ -5,10 +6,13 @@ import {
   AuthSourceControlWriteScope,
   type AuthEnvironmentScope,
 } from "./auth.ts";
+import { ISSUE_WS_METHODS } from "./issues.ts";
+import { SPECTRUM_WS_METHODS } from "./spectrumRpc.ts";
 import { WS_METHODS } from "./rpc.ts";
 
 /** Incremental client enforcement; the server still authorizes every request. */
 export const CLIENT_GUARDED_RPC_SCOPES = {
+  [PROMACHOS_HOME_WS_METHODS.create]: AuthOrchestrationOperateScope,
   [WS_METHODS.pullRequestsRunAction]: AuthSourceControlWriteScope,
   [WS_METHODS.pullRequestsUpdate]: AuthSourceControlWriteScope,
   [WS_METHODS.pullRequestsComment]: AuthSourceControlWriteScope,
@@ -20,6 +24,9 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.pullRequestsSetFilesViewed]: AuthSourceControlWriteScope,
   [WS_METHODS.pullRequestsRequestReviewers]: AuthSourceControlWriteScope,
   [WS_METHODS.pullRequestsSetLabels]: AuthSourceControlWriteScope,
+  // Fork: GitHub Issues (toolboxmd/t3code#27).
+  [ISSUE_WS_METHODS.issuesComment]: AuthSourceControlWriteScope,
+  [ISSUE_WS_METHODS.issuesSetState]: AuthSourceControlWriteScope,
   [WS_METHODS.sourceControlCloneRepository]: AuthSourceControlWriteScope,
   [WS_METHODS.sourceControlPublishRepository]: AuthSourceControlWriteScope,
   [WS_METHODS.projectCloneStart]: AuthSourceControlWriteScope,
@@ -39,6 +46,9 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.scheduledTasksDelete]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksRunNow]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksRotateWebhookToken]: AuthOrchestrationOperateScope,
+  // Fork: Spectrum report abandonment (toolboxmd/chromeria#176).
+  [SPECTRUM_WS_METHODS.abandonReport]: AuthOrchestrationOperateScope,
+  [SPECTRUM_WS_METHODS.stop]: AuthOrchestrationOperateScope,
 } as const;
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 

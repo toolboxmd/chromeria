@@ -353,7 +353,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         tailscaleServeEnabled: true,
         tailscaleServePort: 8443,
       });
-      assert.equal(resolved.dbPath, join(baseDir, "userdata", "statev2.sqlite"));
+      assert.equal(resolved.dbPath, join(baseDir, "userdata", "chromeria-v2.sqlite"));
     }),
   );
 

@@ -93,6 +93,22 @@ it.layer(NodeServices.layer)("PairingGrantStore.layer", (it) => {
     }).pipe(Effect.provide(layerPairingGrantStore())),
   );
 
+  it.effect("consumes SQLite grants with both omitted and explicit requested scopes", () =>
+    Effect.gen(function* () {
+      const grants = yield* PairingGrantStore.PairingGrantStore;
+      for (const requestedScopes of [undefined, ["orchestration:read"] as const]) {
+        const issued = yield* grants.issueOneTimeToken({ scopes: ["orchestration:read"] });
+        const consumed = yield* grants.consume(
+          issued.credential,
+          requestedScopes === undefined ? {} : { requestedScopes },
+        );
+        expect(consumed.scopes).toEqual(["orchestration:read"]);
+        const second = yield* Effect.flip(grants.consume(issued.credential));
+        expect(second._tag).toBe("UnknownBootstrapCredentialError");
+      }
+    }).pipe(Effect.provide(layerPairingGrantStore())),
+  );
+
   it.effect("atomically consumes a one-time token when multiple requests race", () =>
     Effect.gen(function* () {
       const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;

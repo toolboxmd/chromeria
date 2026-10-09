@@ -202,6 +202,30 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
     }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
   );
 
+  it.effect("resolves identity for a partial clone whose fetch line carries a filter", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-repository-identity-partial-clone-",
+      });
+
+      yield* git(cwd, ["init"]);
+      yield* git(cwd, ["remote", "add", "origin", "https://github.com/T3Tools/t3code.git"]);
+      // `git clone --filter=blob:none` writes these, making `git remote -v`
+      // print `origin\t<url> (fetch) [blob:none]`.
+      yield* git(cwd, ["config", "remote.origin.promisor", "true"]);
+      yield* git(cwd, ["config", "remote.origin.partialclonefilter", "blob:none"]);
+      expect((yield* git(cwd, ["remote", "-v"])).stdout).toContain("(fetch) [blob:none]");
+
+      const resolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
+      const identity = yield* resolver.resolve(cwd);
+
+      expect(identity?.canonicalKey).toBe("github.com/t3tools/t3code");
+      expect(identity?.locator.remoteName).toBe("origin");
+      expect(identity?.locator.remoteUrl).toBe("https://github.com/T3Tools/t3code.git");
+    }).pipe(Effect.provide(RepositoryIdentityResolver.layer)),
+  );
+
   it.effect("returns the git top-level root path when resolving from a nested workspace", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

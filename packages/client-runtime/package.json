@@ -47,6 +47,18 @@
       "types": "./src/scheduledTaskWebhook.ts",
       "default": "./src/scheduledTaskWebhook.ts"
     },
+    "./scheduled-task-fork": {
+      "types": "./src/scheduledTaskFork.ts",
+      "default": "./src/scheduledTaskFork.ts"
+    },
+    "./spectrum-report": {
+      "types": "./src/spectrumReport.ts",
+      "default": "./src/spectrumReport.ts"
+    },
+    "./spectrum-stop": {
+      "types": "./src/spectrumStop.ts",
+      "default": "./src/spectrumStop.ts"
+    },
     "./connection": {
       "types": "./src/connection/index.ts",
       "default": "./src/connection/index.ts"

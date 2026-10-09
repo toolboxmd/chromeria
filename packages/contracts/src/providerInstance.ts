@@ -35,6 +35,7 @@
  */
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { WightLimitPercent } from "./wight.ts";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 const PROVIDER_SLUG_MAX_CHARS = 64;
@@ -122,6 +123,7 @@ export type ProviderInstanceEnvironment = typeof ProviderInstanceEnvironment.Typ
  * across version changes without data loss.
  */
 export const ProviderInstanceConfig = Schema.Struct({
+  wightLimitPercent: Schema.optionalKey(WightLimitPercent),
   driver: ProviderDriverKind,
   displayName: Schema.optional(TrimmedNonEmptyString),
   accentColor: Schema.optional(TrimmedNonEmptyString),

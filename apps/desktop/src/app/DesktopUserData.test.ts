@@ -8,7 +8,7 @@ import * as PlatformError from "effect/PlatformError";
 import { resolveUserDataPath } from "./DesktopUserData.ts";
 
 it.effect("identifies a failed source read and preserves its cause", () => {
-  const sourceState = "/profiles/t3code/Local State";
+  const sourceState = "/profiles/Chromeria/Local State";
   const cause = PlatformError.systemError({
     _tag: "PermissionDenied",
     module: "FileSystem",
@@ -37,37 +37,72 @@ it.effect("identifies a failed source read and preserves its cause", () => {
   );
 });
 
-it.effect.each(["t3code", "T3 Code (Alpha)"])(
-  "preserves Windows credential keys from %s without copying browser databases",
-  (sourceName) =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-v2-profile-" });
-      const source = path.join(directory, sourceName);
-      const destination = path.join(directory, "t3code-v2");
-      const state = '{"os_crypt":{"encrypted_key":"test-encrypted-key"}}';
-      yield* fs.makeDirectory(path.join(directory, "T3 Code (Alpha)"), { recursive: true });
-      yield* fs.makeDirectory(path.join(source, "IndexedDB"), { recursive: true });
-      yield* fs.writeFileString(path.join(source, "Local State"), state);
-      yield* fs.writeFileString(path.join(source, "IndexedDB", "LOCK"), "V1 owns this database");
+it.effect("copies only Windows Local State from the legacy Chromeria profile", () => {
+  const sourceState = "/profiles/Chromeria/Local State";
+  const destinationState = "/profiles/chromeria/Local State";
+  const state = '{"os_crypt":{"encrypted_key":"test-encrypted-key"}}';
+  const reads: string[] = [];
+  const writes: Array<{ path: string; contents: string }> = [];
+  const directories: string[] = [];
+  return Effect.gen(function* () {
+    assert.equal(
       yield* resolveUserDataPath({
-        appDataDirectory: directory,
+        appDataDirectory: "/profiles",
         isDevelopment: false,
         platform: "win32",
-      });
-      assert.equal(yield* fs.readFileString(path.join(destination, "Local State")), state);
-      assert.equal(yield* fs.readFileString(path.join(source, "Local State")), state);
-      assert.isFalse(yield* fs.exists(path.join(destination, "IndexedDB")));
-      yield* fs.writeFileString(path.join(destination, "Local State"), "existing V2 state");
-      yield* resolveUserDataPath({
-        appDataDirectory: directory,
-        isDevelopment: false,
-        platform: "win32",
-      });
+      }),
+      "/profiles/chromeria",
+    );
+    assert.deepEqual(reads, [sourceState]);
+    assert.deepEqual(writes, [{ path: destinationState, contents: state }]);
+    assert.deepEqual(directories, ["/profiles/chromeria"]);
+  }).pipe(
+    Effect.provideService(
+      FileSystem.FileSystem,
+      FileSystem.makeNoop({
+        exists: (path) => Effect.succeed(path === sourceState),
+        readFileString: (path) =>
+          Effect.sync(() => {
+            reads.push(path);
+            return state;
+          }),
+        makeDirectory: (path) =>
+          Effect.sync(() => {
+            directories.push(path);
+          }),
+        writeFileString: (path, contents) =>
+          Effect.sync(() => {
+            writes.push({ path, contents });
+          }),
+      }),
+    ),
+    Effect.provide(NodeServices.layer),
+  );
+});
+
+it.effect("preserves the existing Chromeria profile and locked databases on any filesystem", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "chromeria-profile-" });
+    const destination = path.join(directory, "chromeria");
+    const statePath = path.join(destination, "Local State");
+    const lockPath = path.join(destination, "IndexedDB", "LOCK");
+    const state = '{"os_crypt":{"encrypted_key":"existing-key"}}';
+    yield* fs.makeDirectory(path.join(destination, "IndexedDB"), { recursive: true });
+    yield* fs.writeFileString(statePath, state);
+    yield* fs.writeFileString(lockPath, "running profile owns this database");
+    for (const platform of ["win32", "darwin", "linux"] as const) {
       assert.equal(
-        yield* fs.readFileString(path.join(destination, "Local State")),
-        "existing V2 state",
+        yield* resolveUserDataPath({
+          appDataDirectory: directory,
+          isDevelopment: false,
+          platform,
+        }),
+        destination,
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+      assert.equal(yield* fs.readFileString(statePath), state);
+      assert.equal(yield* fs.readFileString(lockPath), "running profile owns this database");
+    }
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

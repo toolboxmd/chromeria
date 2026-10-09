@@ -1,3 +1,6 @@
+import * as PrismServerSettings from "../serverSettings.ts";
+import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
@@ -677,6 +680,7 @@ describe("orchestrator MCP toolkit", () => {
             McpHttpServer.layerOrchestratorToolkit,
             McpHttpServer.layerThreadToolkit,
           ).pipe(
+            Layer.provide(PrismServerSettings.layerTest()),
             Layer.provideMerge(McpServer.McpServer.layer),
             Layer.provideMerge(layerOrchestration),
             Layer.provide(layerRegistry),
@@ -698,7 +702,13 @@ describe("orchestrator MCP toolkit", () => {
                 Layer.provide(layerOrchestration),
               ),
             ),
-            Layer.provide(NodeServices.layer),
+            Layer.provide(
+              Layer.mergeAll(
+                NodeServices.layer,
+                Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
+                Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+              ),
+            ),
           );
 
           yield* Effect.gen(function* () {
@@ -711,6 +721,8 @@ describe("orchestrator MCP toolkit", () => {
               commandId: CommandId.make("command:mcp-parent:create"),
               threadId: parentThreadId,
               projectId,
+              // Fork: threads an agent creates belong to its owner (toolboxmd/chromeria#170).
+              owner: "Pauli",
               title: "MCP parent",
               modelSelection: codexSelection,
               runtimeMode: "full-access",
@@ -2105,6 +2117,8 @@ describe("orchestrator MCP toolkit", () => {
               senderThreadId: parentThreadId,
             });
             const emptyProjection = yield* orchestrator.getThreadProjection(emptyThread.threadId);
+            expect(emptyProjection.thread.owner).toBe("Pauli");
+            expect(createdSource.thread.owner).toBe("Pauli");
             expect(emptyProjection.thread.lineage).toEqual({
               parentThreadId: null,
               relationshipToParent: null,
@@ -3810,6 +3824,7 @@ describe("orchestrator MCP toolkit", () => {
           }),
         ]);
         const layerTest = McpHttpServer.layerOrchestratorToolkit.pipe(
+          Layer.provide(PrismServerSettings.layerTest()),
           Layer.provideMerge(McpServer.McpServer.layer),
           Layer.provideMerge(layerOrchestration),
           Layer.provide(
@@ -3824,7 +3839,13 @@ describe("orchestrator MCP toolkit", () => {
               Layer.provide(layerOrchestration),
             ),
           ),
-          Layer.provide(NodeServices.layer),
+          Layer.provide(
+            Layer.mergeAll(
+              NodeServices.layer,
+              Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
+              Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+            ),
+          ),
         );
 
         yield* Effect.gen(function* () {

@@ -363,6 +363,9 @@ export type OrchestrationV2LimitRecoveryUpdate = typeof OrchestrationV2LimitReco
 
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
+  // Fork: thread people (toolboxmd/chromeria#170). Unset owner is the default person.
+  owner: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  coOwners: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   id: ThreadId,
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
@@ -381,6 +384,10 @@ export const OrchestrationV2AppThread = Schema.Struct({
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   lineage: OrchestrationV2AppThreadLineage,
+  forkRetirement: Schema.optional(Schema.Struct({ token: CommandId })),
+  forkResumedRetirements: Schema.optional(Schema.Array(CommandId)),
+  forkSpectrumRunning: Schema.optional(Schema.Boolean),
+  forkLineageOverride: Schema.optional(Schema.Struct({ commandId: CommandId, runId: RunId })),
   forkedFrom: Schema.NullOr(
     Schema.Union([
       Schema.Struct({ type: Schema.Literal("run"), threadId: ThreadId, runId: RunId }),
@@ -557,6 +564,8 @@ export const OrchestrationV2Run = Schema.Struct({
   completedAt: Schema.NullOr(Schema.DateTimeUtc),
   checkpointId: Schema.NullOr(CheckpointId),
   contextHandoffId: Schema.NullOr(ContextHandoffId),
+  /** Exact failed source of an admitted Prism retry or reset continuation. */
+  forkPrismContinuationSourceRunId: Schema.optional(RunId),
   /** Links server-generated restart continuations to the interrupted run. */
   restartContinuationOfRunId: Schema.optional(RunId),
   /**
@@ -1832,7 +1841,11 @@ export type OrchestrationV2LatestVisibleMessageSummary =
   typeof OrchestrationV2LatestVisibleMessageSummary.Type;
 
 export const OrchestrationV2ThreadShell = Schema.Struct({
+  forkSpectrumRunning: Schema.optional(Schema.Boolean),
   ...OrchestrationV2CreationFields,
+  // Fork: thread people (toolboxmd/chromeria#170). Unset owner is the default person.
+  owner: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  coOwners: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   id: ThreadId,
   projectId: ProjectId,
   title: Schema.String,
@@ -2610,6 +2623,8 @@ export const OrchestrationV2Command = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("thread.create"),
     ...OrchestrationV2CreationFields,
+    /** Fork: the person who owns the new thread, stamped by the server (toolboxmd/chromeria#170). */
+    owner: Schema.optional(TrimmedNonEmptyString),
     commandId: CommandId,
     threadId: ThreadId,
     projectId: ProjectId,
@@ -2734,6 +2749,26 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
   }),
+  // Fork: thread sharing (toolboxmd/chromeria#170). The server stamps the acting person.
+  Schema.Struct({
+    type: Schema.Literal("thread.share"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    coOwner: TrimmedNonEmptyString,
+    actor: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.unshare"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    actor: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread.leave"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    actor: TrimmedNonEmptyString,
+  }),
   Schema.Struct({
     type: Schema.Literal("thread.metadata.update"),
     commandId: CommandId,
@@ -2848,6 +2883,9 @@ export const OrchestrationV2Command = Schema.Union([
     titleSeed: Schema.optional(TrimmedNonEmptyString),
     modelSelection: Schema.optional(ModelSelection),
     sourcePlanRef: Schema.optional(Schema.Struct({ threadId: ThreadId, planId: PlanId })),
+    /** Fork retry identity; automatic delivery never acknowledges retirement. */
+    forkPrismRetryOfRunId: Schema.optional(RunId),
+    forkPrismOriginalRunId: Schema.optional(RunId),
     restartContinuationOfRunId: Schema.optional(RunId),
     usageLimitContinuationOfRunId: Schema.optional(RunId),
     manualContinuationOfRunId: Schema.optional(RunId),
@@ -2980,6 +3018,8 @@ export const OrchestrationV2Command = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("thread.fork"),
     ...OrchestrationV2CreationFields,
+    /** Fork: the forking person, stamped by the server (toolboxmd/chromeria#170). */
+    owner: Schema.optional(TrimmedNonEmptyString),
     commandId: CommandId,
     sourceThreadId: ThreadId,
     targetThreadId: ThreadId,
@@ -2998,6 +3038,8 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("delegated_task.request"),
+    projectId: Schema.optional(ProjectId),
+    workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
     ...OrchestrationV2CreationFields,
     commandId: CommandId,
     parentThreadId: ThreadId,
@@ -3110,6 +3152,13 @@ const OrchestrationV2InternalCommand = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     reason: Schema.optional(Schema.String),
+    /** Trusted durable Stop propagation only, never accepted from client commands. */
+    forkRetirementStop: Schema.optional(
+      Schema.Struct({
+        ancestorThreadId: ThreadId,
+        originalToken: CommandId,
+      }),
+    ),
   }),
   /**
    * Records or updates a secret an agent asked the user for. Internal so no
@@ -3131,7 +3180,18 @@ const OrchestrationV2InternalCommand = Schema.Union([
 export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalCommand.Type;
 
 /** Everything the server's orchestrator accepts: client commands plus internal ones. */
-export type OrchestrationV2ServerCommand = OrchestrationV2Command | OrchestrationV2InternalCommand;
+export type OrchestrationV2ServerCommand =
+  | Exclude<OrchestrationV2Command, { readonly type: "message.dispatch" }>
+  | (Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> & {
+      /** Server-only Wight compare-and-start identity, absent from the wire schema. */
+      readonly wightAdmission?: {
+        readonly latestRunId: RunId | null;
+        readonly updatedAt: number;
+        readonly providerInstanceId: ProviderInstanceId;
+        readonly enabledAt: string;
+      };
+    })
+  | OrchestrationV2InternalCommand;
 
 export const ORCHESTRATION_V2_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
@@ -3178,6 +3238,7 @@ export type OrchestrationV2ArchivedShellStreamItem =
   typeof OrchestrationV2ArchivedShellStreamItem.Type;
 
 export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
+  prismRole: Schema.optional(Schema.Literal("promachos")),
   commandId: CommandId,
   creationSource: Schema.optional(OrchestrationV2CreationSource),
   threadId: Schema.optional(ThreadId),
