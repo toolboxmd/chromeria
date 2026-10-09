@@ -37,7 +37,7 @@ import {
  * Stop, abandonment, a retired Spectrum or a failure without typed retryable
  * evidence.
  */
-export const REPORT_ATTEMPTS = 3;
+const REPORT_ATTEMPTS = 3;
 
 export type ReportCommand = NonNullable<SpectrumState["report"]>;
 export interface ReportAttempt {
@@ -52,11 +52,7 @@ const sameState = Schema.toEquivalence(SpectrumState);
 const sameFailure = Schema.toEquivalence(Schema.NullOr(OrchestrationV2ProviderFailure));
 
 /** Each attempt has its own command and message, with the same text, for the caller's thread. */
-export function reportCommand(
-  state: SpectrumState,
-  attempt: ReportAttempt,
-  text: string,
-): ReportCommand {
+function reportCommand(state: SpectrumState, attempt: ReportAttempt, text: string): ReportCommand {
   const commandId = CommandId.make(
     `spectrum:${state.threadId}:${attempt.generation}:${attempt.cycle}:report:${attempt.ordinal}`,
   );
