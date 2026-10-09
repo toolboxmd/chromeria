@@ -32,14 +32,7 @@ export function resolveChromeriaMobileIdentity(env: Readonly<Record<string, stri
     },
     apply(config: ExpoConfig): ExpoConfig {
       const { owner: _upstreamOwner, ...rest } = config;
-      // Upstream's Clerk and relay only trust upstream's app identity, so a
-      // Chromeria build never carries them, even when a build machine's env sets them.
-      const {
-        eas: _upstreamEasProject,
-        clerk: _upstreamClerk,
-        relay: _upstreamRelay,
-        ...extra
-      } = config.extra ?? {};
+      const { eas: _upstreamEasProject, ...extra } = config.extra ?? {};
       return {
         ...rest,
         updates: { enabled: false },
