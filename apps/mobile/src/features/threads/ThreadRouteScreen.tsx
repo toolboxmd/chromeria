@@ -70,6 +70,7 @@ import { useSelectedThreadWorktree } from "../../state/use-selected-thread-workt
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
 import { resolveMergeBackTargetThreadId } from "@t3tools/client-runtime/state/thread-relationships";
 import { resolveLatestMergeBackRun } from "@t3tools/client-runtime/state/thread-workflows";
+import { threadStopInput } from "@t3tools/client-runtime/spectrum-stop";
 import { threadEnvironment } from "../../state/threads";
 import { projectThreadContentPresentation } from "./threadContentPresentation";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
@@ -581,20 +582,15 @@ function ThreadRouteContent(
     void navigation.navigate("Connections");
   }, [navigation]);
   const handleStopThread = useCallback(() => {
+    const input = selectedThread && threadStopInput(selectedThread, composer.interruptibleRunId);
     if (
       !selectedThread ||
       !readEnvironmentScope(selectedThread.environmentId, AuthOrchestrationOperateScope) ||
-      composer.interruptibleRunId === null
+      !input
     ) {
       return;
     }
-    return interruptThreadTurn({
-      environmentId: selectedThread.environmentId,
-      input: {
-        threadId: selectedThread.id,
-        runId: composer.interruptibleRunId,
-      },
-    });
+    return interruptThreadTurn({ environmentId: selectedThread.environmentId, input });
   }, [composer.interruptibleRunId, interruptThreadTurn, selectedThread]);
 
   const handleOpenTerminal = useCallback(
@@ -983,7 +979,10 @@ function ThreadRouteContent(
           threadSyncStatus={selectedThreadDetailState.status}
           historyControls={historyControls}
           activeThreadBusy={composer.activeThreadBusy}
-          canStopThread={awaitingBootstrapTurn || composer.interruptibleRunId !== null}
+          canStopThread={
+            awaitingBootstrapTurn ||
+            threadStopInput(selectedThread, composer.interruptibleRunId) !== null
+          }
           queuedRunEdit={composer.queuedRunEdit}
           composerDraftKey={composer.composerDraftKey}
           followUpBehavior={composer.followUpBehavior}

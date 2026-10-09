@@ -186,6 +186,8 @@ export interface InterruptThreadTurnInput extends ThreadCommandInput {
   readonly runId?: RunId;
   /** Temporary caller compatibility while UI naming moves from turns to runs. */
   readonly turnId?: string;
+  /** Fork (toolboxmd/chromeria#176): the shell reports a running Spectrum; see `spectrumStop.ts`. */
+  readonly forkSpectrumRunning?: boolean;
 }
 
 export interface RespondToThreadApprovalInput extends ThreadCommandInput {
@@ -782,6 +784,11 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
 export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThreadTurn")(function* (
   input: InterruptThreadTurnInput,
 ) {
+  // Fork (toolboxmd/chromeria#176): the whole thread stops with its Spectrum, run or not.
+  if (input.forkSpectrumRunning === true) {
+    const commandId = yield* allocateCommandId(input);
+    return yield* dispatch({ type: "thread.stop", commandId, threadId: input.threadId });
+  }
   let runId = input.runId ?? (input.turnId as RunId | undefined);
   if (runId === undefined) {
     const projection = yield* getProjection(input.threadId);
