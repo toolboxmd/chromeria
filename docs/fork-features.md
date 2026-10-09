@@ -1106,3 +1106,22 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "keywords": ["ChromeriaFeatureMark", "Chromeria feature"]
 }
 ```
+
+## thread-parent-crumbs
+
+```json
+{
+  "id": "thread-parent-crumbs",
+  "purpose": "Show a child thread's parent and siblings in its header.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/201"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/202"],
+  "newFiles": [
+    "apps/web/src/components/chat/ThreadParentCrumbs.tsx",
+    "apps/web/src/components/chat/threadParentCrumbs.logic.test.ts",
+    "apps/web/src/components/chat/threadParentCrumbs.logic.ts"
+  ],
+  "upstreamFiles": [],
+  "sharedFiles": ["apps/web/src/components/chat/ChatHeader.tsx"],
+  "keywords": ["ThreadParentCrumbs", "parent breadcrumb", "sibling threads"]
+}
+```
