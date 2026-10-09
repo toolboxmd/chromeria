@@ -1,6 +1,7 @@
-import type { RunId } from "@t3tools/contracts";
+import { type CommandId, type RunId, SPECTRUM_WS_METHODS, type ThreadId } from "@t3tools/contracts";
 
 import type { InterruptThreadTurnInput } from "./operations/commands.ts";
+import { request } from "./rpc/client.ts";
 import type { EnvironmentThreadShell } from "./state/models.ts";
 
 /**
@@ -8,6 +9,13 @@ import type { EnvironmentThreadShell } from "./state/models.ts";
  * the whole thread, Spectrum included, even while no run is active. The server
  * reports a running Spectrum on the thread shell; clients never infer it.
  */
+
+/**
+ * Asks the server to stop the thread with its Spectrum. The server checks the
+ * Spectrum itself and replays the same `commandId` as the same stop.
+ */
+export const stopForkSpectrumThread = (threadId: ThreadId, commandId: CommandId) =>
+  request(SPECTRUM_WS_METHODS.stop, { threadId, commandId });
 
 /** Whether the server reports a Spectrum running on this thread. */
 export const isForkSpectrumRunning = (

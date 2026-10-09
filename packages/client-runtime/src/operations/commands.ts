@@ -33,6 +33,7 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 
 import { getInitialServerConfig, request } from "../rpc/client.ts";
+import { stopForkSpectrumThread } from "../spectrumStop.ts";
 
 interface CommandMetadata {
   readonly commandId?: CommandId;
@@ -786,8 +787,7 @@ export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThrea
 ) {
   // Fork (toolboxmd/chromeria#176): the whole thread stops with its Spectrum, run or not.
   if (input.forkSpectrumRunning === true) {
-    const commandId = yield* allocateCommandId(input);
-    return yield* dispatch({ type: "thread.stop", commandId, threadId: input.threadId });
+    return yield* stopForkSpectrumThread(input.threadId, yield* allocateCommandId(input));
   }
   let runId = input.runId ?? (input.turnId as RunId | undefined);
   if (runId === undefined) {

@@ -1,9 +1,9 @@
 import {
+  CommandId,
   EnvironmentId,
   ORCHESTRATION_V2_WS_METHODS,
   RunId,
-  type OrchestrationV2Command,
-  type ThreadId,
+  SPECTRUM_WS_METHODS,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Crypto from "effect/Crypto";
@@ -93,22 +93,27 @@ const layerTestCrypto = Layer.succeed(
   }),
 );
 
-/** A connected environment that records dispatched commands and projection reads. */
-const makeSupervisor = Effect.fn("TestSpectrumStop.makeSupervisor")(function* (input: {
-  readonly commands: OrchestrationV2Command[];
-  readonly projectionRequests: ThreadId[];
-}) {
+/** A connected environment that records every request it serves, in order. */
+const makeSupervisor = Effect.fn("TestSpectrumStop.makeSupervisor")(function* (
+  calls: Array<readonly [method: string, input: unknown]>,
+) {
+  const serve =
+    <A>(method: string, reply: A) =>
+    (input: unknown) =>
+      Effect.sync(() => {
+        calls.push([method, input]);
+        return reply;
+      });
   const client = {
-    [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command: OrchestrationV2Command) =>
-      Effect.sync(() => {
-        input.commands.push(command);
-        return { sequence: input.commands.length };
-      }),
-    [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: (request: { readonly threadId: ThreadId }) =>
-      Effect.sync(() => {
-        input.projectionRequests.push(request.threadId);
-        return v2Projection;
-      }),
+    [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: serve(
+      ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+      { sequence: 1 },
+    ),
+    [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: serve(
+      ORCHESTRATION_V2_WS_METHODS.getThreadProjection,
+      v2Projection,
+    ),
+    [SPECTRUM_WS_METHODS.stop]: serve(SPECTRUM_WS_METHODS.stop, { sequence: 7 }),
   } as unknown as WsRpcProtocolClient;
   const session: RpcSession.RpcSession = {
     client,
@@ -135,55 +140,63 @@ const makeSupervisor = Effect.fn("TestSpectrumStop.makeSupervisor")(function* (i
 });
 
 describe("interruptThreadTurn with a running Spectrum", () => {
-  it.effect("sends one thread.stop, with no run to resolve or interrupt", () =>
+  it.effect("asks the server to stop the thread, with no run to resolve or interrupt", () =>
     Effect.gen(function* () {
-      const commands: OrchestrationV2Command[] = [];
-      const projectionRequests: ThreadId[] = [];
-      const supervisor = yield* makeSupervisor({ commands, projectionRequests });
+      const calls: Array<readonly [string, unknown]> = [];
+      const supervisor = yield* makeSupervisor(calls);
 
       const result = yield* interruptThreadTurn({
         threadId: v2ThreadId,
         forkSpectrumRunning: true,
       }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
 
-      expect(result).toEqual({ sequence: 1 });
-      expect(commands).toEqual([
-        { type: "thread.stop", commandId: expect.any(String), threadId: v2ThreadId },
+      expect(result).toEqual({ sequence: 7 });
+      expect(calls).toEqual([
+        [
+          SPECTRUM_WS_METHODS.stop,
+          { threadId: v2ThreadId, commandId: "00000000-0000-4000-8000-000000000000" },
+        ],
       ]);
-      expect(projectionRequests).toEqual([]);
     }).pipe(Effect.provide(layerTestCrypto)),
   );
 
-  it.effect("sends thread.stop instead of run.interrupt when a run id is also known", () =>
+  it.effect("stops the whole thread under the caller's command id, even with a run id", () =>
     Effect.gen(function* () {
-      const commands: OrchestrationV2Command[] = [];
-      const supervisor = yield* makeSupervisor({ commands, projectionRequests: [] });
+      const calls: Array<readonly [string, unknown]> = [];
+      const supervisor = yield* makeSupervisor(calls);
+      const commandId = CommandId.make("stop-command-1");
 
-      yield* interruptThreadTurn({ threadId: v2ThreadId, runId, forkSpectrumRunning: true }).pipe(
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-      );
+      yield* interruptThreadTurn({
+        threadId: v2ThreadId,
+        commandId,
+        runId,
+        forkSpectrumRunning: true,
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
 
-      expect(commands.map((command) => command.type)).toEqual(["thread.stop"]);
+      expect(calls).toEqual([[SPECTRUM_WS_METHODS.stop, { threadId: v2ThreadId, commandId }]]);
     }).pipe(Effect.provide(layerTestCrypto)),
   );
 
   it.effect("keeps run.interrupt for a thread without a running Spectrum", () =>
     Effect.gen(function* () {
-      const commands: OrchestrationV2Command[] = [];
-      const supervisor = yield* makeSupervisor({ commands, projectionRequests: [] });
+      const calls: Array<readonly [string, unknown]> = [];
+      const supervisor = yield* makeSupervisor(calls);
 
       yield* interruptThreadTurn({ threadId: v2ThreadId, runId, forkSpectrumRunning: false }).pipe(
         Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
       );
 
-      expect(commands).toEqual([
-        {
-          type: "run.interrupt",
-          commandId: expect.any(String),
-          threadId: v2ThreadId,
-          runId,
-          holdQueue: true,
-        },
+      expect(calls).toEqual([
+        [
+          ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+          {
+            type: "run.interrupt",
+            commandId: "00000000-0000-4000-8000-000000000000",
+            threadId: v2ThreadId,
+            runId,
+            holdQueue: true,
+          },
+        ],
       ]);
     }).pipe(Effect.provide(layerTestCrypto)),
   );
