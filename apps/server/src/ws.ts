@@ -1,3 +1,4 @@
+import { stopSpectrum } from "./spectrum/humanStopRpc.ts";
 import { abandonScheduledReport } from "./spectrum/humanReportRpc.ts";
 import { SPECTRUM_WS_METHODS } from "@t3tools/contracts";
 import type * as PromachosLaunch from "./promachos/PromachosLaunch.ts";
@@ -2084,6 +2085,7 @@ const layerWsRpc = (
               Effect.andThen(subscribeOrchestrationV2Thread(input)),
             ),
           ),
+        [SPECTRUM_WS_METHODS.stop]: (input) => stopSpectrum(currentSession, input),
         [SPECTRUM_WS_METHODS.abandonReport]: (input) =>
           abandonScheduledReport(currentSession, input),
         [WS_METHODS.scheduledTasksList]: (_input) =>

@@ -23,6 +23,7 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
  */
 const RPC_AGGREGATES = {
   [SPECTRUM_WS_METHODS.abandonReport]: "spectrum",
+  [SPECTRUM_WS_METHODS.stop]: "spectrum",
   [PROMACHOS_HOME_WS_METHODS.create]: "promachos",
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: "orchestration",
