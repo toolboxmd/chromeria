@@ -29,7 +29,11 @@ import { SharedThreadLabel } from "../people/SharedThreadLabel";
 import { usePersonViewThreads } from "../people/usePersonView";
 import { promachosConversations } from "./promachosConversations";
 import { PromachosNewHome } from "./PromachosNewHome";
-import { usePromachosHome, useStartPromachosConversation } from "./promachosMode";
+import {
+  usePromachosHome,
+  usePromachosHomeRefs,
+  useStartPromachosConversation,
+} from "./promachosMode";
 
 const STATUS_BADGE: Partial<
   Record<SidebarThreadStatus, { label: string; variant: "warning" | "info" | "error" }>
@@ -56,6 +60,7 @@ function projectLabel(
 /** Promachos mode's sidebar: the home's conversations in Chromeria's own chrome. */
 export function PromachosSidebar() {
   const [home, setHome] = usePromachosHome();
+  const homeRefs = usePromachosHomeRefs(home);
   const projects = useProjects();
   const { environments } = useEnvironments();
   const environmentLabelById = useMemo(
@@ -80,7 +85,11 @@ export function PromachosSidebar() {
         {homeProject !== null && home !== null ? (
           <PromachosConversationList
             home={home}
-            homeLabel={projectLabel(homeProject, environmentLabelById, multipleEnvironments)}
+            homeLabel={
+              homeRefs.length > 1
+                ? homeProject.title
+                : projectLabel(homeProject, environmentLabelById, multipleEnvironments)
+            }
             onChangeHome={() => setHome(null)}
           />
         ) : (
@@ -131,9 +140,10 @@ function PromachosConversationList({
 }) {
   const threads = useThreadShells();
   const personThreads = usePersonViewThreads(threads);
+  const homeRefs = usePromachosHomeRefs(home);
   const conversations = useMemo(
-    () => promachosConversations(personThreads, home),
-    [personThreads, home],
+    () => promachosConversations(personThreads, homeRefs),
+    [personThreads, homeRefs],
   );
   const startConversation = useStartPromachosConversation();
   const { isMobile, setOpenMobile } = useSidebar();
