@@ -216,6 +216,34 @@ it.effect(
       assert.strictEqual((yield* orchestrator.getThreadProjection(childId)).runs.length, 2);
     }).pipe(Effect.provide(layer)),
 );
+it.effect("a monitor run after the result does not hold the delegated result", () =>
+  Effect.gen(function* () {
+    const { orchestrator, childId, run } = yield* setup;
+    yield* finish(run, null);
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("child:monitor"),
+      threadId: childId,
+      messageId: MessageId.make("child:monitor-message"),
+      text: "Monitor stopped",
+      attachments: [],
+      notification: { source: { kind: "monitor" }, outcome: "cancelled", summary: "Monitor" },
+      dispatchMode: { type: "queue_after_active" },
+      createdBy: "agent",
+      creationSource: "provider",
+    });
+    const monitor = (yield* orchestrator.getThreadProjection(childId)).runs[1]!;
+    yield* finish(monitor, null);
+    yield* orchestrator.recoverDelegatedTasks;
+    const parent = yield* orchestrator.getThreadProjection(parentId);
+    assert.strictEqual(
+      parent.contextTransfers.filter((x) => x.type === "subagent_result").length,
+      1,
+    );
+    assert.strictEqual(parent.subagents[0]?.status, "completed");
+    assert.strictEqual(parent.subagents[0]?.completionDelivery?.state, "claimed");
+  }).pipe(Effect.provide(layer)),
+);
 it.effect(
   "ancestor Stop after failure cancels held recovery and permits eventual parent finalization",
   () =>

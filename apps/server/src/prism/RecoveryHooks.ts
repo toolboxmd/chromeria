@@ -44,9 +44,14 @@ export const layer = Layer.effect(
       holdsFinalization: (threadId: ThreadId, expectedRunId: RunId) =>
         Effect.gen(function* () {
           // Arm current recovery before result transfer; historical catch-up belongs to the reactor.
+          // Monitor wake runs are not task work (delegatedTaskProgress skips them), so a later
+          // one must not supersede the result run and hold it forever.
           const latest = yield* sql<{ run_id: string }>`SELECT run_id
-            FROM orchestration_v2_projection_runs WHERE thread_id=${threadId} AND status<>'queued'
+            FROM orchestration_v2_projection_runs r WHERE thread_id=${threadId} AND status<>'queued'
               AND NOT(status='cancelled' AND json_extract(payload_json,'$.startedAt') IS NULL)
+              AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_messages m
+                WHERE m.run_id=r.run_id
+                  AND json_extract(m.payload_json,'$.notification.source.kind')='monitor')
             ORDER BY (completed_at IS NULL) DESC,completed_at DESC,ordinal DESC,run_id DESC LIMIT 1`;
           const runIds = [
             expectedRunId,

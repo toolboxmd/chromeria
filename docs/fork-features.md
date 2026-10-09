@@ -751,8 +751,14 @@ Child creation paths are owned by child-threads and shared with thread-people.
 {
   "id": "prism-toolkit",
   "purpose": "Route upstream delegation and top-level launches through one Prism service and coordinate persisted same-provider/model recovery with immutable per-run outcomes, indexed admitted continuation sources and current recovery intent. Own Chromeria autoResumeLimitedThreads=true; Wight consumes it and saved false overrides remain respected.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/169"],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/183"],
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/169",
+    "https://github.com/toolboxmd/chromeria/issues/210"
+  ],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/183",
+    "https://github.com/toolboxmd/chromeria/pull/211"
+  ],
   "newFiles": [
     "apps/server/src/prism/PrismService.test.ts",
     "apps/server/src/prism/PrismService.ts",
