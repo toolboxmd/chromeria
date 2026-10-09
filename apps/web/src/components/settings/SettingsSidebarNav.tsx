@@ -60,6 +60,7 @@ import { useAvailableSettingsSearchItems } from "./useAvailableSettingsSearchIte
 import { validateSettingsScopeSearch } from "./settingsScope";
 import { useSettingsSectionNavigation } from "./useSettingsSectionNavigation";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
+import { ChromeriaFeatureMark } from "../ChromeriaFeatureMark";
 
 const SnapShotIcon = createLucideIcon("snap-shot", [
   [
