@@ -12,7 +12,7 @@ import type { ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
 import { ForkDispatchPlans } from "../fork/ForkDispatchPlans.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Projection from "../orchestration-v2/ProjectionStore.ts";
-import { lifecycleEvents } from "./lifecycle.ts";
+import { lifecycleEvents, lifecyclePlan } from "./lifecycle.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import {
   abandonedState,
@@ -91,10 +91,8 @@ const make = Effect.gen(function* () {
       state: next,
     };
     const now = yield* DateTime.now;
-    const events =
-      old.status === next.status
-        ? []
-        : lifecycleEvents(yield* projections.getThread(old.threadId), next, commandId, now);
+    const thread = old.status === next.status ? null : yield* projections.getThread(old.threadId);
+    const events = thread === null ? [] : lifecycleEvents(thread, next, commandId, now);
     yield* sink.commitCommand({
       commandId,
       threadId: old.threadId,
@@ -103,6 +101,7 @@ const make = Effect.gen(function* () {
       events,
       effects: [],
       forkPlans: [
+        ...(thread === null || events.length === 0 ? [] : [lifecyclePlan(thread)]),
         commandType === "spectrum.report.settle"
           ? spectrumPlan(mutation)
           : reportStatePlan(mutation),

@@ -10708,18 +10708,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: "Wight activation no longer permits continuation.",
         });
       const interceptor = yield* ForkCommandInterceptor;
-      const forkPlan = yield* interceptor.plan(command).pipe(
-        Effect.provideService(SqlClient.SqlClient, forkSql),
-        Effect.provideService(ProjectionStoreV2, projectionStore),
-        Effect.mapError(
-          (cause) =>
-            new OrchestratorDispatchError({
-              commandId: command.commandId,
-              commandType: command.type,
-              cause,
-            }),
-        ),
-      );
+      const forkPlan = yield* interceptor
+        .plan(command)
+        .pipe(
+          Effect.provideService(SqlClient.SqlClient, forkSql),
+          Effect.provideService(ProjectionStoreV2, projectionStore),
+          mapDispatchError(command),
+        );
       return forkPlan ?? (yield* dispatchOnce(command));
     }).pipe(
       Effect.flatMap((planned) =>

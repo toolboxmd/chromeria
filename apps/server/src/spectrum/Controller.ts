@@ -28,7 +28,7 @@ import * as Reports from "./ReportService.ts";
 import * as Rounds from "./RoundService.ts";
 import * as Transcript from "./TranscriptService.ts";
 import { spectrumPlan } from "./spectrumPlan.ts";
-import { lifecycleEvents } from "./lifecycle.ts";
+import { lifecycleEvents, lifecyclePlan } from "./lifecycle.ts";
 import { readSpectrum } from "./store.ts";
 import type { SpectrumState } from "./state.ts";
 
@@ -66,14 +66,16 @@ const make = Effect.gen(function* () {
   ) {
     const now = yield* DateTime.now;
     const thread = yield* projections.getThread(old.threadId);
+    const lifecycle = lifecycleEvents(thread, next, key, now);
     yield* sink.commitCommand({
       commandId: CommandId.make(key),
       threadId: old.threadId,
       commandType: "spectrum.controller",
       acceptedAt: now,
-      events: lifecycleEvents(thread, next, key, now),
+      events: lifecycle,
       effects: [],
       forkPlans: [
+        ...(lifecycle.length === 0 ? [] : [lifecyclePlan(thread)]),
         spectrumPlan({
           expectedRevision: old.revision,
           expectedGeneration: old.generation,

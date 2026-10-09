@@ -1,8 +1,13 @@
 import {
   EventId,
+  OrchestrationV2AppThread as AppThreadSchema,
   type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+import { ForkCommitGuardRejected, type ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
+import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import type * as DateTime from "effect/DateTime";
 import type { SpectrumState } from "./state.ts";
 
@@ -24,3 +29,27 @@ export const lifecycleEvents = (
           payload: { ...thread, forkSpectrumRunning: state.status === "active", updatedAt: now },
         },
       ];
+
+const sameThread = Schema.toEquivalence(AppThreadSchema);
+
+/** Full-thread metadata events must not overwrite a rename or another concurrent shell update. */
+export const lifecyclePlan = (snapshot: OrchestrationV2AppThread): ForkCommitPlan => ({
+  guards: [
+    Effect.gen(function* () {
+      const projection = yield* ProjectionStoreV2;
+      const current = yield* projection
+        .getThread(snapshot.id)
+        .pipe(
+          Effect.mapError(
+            () => new ForkCommitGuardRejected({ threadId: snapshot.id, kind: "storage_failure" }),
+          ),
+        );
+      if (!sameThread(snapshot, current))
+        return yield* new ForkCommitGuardRejected({
+          threadId: snapshot.id,
+          kind: "state_conflict",
+        });
+    }),
+  ],
+  mutations: [],
+});

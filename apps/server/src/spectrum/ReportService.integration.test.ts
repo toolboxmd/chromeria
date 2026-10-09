@@ -797,3 +797,61 @@ it.effect("holds an unknown report identity and an unreadable row for a person",
     assert.deepStrictEqual(yield* reportsFence(scheduled("broken")), { kind: "waiting" });
   }).pipe(Effect.provide(runtime)),
 );
+
+it.effect(
+  "a rename between lifecycle planning and settlement commits is preserved and settlement retries atomically",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const threadId = yield* start("rename-race");
+      const before = yield* read(threadId);
+      const projections = yield* Projection.ProjectionStoreV2;
+      const thread = yield* projections.getThread(threadId);
+      const sink = yield* EventSink.EventSinkV2;
+      const refusal = yield* Effect.gen(function* () {
+        return yield* (yield* Report.SpectrumReportService).settle(threadId, "Report after rename");
+      }).pipe(
+        Effect.provide(Report.layer),
+        Effect.provideService(EventSink.EventSinkV2, {
+          ...sink,
+          commitCommand: (input) =>
+            sink
+              .write({
+                events: [
+                  {
+                    id: EventId.make("concurrent:rename"),
+                    type: "thread.metadata-updated",
+                    threadId,
+                    occurredAt: NOW,
+                    payload: { ...thread, title: "The person's renamed council" },
+                  },
+                ],
+              })
+              .pipe(Effect.andThen(sink.commitCommand(input))),
+        }),
+        Effect.flip,
+      );
+      assert.strictEqual((refusal.cause as { _tag?: string })._tag, "ForkCommitGuardRejected");
+      assert.deepStrictEqual(yield* read(threadId), before);
+      assert.strictEqual(
+        (yield* projections.getThread(threadId)).title,
+        "The person's renamed council",
+      );
+      assert.strictEqual((yield* projections.getThreadShell(threadId))!.forkSpectrumRunning, true);
+      const sql = yield* SqlClient.SqlClient;
+      assert.deepStrictEqual(
+        yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_type='spectrum.report.settle' AND aggregate_id=${threadId}`,
+        [],
+      );
+      const settled = yield* (yield* Report.SpectrumReportService).settle(
+        threadId,
+        "Report after rename",
+      );
+      assert.strictEqual(settled.status, "settled");
+      assert.strictEqual(
+        (yield* projections.getThread(threadId)).title,
+        "The person's renamed council",
+      );
+      assert.strictEqual((yield* projections.getThreadShell(threadId))!.forkSpectrumRunning, false);
+    }).pipe(Effect.provide(runtime)),
+);
