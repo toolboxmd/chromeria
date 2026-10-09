@@ -8,6 +8,7 @@ import { forkScheduleLabel, forkTaskSummary } from "@t3tools/client-runtime/sche
 import { useEffect, useState } from "react";
 
 import { useEnvironmentQuery } from "../../state/query";
+import { ChromeriaFeatureMark } from "../ChromeriaFeatureMark";
 import { serverEnvironment } from "../../state/server";
 import { Button } from "../ui/button";
 import { AbandonReportAction } from "./spectrumReportAction";
@@ -28,11 +29,14 @@ export function ForkTaskSummary({
   readonly task: ScheduledTask;
 }) {
   const summary = forkTaskSummary(task);
-  if (summary === null) return null;
+  if (summary === null && !isForkScheduledTaskSchedule(task.schedule)) return null;
   const run = task.command?.run;
   return (
     <>
-      <span>{summary}</span>
+      <span className="inline-flex items-center gap-1.5">
+        <ChromeriaFeatureMark />
+        {summary === null ? null : <span>{summary}</span>}
+      </span>
       <AbandonReportAction environmentId={environmentId} task={task} />
       {run === null || run === undefined ? null : (
         <CommandOutputToggle
