@@ -6,9 +6,10 @@ import type {
   ScheduledTask,
   ScheduledTaskUpsertSchedule,
   ScheduledTaskWebhookSignature,
+  ScheduledTaskForkSchedule,
 } from "@t3tools/contracts";
 
-import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
+import { DEFAULT_SERVER_SETTINGS, isForkScheduledTaskSchedule } from "@t3tools/contracts";
 import { parseMaxDeliveryAge } from "@t3tools/client-runtime/scheduled-task-webhook";
 import {
   resolveProjectSettings,
@@ -44,12 +45,15 @@ export function scheduledTaskDefaultModel(
 }
 
 export type ScheduleDraft = {
-  readonly mode: "fixed_time" | "interval" | "webhook";
+  /** `preserved`: a fork trigger (#174) the editor shows but never edits or converts. */
+  readonly mode: "fixed_time" | "interval" | "webhook" | "preserved";
   readonly timeOfDay: string;
   readonly weekdays: ReadonlyArray<number>;
   readonly intervalMinutes: string;
   readonly signature: ScheduledTaskWebhookSignature | null;
   readonly maxDeliveryAgeMinutes: string;
+  /** A fork trigger saved back exactly as loaded. */
+  readonly preserved: ScheduledTaskForkSchedule | null;
 };
 
 export const DEFAULT_SCHEDULE: ScheduleDraft = {
@@ -59,9 +63,12 @@ export const DEFAULT_SCHEDULE: ScheduleDraft = {
   intervalMinutes: "15",
   signature: null,
   maxDeliveryAgeMinutes: "",
+  preserved: null,
 };
 
 export function scheduleDraftForTask(task: Pick<ScheduledTask, "schedule">): ScheduleDraft {
+  if (isForkScheduledTaskSchedule(task.schedule))
+    return { ...DEFAULT_SCHEDULE, mode: "preserved", preserved: task.schedule };
   switch (task.schedule.type) {
     case "fixed_time":
       return {
@@ -91,6 +98,7 @@ export function scheduleDraftForTask(task: Pick<ScheduledTask, "schedule">): Sch
 }
 
 export function scheduleFromDraft(draft: ScheduleDraft): ScheduledTaskUpsertSchedule | null {
+  if (draft.mode === "preserved") return draft.preserved;
   if (draft.mode === "webhook") {
     const maxDeliveryAgeMinutes = parseMaxDeliveryAge(draft.maxDeliveryAgeMinutes);
     if (maxDeliveryAgeMinutes === undefined) return null;

@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  isForkScheduledTaskSchedule,
   type ProjectId,
   ScheduledTaskId,
   type ScheduledTask,
@@ -44,7 +45,8 @@ export function validateScheduledTasksSearch(raw: Record<string, unknown>) {
   };
 }
 
-export type ScheduleMode = "fixed" | "interval" | "webhook";
+/** `preserved`: a fork trigger (#174) the dialog shows but never edits or converts. */
+export type ScheduleMode = "fixed" | "interval" | "webhook" | "preserved";
 export type WorkspaceMode = "root" | "worktree" | "existing_worktree";
 
 export interface DraftState {
@@ -77,6 +79,8 @@ export interface DraftState {
   /** Write-only: empty keeps the secret already stored on the server. */
   readonly signatureSecret: string;
   readonly maxDeliveryAgeMinutes: string;
+  /** A fork trigger saved back exactly as loaded. */
+  readonly preservedSchedule: ScheduledTaskUpsertSchedule | null;
 }
 
 export const WEBHOOK_SIGNATURE_DEFAULTS = {
@@ -86,6 +90,7 @@ export const WEBHOOK_SIGNATURE_DEFAULTS = {
 } as const;
 
 export function scheduleFromDraft(draft: DraftState): ScheduledTaskUpsertSchedule | null {
+  if (draft.scheduleMode === "preserved") return draft.preservedSchedule;
   if (draft.scheduleMode === "webhook") {
     const maxDeliveryAgeMinutes = parseMaxDeliveryAge(draft.maxDeliveryAgeMinutes);
     if (maxDeliveryAgeMinutes === undefined) return null;
@@ -126,8 +131,14 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     title: task.title,
     prompt: task.prompt,
     enabled: task.enabled,
-    scheduleMode:
-      schedule.type === "interval" ? "interval" : schedule.type === "webhook" ? "webhook" : "fixed",
+    scheduleMode: isForkScheduledTaskSchedule(schedule)
+      ? "preserved"
+      : schedule.type === "interval"
+        ? "interval"
+        : schedule.type === "webhook"
+          ? "webhook"
+          : "fixed",
+    preservedSchedule: isForkScheduledTaskSchedule(schedule) ? schedule : null,
     intervalMinutes:
       schedule.type === "interval" ? String(Math.max(1, schedule.everyMs / 60_000)) : "15",
     timeOfDay: schedule.type === "fixed_time" ? schedule.timeOfDay : "09:00",
