@@ -32,6 +32,7 @@ import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { ThreadSharingControl } from "../people/ThreadSharingControl";
+import { ThreadParentCrumbs } from "./ThreadParentCrumbs";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
@@ -297,6 +298,9 @@ export const ChatHeader = memo(function ChatHeader({
               <WorkspaceBreadcrumbText>/</WorkspaceBreadcrumbText>
             </WorkspaceBreadcrumbSeparator>
           </>
+        ) : null}
+        {isServerThread ? (
+          <ThreadParentCrumbs environmentId={activeThreadEnvironmentId} threadId={activeThreadId} />
         ) : null}
         <WorkspaceBreadcrumbItem current className="min-w-10 flex-1">
           {renamingTitle !== null ? (
