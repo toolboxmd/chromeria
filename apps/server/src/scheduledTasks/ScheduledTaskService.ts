@@ -49,6 +49,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
+import { dispatchVia, ScheduledTaskDispatchPolicy } from "../scheduledTaskChecks/DispatchPolicy.ts";
+import { forkFireKey } from "../scheduledTaskChecks/schedules.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -457,6 +459,10 @@ export const layer = Layer.effect(
       webhookPolicyBlock !== undefined && task.schedule.type === "webhook"
         ? { ...task, blockedByPolicy: webhookPolicyBlock }
         : task;
+    // Fork: outcome checks and command tasks (toolboxmd/chromeria#174).
+    const dispatchPolicy = yield* ScheduledTaskDispatchPolicy;
+    // Webhook deliveries for one task dispatch in arrival order rather than
+    // being dropped while an earlier delivery is still dispatching.
     const webhookPermits = yield* Ref.make<ReadonlyMap<ScheduledTaskId, Semaphore.Semaphore>>(
       new Map(),
     );
@@ -859,6 +865,11 @@ export const layer = Layer.effect(
                     : null;
           if (reason !== null) return yield* new WebhookDeliverySkipped({ reason });
         }
+        // Fork: decided before the task is marked running; a skip consumed the slot.
+        const decision = yield* dispatchPolicy
+          .decide({ task: active, trigger, startedAt })
+          .pipe(Effect.mapError((error) => taskError(error.message, { taskId: active.id })));
+        if (decision._tag === "skip") return active;
 
         if (webhook === undefined) yield* markRunning(active.id, startedAtIso);
         else
@@ -880,7 +891,8 @@ export const layer = Layer.effect(
 
         const fireKey =
           webhook === undefined
-            ? `${active.id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`
+            ? (forkFireKey(active, trigger) ??
+              `${active.id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`)
             : `${active.id}:webhook:${webhook.deliveryId}`;
         const commandId = CommandId.make(`scheduled-task:${fireKey}`);
         const messageId = MessageId.make(`scheduled-task-message:${fireKey}`);
@@ -893,8 +905,7 @@ export const layer = Layer.effect(
           projectId: ProjectId,
           retries: number,
         ): ReturnType<typeof threadManagement.sendToThread> =>
-          threadManagement
-            .sendToThread({
+          dispatchVia(decision, threadManagement.sendToThread)({
               projectId,
               commandId,
               threadId,
@@ -926,8 +937,10 @@ export const layer = Layer.effect(
         const result =
           active.threadId === null
             ? yield* Effect.exit(
-                threadLaunch
-                  .launch({
+                dispatchVia(
+                  decision,
+                  threadLaunch.launch,
+                )({
                     commandId,
                     projectId: active.projectId,
                     title: active.title,
@@ -944,7 +957,7 @@ export const layer = Layer.effect(
                     createdBy: active.createdBy,
                     creationSource: active.creationSource,
                   })
-                  .pipe(Effect.map((launched) => launched.threadId)),
+                  .pipe(Effect.map((launched) => (launched ? launched.threadId : undefined))),
               )
             : yield* Effect.exit(
                 // The stored selection only seeds fresh threads. A bound run

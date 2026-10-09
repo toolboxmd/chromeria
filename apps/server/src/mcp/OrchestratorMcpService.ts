@@ -112,6 +112,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ScheduledTaskChecks from "../scheduledTaskChecks/ScheduledTaskChecks.ts";
 import {
   clientModeCeiling,
   type McpInvocationScope,
@@ -280,6 +281,7 @@ function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): Orchestrato
       ? {}
       : { webhookSignature: task.webhook.hasSecret ? "set" : "none" }),
     ...(task.blockedByPolicy === undefined ? {} : { blockedByPolicy: task.blockedByPolicy }),
+    ...ScheduledTaskChecks.forkSummaryFields(task),
   };
 }
 
@@ -1021,6 +1023,10 @@ const make = Effect.gen(function* () {
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
+  // Fork (#174): outcome checks and command tasks; refused where the service is absent.
+  const forkTasks = ScheduledTaskChecks.orRefuse(
+    yield* Effect.serviceOption(ScheduledTaskChecks.ScheduledTaskChecks),
+  );
   const projects = yield* ProjectService.ProjectService;
   const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
   const gitDriver = yield* GitVcsDriver.GitVcsDriver;
@@ -2033,8 +2039,11 @@ const make = Effect.gen(function* () {
               }),
             }),
       };
-      const { task } = yield* scheduledTasks
-        .upsert(upsertInput)
+      const { task } = yield* forkTasks
+        .schedule(
+          { input, projectId, parent, bindToCurrentThread, scope },
+          scheduledTasks.upsert,
+        )(upsertInput)
         .pipe(
           Effect.mapError((error) =>
             failure("orchestration_error", `Could not schedule task: ${error.message}`),
@@ -2103,8 +2112,11 @@ const make = Effect.gen(function* () {
           createdBy: existing.createdBy,
           creationSource: existing.creationSource,
         };
-        const { task } = yield* scheduledTasks
-          .upsert(upsertInput)
+        const { task } = yield* forkTasks
+          .update(
+            { input, existing, threadId, parent },
+            scheduledTasks.upsert,
+          )(upsertInput)
           .pipe(
             Effect.mapError((error) =>
               failure("orchestration_error", `Could not update scheduled task: ${error.message}`),
@@ -2118,8 +2130,11 @@ const make = Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope);
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
-        yield* scheduledTasks
-          .delete({ id: existing.id })
+        yield* forkTasks
+          .delete(
+            { existing, parent },
+            scheduledTasks.delete,
+          )({ id: existing.id })
           .pipe(
             Effect.mapError((error) =>
               failure("orchestration_error", `Could not delete scheduled task: ${error.message}`),
