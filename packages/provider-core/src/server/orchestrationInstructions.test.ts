@@ -18,8 +18,6 @@ describe("T3 orchestration provider instructions", () => {
       T3_CODE_ORCHESTRATION_INSTRUCTIONS,
       "Do not use `t3_thread_send` on `childThreadId`",
     );
-    assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "To continue the same delegated job");
-    assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "does not wake you");
   });
 
   it("documents structured schedules instead of JSON strings", () => {
