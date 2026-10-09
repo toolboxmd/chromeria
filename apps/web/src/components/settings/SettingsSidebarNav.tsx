@@ -51,6 +51,7 @@ import {
 } from "./settingsSearch";
 import { useAvailableSettingsSearchItems } from "./useAvailableSettingsSearchItems";
 import { validateSettingsScopeSearch } from "./settingsScope";
+import { ChromeriaFeatureMark } from "../ChromeriaFeatureMark";
 
 const SnapShotIcon = createLucideIcon("snap-shot", [
   [
@@ -356,6 +357,9 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                       >
                         <Icon />
                         <span className="truncate">{item.label}</span>
+                        {item.to === "/settings/prism" ? (
+                          <ChromeriaFeatureMark focusable={false} />
+                        ) : null}
                       </SidebarMenuButton>
                     </SidebarMenuItem>
                   );
