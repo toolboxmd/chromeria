@@ -7,7 +7,10 @@ import type { SpectrumMutation } from "./state.ts";
 import { applySpectrumMutation, checkSpectrumMutation } from "./store.ts";
 
 /** Constructed from data only; all reads and fork writes resolve inside the commit transaction. */
-export function spectrumPlan(mutation: SpectrumMutation): ForkCommitPlan {
+export function spectrumPlan(
+  mutation: SpectrumMutation,
+  admission?: { readonly resume: boolean; readonly humanOverride?: boolean },
+): ForkCommitPlan {
   const threadId = mutation.state.threadId;
   const stateGuard = checkSpectrumMutation(mutation).pipe(
     Effect.catchTags({
@@ -44,7 +47,13 @@ export function spectrumPlan(mutation: SpectrumMutation): ForkCommitPlan {
     }),
   );
   return {
-    guards: [...retirementAdmission({ threadId }).guards, threadGuard, stateGuard],
+    guards: [
+      ...(mutation.state.status === "retired"
+        ? []
+        : retirementAdmission({ threadId, ...admission }).guards),
+      threadGuard,
+      stateGuard,
+    ],
     mutations: [mutationEffect],
   };
 }

@@ -1,3 +1,5 @@
+import { abandonScheduledReport } from "./spectrum/humanReportRpc.ts";
+import { SPECTRUM_WS_METHODS } from "@t3tools/contracts";
 import type * as PromachosLaunch from "./promachos/PromachosLaunch.ts";
 import * as PromachosRpc from "./promachos/PromachosRpc.ts";
 import { PROMACHOS_HOME_WS_METHODS } from "@t3tools/contracts";
@@ -2082,6 +2084,8 @@ const layerWsRpc = (
               Effect.andThen(subscribeOrchestrationV2Thread(input)),
             ),
           ),
+        [SPECTRUM_WS_METHODS.abandonReport]: (input) =>
+          abandonScheduledReport(currentSession, input),
         [WS_METHODS.scheduledTasksList]: (_input) =>
           scheduledTasks.list().pipe(Effect.map(withVisibleWebhookUrls)),
         [WS_METHODS.scheduledTasksSubscribe]: (_input) =>

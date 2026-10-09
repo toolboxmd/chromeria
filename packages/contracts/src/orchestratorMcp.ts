@@ -437,13 +437,22 @@ export const OrchestratorMcpThreadSendInput = Schema.Struct({
 });
 export type OrchestratorMcpThreadSendInput = typeof OrchestratorMcpThreadSendInput.Type;
 
-export const OrchestratorMcpThreadSendResult = Schema.Struct({
-  threadId: ThreadId,
-  messageId: MessageId,
-  runId: RunId,
-  status: OrchestrationV2RunStatus,
-  delivery: Schema.Literals(["started", "queued", "steered", "restarted"]),
-});
+export const OrchestratorMcpThreadSendResult = Schema.Union([
+  Schema.Struct({
+    threadId: ThreadId,
+    messageId: MessageId,
+    runId: RunId,
+    status: OrchestrationV2RunStatus,
+    delivery: Schema.Literals(["started", "queued", "steered", "restarted"]),
+  }),
+  Schema.Struct({
+    threadId: ThreadId,
+    messageId: MessageId,
+    runId: Schema.Null,
+    status: Schema.Literal("idle"),
+    delivery: Schema.Literal("transcript"),
+  }),
+]);
 export type OrchestratorMcpThreadSendResult = typeof OrchestratorMcpThreadSendResult.Type;
 
 export const OrchestratorMcpThreadWaitInput = Schema.Struct({

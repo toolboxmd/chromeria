@@ -1,6 +1,7 @@
 import {
   ORCHESTRATION_V2_WS_METHODS,
   PROMACHOS_HOME_WS_METHODS,
+  SPECTRUM_WS_METHODS,
   WS_METHODS,
   type WsRpcGroup,
 } from "@t3tools/contracts";
@@ -21,6 +22,7 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
  * prefix. Adding an RPC to `WsRpcGroup` without a label is a type error.
  */
 const RPC_AGGREGATES = {
+  [SPECTRUM_WS_METHODS.abandonReport]: "spectrum",
   [PROMACHOS_HOME_WS_METHODS.create]: "promachos",
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: "orchestration",

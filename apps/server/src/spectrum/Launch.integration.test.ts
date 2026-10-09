@@ -242,3 +242,25 @@ it.effect("rebuilds outbox admission after restart and retains native retirement
     );
   }).pipe(Effect.provide(runtime)),
 );
+
+it.effect("legacy Color instance and model overrides keep Prism role instructions", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    const launch = yield* Launch.SpectrumLaunchService;
+    const state = yield* launch.register({
+      ...input,
+      title: "My council",
+      colors: [
+        { label: "Blue", instanceId: "codex", model: "test-model" },
+        { label: "Red", role: "reviewer", instanceId: "codex", model: "test-model" },
+      ],
+    });
+    assert.strictEqual(state.participants[1]!.instructions, "Use the reviewer kit.");
+    for (const color of state.participants) {
+      assert.strictEqual(color.selection.instanceId, "codex");
+      assert.strictEqual(color.selection.model, "test-model");
+    }
+    const projections = yield* Projection.ProjectionStoreV2;
+    assert.strictEqual((yield* projections.getThread(state.threadId)).title, "My council");
+  }).pipe(Effect.provide(runtime)),
+);

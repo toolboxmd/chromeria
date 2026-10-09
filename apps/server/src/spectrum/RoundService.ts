@@ -76,7 +76,11 @@ const make = Effect.gen(function* () {
     if (round === null) return state;
     const records = yield* projections.getThreadRecords(threadId, ["messages"]);
     const discussion = records.messages
-      .filter((message) => state.transcript.includes(message.id))
+      .filter(
+        (message) =>
+          state.transcript.includes(message.id) &&
+          (round.phase !== "independent" || message.role === "user"),
+      )
       .map((message) => message.text)
       .join("\n\n");
     const commands: ReadonlyArray<OrchestrationV2Command> = round.slots.map((slot) => {
@@ -102,9 +106,7 @@ const make = Effect.gen(function* () {
           participant.instructions ?? "",
           instruction,
           `Question:\n${state.question}`,
-          round.phase === "independent" || discussion.length === 0
-            ? ""
-            : `Discussion:\n${discussion}`,
+          discussion.length === 0 ? "" : `Discussion:\n${discussion}`,
         ]
           .filter(Boolean)
           .join("\n\n"),
@@ -115,7 +117,7 @@ const make = Effect.gen(function* () {
         `spectrum:${threadId}:${state.generation}:${state.cycle}:${round.step}:prepare`,
       ),
       state,
-      { ...state, revision: state.revision + 1, round, outbox: commands },
+      { ...state, revision: state.revision + 1, round, inbox: [], outbox: commands },
     );
   });
   const dispatch = Effect.fn("SpectrumRound.dispatch")(function* (

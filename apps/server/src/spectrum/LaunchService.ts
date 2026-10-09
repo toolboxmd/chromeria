@@ -1,6 +1,7 @@
 import {
   CommandId,
   EventId,
+  ProviderInstanceId,
   ThreadId,
   threadOwner,
   type ModelSelection,
@@ -22,6 +23,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderAdapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Prism from "../prism/PrismService.ts";
+import { resolveSchedulerRun, schedulerRunOpenGuard } from "../scheduledTaskChecks/handoff.ts";
 import { spectrumRegistrationPlan } from "./registrationPlan.ts";
 import { SpectrumState } from "./state.ts";
 import { readSpectrum } from "./store.ts";
@@ -32,15 +34,19 @@ export interface SpectrumStart {
   readonly callerThreadId: ThreadId;
   readonly callerRunId: RunId | null;
   readonly question: string;
+  readonly title?: string;
   readonly mode: "council" | "free";
   readonly limit: number;
   readonly moderator: number;
   readonly colors: ReadonlyArray<{
     readonly label: string;
-    readonly role?: PrismRole;
-    readonly lane?: PrismLane;
-    readonly selection?: ModelSelection;
-    readonly instructions?: string;
+    readonly role?: PrismRole | undefined;
+    readonly lane?: PrismLane | undefined;
+    readonly selection?: ModelSelection | undefined;
+    readonly instructions?: string | undefined;
+    readonly instanceId?: string | undefined;
+    readonly model?: string | undefined;
+    readonly effort?: string | undefined;
   }>;
 }
 
@@ -140,12 +146,41 @@ const make = Effect.gen(function* () {
     const caller = yield* projections.getThread(input.callerThreadId);
     const resolved = yield* Effect.forEach(input.colors, (color, index) =>
       Effect.gen(function* () {
+        let explicit =
+          color.selection ?? (color.role === undefined ? caller.modelSelection : undefined);
+        const inheritedSelection = explicit ?? caller.modelSelection;
+        if (
+          color.instanceId !== undefined ||
+          color.model !== undefined ||
+          color.effort !== undefined
+        ) {
+          const instanceId =
+            color.instanceId === undefined
+              ? inheritedSelection.instanceId
+              : ProviderInstanceId.make(color.instanceId);
+          const provider = (yield* providers.getProviders).find(
+            (provider) => provider.instanceId === instanceId,
+          );
+          const effortOption =
+            provider?.driver === "codex" || provider?.driver === "grok"
+              ? "reasoningEffort"
+              : provider?.driver === "opencode"
+                ? "variant"
+                : "effort";
+          explicit = {
+            ...inheritedSelection,
+            instanceId,
+            model: color.model ?? inheritedSelection.model,
+            ...(color.effort === undefined
+              ? {}
+              : { options: [{ id: effortOption, value: color.effort }] }),
+          };
+        }
         const target = yield* prism.resolve({
           projectId: caller.projectId,
           role: color.role ?? "worker",
           lane: color.lane,
-          explicit:
-            color.selection ?? (color.role === undefined ? caller.modelSelection : undefined),
+          explicit,
           inherited: caller.modelSelection,
           validate: (selection) =>
             Prism.validateLaunchSelection(selection).pipe(
@@ -153,23 +188,31 @@ const make = Effect.gen(function* () {
               Effect.provideService(ProviderRegistry.ProviderRegistry, providers),
             ),
         });
+        const selection = target.modelSelection;
         return {
           threadId: ThreadId.make(`sub.${input.threadId}.color.${index}`),
           label: color.label,
-          selection: target.modelSelection,
+          selection,
           instructions: [color.role === undefined ? "" : target.kitText, color.instructions ?? ""]
             .filter(Boolean)
             .join("\n\n"),
         };
       }),
     );
-    const state = yield* validateState({
+    const binding =
+      input.callerRunId === null
+        ? null
+        : yield* resolveSchedulerRun({
+            callerThreadId: caller.id,
+            callerRunId: input.callerRunId,
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    let state = yield* validateState({
       version: 1,
       threadId: input.threadId,
       callerThreadId: caller.id,
       callerRunId: input.callerRunId,
-      scheduledTaskId: null,
-      schedulerRunId: null,
+      scheduledTaskId: binding?.scheduledTaskId ?? null,
+      schedulerRunId: binding?.schedulerRunId ?? null,
       question: input.question,
       mode: input.mode,
       limit: input.limit,
@@ -192,7 +235,7 @@ const make = Effect.gen(function* () {
       shell(caller, {
         id: state.threadId,
         parentId: caller.id,
-        title: `Spectrum: ${input.question.slice(0, 60)}`,
+        title: input.title ?? `Spectrum: ${input.question.slice(0, 60)}`,
         selection: caller.modelSelection,
         now,
       }),
@@ -206,21 +249,47 @@ const make = Effect.gen(function* () {
         }),
       ),
     ];
-    yield* sink.commitCommand({
-      commandId: input.commandId,
-      threadId: state.threadId,
-      commandType: "spectrum.register",
-      acceptedAt: now,
-      events: threads.map((thread) => ({
-        id: EventId.make(`${input.commandId}:create:${thread.id}`),
-        type: "thread.created" as const,
-        threadId: thread.id,
-        occurredAt: now,
-        payload: thread,
-      })),
-      effects: [],
-      forkPlans: [spectrumRegistrationPlan(state, caller)],
-    });
+    const commit = (boundState: SpectrumState) =>
+      sink.commitCommand({
+        commandId: input.commandId,
+        threadId: state.threadId,
+        commandType: "spectrum.register",
+        acceptedAt: now,
+        events: threads.map((thread) => ({
+          id: EventId.make(`${input.commandId}:create:${thread.id}`),
+          type: "thread.created" as const,
+          threadId: thread.id,
+          occurredAt: now,
+          payload: thread,
+        })),
+        effects: [],
+        forkPlans: [
+          {
+            ...spectrumRegistrationPlan(boundState, caller),
+            guards: [
+              ...spectrumRegistrationPlan(boundState, caller).guards,
+              ...(boundState.schedulerRunId === null || boundState.scheduledTaskId === null
+                ? []
+                : [
+                    schedulerRunOpenGuard({
+                      scheduledTaskId: boundState.scheduledTaskId,
+                      schedulerRunId: boundState.schedulerRunId,
+                      callerThreadId: caller.id,
+                    }),
+                  ]),
+            ],
+          },
+        ],
+      });
+    yield* commit(state).pipe(
+      Effect.catchTags({
+        ForkCommitGuardRejected: (error) => {
+          if (binding === null || error.kind !== "state_conflict") return Effect.fail(error);
+          state = { ...state, scheduledTaskId: null, schedulerRunId: null };
+          return commit(state);
+        },
+      }),
+    );
     return state;
   });
   return SpectrumLaunchService.of({
