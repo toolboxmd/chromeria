@@ -343,7 +343,9 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
                       >
                         <Icon />
                         <span className="truncate">{item.label}</span>
-                        {item.to === "/settings/prism" ? <ChromeriaFeatureMark /> : null}
+                        {item.to === "/settings/prism" ? (
+                          <ChromeriaFeatureMark focusable={false} />
+                        ) : null}
                       </SidebarMenuButton>
                     </SidebarMenuItem>
                   );

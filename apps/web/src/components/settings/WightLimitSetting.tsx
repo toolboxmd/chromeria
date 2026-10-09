@@ -2,7 +2,6 @@ import { DEFAULT_WIGHT_LIMIT_PERCENT, type ServerProvider } from "@t3tools/contr
 import { type CSSProperties, useState } from "react";
 
 import { wightUsageStatus } from "~/wightMode";
-import { ChromeriaTitle } from "../ChromeriaFeatureMark";
 import { SettingsRow } from "./settingsLayout";
 
 /**
@@ -33,7 +32,7 @@ export function WightLimitSetting({
   } as CSSProperties;
   return (
     <SettingsRow
-      title={<ChromeriaTitle>Wight usage limit</ChromeriaTitle>}
+      title="Wight usage limit"
       description="Wight threads on this instance stop getting new turns while any usage window is at or above this limit, and resume once it drops below. 0% pauses them."
       status={provider ? wightUsageStatus(provider, value).text : undefined}
       control={

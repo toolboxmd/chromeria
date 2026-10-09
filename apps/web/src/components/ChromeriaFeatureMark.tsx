@@ -3,8 +3,11 @@ import { type ReactNode, useId } from "react";
 
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
-/** Small spectrum crystal with a "Chromeria feature" tooltip. */
-export function ChromeriaFeatureMark() {
+/**
+ * Small spectrum crystal with a "Chromeria feature" tooltip. Pass
+ * `focusable={false}` inside another control, such as a navigation button.
+ */
+export function ChromeriaFeatureMark({ focusable = true }: { readonly focusable?: boolean }) {
   // useId contains characters that break url(#...) references.
   const gradientId = `chromeria-mark-${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
   return (
@@ -15,7 +18,7 @@ export function ChromeriaFeatureMark() {
           <span
             role="img"
             aria-label="Chromeria feature"
-            tabIndex={0}
+            tabIndex={focusable ? 0 : undefined}
             className="inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
         }

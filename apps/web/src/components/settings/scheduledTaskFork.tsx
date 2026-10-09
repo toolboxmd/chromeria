@@ -29,12 +29,14 @@ export function ForkTaskSummary({
   readonly task: ScheduledTask;
 }) {
   const summary = forkTaskSummary(task);
-  if (summary === null) return null;
+  if (summary === null && !isForkScheduledTaskSchedule(task.schedule)) return null;
   const run = task.command?.run;
   return (
     <>
-      <ChromeriaFeatureMark />
-      <span>{summary}</span>
+      <span className="inline-flex items-center gap-1.5">
+        <ChromeriaFeatureMark />
+        {summary === null ? null : <span>{summary}</span>}
+      </span>
       <AbandonReportAction environmentId={environmentId} task={task} />
       {run === null || run === undefined ? null : (
         <CommandOutputToggle
