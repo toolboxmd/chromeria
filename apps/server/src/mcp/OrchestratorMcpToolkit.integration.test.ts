@@ -1963,13 +1963,13 @@ describe("orchestrator MCP toolkit", () => {
               latestTerminalStatus: "interrupted",
             });
 
-            // Later requested work has its own delivery, including an interrupted follow-up.
-            expect(childFollowup.taskId).toBeDefined();
-            expect(activeChildFollowup.taskId).toBeDefined();
-            yield* waitForContinuationOffers(2);
-            yield* expectOffersToStay(2);
-            yield* invoke("task_status", { taskId: childFollowup.taskId });
-            yield* invoke("task_status", { taskId: activeChildFollowup.taskId });
+            // A wait-mode child (completionWake settled_only) that completes
+            // while the parent run is live does not offer a wake: the
+            // blocking delegate_task call above already returned the result.
+            // Fork (pingdotgg/t3code#13490): its finished follow-up does offer
+            // one, since no blocking call returns it. Later checks count from zero.
+            expect(yield* waitForContinuationOffers(1)).toHaveLength(1);
+            yield* expectOffersToStay(1);
             yield* Ref.set(continuationOffers, []);
 
             const repeatedDelegatedCall = yield* invoke("delegate_task", {
@@ -4210,7 +4210,11 @@ describe("orchestrator MCP toolkit", () => {
             latestTerminalStatus: "completed",
             latestTerminalSummary: queuedFollowupResult,
           });
+          // Fork (pingdotgg/t3code#13490): the follow-up result reaches the parent as its own transfer.
           expect(finalStatus.latestTerminalResultContextTransferId).not.toBeNull();
+          expect(finalStatus.latestTerminalResultContextTransferId).not.toBe(
+            delegated.resultContextTransferId,
+          );
           const read = yield* invoke("t3_thread_read", {
             threadId: delegated.childThreadId,
             limit: 100,
@@ -4218,7 +4222,7 @@ describe("orchestrator MCP toolkit", () => {
           expect(read.isError).not.toBe(true);
           const afterRead = yield* orchestrator.getThreadProjection(parentThreadId);
           expect(
-            afterRead.subagents.find((task) => task.id === queuedFollowup.taskId)
+            afterRead.subagents.find((task) => task.id === delegated.taskId)
               ?.completionDelivery?.state,
           ).toBe("acknowledged");
         }).pipe(Effect.provide(layerTest));
