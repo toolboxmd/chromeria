@@ -4158,7 +4158,11 @@ describe("orchestrator MCP toolkit", () => {
             latestTerminalStatus: "completed",
             latestTerminalSummary: queuedFollowupResult,
           });
+          // Fork (pingdotgg/t3code#13490): the follow-up result reaches the parent as its own transfer.
           expect(finalStatus.latestTerminalResultContextTransferId).not.toBeNull();
+          expect(finalStatus.latestTerminalResultContextTransferId).not.toBe(
+            delegated.resultContextTransferId,
+          );
           const read = yield* invoke("t3_thread_read", {
             threadId: delegated.childThreadId,
             limit: 100,
@@ -4166,7 +4170,7 @@ describe("orchestrator MCP toolkit", () => {
           expect(read.isError).not.toBe(true);
           const afterRead = yield* orchestrator.getThreadProjection(parentThreadId);
           expect(
-            afterRead.subagents.find((task) => task.id === queuedFollowup.taskId)
+            afterRead.subagents.find((task) => task.id === delegated.taskId)
               ?.completionDelivery?.state,
           ).toBe("acknowledged");
         }).pipe(Effect.provide(layerTest));
