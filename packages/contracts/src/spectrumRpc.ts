@@ -3,7 +3,7 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 
 import { EnvironmentAuthorizationError } from "./auth.ts";
-import { CommandId, ScheduledTaskId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { CommandId, ScheduledTaskId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 /**
  * Fork (toolboxmd/chromeria#176): a person gives up on a Spectrum report that
@@ -12,6 +12,7 @@ import { CommandId, ScheduledTaskId, TrimmedNonEmptyString } from "./baseSchemas
  */
 export const SPECTRUM_WS_METHODS = {
   abandonReport: "spectrum.abandonReport",
+  stop: "spectrum.stop",
 } as const;
 
 /** How a scheduled run's error starts while a bound Spectrum report holds it at needs-you. */
@@ -35,7 +36,22 @@ export const SpectrumReportAbandonResult = Schema.Struct({
 });
 export type SpectrumReportAbandonResult = typeof SpectrumReportAbandonResult.Type;
 
+/** Human GUI bridge to the server-only thread.stop command; never an MCP tool. */
+export class SpectrumStopError extends Schema.TaggedError<SpectrumStopError>()(
+  "SpectrumStopError",
+  { message: Schema.String },
+) {}
+export const SpectrumStopInput = Schema.Struct({ threadId: ThreadId, commandId: CommandId });
+export type SpectrumStopInput = typeof SpectrumStopInput.Type;
+export const SpectrumStopResult = Schema.Struct({ sequence: Schema.Number });
+export type SpectrumStopResult = typeof SpectrumStopResult.Type;
+
 export const SpectrumRpcGroup = RpcGroup.make(
+  Rpc.make(SPECTRUM_WS_METHODS.stop, {
+    payload: SpectrumStopInput,
+    success: SpectrumStopResult,
+    error: Schema.Union([SpectrumStopError, EnvironmentAuthorizationError]),
+  }),
   Rpc.make(SPECTRUM_WS_METHODS.abandonReport, {
     payload: SpectrumReportAbandonInput,
     success: SpectrumReportAbandonResult,

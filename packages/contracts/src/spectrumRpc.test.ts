@@ -31,3 +31,16 @@ describe("spectrum.abandonReport", () => {
     }
   });
 });
+
+describe("spectrum.stop", () => {
+  it("requires operate permission and an exact thread and command identity", () => {
+    expect(clientRpcRequiredScopes(SPECTRUM_WS_METHODS.stop, undefined)).toEqual([
+      AuthOrchestrationOperateScope,
+    ]);
+    const rpc = WsRpcGroup.requests.get(SPECTRUM_WS_METHODS.stop);
+    if (rpc === undefined) throw new Error("spectrum.stop is not registered");
+    const decode = Schema.decodeUnknownExit(rpc.payloadSchema);
+    expect(Exit.isSuccess(decode({ threadId: "spectrum", commandId: "stop:stable" }))).toBe(true);
+    expect(Exit.isFailure(decode({ threadId: "spectrum" }))).toBe(true);
+  });
+});

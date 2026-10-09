@@ -48,6 +48,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.scheduledTasksRotateWebhookToken]: AuthOrchestrationOperateScope,
   // Fork: Spectrum report abandonment (toolboxmd/chromeria#176).
   [SPECTRUM_WS_METHODS.abandonReport]: AuthOrchestrationOperateScope,
+  [SPECTRUM_WS_METHODS.stop]: AuthOrchestrationOperateScope,
 } as const;
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 
