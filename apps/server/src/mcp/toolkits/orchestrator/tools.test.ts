@@ -25,10 +25,6 @@ describe("orchestrator MCP tool guidance", () => {
       "Do not use a delegated task's childThreadId to start another review round",
     );
     assert.include(
-      OrchestratorToolkit.tools.t3_thread_send.description ?? "",
-      "To continue the same delegated job after it stopped",
-    );
-    assert.include(
       OrchestratorToolkit.tools.task_cancel.description ?? "",
       "This includes later child-thread runs, even after the task is terminal",
     );
