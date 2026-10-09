@@ -1,7 +1,11 @@
 import { type CommandId, type RunId, SPECTRUM_WS_METHODS, type ThreadId } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import type { Atom, AtomRegistry } from "effect/reactivity";
 
+import type { EnvironmentRegistry } from "./connection/registry.ts";
 import type { InterruptThreadTurnInput } from "./operations/commands.ts";
-import { request } from "./rpc/client.ts";
+import { requestGuarded, RpcPermissionGuard } from "./rpc/client.ts";
+import { createCommandPermissions } from "./state/commandPermissions.ts";
 import type { EnvironmentThreadShell } from "./state/models.ts";
 
 /**
@@ -15,7 +19,21 @@ import type { EnvironmentThreadShell } from "./state/models.ts";
  * Spectrum itself and replays the same `commandId` as the same stop.
  */
 export const stopForkSpectrumThread = (threadId: ThreadId, commandId: CommandId) =>
-  request(SPECTRUM_WS_METHODS.stop, { threadId, commandId });
+  requestGuarded(SPECTRUM_WS_METHODS.stop, { threadId, commandId });
+
+/**
+ * Lets the plain Stop command send the guarded bridge: each guarded request is
+ * checked against the target session's grants, as `createEnvironmentRpcCommand`
+ * does for its own tag. Without it the default guard refuses every session.
+ */
+export const withGuardedRequests = <R, E>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
+  registry: AtomRegistry.AtomRegistry,
+) =>
+  Effect.provideService(RpcPermissionGuard, {
+    authorize: (environmentId, method, payload) =>
+      createCommandPermissions(runtime, method).authorize(registry, environmentId, payload),
+  });
 
 /** Whether the server reports a Spectrum running on this thread. */
 export const isForkSpectrumRunning = (

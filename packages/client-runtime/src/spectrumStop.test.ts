@@ -1,9 +1,13 @@
 import {
+  AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
   CommandId,
   EnvironmentId,
   ORCHESTRATION_V2_WS_METHODS,
   RunId,
   SPECTRUM_WS_METHODS,
+  type AuthEnvironmentScope,
+  type AuthSessionState,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Crypto from "effect/Crypto";
@@ -11,12 +15,15 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
+import { vi } from "vite-plus/test";
 
 import {
   AVAILABLE_CONNECTION_STATE,
   PrimaryConnectionTarget,
   type PreparedConnection,
 } from "./connection/model.ts";
+import { EnvironmentRegistry } from "./connection/registry.ts";
 import * as EnvironmentSupervisor from "./connection/supervisor.ts";
 import { interruptThreadTurn } from "./operations/commands.ts";
 import type { WsRpcProtocolClient } from "./rpc/protocol.ts";
@@ -29,7 +36,15 @@ import {
   v2ThreadShell,
 } from "./state/orchestrationV2TestFixtures.ts";
 import { applyShellStreamEvent } from "./state/shellReducer.ts";
-import { isForkSpectrumRunning, threadStopInput } from "./spectrumStop.ts";
+import { isForkSpectrumRunning, threadStopInput, withGuardedRequests } from "./spectrumStop.ts";
+
+// Each environment's session, set per test; the permission checks read it.
+vi.mock("./state/session.ts", () => ({
+  createEnvironmentSessionAtoms: () => ({ sessionStateAtom: sessions }),
+}));
+const sessions = Atom.family((_id: EnvironmentId) =>
+  Atom.make<AsyncResult.AsyncResult<AuthSessionState, string>>(AsyncResult.initial()),
+);
 
 const environmentId = EnvironmentId.make("environment-1");
 const shell = (forkSpectrumRunning?: boolean) =>
@@ -139,41 +154,127 @@ const makeSupervisor = Effect.fn("TestSpectrumStop.makeSupervisor")(function* (
   } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
 });
 
+const runtime = Atom.runtime(
+  Layer.succeed(EnvironmentRegistry, {
+    run: (_id: EnvironmentId, effect: Effect.Effect<unknown>) => effect,
+  } as unknown as EnvironmentRegistry["Service"]),
+);
+
+/** A registry whose session for the test environment holds exactly these scopes. */
+const sessionWith = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
+  Effect.gen(function* () {
+    const registry = AtomRegistry.make();
+    registry.mount(sessions(environmentId));
+    yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
+    registry.set(
+      sessions(environmentId),
+      AsyncResult.success({
+        authenticated: true,
+        auth: {
+          policy: "remote-reachable",
+          bootstrapMethods: [],
+          sessionMethods: [],
+          sessionCookieName: "test",
+        },
+        scopes,
+        permissions: scopes,
+      }),
+    );
+    return registry;
+  });
+
+const operate = [AuthOrchestrationReadScope, AuthOrchestrationOperateScope];
+
 describe("interruptThreadTurn with a running Spectrum", () => {
   it.effect("asks the server to stop the thread, with no run to resolve or interrupt", () =>
-    Effect.gen(function* () {
-      const calls: Array<readonly [string, unknown]> = [];
-      const supervisor = yield* makeSupervisor(calls);
+    Effect.scoped(
+      Effect.gen(function* () {
+        const calls: Array<readonly [string, unknown]> = [];
+        const supervisor = yield* makeSupervisor(calls);
+        const registry = yield* sessionWith(operate);
 
-      const result = yield* interruptThreadTurn({
-        threadId: v2ThreadId,
-        forkSpectrumRunning: true,
-      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+        const result = yield* interruptThreadTurn({
+          threadId: v2ThreadId,
+          forkSpectrumRunning: true,
+        }).pipe(
+          withGuardedRequests(runtime, registry),
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        );
 
-      expect(result).toEqual({ sequence: 7 });
-      expect(calls).toEqual([
-        [
-          SPECTRUM_WS_METHODS.stop,
-          { threadId: v2ThreadId, commandId: "00000000-0000-4000-8000-000000000000" },
-        ],
-      ]);
-    }).pipe(Effect.provide(layerTestCrypto)),
+        expect(result).toEqual({ sequence: 7 });
+        expect(calls).toEqual([
+          [
+            SPECTRUM_WS_METHODS.stop,
+            { threadId: v2ThreadId, commandId: "00000000-0000-4000-8000-000000000000" },
+          ],
+        ]);
+      }),
+    ).pipe(Effect.provide(layerTestCrypto)),
   );
 
   it.effect("stops the whole thread under the caller's command id, even with a run id", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const calls: Array<readonly [string, unknown]> = [];
+        const supervisor = yield* makeSupervisor(calls);
+        const registry = yield* sessionWith(operate);
+        const commandId = CommandId.make("stop-command-1");
+
+        yield* interruptThreadTurn({
+          threadId: v2ThreadId,
+          commandId,
+          runId,
+          forkSpectrumRunning: true,
+        }).pipe(
+          withGuardedRequests(runtime, registry),
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        );
+
+        expect(calls).toEqual([[SPECTRUM_WS_METHODS.stop, { threadId: v2ThreadId, commandId }]]);
+      }),
+    ).pipe(Effect.provide(layerTestCrypto)),
+  );
+
+  it.effect("sends nothing for a session without the operate grant", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const calls: Array<readonly [string, unknown]> = [];
+        const supervisor = yield* makeSupervisor(calls);
+        const registry = yield* sessionWith([AuthOrchestrationReadScope]);
+
+        const error = yield* interruptThreadTurn({
+          threadId: v2ThreadId,
+          forkSpectrumRunning: true,
+        }).pipe(
+          withGuardedRequests(runtime, registry),
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.flip,
+        );
+
+        expect(error).toMatchObject({
+          _tag: "EnvironmentAuthorizationError",
+          requiredScope: AuthOrchestrationOperateScope,
+        });
+        expect(calls).toEqual([]);
+      }),
+    ).pipe(Effect.provide(layerTestCrypto)),
+  );
+
+  it.effect("is refused outside a command boundary that checks the session", () =>
     Effect.gen(function* () {
       const calls: Array<readonly [string, unknown]> = [];
       const supervisor = yield* makeSupervisor(calls);
-      const commandId = CommandId.make("stop-command-1");
 
-      yield* interruptThreadTurn({
+      const error = yield* interruptThreadTurn({
         threadId: v2ThreadId,
-        commandId,
-        runId,
         forkSpectrumRunning: true,
-      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+      }).pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.flip,
+      );
 
-      expect(calls).toEqual([[SPECTRUM_WS_METHODS.stop, { threadId: v2ThreadId, commandId }]]);
+      expect(error).toMatchObject({ _tag: "EnvironmentAuthorizationError" });
+      expect(calls).toEqual([]);
     }).pipe(Effect.provide(layerTestCrypto)),
   );
 
