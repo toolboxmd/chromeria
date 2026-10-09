@@ -34,6 +34,8 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "apps/server/src/spectrum/humanReportRpc.test.ts",
     "apps/server/src/spectrum/humanReportRpc.ts",
     "apps/server/src/spectrum/launchAdmission.ts",
+    "apps/server/src/spectrum/lifecycle.ts",
+    "apps/server/src/spectrum/mcpInterrupt.ts",
     "apps/server/src/spectrum/mcpSend.integration.test.ts",
     "apps/server/src/spectrum/mcpScopes.test.ts",
     "apps/server/src/spectrum/mcpSend.ts",
@@ -73,6 +75,7 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "apps/server/src/observability/RpcInstrumentation.ts",
     "apps/server/src/orchestration-v2/EventSink.ts",
     "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "apps/server/src/orchestration-v2/ProjectionStore.ts",
     "apps/server/src/orchestration-v2/runtimeLayer.ts",
     "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts",
     "apps/server/src/persistence/forkV1Backfills.ts",
@@ -84,6 +87,7 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "packages/contracts/src/clientRpcPermissions.ts",
     "packages/contracts/src/index.ts",
     "packages/contracts/src/orchestratorMcp.ts",
+    "packages/contracts/src/orchestrationV2.ts",
     "packages/contracts/src/rpc.ts"
   ],
   "keywords": [

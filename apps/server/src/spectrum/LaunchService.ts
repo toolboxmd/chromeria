@@ -260,7 +260,10 @@ const make = Effect.gen(function* () {
           type: "thread.created" as const,
           threadId: thread.id,
           occurredAt: now,
-          payload: thread,
+          payload:
+            thread.id === boundState.threadId
+              ? { ...thread, forkSpectrumRunning: boundState.status === "active" }
+              : thread,
         })),
         effects: [],
         forkPlans: [

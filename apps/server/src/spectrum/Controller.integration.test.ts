@@ -20,6 +20,7 @@ import { initializeRecoveryHistory } from "../prism/RecoveryHistory.ts";
 import { reportsFence } from "../scheduledTaskChecks/handoff.ts";
 import { ensureCheckSchema, writeCheckState } from "../scheduledTaskChecks/store.ts";
 import * as Controller from "./Controller.ts";
+import * as McpInterrupt from "./mcpInterrupt.ts";
 import * as CommandPlans from "./commandPlan.ts";
 import * as Adapter from "./SchedulerAdapter.ts";
 import * as Launch from "./LaunchService.ts";
@@ -39,6 +40,7 @@ const services = Layer.mergeAll(Launch.layer, Round.layer, Transcript.layer, Rep
 const runtime = Layer.fresh(
   Layer.mergeAll(
     CommandPlans.layer,
+    McpInterrupt.layer.pipe(Layer.provide(dependencies)),
     Adapter.layer,
     Controller.layer.pipe(Layer.provideMerge(services)),
   ),
@@ -171,6 +173,10 @@ it.effect(
         }).pipe(Effect.provide(Layer.fresh(Controller.layer)));
       }
       assert.strictEqual(current.status, "settled");
+      assert.strictEqual(
+        (yield* projections.getThreadShell(state.threadId))!.forkSpectrumRunning,
+        false,
+      );
       assert.isAbove(current.cursor, 0);
       const transcript = yield* projections.getThreadRecords(state.threadId, ["messages", "runs"]);
       assert.deepStrictEqual(transcript.runs, []);
@@ -271,17 +277,36 @@ it.effect(
       const state = yield* (yield* Launch.SpectrumLaunchService).register(input);
       const controller = yield* Controller.SpectrumController;
       const running = yield* controller.resume(state.threadId);
+      const projections = yield* Projection.ProjectionStoreV2;
+      assert.strictEqual(
+        (yield* projections.getThreadShell(state.threadId))!.forkSpectrumRunning,
+        true,
+      );
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const stop = {
         type: "thread.stop" as const,
         threadId: state.threadId,
         commandId: CommandId.make("human:stop"),
       };
-      yield* orchestrator.dispatch(stop);
+      const hook = yield* McpInterrupt.SpectrumMcpInterrupt;
+      const threads = { dispatch: orchestrator.dispatch };
+      const interrupt = yield* hook.interrupt(
+        threads,
+        { threadId: state.threadId },
+        stop.commandId,
+      );
+      assert.strictEqual(interrupt?.status, "interrupt_requested");
+      assert.deepStrictEqual(
+        yield* hook.interrupt(threads, { threadId: state.threadId }, stop.commandId),
+        interrupt,
+      );
+      assert.strictEqual(
+        (yield* projections.getThreadShell(state.threadId))!.forkSpectrumRunning,
+        false,
+      );
       const retired = yield* controller.resume(state.threadId);
       assert.strictEqual(retired.status, "retired");
       assert.isAbove(retired.generation, running.generation);
-      const projections = yield* Projection.ProjectionStoreV2;
       for (const participant of retired.participants) {
         const child = yield* projections.getThreadRecords(participant.threadId, ["runs"]);
         assert.isTrue(
@@ -316,6 +341,10 @@ it.effect(
       });
       const reopened = yield* read(state.threadId);
       assert.strictEqual(reopened.status, "active");
+      assert.strictEqual(
+        (yield* projections.getThreadShell(state.threadId))!.forkSpectrumRunning,
+        true,
+      );
       assert.isAbove(reopened.generation, retired.generation);
       assert.isNull(reopened.report);
       yield* controller.resume(state.threadId);
@@ -357,4 +386,69 @@ it.effect("abandon then reopen invalidates a delayed old report dispatch", () =>
     assert.isFalse(caller.runs.some((run) => run.userMessageId === old.messageId));
     assert.isFalse(caller.messages.some((message) => message.id === old.messageId));
   }).pipe(Effect.provide(runtime)),
+);
+
+it.effect(
+  "Stop wins after a Drafter launch reads its durable command, and restart repairs the shell without reactivating it",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      yield* initializeRecoveryHistory;
+      const state = yield* (yield* Launch.SpectrumLaunchService).register(input);
+      const prepared = yield* (yield* Round.SpectrumRoundService).prepare(state.threadId);
+      const command = prepared.outbox[0]!;
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const stop = {
+        type: "thread.stop" as const,
+        threadId: state.threadId,
+        commandId: CommandId.make("race:stop"),
+      };
+      // The round service has already read and rebuilt its generation admission before this dispatch boundary.
+      yield* Effect.gen(function* () {
+        yield* (yield* Round.SpectrumRoundService)
+          .dispatch(state.threadId, command.commandId)
+          .pipe(Effect.flip);
+      }).pipe(
+        Effect.provide(Round.layer),
+        Effect.provideService(Orchestrator.OrchestratorV2, {
+          ...orchestrator,
+          dispatch: (launch) =>
+            orchestrator.dispatch(stop).pipe(Effect.andThen(orchestrator.dispatch(launch))),
+        }),
+      );
+      const retired = yield* read(state.threadId);
+      assert.strictEqual(retired.status, "retired");
+      yield* orchestrator.dispatch(stop);
+      assert.deepStrictEqual(yield* read(state.threadId), retired);
+      const projections = yield* Projection.ProjectionStoreV2;
+      for (const color of retired.participants)
+        assert.deepStrictEqual(
+          (yield* projections.getThreadRecords(color.threadId, ["runs"])).runs,
+          [],
+        );
+      const sql = yield* SqlClient.SqlClient;
+      assert.deepStrictEqual(
+        yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id IN ${sql.in(retired.participants.map((color) => color.threadId))} AND status IN('pending','running')`,
+        [],
+      );
+      // An old shell snapshot must be repaired from the fork row, never treated as permission to run.
+      const thread = yield* projections.getThread(state.threadId);
+      yield* (yield* Events.EventSinkV2).write({
+        events: [
+          {
+            id: EventId.make("legacy:spectrum:flag"),
+            type: "thread.metadata-updated",
+            threadId: state.threadId,
+            occurredAt: NOW,
+            payload: { ...thread, forkSpectrumRunning: true },
+          },
+        ],
+      });
+      yield* (yield* Controller.SpectrumController).resume(state.threadId);
+      assert.strictEqual(
+        (yield* projections.getThreadShell(state.threadId))!.forkSpectrumRunning,
+        false,
+      );
+      assert.strictEqual((yield* read(state.threadId)).status, "retired");
+    }).pipe(Effect.provide(runtime)),
 );

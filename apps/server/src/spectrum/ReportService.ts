@@ -11,6 +11,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
 import { ForkDispatchPlans } from "../fork/ForkDispatchPlans.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
+import * as Projection from "../orchestration-v2/ProjectionStore.ts";
+import { lifecycleEvents } from "./lifecycle.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import {
   abandonedState,
@@ -65,6 +67,7 @@ const make = Effect.gen(function* () {
   const locks = yield* KeyedLock.make<ThreadId>();
   const sql = yield* SqlClient.SqlClient;
   const sink = yield* EventSink.EventSinkV2;
+  const projections = yield* Projection.ProjectionStoreV2;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const withSql = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
     Effect.provideService(effect, SqlClient.SqlClient, sql);
@@ -87,12 +90,17 @@ const make = Effect.gen(function* () {
       expectedGeneration: old.generation,
       state: next,
     };
+    const now = yield* DateTime.now;
+    const events =
+      old.status === next.status
+        ? []
+        : lifecycleEvents(yield* projections.getThread(old.threadId), next, commandId, now);
     yield* sink.commitCommand({
       commandId,
       threadId: old.threadId,
       commandType,
-      acceptedAt: yield* DateTime.now,
-      events: [],
+      acceptedAt: now,
+      events,
       effects: [],
       forkPlans: [
         commandType === "spectrum.report.settle"

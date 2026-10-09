@@ -19,6 +19,7 @@ import {
 import { explicitMessage, humanMessage, readRetirementState } from "../childThreads/retirement.ts";
 import * as Projection from "../orchestration-v2/ProjectionStore.ts";
 import { followSend } from "../scheduledTaskChecks/handoff.ts";
+import { lifecycleEvents } from "./lifecycle.ts";
 import { readSpectrum } from "./store.ts";
 import {
   makeInitialReport,
@@ -197,6 +198,7 @@ const plan = Effect.fn("Spectrum.commandPlan")(function* (
         occurredAt: now,
         payload: {
           ...thread,
+          forkSpectrumRunning: next.status === "active",
           forkResumedRetirements: retirement.tokens,
           settledOverride: "active",
           settledAt: null,
@@ -204,6 +206,8 @@ const plan = Effect.fn("Spectrum.commandPlan")(function* (
         },
       });
     }
+    if (command.type === "thread.stop")
+      events.push(...lifecycleEvents(thread, next, command.commandId, now));
     return {
       events,
       effects: [],

@@ -22,6 +22,7 @@ import * as Tasks from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Secrets from "../secrets/SecretRequests.ts";
 import * as Settings from "../serverSettings.ts";
 import * as Git from "../vcs/GitVcsDriver.ts";
+import { SpectrumMcpInterrupt } from "./mcpInterrupt.ts";
 import { SpectrumMcpSend } from "./mcpSend.ts";
 import { makeMessage, makeRun } from "./testFixtures.ts";
 
@@ -36,7 +37,9 @@ it.effect(
       let interactionMode = "default" as "default" | "plan";
       let live = true,
         forkCalls = 0,
-        normalCalls = 0;
+        normalCalls = 0,
+        interruptCalls = 0,
+        normalInterruptCalls = 0;
       const child = idleThreadProjection(liveThreadShell(normalId));
       const run = makeRun({
         threadId: normalId,
@@ -71,6 +74,11 @@ it.effect(
             })),
           getProjectThreadRecords: ({ threadId }) =>
             Effect.succeed(idleThreadProjection(liveThreadShell(threadId))),
+          interruptThread: () =>
+            Effect.sync(() => {
+              normalInterruptCalls++;
+              return { type: "no_active_run" as const };
+            }),
           sendToThread: () =>
             Effect.sync(() => {
               normalCalls++;
@@ -127,6 +135,10 @@ it.effect(
             (yield* service.sendToThread(scope, send).pipe(Effect.flip)).code,
             code,
           );
+          assert.strictEqual(
+            (yield* service.interruptThread(scope, send).pipe(Effect.flip)).code,
+            code,
+          );
         }
         assert.strictEqual(
           (yield* service
@@ -134,6 +146,13 @@ it.effect(
             .pipe(Effect.flip)).code,
           "capability_denied",
         );
+        assert.strictEqual(
+          (yield* service
+            .interruptThread({ ...scope, capabilities: new Set() }, send)
+            .pipe(Effect.flip)).code,
+          "capability_denied",
+        );
+        assert.strictEqual(interruptCalls, 0);
         assert.strictEqual(forkCalls, 0);
         interactionMode = "default";
         const first = yield* service.sendToThread(scope, send);
@@ -143,8 +162,26 @@ it.effect(
         assert.strictEqual(normal.delivery, result.delivery);
         assert.strictEqual(normal.runId, result.runId);
         assert.strictEqual(normalCalls, 1);
+        const stop = yield* service.interruptThread(scope, send);
+        assert.deepStrictEqual(yield* service.interruptThread(scope, send), stop);
+        assert.strictEqual(stop.status, "interrupt_requested");
+        assert.strictEqual(stop.runId, null);
+        assert.strictEqual(
+          (yield* service.interruptThread(scope, { ...send, threadId: normalId })).status,
+          "no_active_run",
+        );
+        assert.strictEqual(normalInterruptCalls, 1);
       }).pipe(
         Effect.provide(Mcp.layer.pipe(Layer.provide(dependencies))),
+        Effect.provideService(SpectrumMcpInterrupt, {
+          interrupt: (_threads, request) =>
+            Effect.sync(() => {
+              interruptCalls++;
+              return request.threadId === spectrumId
+                ? { threadId: spectrumId, runId: null, status: "interrupt_requested" as const }
+                : null;
+            }),
+        }),
         Effect.provideService(SpectrumMcpSend, {
           send: (_threads, input, _commandId, messageId, senderThreadId) =>
             Effect.sync(() => {

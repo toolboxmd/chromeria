@@ -28,6 +28,7 @@ import * as Reports from "./ReportService.ts";
 import * as Rounds from "./RoundService.ts";
 import * as Transcript from "./TranscriptService.ts";
 import { spectrumPlan } from "./spectrumPlan.ts";
+import { lifecycleEvents } from "./lifecycle.ts";
 import { readSpectrum } from "./store.ts";
 import type { SpectrumState } from "./state.ts";
 
@@ -63,12 +64,14 @@ const make = Effect.gen(function* () {
     next: SpectrumState,
     key: string,
   ) {
+    const now = yield* DateTime.now;
+    const thread = yield* projections.getThread(old.threadId);
     yield* sink.commitCommand({
       commandId: CommandId.make(key),
       threadId: old.threadId,
       commandType: "spectrum.controller",
-      acceptedAt: yield* DateTime.now,
-      events: [],
+      acceptedAt: now,
+      events: lifecycleEvents(thread, next, key, now),
       effects: [],
       forkPlans: [
         spectrumPlan({
@@ -192,6 +195,14 @@ const make = Effect.gen(function* () {
   });
   const pump = Effect.fn("SpectrumController.resume")(function* (id: ThreadId) {
     let state = yield* read(id);
+    const shell = yield* projections.getThread(id);
+    if (shell.forkSpectrumRunning !== (state.status === "active")) {
+      state = yield* save(
+        state,
+        { ...state, revision: state.revision + 1 },
+        `spectrum:${id}:lifecycle:${state.revision}`,
+      );
+    }
     const retirement = yield* readRetirementState(id).pipe(
       Effect.provideService(Projections.ProjectionStoreV2, projections),
     );

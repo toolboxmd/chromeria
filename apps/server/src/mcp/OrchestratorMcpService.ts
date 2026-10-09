@@ -1,3 +1,4 @@
+import { SpectrumMcpInterrupt } from "../spectrum/mcpInterrupt.ts";
 import { SpectrumMcpSend } from "../spectrum/mcpSend.ts";
 import * as Prism from "../prism/PrismService.ts";
 import {
@@ -2546,6 +2547,12 @@ const make = Effect.gen(function* () {
         yield* resolveRuntimeMode(limits.runtimeMode, target.thread.runtimeMode);
         yield* resolveInteractionMode(limits.interactionMode, target.thread.interactionMode);
         const key = yield* requestKey(input.clientRequestId);
+        const spectrum = yield* (yield* SpectrumMcpInterrupt).interrupt(
+          threadManagement,
+          input,
+          stableCommandId({ scope, requestKey: key, operation: "thread-interrupt" }),
+        );
+        if (spectrum !== null) return spectrum;
         const result = yield* threadManagement
           .interruptThread({
             projectId: target.thread.projectId,
