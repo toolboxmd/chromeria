@@ -25,6 +25,7 @@ import {
   setNotificationBadge,
   unlockNotificationAudio,
 } from "../threadNotifications";
+import { ScheduledCommandNotifications } from "./ScheduledCommandNotifications";
 import { resolveSidebarThreadStatus } from "./Sidebar.logic";
 import { toastManager } from "./ui/toast";
 
@@ -251,5 +252,8 @@ function EnvironmentNotifications({
     threads,
   ]);
 
-  return null;
+  // Fork (#174): scheduled shell command failures alert like threads do.
+  return (
+    <ScheduledCommandNotifications environmentId={environmentId} onNotification={onNotification} />
+  );
 }

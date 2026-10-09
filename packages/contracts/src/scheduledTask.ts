@@ -17,6 +17,7 @@ import {
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
 } from "./orchestrationV2.ts";
 import { ProviderInteractionMode, RuntimeMode } from "./providerPolicy.ts";
+import * as Fork from "./scheduledTaskChecks.ts";
 
 /** 24-hour "HH:MM" wall-clock time. Mirrors `parseTimeOfDay` on the server. */
 const TimeOfDay = TrimmedNonEmptyString.check(
@@ -130,6 +131,7 @@ export const ScheduledTaskSchedule = Schema.Union([
   ScheduledTaskIntervalSchedule,
   ScheduledTaskFixedTimeSchedule,
   ScheduledTaskWebhookSchedule,
+  ...Fork.ScheduledTaskForkSchedules,
 ]).annotate({
   description:
     "Structured trigger. Pass an object with type 'interval', 'fixed_time' or 'webhook'.",
@@ -152,6 +154,7 @@ export const ScheduledTaskUpsertSchedule = Schema.Union([
   }),
   ScheduledTaskFixedTimeSchedule,
   ScheduledTaskUpsertWebhookSchedule,
+  ...Fork.ScheduledTaskForkSchedules,
 ]).annotate({
   description: "Writable trigger. Pass an object with type 'interval', 'fixed_time' or 'webhook'.",
 });
@@ -192,6 +195,7 @@ export const ScheduledTask = Schema.Struct({
   lastRunError: Schema.NullOr(Schema.String),
   runCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   webhook: Schema.optional(ScheduledTaskWebhookEndpoint),
+  ...Fork.ScheduledTaskForkFields,
 });
 export type ScheduledTask = typeof ScheduledTask.Type;
 
