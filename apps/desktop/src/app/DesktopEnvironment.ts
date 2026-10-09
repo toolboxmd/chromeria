@@ -12,6 +12,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
+import { CHROMERIA_DESKTOP_IDENTITY } from "../../../../scripts/lib/chromeria-desktop-identity.ts";
 import * as DesktopConfig from "./DesktopConfig.ts";
 import { resolveLinuxDesktopEntryName } from "./DesktopEarlyElectronStartup.ts";
 import { resolveDesktopBaseDir, resolveDesktopStateDir } from "./DesktopStatePaths.ts";
@@ -95,7 +96,7 @@ export class DesktopEnvironment extends Context.Service<
 
 // Chromeria (toolboxmd fork): product name shown in window titles, menus and
 // the About panel. The stable build shows the bare name without "(Alpha)".
-const APP_BASE_NAME = "Chromeria";
+const APP_BASE_NAME = CHROMERIA_DESKTOP_IDENTITY.productName;
 
 function resolveDesktopAppStageLabel(input: {
   readonly isDevelopment: boolean;
@@ -116,7 +117,11 @@ export function resolveDesktopAppBranding(input: {
   return {
     baseName: APP_BASE_NAME,
     stageLabel,
-    displayName: stageLabel === "Alpha" ? APP_BASE_NAME : `${APP_BASE_NAME} (${stageLabel})`,
+    // V2's name is fixed so the running app matches its packaged product name.
+    displayName:
+      stageLabel === "Alpha" || CHROMERIA_DESKTOP_IDENTITY.variant !== "default"
+        ? APP_BASE_NAME
+        : `${APP_BASE_NAME} (${stageLabel})`,
   };
 }
 

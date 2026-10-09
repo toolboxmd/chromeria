@@ -4,6 +4,8 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
+import { CHROMERIA_DESKTOP_IDENTITY } from "../../../../scripts/lib/chromeria-desktop-identity.ts";
+
 export class DesktopUserDataInitializationError extends Schema.TaggedError<DesktopUserDataInitializationError>()(
   "DesktopUserDataInitializationError",
   {
@@ -40,6 +42,9 @@ export const resolveUserDataPath = Effect.fn("desktop.userData.resolveUserDataPa
   }) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    // Chromeria (toolboxmd fork): a fixed identity profile never migrates another profile.
+    const ownProfile = CHROMERIA_DESKTOP_IDENTITY.userDataProfile;
+    if (ownProfile !== null) return path.join(input.appDataDirectory, ownProfile);
     const names = input.isDevelopment
       ? { current: "t3code-dev", legacy: "T3 Code (Dev)" }
       : { current: "chromeria", legacy: "Chromeria" };

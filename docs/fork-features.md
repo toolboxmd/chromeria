@@ -150,11 +150,12 @@ are evidence for review, not proof that a feature has been adopted upstream.
 ```json
 {
   "id": "branding",
-  "purpose": "Give desktop and web the Chromeria name, icons and independent desktop identity.",
+  "purpose": "Give desktop and web the Chromeria name, icons and independent desktop identities, including the side-by-side Chromeria V2 build.",
   "issues": [
     "https://github.com/toolboxmd/t3code/issues/12",
     "https://github.com/toolboxmd/t3code/issues/13",
-    "https://github.com/toolboxmd/t3code/issues/14"
+    "https://github.com/toolboxmd/t3code/issues/14",
+    "https://github.com/toolboxmd/chromeria/issues/177"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/12",
@@ -162,23 +163,33 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "https://github.com/toolboxmd/t3code/pull/14"
   ],
   "newFiles": [
+    "apps/desktop/src/app/ChromeriaDesktopV2.test.ts",
     "apps/web/public/chromeria-mark.png",
     "assets/chromeria/chromeria-icon-1024.png",
     "assets/chromeria/chromeria-web-apple-touch-180.png",
     "assets/chromeria/chromeria-web-favicon-16x16.png",
     "assets/chromeria/chromeria-web-favicon-32x32.png",
     "assets/chromeria/chromeria-web-favicon.ico",
-    "assets/chromeria/chromeria-windows.ico"
+    "assets/chromeria/chromeria-windows.ico",
+    "packages/shared/src/codexAuthHandoff.chromeria.test.ts",
+    "scripts/lib/chromeria-desktop-identity.ts",
+    "scripts/lib/desktop-identity-marker.test.ts",
+    "scripts/lib/desktop-identity-marker.ts"
   ],
   "upstreamFiles": [
     "apps/desktop/package.json",
     "apps/desktop/src/app/DesktopAppIdentity.test.ts",
     "apps/desktop/src/app/DesktopClerk.test.ts",
+    "apps/desktop/src/app/DesktopClerk.ts",
+    "apps/desktop/src/app/DesktopLegacyLocalStorage.ts",
     "apps/desktop/src/app/DesktopPreReadyFileSystem.test.ts",
     "apps/desktop/src/app/DesktopEnvironment.ts",
     "apps/desktop/src/app/DesktopPreReadyPlatform.test.ts",
+    "apps/desktop/src/app/DesktopStatePaths.ts",
     "apps/desktop/src/app/DesktopUserData.test.ts",
     "apps/desktop/src/app/DesktopUserData.ts",
+    "apps/desktop/src/electron/ElectronProtocol.ts",
+    "apps/desktop/vite.config.ts",
     "apps/web/index.html",
     "apps/web/src/bootstrap.test.ts",
     "apps/web/src/branding.test.ts",
@@ -192,6 +203,8 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "apps/web/src/components/settings/ThemePreviewCircles.tsx",
     "apps/web/src/components/sidebar/SidebarChrome.tsx",
     "apps/web/src/lib/bootError.ts",
+    "packages/shared/src/codexAuthHandoff.ts",
+    "packages/shared/src/providerAuthReturnUrl.ts",
     "scripts/build-desktop-artifact.test.ts",
     "scripts/build-desktop-artifact.ts",
     "scripts/lib/brand-assets.test.ts",
@@ -206,7 +219,10 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "wordmark",
     "favicon",
     "Chromeria",
-    "auto-update"
+    "auto-update",
+    "chromeria-v2",
+    "setAsDefaultProtocolClient",
+    "requestSingleInstanceLock"
   ]
 }
 ```

@@ -24,6 +24,7 @@ import {
   createBuildConfig,
   DESKTOP_ELECTRON_LANGUAGES,
   DESKTOP_FILE_EXCLUSIONS,
+  DesktopIdentityBuildError,
   DESKTOP_EXTRA_RESOURCES,
   LINUX_CAPTURE_EXTRA_RESOURCES,
   LINUX_BROWSER_SECRET_EXTRA_RESOURCES,
@@ -91,6 +92,7 @@ import {
   WslRuntimeArchiveMissingError,
   wslRuntimeArchiveStem,
 } from "./build-desktop-artifact.ts";
+import { resolveChromeriaDesktopIdentity } from "./lib/chromeria-desktop-identity.ts";
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
 import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
@@ -1991,6 +1993,43 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
+  it.effect("packages Chromeria V2 with its own identity and only its own scheme", () =>
+    Effect.gen(function* () {
+      const v2 = resolveChromeriaDesktopIdentity("v2");
+      const config = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "1.2.3-nightly.20260815.1",
+        false,
+        false,
+        undefined,
+        undefined,
+        false,
+        "arm64",
+        v2,
+      );
+
+      const mac = config.mac as Record<string, unknown>;
+      assert.equal(config.appId, "md.toolbox.chromeria.v2");
+      assert.equal(config.productName, "Chromeria V2");
+      assert.equal(config.artifactName, "Chromeria-V2-${version}-${arch}.${ext}");
+      assert.deepStrictEqual(mac.protocols, [{ name: "Chromeria V2", schemes: ["chromeria-v2"] }]);
+      assert.equal(
+        (config.dmg as Record<string, unknown>).title,
+        "Chromeria V2 1.2.3-nightly.20260815.1 Installer",
+      );
+      const signing = resolveMacPasskeySigningConfiguration(
+        {
+          T3CODE_APPLE_TEAM_ID: "ABC1234567",
+          T3CODE_MACOS_PROVISIONING_PROFILE: "/tmp/t3code.provisionprofile",
+          T3CODE_CLERK_PASSKEY_RP_DOMAINS: "clerk.example.com",
+        },
+        v2,
+      );
+      assert.equal(signing.appId, "md.toolbox.chromeria.v2");
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
+  );
+
   it.effect("uses the nightly DMG background for nightly macOS builds", () =>
     Effect.gen(function* () {
       const config = yield* createBuildConfig(
@@ -2320,6 +2359,41 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(resolved.signed, false);
       assert.equal(resolved.verbose, false);
       assert.equal(resolved.mockUpdates, false);
+    }),
+  );
+
+  it.effect("selects Chromeria V2 for macOS and rejects other platforms and variants", () =>
+    Effect.gen(function* () {
+      const resolveFor = (platform: "mac" | "linux", variant: string) =>
+        resolveBuildOptions({
+          platform: Option.some(platform),
+          target: Option.none(),
+          arch: Option.some("arm64"),
+          buildVersion: Option.none(),
+          outputDir: Option.none(),
+          skipBuild: Option.none(),
+          keepStage: Option.none(),
+          signed: Option.none(),
+          verbose: Option.none(),
+          mockUpdates: Option.none(),
+          mockUpdateServerPort: Option.none(),
+          wslRuntime: Option.none(),
+        }).pipe(
+          Effect.provide(
+            ConfigProvider.layer(
+              ConfigProvider.fromEnv({ env: { CHROMERIA_DESKTOP_VARIANT: variant } }),
+            ),
+          ),
+        );
+
+      assert.equal((yield* resolveFor("mac", "v2")).identity.appId, "md.toolbox.chromeria.v2");
+      assert.equal((yield* resolveFor("linux", "")).identity.appId, "md.toolbox.chromeria");
+      const linux = yield* Effect.flip(resolveFor("linux", "v2"));
+      assert.instanceOf(linux, DesktopIdentityBuildError);
+      assert.include(linux.message, "only for macOS");
+      const unknown = yield* Effect.flip(resolveFor("mac", "v3"));
+      assert.instanceOf(unknown, DesktopIdentityBuildError);
+      assert.include(unknown.message, '"v3"');
     }),
   );
 });

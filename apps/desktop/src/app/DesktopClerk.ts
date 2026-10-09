@@ -6,6 +6,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as Electron from "electron";
 
 import { codexAuthDeliveryUrl, readCodexAuthHandoff } from "@t3tools/shared/codexAuthHandoff";
 import { receiveCodexAuthCallback, CodexAuthCallbackError } from "./CodexAuthCallback.ts";
@@ -16,6 +17,7 @@ import { clerkFrontendApiHostnameFromPublishableKey } from "@t3tools/shared/rela
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
+import { CHROMERIA_DESKTOP_IDENTITY } from "../../../../scripts/lib/chromeria-desktop-identity.ts";
 import * as DesktopUserData from "./DesktopUserData.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 
@@ -94,10 +96,27 @@ export const make = Effect.gen(function* () {
   const electronApp = yield* ElectronApp.ElectronApp;
   const shell = yield* ElectronShell.ElectronShell;
 
+  // Chromeria (toolboxmd fork): V2 runs beside the default app, so it names
+  // itself before Electron derives anything from the app name.
+  const isV2 = CHROMERIA_DESKTOP_IDENTITY.variant === "v2";
+  if (isV2) yield* electronApp.setName(CHROMERIA_DESKTOP_IDENTITY.productName);
+
   // The SDK bridge acquires Electron's profile-scoped single-instance lock.
   // Must not yield: the bridge registers a scheme Electron rejects once ready.
   const userDataPath = yield* DesktopUserData.resolveUserDataPath(environment);
   yield* electronApp.setPath("userData", userDataPath);
+
+  // Chromeria (toolboxmd fork): the SDK takes the lock only off macOS, so V2
+  // takes its own profile lock there and a second V2 instance quits before the
+  // bridge registers its scheme.
+  if (
+    isV2 &&
+    environment.platform === "darwin" &&
+    !(yield* Effect.sync(() => Electron.app.requestSingleInstanceLock()))
+  ) {
+    yield* electronApp.quit;
+    return yield* Effect.interrupt;
+  }
 
   const bridge = yield* Effect.acquireRelease(
     Effect.try({
@@ -140,7 +159,11 @@ export const make = Effect.gen(function* () {
 
       const startProviderAuthHandoff = (value: string | undefined) => {
         if (!value) return false;
-        const request = readCodexAuthHandoff(value, environment.isDevelopment);
+        const request = readCodexAuthHandoff(
+          value,
+          environment.isDevelopment,
+          ElectronProtocol.getDesktopScheme(environment.isDevelopment),
+        );
         if (!request) return false;
         void runPromise(
           Effect.gen(function* () {

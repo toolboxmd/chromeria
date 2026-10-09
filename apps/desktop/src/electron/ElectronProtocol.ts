@@ -12,12 +12,17 @@ import * as Scope from "effect/Scope";
 
 import * as Electron from "electron";
 
+import { CHROMERIA_DESKTOP_IDENTITY } from "../../../../scripts/lib/chromeria-desktop-identity.ts";
+
 export const DESKTOP_HOST = "app";
 const DESKTOP_PRODUCTION_SCHEME = "t3code";
 const DESKTOP_DEVELOPMENT_SCHEME = "t3code-dev";
 
 export function getDesktopScheme(isDevelopment: boolean): string {
-  return isDevelopment ? DESKTOP_DEVELOPMENT_SCHEME : DESKTOP_PRODUCTION_SCHEME;
+  return (
+    CHROMERIA_DESKTOP_IDENTITY.scheme ??
+    (isDevelopment ? DESKTOP_DEVELOPMENT_SCHEME : DESKTOP_PRODUCTION_SCHEME)
+  );
 }
 
 function getDesktopOrigin(isDevelopment: boolean): string {
@@ -117,6 +122,24 @@ function withContentSecurityPolicy(response: Response, policy: string): Response
  * Must run synchronously during process bootstrap, before Electron emits `ready`.
  */
 function registerDesktopSchemePrivilegesSync(): void {
+  // Chromeria (toolboxmd fork): an identity with its own scheme registers only that one.
+  const ownScheme = CHROMERIA_DESKTOP_IDENTITY.scheme;
+  if (ownScheme !== null) {
+    Electron.protocol.registerSchemesAsPrivileged([
+      {
+        scheme: ownScheme,
+        privileges: {
+          standard: true,
+          secure: true,
+          supportFetchAPI: true,
+          corsEnabled: true,
+          stream: true,
+          codeCache: true,
+        },
+      },
+    ]);
+    return;
+  }
   Electron.protocol.registerSchemesAsPrivileged([
     {
       scheme: DESKTOP_PRODUCTION_SCHEME,

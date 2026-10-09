@@ -5,11 +5,16 @@ AGENTS.md
 apps/desktop/package.json
 apps/desktop/src/app/DesktopAppIdentity.test.ts
 apps/desktop/src/app/DesktopClerk.test.ts
+apps/desktop/src/app/DesktopClerk.ts
 apps/desktop/src/app/DesktopEnvironment.ts
+apps/desktop/src/app/DesktopLegacyLocalStorage.ts
 apps/desktop/src/app/DesktopPreReadyFileSystem.test.ts
 apps/desktop/src/app/DesktopPreReadyPlatform.test.ts
+apps/desktop/src/app/DesktopStatePaths.ts
 apps/desktop/src/app/DesktopUserData.test.ts
 apps/desktop/src/app/DesktopUserData.ts
+apps/desktop/src/electron/ElectronProtocol.ts
+apps/desktop/vite.config.ts
 apps/server/src/auth/PairingGrantStore.test.ts
 apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts
 apps/server/src/auth/RpcAuthorization.ts
@@ -103,6 +108,8 @@ packages/contracts/src/orchestrationV2.ts
 packages/contracts/src/orchestratorMcp.ts
 packages/contracts/src/rpc.ts
 packages/contracts/src/settings.ts
+packages/shared/src/codexAuthHandoff.ts
+packages/shared/src/providerAuthReturnUrl.ts
 scripts/build-desktop-artifact.test.ts
 scripts/build-desktop-artifact.ts
 scripts/lib/brand-assets.test.ts
