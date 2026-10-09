@@ -32,6 +32,8 @@ import { makeRun, NOW } from "./testFixtures.ts";
 import { readSpectrum } from "./store.ts";
 import { reportAdmission } from "./reportPolicy.ts";
 import { ForkDispatchPlans } from "../fork/ForkDispatchPlans.ts";
+import { ForkCommandInterceptor } from "../fork/ForkCommandInterceptor.ts";
+import { spectrumLaunchAdmission } from "./launchAdmission.ts";
 
 const dependencies = Layer.mergeAll(base, serialization);
 const services = Layer.mergeAll(Launch.layer, Round.layer, Transcript.layer, Reports.layer).pipe(
@@ -451,4 +453,78 @@ it.effect(
       );
       assert.strictEqual((yield* read(state.threadId)).status, "retired");
     }).pipe(Effect.provide(runtime)),
+);
+
+it.effect("Stop reconciles a Color launch committed after its cancellation snapshot", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    yield* initializeRecoveryHistory;
+    const state = yield* (yield* Launch.SpectrumLaunchService).register(input);
+    const prepared = yield* (yield* Round.SpectrumRoundService).prepare(state.threadId);
+    const launch = prepared.outbox[0]!;
+    assert.strictEqual(launch.type, "message.dispatch");
+    if (launch.type !== "message.dispatch") return;
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const interceptor = yield* ForkCommandInterceptor;
+    yield* orchestrator
+      .dispatch({
+        type: "thread.stop",
+        threadId: state.threadId,
+        commandId: CommandId.make("snapshot-race:stop"),
+      })
+      .pipe(
+        Effect.provideService(ForkCommandInterceptor, {
+          plan: (command) =>
+            Effect.gen(function* () {
+              const planned = yield* interceptor.plan(command);
+              if (command.type === "thread.stop" && command.threadId === state.threadId) {
+                // Commit only the Color launch, before RoundService can bind it or advance the root revision.
+                yield* orchestrator
+                  .dispatch(launch)
+                  .pipe(
+                    Effect.provideService(ForkDispatchPlans, [
+                      spectrumLaunchAdmission(state.threadId, prepared.generation, launch),
+                    ]),
+                  );
+              }
+              return planned;
+            }),
+        }),
+      );
+    const retired = yield* read(state.threadId);
+    assert.strictEqual(retired.status, "retired");
+    const projections = yield* Projection.ProjectionStoreV2;
+    const launched = yield* projections.getThreadRecords(launch.threadId, ["runs"]);
+    assert.strictEqual(launched.runs.length, 1);
+    yield* (yield* Reports.SpectrumReportService).abandon(
+      state.threadId,
+      retired.report!.commandId,
+      "alice",
+    );
+    const reopen = {
+      type: "thread.unsettle" as const,
+      reason: "user" as const,
+      threadId: state.threadId,
+      commandId: CommandId.make("snapshot-race:reopen"),
+    };
+    const early = yield* orchestrator.dispatch(reopen).pipe(Effect.exit);
+    assert.strictEqual(early._tag, "Failure");
+    yield* (yield* Controller.SpectrumController).resume(state.threadId);
+    const drained = yield* projections.getThreadRecords(launch.threadId, ["runs"]);
+    assert.isTrue(
+      drained.runs.every((run) =>
+        ["completed", "failed", "interrupted", "cancelled", "rolled_back"].includes(run.status),
+      ),
+    );
+    const sql = yield* SqlClient.SqlClient;
+    assert.deepStrictEqual(
+      yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id=${launch.threadId} AND status IN('pending','running')`,
+      [],
+    );
+    yield* orchestrator.dispatch({
+      ...reopen,
+      commandId: CommandId.make("snapshot-race:reopen-drained"),
+    });
+    assert.strictEqual((yield* read(state.threadId)).status, "active");
+  }).pipe(Effect.provide(runtime)),
 );

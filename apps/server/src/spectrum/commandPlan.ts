@@ -19,6 +19,7 @@ import {
 import { explicitMessage, humanMessage, readRetirementState } from "../childThreads/retirement.ts";
 import * as Projection from "../orchestration-v2/ProjectionStore.ts";
 import { followSend } from "../scheduledTaskChecks/handoff.ts";
+import { ownedActiveRuns, ownedThreads, ownedRunsDrainedPlan } from "./cancellationPlan.ts";
 import { lifecycleEvents } from "./lifecycle.ts";
 import { readSpectrum } from "./store.ts";
 import {
@@ -124,6 +125,27 @@ const plan = Effect.fn("Spectrum.commandPlan")(function* (
                 "The abandoned report is still draining. Reopen once its exact continuation chain has stopped.",
             });
           guards.push(reportDrainedPlan(proof));
+        }
+        if (state.status === "retired") {
+          if ((yield* ownedActiveRuns(state.threadId)).length !== 0)
+            return yield* new ForkCommandPlanError({
+              threadId: state.threadId,
+              cause: "Owned Drafters are still draining. Reopen after they stop.",
+            });
+          const descendants = yield* ownedThreads(state.threadId);
+          const sql = yield* SqlClient.SqlClient;
+          const pending =
+            descendants.length === 0
+              ? []
+              : yield* sql`SELECT 1 FROM orchestration_v2_effect_outbox
+            WHERE thread_id IN ${sql.in(descendants)} AND status IN('pending','running')
+              AND json_extract(payload_json,'$.type') IN('provider-turn.start','provider-turn.restart','provider-turn.interrupt') LIMIT 1`;
+          if (pending.length !== 0)
+            return yield* new ForkCommandPlanError({
+              threadId: state.threadId,
+              cause: "Owned Drafter effects are still draining. Reopen after they stop.",
+            });
+          guards.push(ownedRunsDrainedPlan(state.threadId, descendants));
         }
         next = {
           ...state,

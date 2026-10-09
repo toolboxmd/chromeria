@@ -23,7 +23,7 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as Projections from "../orchestration-v2/ProjectionStore.ts";
 import { followRun } from "../scheduledTaskChecks/handoff.ts";
 import { acceptReply, barrierComplete, nextRound } from "./barrier.ts";
-import { spectrumCancellationPlan } from "./cancellationPlan.ts";
+import { ownedActiveRuns, spectrumCancellationPlan } from "./cancellationPlan.ts";
 import * as Reports from "./ReportService.ts";
 import * as Rounds from "./RoundService.ts";
 import * as Transcript from "./TranscriptService.ts";
@@ -116,17 +116,9 @@ const make = Effect.gen(function* () {
     key: string,
   ) {
     // Lineage-only Colors are not delegated task rows. Enumerate their full owned lineage explicitly.
-    const owned = yield* sql<{
-      thread_id: string;
-      run_id: string;
-      status: string;
-    }>`WITH RECURSIVE owned(thread_id) AS (
-      SELECT thread_id FROM orchestration_v2_projection_threads WHERE json_extract(payload_json,'$.lineage.parentThreadId')=${state.threadId}
-      AND json_extract(payload_json,'$.lineage.relationshipToParent')='subagent'
-      UNION SELECT t.thread_id FROM orchestration_v2_projection_threads t JOIN owned p ON json_extract(t.payload_json,'$.lineage.parentThreadId')=p.thread_id
-      WHERE json_extract(t.payload_json,'$.lineage.relationshipToParent')='subagent'
-    ) SELECT r.thread_id,r.run_id,r.status FROM orchestration_v2_projection_runs r JOIN owned o ON r.thread_id=o.thread_id
-      WHERE r.status NOT IN('completed','failed','interrupted','cancelled','rolled_back')`;
+    const owned = yield* ownedActiveRuns(state.threadId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
     const generation = state.generation + 1;
     const commands: OrchestrationV2Command[] = owned.map((run) => {
       const identity = {
@@ -161,7 +153,50 @@ const make = Effect.gen(function* () {
         WHERE json_extract(t.payload_json,'$.lineage.relationshipToParent')='subagent'
     ) SELECT 1 FROM orchestration_v2_effect_outbox e JOIN owned o ON e.thread_id=o.thread_id
       WHERE e.status IN('pending','running') AND json_extract(e.payload_json,'$.type') IN('provider-turn.start','provider-turn.restart','provider-turn.interrupt') LIMIT 1`;
-    return pending.length === 0;
+    return (
+      pending.length === 0 &&
+      (yield* ownedActiveRuns(id).pipe(Effect.provideService(SqlClient.SqlClient, sql))).length ===
+        0
+    );
+  });
+  const reconcileRetired = Effect.fn("SpectrumController.reconcileRetired")(function* (
+    state: SpectrumState,
+  ) {
+    const owned = yield* ownedActiveRuns(state.threadId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    const commands: OrchestrationV2Command[] = owned.map((run) => {
+      const type = run.status === "queued" ? "queued-run.cancel" : "run.interrupt";
+      const existing = state.outbox.find(
+        (command) => command.type === type && command.runId === run.run_id,
+      );
+      if (existing !== undefined && existing.type !== "spectrum.transcript.append") return existing;
+      const identity = {
+        commandId: CommandId.make(
+          `spectrum:${state.threadId}:${state.generation}:drain:${run.run_id}:${run.status}`,
+        ),
+        threadId: ThreadId.make(run.thread_id),
+        runId: RunId.make(run.run_id),
+      };
+      return run.status === "queued"
+        ? { ...identity, type: "queued-run.cancel" }
+        : { ...identity, type: "run.interrupt", holdQueue: false, reason: "Spectrum stopped" };
+    });
+    const other = state.outbox.filter(
+      (command) => command.type !== "run.interrupt" && command.type !== "queued-run.cancel",
+    );
+    const outbox = [...commands, ...other];
+    if (
+      outbox.length === state.outbox.length &&
+      outbox.every((command, index) => command.commandId === state.outbox[index]?.commandId)
+    )
+      return state;
+    // Stop's snapshot may predate a Color launch commit. Keep its generation/report and persist exact cancellations before delivery.
+    return yield* save(
+      state,
+      { ...state, revision: state.revision + 1, outbox },
+      `spectrum:${state.threadId}:${state.generation}:drain:${state.revision}`,
+    );
   });
   const drain = Effect.fn("SpectrumController.drain")(function* (id: ThreadId) {
     let state = yield* read(id);
@@ -213,6 +248,7 @@ const make = Effect.gen(function* () {
       yield* reports.settle(id, "Spectrum stopped.", true);
     }
     for (let step = 0; step < 128; step++) {
+      if (state.status === "retired") state = yield* reconcileRetired(state);
       state = yield* drain(id);
       if (state.status !== "active") {
         if (state.status !== "retired" || (yield* ownedWorkDrained(id))) yield* reports.deliver(id);
