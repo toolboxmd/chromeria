@@ -10,6 +10,7 @@ apps/desktop/src/app/DesktopPreReadyFileSystem.test.ts
 apps/desktop/src/app/DesktopPreReadyPlatform.test.ts
 apps/desktop/src/app/DesktopUserData.test.ts
 apps/desktop/src/app/DesktopUserData.ts
+apps/mobile/app.config.ts
 apps/server/src/auth/PairingGrantStore.test.ts
 apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts
 apps/server/src/auth/RpcAuthorization.ts
