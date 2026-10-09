@@ -8,6 +8,7 @@ import { Text } from "react-native";
  * read-only here and edited through agent tools.
  */
 export { forkScheduleLabel };
+export { useAbandonReport } from "./spectrumReportAction";
 
 /** A fork task's one-line state: its check verdict or its command's last result. */
 export function ForkTaskSummaryText({ task }: { readonly task: ScheduledTask }) {

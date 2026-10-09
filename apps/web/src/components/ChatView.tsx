@@ -179,11 +179,11 @@ import {
   selectHandoffImageResources,
   deriveActivePlanState,
   deriveActiveWorkStartedAt,
-  deriveCanInterruptRunningThread,
   findLatestProposedPlan,
   hasActionableProposedPlan,
   isLatestRunSettled,
 } from "../session-logic";
+import { deriveCanStopThread, isForkSpectrumRunning } from "../spectrumStop";
 import { type LegendListRef } from "@legendapp/list/react";
 import {
   CHAT_TIMELINE_ANCHOR_OFFSET,
@@ -3288,8 +3288,10 @@ export default function ChatView(props: ChatViewProps) {
     composerRef.current?.focusAtEnd();
   };
   const focusComposerStable = useStableCallback(focusComposer);
+  const forkSpectrumRunning = isForkSpectrumRunning(activeThreadShell);
   const canInterruptRunningThread =
-    canOperateThread && deriveCanInterruptRunningThread(activeThread !== undefined, activeRuntime);
+    canOperateThread &&
+    deriveCanStopThread(activeThread !== undefined, activeRuntime, forkSpectrumRunning);
   const onInterrupt = async () => {
     if (
       !activeThread ||
@@ -3298,7 +3300,7 @@ export default function ChatView(props: ChatViewProps) {
       return;
     const result = await interruptThreadTurn({
       environmentId,
-      input: { threadId: activeThread.id },
+      input: { threadId: activeThread.id, forkSpectrumRunning },
     });
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       const error = squashAtomCommandFailure(result);
