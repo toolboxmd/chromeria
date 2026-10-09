@@ -92,7 +92,7 @@ const encodeCommand = Schema.encodeSync(OrchestrationV2Command);
 const toJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 /** A report attempt as Spectrum dispatches it to the caller's thread. */
-export const reportCommand = (threadId: ThreadId, id: string) => ({
+const reportCommand = (threadId: ThreadId, id: string) => ({
   type: "message.dispatch" as const,
   commandId: CommandId.make(`report:${id}`),
   threadId,

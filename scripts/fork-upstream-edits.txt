@@ -172,6 +172,8 @@ apps/mobile/src/features/settings/SettingsScheduledTasksRouteScreen.tsx
 apps/mobile/src/features/settings/scheduledTaskDraft.ts
 apps/server/src/scheduledTasks/Schedule.ts
 apps/server/src/scheduledTasks/ScheduledTaskService.ts
+apps/web/src/components/ThreadNotificationCoordinator.badge.test.tsx
+apps/web/src/components/ThreadNotificationCoordinator.test.tsx
 apps/web/src/components/ThreadNotificationCoordinator.tsx
 apps/web/src/components/settings/ScheduledTasksSettings.tsx
 apps/web/src/components/settings/scheduledTasksSettings.logic.ts

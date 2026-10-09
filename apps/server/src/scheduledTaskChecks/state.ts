@@ -137,10 +137,10 @@ export type CheckState = typeof CheckState.Type;
 /** Delays before the same thread is asked to continue after a failed check or run. */
 export const RECOVERY_DELAYS_MS = [30_000, 60_000, 300_000, 900_000, 3_600_000] as const;
 /** Command runs keep their output tail only for this many newest runs. */
-export const COMMAND_OUTPUTS_KEPT = 3;
+const COMMAND_OUTPUTS_KEPT = 3;
 /** Settled runs kept per task; unfinished runs and their pinned versions are always kept. */
-export const RUNS_KEPT = 20;
-export const CHECK_VERSIONS_KEPT = 20;
+const RUNS_KEPT = 20;
+const CHECK_VERSIONS_KEPT = 20;
 export const CHECK_OUTPUT_BYTES = 16_384;
 
 export const activeCheck = (state: CheckState) => state.checks.at(-1)!;

@@ -58,7 +58,7 @@ export const forkSummaryFields = (task: ScheduledTask) => ({
 });
 
 /** Whether an agent-tool call sets any fork field. */
-export const hasOutcomeCheckFields = (fields: ScheduledTaskOutcomeCheckUpdate) =>
+const hasOutcomeCheckFields = (fields: ScheduledTaskOutcomeCheckUpdate) =>
   fields.checkCommand !== undefined ||
   fields.checkReason !== undefined ||
   fields.revertCheckVersion !== undefined ||
@@ -125,7 +125,7 @@ export class ScheduledTaskChecks extends Context.Service<
 >()("t3/scheduledTaskChecks/ScheduledTaskChecks") {}
 
 /** The agent thread deleting a task through its tools, for the judged-thread guard; null otherwise. */
-export class ScheduledTaskDeleteActor extends Context.Reference<ThreadId | null>(
+class ScheduledTaskDeleteActor extends Context.Reference<ThreadId | null>(
   "t3/scheduledTaskChecks/ScheduledTaskDeleteActor",
   { defaultValue: () => null },
 ) {}
@@ -456,14 +456,14 @@ const toTaskError = (taskId: ScheduledTaskId | undefined) => (cause: unknown) =>
  * which only the list and the agent tools return. Every client holds the
  * subscription open, and none shows output from it.
  */
-export function withoutCommandOutput(task: ScheduledTask): ScheduledTask {
+function withoutCommandOutput(task: ScheduledTask): ScheduledTask {
   const run = task.command?.run;
   if (run?.output === undefined) return task;
   const { output: _output, ...compact } = run;
   return { ...task, command: { ...task.command!, run: compact } };
 }
 
-export function withForkState(task: ScheduledTask, state: CheckState | undefined): ScheduledTask {
+function withForkState(task: ScheduledTask, state: CheckState | undefined): ScheduledTask {
   if (state === undefined) return task;
   const status = checkedRunStatus(state);
   return {

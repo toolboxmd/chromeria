@@ -157,10 +157,10 @@ const skipDecision: ScheduledTaskDispatchDecision = { _tag: "skip" };
 const refuse = (message: string) => new ScheduledTaskDispatchRefused({ message });
 const fail = (message: string) => new ScheduledTaskCheckError({ message });
 
-export const runThreadId = (task: ScheduledTask, runId: string) =>
+const runThreadId = (task: ScheduledTask, runId: string) =>
   task.threadId ?? ThreadId.make(`scheduled-run:${runId}`);
 
-export const sendIdentity = (run: CheckedRun, index: number) => ({
+const sendIdentity = (run: CheckedRun, index: number) => ({
   commandId: CommandId.make(`scheduled-task-check:${run.id}:${index}`),
   messageId: MessageId.make(`scheduled-task-check-message:${run.id}:${index}`),
 });
@@ -169,7 +169,7 @@ const runContext = (task: ScheduledTask, run: CheckedRun) =>
   `Scheduled task ${task.id}, run ${run.id}. Immutable outcome check version ${run.checkVersion}.\n`;
 
 /** First sends carry the task prompt; continuations ask the same thread to finish. */
-export function sendText(
+function sendText(
   task: ScheduledTask,
   run: CheckedRun,
   send: Pick<RunSend, "kind">,
