@@ -181,3 +181,6 @@ docs/user/project-settings.md
 packages/client-runtime/package.json
 packages/client-runtime/src/state/server.ts
 packages/contracts/src/scheduledTask.ts
+
+# Spectrum: reviewed authenticated Stop command boundary (#176).
+vite.config.ts
