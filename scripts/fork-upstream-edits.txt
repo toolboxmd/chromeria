@@ -184,3 +184,6 @@ packages/contracts/src/scheduledTask.ts
 
 # Spectrum: reviewed authenticated Stop command boundary (#176).
 vite.config.ts
+apps/mobile/src/features/threads/ThreadRouteScreen.tsx
+apps/mobile/src/state/use-thread-selection.ts
+packages/client-runtime/src/state/threadCommands.ts

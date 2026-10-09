@@ -67,12 +67,15 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "packages/contracts/src/spectrumRpc.test.ts",
     "packages/contracts/src/spectrumRpc.ts"
   ],
-  "upstreamFiles": ["vite.config.ts"],
+  "upstreamFiles": [
+    "apps/mobile/src/features/threads/ThreadRouteScreen.tsx",
+    "apps/mobile/src/state/use-thread-selection.ts",
+    "packages/client-runtime/src/state/threadCommands.ts",
+    "vite.config.ts"
+  ],
   "sharedFiles": [
     "apps/mobile/src/features/settings/SettingsScheduledTasksRouteScreen.tsx",
     "apps/mobile/src/features/settings/scheduledTaskFork.tsx",
-    "apps/mobile/src/features/threads/ThreadRouteScreen.tsx",
-    "apps/mobile/src/state/use-thread-selection.ts",
     "apps/server/src/childThreads/ForkCommitPlan.ts",
     "apps/server/src/childThreads/retirement.ts",
     "apps/server/src/fork/ForkDispatchPlans.ts",
@@ -95,7 +98,6 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "apps/web/src/components/ChatView.tsx",
     "packages/client-runtime/package.json",
     "packages/client-runtime/src/operations/commands.ts",
-    "packages/client-runtime/src/state/threadCommands.ts",
     "packages/contracts/src/clientRpcPermissions.ts",
     "packages/contracts/src/index.ts",
     "packages/contracts/src/orchestratorMcp.ts",
