@@ -7,9 +7,10 @@ import { ComposerBanner } from "../chat/ComposerBanner";
 /**
  * Re-points the message tokens so the user's bubble reads as the outbound
  * side of a chat: the theme's foreground as surface, its background as ink.
+ * The message body paints itself `text-foreground`, so it is re-inked too.
  */
 export const PROMACHOS_OUTBOUND_BUBBLE_CLASS_NAME =
-  "rounded-2xl px-4 py-2.5 [--contrast-message-foreground:var(--background)] [--message-foreground:var(--background)] [--message-surface:var(--foreground)]";
+  "rounded-2xl px-4 py-2.5 [--contrast-message-foreground:var(--background)] [--message-foreground:var(--background)] [--message-surface:var(--foreground)] [&_.text-foreground]:text-message-foreground";
 
 const INBOUND_BUBBLE_CLASS_NAME =
   "min-w-0 max-w-[85%] rounded-2xl bg-message px-4 py-2.5 text-message-foreground";
