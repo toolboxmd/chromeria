@@ -161,7 +161,7 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "https://github.com/toolboxmd/t3code/pull/12",
     "https://github.com/toolboxmd/t3code/pull/13",
     "https://github.com/toolboxmd/t3code/pull/14",
-    "https://github.com/toolboxmd/chromeria/compare/main...feat/chromeria-mobile-testflight"
+    "https://github.com/toolboxmd/chromeria/pull/209"
   ],
   "newFiles": [
     "apps/mobile/chromeria.ts",
