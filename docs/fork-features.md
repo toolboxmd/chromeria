@@ -5,6 +5,116 @@ Each JSON entry assigns actual carried edits one primary owner. Shared paths are
 watched by other carried features; deferred features are excluded. Keyword matches
 are evidence for review, not proof that a feature has been adopted upstream.
 
+## spectrum
+
+```json
+{
+  "id": "spectrum",
+  "purpose": "Run council and free Spectrum conversations with durable server-authored transcripts and exact-run barriers.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/176"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/176-spectrum-v2"],
+  "newFiles": [
+    "apps/mobile/src/features/settings/spectrumReportAction.tsx",
+    "apps/server/src/fork/ForkCommandInterceptor.ts",
+    "apps/server/src/spectrum/Controller.integration.test.ts",
+    "apps/server/src/spectrum/Controller.ts",
+    "apps/server/src/spectrum/Launch.integration.test.ts",
+    "apps/server/src/spectrum/LaunchService.ts",
+    "apps/server/src/spectrum/ReportService.integration.test.ts",
+    "apps/server/src/spectrum/ReportService.ts",
+    "apps/server/src/spectrum/RoundService.ts",
+    "apps/server/src/spectrum/SchedulerAdapter.ts",
+    "apps/server/src/spectrum/TranscriptService.test.ts",
+    "apps/server/src/spectrum/TranscriptService.ts",
+    "apps/server/src/spectrum/barrier.test.ts",
+    "apps/server/src/spectrum/barrier.ts",
+    "apps/server/src/spectrum/cancellationPlan.ts",
+    "apps/server/src/spectrum/commandPlan.ts",
+    "apps/server/src/spectrum/controllerTestkit.ts",
+    "apps/server/src/spectrum/humanReportRpc.test.ts",
+    "apps/server/src/spectrum/humanReportRpc.ts",
+    "apps/server/src/spectrum/humanStopRpc.ts",
+    "apps/server/src/spectrum/humanStopRpc.integration.test.ts",
+    "apps/server/src/spectrum/launchAdmission.ts",
+    "apps/server/src/spectrum/lifecycle.ts",
+    "apps/server/src/spectrum/mcpInterrupt.ts",
+    "apps/server/src/spectrum/mcpSend.integration.test.ts",
+    "apps/server/src/spectrum/mcpScopes.test.ts",
+    "apps/server/src/spectrum/mcpSend.ts",
+    "apps/server/src/spectrum/mcpToolkit.ts",
+    "apps/server/src/spectrum/registrationPlan.ts",
+    "apps/server/src/spectrum/resumeScheduler.integration.test.ts",
+    "apps/server/src/spectrum/resumeScheduler.ts",
+    "apps/server/src/spectrum/reportPolicy.ts",
+    "apps/server/src/spectrum/runtimeLayer.ts",
+    "apps/server/src/spectrum/runtimeLayer.integration.test.ts",
+    "apps/server/src/spectrum/spectrumPlan.test.ts",
+    "apps/server/src/spectrum/spectrumPlan.ts",
+    "apps/server/src/spectrum/state.ts",
+    "apps/server/src/spectrum/store.test.ts",
+    "apps/server/src/spectrum/store.ts",
+    "apps/server/src/spectrum/testFixtures.ts",
+    "apps/server/src/spectrum/transcript.test.ts",
+    "apps/server/src/spectrum/transcript.ts",
+    "apps/web/src/components/settings/spectrumReportAction.tsx",
+    "apps/web/src/spectrumStop.ts",
+    "apps/web/src/spectrumStop.test.ts",
+    "packages/client-runtime/src/spectrumReport.test.ts",
+    "packages/client-runtime/src/spectrumReport.ts",
+    "packages/client-runtime/src/spectrumStop.ts",
+    "packages/client-runtime/src/spectrumStop.test.ts",
+    "packages/contracts/src/spectrum.ts",
+    "packages/contracts/src/spectrumRpc.test.ts",
+    "packages/contracts/src/spectrumRpc.ts"
+  ],
+  "upstreamFiles": [
+    "apps/mobile/src/features/threads/ThreadRouteScreen.tsx",
+    "apps/mobile/src/state/use-thread-selection.ts",
+    "packages/client-runtime/src/state/threadCommands.ts",
+    "vite.config.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+    "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+    "apps/mobile/src/features/settings/SettingsScheduledTasksRouteScreen.tsx",
+    "apps/mobile/src/features/settings/scheduledTaskFork.tsx",
+    "apps/server/src/childThreads/ForkCommitPlan.ts",
+    "apps/server/src/childThreads/retirement.ts",
+    "apps/server/src/fork/ForkDispatchPlans.ts",
+    "apps/server/src/fork/commitSequence.test.ts",
+    "apps/server/src/fork/commitSequence.ts",
+    "apps/server/src/mcp/McpHttpServer.ts",
+    "apps/server/src/mcp/OrchestratorMcpService.ts",
+    "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+    "apps/server/src/observability/RpcInstrumentation.ts",
+    "apps/server/src/orchestration-v2/EventSink.ts",
+    "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "apps/server/src/orchestration-v2/ProjectionStore.ts",
+    "apps/server/src/orchestration-v2/runtimeLayer.ts",
+    "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts",
+    "apps/server/src/persistence/forkV1Backfills.ts",
+    "apps/server/src/prism/PrismService.ts",
+    "apps/server/src/ws.ts",
+    "docs/user/project-settings.md",
+    "apps/web/src/components/settings/scheduledTaskFork.tsx",
+    "apps/web/src/components/ChatView.tsx",
+    "packages/client-runtime/package.json",
+    "packages/client-runtime/src/operations/commands.ts",
+    "packages/contracts/src/clientRpcPermissions.ts",
+    "packages/contracts/src/index.ts",
+    "packages/contracts/src/orchestratorMcp.ts",
+    "packages/contracts/src/orchestrationV2.ts",
+    "packages/contracts/src/rpc.ts"
+  ],
+  "keywords": [
+    "Spectrum",
+    "fork_spectra",
+    "spectrum.transcript.append",
+    "server-authored transcript append"
+  ]
+}
+```
+
 ## direction
 
 ```json
@@ -589,7 +699,10 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/childThreads/retirement.test.ts",
     "apps/server/src/childThreads/retirement.ts",
     "apps/server/src/childThreads/stopDescendants.ts",
-    "apps/server/src/childThreads/workspaceAccess.ts"
+    "apps/server/src/childThreads/workspaceAccess.ts",
+    "apps/server/src/fork/ForkDispatchPlans.ts",
+    "apps/server/src/fork/commitSequence.ts",
+    "apps/server/src/fork/commitSequence.test.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/mcp/OrchestratorMcpService.activity.test.ts",

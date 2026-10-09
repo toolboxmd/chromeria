@@ -41,6 +41,7 @@ import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { IssueRpcs } from "./issues.ts";
 import { IssueLinksRpcGroup } from "./issueLinks.ts";
+import { SpectrumRpcGroup } from "./spectrumRpc.ts";
 import {
   ProviderAuthCancelInput,
   ProviderAuthCompleteInput,
@@ -2214,4 +2215,6 @@ export const WsRpcGroup = RpcGroup.make(
   // Fork: Issue links (toolboxmd/t3code#28).
   .merge(PromachosHomeRpcGroup)
   .merge(IssueLinksRpcGroup)
+  // Fork: Spectrum report abandonment (toolboxmd/chromeria#176).
+  .merge(SpectrumRpcGroup)
   .middleware(RpcScopeAuthorization);

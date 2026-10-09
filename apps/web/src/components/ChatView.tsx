@@ -136,12 +136,12 @@ import { composerRequiresModifier } from "../composer-logic";
 import {
   derivePhase,
   deriveActiveWorkStartedAt,
-  deriveCanInterruptRunningThread,
   findLatestProposedPlan,
   findRevertCheckpoint,
   hasActionableProposedPlan,
   isLatestRunSettled,
 } from "../session-logic";
+import { deriveCanStopThread, isForkSpectrumRunning } from "../spectrumStop";
 import { type LegendListRef } from "@legendapp/list/react";
 import { useWorkspaceMutationRefresh } from "../hooks/useWorkspaceMutationRefresh";
 import { DEFAULT_INTERACTION_MODE, type ChatMessage } from "../types";
@@ -1820,8 +1820,10 @@ export default function ChatView(props: ChatViewProps) {
     composerRef.current?.focusAtEnd();
   };
   const focusComposerStable = useStableCallback(focusComposer);
+  const forkSpectrumRunning = isForkSpectrumRunning(activeThreadShell);
   const canInterruptRunningThread =
-    canOperateThread && deriveCanInterruptRunningThread(activeThread !== undefined, activeRuntime);
+    canOperateThread &&
+    deriveCanStopThread(activeThread !== undefined, activeRuntime, forkSpectrumRunning);
   const onInterrupt = async () => {
     if (
       !activeThread ||
@@ -1830,7 +1832,7 @@ export default function ChatView(props: ChatViewProps) {
       return;
     const result = await interruptThreadTurn({
       environmentId,
-      input: { threadId: activeThread.id },
+      input: { threadId: activeThread.id, forkSpectrumRunning },
     });
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       const error = squashAtomCommandFailure(result);
