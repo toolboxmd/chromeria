@@ -11,6 +11,7 @@ import {
   backfillScheduledTasks,
   scheduledTasksBackfillId,
 } from "../scheduledTaskChecks/v1Import.ts";
+import { ensureSpectrumSchema } from "../spectrum/store.ts";
 
 export interface ForkV1Backfill {
   readonly id: string;
@@ -43,6 +44,7 @@ export class ForkV1BackfillError extends Schema.TaggedError<ForkV1BackfillError>
  * outside the upstream migration ledger. No provider work may start here.
  */
 export const forkV1Backfills: ReadonlyArray<ForkV1Backfill> = [
+  { id: "spectrum-schema", run: ensureSpectrumSchema },
   {
     id: "thread-people",
     run: backfillThreadPeople.pipe(

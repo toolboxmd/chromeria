@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { Button } from "../ui/button";
+import { AbandonReportAction } from "./spectrumReportAction";
 
 /**
  * Fork (toolboxmd/chromeria#174): the web scheduled task screens' view of
@@ -32,6 +33,7 @@ export function ForkTaskSummary({
   return (
     <>
       <span>{summary}</span>
+      <AbandonReportAction environmentId={environmentId} task={task} />
       {run === null || run === undefined ? null : (
         <CommandOutputToggle
           environmentId={environmentId}

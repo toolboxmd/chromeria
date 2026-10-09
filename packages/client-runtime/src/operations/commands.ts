@@ -34,6 +34,7 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 
 import { getInitialServerConfig, request } from "../rpc/client.ts";
+import { stopForkSpectrumThread } from "../spectrumStop.ts";
 
 interface CommandMetadata {
   readonly commandId?: CommandId;
@@ -190,6 +191,8 @@ export interface InterruptThreadTurnInput extends ThreadCommandInput {
   readonly subagentId?: NodeId;
   /** Temporary caller compatibility while UI naming moves from turns to runs. */
   readonly turnId?: string;
+  /** Fork (toolboxmd/chromeria#176): the shell reports a running Spectrum; see `spectrumStop.ts`. */
+  readonly forkSpectrumRunning?: boolean;
 }
 
 export interface RespondToThreadApprovalInput extends ThreadCommandInput {
@@ -787,6 +790,10 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
 export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThreadTurn")(function* (
   input: InterruptThreadTurnInput,
 ) {
+  // Fork (toolboxmd/chromeria#176): the whole thread stops with its Spectrum, run or not.
+  if (input.forkSpectrumRunning === true) {
+    return yield* stopForkSpectrumThread(input.threadId, yield* allocateCommandId(input));
+  }
   if (input.subagentId !== undefined) {
     const projection = yield* getProjection(input.threadId);
     const subagent = projection.subagents.find((agent) => agent.id === input.subagentId);
