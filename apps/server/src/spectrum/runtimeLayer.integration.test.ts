@@ -19,6 +19,7 @@ it.effect(
       const sink = yield* Sink.EventSinkV2;
       let tick = Effect.void;
       let registrations = 0;
+      let subscriptions = 0;
       const register: Scheduler["Service"]["register"] = <E, R>(
         name: string,
         work: Effect.Effect<void, E, R>,
@@ -46,6 +47,7 @@ it.effect(
             ],
           });
         assert.strictEqual(registrations, 1);
+        assert.strictEqual(subscriptions, 0);
         // Publishing a burst schedules no individual sweep; the registered shared tick advances it.
         assert.deepStrictEqual(
           (yield* projections.getThreadRecords(state.participants[0]!.threadId, ["runs"])).runs,
@@ -62,7 +64,10 @@ it.effect(
         Effect.provideService(Scheduler, { register }),
         Effect.provideService(Sink.EventSinkV2, {
           ...sink,
-          stream: () => Stream.die("Spectrum must not subscribe to global events"),
+          stream: () => {
+            subscriptions++;
+            return Stream.empty;
+          },
         }),
       );
     }).pipe(Effect.provide(Layer.mergeAll(base, serialization))),
