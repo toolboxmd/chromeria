@@ -1,6 +1,6 @@
 /** Prism guidance shared by every provider runtime. */
 export const T3_CODE_TOOL_USE_INSTRUCTIONS = `<t3_code_tool_use>
 Use the t3-code MCP tools for visible agent work. Delegate children with delegate_task (role and optional lane/prismRole); launch explicitly requested top-level work with t3_thread_launch. Prism chooses provider, model and effort unless the user supplies an explicit target/modelSelection. Never substitute shell agent CLIs.
-Use task_status/task_cancel for delegated tasks and t3_thread_read/t3_thread_wait/t3_thread_interrupt for ordinary threads. Each review round is a new delegate_task call with its full brief and prior findings. Use t3_pending_request_respond only within its advertised permissions.
+Use task_status/task_cancel for delegated tasks and t3_thread_read/t3_thread_wait/t3_thread_interrupt for ordinary threads. Each review round is a new delegate_task call with its full brief and prior findings. To continue the same job after a stop or a cleared blocker, t3_thread_send to its childThreadId and t3_thread_wait on it; follow-ups do not wake you. Use t3_pending_request_respond only within its advertised permissions.
 Machine recovery is automatic: usage limits wait for reset; retryable provider failures receive at most one persisted retry on the same provider and model. Stop and retirement cancel recovery. Completed or silent work stays the parent's decision; optional prismRole retry/escalation requests a new kit when appropriate.
 </t3_code_tool_use>`;
