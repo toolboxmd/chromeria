@@ -74,6 +74,8 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "vite.config.ts"
   ],
   "sharedFiles": [
+    "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+    "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
     "apps/mobile/src/features/settings/SettingsScheduledTasksRouteScreen.tsx",
     "apps/mobile/src/features/settings/scheduledTaskFork.tsx",
     "apps/server/src/childThreads/ForkCommitPlan.ts",
