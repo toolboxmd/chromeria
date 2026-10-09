@@ -2225,6 +2225,57 @@ it.effect("cancels tracked setup before provider work is released", () =>
   }),
 );
 
+it.effect("drains a delayed branch rename before cancelled setup clears its workspace", () =>
+  Effect.gen(function* () {
+    const setupEntered = yield* Deferred.make<void>();
+    const renameEntered = yield* Deferred.make<void>();
+    const renameResume = yield* Deferred.make<void>();
+    const renameInterrupted = yield* Ref.make(false);
+    const harness = makeHarness({
+      renameBranch: () =>
+        Deferred.succeed(renameEntered, undefined).pipe(
+          Effect.andThen(Deferred.await(renameResume)),
+          Effect.as({ branch: "late-generated-branch" }),
+          Effect.onInterrupt(() => Ref.set(renameInterrupted, true)),
+        ),
+      runSetup: () => Deferred.succeed(setupEntered, undefined).pipe(Effect.andThen(Effect.never)),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const input = launchInput({
+        command: "launch:delayed-cancel-rename",
+        thread: "thread:delayed-cancel-rename",
+        message: "Start",
+        workspace: { type: "worktree", baseRef: "main" },
+      });
+      const launched = yield* launches.launch(input);
+      yield* Deferred.await(setupEntered);
+      yield* Deferred.await(renameEntered);
+      assert.isTrue(yield* tracker.cancel(launched.threadId));
+      const interrupted = yield* Ref.get(renameInterrupted);
+      yield* Deferred.succeed(renameResume, undefined);
+      // On the broken source, observe the delayed write after cleanup rather than relying on timing.
+      if (!interrupted)
+        yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+          Stream.filter(
+            (stored) => stored.commandId === CommandId.make(`${input.commandId}:branch-rename`),
+          ),
+          Stream.runHead,
+        );
+      const projection = yield* threads.getThreadProjection(launched.threadId);
+      assert.isNull(projection.thread.worktreePath);
+      assert.isNull(projection.thread.branch);
+      assert.isTrue(interrupted);
+      assert.equal(projection.runs[0]?.status, "failed");
+      assert.equal(harness.removeWorktree.mock.calls.length, 1);
+      assert.isEmpty(yield* outbox.listByCommandId(CommandId.make(`${input.commandId}:release`)));
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
 it.effect.each([0, 1])("releases an async setup before its completion with exit %s", (exitCode) =>
   Effect.gen(function* () {
     const completion = yield* Deferred.make<{ exitCode: number | null; durationMs: number }>();

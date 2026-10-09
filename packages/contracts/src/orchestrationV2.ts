@@ -386,6 +386,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   lineage: OrchestrationV2AppThreadLineage,
   forkRetirement: Schema.optional(Schema.Struct({ token: CommandId })),
   forkResumedRetirements: Schema.optional(Schema.Array(CommandId)),
+  forkSpectrumRunning: Schema.optional(Schema.Boolean),
   forkLineageOverride: Schema.optional(Schema.Struct({ commandId: CommandId, runId: RunId })),
   forkedFrom: Schema.NullOr(
     Schema.Union([
@@ -1840,6 +1841,7 @@ export type OrchestrationV2LatestVisibleMessageSummary =
   typeof OrchestrationV2LatestVisibleMessageSummary.Type;
 
 export const OrchestrationV2ThreadShell = Schema.Struct({
+  forkSpectrumRunning: Schema.optional(Schema.Boolean),
   ...OrchestrationV2CreationFields,
   // Fork: thread people (toolboxmd/chromeria#170). Unset owner is the default person.
   owner: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),

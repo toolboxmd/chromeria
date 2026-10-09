@@ -185,6 +185,8 @@ export default defineConfig({
         files: [
           "packages/client-runtime/src/state/runtime.ts",
           "packages/client-runtime/src/state/vcsAction.ts",
+          // Fork (toolboxmd/chromeria#176): the Stop command's guard for the Spectrum bridge.
+          "packages/client-runtime/src/spectrumStop.ts",
         ],
         rules: {
           "t3code/no-rpc-permission-bypass": [

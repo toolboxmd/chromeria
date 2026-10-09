@@ -83,12 +83,28 @@ Chromeria alerts you when a scheduled command starts failing.
 
 When a scheduled run asks a Spectrum, the run finishes only after the turn
 that delivers the Spectrum's report has completed in its thread. If that
-delivery can't finish, the task shows **Needs you** with the reason; once
-you've dealt with the report, **Run now** picks the run up again.
+delivery fails, Spectrum may send the same report again, up to three attempts
+in total. A partially processed report can therefore be processed twice. Stop,
+explicit abandonment and a failure that cannot be retried end automatic retries.
+If delivery cannot finish, the task shows **Needs you** with the reason. Choose
+**Abandon report** in web settings or the mobile task menu to stop delivering it
+and continue to the task's check. An active Spectrum still holds that check.
 
 Tasks brought over from Chromeria 1 start paused, and their earlier runs stay
 as history that never resumes; **Run now** starts a new run. Turn a task on
 when you stop using it in Chromeria 1.
+
+## Spectrum conversations
+
+Ask your agent to start a Spectrum with a question and two to eight named
+Colors. Each Color is a Drafter selected through Prism, with an optional role
+or explicit model. **Council** collects independent answers, runs at least two
+relay rounds, then asks the moderator Color to synthesize. **Free** lets Colors
+speak in order for a fixed number of turns.
+
+The Spectrum thread shows the full discussion. Send a message there to join at
+the next barrier. **Stop** cancels its owned Drafter work. After the report
+finishes or you explicitly abandon it, reopen the thread to continue.
 
 ## Webhook automations
 

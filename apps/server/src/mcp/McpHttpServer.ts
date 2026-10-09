@@ -1,3 +1,4 @@
+import * as SpectrumToolkit from "../spectrum/mcpToolkit.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -864,5 +865,6 @@ export const layer = Layer.mergeAll(
   layerPullRequestsToolkit,
   layerIssuesToolkitRegistration,
   layerDeviceToolkit,
+  toolkitRegistration(SpectrumToolkit.SpectrumToolkit, SpectrumToolkit.layer),
   layerHtmlToolkit,
 ).pipe(Layer.provideMerge(layerMcpTransport));

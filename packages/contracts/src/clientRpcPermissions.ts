@@ -7,6 +7,7 @@ import {
   type AuthEnvironmentScope,
 } from "./auth.ts";
 import { ISSUE_WS_METHODS } from "./issues.ts";
+import { SPECTRUM_WS_METHODS } from "./spectrumRpc.ts";
 import { WS_METHODS } from "./rpc.ts";
 
 /** Incremental client enforcement; the server still authorizes every request. */
@@ -45,6 +46,9 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.scheduledTasksDelete]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksRunNow]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksRotateWebhookToken]: AuthOrchestrationOperateScope,
+  // Fork: Spectrum report abandonment (toolboxmd/chromeria#176).
+  [SPECTRUM_WS_METHODS.abandonReport]: AuthOrchestrationOperateScope,
+  [SPECTRUM_WS_METHODS.stop]: AuthOrchestrationOperateScope,
 } as const;
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 
