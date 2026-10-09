@@ -9857,10 +9857,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             completedAt: now,
             updatedAt: now,
           };
+      // The parent sent the follow-up after the delegating turn, so no blocking
+      // wait owns it and a stop of that turn does not cancel it.
       const completionPlan = yield* planDelegatedCompletionDelivery({
         parentProjection,
-        parentRun,
-        task,
+        parentRun:
+          followUp && parentRun?.delegatedCompletion !== undefined
+            ? {
+                ...parentRun,
+                delegatedCompletion: { ...parentRun.delegatedCompletion, disposition: "open" },
+              }
+            : parentRun,
+        task: followUp ? { ...task, completionWake: "always" } : task,
         updatedTask,
         now,
       });

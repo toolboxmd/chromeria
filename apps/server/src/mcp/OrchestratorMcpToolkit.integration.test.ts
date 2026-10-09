@@ -1939,7 +1939,11 @@ describe("orchestrator MCP toolkit", () => {
             // A wait-mode child (completionWake settled_only) that completes
             // while the parent run is live does not offer a wake: the
             // blocking delegate_task call above already returned the result.
-            yield* expectOffersToStay(0);
+            // Fork (pingdotgg/t3code#13490): its finished follow-up does offer
+            // one, since no blocking call returns it. Later checks count from zero.
+            expect(yield* waitForContinuationOffers(1)).toHaveLength(1);
+            yield* expectOffersToStay(1);
+            yield* Ref.set(continuationOffers, []);
 
             const repeatedDelegatedCall = yield* invoke("delegate_task", {
               task: delegatedPrompt,

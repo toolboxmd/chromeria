@@ -1605,3 +1605,111 @@ it.layer(layerTest)("delegated task follow-up turns", (it) => {
     }),
   );
 });
+
+it.layer(layerTest)("delegated task follow-up turns after the delegating turn", (it) => {
+  const firstResultThenFollowUp = (input: {
+    readonly name: string;
+    readonly completionWake: "always" | "settled_only";
+    readonly stopDelegatingTurn: boolean;
+  }) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make(`thread:${input.name}-parent`);
+      const runId = RunId.make(`run:${input.name}-parent`);
+      const rootNodeId = NodeId.make(`node:${input.name}-parent-root`);
+      yield* seedParentWithTerminalTask({
+        threadId,
+        projectId: ProjectId.make(`project:${input.name}`),
+        runId,
+        rootNodeId,
+        taskId: NodeId.make(`node:${input.name}-settled`),
+        deliveryState: "delivered",
+        now,
+      });
+      const child = yield* seedRestartCancelledChild({
+        parentThreadId: threadId,
+        projectId: ProjectId.make(`project:${input.name}`),
+        parentRunId: runId,
+        rootNodeId,
+        name: input.name,
+        completionWake: input.completionWake,
+        continuationPending: false,
+        runStatus: "completed",
+        now,
+      });
+      yield* orchestrator.recoverDelegatedTasks;
+      // The parent read the first result.
+      yield* orchestrator.dispatch({
+        type: "delegated_task.completion-delivery.acknowledge",
+        commandId: CommandId.make(`command:${input.name}:ack`),
+        parentThreadId: threadId,
+        taskId: child.taskId,
+        observedByRunId: runId,
+      });
+      if (input.stopDelegatingTurn) {
+        yield* eventSink.write({
+          commandId: CommandId.make(`command:${input.name}:stopped`),
+          events: [
+            runEvent({
+              threadId,
+              runId,
+              ordinal: 1,
+              status: "interrupted",
+              now,
+              delegatedCompletion: { disposition: "stopped", nextGeneration: 2, delivery: null },
+            }),
+          ],
+        });
+      }
+
+      const followUpRunId = RunId.make(`run:${input.name}:2`);
+      yield* eventSink.write({
+        commandId: CommandId.make(`command:${input.name}:follow-up`),
+        events: [
+          runEvent({
+            threadId: child.childThreadId,
+            runId: followUpRunId,
+            ordinal: 2,
+            status: "completed",
+            now,
+          }),
+        ],
+      });
+      yield* orchestrator.recoverDelegatedTask(child.childThreadId, followUpRunId);
+      const parent = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(
+        parent.contextTransfers
+          .filter(
+            (transfer) =>
+              transfer.type === "subagent_result" &&
+              transfer.sourceThreadId === child.childThreadId,
+          )
+          .map((transfer) => transfer.sourcePoint.runId),
+        [child.childRunId, followUpRunId],
+      );
+      assert.equal(
+        parent.subagents.find((row) => row.id === child.taskId)?.completionDelivery?.state,
+        "claimed",
+      );
+    });
+
+  it.effect("wakes the parent for a follow-up after the user stopped the delegating turn", () =>
+    firstResultThenFollowUp({
+      name: "follow-up-after-stop",
+      completionWake: "always",
+      stopDelegatingTurn: true,
+    }),
+  );
+
+  it.effect(
+    "wakes the parent for a wait-mode task's follow-up while the delegating turn runs",
+    () =>
+      firstResultThenFollowUp({
+        name: "follow-up-wait-mode",
+        completionWake: "settled_only",
+        stopDelegatingTurn: false,
+      }),
+  );
+});
