@@ -8,7 +8,7 @@ import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
 describe("delegated task continuation guidance", () => {
   it("tells agents to continue the same job in its child thread", () => {
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "To continue the same delegated job");
-    assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "does not wake you");
+    assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "the finished follow-up wakes you");
     assert.include(T3_CODE_TOOL_USE_INSTRUCTIONS, "To continue the same job after a stop");
     assert.include(
       OrchestratorToolkit.tools.t3_thread_send.description ?? "",

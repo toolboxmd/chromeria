@@ -27,6 +27,7 @@ apps/server/src/mcp/toolkits/thread/handlers.ts
 apps/server/src/mcp/toolkits/thread/tools.ts
 apps/server/src/mcp/toolkits/worktree/registration.test.ts
 apps/server/src/observability/RpcInstrumentation.ts
+apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts
 apps/server/src/orchestration-v2/EffectOutbox.ts
 apps/server/src/orchestration-v2/EffectWorker.ts
 apps/server/src/orchestration-v2/EventSink.ts
