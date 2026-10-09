@@ -587,6 +587,7 @@ describe("orchestrator MCP toolkit", () => {
             latestTerminalStatus: "completed",
             latestTerminalSummary: latestSummary,
           });
+          // Fork (pingdotgg/t3code#13490): the follow-up result reaches the parent as its own transfer.
           const followupTransfer = finishedParent.contextTransfers.find(
             (transfer) =>
               transfer.type === "subagent_result" &&
@@ -604,7 +605,7 @@ describe("orchestrator MCP toolkit", () => {
           expect(read.isError).not.toBe(true);
           const afterRead = yield* orchestrator.getThreadProjection(parentThreadId);
           expect(
-            afterRead.subagents.find((task) => task.id === queuedFollowup.taskId)
+            afterRead.subagents.find((task) => task.id === delegated.taskId)
               ?.completionDelivery?.state,
           ).toBe("acknowledged");
         }).pipe(Effect.provide(layerTest));
