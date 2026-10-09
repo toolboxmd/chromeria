@@ -8,6 +8,7 @@ import {
   type ModelSelection,
   NodeId,
   type OrchestrationV2Run,
+  type OrchestrationV2ThreadProjection,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -1460,6 +1461,146 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
       assert.deepEqual(
         projection.runs.find((row) => row.id === runId)?.delegatedCompletion?.delivery?.taskIds,
         [child.taskId],
+      );
+    }),
+  );
+});
+
+// Fork: a finished follow-up turn wakes the parent too (pingdotgg/t3code#13490, toolboxmd/chromeria#212).
+it.layer(layerTest)("delegated task follow-up turns", (it) => {
+  it.effect("wakes the parent once per finished follow-up turn, not for a Monitor wake", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:follow-up-parent");
+      const runId = RunId.make("run:follow-up-parent");
+      const rootNodeId = NodeId.make("node:follow-up-parent-root");
+      yield* seedParentWithTerminalTask({
+        threadId,
+        projectId: ProjectId.make("project:follow-up-parent"),
+        runId,
+        rootNodeId,
+        taskId: NodeId.make("node:follow-up-parent-settled"),
+        deliveryState: "delivered",
+        now,
+      });
+      const child = yield* seedRestartCancelledChild({
+        parentThreadId: threadId,
+        projectId: ProjectId.make("project:follow-up-parent"),
+        parentRunId: runId,
+        rootNodeId,
+        name: "follow-up-child",
+        completionWake: "always",
+        continuationPending: false,
+        runStatus: "completed",
+        now,
+      });
+      const results = (projection: Pick<OrchestrationV2ThreadProjection, "contextTransfers">) =>
+        projection.contextTransfers
+          .filter(
+            (transfer) =>
+              transfer.type === "subagent_result" &&
+              transfer.sourceThreadId === child.childThreadId,
+          )
+          .map((transfer) => transfer.sourcePoint.runId);
+
+      yield* orchestrator.recoverDelegatedTasks;
+      assert.deepEqual(results(yield* orchestrator.getThreadProjection(threadId)), [
+        child.childRunId,
+      ]);
+      // The parent read the first result, settling its wake.
+      yield* orchestrator.dispatch({
+        type: "delegated_task.completion-delivery.acknowledge",
+        commandId: CommandId.make("command:follow-up-child:ack"),
+        parentThreadId: threadId,
+        taskId: child.taskId,
+        observedByRunId: runId,
+      });
+
+      // The parent sends more work; the child finishes that turn.
+      const followUpRunId = RunId.make("run:follow-up-child:2");
+      yield* eventSink.write({
+        commandId: CommandId.make("command:follow-up-child:completed"),
+        events: [
+          runEvent({
+            threadId: child.childThreadId,
+            runId: followUpRunId,
+            ordinal: 2,
+            status: "completed",
+            now,
+          }),
+        ],
+      });
+      yield* orchestrator.recoverDelegatedTask(child.childThreadId, followUpRunId);
+      const woken = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(results(woken), [child.childRunId, followUpRunId]);
+      const task = woken.subagents.find((row) => row.id === child.taskId);
+      assert.equal(task?.completionDelivery?.state, "claimed");
+      assert.deepEqual(
+        woken.runs.find((row) => row.id === runId)?.delegatedCompletion?.delivery?.taskIds,
+        [child.taskId],
+      );
+      // Replaying the same finished turn creates no second result.
+      yield* orchestrator.recoverDelegatedTask(child.childThreadId, followUpRunId);
+      assert.deepEqual(results(yield* orchestrator.getThreadProjection(threadId)), [
+        child.childRunId,
+        followUpRunId,
+      ]);
+
+      // A Monitor wake is not task work: no new result and no second wake.
+      yield* orchestrator.dispatch({
+        type: "delegated_task.completion-delivery.acknowledge",
+        commandId: CommandId.make("command:follow-up-child:ack-2"),
+        parentThreadId: threadId,
+        taskId: child.taskId,
+        observedByRunId: runId,
+      });
+      const monitorRunId = RunId.make("run:follow-up-child:3");
+      yield* eventSink.write({
+        commandId: CommandId.make("command:follow-up-child:monitor"),
+        events: [
+          {
+            id: EventId.make("event:follow-up-child:monitor-message"),
+            type: "message.updated",
+            threadId: child.childThreadId,
+            runId: monitorRunId,
+            occurredAt: now,
+            payload: {
+              id: MessageId.make(`message:${monitorRunId}`),
+              threadId: child.childThreadId,
+              runId: monitorRunId,
+              nodeId: null,
+              role: "user",
+              text: "Monitor stopped",
+              attachments: [],
+              streaming: false,
+              notification: {
+                source: { kind: "monitor" },
+                outcome: "cancelled",
+                summary: "Monitor",
+              },
+              createdBy: "agent",
+              creationSource: "provider",
+              createdAt: now,
+              updatedAt: now,
+            },
+          },
+          runEvent({
+            threadId: child.childThreadId,
+            runId: monitorRunId,
+            ordinal: 3,
+            status: "completed",
+            now,
+          }),
+        ],
+      });
+      yield* orchestrator.recoverDelegatedTask(child.childThreadId, monitorRunId);
+      const quiet = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(results(quiet), [child.childRunId, followUpRunId]);
+      assert.equal(
+        quiet.subagents.find((row) => row.id === child.taskId)?.completionDelivery?.state,
+        "acknowledged",
       );
     }),
   );

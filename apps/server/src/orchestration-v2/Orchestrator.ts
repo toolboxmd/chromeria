@@ -9811,15 +9811,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (task === undefined) {
         return;
       }
-      const existingResultTransfer = parentProjection.contextTransfers.find(
+      const priorResultTransfers = parentProjection.contextTransfers.filter(
         (transfer) =>
           transfer.type === "subagent_result" &&
           transfer.sourceThreadId === childThreadId &&
           transfer.targetThreadId === parentThreadId,
       );
-      if (existingResultTransfer !== undefined) {
+      // Fork (pingdotgg/t3code#13490): each finished turn transfers once, so a
+      // follow-up turn wakes the parent too. A legacy transfer without a run
+      // keeps the old once-per-child rule.
+      if (
+        priorResultTransfers.some(
+          (transfer) =>
+            transfer.sourcePoint.runId === undefined || transfer.sourcePoint.runId === childRun.id,
+        )
+      ) {
         return;
       }
+      const followUp = priorResultTransfers.length > 0;
       if (yield* prismRecovery.holdsFinalization(childThreadId, childRun.id)) return;
 
       const now = yield* DateTime.now;
@@ -9832,14 +9841,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const parentTurnItem = parentProjection.turnItems.find(
         (candidate) => candidate.type === "subagent" && candidate.subagentId === task.id,
       );
-      const updatedTask: OrchestrationV2Subagent = {
-        ...task,
-        providerThreadId: childRun.providerThreadId,
-        status: terminalStatus,
-        result: result.text,
-        completedAt: now,
-        updatedAt: now,
-      };
+      const { completionDelivery: observedDelivery, ...unobservedTask } = task;
+      // A follow-up keeps the task's first result (task_status reports the
+      // later one as latestTerminal*) and reopens a wake the parent already
+      // observed. A cancelled task (disposed) stays quiet.
+      const updatedTask: OrchestrationV2Subagent = followUp
+        ? observedDelivery?.state === "acknowledged" || observedDelivery?.state === "delivered"
+          ? { ...unobservedTask, updatedAt: now }
+          : task
+        : {
+            ...task,
+            providerThreadId: childRun.providerThreadId,
+            status: terminalStatus,
+            result: result.text,
+            completedAt: now,
+            updatedAt: now,
+          };
       const completionPlan = yield* planDelegatedCompletionDelivery({
         parentProjection,
         parentRun,
@@ -9965,7 +9982,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 payload: completionPlan.message,
               },
             ]),
-        ...(parentNode === undefined
+        ...(parentNode === undefined || followUp
           ? []
           : [
               {
@@ -9983,7 +10000,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 },
               },
             ]),
-        ...(parentTurnItem === undefined
+        ...(parentTurnItem === undefined || followUp
           ? []
           : [
               {

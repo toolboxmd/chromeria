@@ -4116,8 +4116,12 @@ describe("orchestrator MCP toolkit", () => {
             latestTerminalRunId: queuedFollowup.runId,
             latestTerminalStatus: "completed",
             latestTerminalSummary: queuedFollowupResult,
-            latestTerminalResultContextTransferId: null,
           });
+          // Fork (pingdotgg/t3code#13490): the follow-up result reaches the parent as its own transfer.
+          expect(finalStatus.latestTerminalResultContextTransferId).not.toBeNull();
+          expect(finalStatus.latestTerminalResultContextTransferId).not.toBe(
+            delegated.resultContextTransferId,
+          );
         }).pipe(Effect.provide(layerTest));
       }),
     ),

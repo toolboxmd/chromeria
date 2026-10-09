@@ -745,6 +745,31 @@ Child creation paths are owned by child-threads and shared with thread-people.
 }
 ```
 
+## child-follow-up-wake
+
+```json
+{
+  "id": "child-follow-up-wake",
+  "purpose": "Wake the parent once for every finished follow-up turn of a delegated child, not for Monitor wakes. Retire this edit and take upstream's when pingdotgg/t3code#13490 is fixed upstream.",
+  "issues": [
+    "https://github.com/pingdotgg/t3code/issues/13490",
+    "https://github.com/toolboxmd/chromeria/issues/212"
+  ],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/PR_NUMBER"],
+  "newFiles": [],
+  "upstreamFiles": ["apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts"],
+  "sharedFiles": [
+    "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+    "apps/server/src/mcp/delegatedTaskContinuation.test.ts",
+    "apps/server/src/mcp/toolInstructions.ts",
+    "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+    "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "apps/server/src/provider/T3OrchestrationInstructions.ts"
+  ],
+  "keywords": ["13490", "finalizeAppOwnedSubagent", "priorResultTransfers", "follow-up turn"]
+}
+```
+
 ## prism-toolkit
 
 ```json
