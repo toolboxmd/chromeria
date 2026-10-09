@@ -24,6 +24,7 @@ import type {
   ScheduledTaskWebhookDeliverySummary,
   ThreadId,
 } from "@t3tools/contracts";
+import * as ScheduledTaskFork from "./scheduledTaskFork";
 import {
   DEFAULT_WEBHOOK_PROMPT,
   emptyWebhookFilterDraft,
@@ -33,6 +34,7 @@ import {
   type WebhookFilterDraft,
 } from "@t3tools/client-runtime/scheduled-task-webhook";
 import {
+  isForkScheduledTaskSchedule,
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
   MAX_WEBHOOK_FILTERS,
   MIN_SCHEDULED_TASK_INTERVAL_MS,
@@ -153,6 +155,7 @@ const EMPTY_DRAFT: DraftState = {
   coalesceWindowSeconds: "",
   filters: [],
   savedFilters: [],
+  preservedSchedule: null,
 };
 
 function WebhookFiltersField({
@@ -283,6 +286,7 @@ function splitModelKey(value: string): ModelSelection | null {
 
 export function scheduleLabel(schedule: ScheduledTaskSchedule): string {
   if (schedule.type === "webhook") return "On webhook";
+  if (isForkScheduledTaskSchedule(schedule)) return ScheduledTaskFork.forkScheduleLabel(schedule);
   if (schedule.type === "interval") {
     const minutes = schedule.everyMs / 60_000;
     return Number.isInteger(minutes)
@@ -739,6 +743,7 @@ function ScheduledTaskRow({
             <Badge variant={statusVariant(task.lastRunStatus)}>{task.lastRunStatus}</Badge>
           ) : null}
           {task.lastRunError ? <span className="text-destructive">{task.lastRunError}</span> : null}
+          <ScheduledTaskFork.ForkTaskSummary environmentId={environmentId} task={task} />
         </div>
       }
       control={
@@ -1495,8 +1500,10 @@ function ScheduledTaskEditorForm({
             {/* Wraps the toggle below the label when both don't fit, as on phones. */}
             <div className="flex flex-wrap items-center justify-between gap-2">
               <Label>Schedule</Label>
+                <ScheduledTaskFork.PreservedScheduleNote schedule={draft.preservedSchedule} />
               <ToggleGroup
-                aria-label="Schedule type"
+                disabled={draft.preservedSchedule !== null}
+                  aria-label="Schedule type"
                 value={[draft.scheduleMode]}
                 onValueChange={(values) => {
                   const mode = values[0] as ScheduleMode | undefined;
@@ -1517,7 +1524,7 @@ function ScheduledTaskEditorForm({
               </ToggleGroup>
             </div>
 
-            {draft.scheduleMode === "webhook" ? (
+            {draft.scheduleMode === "preserved" ? null : draft.scheduleMode === "webhook" ? (
               <div className="space-y-4">
                 <WebhookEndpointField environmentId={environmentId} task={liveTask} />
                 <p className="text-xs text-muted-foreground">

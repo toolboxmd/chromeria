@@ -7,6 +7,10 @@ import type { SqlError } from "effect/sql/SqlError";
 import { backfillImportedLineage, lineageBackfillId } from "../childThreads/lineageBackfill.ts";
 import type * as EventSink from "../orchestration-v2/EventSink.ts";
 import { backfillThreadPeople } from "./forkThreadPeopleBackfill.ts";
+import {
+  backfillScheduledTasks,
+  scheduledTasksBackfillId,
+} from "../scheduledTaskChecks/v1Import.ts";
 
 export interface ForkV1Backfill {
   readonly id: string;
@@ -49,6 +53,15 @@ export const forkV1Backfills: ReadonlyArray<ForkV1Backfill> = [
     ),
   },
   { id: lineageBackfillId, run: backfillImportedLineage() },
+  {
+    id: scheduledTasksBackfillId,
+    run: backfillScheduledTasks.pipe(
+      Effect.catchTags({
+        SchemaError: () =>
+          Effect.fail(new ForkV1BackfillStepError({ backfillId: scheduledTasksBackfillId })),
+      }),
+    ),
+  },
 ];
 
 export const runForkV1Backfills = Effect.fn("forkV1Backfills.run")(function* (

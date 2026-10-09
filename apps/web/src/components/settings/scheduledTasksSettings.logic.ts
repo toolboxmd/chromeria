@@ -2,6 +2,7 @@ import { isWebhookDedupeTemplate } from "@t3tools/contracts";
 import {
   EnvironmentId,
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
+  isForkScheduledTaskSchedule,
   type ProjectId,
   ScheduledTaskId,
   type ScheduledTask,
@@ -52,7 +53,8 @@ export function validateScheduledTasksSearch(raw: Record<string, unknown>) {
   };
 }
 
-export type ScheduleMode = "fixed" | "interval" | "webhook";
+/** `preserved`: a fork trigger (#174) the dialog shows but never edits or converts. */
+export type ScheduleMode = "fixed" | "interval" | "webhook" | "preserved";
 export type WorkspaceMode = "root" | "worktree" | "existing_worktree";
 
 export interface DraftState {
@@ -88,6 +90,8 @@ export interface DraftState {
   readonly filters: ReadonlyArray<WebhookFilterDraft>;
   /** The filter rows the form opened with. */
   readonly savedFilters: ReadonlyArray<WebhookFilterDraft>;
+  /** A fork trigger saved back exactly as loaded. */
+  readonly preservedSchedule: ScheduledTaskUpsertSchedule | null;
 }
 
 export const WEBHOOK_SIGNATURE_DEFAULTS = {
@@ -144,6 +148,7 @@ export function webhookDeliveryLabel(delivery: {
 }
 
 export function scheduleFromDraft(draft: DraftState): ScheduledTaskUpsertSchedule | null {
+  if (draft.scheduleMode === "preserved") return draft.preservedSchedule;
   if (draft.scheduleMode === "webhook") {
     if (webhookDraftErrors(draft).length > 0) return null;
     const maxDeliveryAgeMinutes = parseMaxDeliveryAge(draft.maxDeliveryAgeMinutes);
@@ -206,8 +211,14 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     title: task.title,
     prompt: task.prompt,
     enabled: task.enabled,
-    scheduleMode:
-      schedule.type === "interval" ? "interval" : schedule.type === "webhook" ? "webhook" : "fixed",
+    scheduleMode: isForkScheduledTaskSchedule(schedule)
+      ? "preserved"
+      : schedule.type === "interval"
+        ? "interval"
+        : schedule.type === "webhook"
+          ? "webhook"
+          : "fixed",
+    preservedSchedule: isForkScheduledTaskSchedule(schedule) ? schedule : null,
     intervalMinutes:
       schedule.type === "interval" ? String(Math.max(1, schedule.everyMs / 60_000)) : "15",
     timeOfDay: schedule.type === "fixed_time" ? schedule.timeOfDay : "09:00",

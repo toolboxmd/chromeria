@@ -260,3 +260,5 @@ it("holds a completion through a continuation gap and notifies once it settles",
   await vi.advanceTimersByTimeAsync(1);
   expect(TestNotification.sent.map((sent) => sent.title)).toEqual(["Thread completed"]);
 });
+
+vi.mock(import("../state/query"), async (original) => ({ ...(await original()), useEnvironmentQuery: (() => ({ data: null })) as never }));
