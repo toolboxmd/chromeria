@@ -10,6 +10,7 @@ import { setServerClientSessionPerson } from "../../environments/primary";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { usePrimaryEnvironmentId } from "../../state/environments";
 import { environmentSession, useEnvironmentScope } from "../../state/session";
+import { ChromeriaFeatureMark } from "../ChromeriaFeatureMark";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { toastManager } from "../ui/toast";
 
@@ -52,22 +53,25 @@ export function ClientPersonSelect({
   };
 
   return (
-    <Select
-      value={value}
-      onValueChange={(next) => {
-        if (typeof next === "string" && next !== value) void save(next);
-      }}
-    >
-      <SelectTrigger size="xs" aria-label="Person" disabled={!canEditPerson || saving}>
-        <SelectValue>{value}</SelectValue>
-      </SelectTrigger>
-      <SelectPopup align="end" alignItemWithTrigger={false}>
-        {PEOPLE.map((option) => (
-          <SelectItem hideIndicator key={option} value={option}>
-            {option}
-          </SelectItem>
-        ))}
-      </SelectPopup>
-    </Select>
+    <span className="inline-flex items-center gap-1.5">
+      <ChromeriaFeatureMark />
+      <Select
+        value={value}
+        onValueChange={(next) => {
+          if (typeof next === "string" && next !== value) void save(next);
+        }}
+      >
+        <SelectTrigger size="xs" aria-label="Person" disabled={!canEditPerson || saving}>
+          <SelectValue>{value}</SelectValue>
+        </SelectTrigger>
+        <SelectPopup align="end" alignItemWithTrigger={false}>
+          {PEOPLE.map((option) => (
+            <SelectItem hideIndicator key={option} value={option}>
+              {option}
+            </SelectItem>
+          ))}
+        </SelectPopup>
+      </Select>
+    </span>
   );
 }

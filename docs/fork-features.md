@@ -1091,3 +1091,18 @@ Child creation paths are owned by child-threads and shared with thread-people.
   ]
 }
 ```
+
+## settings-mark
+
+```json
+{
+  "id": "settings-mark",
+  "purpose": "Mark settings that Chromeria adds so the user can tell them from upstream T3 settings.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/199"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/200"],
+  "newFiles": ["apps/web/src/components/ChromeriaFeatureMark.tsx"],
+  "upstreamFiles": [],
+  "sharedFiles": ["apps/web/src/components/settings/SettingsSidebarNav.tsx"],
+  "keywords": ["ChromeriaFeatureMark", "Chromeria feature"]
+}
+```
