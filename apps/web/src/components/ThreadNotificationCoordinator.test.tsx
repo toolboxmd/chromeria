@@ -111,6 +111,8 @@ vi.mock("../state/environments", () => ({
 vi.mock("../state/shell", () => ({
   environmentShell: { stateValueAtom: vi.fn() },
 }));
+// Fork (#174): no scheduled tasks here; ScheduledCommandNotifications.test.tsx covers their alerts.
+vi.mock("../state/query", () => ({ useEnvironmentQuery: () => ({ data: null }) }));
 vi.mock("../threadNotifications", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../threadNotifications")>()),
   playNotificationSound: state.sound,

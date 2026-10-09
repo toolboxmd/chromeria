@@ -22,6 +22,8 @@ vi.mock("@tanstack/react-router", () => ({
 }));
 vi.mock("./ui/toast", () => ({ toastManager: { add: state.toast } }));
 vi.mock("../state/shell", () => ({ environmentShell: { stateValueAtom: (id: string) => id } }));
+// Fork (#174): no scheduled tasks here; ScheduledCommandNotifications.test.tsx covers their alerts.
+vi.mock("../state/query", () => ({ useEnvironmentQuery: () => ({ data: null }) }));
 vi.mock("../state/environments", () => ({
   useEnvironmentIds: () => state.environmentIds,
 }));

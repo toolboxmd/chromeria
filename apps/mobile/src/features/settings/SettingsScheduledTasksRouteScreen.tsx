@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
   AuthOrchestrationOperateScope,
+  isForkScheduledTaskSchedule,
   resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
 import { readEnvironmentScope } from "../../state/session";
@@ -49,6 +50,7 @@ import { ControlPillMenu } from "../../components/ControlPill";
 import type { ComposerEditorSelection } from "../../components/ComposerEditor";
 import { ScreenScrollView as ScrollView } from "../../components/ScreenScrollView";
 import { SegmentedControl } from "../../components/SegmentedControl";
+import * as ScheduledTaskFork from "./scheduledTaskFork";
 import { ThemedSwitch } from "../../components/ThemedSwitch";
 import { webhookAddress } from "@t3tools/client-runtime/webhook-address";
 import { tryCopyTextWithHaptic } from "../../lib/copyTextWithHaptic";
@@ -104,6 +106,8 @@ const DAYS = [
 
 function describeSchedule(task: ScheduledTask): string {
   if (task.schedule.type === "webhook") return "On webhook";
+  if (isForkScheduledTaskSchedule(task.schedule))
+    return ScheduledTaskFork.forkScheduleLabel(task.schedule);
   if (task.schedule.type === "interval") return formatScheduledTaskInterval(task.schedule.everyMs);
   const days = task.schedule.weekdays?.length ? repeatLabel(task.schedule.weekdays) : "Every day";
   return `${days} at ${formatTime(task.schedule.timeOfDay)}`;
@@ -857,7 +861,8 @@ function TaskForm({
       </SettingsSection>
 
       <SettingsSection title="Schedule">
-        <View className="px-4 py-3">
+        <ScheduledTaskFork.PreservedScheduleText schedule={draft.schedule.preserved} />
+        <View className={draft.schedule.preserved ? "hidden" : "px-4 py-3"}>
           <SegmentedControl
             options={[
               { value: "fixed_time", label: "At a time" },
@@ -878,7 +883,7 @@ function TaskForm({
             }}
           />
         </View>
-        {draft.schedule.mode === "fixed_time" ? (
+        {draft.schedule.mode === "preserved" ? null : draft.schedule.mode === "fixed_time" ? (
           <>
             <Pressable
               accessibilityRole="button"
@@ -1230,6 +1235,7 @@ function EnvironmentTasks({
                   Last run failed: {task.lastRunError}
                 </Text>
               ) : null}
+              <ScheduledTaskFork.ForkTaskSummaryText task={task} />
             </Pressable>
             <ControlPillMenu
               actions={[
@@ -1241,7 +1247,7 @@ function EnvironmentTasks({
                 },
                 ...(task.schedule.type === "webhook"
                   ? []
-                  : [{ id: "run", title: "Run now", attributes: { disabled: !canOperate } }]),
+                  : [ScheduledTaskFork.runNowAction(task, canOperate)]),
                 {
                   id: "delete",
                   title: "Delete",
