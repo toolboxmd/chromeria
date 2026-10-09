@@ -4,14 +4,20 @@
  *
  * Both values live in this client's local storage: the mode is a view
  * preference, and the home names one project on one environment, so the same
- * project id on two environments never collides.
+ * project id on two environments never collides. The home spans every
+ * project the sidebar merges with it, so the Promachos runs on any machine.
  */
 import { ScopedProjectRef } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import { useMemo } from "react";
 import { promachosMultipleModelSelections } from "./promachosStart";
 
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { useNewThreadHandler } from "../../hooks/useHandleNewThread";
+import { useClientSettings } from "../../hooks/useSettings";
+import { selectProjectGroupingSettings } from "../../logicalProject";
+import { useProjects } from "../../state/entities";
+import { isInPromachosHome, promachosHomeRefs } from "./promachosConversations";
 
 const PROMACHOS_MODE_STORAGE_KEY = "chromeria:promachos-mode";
 const PROMACHOS_HOME_STORAGE_KEY = "chromeria:promachos-home";
@@ -30,15 +36,15 @@ export function usePromachosHome(): [
   return [home, setHome];
 }
 
-function isPromachosHome(
-  projectRef: ScopedProjectRef | null,
+/** Every project of the Promachos home, across the machines it is merged over. */
+export function usePromachosHomeRefs(
   home: ScopedProjectRef | null,
-): boolean {
-  return (
-    projectRef !== null &&
-    home !== null &&
-    projectRef.environmentId === home.environmentId &&
-    projectRef.projectId === home.projectId
+): ReadonlyArray<ScopedProjectRef> {
+  const projects = useProjects();
+  const groupingSettings = useClientSettings(selectProjectGroupingSettings);
+  return useMemo(
+    () => (home === null ? [] : promachosHomeRefs(projects, home, groupingSettings)),
+    [groupingSettings, home, projects],
   );
 }
 
@@ -46,7 +52,8 @@ function isPromachosHome(
 function usePromachosChat(projectRef: ScopedProjectRef | null): boolean {
   const [enabled] = usePromachosMode();
   const [home] = usePromachosHome();
-  return enabled && isPromachosHome(projectRef, home);
+  const homeRefs = usePromachosHomeRefs(enabled ? home : null);
+  return enabled && projectRef !== null && isInPromachosHome(projectRef, homeRefs);
 }
 
 /**
