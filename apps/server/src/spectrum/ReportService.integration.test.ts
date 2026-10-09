@@ -49,9 +49,11 @@ import {
   reportChainsUnchanged,
   reportDrainedPlan,
   reportDrainProof,
+  reportUndeliveredGuard,
 } from "./reportPolicy.ts";
 import * as SchedulerAdapter from "./SchedulerAdapter.ts";
 import { spectrumPlan } from "./spectrumPlan.ts";
+import type { SpectrumState } from "./state.ts";
 import { ensureSpectrumSchema, readSpectrum } from "./store.ts";
 import { makeThread, NOW } from "./testFixtures.ts";
 
@@ -612,6 +614,101 @@ it.effect(
         ["cancelled"],
       );
     }).pipe(Effect.provide(runtime)),
+);
+
+it.effect("a report turn that completes between abandon's read and its commit refuses it", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    const reports = yield* Report.SpectrumReportService;
+    const sink = yield* EventSink.EventSinkV2;
+    const receipts = yield* CommandReceipts.CommandReceiptStoreV2;
+    /** Runs abandon on a fresh service whose sink commits `completion` just before the abandonment. */
+    const abandonRacing = (
+      threadId: ThreadId,
+      commandId: CommandId,
+      completion: ReadonlyArray<OrchestrationV2DomainEvent>,
+    ) =>
+      Effect.gen(function* () {
+        return yield* (yield* Report.SpectrumReportService).abandon(threadId, commandId, "alice");
+      }).pipe(
+        Effect.provide(Report.layer),
+        Effect.provideService(
+          EventSink.EventSinkV2,
+          EventSink.EventSinkV2.of({
+            ...sink,
+            commitCommand: (input) =>
+              input.commandType === "spectrum.report.abandon"
+                ? sink
+                    .commitCommand({
+                      commandId: CommandId.make(`race:${threadId}`),
+                      threadId: CALLER,
+                      commandType: "fixture",
+                      acceptedAt: NOW,
+                      events: completion,
+                      effects: [],
+                    })
+                    .pipe(Effect.orDie, Effect.andThen(sink.commitCommand(input)))
+                : sink.commitCommand(input),
+          }),
+        ),
+        Effect.flip,
+      );
+    const refusedUnchanged = (
+      threadId: ThreadId,
+      before: SpectrumState,
+      refused: Report.SpectrumReportError,
+    ) =>
+      Effect.gen(function* () {
+        assert.strictEqual(
+          (refused.cause as { readonly _tag?: string })._tag,
+          "ForkCommitGuardRejected",
+        );
+        assert.deepStrictEqual(yield* read(threadId), before);
+        const abandonReceipt = yield* receipts.getByCommandId(
+          CommandId.make(`${before.report!.commandId}:abandon`),
+        );
+        assert.isTrue(Option.isNone(abandonReceipt));
+      });
+
+    const direct = yield* start("race");
+    yield* reports.settle(direct, "Racing report");
+    const before = yield* reports.deliver(direct);
+    const report = before.report!;
+    const run = yield* runFor(report.messageId);
+    // While the turn is open, the same guard admits.
+    yield* sink.commitCommand({
+      commandId: CommandId.make("race:open"),
+      threadId: direct,
+      commandType: "fixture",
+      acceptedAt: NOW,
+      events: [],
+      effects: [],
+      forkPlans: [reportUndeliveredGuard(direct, report)],
+    });
+    const refused = yield* abandonRacing(direct, report.commandId, [ended(run, "completed")]);
+    yield* refusedUnchanged(direct, before, refused);
+    assert.strictEqual((yield* runFor(report.messageId)).status, "completed");
+    assert.deepStrictEqual(yield* reportsFence(scheduled("race")), { kind: "released" });
+
+    // Delivery through a restart continuation is found on the recorded chain.
+    const chained = yield* start("race-chain");
+    yield* reports.settle(chained, "Continued report");
+    const beforeChain = yield* reports.deliver(chained);
+    const source = yield* runFor(beforeChain.report!.messageId);
+    yield* commit([ended(source, "cancelled")], `command:runtime-reconcile:startup:${CALLER}:race`);
+    const refusedChain = yield* abandonRacing(chained, beforeChain.report!.commandId, [
+      runEvent("run.created", {
+        ...source,
+        id: RunId.make("run:race:continuation"),
+        ordinal: source.ordinal + 1,
+        userMessageId: MessageId.make("message:race-continuation"),
+        restartContinuationOfRunId: source.id,
+        status: "completed",
+        completedAt: NOW,
+      }),
+    ]);
+    yield* refusedUnchanged(chained, beforeChain, refusedChain);
+  }).pipe(Effect.provide(runtime)),
 );
 
 it.effect(

@@ -213,6 +213,60 @@ export function reportStatePlan(mutation: SpectrumMutation): ForkCommitPlan {
   };
 }
 
+/** Abandons the current report and drops it from the outbox; its identity stays until the chain drains. */
+export function abandonedState(
+  state: SpectrumState,
+  person: string,
+  abandonedAt: NonNullable<SpectrumState["reportAbandonment"]>["abandonedAt"],
+): SpectrumState {
+  const report = state.report;
+  if (report === null) throw new RangeError("Only a current report can be abandoned.");
+  return {
+    ...state,
+    revision: state.revision + 1,
+    reportAbandonment: { commandId: report.commandId, person, abandonedAt },
+    outbox: state.outbox.filter((command) => command.commandId !== report.commandId),
+  };
+}
+
+/** Every run an attempt's message started, followed through each recorded continuation link. */
+function reachableRuns(runs: ReadonlyArray<OrchestrationV2Run>, messageId: MessageId) {
+  const found = runs.filter((run) => run.userMessageId === messageId);
+  for (let index = 0; index < found.length; index += 1) {
+    const source = found[index]!.id;
+    for (const run of runs)
+      if (
+        (run.restartContinuationOfRunId === source ||
+          run.forkPrismContinuationSourceRunId === source) &&
+        !found.includes(run)
+      )
+        found.push(run);
+  }
+  return found;
+}
+
+/**
+ * Abandonment's commit guard (D42): the attempt must still be undelivered when
+ * the abandonment commits, not only when it was planned. A completed run
+ * anywhere on its recorded chain delivered the report. Projection reads only.
+ */
+export function reportUndeliveredGuard(
+  threadId: ThreadId,
+  report: Pick<ReportCommand, "threadId" | "messageId">,
+): ForkCommitPlan {
+  return {
+    guards: [
+      Effect.gen(function* () {
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const { runs } = yield* projections.getThreadRecords(report.threadId, ["runs"]);
+        if (reachableRuns(runs, report.messageId).some((run) => run.status === "completed"))
+          return yield* conflict(threadId);
+      }).pipe(Effect.mapError((error) => guardError(threadId, error))),
+    ],
+    mutations: [],
+  };
+}
+
 export const REPORT_STOPPED = "The Spectrum report was stopped before its turn completed.";
 export const REPORT_REJECTED = "The caller's thread refused the Spectrum report.";
 export const REPORT_NOT_RETRYABLE =

@@ -13,6 +13,7 @@ import { ForkDispatchPlans } from "../fork/ForkDispatchPlans.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import {
+  abandonedState,
   attemptOutcome,
   makeInitialReport,
   reportAdmission,
@@ -22,6 +23,7 @@ import {
   reportCancellation,
   reportChainsUnchanged,
   reportStatePlan,
+  reportUndeliveredGuard,
   retriedState,
   retryEvidence,
   type ReportCommand,
@@ -208,16 +210,13 @@ const make = Effect.gen(function* () {
     const outcome = yield* withSql(attemptOutcome(state.callerThreadId, report));
     if (outcome.kind === "delivered")
       return yield* fail(threadId, "The Spectrum report was already delivered");
+    // The turn can complete between this read and the commit; the guard rechecks it there.
     const abandoned = yield* persist(
       CommandId.make(`${commandId}:abandon`),
       "spectrum.report.abandon",
       state,
-      {
-        ...state,
-        revision: state.revision + 1,
-        reportAbandonment: { commandId, person, abandonedAt: yield* DateTime.now },
-        outbox: state.outbox.filter((command) => command.commandId !== commandId),
-      },
+      abandonedState(state, person, yield* DateTime.now),
+      [reportUndeliveredGuard(threadId, report)],
     );
     return yield* drain(abandoned);
   });
