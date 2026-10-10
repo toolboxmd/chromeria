@@ -188,3 +188,10 @@ vite.config.ts
 apps/mobile/src/features/threads/ThreadRouteScreen.tsx
 apps/mobile/src/state/use-thread-selection.ts
 packages/client-runtime/src/state/threadCommands.ts
+apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts
+apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.ts
+apps/server/src/orchestration-v2/testkit/fixtures/index.ts
+apps/server/src/provider/acp/XAiAcpExtension.test.ts
+apps/server/src/provider/acp/XAiAcpExtension.ts
+apps/server/src/orchestration-v2/Adapters/GrokAdapterV2.test.ts
+apps/server/src/orchestration-v2/Adapters/GrokAdapterV2.ts
