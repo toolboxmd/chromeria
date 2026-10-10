@@ -1,6 +1,6 @@
 import type { OrchestratorFixtureInput } from "../shared.ts";
 
-export const GROK_BACKGROUND_BASH_KILLED_PROMPT =
+const GROK_BACKGROUND_BASH_KILLED_PROMPT =
   "Start the log search and the second step in the background. Stop the log search, then reply exactly ROOT_DONE.";
 
 /** The first frame of Grok's own `task-completed-call-*` wake turn: it polls the finished command. */

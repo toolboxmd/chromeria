@@ -1,6 +1,6 @@
 import type { OrchestratorFixtureInput } from "../shared.ts";
 
-export const GROK_BACKGROUND_BASH_UNPOLLED_PROMPT =
+const GROK_BACKGROUND_BASH_UNPOLLED_PROMPT =
   "Warm the cache in the background without waiting for it, then reply exactly ROOT_DONE.";
 
 // The command ends while the turn is still open, and its `task_completed` is
