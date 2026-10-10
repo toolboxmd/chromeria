@@ -60,9 +60,13 @@ import * as AcpSessionRuntime from "../../provider/acp/AcpSessionRuntime.ts";
 import {
   extractXAiAcpSubagentEndNotice,
   extractXAiAcpSubagentUpdate,
+  extractXAiBackgroundTaskCompletion,
+  extractXAiKilledBackgroundTasks,
+  extractXAiMonitorTaskId,
   makeXAiPromptCompletionRuntime,
   normalizeXAiAcpToolCallState,
   registerXAiBackgroundTaskTracking,
+  xAiBackgroundTaskLifecycleMutation,
 } from "../../provider/acp/XAiAcpExtension.ts";
 import * as IdAllocator from "../IdAllocator.ts";
 import {
@@ -3445,7 +3449,7 @@ describe("AcpAdapterV2", () => {
         );
       }
       assert.deepEqual(previousSelections, [null, initial, alternate]);
-    }).pipe(Effect.provide(testLayer), Effect.scoped),
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
   it.effect("skips requested options that the active ACP session does not expose", () =>
@@ -10287,7 +10291,7 @@ describe("AcpAdapterV2", () => {
   );
 
   it.effect(
-    "pre-settle ext completion arm is cleared when the report precedes its end notice",
+    "pre-settle ext completion ends the row and offers one continuation, not a second for its late report",
     () =>
       Effect.gen(function* () {
         const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -10434,20 +10438,31 @@ describe("AcpAdapterV2", () => {
           "pre-settle unhandled completion must not offer while the turn is active",
         );
 
-        // Settle without reporting. Tool stays in_progress so deferred finalize
-        // holds the turn open for the injected report.
+        // The structured end finished the row, so settle does not hold the turn
+        // for it. The agent never read the end, so it offers one continuation.
         yield* Deferred.succeed(promptGate, { stopReason: "end_turn" });
-        yield* Effect.yieldNow;
+        const providerTurnId = idAllocator.derive.providerTurn({
+          driver: ACP_TEST_DRIVER,
+          nativeTurnId: acpScopedNativeId(instanceId, "mock-session-1:turn:1"),
+        });
+        let terminalStatus: string | null = null;
+        while (terminalStatus === null) {
+          const event = yield* Queue.take(events);
+          if (event.type === "turn.terminal" && event.providerTurnId === providerTurnId) {
+            terminalStatus = event.status;
+          }
+        }
+        assert.equal(terminalStatus, "completed");
         yield* Effect.yieldNow;
         yield* Effect.yieldNow;
         assert.lengthOf(
           continuationRequests,
-          0,
-          "settle must hold for deferred background work; midTurn alone must not offer mid-hold",
+          1,
+          "an unread pre-settle end offers one continuation after finalize",
         );
 
-        // The injected report can race ahead of the end notice. It must be
-        // remembered so the later notice consumes the pre-settle arm.
+        // Grok's injected report and end notice for the same monitor belong to
+        // that continuation and must not offer a second wake.
         yield* sessionUpdateHandler!({
           sessionId: "mock-session-1",
           update: {
@@ -10467,61 +10482,297 @@ describe("AcpAdapterV2", () => {
         });
         yield* Effect.yieldNow;
         yield* Effect.yieldNow;
-        yield* Effect.yieldNow;
-
-        let reportSeen = false;
-        const trackReport = (event: ProviderAdapterV2Event): void => {
-          if (
-            event.type === "turn_item.updated" &&
-            event.turnItem.type === "assistant_message" &&
-            event.turnItem.text.includes("MONITOR_REPORT_TOKEN")
-          ) {
-            reportSeen = true;
-          }
-          if (
-            event.type === "message.updated" &&
-            event.message.text.includes("MONITOR_REPORT_TOKEN")
-          ) {
-            reportSeen = true;
-          }
-        };
-        let drained = yield* Queue.poll(events);
-        while (Option.isSome(drained)) {
-          trackReport(drained.value);
-          assert.notEqual(
-            drained.value.type,
-            "turn.terminal",
-            "turn must stay open while hydration hold / quiet window remain",
-          );
-          drained = yield* Queue.poll(events);
-        }
-        assert.isTrue(reportSeen, "injected report must project into the held turn");
-
-        // Hydration safety (60s) force-completes the monitor tool, then the 3s
-        // quiet window finalizes. No TaskOutput path: that would also clear
-        // midTurn and hide the agent_message_chunk consumption site under test.
         yield* TestClock.adjust("60 seconds");
         yield* Effect.yieldNow;
         yield* Effect.yieldNow;
-        yield* TestClock.adjust("3 seconds");
+        assert.lengthOf(
+          continuationRequests,
+          1,
+          "the late report and end notice add no second continuation",
+        );
+      }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.effect(
+    "Grok background commands killed or polled before settle do not hold the finished turn (#15888)",
+    () =>
+      Effect.gen(function* () {
+        const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const path = yield* Path.Path;
+        const serverConfig = yield* ServerConfig.ServerConfig;
+        const selfInvocation = yield* resolveSelfInvocation();
+        const mockAgentPath = yield* path.fromFileUrl(
+          new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+        );
+        const continuationRequests: Array<ProviderContinuationRequest> = [];
+        type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
+        let sessionUpdateHandler: Parameters<RuntimeService["handleSessionUpdate"]>[0] | undefined;
+        let applyMutation: AcpAdapterV2ExtensionContext["applyBackgroundTaskMutation"] | undefined;
+        const promptCalled = yield* Deferred.make<void>();
+        const promptGate = yield* Deferred.make<EffectAcpSchema.PromptResponse>();
+        const heldForBackgroundWork = yield* Deferred.make<void>();
+        const instanceId = ProviderInstanceId.make("acp-test");
+        const adapter = makeAcpAdapterV2({
+          testHooks: {
+            afterPromptSettledWithBackgroundWork: () =>
+              Deferred.succeed(heldForBackgroundWork, undefined).pipe(Effect.asVoid),
+          },
+          crypto: yield* Crypto.Crypto,
+          instanceId,
+          flavor: {
+            driver: ACP_TEST_DRIVER,
+            capabilities: AcpProviderCapabilitiesV2,
+            // The Grok flavor's background task pieces (makeGrokAcpAdapterFlavor).
+            normalizeToolCall: normalizeXAiAcpToolCallState,
+            extractBackgroundTaskId: extractXAiMonitorTaskId,
+            extractBackgroundTaskCompletion: (toolCall) => [
+              ...extractXAiBackgroundTaskCompletion(toolCall),
+              ...extractXAiKilledBackgroundTasks(toolCall),
+            ],
+            deferFinalizeForBackgroundWork: true,
+            enablePostSettleContinuation: true,
+            registerExtensions: (context) =>
+              Effect.sync(() => {
+                applyMutation = context.applyBackgroundTaskMutation;
+              }),
+            makeRuntime: makeMockRuntime({
+              childProcessSpawner,
+              mockAgentPath,
+              environment: { T3_ACP_HANG_PROMPT_FOREVER: "1" },
+              wrapRuntime: (runtime) => ({
+                ...runtime,
+                handleSessionUpdate: (handler) =>
+                  Effect.sync(() => {
+                    sessionUpdateHandler = handler;
+                  }).pipe(Effect.andThen(runtime.handleSessionUpdate(handler))),
+                prompt: () =>
+                  Deferred.succeed(promptCalled, undefined).pipe(
+                    Effect.andThen(Deferred.await(promptGate)),
+                  ),
+              }),
+            }),
+          },
+          fileSystem,
+          idAllocator,
+          serverConfig,
+          selfInvocation,
+          continuationRequests: {
+            offer: (request) =>
+              Effect.sync(() => {
+                continuationRequests.push(request);
+              }),
+          },
+        });
+        const threadId = ThreadId.make("thread-acp-grok-background-ended-before-settle");
+        const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const modelSelection = { instanceId, model: "default" } as const;
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make(
+            "provider-session-acp-grok-background-ended-before-settle",
+          ),
+          modelSelection,
+          runtimePolicy,
+        });
+        const events = yield* Queue.unbounded<ProviderAdapterV2Event>();
+        yield* runtime.events.pipe(
+          Stream.runForEach((event) => Queue.offer(events, event)),
+          Effect.forkScoped,
+        );
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const now = yield* DateTime.now;
+        yield* runtime
+          .startTurn(
+            makeTurnInput({ threadId, providerThread, instanceId, runtimePolicy, now, ordinal: 1 }),
+          )
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(promptCalled);
+        if (sessionUpdateHandler === undefined || applyMutation === undefined) {
+          return yield* Effect.die("the turn must register its update and mutation handlers");
+        }
+        const send = sessionUpdateHandler;
+        const mutate = applyMutation;
+        const sessionId = "mock-session-1";
+        const taskCompleted = (taskId: string, exitCode: number | null) =>
+          Effect.gen(function* () {
+            const mutation = xAiBackgroundTaskLifecycleMutation(
+              {
+                sessionId,
+                update: {
+                  sessionUpdate: "task_completed",
+                  task_snapshot: {
+                    task_id: taskId,
+                    command: "python -I embed.py",
+                    output: "Loading weights: 100%\n",
+                    exit_code: exitCode,
+                    completed: true,
+                    kind: "bash",
+                  },
+                },
+              },
+              "completed",
+            );
+            if (mutation === null)
+              return yield* Effect.die("task_completed must map to a mutation");
+            yield* mutate(mutation);
+          });
+
+        // Frames recorded from the stuck Grok child: one background command with
+        // a UUID task id that the agent kills (a KillTask whose rawInput only
+        // arrives on the in-progress update), and one foreground command Grok
+        // moved to the background under its call id, then polled to completion.
+        const killedCallId = "call-e07726be-208f-4787-80d8-6bedae03f0db-66";
+        const killedTaskId = "01a12273-d466-7921-b973-eedc8735b873";
+        const polledTaskId = "call-86a044bb-55ad-4d9e-a99c-dbefe0a9cbf9-78";
+        for (const [callId, taskId] of [
+          [killedCallId, killedTaskId],
+          [polledTaskId, polledTaskId],
+        ] as const) {
+          yield* send({
+            sessionId,
+            update: {
+              sessionUpdate: "tool_call",
+              toolCallId: callId,
+              title: "run_terminal_command",
+              kind: "execute",
+              status: "pending",
+              rawInput: { command: "python -I embed.py" },
+            },
+          });
+          yield* send({
+            sessionId,
+            update: {
+              sessionUpdate: "tool_call_update",
+              toolCallId: callId,
+              status: "completed",
+              rawOutput: {
+                type: "BackgroundTaskStarted",
+                task_id: taskId,
+                task_type: "bash",
+                status: "running",
+              },
+            },
+          });
+          yield* mutate({ sessionId, taskId, status: "running" });
+        }
+
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call-ceec49ab-842b-4e9a-b170-197d4afb2800-74",
+            title: "kill_command_or_subagent",
+            kind: "other",
+            status: "pending",
+            rawInput: { task_id: killedTaskId },
+          },
+        });
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call-ceec49ab-842b-4e9a-b170-197d4afb2800-74",
+            title: `Kill task: ${killedTaskId}`,
+            rawInput: { variant: "KillTask", task_id: killedTaskId },
+          },
+        });
+        yield* taskCompleted(killedTaskId, null);
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call-ceec49ab-842b-4e9a-b170-197d4afb2800-74",
+            status: "completed",
+            title: "kill 01a12273 (killed)",
+            rawOutput: {
+              type: "KillTask",
+              Result: { task_id: killedTaskId, outcome: "killed" },
+            },
+          },
+        });
+
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call-d5755244-cd35-4734-99bd-b68d04730cf8-79",
+            title: "get_command_or_subagent_output",
+            kind: "other",
+            status: "pending",
+            rawInput: { task_ids: [polledTaskId] },
+          },
+        });
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call-d5755244-cd35-4734-99bd-b68d04730cf8-79",
+            rawInput: { variant: "TaskOutput", task_ids: [polledTaskId] },
+          },
+        });
+        yield* taskCompleted(polledTaskId, 0);
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call-d5755244-cd35-4734-99bd-b68d04730cf8-79",
+            status: "completed",
+            rawOutput: {
+              type: "TaskOutput",
+              Result: {
+                task_id: polledTaskId,
+                status: "completed",
+                exit_code: 0,
+                output: "Loading weights: 100%\n",
+              },
+            },
+          },
+        });
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "Final review verdict." },
+          },
+        });
+        yield* Deferred.succeed(promptGate, { stopReason: "end_turn" });
 
         const providerTurnId = idAllocator.derive.providerTurn({
           driver: ACP_TEST_DRIVER,
           nativeTurnId: acpScopedNativeId(instanceId, "mock-session-1:turn:1"),
         });
-        let terminalStatus: string | null = null;
-        while (terminalStatus === null) {
-          const event = yield* Queue.take(events);
-          trackReport(event);
-          if (event.type === "turn.terminal" && event.providerTurnId === providerTurnId) {
-            terminalStatus = event.status;
+        const commandStatuses = new Map<string, string>();
+        const terminal = Effect.gen(function* () {
+          while (true) {
+            const event = yield* Queue.take(events);
+            if (event.type === "turn_item.updated" && event.turnItem.type === "command_execution") {
+              commandStatuses.set(event.turnItem.id, event.turnItem.status);
+            }
+            if (event.type === "turn.terminal" && event.providerTurnId === providerTurnId) {
+              return event.status;
+            }
           }
-        }
-        assert.equal(terminalStatus, "completed");
+        });
+        const outcome = yield* Effect.raceFirst(
+          terminal,
+          Deferred.await(heldForBackgroundWork).pipe(Effect.as("held" as const)),
+        );
+        assert.equal(outcome, "completed", "both commands ended, so settle must not hold the turn");
+        assert.deepEqual([...new Set(commandStatuses.values())], ["completed"]);
         assert.lengthOf(
           continuationRequests,
           0,
-          "pre-settle arm must be cleared when the injected report streams; no duplicate wake",
+          "the agent read both ends in the turn, so nothing is left to wake it for",
         );
       }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
