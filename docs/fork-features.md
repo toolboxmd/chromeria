@@ -770,6 +770,66 @@ Child creation paths are owned by child-threads and shared with thread-people.
 }
 ```
 
+## grok-background-command-end
+
+```json
+{
+  "id": "grok-background-command-end",
+  "purpose": "Finish a Grok run when its background commands end inside the turn (task_completed before settle, call-id task ids, KillTask, MultiResult). Carries upstream pingdotgg/t3code#17144 plus fork edits: an unread pre-settle end keeps its report kind so a Monitor wake stays one (#211), the pre-settle Monitor test asserts one wake instead of the removed hold, and the fixture prompts are module-local for knip. When #17144 merges, take upstream's and keep or re-port those edits.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/215",
+    "https://github.com/pingdotgg/t3code/issues/15888",
+    "https://github.com/pingdotgg/t3code/pull/17144"
+  ],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/216"],
+  "newFiles": [
+    "apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash_killed/grok_transcript.ndjson",
+    "apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash_killed/input.ts",
+    "apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash_killed/output.ts",
+    "apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash_polled/grok_transcript.ndjson",
+    "apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash_polled/input.ts",
+    "apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash_polled/output.ts",
+    "apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash_unpolled/grok_transcript.ndjson",
+    "apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash_unpolled/input.ts",
+    "apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash_unpolled/output.ts"
+  ],
+  "upstreamFiles": [
+    "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
+    "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.ts",
+    "apps/server/src/orchestration-v2/testkit/fixtures/index.ts",
+    "apps/server/src/provider/acp/XAiAcpExtension.test.ts",
+    "apps/server/src/provider/acp/XAiAcpExtension.ts"
+  ],
+  "sharedFiles": [],
+  "keywords": ["17144", "15888", "endReportedOutOfBand", "XAI_TASK_ID_RE", "KillTask"]
+}
+```
+
+## grok-reasoning-effort
+
+```json
+{
+  "id": "grok-reasoning-effort",
+  "purpose": "Run Grok ACP threads at the selected reasoning effort. Carries upstream pingdotgg/t3code#15319 unchanged; drop this edit and take upstream's when #15319 merges.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/215",
+    "https://github.com/pingdotgg/t3code/issues/15251",
+    "https://github.com/pingdotgg/t3code/pull/15319"
+  ],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/216"],
+  "newFiles": [],
+  "upstreamFiles": [
+    "apps/server/src/orchestration-v2/Adapters/GrokAdapterV2.test.ts",
+    "apps/server/src/orchestration-v2/Adapters/GrokAdapterV2.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
+    "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.ts"
+  ],
+  "keywords": ["15319", "15251", "reasoning_effort", "reasoningEffort"]
+}
+```
+
 ## prism-toolkit
 
 ```json
