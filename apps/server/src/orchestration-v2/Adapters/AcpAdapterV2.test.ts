@@ -10615,7 +10615,6 @@ describe("AcpAdapterV2", () => {
                     command: "python -I embed.py",
                     output: "Loading weights: 100%\n",
                     exit_code: exitCode,
-                    completed: true,
                     kind: "bash",
                   },
                 },
