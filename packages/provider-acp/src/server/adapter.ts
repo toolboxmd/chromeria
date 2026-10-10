@@ -226,6 +226,13 @@ export interface AcpAdapterV2Flavor {
     readonly runtime: AcpSessionRuntime.AcpSessionRuntime["Service"];
     readonly startResult: AcpSessionRuntime.AcpSessionRuntimeStartResult;
     readonly modelSelection: ModelSelection;
+    /**
+     * The selection this live session was last configured with, or null when
+     * it was just activated and `startResult` describes its current state.
+     * Same-runtime switches reuse the stored setup, so a flavor whose session
+     * state is only visible at setup time baselines on this instead.
+     */
+    readonly previousSelection: ModelSelection | null;
   }) => Effect.Effect<string | undefined, EffectAcpErrors.AcpError>;
   readonly sessionModeForPolicy?: (
     policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
@@ -1752,12 +1759,21 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           readonly reports: ReadonlyMap<string, BackgroundWorkReport>;
           readonly offered: ReadonlySet<string>;
         }>(noWakeReports);
+        // Reports for ends that land while the prompt is open. The agent usually
+        // reads them itself; finalizeTurn names only those it left unread, so
+        // their continuation keeps its real kind (a Monitor wake stays one).
+        const midTurnWakeReports = yield* Ref.make<ReadonlyMap<string, BackgroundWorkReport>>(
+          new Map(),
+        );
         const recordWakeReport = Effect.fnUntraced(function* (
           key: string,
           report: BackgroundWorkReport,
         ) {
           const context = yield* Ref.get(activeTurn);
-          if (context !== null && !context.promptSettled && !context.finalized) return;
+          if (context !== null && !context.promptSettled && !context.finalized) {
+            yield* Ref.update(midTurnWakeReports, (current) => new Map(current).set(key, report));
+            return;
+          }
           yield* Ref.update(wakeReports, ({ reports, offered }) => ({
             reports: new Map(reports).set(key, report),
             offered,
@@ -2789,6 +2805,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           context: ActiveAcpTurn,
           incoming: AcpToolCallState,
           projectedStatus?: ProjectedToolStatus,
+          options?: { readonly endReportedOutOfBand?: boolean },
         ) => Effect.Effect<void> = () => Effect.void;
 
         const markAwaitingBackgroundHydration = (context: ActiveAcpTurn, taskId: string) =>
@@ -2839,6 +2856,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           context: ActiveAcpTurn,
           incoming: AcpToolCallState,
           projectedStatus?: ProjectedToolStatus,
+          options?: { readonly endReportedOutOfBand?: boolean },
         ) {
           if (context.assistant.current?.sourceMessageId == null)
             yield* closeTextStream(context, "assistant");
@@ -2847,9 +2865,20 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           yield* closeTextStream(context, "user");
           const previous = context.tools.get(incoming.toolCallId);
           const merged = mergeToolCallState(previous, incoming);
-          const toolCall = flavor.normalizeToolCall?.(merged) ?? merged;
+          const normalized = flavor.normalizeToolCall?.(merged) ?? merged;
+          const backgroundTaskId = flavor.extractBackgroundTaskId?.(normalized);
+          // Normalization reads a kept start ACK as still running. Once the task
+          // has a genuine end, an ended row must not reopen and pin the turn.
+          const endedStatus =
+            merged.status === "completed" || merged.status === "failed" ? merged.status : undefined;
+          const toolCall =
+            endedStatus !== undefined &&
+            backgroundTaskId !== undefined &&
+            toolStatus(normalized.status) === "running" &&
+            (yield* Ref.get(endedBackgroundTaskIds)).has(backgroundTaskId)
+              ? { ...normalized, status: endedStatus }
+              : normalized;
           context.tools.set(toolCall.toolCallId, toolCall);
-          const backgroundTaskId = flavor.extractBackgroundTaskId?.(toolCall);
           if (backgroundTaskId !== undefined) {
             context.toolCallIdsByBackgroundTaskId.set(backgroundTaskId, toolCall.toolCallId);
             if (flavor.isPersistentBackgroundTool?.(toolCall) === true) {
@@ -2862,6 +2891,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             );
             if (
               !context.promptSettled &&
+              options?.endReportedOutOfBand !== true &&
               backgroundStatus !== "pending" &&
               backgroundStatus !== "running"
             ) {
@@ -2906,7 +2936,27 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             }
             const target =
               targetToolCallId !== undefined ? context.tools.get(targetToolCallId) : undefined;
-            if (target !== undefined && target.toolCallId !== toolCall.toolCallId) {
+            const targetStatus = target === undefined ? undefined : toolStatus(target.status);
+            const targetEnded = targetStatus === "completed" || targetStatus === "failed";
+            if (
+              target !== undefined &&
+              target.toolCallId !== toolCall.toolCallId &&
+              targetEnded &&
+              backgroundCompletion.appendOutput.length > 0 &&
+              toolOutputText(target).trim() !== backgroundCompletion.appendOutput.trim()
+            ) {
+              // `task_completed` already ended the row without its final output
+              // (only the start ACK or partial stdout). The poll's result is the
+              // full output: replace, never append.
+              yield* emitTool(
+                context,
+                setToolOutputText(target, backgroundCompletion.appendOutput),
+              );
+            } else if (
+              target !== undefined &&
+              target.toolCallId !== toolCall.toolCallId &&
+              !targetEnded
+            ) {
               const nextStatus =
                 backgroundCompletion.status === "running"
                   ? ("inProgress" as const)
@@ -3550,7 +3600,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           readonly output?: string;
         }) {
           const context = yield* Ref.get(activeTurn);
-          if (context === null || context.finalized || !context.promptSettled) return;
+          if (context === null || context.finalized) return;
           const toolCallId = context.toolCallIdsByBackgroundTaskId.get(mutation.taskId);
           const tool = toolCallId === undefined ? undefined : context.tools.get(toolCallId);
           if (tool === undefined) return;
@@ -3562,6 +3612,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             context,
             mutation.output === undefined ? finished : setToolOutputText(finished, mutation.output),
             mutation.status,
+            { endReportedOutOfBand: true },
           );
           yield* rearmDeferredFinalize(context);
         });
@@ -5827,6 +5878,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           startResult: AcpSessionRuntime.AcpSessionRuntimeStartResult,
           modelSelection: ModelSelection,
           runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+          previousSelection: ModelSelection | null,
         ) {
           yield* Ref.set(activeSelection, null);
           const requestedModel = flavor.resolveModelId?.(modelSelection) ?? modelSelection.model;
@@ -5836,6 +5888,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               runtime,
               startResult,
               modelSelection,
+              previousSelection,
             });
           } else if (
             requestedModel.length > 0 &&
@@ -6019,7 +6072,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           );
         });
 
-        yield* configureSession(started, input.modelSelection, input.runtimePolicy);
+        yield* configureSession(started, input.modelSelection, input.runtimePolicy, null);
         yield* Ref.set(activeSelection, input.modelSelection);
         yield* Ref.set(activeInteractionMode, input.runtimePolicy.interactionMode);
         const createdAt = yield* DateTime.now;
@@ -6103,6 +6156,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               yield* Ref.set(continuationRequested, false);
               yield* Ref.set(runningBackgroundTaskIds, new Set());
               yield* Ref.set(midTurnUnreportedCompletedTaskIds, new Set());
+              yield* Ref.set(midTurnWakeReports, new Map());
               yield* Ref.set(carryoverSubagents, null);
               yield* Ref.set(lastTurnRoute, null);
             }),
@@ -6253,6 +6307,22 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             }
           }
           yield* Ref.set(activeTurn, null);
+          // A mid-turn background completion may have deferred its offer while
+          // this root turn was still streaming. Once the turn leaves the active
+          // slot, re-check: empty running set + residual wake evidence (or a
+          // mid-turn unreported completion) means a legitimate unhandled
+          // completion can open exactly one continuation. Sticky
+          // continuationRequested prevents double-offer if a later frame also
+          // races into offerContinuationRun.
+          const unreadMidTurn = yield* Ref.get(midTurnUnreportedCompletedTaskIds);
+          const midTurnReports = yield* Ref.getAndSet(midTurnWakeReports, new Map());
+          const unreadReports = [...midTurnReports].filter(([taskId]) => unreadMidTurn.has(taskId));
+          if (settledStatus === "completed" && unreadReports.length > 0) {
+            yield* Ref.update(wakeReports, ({ reports, offered }) => ({
+              reports: new Map([...reports, ...unreadReports]),
+              offered,
+            }));
+          }
           if (
             postSettleContinuationEnabled &&
             settledStatus === "completed" &&
@@ -6421,7 +6491,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               const activated = yield* activateSession(requestedSessionId, turnInput.threadId);
               yield* Ref.set(activeSessionId, activated.sessionId);
               yield* Ref.set(activeSessionSetup, activated);
-              yield* configureSession(activated, turnInput.modelSelection, turnInput.runtimePolicy);
+              yield* configureSession(
+                activated,
+                turnInput.modelSelection,
+                turnInput.runtimePolicy,
+                null,
+              );
               yield* Ref.set(activeSelection, turnInput.modelSelection);
               yield* Ref.set(activeInteractionMode, turnInput.runtimePolicy.interactionMode);
             } else {
@@ -6443,6 +6518,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   currentSessionSetup,
                   turnInput.modelSelection,
                   turnInput.runtimePolicy,
+                  configuredSelection,
                 );
                 yield* Ref.set(activeSelection, turnInput.modelSelection);
                 yield* Ref.set(activeInteractionMode, turnInput.runtimePolicy.interactionMode);
@@ -6903,7 +6979,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     yield* Ref.set(activeSessionSetup, activated);
                     const nextSelection = threadInput.modelSelection ?? input.modelSelection;
                     const nextRuntimePolicy = threadInput.runtimePolicy ?? input.runtimePolicy;
-                    yield* configureSession(activated, nextSelection, nextRuntimePolicy);
+                    yield* configureSession(activated, nextSelection, nextRuntimePolicy, null);
                     yield* Ref.set(activeSelection, nextSelection);
                     yield* Ref.set(activeInteractionMode, nextRuntimePolicy.interactionMode);
                   }
