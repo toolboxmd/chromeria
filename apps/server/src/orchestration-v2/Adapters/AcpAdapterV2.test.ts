@@ -10314,6 +10314,7 @@ describe("AcpAdapterV2", () => {
                 readonly sessionId: string;
                 readonly taskId: string;
                 readonly status: "running" | "completed" | "failed";
+                readonly report?: { readonly kind: "monitor"; readonly label: string };
               }) => Effect.Effect<void>)
             | null;
         } = { current: null };
@@ -10431,6 +10432,7 @@ describe("AcpAdapterV2", () => {
           sessionId: "mock-session-1",
           taskId: "task-monitor-1",
           status: "completed",
+          report: { kind: "monitor", label: "pre-settle complete" },
         });
         assert.lengthOf(
           continuationRequests,
@@ -10460,6 +10462,9 @@ describe("AcpAdapterV2", () => {
           1,
           "an unread pre-settle end offers one continuation after finalize",
         );
+        // A delegated task treats a Monitor wake as no new work (#211), so the
+        // continuation must name the Monitor, not a generic background task.
+        assert.equal(continuationRequests[0]?.notification?.source.kind, "monitor");
 
         // Grok's injected report and end notice for the same monitor belong to
         // that continuation and must not offer a second wake.

@@ -1982,13 +1982,21 @@ export function makeAcpAdapterV2(
           readonly reports: ReadonlyMap<string, BackgroundWorkReport>;
           readonly offered: ReadonlySet<string>;
         }>(noWakeReports);
+        // Reports for ends that land while the prompt is open. The agent usually
+        // reads them itself; finalizeTurn names only those it left unread, so
+        // their continuation keeps its real kind (a Monitor wake stays one).
+        const midTurnWakeReports = yield* Ref.make<ReadonlyMap<string, BackgroundWorkReport>>(
+          new Map(),
+        );
         const recordWakeReport = Effect.fnUntraced(function* (
           key: string,
           report: BackgroundWorkReport,
         ) {
           const context = yield* Ref.get(activeTurn);
-          // An open prompt reports the work itself; no continuation follows.
-          if (context !== null && !context.promptSettled && !context.finalized) return;
+          if (context !== null && !context.promptSettled && !context.finalized) {
+            yield* Ref.update(midTurnWakeReports, (current) => new Map(current).set(key, report));
+            return;
+          }
           yield* Ref.update(wakeReports, ({ reports, offered }) => ({
             reports: new Map(reports).set(key, report),
             offered,
@@ -6599,6 +6607,7 @@ export function makeAcpAdapterV2(
               yield* Ref.set(continuationRequested, false);
               yield* Ref.set(runningBackgroundTaskIds, new Set());
               yield* Ref.set(midTurnUnreportedCompletedTaskIds, new Set());
+              yield* Ref.set(midTurnWakeReports, new Map());
               yield* Ref.set(carryoverSubagents, null);
               yield* Ref.set(lastTurnRoute, null);
             }),
@@ -6759,6 +6768,15 @@ export function makeAcpAdapterV2(
           // completion can open exactly one continuation. Sticky
           // continuationRequested prevents double-offer if a later frame also
           // races into offerContinuationRun.
+          const unreadMidTurn = yield* Ref.get(midTurnUnreportedCompletedTaskIds);
+          const midTurnReports = yield* Ref.getAndSet(midTurnWakeReports, new Map());
+          const unreadReports = [...midTurnReports].filter(([taskId]) => unreadMidTurn.has(taskId));
+          if (settledStatus === "completed" && unreadReports.length > 0) {
+            yield* Ref.update(wakeReports, ({ reports, offered }) => ({
+              reports: new Map([...reports, ...unreadReports]),
+              offered,
+            }));
+          }
           if (
             postSettleContinuationEnabled &&
             settledStatus === "completed" &&
