@@ -8,10 +8,12 @@
  * environment (`t3 auth session issue`, run by `contextmd-serve install`) with
  * `orchestration:read`, checked by `EnvironmentAuth`.
  */
+import * as ByteSize from "effect/ByteSize";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
+import * as HttpIncomingMessage from "effect/http/HttpIncomingMessage";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ContextmdServing from "./ContextmdServing.ts";
@@ -46,7 +48,14 @@ export const layer = HttpRouter.use((router) =>
           harness: request.headers["x-contextmd-harness"],
           delivery: request.headers["x-contextmd-delivery"],
           contentLength: length === undefined ? undefined : Number(length),
-          body: request.text.pipe(Effect.orElseSucceed(() => "")),
+          // Chunked requests carry no content-length, so the reader itself is capped.
+          body: request.text.pipe(
+            Effect.provideService(
+              HttpIncomingMessage.MaxBodySize,
+              ByteSize.bytes(ContextmdServing.MAX_BODY_BYTES),
+            ),
+            Effect.orElseSucceed(() => null),
+          ),
         });
         return reply.status === 200
           ? HttpServerResponse.text(reply.body, { status: 200, contentType: "application/json" })

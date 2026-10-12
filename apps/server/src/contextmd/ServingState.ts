@@ -12,7 +12,7 @@
  *   2,000-byte deny budget, in UTF-8 bytes. Session-start files sit outside both.
  * - A reply is `reserved` until the hook settles it. Only settled claims count
  *   for dedupe and deny lifts; a reservation not settled within
- *   `RELEASE_AFTER_MS` is released as `delivery_unverified`, with its bytes
+ *   the harness's settle deadline is released as `delivery_unverified`, with its bytes
  *   and claims returned.
  * - A must-know entry denies every matching call until it lifts: a pointer
  *   rule on an observed successful read of its target in the same session and
@@ -28,7 +28,6 @@ import type { Candidate, Selection } from "./Selection.ts";
 export const SERVE_BUDGET_BYTES = 8_000;
 export const DENY_BUDGET_BYTES = 2_000;
 const DENY_CAP = 3;
-export const RELEASE_AFTER_MS = 2_000;
 /** A denied call is projected within seconds; after this a deny without its item stays unproven. */
 const CHECK_GIVE_UP_SECONDS = 60;
 
@@ -39,8 +38,8 @@ CREATE TABLE IF NOT EXISTS budgets (run_id TEXT PRIMARY KEY, serve_used INTEGER 
   deny_used INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS deliveries (delivery TEXT PRIMARY KEY, harness TEXT NOT NULL, moment_id INTEGER,
   stage TEXT NOT NULL, status INTEGER NOT NULL, body TEXT, run_id TEXT, serve_bytes INTEGER NOT NULL DEFAULT 0,
-  deny_bytes INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL, settled_at REAL);
-CREATE INDEX IF NOT EXISTS deliveries_reserved ON deliveries(created_at) WHERE stage = 'reserved';
+  deny_bytes INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL, expires_at REAL NOT NULL, settled_at REAL);
+CREATE INDEX IF NOT EXISTS deliveries_reserved ON deliveries(expires_at) WHERE stage = 'reserved';
 CREATE TABLE IF NOT EXISTS claims (delivery TEXT NOT NULL, kind TEXT NOT NULL, harness TEXT NOT NULL,
   session TEXT NOT NULL, epoch INTEGER NOT NULL, run_id TEXT, entry TEXT NOT NULL, version TEXT NOT NULL,
   rule TEXT, whole INTEGER NOT NULL, settled INTEGER NOT NULL DEFAULT 0, candidate_id INTEGER NOT NULL,
@@ -181,13 +180,6 @@ class Composer {
   };
 }
 
-/**
- * A slice of a rule's text as it appears inside a JSON string, to find it in the
- * projected turn item that records what the model saw for a denied call.
- */
-export const evidenceProbe = (text: string) =>
-  JSON.stringify(text.slice(0, 80)).slice(1, -1).slice(0, 60).replace(/\\+$/u, "");
-
 /** What the projection showed for one settled deny. */
 export interface DenyCheck {
   readonly claim: number;
@@ -269,12 +261,12 @@ export class ServingState {
     });
   }
 
-  /** Release every reservation older than `RELEASE_AFTER_MS`, as `delivery_unverified`. */
+  /** Release every reservation past its settle deadline, as `delivery_unverified`. */
   releaseStale(now: number) {
     this.tx(() => {
       const stale = this.all<{ delivery: string }>(
-        "SELECT delivery FROM deliveries WHERE stage = 'reserved' AND created_at < ?",
-        now - RELEASE_AFTER_MS / 1000,
+        "SELECT delivery FROM deliveries WHERE stage = 'reserved' AND expires_at < ?",
+        now,
       );
       for (const { delivery } of stale) this.release(delivery);
     });
@@ -310,15 +302,20 @@ export class ServingState {
 
   /**
    * Settle a delivery after the hook wrote the reply. Returns false when the
-   * delivery is unknown, has nothing reserved, or was already released.
+   * delivery is unknown, has nothing reserved, or was already released; a settle
+   * that arrives after the deadline releases the reservation instead.
    */
   settle(delivery: string, now: number): boolean {
     return this.tx(() => {
-      const d = this.get<{ stage: string; moment_id: number }>(
-        "SELECT stage, moment_id FROM deliveries WHERE delivery = ?",
+      const d = this.get<{ stage: string; moment_id: number; expires_at: number }>(
+        "SELECT stage, moment_id, expires_at FROM deliveries WHERE delivery = ?",
         delivery,
       );
       if (!d || d.stage !== "reserved") return false;
+      if (d.expires_at < now) {
+        this.release(delivery);
+        return false;
+      }
       this.run(
         "UPDATE deliveries SET stage = 'settled', settled_at = ? WHERE delivery = ?",
         now,
@@ -333,31 +330,15 @@ export class ServingState {
         now,
         d.moment_id,
       );
-      // An inline rule delivered whole was read: the model received its text. Where the
-      // projection can show what the model saw, the lift waits for that evidence instead,
+      // Without projection evidence the hook's settle is the proof the model was shown the
+      // deny: it counts toward the cap, and an inline rule delivered whole was read. Where
+      // the projection can show what the model saw, both wait for that evidence instead,
       // because another hook denying the same call can replace this reason (obedience test).
-      const inline = this.all<{
-        harness: string;
-        session: string;
-        epoch: number;
-        entry: string;
-        version: string;
-      }>(
-        "SELECT harness, session, epoch, entry, version FROM claims WHERE delivery = ? AND kind = 'deny' AND rule = 'inline' AND whole = 1 AND coalesce(evidence, 'none') = 'none'",
+      const shown = this.all<{ rowid: number }>(
+        "SELECT rowid FROM claims WHERE delivery = ? AND kind = 'deny' AND coalesce(evidence, 'none') = 'none'",
         delivery,
       );
-      for (const c of inline) {
-        this.run(
-          `UPDATE deny_state SET lifted = 1, lift_outcome = 'delivered_inline', lifted_at = ?
-           WHERE harness = ? AND session = ? AND epoch = ? AND entry = ? AND version = ? AND lifted = 0`,
-          now,
-          c.harness,
-          c.session,
-          c.epoch,
-          c.entry,
-          c.version,
-        );
-      }
+      for (const c of shown) this.denyShown(c.rowid, now);
       return true;
     });
   }
@@ -385,56 +366,88 @@ export class ServingState {
    * item after `CHECK_GIVE_UP_SECONDS` stays armed, logged `unverified`.
    */
   applyChecks(
-    results: ReadonlyArray<{ readonly claim: number; readonly output: string | null }>,
+    results: ReadonlyArray<{
+      readonly claim: number;
+      /** Every string in the projected item's `output`, or null when there is no item yet. */
+      readonly output: ReadonlyArray<string> | null;
+    }>,
     now: number,
   ) {
     this.tx(() => {
       for (const r of results) {
-        const c = this.get<{
-          harness: string;
-          session: string;
-          epoch: number;
-          entry: string;
-          version: string;
-          rule: string | null;
-          whole: number;
-          probe: string;
-          candidate_id: number;
-          created_at: number;
-        }>(
-          `SELECT c.harness, c.session, c.epoch, c.entry, c.version, c.rule, c.whole, c.probe, c.candidate_id,
-             d.created_at FROM claims c JOIN deliveries d ON d.delivery = c.delivery WHERE c.rowid = ?`,
+        const c = this.get<{ probe: string; candidate_id: number; created_at: number }>(
+          `SELECT c.probe, c.candidate_id, d.created_at FROM claims c
+           JOIN deliveries d ON d.delivery = c.delivery WHERE c.rowid = ? AND c.checked IS NULL`,
           r.claim,
         );
-        if (!c) continue;
-        const key = [c.harness, c.session, c.epoch, c.entry, c.version] as const;
+        if (!c) continue; // already adjudicated by a concurrent moment
         if (r.output === null) {
-          if (c.created_at < now - CHECK_GIVE_UP_SECONDS) {
-            this.run("UPDATE claims SET checked = 'unverified' WHERE rowid = ?", r.claim);
+          if (
+            c.created_at < now - CHECK_GIVE_UP_SECONDS &&
+            this.adjudicate(r.claim, "unverified")
+          ) {
+            this.denyShown(r.claim, now, { lift: false });
           }
           continue;
         }
-        if (r.output.includes(c.probe)) {
-          this.run("UPDATE claims SET checked = 'shown' WHERE rowid = ?", r.claim);
-          if (c.rule === "inline" && c.whole === 1) {
-            this.run(
-              `UPDATE deny_state SET lifted = 1, lift_outcome = 'delivered_inline', lifted_at = ?
-               WHERE harness = ? AND session = ? AND epoch = ? AND entry = ? AND version = ? AND lifted = 0`,
-              now,
-              ...key,
-            );
-          }
+        // The whole delivered rule must be in what the model saw; the call's input does not count.
+        if (r.output.some((text) => text.includes(c.probe))) {
+          if (this.adjudicate(r.claim, "shown")) this.denyShown(r.claim, now);
           continue;
         }
-        this.run("UPDATE claims SET checked = 'hidden', settled = 0 WHERE rowid = ?", r.claim);
-        this.run("UPDATE candidates SET outcome = 'hidden' WHERE id = ?", c.candidate_id);
-        this.run(
-          `UPDATE deny_state SET denies = max(denies - 1, 0)
-           WHERE harness = ? AND session = ? AND epoch = ? AND entry = ? AND version = ?`,
-          ...key,
-        );
+        if (this.adjudicate(r.claim, "hidden")) {
+          this.run("UPDATE claims SET settled = 0 WHERE rowid = ?", r.claim);
+          this.run("UPDATE candidates SET outcome = 'hidden' WHERE id = ?", c.candidate_id);
+        }
       }
     });
+  }
+
+  /** Claim the one verdict a deny gets; only the winning transition may change counts or lifts. */
+  private adjudicate(claim: number, verdict: "shown" | "hidden" | "unverified") {
+    return (
+      Number(
+        this.run(
+          "UPDATE claims SET checked = ? WHERE rowid = ? AND checked IS NULL",
+          verdict,
+          claim,
+        ).changes,
+      ) === 1
+    );
+  }
+
+  /**
+   * A deny the model was shown counts toward the cap, and an inline rule shown whole is
+   * read. An unproven deny also counts (`lift: false`), so an agent is never denied forever.
+   */
+  private denyShown(claim: number, now: number, options: { lift: boolean } = { lift: true }) {
+    const c = this.get<{
+      harness: string;
+      session: string;
+      epoch: number;
+      entry: string;
+      version: string;
+      rule: string | null;
+      whole: number;
+    }>(
+      "SELECT harness, session, epoch, entry, version, rule, whole FROM claims WHERE rowid = ?",
+      claim,
+    );
+    if (!c) return;
+    const key = [c.harness, c.session, c.epoch, c.entry, c.version] as const;
+    this.run(
+      `UPDATE deny_state SET denies = denies + 1
+       WHERE harness = ? AND session = ? AND epoch = ? AND entry = ? AND version = ?`,
+      ...key,
+    );
+    if (options.lift && c.rule === "inline" && c.whole === 1) {
+      this.run(
+        `UPDATE deny_state SET lifted = 1, lift_outcome = 'delivered_inline', lifted_at = ?
+         WHERE harness = ? AND session = ? AND epoch = ? AND entry = ? AND version = ? AND lifted = 0`,
+        now,
+        ...key,
+      );
+    }
   }
 
   /** Decide and reserve the reply to one selected moment. */
@@ -545,6 +558,9 @@ export class ServingState {
   }
 
   private decideTx(input: MomentInput): Reply {
+    // A delivery id decided while this moment was selecting gets that same reply.
+    const replay = this.replayed(input.delivery);
+    if (replay !== undefined) return replay;
     const { harness, selection: sel, now } = input;
     const m = sel.moment;
     const epoch = this.epochFor(harness, sel);
@@ -575,8 +591,9 @@ export class ServingState {
     }
     const finish = (reply: Reply, reserved?: { runId: string; serve: number; deny: number }) => {
       this.run(
-        `INSERT INTO deliveries (delivery, harness, moment_id, stage, status, body, run_id, serve_bytes, deny_bytes, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO deliveries (delivery, harness, moment_id, stage, status, body, run_id, serve_bytes, deny_bytes,
+           created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         input.delivery,
         harness,
         momentId,
@@ -587,6 +604,7 @@ export class ServingState {
         reserved?.serve ?? 0,
         reserved?.deny ?? 0,
         now,
+        now + sel.profile.settle_within_ms / 1000,
       );
       return reply;
     };
@@ -957,15 +975,16 @@ export class ServingState {
         rule: c.rule,
         whole,
         candidateId: id,
-        probe: evidenceProbe(part),
+        probe: part,
       };
       out.add(part, claim);
       claims.push(claim);
-      // Every deny counts toward the cap, settled or not, so an agent is never denied forever.
+      // A deny counts toward the cap once shown (on settle or projection evidence), so
+      // outstanding and dropped deliveries never spend it and parallel calls stay denied.
       this.run(
         `INSERT INTO deny_state (harness, session, epoch, entry, version, rule_kind, target, denies, first_denied_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
-         ON CONFLICT (harness, session, epoch, entry, version) DO UPDATE SET denies = denies + 1`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+         ON CONFLICT (harness, session, epoch, entry, version) DO NOTHING`,
         harness,
         sel.moment.session,
         epoch,

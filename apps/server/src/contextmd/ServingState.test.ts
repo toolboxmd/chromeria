@@ -10,10 +10,8 @@ import { assert, describe, it } from "@effect/vitest";
 import type { Candidate, MomentKind, Profile, Selection } from "./Selection.ts";
 import {
   DENY_BUDGET_BYTES,
-  RELEASE_AFTER_MS,
   SERVE_BUDGET_BYTES,
   ServingState,
-  evidenceProbe,
   isHoldout,
   type Reply,
   type RunJoin,
@@ -31,6 +29,7 @@ const PROFILE: Profile = {
   ],
   carry_to: null,
   limit_bytes: 2000,
+  settle_within_ms: 2000,
   session_start_limit_bytes: 9500,
   new_epoch_sources: ["compact", "clear"],
   templates: {
@@ -52,6 +51,8 @@ const GROK: Profile = {
   delivering: ["pre_tool", "before_done"],
   carry_to: "pre_tool",
 };
+
+const SETTLE_MS = 2000;
 
 const entry = (id: string, text: string, extra: Partial<Candidate> = {}): Candidate => ({
   matcher: "exact_key",
@@ -315,7 +316,7 @@ describe("ServingState deny lifts", () => {
     const unsettled = h.fire({ kind: "pre_tool", candidates: [rule], settle: false });
     assert.strictEqual(h.decision(unsettled), "deny");
     // The hook was killed after the reply and before settle: after the release window the retry is denied.
-    h.advance(RELEASE_AFTER_MS + 1);
+    h.advance(SETTLE_MS + 1);
     h.state.releaseStale(h.now());
     assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [rule] })), "deny");
     assert.strictEqual(h.fire({ kind: "pre_tool", candidates: [rule] }).status, 204);
@@ -325,20 +326,32 @@ describe("ServingState deny lifts", () => {
   it("denies every call of a parallel wave until a read exists", () => {
     const h = makeHarness();
     const rule = pointer("vc", target);
-    const wave = [1, 2, 3].map(() =>
+    const wave = [1, 2, 3, 4, 5].map(() =>
       h.fire({ kind: "pre_tool", candidates: [rule], settle: false }),
     );
-    assert.deepStrictEqual(wave.map(h.decision), ["deny", "deny", "deny"]);
+    assert.deepStrictEqual(wave.map(h.decision), ["deny", "deny", "deny", "deny", "deny"]);
+  });
+
+  it("does not spend the cap on denies whose delivery was dropped", () => {
+    const h = makeHarness();
+    const rule = pointer("vc", target);
+    for (let i = 0; i < 3; i++) {
+      assert.strictEqual(
+        h.decision(h.fire({ kind: "pre_tool", candidates: [rule], settle: false })),
+        "deny",
+      );
+      h.advance(SETTLE_MS + 1);
+      h.state.releaseStale(h.now());
+    }
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [rule] })), "deny");
+    assert.notInclude(h.outcomes("vc"), "lifted");
   });
 });
 
 describe("ServingState deny evidence (two hooks deny one call)", () => {
   const CLAUDE: Profile = { ...PROFILE, deny_evidence: "projection" };
-  const projected = (shown: string) =>
-    JSON.stringify({
-      type: "command_execution",
-      output: `Error: PreToolUse:Bash hook error: ${shown}`,
-    });
+  /** The strings of a denied call's projected `output`: what the model was shown. */
+  const projected = (shown: string) => [`Error: PreToolUse:Bash hook error: ${shown}`];
 
   it("keeps an inline rule armed until the projection shows the model saw it", () => {
     const h = makeHarness();
@@ -401,9 +414,42 @@ describe("ServingState deny evidence (two hooks deny one call)", () => {
     );
   });
 
-  it("finds the rule inside the JSON-escaped projection, quotes and newlines included", () => {
-    const text = 'Run "./check.sh"\nthen commit';
-    assert.include(JSON.stringify({ output: `x ${text}` }), evidenceProbe(text));
+  it("needs the whole rule: a rule sharing a prefix with the shown one stays armed", () => {
+    const h = makeHarness();
+    // Both rules share far more than a short probe: the first 70 characters are equal.
+    const base = "Commits in this repository need the Refs: WID-42 trailer line, always.";
+    const short = inline("short", base);
+    const long = inline("long", `${base} Also run ./check.sh before every commit.`);
+    h.fire({ kind: "pre_tool", profile: CLAUDE, candidates: [short] });
+    h.fire({ kind: "pre_tool", profile: CLAUDE, candidates: [long] });
+    for (const c of h.state.pendingChecks("claude", "s1")) {
+      h.state.applyChecks(
+        [{ claim: c.claim, output: projected(`deny-head\n\n${short.text}`) }],
+        h.now(),
+      );
+    }
+    assert.strictEqual(
+      h.fire({ kind: "pre_tool", profile: CLAUDE, candidates: [short] }).status,
+      204,
+    );
+    assert.strictEqual(
+      h.decision(h.fire({ kind: "pre_tool", profile: CLAUDE, candidates: [long] })),
+      "deny",
+    );
+  });
+
+  it("adjudicates a deny once, however many moments check it", () => {
+    const h = makeHarness();
+    const rule = pointer("vc", "/repo/vc.md");
+    h.fire({ kind: "pre_tool", profile: CLAUDE, candidates: [rule] });
+    const [check] = h.state.pendingChecks("claude", "s1");
+    const shown = { claim: check!.claim, output: projected(`deny-head\n\n${rule.deny_text}`) };
+    h.state.applyChecks([shown], h.now());
+    h.state.applyChecks([shown], h.now());
+    h.state.applyChecks([{ claim: check!.claim, output: projected("another hook") }], h.now());
+    const state = h.db.prepare("SELECT denies FROM deny_state").get() as { denies: number };
+    assert.strictEqual(state.denies, 1);
+    assert.deepStrictEqual(h.outcomes("vc"), ["injected"]);
   });
 
   it("lifts an inline rule on settlement where the harness leaves no evidence", () => {
@@ -427,10 +473,39 @@ describe("ServingState settlement", () => {
     assert.strictEqual(used.serve_used, Buffer.byteLength(h.text(first)!));
   });
 
+  it("keeps a reply reserved for the harness's own settle window (OpenCode settles when the model reads it)", () => {
+    const h = makeHarness();
+    const opencode: Profile = { ...PROFILE, harness: "opencode", settle_within_ms: 120_000 };
+    const r = h.fire({
+      kind: "pre_tool",
+      profile: opencode,
+      candidates: [inline("pr")],
+      settle: false,
+    });
+    h.advance(10_000);
+    h.state.releaseStale(h.now());
+    assert.isTrue(h.state.settle(r.delivery, h.now()));
+    assert.deepStrictEqual(h.outcomes("pr"), ["injected"]);
+  });
+
+  it("refuses a settle that arrives after the deadline, with no sweep in between", () => {
+    const h = makeHarness();
+    const r = h.fire({ kind: "pre_tool", candidates: [inline("pr")], settle: false });
+    h.advance(10_000);
+    assert.isFalse(h.state.settle(r.delivery, h.now()));
+    assert.deepStrictEqual(h.outcomes("pr"), ["delivery_unverified"]);
+    const used = h.db.prepare("SELECT deny_used FROM budgets").get() as { deny_used: number };
+    assert.strictEqual(used.deny_used, 0);
+    assert.strictEqual(
+      h.decision(h.fire({ kind: "pre_tool", candidates: [inline("pr")] })),
+      "deny",
+    );
+  });
+
   it("releases an unsettled reservation's bytes and claims", () => {
     const h = makeHarness();
     h.fire({ kind: "tool_result", candidates: [entry("a", "A".repeat(1000))], settle: false });
-    h.advance(RELEASE_AFTER_MS + 1);
+    h.advance(SETTLE_MS + 1);
     h.state.releaseStale(h.now());
     const used = h.db.prepare("SELECT serve_used FROM budgets").get() as { serve_used: number };
     assert.strictEqual(used.serve_used, 0);

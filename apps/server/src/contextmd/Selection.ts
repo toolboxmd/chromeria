@@ -42,6 +42,8 @@ export interface Profile {
   readonly delivering: ReadonlyArray<MomentKind>;
   readonly carry_to: MomentKind | null;
   readonly limit_bytes: number;
+  /** How long a reply may wait for the hook's settle before it is released as unverified. */
+  readonly settle_within_ms: number;
   readonly session_start_limit_bytes: number;
   readonly new_epoch_sources: ReadonlyArray<string>;
   readonly templates: { readonly context: unknown; readonly deny: unknown };

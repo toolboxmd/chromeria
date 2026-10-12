@@ -35,14 +35,26 @@ import * as Select from "./Select.ts";
 import type { ParseCache } from "./Store.ts";
 import { ServingState, type Reply, type RunJoin, type Unserved } from "./ServingState.ts";
 
-const MAX_BODY_BYTES = 1_048_576;
+export const MAX_BODY_BYTES = 1_048_576;
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
 export interface MomentRequest {
   readonly harness: string | undefined;
   readonly delivery: string | undefined;
   readonly contentLength: number | undefined;
-  readonly body: Effect.Effect<string>;
+  /** The request body, or null when it exceeds `MAX_BODY_BYTES` or cannot be read. */
+  readonly body: Effect.Effect<string | null>;
+}
+
+export class StateOpenError extends Schema.TaggedError<StateOpenError>()(
+  "ContextmdStateOpenError",
+  {
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return "Failed to open the ContextMD serving state file.";
+  }
 }
 
 export type MomentResponse = Reply | { readonly status: 400 };
@@ -74,6 +86,24 @@ const checkContract = (sql: SqlClient.SqlClient) =>
     return counts === undefined || counts.total === 0 || counts.native > 0;
   }).pipe(Effect.orElseSucceed(() => false));
 
+/** Every string in a projected turn item's `output`: the text the model was shown for the call. */
+const shownOutput = (payload: string): string[] => {
+  const item = decodeJson(payload);
+  const output =
+    Option.isSome(item) && typeof item.value === "object" && item.value !== null
+      ? (item.value as Record<string, unknown>)["output"]
+      : undefined;
+  const strings = (value: unknown): string[] =>
+    typeof value === "string"
+      ? [value]
+      : Array.isArray(value)
+        ? value.flatMap(strings)
+        : typeof value === "object" && value !== null
+          ? Object.values(value).flatMap(strings)
+          : [];
+  return strings(output);
+};
+
 const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const sql = yield* SqlClient.SqlClient;
@@ -81,9 +111,38 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const crypto = yield* Crypto.Crypto;
   const dir = path.join(config.stateDir, "contextmd");
-  yield* fileSystem.makeDirectory(dir, { recursive: true });
-  const db = new NodeSqlite.DatabaseSync(path.join(config.stateDir, "contextmd.sqlite"));
-  const state = new ServingState(db);
+  // Serving must never stop Chromeria from starting: a state file that cannot be opened
+  // (unwritable, corrupt, from an incompatible build) disables serving instead.
+  const opened = yield* fileSystem.makeDirectory(dir, { recursive: true }).pipe(
+    Effect.andThen(
+      Effect.try({
+        try: () => {
+          const db = new NodeSqlite.DatabaseSync(path.join(config.stateDir, "contextmd.sqlite"));
+          try {
+            return { db, state: new ServingState(db) };
+          } catch (cause) {
+            db.close();
+            throw cause;
+          }
+        },
+        catch: (cause) => new StateOpenError({ cause }),
+      }),
+    ),
+    Effect.asSome,
+    Effect.catchCause((cause) =>
+      Effect.logWarning("ContextMD serving is disabled: its state file could not be opened", {
+        cause,
+      }).pipe(Effect.as(Option.none<{ db: NodeSqlite.DatabaseSync; state: ServingState }>())),
+    ),
+  );
+  if (Option.isNone(opened)) {
+    return ContextmdServing.of({
+      moment: () => Effect.succeed({ status: 204 } as const),
+      settle: () => Effect.succeed({ status: 404 } as const),
+      rejected: () => Effect.void,
+    });
+  }
+  const { db, state } = opened.value;
   const parsed: ParseCache = new Map();
   const servingConfig = yield* Select.configFile;
   const mapped = yield* checkContract(sql);
@@ -139,7 +198,10 @@ const make = Effect.gen(function* () {
           SELECT payload_json FROM orchestration_v2_projection_turn_items
           WHERE thread_id = ${threadId} AND turn_item_id LIKE ${`%native-item:%${check.toolUseId}`}
           LIMIT 1`.pipe(
-          Effect.map((rows) => ({ claim: check.claim, output: rows[0]?.payload_json ?? null })),
+          Effect.map((rows) => ({
+            claim: check.claim,
+            output: rows[0] === undefined ? null : shownOutput(rows[0].payload_json),
+          })),
         ),
       );
       state.applyChecks(results, yield* nowSeconds);
@@ -179,7 +241,7 @@ const make = Effect.gen(function* () {
         return { status: 204 } as const;
       }
       const body = yield* request.body;
-      if (Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
+      if (body === null || Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
         yield* unserved("oversize");
         return { status: 204 } as const;
       }

@@ -292,6 +292,7 @@ export const select = Effect.fn("contextmd.select")(function* (
       delivering: harness.delivering,
       carry_to: harness.carryTo,
       limit_bytes: harness.limitBytes,
+      settle_within_ms: harness.settleWithinMs,
       session_start_limit_bytes: harness.sessionStartLimitBytes,
       new_epoch_sources: harness.newEpochSources,
       templates: harness.templates,

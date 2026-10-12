@@ -10,6 +10,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import { HttpClient, HttpClientRequest, HttpRouter } from "effect/http";
 
@@ -41,6 +42,24 @@ const claude = (event: string, session: string, command: string) => ({
   tool_input: { command },
   tool_use_id: `toolu-${command}`,
 });
+
+/** What Claude Code's adapter projects for a denied call: its input and the text the model saw. */
+const projectDeniedCall = (input: { readonly command: string; readonly shown: string }) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const payload = JSON.stringify({
+      type: "command_execution",
+      input: input.command,
+      output: `Error: PreToolUse:Bash hook error: ${input.shown}`,
+    });
+    yield* sql`
+      INSERT INTO orchestration_v2_projection_turn_items (
+        turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json
+      ) VALUES (
+        ${`turn-item:provider:claudeAgent:native-item:toolu-${input.command}`}, 'thread-of-run-1', 'run-1',
+        1, 'command_execution', 'failed', '', ${payload}
+      )`;
+  }).pipe(Effect.orDie);
 
 const insertAttempt = (input: {
   readonly attempt: string;
@@ -81,13 +100,20 @@ const layerAuth = Layer.mock(EnvironmentAuth.EnvironmentAuth)({
 });
 
 /** Serve the contextmd routes on a test server over a migrated database prepared by `setup`. */
-const serve = <R>(setup: Effect.Effect<void, never, R | SqlClient.SqlClient>) =>
+const serve = <R>(
+  setup: Effect.Effect<void, never, R | SqlClient.SqlClient>,
+  options: { readonly breakStateFile?: boolean } = {},
+) =>
   Effect.gen(function* () {
     const configContext = yield* Layer.build(
       ServerConfig.layerTest(process.cwd(), { prefix: "contextmd-route-test-" }),
     );
     const config = Context.get(configContext, ServerConfig.ServerConfig);
     const store = writeStore(config.baseDir);
+    // A directory where the state file belongs: SQLite cannot open it.
+    if (options.breakStateFile) {
+      NodeFS.mkdirSync(NodePath.join(config.stateDir, "contextmd.sqlite"), { recursive: true });
+    }
     const database = yield* Layer.build(SqlitePersistence.layerMemory);
     yield* setup.pipe(Effect.provide(database));
     const services = yield* Layer.build(
@@ -150,7 +176,26 @@ const serve = <R>(setup: Effect.Effect<void, never, R | SqlClient.SqlClient>) =>
         db.close();
       }
     };
-    return { moment, settle, log, store };
+    const chunked = (bytes: number) =>
+      client
+        .execute(
+          HttpClientRequest.post("/contextmd/v1/moment").pipe(
+            HttpClientRequest.setHeaders({
+              authorization: `Bearer ${token}`,
+              "x-contextmd-harness": "claude",
+              "x-contextmd-delivery": "chunked",
+            }),
+            HttpClientRequest.bodyStream(
+              Stream.make(new Uint8Array(bytes / 2).fill(32), new Uint8Array(bytes / 2).fill(32)),
+            ),
+          ),
+        )
+        .pipe(
+          Effect.map((r) => r.status),
+          // The server may stop reading at the cap and reset the connection.
+          Effect.orElseSucceed(() => "reset" as const),
+        );
+    return { moment, settle, log, store, chunked };
   });
 
 describe("contextmd routes", () => {
@@ -256,6 +301,60 @@ describe("contextmd routes", () => {
         (yield* s.moment(claude("PostToolUse", "S", "echo a"))).body,
         "rule a, edited",
       );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("keeps serving off, without failing startup, when its state file cannot be opened", () =>
+    Effect.gen(function* () {
+      const s = yield* serve(
+        insertAttempt({ attempt: "a", run: "run-1", status: "running", native: "S" }),
+        { breakStateFile: true },
+      );
+      assert.strictEqual((yield* s.moment(claude("PreToolUse", "S", "gh pr create"))).status, 204);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("caps a chunked body while reading it", () =>
+    Effect.gen(function* () {
+      const s = yield* serve(
+        insertAttempt({ attempt: "a", run: "run-1", status: "running", native: "S" }),
+      );
+      assert.include([204, "reset"], yield* s.chunked(2_000_000));
+      assert.deepStrictEqual(
+        s.log().map((r) => r.status),
+        ["oversize"],
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("gives concurrent requests with one delivery id the same reply", () =>
+    Effect.gen(function* () {
+      const s = yield* serve(
+        insertAttempt({ attempt: "a", run: "run-1", status: "running", native: "S" }),
+      );
+      const raw = claude("PreToolUse", "S", "gh pr create");
+      const [a, b] = yield* Effect.all(
+        [s.moment(raw, { delivery: "same" }), s.moment(raw, { delivery: "same" })],
+        { concurrency: 2 },
+      );
+      assert.strictEqual(a.status, 200);
+      assert.deepStrictEqual(b, a);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("does not count a rule shown only in the denied call's input as delivered", () =>
+    Effect.gen(function* () {
+      const s = yield* serve(
+        Effect.all([
+          insertAttempt({ attempt: "a", run: "run-1", status: "running", native: "S" }),
+          // The command itself contains the rule text; the model saw only another hook's reason.
+          projectDeniedCall({ command: "gh pr create --body 'rule pr'", shown: "OTHER-HOOK: no" }),
+        ]).pipe(Effect.asVoid),
+      );
+      const raw = claude("PreToolUse", "S", "gh pr create --body 'rule pr'");
+      assert.include((yield* s.moment(raw)).body, "rule pr");
+      yield* s.settle("delivery-1");
+      assert.include((yield* s.moment(raw)).body, "rule pr");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 

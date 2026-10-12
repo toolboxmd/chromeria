@@ -35,6 +35,8 @@ export interface Harness {
   readonly carryTo: MomentKind | null;
   /** UTF-8 bytes one hook output may carry before the harness spills or clips it. */
   readonly limitBytes: number;
+  /** How long a reply may wait for its settle: the hook settles at once, OpenCode when the model reads it. */
+  readonly settleWithinMs: number;
   readonly sessionStartLimitBytes: number;
   readonly templates: { readonly context: unknown; readonly deny: unknown };
   /** Where the module can see what the model was shown for a denied call. */
@@ -88,6 +90,7 @@ export const HARNESSES: Readonly<Record<string, Harness>> = {
     ],
     carryTo: null,
     limitBytes: 2000,
+    settleWithinMs: 2000,
     sessionStartLimitBytes: 9500,
     templates: HOOK_OUTPUT,
     denyEvidence: "projection",
@@ -111,6 +114,7 @@ export const HARNESSES: Readonly<Record<string, Harness>> = {
     delivering: ["user_message", "pre_tool", "tool_result", "tool_failure", "before_done"],
     carryTo: null,
     limitBytes: 2000,
+    settleWithinMs: 2000,
     sessionStartLimitBytes: 0,
     templates: HOOK_OUTPUT,
     denyEvidence: "none",
@@ -139,6 +143,7 @@ export const HARNESSES: Readonly<Record<string, Harness>> = {
     delivering: ["pre_tool", "before_done"],
     carryTo: "pre_tool",
     limitBytes: 2000,
+    settleWithinMs: 2000,
     sessionStartLimitBytes: 0,
     templates: HOOK_OUTPUT,
     denyEvidence: "projection",
@@ -169,6 +174,7 @@ export const HARNESSES: Readonly<Record<string, Harness>> = {
     delivering: ["user_message", "pre_tool", "tool_result", "tool_failure"],
     carryTo: null,
     limitBytes: 2000,
+    settleWithinMs: 120_000,
     sessionStartLimitBytes: 0,
     templates: { context: { context: "{{text}}" }, deny: { deny: "{{text}}" } },
     denyEvidence: "none",
