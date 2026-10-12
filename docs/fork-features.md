@@ -1231,7 +1231,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "id": "contextmd-serving",
   "purpose": "Serve ContextMD's stored rules to agents in Chromeria threads through thin harness hooks, with serving state, settlement and the serving log in the environment.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/217"],
-  "prs": [],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/220"],
   "newFiles": [
     "apps/server/src/contextmd/ContextmdRoute.test.ts",
     "apps/server/src/contextmd/ContextmdRoute.ts",
