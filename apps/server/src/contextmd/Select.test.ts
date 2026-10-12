@@ -183,7 +183,10 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
     NodeFS.mkdirSync(keys);
     NodeFS.mkdirSync(NodePath.join(ws, ".git"), { recursive: true });
     const target = NodePath.join(ws, "RULE.md");
-    NodeFS.writeFileSync(target, "the rule");
+    NodeFS.writeFileSync(
+      target,
+      "# Rules\n\nPushes need the deploy key alias.\nAsk before force-pushing a branch.\n",
+    );
     entry(keys, "push", "A push rule applies.", {
       command: "git push",
       "must-know-before": "true",
@@ -272,7 +275,8 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
         cwd: ws,
         tool_name: "Bash",
         tool_input: { command: `cat ${target}` },
-        tool_response: "the rule\n",
+        tool_response:
+          "# Rules\n\nPushes need the deploy key alias.\nAsk before force-pushing a branch.\n",
         tool_use_id: "exec-1",
       });
       assert.strictEqual(out.moment.failed, null);
@@ -287,6 +291,37 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
         tool_response: `cat: ${target}: Permission denied\n`,
       });
       assert.deepStrictEqual(failedRead.moment.reads, []);
+      // Per file: an error for one file and another file's text under the same heading do not
+      // prove the first was read; a partial range of a file proves that file was.
+      const other = NodePath.join(ws, "OTHER.md");
+      NodeFS.writeFileSync(other, "# Rules\n\nThe other file has its own lines.\n");
+      const mixed = yield* sel("codex", {
+        hook_event_name: "PostToolUse",
+        session_id: "S",
+        cwd: ws,
+        tool_name: "Bash",
+        tool_input: { command: `cat ${target} ${other}` },
+        tool_response: `cat: ${target}: Permission denied\n# Rules\n\nThe other file has its own lines.\n`,
+      });
+      assert.deepStrictEqual(mixed.moment.reads, [{ path: other, kind: "shell_full" }]);
+      const range = yield* sel("codex", {
+        hook_event_name: "PostToolUse",
+        session_id: "S",
+        cwd: ws,
+        tool_name: "Bash",
+        tool_input: { command: `sed -n '3,4p' ${target}` },
+        tool_response: "Pushes need the deploy key alias.\nAsk before force-pushing a branch.\n",
+      });
+      assert.deepStrictEqual(range.moment.reads, [{ path: target, kind: "shell_full" }]);
+      const grep = yield* sel("codex", {
+        hook_event_name: "PostToolUse",
+        session_id: "S",
+        cwd: ws,
+        tool_name: "Bash",
+        tool_input: { command: `grep -n force ${target}` },
+        tool_response: "4:Ask before force-pushing a branch.\n",
+      });
+      assert.deepStrictEqual(grep.moment.reads, [{ path: target, kind: "shell_partial" }]);
       const fail = yield* sel("codex", {
         hook_event_name: "PostToolUse",
         session_id: "S",

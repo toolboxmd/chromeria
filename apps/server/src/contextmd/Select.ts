@@ -20,7 +20,7 @@ import { expandHomePathWith } from "../pathExpansion.ts";
 import { HARNESSES, type Harness } from "./Harnesses.ts";
 import { extract, firstMatch, Unsupported } from "./Matcher.ts";
 import { reads } from "./Reads.ts";
-import type { Candidate, MomentKind, Note, Selection } from "./Selection.ts";
+import type { Candidate, MomentKind, Note, Read, Selection } from "./Selection.ts";
 import * as Store from "./Store.ts";
 
 // Served text says where it comes from: models treat unexplained text as data
@@ -133,19 +133,53 @@ const outputText = (value: unknown): string => {
 const denyText = (e: Store.Entry) =>
   e.target ? `${e.text}\nRead ${e.target}, then run the same call again.` : e.text;
 
-/** The file's first non-empty line appears in the tool output. */
-const shownInOutput = Effect.fn("contextmd.shownInOutput")(function* (
-  file: string,
+/** An output line reporting that a file could not be read. */
+const READ_ERROR =
+  /permission denied|no such file|is a directory|cannot open|not found|operation not permitted/iu;
+/** Shorter lines (headings, blank-ish lines) are too common to prove which file was read. */
+const MIN_EVIDENCE_CHARS = 12;
+/** `grep -n` and multi-file prefixes before a file's own line: `path:`, `12:`, `path:12:`. */
+const GREP_PREFIX = /^(?:[^\s:]+:)?(?:\d+[:-])?/u;
+
+const evidenceLines = (content: string) =>
+  new Set(
+    content
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length >= MIN_EVIDENCE_CHARS),
+  );
+
+/**
+ * Which of the files a command named it actually read, judged from its output alone (Codex
+ * reports no exit code). A file counts when no output line reports an error for it and the
+ * output holds one of its own lines that none of the other named files contains, so a
+ * shared heading or another file's content never proves it. Partial reads (`sed -n`,
+ * `head`, `grep`) qualify through the lines they print.
+ */
+const readsShownInOutput = Effect.fn("contextmd.readsShownInOutput")(function* (
+  candidates: ReadonlyArray<Read>,
   output: string,
 ) {
+  if (candidates.length === 0) return [] as Read[];
   const fs = yield* FileSystem.FileSystem;
-  const content = yield* fs.readFileString(file).pipe(Effect.option);
-  if (Option.isNone(content)) return false;
-  const first = content.value
+  const path = yield* Path.Path;
+  const lines = yield* Effect.forEach(candidates, (r) =>
+    fs.readFileString(r.path).pipe(
+      Effect.map(evidenceLines),
+      Effect.orElseSucceed(() => new Set<string>()),
+    ),
+  );
+  const printed = output
     .split("\n")
-    .map((line) => line.trim())
-    .find((line) => line !== "");
-  return first !== undefined && output.includes(first);
+    .slice(0, 5000)
+    .map((line) => line.trim());
+  const shown = new Set(printed.flatMap((line) => [line, line.replace(GREP_PREFIX, "").trim()]));
+  return candidates.filter((r, i) => {
+    const name = path.basename(r.path);
+    if (printed.some((line) => line.includes(name) && READ_ERROR.test(line))) return false;
+    const others = new Set(lines.flatMap((set, k) => (k === i ? [] : [...set])));
+    return [...lines[i]!].some((line) => !others.has(line) && shown.has(line));
+  });
 });
 
 /** A path relative to the repository holding it, else the absolute path. */
@@ -216,12 +250,10 @@ export const select = Effect.fn("contextmd.select")(function* (
     kind === "tool_result" || kind === "tool_failure"
       ? yield* reads(tool ?? "", toolInput, cwd, harness.shellTools)
       : [];
-  // Without a failure signal (Codex) a read counts only when the output shows the file's
-  // content: its first non-empty line. A failed `cat` prints an error, not the file.
+  // Without a failure signal (Codex) a read counts only when the output shows that file's
+  // own content and no error for it. A failed `cat` prints an error, not the file.
   const momentReads =
-    harness.failureBy === "none"
-      ? yield* Effect.filter(observed, (r) => shownInOutput(r.path, output))
-      : observed;
+    harness.failureBy === "none" ? yield* readsShownInOutput(observed, output) : observed;
 
   if (kind === "session_start") {
     const fs = yield* FileSystem.FileSystem;
