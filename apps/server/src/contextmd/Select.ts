@@ -133,6 +133,21 @@ const outputText = (value: unknown): string => {
 const denyText = (e: Store.Entry) =>
   e.target ? `${e.text}\nRead ${e.target}, then run the same call again.` : e.text;
 
+/** The file's first non-empty line appears in the tool output. */
+const shownInOutput = Effect.fn("contextmd.shownInOutput")(function* (
+  file: string,
+  output: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const content = yield* fs.readFileString(file).pipe(Effect.option);
+  if (Option.isNone(content)) return false;
+  const first = content.value
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line !== "");
+  return first !== undefined && output.includes(first);
+});
+
 /** A path relative to the repository holding it, else the absolute path. */
 const repoRelative = Effect.fn("contextmd.repoRelative")(function* (
   file: string,
@@ -197,10 +212,16 @@ export const select = Effect.fn("contextmd.select")(function* (
   const owners: Record<string, string | null> = {};
   const toolKind = kind === "pre_tool" || kind === "tool_result" || kind === "tool_failure";
   const toolInput = at(raw, f.toolInput);
-  const momentReads =
+  const observed =
     kind === "tool_result" || kind === "tool_failure"
       ? yield* reads(tool ?? "", toolInput, cwd, harness.shellTools)
       : [];
+  // Without a failure signal (Codex) a read counts only when the output shows the file's
+  // content: its first non-empty line. A failed `cat` prints an error, not the file.
+  const momentReads =
+    harness.failureBy === "none"
+      ? yield* Effect.filter(observed, (r) => shownInOutput(r.path, output))
+      : observed;
 
   if (kind === "session_start") {
     const fs = yield* FileSystem.FileSystem;

@@ -25,6 +25,10 @@ const writeStore = (dir: string) => {
   NodeFS.mkdirSync(keys, { recursive: true });
   NodeFS.writeFileSync(NodePath.join(keys, "a.md"), "---\nid: a\ncommand: echo a\n---\nrule a\n");
   NodeFS.writeFileSync(
+    NodePath.join(keys, "skill.md"),
+    "---\nid: skill\npath: **/SKILL.md\nmust-know-before: true\n---\nrule skill\n",
+  );
+  NodeFS.writeFileSync(
     NodePath.join(keys, "pr.md"),
     "---\nid: pr\ncommand: gh pr create\nmust-know-before: true\n---\nrule pr\n",
   );
@@ -43,22 +47,36 @@ const claude = (event: string, session: string, command: string) => ({
   tool_use_id: `toolu-${command}`,
 });
 
-/** What Claude Code's adapter projects for a denied call: its input and the text the model saw. */
-const projectDeniedCall = (input: { readonly command: string; readonly shown: string }) =>
+/**
+ * What Claude Code's adapter projects for a denied call: its input, and the text the model saw
+ * in the item type's result field (`output` for commands, `diffStr` for file edits).
+ */
+const projectDeniedCall = (input: {
+  readonly toolUseId: string;
+  readonly shown?: string;
+  readonly type?: "command_execution" | "file_change";
+  readonly status?: string;
+  readonly commandInput?: string;
+}) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const type = input.type ?? "command_execution";
+    const field = type === "file_change" ? "diffStr" : "output";
     const payload = JSON.stringify({
-      type: "command_execution",
-      input: input.command,
-      output: `Error: PreToolUse:Bash hook error: ${input.shown}`,
+      type,
+      input: input.commandInput ?? "",
+      ...(input.shown === undefined
+        ? {}
+        : { [field]: `Error: PreToolUse hook error: ${input.shown}` }),
     });
     yield* sql`
       INSERT INTO orchestration_v2_projection_turn_items (
         turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json
       ) VALUES (
-        ${`turn-item:provider:claudeAgent:native-item:toolu-${input.command}`}, 'thread-of-run-1', 'run-1',
-        1, 'command_execution', 'failed', '', ${payload}
-      )`;
+        ${`turn-item:provider:claudeAgent:native-item:${input.toolUseId}`}, 'thread-of-run-1', 'run-1',
+        1, ${type}, ${input.status ?? "failed"}, '', ${payload}
+      )
+      ON CONFLICT (turn_item_id) DO UPDATE SET status = excluded.status, payload_json = excluded.payload_json`;
   }).pipe(Effect.orDie);
 
 const insertAttempt = (input: {
@@ -195,7 +213,21 @@ const serve = <R>(
           // The server may stop reading at the cap and reset the connection.
           Effect.orElseSucceed(() => "reset" as const),
         );
-    return { moment, settle, log, store, chunked };
+    const outcomes = (entry: string) => {
+      const db = new NodeSqlite.DatabaseSync(NodePath.join(config.stateDir, "contextmd.sqlite"));
+      try {
+        return (
+          db
+            .prepare("SELECT outcome FROM candidates WHERE entry = ? ORDER BY id")
+            .all(entry) as Array<{
+            outcome: string;
+          }>
+        ).map((r) => r.outcome);
+      } finally {
+        db.close();
+      }
+    };
+    return { moment, settle, log, store, chunked, outcomes, database };
   });
 
 describe("contextmd routes", () => {
@@ -348,13 +380,54 @@ describe("contextmd routes", () => {
         Effect.all([
           insertAttempt({ attempt: "a", run: "run-1", status: "running", native: "S" }),
           // The command itself contains the rule text; the model saw only another hook's reason.
-          projectDeniedCall({ command: "gh pr create --body 'rule pr'", shown: "OTHER-HOOK: no" }),
+          projectDeniedCall({
+            toolUseId: "toolu-gh pr create --body 'rule pr'",
+            commandInput: "gh pr create --body 'rule pr'",
+            shown: "OTHER-HOOK: no",
+          }),
         ]).pipe(Effect.asVoid),
       );
       const raw = claude("PreToolUse", "S", "gh pr create --body 'rule pr'");
       assert.include((yield* s.moment(raw)).body, "rule pr");
       yield* s.settle("delivery-1");
       assert.include((yield* s.moment(raw)).body, "rule pr");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("proves an edit deny from the file item's diff, once the item is finished", () =>
+    Effect.gen(function* () {
+      const s = yield* serve(
+        insertAttempt({ attempt: "a", run: "run-1", status: "running", native: "S" }),
+      );
+      const edit = {
+        hook_event_name: "PreToolUse",
+        session_id: "S",
+        cwd: "/tmp",
+        tool_name: "Edit",
+        tool_input: { file_path: "/tmp/skills/ops/SKILL.md" },
+        tool_use_id: "toolu-edit",
+      };
+      assert.include((yield* s.moment(edit)).body, "rule skill");
+      yield* s.settle("delivery-1");
+      // Still running, with no result yet: the deny stays pending, not hidden.
+      yield* projectDeniedCall({
+        toolUseId: "toolu-edit",
+        type: "file_change",
+        status: "running",
+      }).pipe(Effect.provide(s.database));
+      assert.include(
+        (yield* s.moment({ ...edit, tool_use_id: "toolu-edit-2" })).body,
+        "rule skill",
+      );
+      // Finished, and its diff field shows the rule: the inline rule lifts.
+      yield* projectDeniedCall({
+        toolUseId: "toolu-edit",
+        type: "file_change",
+        status: "failed",
+        shown: "deny-head\n\nrule skill",
+      }).pipe(Effect.provide(s.database));
+      assert.strictEqual((yield* s.moment({ ...edit, tool_use_id: "toolu-edit-3" })).status, 204);
+      assert.notInclude(s.outcomes("skill"), "hidden");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 

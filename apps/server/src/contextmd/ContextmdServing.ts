@@ -86,12 +86,31 @@ const checkContract = (sql: SqlClient.SqlClient) =>
     return counts === undefined || counts.total === 0 || counts.native > 0;
   }).pipe(Effect.orElseSucceed(() => false));
 
-/** Every string in a projected turn item's `output`: the text the model was shown for the call. */
-const shownOutput = (payload: string): string[] => {
-  const item = decodeJson(payload);
+/** The field of each projected item type that holds what the model was shown for the call. */
+const RESULT_FIELD: Readonly<Record<string, string>> = {
+  command_execution: "output",
+  dynamic_tool: "output",
+  file_change: "diffStr",
+};
+/** Item statuses after which the projected result no longer changes. */
+const TERMINAL = new Set(["completed", "failed", "cancelled", "interrupted"]);
+
+/**
+ * Every string in a finished projected turn item's result field: the text the model was
+ * shown for the call, never its input. Null while the item is unfinished or has no result
+ * field the module knows, so the deny stays pending.
+ */
+const shownOutput = (row: {
+  readonly type: string;
+  readonly status: string;
+  readonly payload_json: string;
+}) => {
+  const field = RESULT_FIELD[row.type];
+  if (field === undefined || !TERMINAL.has(row.status)) return null;
+  const item = decodeJson(row.payload_json);
   const output =
     Option.isSome(item) && typeof item.value === "object" && item.value !== null
-      ? (item.value as Record<string, unknown>)["output"]
+      ? (item.value as Record<string, unknown>)[field]
       : undefined;
   const strings = (value: unknown): string[] =>
     typeof value === "string"
@@ -194,13 +213,13 @@ const make = Effect.gen(function* () {
       const pending = state.pendingChecks(harness, session);
       if (pending.length === 0) return;
       const results = yield* Effect.forEach(pending, (check) =>
-        sql<{ readonly payload_json: string }>`
-          SELECT payload_json FROM orchestration_v2_projection_turn_items
+        sql<{ readonly type: string; readonly status: string; readonly payload_json: string }>`
+          SELECT type, status, payload_json FROM orchestration_v2_projection_turn_items
           WHERE thread_id = ${threadId} AND turn_item_id LIKE ${`%native-item:%${check.toolUseId}`}
           LIMIT 1`.pipe(
           Effect.map((rows) => ({
             claim: check.claim,
-            output: rows[0] === undefined ? null : shownOutput(rows[0].payload_json),
+            output: rows[0] === undefined ? null : shownOutput(rows[0]),
           })),
         ),
       );

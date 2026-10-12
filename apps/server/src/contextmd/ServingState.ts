@@ -269,7 +269,27 @@ export class ServingState {
         now,
       );
       for (const { delivery } of stale) this.release(delivery);
+      this.expireChecks(now);
     });
+  }
+
+  /**
+   * A settled deny whose evidence never arrived (no projected item, an unknown item type,
+   * no tool-use id) stops waiting after `CHECK_GIVE_UP_SECONDS`: logged `unverified` and
+   * counted toward the cap, so an agent is never denied forever.
+   */
+  private expireChecks(now: number) {
+    const overdue = this.all<{ claim: number; candidate_id: number }>(
+      `SELECT c.rowid AS claim, c.candidate_id FROM claims c JOIN deliveries d ON d.delivery = c.delivery
+       WHERE c.kind = 'deny' AND c.settled = 1 AND c.evidence = 'projection' AND c.checked IS NULL
+         AND d.created_at < ?`,
+      now - CHECK_GIVE_UP_SECONDS,
+    );
+    for (const o of overdue) {
+      if (!this.adjudicate(o.claim, "unverified")) continue;
+      this.run("UPDATE candidates SET outcome = 'unverified' WHERE id = ?", o.candidate_id);
+      this.denyShown(o.claim, now, { lift: false });
+    }
   }
 
   private release(delivery: string) {
@@ -339,6 +359,11 @@ export class ServingState {
         delivery,
       );
       for (const c of shown) this.denyShown(c.rowid, now);
+      this.run(
+        `UPDATE candidates SET outcome = 'awaiting_evidence' WHERE id IN
+           (SELECT candidate_id FROM claims WHERE delivery = ? AND kind = 'deny' AND evidence = 'projection')`,
+        delivery,
+      );
       return true;
     });
   }
@@ -381,18 +406,18 @@ export class ServingState {
           r.claim,
         );
         if (!c) continue; // already adjudicated by a concurrent moment
-        if (r.output === null) {
-          if (
-            c.created_at < now - CHECK_GIVE_UP_SECONDS &&
-            this.adjudicate(r.claim, "unverified")
-          ) {
-            this.denyShown(r.claim, now, { lift: false });
-          }
-          continue;
-        }
+        if (r.output === null) continue; // no finished item yet; `expireChecks` ends the wait
         // The whole delivered rule must be in what the model saw; the call's input does not count.
         if (r.output.some((text) => text.includes(c.probe))) {
-          if (this.adjudicate(r.claim, "shown")) this.denyShown(r.claim, now);
+          if (this.adjudicate(r.claim, "shown")) {
+            this.run(
+              `UPDATE candidates SET outcome = CASE WHEN (SELECT whole FROM claims WHERE rowid = ?) = 1
+                 THEN 'injected' ELSE 'truncated' END WHERE id = ?`,
+              r.claim,
+              c.candidate_id,
+            );
+            this.denyShown(r.claim, now);
+          }
           continue;
         }
         if (this.adjudicate(r.claim, "hidden")) {

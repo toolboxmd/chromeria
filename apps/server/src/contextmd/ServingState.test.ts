@@ -452,6 +452,28 @@ describe("ServingState deny evidence (two hooks deny one call)", () => {
     assert.deepStrictEqual(h.outcomes("vc"), ["injected"]);
   });
 
+  it("stops waiting for evidence after a minute, logs unverified and counts the deny", () => {
+    const h = makeHarness();
+    const rule = pointer("vc", "/repo/vc.md");
+    // Twelve settled denies without any projected item: more than one lookup batch.
+    for (let i = 0; i < 12; i++) {
+      assert.strictEqual(
+        h.decision(h.fire({ kind: "pre_tool", profile: CLAUDE, candidates: [rule] })),
+        "deny",
+      );
+    }
+    assert.deepStrictEqual([...new Set(h.outcomes("vc"))], ["awaiting_evidence"]);
+    h.advance(61_000);
+    h.state.releaseStale(h.now());
+    assert.deepStrictEqual([...new Set(h.outcomes("vc"))], ["unverified"]);
+    const state = h.db.prepare("SELECT denies FROM deny_state").get() as { denies: number };
+    assert.strictEqual(state.denies, 12);
+    assert.strictEqual(
+      h.fire({ kind: "pre_tool", profile: CLAUDE, candidates: [rule] }).status,
+      204,
+    );
+  });
+
   it("lifts an inline rule on settlement where the harness leaves no evidence", () => {
     const h = makeHarness();
     const rule = inline("pr");

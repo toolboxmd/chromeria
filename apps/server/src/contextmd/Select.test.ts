@@ -277,6 +277,16 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
       });
       assert.strictEqual(out.moment.failed, null);
       assert.deepStrictEqual(out.moment.reads, [{ path: target, kind: "shell_full" }]);
+      // A failed read prints an error, not the file: it does not count.
+      const failedRead = yield* sel("codex", {
+        hook_event_name: "PostToolUse",
+        session_id: "S",
+        cwd: ws,
+        tool_name: "Bash",
+        tool_input: { command: `cat ${target}` },
+        tool_response: `cat: ${target}: Permission denied\n`,
+      });
+      assert.deepStrictEqual(failedRead.moment.reads, []);
       const fail = yield* sel("codex", {
         hook_event_name: "PostToolUse",
         session_id: "S",
