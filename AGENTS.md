@@ -60,11 +60,11 @@ We need to be on the same page with terminology. When communicating, use this la
 
 Chromeria is one system with AgentsMD, Agent Observer and ContextMD. Root [`GLOSSARY.md`](GLOSSARY.md) is the system glossary: it defines every term two or more of them use, and its names win over the T3 terms above in fork prose and new names; T3 code identifiers keep their names. Before naming a concept, check it there and in the connected project's glossary; reuse the existing term or add the new one to `GLOSSARY.md`, never a conflicting synonym.
 
-| Project | Repository | Glossary |
-| --- | --- | --- |
-| AgentsMD | `toolboxmd/agentsmd` | [`GLOSSARY.md`](https://github.com/toolboxmd/agentsmd/blob/main/GLOSSARY.md) |
+| Project        | Repository                 | Glossary                                                                           |
+| -------------- | -------------------------- | ---------------------------------------------------------------------------------- |
+| AgentsMD       | `toolboxmd/agentsmd`       | [`GLOSSARY.md`](https://github.com/toolboxmd/agentsmd/blob/main/GLOSSARY.md)       |
 | Agent Observer | `toolboxmd/agent-observer` | [`GLOSSARY.md`](https://github.com/toolboxmd/agent-observer/blob/main/GLOSSARY.md) |
-| ContextMD | `toolboxmd/contextmd` | [`GLOSSARY.md`](https://github.com/toolboxmd/contextmd/blob/main/GLOSSARY.md) |
+| ContextMD      | `toolboxmd/contextmd`      | [`GLOSSARY.md`](https://github.com/toolboxmd/contextmd/blob/main/GLOSSARY.md)      |
 
 Model Router (`toolboxmd/model-router`) is retired; Prism absorbed it.
 
