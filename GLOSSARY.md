@@ -81,7 +81,7 @@ uses to pick its Color.
 _Avoid_: tier, track, matcher
 
 **Cue (intent detector)**:
-The model that scores ContextMD's judgment entries at each moment and decides
+The model that scores ContextMD's `intent` entries at each moment and decides
 which ones to serve.
 _Avoid_: router, intent router, knowledge router
 
@@ -112,8 +112,10 @@ worker threads to a PR; Prism absorbed it.
 
 **Harness**:
 The agent program a session runs in: Claude Code, Codex, Grok Build, OpenCode
-or Cursor. Agent Observer's harness ids are `claude`, `codex`, `grok` and
-`opencode`; T3's driver `claudeAgent` is `claude`. AgentsMD's `--host` flag is an alias.
+or Cursor. Agent Observer's harness ids are `claude`, `codex`, `grok`,
+`opencode`, and the import sources `t3` and `router`; T3's driver `claudeAgent`
+is `claude`. AgentsMD's current flag for it is `--host`; `--harness` is
+planned (toolboxmd/agentsmd#213).
 _Avoid_: host (for the program), provider (alone)
 
 **Provider instance**:
@@ -173,9 +175,11 @@ One user-role input in a session or thread (T3 `userMessageId`).
 _Avoid_: submission, prompt (as a record)
 
 **Created by**:
-Who wrote an input: `user`, `agent` or `system` (T3 `createdBy`). Agent
-Observer adds `unknown` when evidence is missing.
-_Avoid_: origin, human (as a value)
+Who wrote an input. T3 `createdBy` is `user`, `agent` or `system`; Agent
+Observer's `origin` is `human`, `agent` or `unknown` today, where `human` maps
+to `user`, `unknown` means evidence is missing, and `system` has no Observer
+value. Observer's rename to `created_by` and `user` is planned.
+_Avoid_: origin (in new names)
 
 ## Work and roles
 
@@ -240,8 +244,9 @@ _Avoid_: intervention
 
 **Intervention**:
 A user message, interrupt or tool-call rejection in a main session that Agent
-Observer selects for a judge.
-_Avoid_: moment
+Observer selects for a judge. Observer's code says moment until its planned
+schema-3 rename.
+_Avoid_: moment (in new names)
 
 **Correction**:
 An intervention that changes what an agent did, as a judge rules it.
@@ -252,6 +257,6 @@ ContextMD deny. Never an intervention or a correction.
 _Avoid_: rejection
 
 **Recurring problem**:
-One underlying problem that a judge finds in interventions from two or more
-sessions.
+A problem group that a judge's yes answers place in two or more sessions; the
+problem and its group exist only on a yes answer.
 _Avoid_: repeated correction
