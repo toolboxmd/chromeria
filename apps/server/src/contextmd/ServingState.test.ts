@@ -89,6 +89,7 @@ interface Fire {
   readonly profile?: Profile;
   readonly delivery?: string;
   readonly settle?: boolean;
+  readonly readChecks?: ReadonlyArray<{ readonly toolUseId: string; readonly ok: boolean | null }>;
 }
 
 const makeHarness = (file = ":memory:") => {
@@ -112,8 +113,13 @@ const makeHarness = (file = ":memory:") => {
           tool: "Bash",
           source: f.source ?? null,
           failed:
-            f.failed ??
-            (f.kind === "tool_failure" ? true : f.kind === "tool_result" ? false : null),
+            f.failed !== undefined
+              ? f.failed
+              : f.kind === "tool_failure"
+                ? true
+                : f.kind === "tool_result"
+                  ? false
+                  : null,
           reads: f.reads ?? [],
         },
         candidates: f.candidates ?? [],
@@ -122,6 +128,7 @@ const makeHarness = (file = ":memory:") => {
         profile,
       },
       join: f.join ?? { type: "run", runId: f.run ?? "run-1", threadId: "thread-1" },
+      ...(f.readChecks === undefined ? {} : { readChecks: f.readChecks }),
       now,
       startedAt: now,
     });
@@ -270,6 +277,37 @@ describe("ServingState deny lifts", () => {
     h.fire({ kind: "pre_tool", candidates: [rule] });
     h.fire({ kind: "tool_result", reads: [{ path: "/repo/README.md", kind: "read_tool" }] });
     assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [rule] })), "deny");
+  });
+
+  it("holds a read without a failure signal (Codex) until the projection shows exit code 0", () => {
+    const h = makeHarness();
+    const rule = pointer("vc", target);
+    h.fire({ kind: "pre_tool", candidates: [rule] });
+    // A read whose success is unknown (`failed: null`) does not lift yet.
+    h.fire({ kind: "tool_result", failed: null, reads: [{ path: target, kind: "shell_full" }] });
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [rule] })), "deny");
+    // That call failed (exit code 1): its read is discarded.
+    const pending = h.state.pendingReads("claude", "s1");
+    assert.strictEqual(pending.length, 1);
+    assert.strictEqual(
+      h.decision(
+        h.fire({
+          kind: "pre_tool",
+          candidates: [rule],
+          readChecks: [{ toolUseId: pending[0]!, ok: false }],
+        }),
+      ),
+      "deny",
+    );
+    assert.deepStrictEqual(h.state.pendingReads("claude", "s1"), []);
+    // A later read of the same file that finished with exit code 0 lifts the rule.
+    h.fire({ kind: "tool_result", failed: null, reads: [{ path: target, kind: "shell_partial" }] });
+    const [ok] = h.state.pendingReads("claude", "s1");
+    assert.strictEqual(
+      h.fire({ kind: "pre_tool", candidates: [rule], readChecks: [{ toolUseId: ok!, ok: true }] })
+        .status,
+      204,
+    );
   });
 
   it("lets a call pass without a deny when the target was read first", () => {

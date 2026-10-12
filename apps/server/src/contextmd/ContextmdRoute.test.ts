@@ -32,9 +32,15 @@ const writeStore = (dir: string) => {
     NodePath.join(keys, "pr.md"),
     "---\nid: pr\ncommand: gh pr create\nmust-know-before: true\n---\nrule pr\n",
   );
+  const rule = NodePath.join(dir, "PUSH-RULES.md");
+  NodeFS.writeFileSync(rule, "Pushes need the deploy key alias.\n");
+  NodeFS.writeFileSync(
+    NodePath.join(keys, "push.md"),
+    `---\nid: push\ncommand: git push\nmust-know-before: true\ntarget: ${rule}\n---\nrule push\n`,
+  );
   const config = NodePath.join(dir, "serving.json");
   NodeFS.writeFileSync(config, JSON.stringify({ exact_keys: [keys] }));
-  return { keys, config };
+  return { keys, config, rule };
 };
 
 /** A Claude Code hook event, as the harness sends it. */
@@ -116,6 +122,28 @@ const layerAuth = Layer.mock(EnvironmentAuth.EnvironmentAuth)({
     } as unknown as EnvironmentAuth.AuthenticatedSession);
   },
 });
+
+/** A command item as Codex's adapter projects it, with the call's exit code. */
+const projectCommand = (input: {
+  readonly toolUseId: string;
+  readonly status: string;
+  readonly exitCode: number;
+}) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const payload = JSON.stringify({
+      type: "command_execution",
+      input: "cat",
+      exitCode: input.exitCode,
+    });
+    yield* sql`
+      INSERT INTO orchestration_v2_projection_turn_items (
+        turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json
+      ) VALUES (
+        ${`turn-item:provider:codex:native-item:${input.toolUseId}`}, 'thread-of-run-1', 'run-1',
+        1, 'command_execution', ${input.status}, '', ${payload}
+      )`;
+  }).pipe(Effect.orDie);
 
 /** Serve the contextmd routes on a test server over a migrated database prepared by `setup`. */
 const serve = <R>(
@@ -428,6 +456,51 @@ describe("contextmd routes", () => {
       }).pipe(Effect.provide(s.database));
       assert.strictEqual((yield* s.moment({ ...edit, tool_use_id: "toolu-edit-3" })).status, 204);
       assert.notInclude(s.outcomes("skill"), "hidden");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("counts a Codex read only once the projected command exited 0", () =>
+    Effect.gen(function* () {
+      const s = yield* serve(
+        insertAttempt({ attempt: "a", run: "run-1", status: "running", native: "S" }),
+      );
+      const codex = (event: string, command: string, toolUseId: string, response = "") => ({
+        hook_event_name: event,
+        session_id: "S",
+        cwd: "/tmp",
+        tool_name: "Bash",
+        tool_input: { command },
+        tool_use_id: toolUseId,
+        tool_response: response,
+      });
+      let calls = 0;
+      const push = () => {
+        calls += 1;
+        return s.moment(codex("PreToolUse", "git push", `push-${calls}`), { harness: "codex" });
+      };
+      assert.include((yield* push()).body, "rule push");
+      // A failed read (exit code 1) of the target does not lift the rule.
+      yield* s.moment(
+        codex("PostToolUse", `cat ${s.store.rule}`, "exec-1", "cat: Permission denied"),
+        {
+          harness: "codex",
+        },
+      );
+      yield* projectCommand({ toolUseId: "exec-1", status: "failed", exitCode: 1 }).pipe(
+        Effect.provide(s.database),
+      );
+      assert.include((yield* push()).body, "rule push");
+      // A read that exited 0 does.
+      yield* s.moment(
+        codex("PostToolUse", `cat ${s.store.rule}`, "exec-2", "Pushes need the deploy key alias."),
+        {
+          harness: "codex",
+        },
+      );
+      yield* projectCommand({ toolUseId: "exec-2", status: "completed", exitCode: 0 }).pipe(
+        Effect.provide(s.database),
+      );
+      assert.strictEqual((yield* push()).status, 204);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 

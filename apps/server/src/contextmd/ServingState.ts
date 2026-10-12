@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS deny_state (harness TEXT NOT NULL, session TEXT NOT N
   denies INTEGER NOT NULL DEFAULT 0, lifted INTEGER NOT NULL DEFAULT 0, lift_outcome TEXT,
   first_denied_at REAL, lifted_at REAL, PRIMARY KEY (harness, session, epoch, entry, version));
 CREATE TABLE IF NOT EXISTS reads (harness TEXT NOT NULL, session TEXT NOT NULL, epoch INTEGER NOT NULL,
-  path TEXT NOT NULL, kind TEXT NOT NULL, moment_id INTEGER NOT NULL, read_at REAL NOT NULL);
+  path TEXT NOT NULL, kind TEXT NOT NULL, moment_id INTEGER NOT NULL, read_at REAL NOT NULL,
+  pending_tool_use_id TEXT);
 CREATE INDEX IF NOT EXISTS reads_path ON reads(harness, session, epoch, path);
 CREATE TABLE IF NOT EXISTS carries (id INTEGER PRIMARY KEY, harness TEXT NOT NULL, session TEXT NOT NULL,
   run_id TEXT NOT NULL, entry TEXT NOT NULL, version TEXT NOT NULL, text TEXT NOT NULL,
@@ -82,6 +83,8 @@ export interface MomentInput {
   readonly delivery: string;
   readonly selection: Selection;
   readonly join: RunJoin;
+  /** Projected exit status of earlier calls whose reads are pending (Codex). */
+  readonly readChecks?: ReadonlyArray<ReadCheck>;
   readonly now: number;
   readonly startedAt: number;
 }
@@ -178,6 +181,12 @@ class Composer {
     const body = this.parts.map((p) => p.text).join("\n\n");
     return this.head ? `${this.head}\n\n${body}` : body;
   };
+}
+
+/** Whether a call with pending reads finished successfully: null while unknown. */
+export interface ReadCheck {
+  readonly toolUseId: string;
+  readonly ok: boolean | null;
 }
 
 /** What the projection showed for one settled deny. */
@@ -640,6 +649,7 @@ export class ServingState {
       return finish({ status: 204 });
     }
     this.expireCarries(harness, m.session, joined.runId);
+    this.applyReadChecks(harness, m.session, input.readChecks ?? [], momentId, now);
     if ((m.kind === "tool_result" || m.kind === "tool_failure") && m.failed !== true) {
       this.recordReads(harness, sel, epoch, momentId, now);
     }
@@ -674,6 +684,11 @@ export class ServingState {
     return { matcher: c.matcher, entry: c.entry, version: c.version, key: c.key };
   }
 
+  /**
+   * Record the files a successful call read. Where the harness reports no failure (Codex),
+   * a read waits for proof: it stays pending until the projected command item shows the
+   * call finished with exit code 0 (`pendingReads`, `applyReadChecks`).
+   */
   private recordReads(
     harness: string,
     sel: Selection,
@@ -681,9 +696,11 @@ export class ServingState {
     momentId: number,
     now: number,
   ) {
+    const pending = sel.moment.failed === null ? sel.moment.tool_use_id : null;
     for (const read of sel.moment.reads) {
       this.run(
-        "INSERT INTO reads (harness, session, epoch, path, kind, moment_id, read_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        `INSERT INTO reads (harness, session, epoch, path, kind, moment_id, read_at, pending_tool_use_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         harness,
         sel.moment.session,
         epoch,
@@ -691,53 +708,125 @@ export class ServingState {
         read.kind,
         momentId,
         now,
+        pending,
       );
-      const waiting = this.all<{
-        entry: string;
-        version: string;
-        denies: number;
-        first_denied_at: number | null;
-      }>(
-        `SELECT entry, version, denies, first_denied_at FROM deny_state
-         WHERE harness = ? AND session = ? AND epoch = ? AND target = ? AND lifted = 0`,
+      if (pending === null)
+        this.liftOnRead(harness, sel.moment.session, epoch, read, momentId, now);
+    }
+  }
+
+  /** Lift every pointer rule waiting on this file in this session and epoch. */
+  private liftOnRead(
+    harness: string,
+    session: string,
+    epoch: number,
+    read: { readonly path: string; readonly kind: string },
+    momentId: number,
+    now: number,
+  ) {
+    const waiting = this.all<{
+      entry: string;
+      version: string;
+      denies: number;
+      first_denied_at: number | null;
+    }>(
+      `SELECT entry, version, denies, first_denied_at FROM deny_state
+       WHERE harness = ? AND session = ? AND epoch = ? AND target = ? AND lifted = 0`,
+      harness,
+      session,
+      epoch,
+      read.path,
+    );
+    for (const w of waiting) {
+      this.run(
+        `UPDATE deny_state SET lifted = 1, lift_outcome = 'read', lifted_at = ?
+         WHERE harness = ? AND session = ? AND epoch = ? AND entry = ? AND version = ?`,
+        now,
         harness,
-        sel.moment.session,
+        session,
         epoch,
-        read.path,
+        w.entry,
+        w.version,
       );
-      for (const w of waiting) {
+      const calls = this.get<{ n: number }>(
+        `SELECT count(*) AS n FROM moments WHERE harness = ? AND session = ? AND kind = 'pre_tool' AND received_at > ?`,
+        harness,
+        session,
+        w.first_denied_at ?? now,
+      );
+      this.insertCandidate(momentId, {
+        matcher: "exact_key",
+        entry: w.entry,
+        version: w.version,
+        outcome: "lifted",
+        reason: "read",
+        extra: { denies: w.denies, calls: calls?.n ?? 0, read_kind: read.kind },
+      });
+    }
+  }
+
+  /** Calls whose reads wait for the projected exit status, newest first. */
+  pendingReads(harness: string, session: string): string[] {
+    return this.all<{ id: string }>(
+      `SELECT DISTINCT pending_tool_use_id AS id FROM reads
+       WHERE harness = ? AND session = ? AND pending_tool_use_id IS NOT NULL
+       ORDER BY rowid DESC LIMIT 8`,
+      harness,
+      session,
+    ).map((r) => r.id);
+  }
+
+  /**
+   * Settle pending reads from the projected command items: a call that finished with exit
+   * code 0 proves its reads (and lifts their rules); a call that failed discards them.
+   * `ok: null` (not finished, or no item) keeps them waiting for up to `CHECK_GIVE_UP_SECONDS`.
+   */
+  private applyReadChecks(
+    harness: string,
+    session: string,
+    results: ReadonlyArray<ReadCheck>,
+    momentId: number,
+    now: number,
+  ) {
+    {
+      for (const r of results) {
+        if (r.ok === false) {
+          this.run(
+            "DELETE FROM reads WHERE harness = ? AND session = ? AND pending_tool_use_id = ?",
+            harness,
+            session,
+            r.toolUseId,
+          );
+          continue;
+        }
+        if (r.ok === null) continue;
+        const proven = this.all<{ path: string; kind: string; epoch: number }>(
+          `SELECT path, kind, epoch FROM reads
+           WHERE harness = ? AND session = ? AND pending_tool_use_id = ?`,
+          harness,
+          session,
+          r.toolUseId,
+        );
         this.run(
-          `UPDATE deny_state SET lifted = 1, lift_outcome = 'read', lifted_at = ?
-           WHERE harness = ? AND session = ? AND epoch = ? AND entry = ? AND version = ?`,
-          now,
+          "UPDATE reads SET pending_tool_use_id = NULL WHERE harness = ? AND session = ? AND pending_tool_use_id = ?",
           harness,
-          sel.moment.session,
-          epoch,
-          w.entry,
-          w.version,
+          session,
+          r.toolUseId,
         );
-        const calls = this.get<{ n: number }>(
-          `SELECT count(*) AS n FROM moments WHERE harness = ? AND session = ? AND kind = 'pre_tool' AND received_at > ?`,
-          harness,
-          sel.moment.session,
-          w.first_denied_at ?? now,
-        );
-        this.insertCandidate(momentId, {
-          matcher: "exact_key",
-          entry: w.entry,
-          version: w.version,
-          outcome: "lifted",
-          reason: "read",
-          extra: { denies: w.denies, calls: calls?.n ?? 0, read_kind: read.kind },
-        });
+        for (const read of proven)
+          this.liftOnRead(harness, session, read.epoch, read, momentId, now);
       }
+      this.run(
+        "DELETE FROM reads WHERE pending_tool_use_id IS NOT NULL AND read_at < ?",
+        now - CHECK_GIVE_UP_SECONDS,
+      );
     }
   }
 
   private wasRead(harness: string, session: string, epoch: number, target: string) {
     return (
       this.get(
-        "SELECT 1 FROM reads WHERE harness = ? AND session = ? AND epoch = ? AND path = ?",
+        "SELECT 1 FROM reads WHERE harness = ? AND session = ? AND epoch = ? AND path = ? AND pending_tool_use_id IS NULL",
         harness,
         session,
         epoch,

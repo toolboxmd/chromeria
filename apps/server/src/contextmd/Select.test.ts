@@ -281,47 +281,17 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
       });
       assert.strictEqual(out.moment.failed, null);
       assert.deepStrictEqual(out.moment.reads, [{ path: target, kind: "shell_full" }]);
-      // A failed read prints an error, not the file: it does not count.
-      const failedRead = yield* sel("codex", {
+      // Codex reports no failure, so selection only names the files; the serving state waits
+      // for the projected exit status before counting them (ServingState and route tests).
+      const nl = yield* sel("codex", {
         hook_event_name: "PostToolUse",
         session_id: "S",
         cwd: ws,
         tool_name: "Bash",
-        tool_input: { command: `cat ${target}` },
-        tool_response: `cat: ${target}: Permission denied\n`,
+        tool_input: { command: `nl -ba ${target}` },
+        tool_response: "     1\t# Rules\n",
       });
-      assert.deepStrictEqual(failedRead.moment.reads, []);
-      // Per file: an error for one file and another file's text under the same heading do not
-      // prove the first was read; a partial range of a file proves that file was.
-      const other = NodePath.join(ws, "OTHER.md");
-      NodeFS.writeFileSync(other, "# Rules\n\nThe other file has its own lines.\n");
-      const mixed = yield* sel("codex", {
-        hook_event_name: "PostToolUse",
-        session_id: "S",
-        cwd: ws,
-        tool_name: "Bash",
-        tool_input: { command: `cat ${target} ${other}` },
-        tool_response: `cat: ${target}: Permission denied\n# Rules\n\nThe other file has its own lines.\n`,
-      });
-      assert.deepStrictEqual(mixed.moment.reads, [{ path: other, kind: "shell_full" }]);
-      const range = yield* sel("codex", {
-        hook_event_name: "PostToolUse",
-        session_id: "S",
-        cwd: ws,
-        tool_name: "Bash",
-        tool_input: { command: `sed -n '3,4p' ${target}` },
-        tool_response: "Pushes need the deploy key alias.\nAsk before force-pushing a branch.\n",
-      });
-      assert.deepStrictEqual(range.moment.reads, [{ path: target, kind: "shell_full" }]);
-      const grep = yield* sel("codex", {
-        hook_event_name: "PostToolUse",
-        session_id: "S",
-        cwd: ws,
-        tool_name: "Bash",
-        tool_input: { command: `grep -n force ${target}` },
-        tool_response: "4:Ask before force-pushing a branch.\n",
-      });
-      assert.deepStrictEqual(grep.moment.reads, [{ path: target, kind: "shell_partial" }]);
+      assert.deepStrictEqual(nl.moment.reads, [{ path: target, kind: "shell_full" }]);
       const fail = yield* sel("codex", {
         hook_event_name: "PostToolUse",
         session_id: "S",

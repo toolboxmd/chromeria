@@ -33,7 +33,13 @@ import * as ServerConfig from "../config.ts";
 import * as ServerActivation from "../serverActivation.ts";
 import * as Select from "./Select.ts";
 import type { ParseCache } from "./Store.ts";
-import { ServingState, type Reply, type RunJoin, type Unserved } from "./ServingState.ts";
+import {
+  ServingState,
+  type ReadCheck,
+  type Reply,
+  type RunJoin,
+  type Unserved,
+} from "./ServingState.ts";
 
 export const MAX_BODY_BYTES = 1_048_576;
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
@@ -228,6 +234,32 @@ const make = Effect.gen(function* () {
       Effect.catchCause((cause) => Effect.logWarning("ContextMD deny check failed", { cause })),
     );
 
+  /**
+   * The projected exit status of earlier calls whose reads wait for proof (Codex reports no
+   * failure to its hook): a command item finished with exit code 0 proves them.
+   */
+  const checkReads = (harness: string, session: string, threadId: string) =>
+    Effect.forEach(state.pendingReads(harness, session), (toolUseId) =>
+      sql<{ readonly status: string; readonly exit_code: number | null }>`
+        SELECT status, json_extract(payload_json, '$.exitCode') AS exit_code
+        FROM orchestration_v2_projection_turn_items
+        WHERE thread_id = ${threadId} AND type = 'command_execution'
+          AND turn_item_id LIKE ${`%native-item:%${toolUseId}`}
+        LIMIT 1`.pipe(
+        Effect.map((rows): ReadCheck => {
+          const item = rows[0];
+          if (item === undefined || !TERMINAL.has(item.status)) return { toolUseId, ok: null };
+          return { toolUseId, ok: item.status === "completed" && (item.exit_code ?? 0) === 0 };
+        }),
+      ),
+    ).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("ContextMD read check failed", { cause }).pipe(
+          Effect.as([] as ReadCheck[]),
+        ),
+      ),
+    );
+
   const moment: ContextmdServing["Service"]["moment"] = (request) =>
     Effect.gen(function* () {
       const startedAt = yield* nowSeconds;
@@ -289,11 +321,21 @@ const make = Effect.gen(function* () {
       }
       const selection = selected.selection;
       const join = yield* resolveRun(selection.moment.session);
+      let readChecks: ReadonlyArray<ReadCheck> = [];
       if (join.type === "run") {
         yield* checkDenies(harness, selection.moment.session, join.threadId);
+        readChecks = yield* checkReads(harness, selection.moment.session, join.threadId);
       }
       const now = yield* nowSeconds;
-      return state.decide({ harness, delivery: request.delivery, selection, join, now, startedAt });
+      return state.decide({
+        harness,
+        delivery: request.delivery,
+        selection,
+        join,
+        readChecks,
+        now,
+        startedAt,
+      });
     }).pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning("ContextMD moment failed", { cause }).pipe(
