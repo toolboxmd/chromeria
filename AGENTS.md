@@ -58,7 +58,7 @@ We need to be on the same page with terminology. When communicating, use this la
 
 ## Connected projects
 
-Chromeria is one system with AgentsMD, Agent Observer and ContextMD. Root [`GLOSSARY.md`](GLOSSARY.md) is the system glossary: it defines every term two or more of them use, and its names win over the T3 terms above in fork code and docs. Before naming a concept, check it there and in the connected project's glossary; reuse the existing term or add the new one to `GLOSSARY.md`, never a conflicting synonym.
+Chromeria is one system with AgentsMD, Agent Observer and ContextMD. Root [`GLOSSARY.md`](GLOSSARY.md) is the system glossary: it defines every term two or more of them use, and its names win over the T3 terms above in fork prose and new names; T3 code identifiers keep their names. Before naming a concept, check it there and in the connected project's glossary; reuse the existing term or add the new one to `GLOSSARY.md`, never a conflicting synonym.
 
 | Project | Repository | Glossary |
 | --- | --- | --- |

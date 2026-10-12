@@ -112,8 +112,8 @@ worker threads to a PR; Prism absorbed it.
 
 **Harness**:
 The agent program a session runs in: Claude Code, Codex, Grok Build, OpenCode
-or Cursor. Ids: `claude`, `codex`, `grok`, `opencode`; T3's driver
-`claudeAgent` is `claude`. AgentsMD's `--host` flag is an alias.
+or Cursor. Agent Observer's harness ids are `claude`, `codex`, `grok` and
+`opencode`; T3's driver `claudeAgent` is `claude`. AgentsMD's `--host` flag is an alias.
 _Avoid_: host (for the program), provider (alone)
 
 **Provider instance**:
@@ -125,8 +125,8 @@ The company that serves a model, such as Anthropic, OpenAI or xAI.
 _Avoid_: provider (alone)
 
 **Machine**:
-One of the user's computers, such as rocky, cavallo or bestia. It holds one
-Agent Observer ledger and runs one Chromeria environment.
+One of the user's computers. It holds one Agent Observer ledger and runs one
+Chromeria environment.
 _Avoid_: host (for a computer), box
 
 **Environment**:
@@ -173,8 +173,8 @@ One user-role input in a session or thread (T3 `userMessageId`).
 _Avoid_: submission, prompt (as a record)
 
 **Created by**:
-Who wrote an input: `user`, `agent`, `system`, or `unknown` when evidence is
-missing (T3 `createdBy`).
+Who wrote an input: `user`, `agent` or `system` (T3 `createdBy`). Agent
+Observer adds `unknown` when evidence is missing.
 _Avoid_: origin, human (as a value)
 
 ## Work and roles
@@ -218,6 +218,10 @@ owner and matcher, reflect decides add, update or remove against the owner's
 current content, and the write step applies those decisions.
 _Avoid_: reflection (for the pipeline)
 
+**Lesson**:
+One piece of durable knowledge capture takes from a session, such as a rule,
+a fact or a preference.
+
 **Write step**:
 The capture step that writes into an owner: code applies the reflected add,
 update or remove and commits it.
@@ -248,6 +252,6 @@ ContextMD deny. Never an intervention or a correction.
 _Avoid_: rejection
 
 **Recurring problem**:
-A group of yes verdicts on one underlying problem that spans two or more
+One underlying problem that a judge finds in interventions from two or more
 sessions.
 _Avoid_: repeated correction
