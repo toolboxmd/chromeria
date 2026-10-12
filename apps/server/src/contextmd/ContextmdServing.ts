@@ -221,7 +221,8 @@ const make = Effect.gen(function* () {
       const results = yield* Effect.forEach(pending, (check) =>
         sql<{ readonly type: string; readonly status: string; readonly payload_json: string }>`
           SELECT type, status, payload_json FROM orchestration_v2_projection_turn_items
-          WHERE thread_id = ${threadId} AND turn_item_id LIKE ${`%native-item:%${check.toolUseId}`}
+          WHERE thread_id = ${threadId}
+            AND json_extract(payload_json, '$.nativeItemRef.nativeId') = ${check.toolUseId}
           LIMIT 1`.pipe(
           Effect.map((rows) => ({
             claim: check.claim,
@@ -244,12 +245,15 @@ const make = Effect.gen(function* () {
         SELECT status, json_extract(payload_json, '$.exitCode') AS exit_code
         FROM orchestration_v2_projection_turn_items
         WHERE thread_id = ${threadId} AND type = 'command_execution'
-          AND turn_item_id LIKE ${`%native-item:%${toolUseId}`}
+          AND json_extract(payload_json, '$.nativeItemRef.nativeId') = ${toolUseId}
         LIMIT 1`.pipe(
         Effect.map((rows): ReadCheck => {
           const item = rows[0];
           if (item === undefined || !TERMINAL.has(item.status)) return { toolUseId, ok: null };
-          return { toolUseId, ok: item.status === "completed" && (item.exit_code ?? 0) === 0 };
+          // Success needs an explicit exit code 0; a finished item without one proves nothing.
+          if (item.status === "completed" && item.exit_code === null)
+            return { toolUseId, ok: null };
+          return { toolUseId, ok: item.status === "completed" && item.exit_code === 0 };
         }),
       ),
     ).pipe(

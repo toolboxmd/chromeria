@@ -70,6 +70,7 @@ const projectDeniedCall = (input: {
     const field = type === "file_change" ? "diffStr" : "output";
     const payload = JSON.stringify({
       type,
+      nativeItemRef: { driver: "claudeAgent", nativeId: input.toolUseId, strength: "strong" },
       input: input.commandInput ?? "",
       ...(input.shown === undefined
         ? {}
@@ -127,20 +128,22 @@ const layerAuth = Layer.mock(EnvironmentAuth.EnvironmentAuth)({
 const projectCommand = (input: {
   readonly toolUseId: string;
   readonly status: string;
-  readonly exitCode: number;
+  readonly exitCode?: number;
+  readonly itemId?: string;
 }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const payload = JSON.stringify({
       type: "command_execution",
+      nativeItemRef: { driver: "codex", nativeId: input.toolUseId, strength: "strong" },
       input: "cat",
-      exitCode: input.exitCode,
+      ...(input.exitCode === undefined ? {} : { exitCode: input.exitCode }),
     });
     yield* sql`
       INSERT INTO orchestration_v2_projection_turn_items (
         turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json
       ) VALUES (
-        ${`turn-item:provider:codex:native-item:${input.toolUseId}`}, 'thread-of-run-1', 'run-1',
+        ${input.itemId ?? `turn-item:provider:codex:native-item:${input.toolUseId}`}, 'thread-of-run-1', 'run-1',
         1, 'command_execution', ${input.status}, '', ${payload}
       )`;
   }).pipe(Effect.orDie);
@@ -478,6 +481,24 @@ describe("contextmd routes", () => {
         calls += 1;
         return s.moment(codex("PreToolUse", "git push", `push-${calls}`), { harness: "codex" });
       };
+      assert.include((yield* push()).body, "rule push");
+      // Another command whose id merely ends with this one's, and that succeeded, proves nothing.
+      yield* projectCommand({
+        toolUseId: "prior-exec-1",
+        status: "completed",
+        exitCode: 0,
+        itemId: "turn-item:provider:codex:native-item:prior-exec-1",
+      }).pipe(Effect.provide(s.database));
+      // A finished item without an exit code proves nothing either.
+      yield* s.moment(
+        codex("PostToolUse", `cat ${s.store.rule}`, "exec-0", "Pushes need the deploy key alias."),
+        {
+          harness: "codex",
+        },
+      );
+      yield* projectCommand({ toolUseId: "exec-0", status: "completed" }).pipe(
+        Effect.provide(s.database),
+      );
       assert.include((yield* push()).body, "rule push");
       // A failed read (exit code 1) of the target does not lift the rule.
       yield* s.moment(

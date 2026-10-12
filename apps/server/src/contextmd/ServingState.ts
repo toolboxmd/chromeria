@@ -696,6 +696,9 @@ export class ServingState {
     momentId: number,
     now: number,
   ) {
+    // Without a failure signal a read waits for the projected exit code, which needs the
+    // call's tool-use id; a read that can never be checked does not count at all.
+    if (sel.moment.failed === null && sel.moment.tool_use_id === null) return;
     const pending = sel.moment.failed === null ? sel.moment.tool_use_id : null;
     for (const read of sel.moment.reads) {
       this.run(

@@ -251,7 +251,8 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
       const out = yield* sel("claude", ok);
       assert.deepStrictEqual(
         [out.moment.kind, out.moment.failed, out.moment.event],
-        ["tool_failure", true, "PostToolUse"],
+        // The printed exit routes error keys; whether files were read stays the harness's report.
+        ["tool_failure", false, "PostToolUse"],
       );
       assert.deepInclude(out.notes, { matcher: "failure", outcome: "failed_by_output" });
       assert.deepStrictEqual(

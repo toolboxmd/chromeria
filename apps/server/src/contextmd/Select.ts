@@ -186,10 +186,10 @@ export const select = Effect.fn("contextmd.select")(function* (
       failed = false;
     }
     if (failed !== true && EXIT_PRINTED.test(output)) {
-      // The output shows a failure the harness did not report. The reply keeps the
-      // harness's own event name, since that is the event it answers.
+      // The output shows a failure the harness did not report, so error keys and the failure
+      // seam apply. It does not decide whether files were read: printed text can be file
+      // content, so `failed` keeps the harness's own report.
       kind = "tool_failure";
-      failed = true;
       notes.push({ matcher: "failure", outcome: "failed_by_output" });
     }
   }

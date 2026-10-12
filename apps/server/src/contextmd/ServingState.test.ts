@@ -90,6 +90,7 @@ interface Fire {
   readonly delivery?: string;
   readonly settle?: boolean;
   readonly readChecks?: ReadonlyArray<{ readonly toolUseId: string; readonly ok: boolean | null }>;
+  readonly toolUseId?: string | null;
 }
 
 const makeHarness = (file = ":memory:") => {
@@ -109,7 +110,7 @@ const makeHarness = (file = ":memory:") => {
           kind: f.kind,
           event: "PreToolUse",
           session: f.session ?? "s1",
-          tool_use_id: `t${n}`,
+          tool_use_id: f.toolUseId !== undefined ? f.toolUseId : `t${n}`,
           tool: "Bash",
           source: f.source ?? null,
           failed:
@@ -308,6 +309,29 @@ describe("ServingState deny lifts", () => {
         .status,
       204,
     );
+  });
+
+  it("does not count a read that can never be checked (no failure signal, no tool-use id)", () => {
+    const h = makeHarness();
+    const rule = pointer("vc", target);
+    h.fire({ kind: "pre_tool", candidates: [rule] });
+    h.fire({
+      kind: "tool_result",
+      failed: null,
+      toolUseId: null,
+      reads: [{ path: target, kind: "shell_full" }],
+    });
+    assert.deepStrictEqual(h.state.pendingReads("claude", "s1"), []);
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [rule] })), "deny");
+  });
+
+  it("counts a successful read whose output merely mentions a printed exit", () => {
+    const h = makeHarness();
+    const rule = pointer("vc", target);
+    h.fire({ kind: "pre_tool", candidates: [rule] });
+    // Selection routes such output as tool_failure but keeps the harness's own `failed: false`.
+    h.fire({ kind: "tool_failure", failed: false, reads: [{ path: target, kind: "shell_full" }] });
+    assert.strictEqual(h.fire({ kind: "pre_tool", candidates: [rule] }).status, 204);
   });
 
   it("lets a call pass without a deny when the target was read first", () => {
