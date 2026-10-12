@@ -1,0 +1,704 @@
+// @effect-diagnostics nodeBuiltinImport:off - the state core runs on node:sqlite; one test holds a write lock from another process.
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
+
+import { assert, describe, it } from "@effect/vitest";
+
+import type { Candidate, MomentKind, Profile, Selection } from "./Selection.ts";
+import {
+  DENY_BUDGET_BYTES,
+  SERVE_BUDGET_BYTES,
+  ServingState,
+  isHoldout,
+  type Reply,
+  type RunJoin,
+} from "./ServingState.ts";
+
+const PROFILE: Profile = {
+  harness: "claude",
+  delivering: [
+    "session_start",
+    "user_message",
+    "pre_tool",
+    "tool_result",
+    "tool_failure",
+    "before_done",
+  ],
+  carry_to: null,
+  limit_bytes: 2000,
+  settle_within_ms: 2000,
+  session_start_limit_bytes: 9500,
+  new_epoch_sources: ["compact", "clear"],
+  templates: {
+    context: { hookSpecificOutput: { hookEventName: "{{event}}", additionalContext: "{{text}}" } },
+    deny: {
+      hookSpecificOutput: {
+        hookEventName: "{{event}}",
+        permissionDecision: "deny",
+        permissionDecisionReason: "{{text}}",
+      },
+    },
+  },
+  heads: { deny: "deny-head", context: "context-head" },
+};
+
+const GROK: Profile = {
+  ...PROFILE,
+  harness: "grok",
+  delivering: ["pre_tool", "before_done"],
+  carry_to: "pre_tool",
+};
+
+const SETTLE_MS = 2000;
+
+const entry = (id: string, text: string, extra: Partial<Candidate> = {}): Candidate => ({
+  matcher: "exact_key",
+  entry: id,
+  version: "v1",
+  key: `command:${id}`,
+  text,
+  must_know: false,
+  rule: null,
+  target: null,
+  ...extra,
+});
+
+const pointer = (id: string, target: string, text = `rule ${id}`) =>
+  entry(id, text, {
+    must_know: true,
+    rule: "pointer",
+    target,
+    deny_text: `${text}\nRead ${target}`,
+  });
+
+const inline = (id: string, text = `rule ${id}`) =>
+  entry(id, text, { must_know: true, rule: "inline", deny_text: text });
+
+interface Fire {
+  readonly kind: MomentKind;
+  readonly candidates?: Candidate[];
+  readonly session?: string;
+  readonly run?: string;
+  readonly join?: RunJoin;
+  readonly reads?: Selection["moment"]["reads"];
+  readonly failed?: boolean | null;
+  readonly source?: string | null;
+  readonly profile?: Profile;
+  readonly delivery?: string;
+  readonly settle?: boolean;
+  readonly readChecks?: ReadonlyArray<{ readonly toolUseId: string; readonly ok: boolean | null }>;
+  readonly toolUseId?: string | null;
+}
+
+const makeHarness = (file = ":memory:") => {
+  const db = new NodeSqlite.DatabaseSync(file);
+  const state = new ServingState(db);
+  let now = 1_000;
+  let n = 0;
+  const fire = (f: Fire): Reply & { delivery: string } => {
+    n += 1;
+    const delivery = f.delivery ?? `d${n}`;
+    const profile = f.profile ?? PROFILE;
+    const reply = state.decide({
+      harness: profile.harness,
+      delivery,
+      selection: {
+        moment: {
+          kind: f.kind,
+          event: "PreToolUse",
+          session: f.session ?? "s1",
+          tool_use_id: f.toolUseId !== undefined ? f.toolUseId : `t${n}`,
+          tool: "Bash",
+          source: f.source ?? null,
+          failed:
+            f.failed !== undefined
+              ? f.failed
+              : f.kind === "tool_failure"
+                ? true
+                : f.kind === "tool_result"
+                  ? false
+                  : null,
+          reads: f.reads ?? [],
+        },
+        candidates: f.candidates ?? [],
+        notes: [],
+        owners: { "/store": "abc123" },
+        profile,
+      },
+      join: f.join ?? { type: "run", runId: f.run ?? "run-1", threadId: "thread-1" },
+      ...(f.readChecks === undefined ? {} : { readChecks: f.readChecks }),
+      now,
+      startedAt: now,
+    });
+    if (reply.status === 200 && f.settle !== false) state.settle(delivery, now);
+    return { ...reply, delivery };
+  };
+  const text = (r: Reply) => {
+    if (r.status !== 200) return null;
+    const body = JSON.parse(r.body).hookSpecificOutput;
+    return (body.permissionDecisionReason ?? body.additionalContext) as string;
+  };
+  const decision = (r: Reply) =>
+    r.status === 200
+      ? (JSON.parse(r.body).hookSpecificOutput.permissionDecision ?? "context")
+      : "none";
+  const outcomes = (entryId: string) =>
+    (
+      db
+        .prepare("SELECT outcome FROM candidates WHERE entry = ? ORDER BY id")
+        .all(entryId) as Array<{ outcome: string }>
+    ).map((r) => r.outcome);
+  const advance = (ms: number) => {
+    now += ms / 1000;
+  };
+  return { db, state, fire, text, decision, outcomes, advance, now: () => now };
+};
+
+describe("ServingState budgets", () => {
+  it("gives each run its own serve budget and cuts at the budget", () => {
+    const h = makeHarness();
+    const big = (i: number) => entry(`e${i}`, `rule ${i} ${"y".repeat(1490)}`);
+    const served = [0, 1, 2, 3, 4, 5, 6].map((i) =>
+      h.fire({ kind: "tool_result", candidates: [big(i)] }),
+    );
+    const total = served.reduce((sum, r) => sum + Buffer.byteLength(h.text(r) ?? ""), 0);
+    assert.isAtMost(total, SERVE_BUDGET_BYTES);
+    assert.deepStrictEqual(h.outcomes("e5"), ["cut_budget"]);
+    // A second user turn is a second run: a fresh budget.
+    assert.strictEqual(
+      h.fire({ kind: "tool_result", run: "run-2", candidates: [big(6)] }).status,
+      200,
+    );
+  });
+
+  it("keeps serves out of the deny budget", () => {
+    const h = makeHarness();
+    for (let i = 0; i < 6; i++) {
+      h.fire({ kind: "tool_result", candidates: [entry(`e${i}`, "y".repeat(1500))] });
+    }
+    const deny = h.fire({ kind: "pre_tool", candidates: [inline("pr", "P".repeat(600))] });
+    assert.strictEqual(h.decision(deny), "deny");
+  });
+
+  it("bounds one output by the harness limit in bytes, with non-ASCII text", () => {
+    const h = makeHarness();
+    const wide = entry("wide", "\u{1F600}".repeat(400)); // 1,600 bytes
+    const second = entry("second", "\u{1F600}".repeat(400));
+    const r = h.fire({ kind: "tool_result", candidates: [wide, second] });
+    assert.isAtMost(Buffer.byteLength(h.text(r)!), PROFILE.limit_bytes);
+    assert.deepStrictEqual(h.outcomes("second"), ["cut_budget"]);
+  });
+
+  it("serves an entry once per run and epoch", () => {
+    const h = makeHarness();
+    assert.strictEqual(h.fire({ kind: "tool_result", candidates: [entry("a", "A")] }).status, 200);
+    assert.strictEqual(h.fire({ kind: "tool_result", candidates: [entry("a", "A")] }).status, 204);
+    assert.deepStrictEqual(h.outcomes("a"), ["injected", "deduped"]);
+  });
+
+  it("serves nothing for an unjoined or ambiguous session", () => {
+    const h = makeHarness();
+    assert.strictEqual(
+      h.fire({ kind: "pre_tool", join: { type: "unjoined" }, candidates: [inline("x")] }).status,
+      204,
+    );
+    assert.strictEqual(
+      h.fire({ kind: "pre_tool", join: { type: "ambiguous" }, candidates: [inline("x")] }).status,
+      204,
+    );
+    assert.deepStrictEqual(h.outcomes("x"), ["unjoined", "ambiguous"]);
+  });
+});
+
+describe("ServingState deny composition", () => {
+  it("carries whole rules only, always the first, and defers the rest", () => {
+    const h = makeHarness();
+    const first = inline("first", "A".repeat(1800));
+    const second = inline("second", "B".repeat(1500));
+    const r = h.fire({ kind: "pre_tool", candidates: [first, second] });
+    const reason = h.text(r)!;
+    assert.isAtMost(Buffer.byteLength(reason), PROFILE.limit_bytes);
+    assert.include(reason, "A".repeat(1800));
+    assert.notInclude(reason, "B");
+    assert.deepStrictEqual(h.outcomes("second"), ["deferred"]);
+    // The deferred rule denies the next matching call.
+    assert.include(
+      h.text(h.fire({ kind: "pre_tool", candidates: [first, second] }))!,
+      "B".repeat(1500),
+    );
+  });
+
+  it("cuts only a first rule that alone exceeds the limit, and logs it truncated", () => {
+    const h = makeHarness();
+    const huge = inline("huge", "é".repeat(1500)); // 3,000 bytes
+    const r = h.fire({ kind: "pre_tool", candidates: [huge] });
+    assert.isAtMost(Buffer.byteLength(h.text(r)!), PROFILE.limit_bytes);
+    assert.notInclude(h.text(r)!, "�");
+    assert.deepStrictEqual(h.outcomes("huge"), ["truncated"]);
+    // A truncated inline deny is not a read: the next call is denied again.
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [huge] })), "deny");
+  });
+
+  it("still denies with the first rule when the deny budget is spent", () => {
+    const h = makeHarness();
+    h.fire({ kind: "pre_tool", candidates: [inline("a", "A".repeat(1800))] });
+    const r = h.fire({ kind: "pre_tool", candidates: [inline("b", "B".repeat(1800))] });
+    assert.strictEqual(h.decision(r), "deny");
+    assert.include(h.text(r)!, "B".repeat(1800));
+    const used = h.db.prepare("SELECT deny_used FROM budgets").get() as { deny_used: number };
+    assert.isAbove(used.deny_used, DENY_BUDGET_BYTES);
+  });
+});
+
+describe("ServingState deny lifts", () => {
+  const target = "/repo/skills/version-control/index.md";
+
+  it("lifts a pointer rule only after a successful read of its target", () => {
+    const h = makeHarness();
+    const rule = pointer("vc", target);
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [rule] })), "deny");
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [rule] })), "deny");
+    // A failed read does not lift it.
+    h.fire({ kind: "tool_failure", reads: [{ path: target, kind: "shell_full" }] });
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [rule] })), "deny");
+    assert.deepStrictEqual(h.outcomes("vc"), ["injected", "injected", "injected"]);
+    const fresh = makeHarness();
+    fresh.fire({ kind: "pre_tool", candidates: [rule] });
+    fresh.fire({ kind: "tool_result", reads: [{ path: target, kind: "read_tool" }] });
+    assert.strictEqual(fresh.fire({ kind: "pre_tool", candidates: [rule] }).status, 204);
+    assert.deepStrictEqual(fresh.outcomes("vc"), ["injected", "lifted", "passed"]);
+  });
+
+  it("does not lift on a read of another file", () => {
+    const h = makeHarness();
+    const rule = pointer("vc", target);
+    h.fire({ kind: "pre_tool", candidates: [rule] });
+    h.fire({ kind: "tool_result", reads: [{ path: "/repo/README.md", kind: "read_tool" }] });
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [rule] })), "deny");
+  });
+
+  it("holds a read without a failure signal (Codex) until the projection shows exit code 0", () => {
+    const h = makeHarness();
+    const rule = pointer("vc", target);
+    h.fire({ kind: "pre_tool", candidates: [rule] });
+    // A read whose success is unknown (`failed: null`) does not lift yet.
+    h.fire({ kind: "tool_result", failed: null, reads: [{ path: target, kind: "shell_full" }] });
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [rule] })), "deny");
+    // That call failed (exit code 1): its read is discarded.
+    const pending = h.state.pendingReads("claude", "s1");
+    assert.strictEqual(pending.length, 1);
+    assert.strictEqual(
+      h.decision(
+        h.fire({
+          kind: "pre_tool",
+          candidates: [rule],
+          readChecks: [{ toolUseId: pending[0]!, ok: false }],
+        }),
+      ),
+      "deny",
+    );
+    assert.deepStrictEqual(h.state.pendingReads("claude", "s1"), []);
+    // A later read of the same file that finished with exit code 0 lifts the rule.
+    h.fire({ kind: "tool_result", failed: null, reads: [{ path: target, kind: "shell_partial" }] });
+    const [ok] = h.state.pendingReads("claude", "s1");
+    assert.strictEqual(
+      h.fire({ kind: "pre_tool", candidates: [rule], readChecks: [{ toolUseId: ok!, ok: true }] })
+        .status,
+      204,
+    );
+  });
+
+  it("does not count a read that can never be checked (no failure signal, no tool-use id)", () => {
+    const h = makeHarness();
+    const rule = pointer("vc", target);
+    h.fire({ kind: "pre_tool", candidates: [rule] });
+    h.fire({
+      kind: "tool_result",
+      failed: null,
+      toolUseId: null,
+      reads: [{ path: target, kind: "shell_full" }],
+    });
+    assert.deepStrictEqual(h.state.pendingReads("claude", "s1"), []);
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [rule] })), "deny");
+  });
+
+  it("counts a successful read whose output merely mentions a printed exit", () => {
+    const h = makeHarness();
+    const rule = pointer("vc", target);
+    h.fire({ kind: "pre_tool", candidates: [rule] });
+    // Selection routes such output as tool_failure but keeps the harness's own `failed: false`.
+    h.fire({ kind: "tool_failure", failed: false, reads: [{ path: target, kind: "shell_full" }] });
+    assert.strictEqual(h.fire({ kind: "pre_tool", candidates: [rule] }).status, 204);
+  });
+
+  it("lets a call pass without a deny when the target was read first", () => {
+    const h = makeHarness();
+    h.fire({ kind: "tool_result", reads: [{ path: target, kind: "shell_partial" }] });
+    assert.strictEqual(
+      h.fire({ kind: "pre_tool", candidates: [pointer("vc", target)] }).status,
+      204,
+    );
+    assert.deepStrictEqual(h.outcomes("vc"), ["lifted"]);
+  });
+
+  it("ignores a read in another session or an earlier epoch", () => {
+    const h = makeHarness();
+    const rule = pointer("vc", target);
+    h.fire({ kind: "tool_result", session: "other", reads: [{ path: target, kind: "read_tool" }] });
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [rule] })), "deny");
+    h.fire({ kind: "tool_result", reads: [{ path: target, kind: "read_tool" }] });
+    assert.strictEqual(h.fire({ kind: "pre_tool", candidates: [rule] }).status, 204);
+    // Compaction starts a new epoch: the rule denies again until it is read again.
+    h.fire({ kind: "session_start", source: "compact" });
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [rule] })), "deny");
+  });
+
+  it("passes after three denies without a read, logged not_read_capped", () => {
+    const h = makeHarness();
+    const rule = pointer("vc", target);
+    for (let i = 0; i < 3; i++) {
+      assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [rule] })), "deny");
+    }
+    assert.strictEqual(h.fire({ kind: "pre_tool", candidates: [rule] }).status, 204);
+    const lifted = h.db
+      .prepare(
+        "SELECT reason, extra_json FROM candidates WHERE entry = 'vc' AND outcome = 'lifted'",
+      )
+      .get() as { reason: string; extra_json: string };
+    assert.strictEqual(lifted.reason, "not_read_capped");
+    assert.strictEqual(JSON.parse(lifted.extra_json).denies, 3);
+  });
+
+  it("lifts an inline rule on a settled whole delivery, not an unsettled one", () => {
+    const h = makeHarness();
+    const rule = inline("pr");
+    const unsettled = h.fire({ kind: "pre_tool", candidates: [rule], settle: false });
+    assert.strictEqual(h.decision(unsettled), "deny");
+    // The hook was killed after the reply and before settle: after the release window the retry is denied.
+    h.advance(SETTLE_MS + 1);
+    h.state.releaseStale(h.now());
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [rule] })), "deny");
+    assert.strictEqual(h.fire({ kind: "pre_tool", candidates: [rule] }).status, 204);
+    assert.deepStrictEqual(h.outcomes("pr"), ["delivery_unverified", "injected", "passed"]);
+  });
+
+  it("denies every call of a parallel wave until a read exists", () => {
+    const h = makeHarness();
+    const rule = pointer("vc", target);
+    const wave = [1, 2, 3, 4, 5].map(() =>
+      h.fire({ kind: "pre_tool", candidates: [rule], settle: false }),
+    );
+    assert.deepStrictEqual(wave.map(h.decision), ["deny", "deny", "deny", "deny", "deny"]);
+  });
+
+  it("does not spend the cap on denies whose delivery was dropped", () => {
+    const h = makeHarness();
+    const rule = pointer("vc", target);
+    for (let i = 0; i < 3; i++) {
+      assert.strictEqual(
+        h.decision(h.fire({ kind: "pre_tool", candidates: [rule], settle: false })),
+        "deny",
+      );
+      h.advance(SETTLE_MS + 1);
+      h.state.releaseStale(h.now());
+    }
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [rule] })), "deny");
+    assert.notInclude(h.outcomes("vc"), "lifted");
+  });
+});
+
+describe("ServingState deny evidence (two hooks deny one call)", () => {
+  const CLAUDE: Profile = { ...PROFILE, deny_evidence: "projection" };
+  /** The strings of a denied call's projected `output`: what the model was shown. */
+  const projected = (shown: string) => [`Error: PreToolUse:Bash hook error: ${shown}`];
+
+  it("keeps an inline rule armed until the projection shows the model saw it", () => {
+    const h = makeHarness();
+    const rule = inline("pr", "Commits need the Refs: WID-42 trailer.");
+    assert.strictEqual(
+      h.decision(h.fire({ kind: "pre_tool", profile: CLAUDE, candidates: [rule] })),
+      "deny",
+    );
+    // Settled, but not yet proven shown: the retry is denied again.
+    const [check] = h.state.pendingChecks("claude", "s1");
+    assert.isDefined(check);
+    h.state.applyChecks([{ claim: check!.claim, output: null }], h.now());
+    assert.strictEqual(
+      h.decision(h.fire({ kind: "pre_tool", profile: CLAUDE, candidates: [rule] })),
+      "deny",
+    );
+    for (const c of h.state.pendingChecks("claude", "s1")) {
+      h.state.applyChecks(
+        [{ claim: c.claim, output: projected(`deny-head\n\n${rule.text}`) }],
+        h.now(),
+      );
+    }
+    assert.strictEqual(
+      h.fire({ kind: "pre_tool", profile: CLAUDE, candidates: [rule] }).status,
+      204,
+    );
+  });
+
+  it("re-arms a deny another hook's reason replaced, without counting it toward the cap", () => {
+    const h = makeHarness();
+    const rule = inline("pr", "Commits need the Refs: WID-42 trailer.");
+    h.fire({ kind: "pre_tool", profile: CLAUDE, candidates: [rule] });
+    const [check] = h.state.pendingChecks("claude", "s1");
+    h.state.applyChecks(
+      [
+        {
+          claim: check!.claim,
+          output: projected("AgentsMD: before this commit, read version-control/index.md"),
+        },
+      ],
+      h.now(),
+    );
+    assert.deepStrictEqual(h.outcomes("pr"), ["hidden"]);
+    const state = h.db.prepare("SELECT denies, lifted FROM deny_state").get() as {
+      denies: number;
+      lifted: number;
+    };
+    assert.deepStrictEqual({ ...state }, { denies: 0, lifted: 0 });
+    // The retry is denied with the rule, and three hidden denies never trigger the cap.
+    for (let i = 0; i < 3; i++) {
+      const r = h.fire({ kind: "pre_tool", profile: CLAUDE, candidates: [rule] });
+      assert.include(h.text(r)!, "WID-42");
+      for (const c of h.state.pendingChecks("claude", "s1")) {
+        h.state.applyChecks([{ claim: c.claim, output: projected("another hook") }], h.now());
+      }
+    }
+    assert.strictEqual(
+      h.decision(h.fire({ kind: "pre_tool", profile: CLAUDE, candidates: [rule] })),
+      "deny",
+    );
+  });
+
+  it("needs the whole rule: a rule sharing a prefix with the shown one stays armed", () => {
+    const h = makeHarness();
+    // Both rules share far more than a short probe: the first 70 characters are equal.
+    const base = "Commits in this repository need the Refs: WID-42 trailer line, always.";
+    const short = inline("short", base);
+    const long = inline("long", `${base} Also run ./check.sh before every commit.`);
+    h.fire({ kind: "pre_tool", profile: CLAUDE, candidates: [short] });
+    h.fire({ kind: "pre_tool", profile: CLAUDE, candidates: [long] });
+    for (const c of h.state.pendingChecks("claude", "s1")) {
+      h.state.applyChecks(
+        [{ claim: c.claim, output: projected(`deny-head\n\n${short.text}`) }],
+        h.now(),
+      );
+    }
+    assert.strictEqual(
+      h.fire({ kind: "pre_tool", profile: CLAUDE, candidates: [short] }).status,
+      204,
+    );
+    assert.strictEqual(
+      h.decision(h.fire({ kind: "pre_tool", profile: CLAUDE, candidates: [long] })),
+      "deny",
+    );
+  });
+
+  it("adjudicates a deny once, however many moments check it", () => {
+    const h = makeHarness();
+    const rule = pointer("vc", "/repo/vc.md");
+    h.fire({ kind: "pre_tool", profile: CLAUDE, candidates: [rule] });
+    const [check] = h.state.pendingChecks("claude", "s1");
+    const shown = { claim: check!.claim, output: projected(`deny-head\n\n${rule.deny_text}`) };
+    h.state.applyChecks([shown], h.now());
+    h.state.applyChecks([shown], h.now());
+    h.state.applyChecks([{ claim: check!.claim, output: projected("another hook") }], h.now());
+    const state = h.db.prepare("SELECT denies FROM deny_state").get() as { denies: number };
+    assert.strictEqual(state.denies, 1);
+    assert.deepStrictEqual(h.outcomes("vc"), ["injected"]);
+  });
+
+  it("stops waiting for evidence after a minute, logs unverified and counts the deny", () => {
+    const h = makeHarness();
+    const rule = pointer("vc", "/repo/vc.md");
+    // Twelve settled denies without any projected item: more than one lookup batch.
+    for (let i = 0; i < 12; i++) {
+      assert.strictEqual(
+        h.decision(h.fire({ kind: "pre_tool", profile: CLAUDE, candidates: [rule] })),
+        "deny",
+      );
+    }
+    assert.deepStrictEqual([...new Set(h.outcomes("vc"))], ["awaiting_evidence"]);
+    h.advance(61_000);
+    h.state.releaseStale(h.now());
+    assert.deepStrictEqual([...new Set(h.outcomes("vc"))], ["unverified"]);
+    const state = h.db.prepare("SELECT denies FROM deny_state").get() as { denies: number };
+    assert.strictEqual(state.denies, 12);
+    assert.strictEqual(
+      h.fire({ kind: "pre_tool", profile: CLAUDE, candidates: [rule] }).status,
+      204,
+    );
+  });
+
+  it("lifts an inline rule on settlement where the harness leaves no evidence", () => {
+    const h = makeHarness();
+    const rule = inline("pr");
+    h.fire({ kind: "pre_tool", candidates: [rule] });
+    assert.deepStrictEqual(h.state.pendingChecks("claude", "s1"), []);
+    assert.strictEqual(h.fire({ kind: "pre_tool", candidates: [rule] }).status, 204);
+  });
+});
+
+describe("ServingState settlement", () => {
+  it("answers a repeated delivery id with the same reply without charging again", () => {
+    const h = makeHarness();
+    const first = h.fire({ kind: "tool_result", candidates: [entry("a", "A")], delivery: "same" });
+    assert.deepStrictEqual(h.state.replayed("same"), {
+      status: 200,
+      body: (first as { body: string }).body,
+    });
+    const used = h.db.prepare("SELECT serve_used FROM budgets").get() as { serve_used: number };
+    assert.strictEqual(used.serve_used, Buffer.byteLength(h.text(first)!));
+  });
+
+  it("keeps a reply reserved for the harness's own settle window (OpenCode settles when the model reads it)", () => {
+    const h = makeHarness();
+    const opencode: Profile = { ...PROFILE, harness: "opencode", settle_within_ms: 120_000 };
+    const r = h.fire({
+      kind: "pre_tool",
+      profile: opencode,
+      candidates: [inline("pr")],
+      settle: false,
+    });
+    h.advance(10_000);
+    h.state.releaseStale(h.now());
+    assert.isTrue(h.state.settle(r.delivery, h.now()));
+    assert.deepStrictEqual(h.outcomes("pr"), ["injected"]);
+  });
+
+  it("refuses a settle that arrives after the deadline, with no sweep in between", () => {
+    const h = makeHarness();
+    const r = h.fire({ kind: "pre_tool", candidates: [inline("pr")], settle: false });
+    h.advance(10_000);
+    assert.isFalse(h.state.settle(r.delivery, h.now()));
+    assert.deepStrictEqual(h.outcomes("pr"), ["delivery_unverified"]);
+    const used = h.db.prepare("SELECT deny_used FROM budgets").get() as { deny_used: number };
+    assert.strictEqual(used.deny_used, 0);
+    assert.strictEqual(
+      h.decision(h.fire({ kind: "pre_tool", candidates: [inline("pr")] })),
+      "deny",
+    );
+  });
+
+  it("releases an unsettled reservation's bytes and claims", () => {
+    const h = makeHarness();
+    h.fire({ kind: "tool_result", candidates: [entry("a", "A".repeat(1000))], settle: false });
+    h.advance(SETTLE_MS + 1);
+    h.state.releaseStale(h.now());
+    const used = h.db.prepare("SELECT serve_used FROM budgets").get() as { serve_used: number };
+    assert.strictEqual(used.serve_used, 0);
+    assert.strictEqual(h.state.settle("d1", h.now()), false);
+    assert.strictEqual(
+      h.fire({ kind: "tool_result", candidates: [entry("a", "A".repeat(1000))] }).status,
+      200,
+    );
+  });
+
+  it("fails fast when another writer holds the lock", async () => {
+    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "contextmd-lock-"));
+    const file = NodePath.join(dir, "contextmd.sqlite");
+    const h = makeHarness(file);
+    const holder = NodeChildProcess.spawn(
+      process.execPath,
+      [
+        "-e",
+        `const db = new (require("node:sqlite").DatabaseSync)(process.argv[1]); db.exec("BEGIN IMMEDIATE"); process.stdout.write("locked\\n"); setTimeout(() => {}, 5000);`,
+        file,
+      ],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    try {
+      await new Promise<void>((resolve) => holder.stdout!.once("data", () => resolve()));
+      const started = performance.now();
+      assert.throws(() => h.fire({ kind: "tool_result", candidates: [entry("a", "A")] }));
+      assert.isBelow(performance.now() - started, 1000);
+    } finally {
+      holder.kill("SIGKILL");
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("ServingState epochs and carries", () => {
+  it("re-serves the session-start pack after compaction, outside both budgets", () => {
+    const h = makeHarness();
+    const pack = entry("/notes/PACK.md", "Prefer small diffs.", { matcher: "session_start" });
+    assert.strictEqual(
+      h.text(h.fire({ kind: "session_start", source: "startup", candidates: [pack] })),
+      "Prefer small diffs.",
+    );
+    assert.strictEqual(
+      h.text(h.fire({ kind: "session_start", source: "compact", candidates: [pack] })),
+      "Prefer small diffs.",
+    );
+    const epochs = h.db.prepare("SELECT epoch FROM moments ORDER BY id").all() as Array<{
+      epoch: number;
+    }>;
+    assert.deepStrictEqual(
+      epochs.map((e) => e.epoch),
+      [0, 1],
+    );
+    assert.strictEqual(h.db.prepare("SELECT count(*) AS n FROM budgets").get()!.n, 0);
+  });
+
+  it("starts a new epoch on a compaction moment", () => {
+    const h = makeHarness();
+    h.fire({ kind: "tool_result", candidates: [entry("a", "A")] });
+    h.fire({ kind: "compaction" });
+    assert.strictEqual(h.fire({ kind: "tool_result", candidates: [entry("a", "A")] }).status, 200);
+  });
+
+  it("carries a Grok serve to the next PreToolUse in the same run, then expires it with the run", () => {
+    const h = makeHarness();
+    assert.strictEqual(
+      h.fire({ kind: "tool_result", profile: GROK, candidates: [entry("a", "carry me")] }).status,
+      204,
+    );
+    const printed = h.fire({ kind: "pre_tool", profile: GROK });
+    assert.include(h.text(printed)!, "carry me");
+    assert.deepStrictEqual(h.outcomes("a"), ["carried", "injected"]);
+    h.fire({ kind: "tool_result", profile: GROK, candidates: [entry("b", "later")] });
+    h.fire({ kind: "pre_tool", profile: GROK, run: "run-2" });
+    assert.deepStrictEqual(h.outcomes("b"), ["carry_expired"]);
+  });
+
+  it("replaces a waiting carry with a newer entry version", () => {
+    const h = makeHarness();
+    h.fire({ kind: "tool_result", profile: GROK, candidates: [entry("a", "old")] });
+    h.fire({
+      kind: "tool_result",
+      profile: GROK,
+      candidates: [entry("a", "new", { version: "v2" })],
+    });
+    assert.deepStrictEqual(h.outcomes("a"), ["superseded", "carried"]);
+    assert.include(h.text(h.fire({ kind: "pre_tool", profile: GROK }))!, "new");
+  });
+});
+
+describe("ServingState log", () => {
+  it("records ids, versions and outcomes without prompt, command or result text", () => {
+    const h = makeHarness();
+    h.fire({ kind: "pre_tool", candidates: [inline("pr", "Rule text.")] });
+    const dump = JSON.stringify([
+      h.db.prepare("SELECT * FROM moments").all(),
+      h.db.prepare("SELECT * FROM candidates").all(),
+    ]);
+    assert.notInclude(dump, "Rule text.");
+    const moment = h.db.prepare("SELECT * FROM moments").get() as Record<string, unknown>;
+    assert.strictEqual(moment.run_id, "run-1");
+    assert.strictEqual(moment.owners_json, JSON.stringify({ "/store": "abc123" }));
+  });
+
+  it("puts about one session in ten in the holdout arm", () => {
+    let held = 0;
+    for (let i = 0; i < 10_000; i++) if (isHoldout("claude", `session-${i}`)) held += 1;
+    assert.isAbove(held, 900);
+    assert.isBelow(held, 1100);
+  });
+});
