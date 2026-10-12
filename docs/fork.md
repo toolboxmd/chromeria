@@ -100,3 +100,12 @@ its owning Issue without closing it before merge. No merge, main rewrite,
 installation or cutover follows merely from opening that PR. Preview background
 capture runtime retest from #152 remains required before #177 cutover, after the
 user explicitly grants browser authority.
+
+## Absorbed projects
+
+Prism absorbed Model Router (`toolboxmd/model-router`), the runner that Prism's
+submit tools once called to carry a delegated task through dispatcher and
+worker threads to a PR. Prism now routes `delegate_task` and
+`t3_thread_launch` itself, and the T3 routes the runner called
+(`/api/prism/snapshot`, `/api/prism/liveness`, `/api/orchestration/dispatch`)
+no longer exist. Model Router is retired; do not restore those routes for it.
