@@ -19,8 +19,10 @@ export const FEATURE_MAP_OPEN_ISSUE_PAGE = 100;
 export const FEATURE_MAP_OPEN_ISSUE_PAGES = 5;
 /** Refs read per request. */
 export const FEATURE_MAP_REFS_PER_READ = 100;
-/** Closing pull requests read per Issue. */
+/** Closing pull requests read per Issue; more marks the Issue's facts incomplete. */
 const CLOSING_PULL_REQUEST_PAGE = 10;
+/** Labels read per Issue, GitHub's page maximum; labels add no cost per page size. */
+const LABEL_PAGE = 100;
 
 const FENCE = /^```mermaid[ \t]*\r?\n([\s\S]*?)\r?\n```[ \t]*$/m;
 const PART = /^\s*([A-Za-z]\w*)\s*\["([^"]*)"\]\s*;?\s*$/;
@@ -61,6 +63,7 @@ function readRefs(text: string, at: { readonly host: string; readonly repository
   const tokens = text.trim().split(/\s+/).filter(Boolean);
   const refs: Array<FeatureMapRef> = [];
   const unreadable: Array<string> = [];
+  let firstUnreadable = false;
   for (let index = 0; index < tokens.length; index++) {
     const token = tokens[index]!;
     let repository = at.repository;
@@ -78,13 +81,14 @@ function readRefs(text: string, at: { readonly host: string; readonly repository
         ? null
         : refOf(at.host, pull ? "pull" : "issue", qualified?.[1] ?? repository, number);
     if (ref === null) {
+      if (refs.length === 0 && unreadable.length === 0) firstUnreadable = true;
       unreadable.push(token);
       continue;
     }
     refs.push(ref);
     index = cursor;
   }
-  return { refs, unreadable };
+  return { refs, unreadable, firstUnreadable };
 }
 
 /**
@@ -109,7 +113,10 @@ export function parseFeatureMapFile(
     const refLine = REF_LINE.exec(line);
     if (refLine !== null) lines.push({ id: refLine[1]!, text: refLine[2]!.trim() });
   }
-  const bound = new Map<string, { context: boolean; refs: Array<FeatureMapRef> }>();
+  const bound = new Map<
+    string,
+    { context: boolean; primaryUnreadable: boolean; refs: Array<FeatureMapRef> }
+  >();
   const undeclaredRefLines: Array<FeatureMapRefLineProblem> = [];
   const unreadableRefs: Array<FeatureMapRefLineProblem> = [];
   for (const { id, text } of lines) {
@@ -117,11 +124,13 @@ export function parseFeatureMapFile(
       undeclaredRefLines.push({ id, text });
       continue;
     }
-    const binding = bound.get(id) ?? { context: false, refs: [] };
+    const binding = bound.get(id) ?? { context: false, primaryUnreadable: false, refs: [] };
     if (text === "context") {
       binding.context = true;
     } else {
-      const { refs, unreadable } = readRefs(text, at);
+      const { refs, unreadable, firstUnreadable } = readRefs(text, at);
+      // The first token is the primary ref; a later ref must not take its place.
+      if (binding.refs.length === 0 && firstUnreadable) binding.primaryUnreadable = true;
       binding.refs.push(...refs);
       unreadableRefs.push(...unreadable.map((token) => ({ id, text: token })));
     }
@@ -133,6 +142,7 @@ export function parseFeatureMapFile(
       id,
       name,
       context: bound.get(id)?.context ?? false,
+      primaryUnreadable: bound.get(id)?.primaryUnreadable ?? false,
       refs: bound.get(id)?.refs ?? [],
     })),
     undeclaredRefLines,
@@ -204,8 +214,9 @@ const HEAD_CHECKS = "commits(last: 1) { nodes { commit { statusCheckRollup { sta
 const REF_FIELDS = `__typename
       ... on Issue {
         url state stateReason
-        labels(first: 20) { nodes { name } }
+        labels(first: ${LABEL_PAGE}) { pageInfo { hasNextPage } nodes { name } }
         closedByPullRequestsReferences(first: ${CLOSING_PULL_REQUEST_PAGE}) {
+          pageInfo { hasNextPage }
           nodes { number url state isDraft repository { nameWithOwner } ${HEAD_CHECKS} }
         }
       }
@@ -272,9 +283,11 @@ const IssueAnswer = Schema.Struct({
   state: Schema.String,
   stateReason: Schema.NullOr(Schema.String),
   labels: Schema.Struct({
+    pageInfo: Schema.Struct({ hasNextPage: Schema.Boolean }),
     nodes: Schema.Array(Schema.NullOr(Schema.Struct({ name: Schema.String }))),
   }),
   closedByPullRequestsReferences: Schema.Struct({
+    pageInfo: Schema.Struct({ hasNextPage: Schema.Boolean }),
     nodes: Schema.Array(
       Schema.NullOr(
         Schema.Struct({
@@ -389,6 +402,9 @@ export function featureMapFactsOf(
         url: node.url,
         state: issueStateOf(node),
         labels: node.labels.nodes.flatMap((label) => (label === null ? [] : [label.name])),
+        complete:
+          !node.labels.pageInfo.hasNextPage &&
+          !node.closedByPullRequestsReferences.pageInfo.hasNextPage,
         openClosingPullRequests: node.closedByPullRequestsReferences.nodes.flatMap((pullRequest) =>
           pullRequest === null || pullRequest.state !== "OPEN"
             ? []

@@ -38,6 +38,7 @@ const part = (id: string, refs: ReadonlyArray<FeatureMapRef>, context = false): 
   id,
   name: `Part ${id}`,
   context,
+  primaryUnreadable: false,
   refs,
 });
 const issueFact = (
@@ -53,6 +54,7 @@ const issueFact = (
     state: "open",
     labels: [],
     openClosingPullRequests: [],
+    complete: true,
     ...overrides,
   },
 });
@@ -255,6 +257,64 @@ describe("foldFeatureMap: broken", () => {
   });
 });
 
+describe("foldFeatureMap: incomplete or unreadable evidence", () => {
+  it("does not claim done when an open Issue ref has more labels than GitHub returned", () => {
+    // The `bug` label could be the 21st label: the part may be broken.
+    const map = snapshot(
+      [part("SR", [pull(38), issue(50)])],
+      [
+        pullFact(38, { state: "merged", mergedIntoDefault: true }),
+        issueFact(50, { complete: false }),
+      ],
+    );
+    expect(stateOf(map, "SR")).toEqual({ state: null, note: "incomplete" });
+  });
+
+  it("does not claim working when the primary Issue has more closing PRs than GitHub returned", () => {
+    const map = snapshot(
+      [part("C", [issue(7)])],
+      [
+        issueFact(7, {
+          complete: false,
+          openClosingPullRequests: [
+            { repository: REPO, number: 22, url: "u22", isDraft: false, checks: "passing" },
+          ],
+        }),
+      ],
+    );
+    expect(stateOf(map, "C")).toEqual({ state: null, note: "incomplete" });
+  });
+
+  it("still shows broken when the evidence that was read proves it", () => {
+    const map = snapshot(
+      [part("C", [issue(7)])],
+      [issueFact(7, { complete: false, labels: ["bug"] })],
+    );
+    expect(stateOf(map, "C").state).toBe("broken");
+  });
+
+  it("ignores incomplete evidence on a closed Issue", () => {
+    const map = snapshot(
+      [part("C", [issue(7)])],
+      [issueFact(7, { state: "done", complete: false })],
+    );
+    expect(stateOf(map, "C").state).toBe("done");
+  });
+
+  it("shows unknown, and opens nothing, when the primary ref was unreadable", () => {
+    const map = snapshot(
+      [{ ...part("A", [pull(38)]), primaryUnreadable: true }],
+      [pullFact(38, { state: "merged", mergedIntoDefault: true })],
+    );
+    const [view] = foldFeatureMap(map, noThreads);
+    expect({ state: view?.state, note: view?.note, url: view?.url }).toEqual({
+      state: null,
+      note: "unknown",
+      url: null,
+    });
+  });
+});
+
 describe("foldFeatureMap: the thread icon", () => {
   it("lights only the part whose pull request the working thread carries", () => {
     // SR, SC and LJ all name #15; only the thread on SC's PR #45 works.
@@ -277,6 +337,21 @@ describe("foldFeatureMap: the thread icon", () => {
     expect(views.find((view) => view.part.id === "LJ")?.state).toBe("planned");
   });
 
+  it("keeps a working thread on an Issue primary that also carries an unrelated part's PR", () => {
+    // B does not name #7, so the thread's old link to B's PR #38 says nothing about A.
+    const map = snapshot(
+      [part("A", [issue(7)]), part("B", [pull(38)])],
+      [issueFact(7), pullFact(38, { state: "merged", mergedIntoDefault: true })],
+    );
+    const threads = new Map([["github.com toolboxmd/contextmd#7", [thread("t7", [38])]]]);
+    const [a] = foldFeatureMap(map, {
+      threadsByIssue: threads,
+      working: new Set([threadKey("t7")]),
+    });
+    expect(a?.state).toBe("working");
+    expect(a?.threads.map((entry) => entry.id)).toEqual(["t7"]);
+  });
+
   it("shows no icon for a linked thread that is not working", () => {
     const map = snapshot([part("C", [issue(7)])], [issueFact(7)]);
     const threads = new Map([["github.com toolboxmd/contextmd#7", [thread("idle")]]]);
@@ -296,6 +371,7 @@ describe("featureMapGaps", () => {
         part("SC", [pull(45), issue(15)]),
         part("X", [issue(60)]),
         part("Y", [pull(70)]),
+        part("Z", [issue(80)]),
       ],
       [
         pullFact(38, { state: "merged", mergedIntoDefault: true }),
@@ -303,6 +379,7 @@ describe("featureMapGaps", () => {
         pullFact(45),
         issueFact(60, { state: "not-planned" }),
         { repository: REPO, number: 70, fact: null },
+        issueFact(80, { complete: false }),
       ],
       {
         openIssues: [
@@ -322,6 +399,7 @@ describe("featureMapGaps", () => {
     expect(gaps.problemRefs.map((entry) => [entry.partId, entry.ref.number, entry.note])).toEqual([
       ["X", 60, "cancelled"],
       ["Y", 70, "unavailable"],
+      ["Z", 80, "incomplete"],
     ]);
     expect(gaps.undeclaredRefLines).toEqual([{ id: "GHOST", text: "#5" }]);
     expect(gaps.unreadableRefs).toEqual([{ id: "X", text: "issue-9" }]);

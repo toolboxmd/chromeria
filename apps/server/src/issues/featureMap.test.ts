@@ -31,11 +31,12 @@ flowchart TD
     expect(parsed.source.startsWith("%%{init")).toBe(true);
     expect(parsed.source.endsWith('C -->|"next"| LJ')).toBe(true);
     expect(parsed.parts).toEqual([
-      { id: "S", name: "Session in Chromeria", context: true, refs: [] },
+      { id: "S", name: "Session in Chromeria", context: true, primaryUnreadable: false, refs: [] },
       {
         id: "C",
         name: "2 Capture: extract and judge",
         context: false,
+        primaryUnreadable: false,
         refs: [
           {
             kind: "issue",
@@ -55,6 +56,7 @@ flowchart TD
         id: "MK",
         name: "Must-know rule before its action",
         context: false,
+        primaryUnreadable: false,
         refs: [
           {
             kind: "pull",
@@ -70,7 +72,13 @@ flowchart TD
           },
         ],
       },
-      { id: "LJ", name: "6 Labeler judge runs", context: false, refs: [] },
+      {
+        id: "LJ",
+        name: "6 Labeler judge runs",
+        context: false,
+        primaryUnreadable: false,
+        refs: [],
+      },
     ]);
     expect(parsed.undeclaredRefLines).toEqual([]);
     expect(parsed.unreadableRefs).toEqual([]);
@@ -99,6 +107,17 @@ flowchart TD
     expect(parsed?.unreadableRefs).toEqual([
       { id: "A", text: "issue-9" },
       { id: "A", text: "PR" },
+    ]);
+  });
+
+  it("marks a part whose primary ref cannot be read, instead of promoting the next ref", () => {
+    const parsed = parseFeatureMapFile(
+      file(`flowchart TD\n    A["Alpha"]\n    %% A: #0 PR #38\n    B["Beta"]\n    %% B: #1 bogus`),
+      at,
+    );
+    expect(parsed?.parts.map((part) => [part.id, part.primaryUnreadable])).toEqual([
+      ["A", true],
+      ["B", false],
     ]);
   });
 
@@ -158,8 +177,9 @@ describe("featureMapFactsOf", () => {
         url: "https://github.com/toolboxmd/contextmd/issues/7",
         state: "OPEN",
         stateReason: null,
-        labels: { nodes: [{ name: "bug" }] },
+        labels: { pageInfo: { hasNextPage: false }, nodes: [{ name: "bug" }] },
         closedByPullRequestsReferences: {
+          pageInfo: { hasNextPage: false },
           nodes: [
             {
               number: 22,
@@ -212,6 +232,7 @@ describe("featureMapFactsOf", () => {
           url: "https://github.com/toolboxmd/contextmd/issues/7",
           state: "open",
           labels: ["bug"],
+          complete: true,
           openClosingPullRequests: [
             {
               repository: "toolboxmd/contextmd",
@@ -252,6 +273,26 @@ describe("featureMapFactsOf", () => {
     ]);
   });
 
+  it("marks an Issue incomplete when GitHub holds more labels or closing PRs than it returned", () => {
+    const answer = (labelsMore: boolean, closingMore: boolean) => ({
+      ref0: {
+        __typename: "Issue",
+        url: "u",
+        state: "OPEN",
+        stateReason: null,
+        labels: { pageInfo: { hasNextPage: labelsMore }, nodes: [{ name: "area" }] },
+        closedByPullRequestsReferences: { pageInfo: { hasNextPage: closingMore }, nodes: [] },
+      },
+    });
+    const completeOf = (labelsMore: boolean, closingMore: boolean) => {
+      const fact = featureMapFactsOf([refs[0]], answer(labelsMore, closingMore))[0]?.fact;
+      return fact?.kind === "issue" ? fact.complete : null;
+    };
+    expect(completeOf(false, false)).toBe(true);
+    expect(completeOf(true, false)).toBe(false);
+    expect(completeOf(false, true)).toBe(false);
+  });
+
   it("reads a closed-not-planned Issue as not planned", () => {
     const [entry] = featureMapFactsOf([refs[0]], {
       ref0: {
@@ -259,8 +300,8 @@ describe("featureMapFactsOf", () => {
         url: "u",
         state: "CLOSED",
         stateReason: "NOT_PLANNED",
-        labels: { nodes: [] },
-        closedByPullRequestsReferences: { nodes: [] },
+        labels: { pageInfo: { hasNextPage: false }, nodes: [] },
+        closedByPullRequestsReferences: { pageInfo: { hasNextPage: false }, nodes: [] },
       },
     });
     expect(entry?.fact).toMatchObject({ kind: "issue", state: "not-planned" });

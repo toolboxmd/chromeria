@@ -227,8 +227,8 @@ describe("IssueService.readFeatureMap", () => {
     url: "https://github.com/toolboxmd/contextmd/issues/7",
     state: "OPEN",
     stateReason: null,
-    labels: { nodes: [] },
-    closedByPullRequestsReferences: { nodes: [] },
+    labels: { pageInfo: { hasNextPage: false }, nodes: [] },
+    closedByPullRequestsReferences: { pageInfo: { hasNextPage: false }, nodes: [] },
   };
 
   it.effect(

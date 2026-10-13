@@ -16,7 +16,13 @@ type Fact = NonNullable<FeatureMapRefFact["fact"]>;
 /** The four states GitHub can prove. */
 export type FeatureMapState = "planned" | "working" | "broken" | "done";
 /** Shown in place of a state when the primary ref cannot decide one. */
-export type FeatureMapNote = "cancelled" | "unavailable" | "unknown" | "untracked" | "context";
+export type FeatureMapNote =
+  | "cancelled"
+  | "unavailable"
+  | "unknown"
+  | "incomplete"
+  | "untracked"
+  | "context";
 
 export interface FeatureMapPartView {
   readonly part: FeatureMapPart;
@@ -47,12 +53,21 @@ function factsByRef(map: MapSnapshot): ReadonlyMap<string, Fact | null> {
 const isIssueRef = (ref: FeatureMapRef, fact: Fact | null | undefined) =>
   fact ? fact.kind === "issue" : ref.kind === "issue";
 
-function brokenBy(part: FeatureMapPart, facts: ReadonlyMap<string, Fact | null>): boolean {
-  return part.refs.some((ref, index) => {
+/**
+ * Whether the part is broken: proven by the evidence read, or possible because an open Issue's
+ * labels or closing pull requests ran past the page GitHub returned.
+ */
+function brokenBy(
+  part: FeatureMapPart,
+  facts: ReadonlyMap<string, Fact | null>,
+): "broken" | "possibly" | "no" {
+  let possibly = false;
+  const proven = part.refs.some((ref, index) => {
     const fact = facts.get(refKey(ref));
     if (!fact) return false;
     if (fact.kind === "pull") return fact.state === "open" && fact.checks === "failing";
     if (fact.state !== "open") return false;
+    if (!fact.complete) possibly = true;
     if (fact.labels.some((label) => label.toLowerCase() === "bug")) return true;
     // Only the primary Issue's closing pull requests are the part's.
     return (
@@ -60,6 +75,7 @@ function brokenBy(part: FeatureMapPart, facts: ReadonlyMap<string, Fact | null>)
       fact.openClosingPullRequests.some((pullRequest) => pullRequest.checks === "failing")
     );
   });
+  return proven ? "broken" : possibly ? "possibly" : "no";
 }
 
 function workingThreadsOf(
@@ -67,8 +83,8 @@ function workingThreadsOf(
   facts: ReadonlyMap<string, Fact | null>,
   host: string,
   threads: FeatureMapThreads,
-  /** `refKey`s of pull requests that are some part's primary ref. */
-  primaryPullRequests: ReadonlySet<string>,
+  /** By Issue `refKey`: the primary pull requests of the parts that name that Issue. */
+  siblingPrimaryPullRequests: ReadonlyMap<string, ReadonlySet<string>>,
 ): ReadonlyArray<IssueRowThread> {
   const primary = part.refs[0];
   if (primary === undefined) return [];
@@ -79,11 +95,13 @@ function workingThreadsOf(
       issueKey({ host, repository: ref.repository, number: ref.number }),
     ) ?? [];
   if (isIssueRef(primary, facts.get(refKey(primary)))) {
-    // A thread carrying another part's primary pull request works on that part, not this one.
+    // A thread on this Issue that carries the primary pull request of another part naming the same
+    // Issue works on that part; any other pull request it carries says nothing about this one.
+    const siblings = siblingPrimaryPullRequests.get(refKey(primary));
     return linkedTo(primary).filter(
       (thread) =>
         isWorking(thread) &&
-        !thread.pullRequests.some((pullRequest) => primaryPullRequests.has(refKey(pullRequest))),
+        !thread.pullRequests.some((pullRequest) => siblings?.has(refKey(pullRequest)) === true),
     );
   }
   // A pull request primary: threads on the part's Issues that carry that pull request, so a
@@ -110,24 +128,28 @@ export function foldFeatureMap(
   threads: FeatureMapThreads,
 ): ReadonlyArray<FeatureMapPartView> {
   const facts = factsByRef(map);
-  const primaryPullRequests = new Set(
-    map.parts.flatMap((part) => {
-      const primary = part.refs[0];
-      return primary !== undefined && !isIssueRef(primary, facts.get(refKey(primary)))
-        ? [refKey(primary)]
-        : [];
-    }),
-  );
+  const siblingPrimaryPullRequests = new Map<string, Set<string>>();
+  for (const part of map.parts) {
+    const primary = part.refs[0];
+    if (primary === undefined || isIssueRef(primary, facts.get(refKey(primary)))) continue;
+    for (const ref of part.refs.slice(1)) {
+      if (!isIssueRef(ref, facts.get(refKey(ref)))) continue;
+      const pullRequests = siblingPrimaryPullRequests.get(refKey(ref)) ?? new Set();
+      pullRequests.add(refKey(primary));
+      siblingPrimaryPullRequests.set(refKey(ref), pullRequests);
+    }
+  }
   return map.parts.map((part): FeatureMapPartView => {
     const primary = part.refs[0];
-    const working = workingThreadsOf(part, facts, map.host, threads, primaryPullRequests);
+    const working = workingThreadsOf(part, facts, map.host, threads, siblingPrimaryPullRequests);
     const fact = primary === undefined ? undefined : facts.get(refKey(primary));
-    const url = fact?.url ?? primary?.url ?? null;
+    // An unreadable first token leaves no primary: the next ref must not decide or open it.
+    const url = part.primaryUnreadable ? null : (fact?.url ?? primary?.url ?? null);
     if (part.context) return { part, state: null, note: "context", url, threads: working };
     if (primary === undefined)
       return { part, state: null, note: "untracked", url, threads: working };
     const base = ((): { state: FeatureMapState | null; note: FeatureMapNote | null } => {
-      if (fact === undefined) return { state: null, note: "unknown" };
+      if (part.primaryUnreadable || fact === undefined) return { state: null, note: "unknown" };
       if (fact === null) return { state: null, note: "unavailable" };
       if (fact.kind === "pull") {
         if (fact.state === "closed") return { state: null, note: "cancelled" };
@@ -141,9 +163,13 @@ export function foldFeatureMap(
         note: null,
       };
     })();
-    return brokenBy(part, facts)
-      ? { part, state: "broken", note: null, url, threads: working }
-      : { part, ...base, url, threads: working };
+    const broken = brokenBy(part, facts);
+    if (broken === "broken") return { part, state: "broken", note: null, url, threads: working };
+    // The unread evidence could hold a defect, so no clean state is claimed.
+    if (broken === "possibly") {
+      return { part, state: null, note: "incomplete", url, threads: working };
+    }
+    return { part, ...base, url, threads: working };
   });
 }
 
@@ -158,7 +184,7 @@ export interface FeatureMapGaps {
   readonly problemRefs: ReadonlyArray<{
     readonly partId: string;
     readonly ref: FeatureMapRef;
-    readonly note: "cancelled" | "unavailable";
+    readonly note: "cancelled" | "unavailable" | "incomplete";
   }>;
   readonly undeclaredRefLines: ReadonlyArray<FeatureMapRefLineProblem>;
   readonly unreadableRefs: ReadonlyArray<FeatureMapRefLineProblem>;
@@ -181,6 +207,8 @@ export function featureMapGaps(map: MapSnapshot): FeatureMapGaps {
         (fact?.kind === "pull" && fact.state === "closed")
       ) {
         problemRefs.push({ partId: part.id, ref, note: "cancelled" });
+      } else if (fact?.kind === "issue" && fact.state === "open" && !fact.complete) {
+        problemRefs.push({ partId: part.id, ref, note: "incomplete" });
       }
       if (!isIssueRef(ref, fact)) continue;
       const entry = issueParts.get(key) ?? { ref, partIds: [] };
@@ -202,7 +230,7 @@ export function featureMapGaps(map: MapSnapshot): FeatureMapGaps {
 }
 
 /** Mermaid class names; explicit text colours keep both themes readable. */
-export const FEATURE_MAP_CLASSES = {
+const FEATURE_MAP_CLASSES = {
   planned: { name: "fmPlanned", style: "fill:#e0e7ff,stroke:#4f46e5,color:#111827" },
   working: { name: "fmWorking", style: "fill:#fde68a,stroke:#b45309,color:#111827" },
   broken: { name: "fmBroken", style: "fill:#fecaca,stroke:#b91c1c,color:#111827" },

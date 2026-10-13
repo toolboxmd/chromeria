@@ -47,6 +47,7 @@ const STATE_LABELS = {
   cancelled: "Cancelled",
   unavailable: "Unavailable",
   unknown: "Unknown",
+  incomplete: "Incomplete",
   untracked: "Untracked",
   context: "Context",
 } as const;
@@ -522,7 +523,7 @@ function GapList({
       })),
     },
     {
-      title: "Cancelled and unavailable refs",
+      title: "Cancelled, unavailable and incomplete refs",
       items: gaps.problemRefs.map(({ partId, ref, note }) => ({
         key: `${partId} ${ref.repository}#${ref.number}`,
         node: (

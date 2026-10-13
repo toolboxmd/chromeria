@@ -28,6 +28,8 @@ export const FeatureMapPart = Schema.Struct({
   id: TrimmedNonEmptyString,
   name: Schema.String,
   context: Schema.Boolean,
+  /** The first token of its ref line could not be read, so no ref may stand in as primary. */
+  primaryUnreadable: Schema.Boolean,
   refs: Schema.Array(FeatureMapRef),
 });
 export type FeatureMapPart = typeof FeatureMapPart.Type;
@@ -59,6 +61,8 @@ export const FeatureMapIssueFact = Schema.Struct({
   url: TrimmedNonEmptyString,
   state: IssueState,
   labels: Schema.Array(Schema.String),
+  /** Every label and closing pull request was read; false when GitHub held more than one page. */
+  complete: Schema.Boolean,
   /** Open pull requests that close it, with their head checks. */
   openClosingPullRequests: Schema.Array(
     Schema.Struct({
