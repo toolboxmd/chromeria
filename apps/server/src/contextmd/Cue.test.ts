@@ -12,6 +12,9 @@ import {
   type Transport,
 } from "./Cue.ts";
 
+/** A wait long enough for a fake transport that answers at once. */
+const WAIT = 500;
+
 const REQ: CueRequest = {
   items: [["user", "Open the PR"]],
   moment: { kind: "user_message" },
@@ -43,7 +46,7 @@ const scripted = (
 describe("Cue client", () => {
   it("scores a message and returns the adapter, threshold and scores", async () => {
     const { transport, calls } = scripted([{ kind: "reply", status: 200, body: OK }]);
-    const r = await new CueClient(transport).score(REQ);
+    const r = await new CueClient(transport).score(REQ, WAIT);
     assert.strictEqual(r.status, "ok");
     assert.deepStrictEqual([r.adapter, r.threshold, r.scores], ["v1", 0.5, { a: 1.25 }]);
     assert.deepStrictEqual(r.detail, { ms: 300, queue_ms: 0 });
@@ -59,16 +62,16 @@ describe("Cue client", () => {
       { kind: "reply", status: 200, body: OK },
     ]);
     const c = new CueClient(transport);
-    assert.strictEqual((await c.score(REQ)).status, "connect_failed");
+    assert.strictEqual((await c.score(REQ, WAIT)).status, "connect_failed");
     assert.isFalse(c.isAvailable());
-    assert.strictEqual((await c.score(REQ)).status, "not_called");
+    assert.strictEqual((await c.score(REQ, WAIT)).status, "not_called");
     assert.strictEqual(c.start("k", REQ).status, "not_called");
     assert.strictEqual((await c.collect("k")).status, "not_called");
     assert.strictEqual((await c.collect("no-start-while-down")).status, "not_called");
     assert.strictEqual(calls.length, 1);
     assert.isFalse(await c.probe());
     assert.isTrue(await c.probe());
-    assert.strictEqual((await c.score(REQ)).status, "ok");
+    assert.strictEqual((await c.score(REQ, WAIT)).status, "ok");
   });
 
   it("logs a slow or refused reply for that call only", async () => {
@@ -78,9 +81,9 @@ describe("Cue client", () => {
       { kind: "reply", status: 200, body: "not json" },
     ]);
     const c = new CueClient(transport);
-    assert.strictEqual((await c.score(REQ)).status, "timeout");
-    assert.strictEqual((await c.score(REQ)).status, "overload");
-    assert.strictEqual((await c.score(REQ)).status, "error");
+    assert.strictEqual((await c.score(REQ, WAIT)).status, "timeout");
+    assert.strictEqual((await c.score(REQ, WAIT)).status, "overload");
+    assert.strictEqual((await c.score(REQ, WAIT)).status, "error");
     assert.isTrue(c.isAvailable());
   });
 
@@ -90,11 +93,11 @@ describe("Cue client", () => {
       { kind: "reply", status: 200, body: OK },
     ]);
     const c = new CueClient(transport);
-    const r = await c.score(REQ);
+    const r = await c.score(REQ, WAIT);
     assert.strictEqual(r.status, "rejected");
     assert.deepStrictEqual(r.detail, { http: 400, error: "NoMessage: no user message" });
     assert.isTrue(c.isAvailable());
-    assert.strictEqual((await c.score(REQ)).status, "ok");
+    assert.strictEqual((await c.score(REQ, WAIT)).status, "ok");
   });
 
   it("collects what a pre-tool moment started, once, and calls a missing start lost", async () => {
@@ -118,7 +121,7 @@ describe("Cue client", () => {
       throw new Error("boom");
     };
     const c = new CueClient(throwing);
-    assert.strictEqual((await c.score(REQ)).status, "error");
+    assert.strictEqual((await c.score(REQ, WAIT)).status, "error");
     assert.strictEqual(c.start("k", REQ).status, "started");
     assert.strictEqual((await c.collect("k", 50)).status, "error");
     assert.isTrue(await c.probe());

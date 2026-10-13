@@ -126,7 +126,8 @@ export interface Unserved {
     | "bad_event"
     | "oversize"
     | "unauthorized"
-    | "bad_request";
+    | "bad_request"
+    | "over_budget";
   readonly reason?: string;
   readonly now: number;
   readonly startedAt: number;

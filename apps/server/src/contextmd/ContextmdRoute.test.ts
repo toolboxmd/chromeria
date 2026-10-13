@@ -21,6 +21,7 @@ import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ContextmdRoute from "./ContextmdRoute.ts";
+import { MOMENT_BUDGET_MS } from "./ContextmdServing.ts";
 import { isHoldout } from "./ServingState.ts";
 
 // The store and config are ContextMD's data files; the matcher runs in this module.
@@ -363,7 +364,32 @@ const serve = <R>(
         db.close();
       }
     };
-    return { moment, settle, log, store, chunked, outcomes, database, cueLog };
+    /** Send `raw` in two halves `stallMs` apart; the reply status, or "reset". */
+    const stalled = (raw: unknown, stallMs: number) => {
+      const bytes = new TextEncoder().encode(JSON.stringify(raw));
+      const half = Math.floor(bytes.length / 2);
+      return client
+        .execute(
+          HttpClientRequest.post("/contextmd/v1/moment").pipe(
+            HttpClientRequest.setHeaders({
+              authorization: `Bearer ${token}`,
+              "x-contextmd-harness": "claude",
+              "x-contextmd-delivery": "stalled",
+            }),
+            HttpClientRequest.bodyStream(
+              Stream.concat(
+                Stream.make(bytes.slice(0, half)),
+                Stream.fromEffect(Effect.sleep(stallMs).pipe(Effect.as(bytes.slice(half)))),
+              ),
+            ),
+          ),
+        )
+        .pipe(
+          Effect.map((r) => r.status),
+          Effect.orElseSucceed(() => "reset" as const),
+        );
+    };
+    return { moment, settle, log, store, chunked, stalled, outcomes, database, cueLog };
   });
 
 /** Many tool calls in the thread, each a projected command item, at consecutive ordinals. */
@@ -710,32 +736,83 @@ describe("contextmd routes", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.live(
-    "waits long enough for a slow Cue score at the user message, inside the 2 s cut-off (#248)",
-    () =>
-      Effect.gen(function* () {
-        // A 1 s score timed out at the old 650 ms wait; the cut-off is now 2 s while Cue is new.
-        const cue = yield* fakeCue({ "agentsmd-research": 2.5 }, undefined, 1000);
-        const s = yield* serve(
-          Effect.all([
-            insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
-            projectUserMessage("How does the projector handle retries?"),
-          ]).pipe(Effect.asVoid),
-          { cueUrl: cue.url },
-        );
-        const started = yield* Clock.currentTimeMillis;
-        const r = yield* s.moment({
+  it.live("serves a slow Cue score that fits the moment's budget (#248)", () =>
+    Effect.gen(function* () {
+      // A 600 ms score timed out at the old 650 ms wait once the moment's own work was added.
+      const cue = yield* fakeCue({ "agentsmd-research": 2.5 }, undefined, 600);
+      const s = yield* serve(
+        Effect.all([
+          insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
+          projectUserMessage("How does the projector handle retries?"),
+        ]).pipe(Effect.asVoid),
+        { cueUrl: cue.url },
+      );
+      const r = yield* s.moment({
+        hook_event_name: "UserPromptSubmit",
+        session_id: servedSession,
+        cwd: "/tmp",
+        prompt: "How does the projector handle retries?",
+      });
+      assert.strictEqual(r.status, 200);
+      assert.deepStrictEqual(s.cueLog().moments, [
+        { kind: "user_message", cue_status: "ok", cue_adapter: "fake-adapter" },
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("replies within the moment's budget when Cue never answers a failed call (#251)", () =>
+    Effect.gen(function* () {
+      const cue = yield* fakeCue({ "agentsmd-research": 2.5 }, undefined, 10_000);
+      const s = yield* serve(
+        Effect.all([
+          insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
+          projectUserMessage("Look at the logs"),
+        ]).pipe(Effect.asVoid),
+        { cueUrl: cue.url },
+      );
+      for (const event of [
+        claude("PostToolUseFailure", servedSession, "echo a"),
+        {
           hook_event_name: "UserPromptSubmit",
           session_id: servedSession,
           cwd: "/tmp",
-          prompt: "How does the projector handle retries?",
-        });
-        assert.isBelow((yield* Clock.currentTimeMillis) - started, 2000);
-        assert.strictEqual(r.status, 200);
-        assert.deepStrictEqual(s.cueLog().moments, [
-          { kind: "user_message", cue_status: "ok", cue_adapter: "fake-adapter" },
-        ]);
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+          prompt: "Look at the logs",
+        },
+      ]) {
+        const started = yield* Clock.currentTimeMillis;
+        yield* s.moment(event);
+        // Measured by the client: the connection, the moment's work, the Cue wait and the reply.
+        assert.isBelow((yield* Clock.currentTimeMillis) - started, MOMENT_BUDGET_MS);
+      }
+      assert.deepStrictEqual(
+        s.cueLog().moments.map((m) => [m.kind, m.cue_status]),
+        [
+          ["tool_failure", "timeout"],
+          ["user_message", "timeout"],
+        ],
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("cuts a moment whose work outruns the budget and logs it over budget (#251)", () =>
+    Effect.gen(function* () {
+      const s = yield* serve(
+        insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
+      );
+      const started = yield* Clock.currentTimeMillis;
+      // The body arrives too slowly for the moment to finish inside its budget.
+      const r = yield* s.stalled(
+        claude("PostToolUse", servedSession, "echo a"),
+        2 * MOMENT_BUDGET_MS,
+      );
+      assert.isBelow((yield* Clock.currentTimeMillis) - started, MOMENT_BUDGET_MS);
+      // The reply may come while the client is still sending, which can reset the connection.
+      assert.include([204, "reset"], r);
+      assert.deepStrictEqual(
+        s.log().map((m) => m.status),
+        ["over_budget"],
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.live("starts Cue before a tool call and serves its fire with the tool result", () =>

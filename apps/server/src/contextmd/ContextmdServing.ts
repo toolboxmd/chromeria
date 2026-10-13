@@ -25,6 +25,7 @@ import * as NodeSqlite from "node:sqlite";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -40,7 +41,6 @@ import {
   COLLECT_MS,
   CueClient,
   PROBE_SECONDS,
-  WAIT_MS,
   httpTransport,
   transcriptItems,
   type CueReply,
@@ -60,6 +60,19 @@ import {
 } from "./ServingState.ts";
 
 export const MAX_BODY_BYTES = 1_048_576;
+/**
+ * Every moment replies within this many milliseconds of its arrival, whatever its steps cost. The hook
+ * cuts the server off at 2 s (#248); its spawn, connect, queueing and transfer took up to 600 ms at p99
+ * (Grok, rocky, 2026-10-13), and 200 ms stay spare.
+ */
+export const MOMENT_BUDGET_MS = 1200;
+/**
+ * Kept back from the budget for the reply after the moment's work: the decision itself, and a timer
+ * firing late while the event loop is busy (up to 236 ms seen on rocky's Cue collects).
+ */
+const REPLY_RESERVE_MS = 250;
+/** A Cue wait ends this long before the moment's work is cut, so a late score still leaves it served. */
+const CUE_MARGIN_MS = 50;
 /** Cue's window reads the last user messages, the replies between them and the work since the last one. */
 const TRANSCRIPT_USERS = 6;
 const TRANSCRIPT_REPLIES = 100;
@@ -345,6 +358,7 @@ const make = Effect.gen(function* () {
     selection: Selection,
     threadId: string,
     config: Select.ServingConfig,
+    waitUntil: number,
   ) =>
     Effect.gen(function* () {
       const m = selection.moment;
@@ -368,9 +382,14 @@ const make = Effect.gen(function* () {
             entries: store.entries.map((e) => ({ id: e.id, doc: `${e.name}: ${e.applies}` })),
           })),
         );
+      // The wait is whatever the moment's budget still leaves.
+      const left = Effect.map(nowSeconds, (now) =>
+        Math.max(0, Math.round((waitUntil - now) * 1000)),
+      );
       let reply: CueReply;
       if (m.kind === "tool_result") {
-        reply = yield* Effect.promise(() => client.collect(key, COLLECT_MS));
+        const wait = Math.min(COLLECT_MS, yield* left);
+        reply = yield* Effect.promise(() => client.collect(key, wait));
       } else {
         if (m.kind === "tool_failure") client.drop(key);
         const req = yield* request(m.kind);
@@ -380,7 +399,8 @@ const make = Effect.gen(function* () {
         } else if (m.kind === "pre_tool") {
           reply = client.start(key, req);
         } else {
-          reply = yield* Effect.promise(() => client.score(req, WAIT_MS));
+          const wait = yield* left;
+          reply = yield* Effect.promise(() => client.score(req, wait));
         }
       }
       return {
@@ -435,54 +455,72 @@ const make = Effect.gen(function* () {
         yield* unserved("unmapped");
         return { status: 204 } as const;
       }
-      const body = yield* request.body;
-      if (body === null || Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
-        yield* unserved("oversize");
-        return { status: 204 } as const;
-      }
-      const raw = decodeJson(body);
-      if (Option.isNone(raw)) {
-        yield* unserved("bad_event", { reason: "json" });
-        return { status: 204 } as const;
-      }
       const harness = request.harness;
-      const selected = yield* Select.loadConfig(servingConfig).pipe(
-        Effect.flatMap((config) =>
-          Select.select(harness, raw.value, config, parsed).pipe(
-            Effect.map((selection) => ({ selection, config })),
+      // The moment's work must leave the reply its reserve; past that it is cut and not served.
+      const workBy = startedAt + (MOMENT_BUDGET_MS - REPLY_RESERVE_MS) / 1000;
+      const workLeft = Math.max(0, Math.round((workBy - (yield* nowSeconds)) * 1000));
+      const prepared = yield* Effect.gen(function* () {
+        const body = yield* request.body;
+        if (body === null || Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
+          yield* unserved("oversize");
+          return null;
+        }
+        const raw = decodeJson(body);
+        if (Option.isNone(raw)) {
+          yield* unserved("bad_event", { reason: "json" });
+          return null;
+        }
+        const selected = yield* Select.loadConfig(servingConfig).pipe(
+          Effect.flatMap((config) =>
+            Select.select(harness, raw.value, config, parsed).pipe(
+              Effect.map((selection) => ({ selection, config })),
+            ),
           ),
-        ),
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, path),
-        Effect.provideService(Crypto.Crypto, crypto),
-        Effect.catchTags({
-          ContextmdBadConfig: (e) =>
-            Effect.succeed({ status: "bad_config" as const, reason: e.reason }),
-          ContextmdBadEvent: (e) =>
-            Effect.succeed({ status: "bad_event" as const, reason: e.reason }),
-        }),
-      );
-      if (!("selection" in selected)) {
-        yield* unserved(selected.status, { reason: selected.reason });
-        return { status: 204 } as const;
-      }
-      let selection = selected.selection;
-      const join = yield* resolveRun(selection.moment.session);
-      let readChecks: ReadonlyArray<ReadCheck> = [];
-      let cue: CueMoment | null = null;
-      if (join.type === "run") {
-        yield* checkDenies(harness, selection.moment.session, join.threadId);
-        readChecks = yield* checkReads(harness, selection.moment.session, join.threadId);
-        const asked = yield* askCue(harness, selection, join.threadId, selected.config).pipe(
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
           Effect.provideService(Crypto.Crypto, crypto),
+          Effect.catchTags({
+            ContextmdBadConfig: (e) =>
+              Effect.succeed({ status: "bad_config" as const, reason: e.reason }),
+            ContextmdBadEvent: (e) =>
+              Effect.succeed({ status: "bad_event" as const, reason: e.reason }),
+          }),
         );
-        if (asked !== null) {
-          cue = asked.moment;
-          selection = { ...selection, owners: { ...selection.owners, ...asked.owners } };
+        if (!("selection" in selected)) {
+          yield* unserved(selected.status, { reason: selected.reason });
+          return null;
         }
+        let selection = selected.selection;
+        const join = yield* resolveRun(selection.moment.session);
+        let readChecks: ReadonlyArray<ReadCheck> = [];
+        let cue: CueMoment | null = null;
+        if (join.type === "run") {
+          yield* checkDenies(harness, selection.moment.session, join.threadId);
+          readChecks = yield* checkReads(harness, selection.moment.session, join.threadId);
+          const asked = yield* askCue(
+            harness,
+            selection,
+            join.threadId,
+            selected.config,
+            workBy - CUE_MARGIN_MS / 1000,
+          ).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+            Effect.provideService(Crypto.Crypto, crypto),
+          );
+          if (asked !== null) {
+            cue = asked.moment;
+            selection = { ...selection, owners: { ...selection.owners, ...asked.owners } };
+          }
+        }
+        return { selection, join, readChecks, cue };
+      }).pipe(Effect.timeoutOption(Duration.millis(workLeft)));
+      if (Option.isNone(prepared)) {
+        yield* unserved("over_budget");
+        return { status: 204 } as const;
       }
+      if (prepared.value === null) return { status: 204 } as const;
+      const { selection, join, readChecks, cue } = prepared.value;
       const now = yield* nowSeconds;
       return state.decide({
         harness,
