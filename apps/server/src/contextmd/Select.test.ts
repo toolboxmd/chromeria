@@ -324,6 +324,80 @@ describe("reads", () => {
   );
 });
 
+describe("keys from files a shell command names (#234)", () => {
+  // The forms agents use for one database, from rocky's Observer (2026-10-06 to 2026-10-13).
+  const setup = () => {
+    const d = tmp();
+    const keys = NodePath.join(d, "keys");
+    NodeFS.mkdirSync(keys);
+    const db = NodePath.join(d, "userdata", "chromeria-v2.sqlite");
+    entry(keys, "by-path", "Open the projection database read-only.", {
+      path: "**/chromeria-v2.sqlite",
+    });
+    entry(keys, "by-word", "Open the projection database read-only (bake entry).", {
+      command: "chromeria-v2.sqlite",
+    });
+    const config: ServingConfig = { exactKeys: [keys], sessionStart: [] };
+    const matched = (command: string, cwd = d) =>
+      select(
+        "claude",
+        {
+          hook_event_name: "PreToolUse",
+          session_id: "S",
+          cwd,
+          tool_name: "Bash",
+          tool_input: { command },
+        },
+        config,
+        new Map(),
+      ).pipe(Effect.map((s) => s.candidates.map((c) => c.key)));
+    return { d, db, matched };
+  };
+
+  it.effect("matches a path key in every form a shell command names the file", () =>
+    Effect.gen(function* () {
+      const { d, db, matched } = setup();
+      for (const command of [
+        `sqlite3 ${db} 'select 1'`,
+        `sqlite3 'file:${db}?mode=ro' 'select 1'`,
+        `python3 -c "import sqlite3; sqlite3.connect('file://${db}?mode=ro', uri=True)"`,
+        `DB=${db}; sqlite3 -readonly "$DB" .tables`,
+        "sqlite3 -readonly ~/.t3/userdata/chromeria-v2.sqlite .tables",
+      ]) {
+        assert.include(yield* matched(command), "path:**/chromeria-v2.sqlite", command);
+      }
+      // A bare name resolves against the working directory.
+      assert.include(
+        yield* matched("sqlite3 chromeria-v2.sqlite .tables", NodePath.join(d, "userdata")),
+        "path:**/chromeria-v2.sqlite",
+      );
+      for (const command of ["echo hello", "curl -s https://example.com/chromeria-v2.sqlite.gz"]) {
+        assert.notInclude(yield* matched(command), "path:**/chromeria-v2.sqlite", command);
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("keeps the first bake's bare command key matching as before", () =>
+    Effect.gen(function* () {
+      const { db, matched } = setup();
+      // Word matching: the bare name as an argument, and a path whose last part is the name.
+      for (const command of [
+        "sqlite3 chromeria-v2.sqlite .tables",
+        "sqlite3 -readonly ~/.t3/userdata/chromeria-v2.sqlite .tables",
+        `sqlite3 ${db} .tables`,
+      ]) {
+        assert.include(yield* matched(command), "command:chromeria-v2.sqlite", command);
+      }
+      // The SQLite URI is one word ending in `?mode=ro`, so the bare command key misses it;
+      // the path key above covers it.
+      assert.notInclude(
+        yield* matched(`sqlite3 'file:${db}?mode=ro' .tables`),
+        "command:chromeria-v2.sqlite",
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});
+
 describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", () => {
   const setup = () => {
     const d = tmp();
