@@ -140,7 +140,7 @@ const repoRelative = Effect.fn("contextmd.repoRelative")(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const absolute = path.resolve(cwd ?? "/", file);
+  const absolute = path.resolve(cwd ?? "/", expandHomePathWith(file, path));
   let d = path.dirname(absolute);
   while (true) {
     if (yield* fs.exists(path.join(d, ".git")).pipe(Effect.orElseSucceed(() => false))) {
