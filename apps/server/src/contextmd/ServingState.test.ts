@@ -253,6 +253,44 @@ describe("ServingState deny composition", () => {
   });
 });
 
+describe("ServingState must-know rules after their action (#231)", () => {
+  const target = "/repo/skills/version-control/index.md";
+
+  it("serves no must-know rule on the result of the call its own key matched", () => {
+    const h = makeHarness();
+    const rule = pointer("vc", target);
+    const inline = entry("inline", "Say the token first.", { must_know: true, rule: "inline" });
+    const plain = entry("labels", "Label PRs with the area.");
+    h.fire({ kind: "tool_result", reads: [{ path: target, kind: "read_tool" }] });
+    assert.strictEqual(h.fire({ kind: "pre_tool", candidates: [rule] }).status, 204);
+    const after = h.fire({ kind: "tool_result", candidates: [rule, inline, plain] });
+    assert.strictEqual(after.status, 200);
+    assert.notInclude(h.text(after)!, "rule vc");
+    assert.notInclude(h.text(after)!, "Say the token first.");
+    assert.include(h.text(after)!, "Label PRs with the area.");
+    assert.include(h.outcomes("vc"), "suppressed");
+    assert.include(h.outcomes("inline"), "suppressed");
+    assert.strictEqual(h.fire({ kind: "tool_failure", candidates: [rule] }).status, 204);
+  });
+
+  it("keeps a must-know rule keyed on an error, which only exists after the call", () => {
+    const h = makeHarness();
+    const onError = pointer("err", target);
+    const r = h.fire({
+      kind: "tool_failure",
+      candidates: [{ ...onError, key: "error:permission denied" }],
+    });
+    assert.strictEqual(r.status, 200);
+  });
+
+  it("carries no must-know rule on Grok after its action", () => {
+    const h = makeHarness();
+    h.fire({ kind: "tool_result", profile: GROK, candidates: [pointer("vc", target)] });
+    assert.strictEqual(h.fire({ kind: "pre_tool", profile: GROK }).status, 204);
+    assert.deepStrictEqual(h.outcomes("vc"), ["suppressed"]);
+  });
+});
+
 describe("ServingState deny lifts", () => {
   const target = "/repo/skills/version-control/index.md";
 
