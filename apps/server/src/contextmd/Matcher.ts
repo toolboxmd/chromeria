@@ -33,20 +33,26 @@ const shellPaths = (ws: ReadonlyArray<string>) => {
 };
 
 const HEREDOC_START = /^<<-?[ \t]*(['"]?)(\w+)\1/u;
-const SUBSTITUTION = /\$\(([^()]*)\)|`([^`]*)`/gu;
+// An escaped `\$(` or `\`` is literal text, not a substitution.
+const SUBSTITUTION = /(?<!\\)\$\(([^()]*)\)|(?<!\\)`([^`]*)`/gu;
+const substitutions = (text: string) =>
+  [...text.matchAll(SUBSTITUTION)].map((m) => visibleCommand(m[1] ?? m[2] ?? "")).join(" ; ");
+/** Where a new command starts: the line so far ends at a separator, or holds only a word being built. */
+const SEPARATOR = /(?:^|[;&|(\n]|\$\()[ \t]*\S*$/u;
 const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
 
 /**
- * The parts of a shell command that run, for command keys (#232): heredoc bodies and quoted
- * strings are dropped, because a key named there is only mentioned; the string after
- * `sh -c` (`bash`, `zsh -lc`) runs, and so do `$(...)` and backticks inside double quotes.
- * Unquoted arguments stay, so a bare key still matches a file name passed to a command.
+ * The parts of a shell command that run, for command keys (#232): quoted strings and heredoc
+ * bodies are dropped, because a key named there is only mentioned. What bash still runs is
+ * kept: the string after `sh -c` (`bash`, `zsh -lc`); `$(...)` and backticks inside double
+ * quotes or an unquoted-marker heredoc, unless escaped; and a quoted word in command position
+ * (`'gh' pr create`). Unquoted arguments stay, so a bare key still matches a file argument.
  */
-export const visibleCommand = (command: string): string => {
+const visibleCommand = (command: string): string => {
   const text = command;
   let out = "";
   let i = 0;
-  const heredocs: string[] = [];
+  const heredocs: Array<{ word: string; expands: boolean }> = [];
   while (i < text.length) {
     const ch = text[i]!;
     // An unquoted `<<WORD` opens a heredoc: its body, from the next line to WORD, is data.
@@ -55,7 +61,7 @@ export const visibleCommand = (command: string): string => {
         ? HEREDOC_START.exec(text.slice(i))
         : null;
     if (opening !== null) {
-      heredocs.push(opening[2]!);
+      heredocs.push({ word: opening[2]!, expands: opening[1] === "" });
       out += " ";
       i += opening[0].length;
       continue;
@@ -63,12 +69,17 @@ export const visibleCommand = (command: string): string => {
     if (ch === "\n" && heredocs.length > 0) {
       // Skip each pending heredoc body up to its terminator line.
       let j = i + 1;
-      for (const word of heredocs) {
+      let kept = "";
+      for (const { word, expands } of heredocs) {
         const end = new RegExp(`(^|\\n)[ \\t]*${word}[ \\t]*(?=\\n|$)`, "u").exec(text.slice(j));
-        j = end === null ? text.length : j + end.index + end[0].length;
+        const stop = end === null ? text.length : j + end.index + end[0].length;
+        // An unquoted marker expands the body: its substitutions run.
+        if (expands)
+          kept += ` ${substitutions(text.slice(j, end === null ? text.length : j + end.index))} `;
+        j = stop;
       }
       heredocs.length = 0;
-      out += "\n";
+      out += `${kept}\n`;
       i = j;
       continue;
     }
@@ -89,8 +100,11 @@ export const visibleCommand = (command: string): string => {
     const shell = (before.at(-2) ?? "").slice((before.at(-2) ?? "").lastIndexOf("/") + 1);
     if (SHELLS.has(shell) && /^-[a-z]*c$/u.test(before.at(-1) ?? "")) {
       out += ` ${visibleCommand(body)} `;
+    } else if (SEPARATOR.test(out) && !/\s/u.test(body)) {
+      // A quoted word where a command starts is that command's name: bash runs it.
+      out += body;
     } else if (ch === '"') {
-      out += ` ${[...body.matchAll(SUBSTITUTION)].map((m) => visibleCommand(m[1] ?? m[2] ?? "")).join(" ; ")} `;
+      out += ` ${substitutions(body)} `;
     } else {
       out += " ";
     }

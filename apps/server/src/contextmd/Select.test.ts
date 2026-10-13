@@ -90,6 +90,29 @@ describe("command keys", () => {
     }
   });
 
+  it("follows what bash runs: expanding heredocs, quoted command words, escapes (Sol review)", () => {
+    // Checked with /bin/bash and a stub gh that prints EXECUTED.
+    for (const command of [
+      "cat <<EOF\n$(gh pr create)\nEOF",
+      "cat <<EOF\n`gh pr create`\nEOF",
+      "bash -c \"'gh' pr create\"",
+      "'gh' pr create",
+      '"gh" pr create --fill',
+      "g'h' pr create",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "cat <<'EOF'\n$(gh pr create)\nEOF",
+      'cat <<"EOF"\n$(gh pr create)\nEOF',
+      'echo "\\$(gh pr create)"',
+      'echo "\\`gh pr create\\`"',
+      "cat <<EOF\nrun gh pr create later\nEOF",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
   it("keeps the first bake's bare key on unquoted arguments (#232, contextmd#39)", () => {
     const db = (command: string) => hit(command, "chromeria-v2.sqlite");
     for (const command of [
