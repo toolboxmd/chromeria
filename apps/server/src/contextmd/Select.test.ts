@@ -270,6 +270,11 @@ describe("reads", () => {
         "Total output lines: 900\n[... omitted 400 of 900 lines ...]",
         "x\n…2048 tokens truncated…",
         "x … [+54 chars]",
+        "x\n... [12045 characters truncated] ...\ny",
+        "x\n…812 chars truncated…\ny",
+        "x [... truncated (90000 chars total)]",
+        "[Output truncated - 120000 bytes total]",
+        "x\n... (output truncated) ...",
         { stdout: "x", stderr: "", note: "Output truncated" },
       ]) {
         assert.deepStrictEqual(yield* kind("Bash", cat, output), ["shell_partial"], String(output));
@@ -491,7 +496,7 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
 
   it.effect("reads OpenCode plugin events", () =>
     Effect.gen(function* () {
-      const { ws, sel } = setup();
+      const { ws, target, sel } = setup();
       const before = yield* sel("opencode", {
         hook: "tool.execute.before",
         directory: ws,
@@ -510,6 +515,26 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
         output: { metadata: { exit: 1 }, output: "" },
       });
       assert.strictEqual(after.moment.kind, "tool_failure");
+      // A read OpenCode cut at 2000 lines or 50 KB, as the plugin posts it: no offset or limit
+      // in the args, the footer at the end of the forwarded output (Grok review of #226).
+      const readOf = (output: string, metadata: Record<string, unknown> = { exit: undefined }) =>
+        sel("opencode", {
+          hook: "tool.execute.after",
+          directory: ws,
+          input: { tool: "read", sessionID: "ses_1", callID: "c2", args: { filePath: target } },
+          output: { metadata, output },
+        }).pipe(Effect.map((r) => r.moment.reads.map((x) => x.kind)));
+      assert.deepStrictEqual(yield* readOf("# Rules\n"), ["read_tool"]);
+      for (const footer of [
+        "(Showing lines 1-2000 of 5000. Use offset=2001 to continue.)",
+        "(Output capped at 50 KB. Showing lines 1-120. Use offset=121 to continue.)",
+      ]) {
+        assert.deepStrictEqual(yield* readOf(`# Rules\n${footer}`), ["read_partial"], footer);
+      }
+      // The plugin's own flag, set when the marker fell outside its 4 KB slice.
+      assert.deepStrictEqual(yield* readOf("# Rules\n", { exit: undefined, truncated: true }), [
+        "read_partial",
+      ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 

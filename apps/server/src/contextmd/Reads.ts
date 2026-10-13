@@ -57,9 +57,28 @@ const WHOLE_OPTIONS: Record<string, ReadonlySet<string>> = {
 const SHELL_SYNTAX = /[;|&<>`$(){}[\]*?!\\\n'"]/u;
 /** Operands a full read refuses: `..` after a symlink or `cd -` can name another file. */
 const UNSAFE_PATH = /(?:^|\/)\.\.(?:\/|$)|^-$/u;
-/** How harnesses mark a cut result: Codex, Claude Code, OpenCode, Grok. */
-const TRUNCATED =
-  /\b\d+ (?:tokens|chars|characters|lines|bytes) (?:truncated|omitted)\b|omitted \d+ of \d+ lines|\[\+\d+ chars\]|File has more lines|Output (?:was )?truncated|line truncated to \d+ chars/iu;
+/**
+ * How harnesses mark a cut result, from their own sources: Claude Code (`[N characters
+ * truncated]`), Codex (`N tokens truncated`, `N chars truncated`), Grok (`[+N chars]`,
+ * `[... truncated (N chars total)]`, `[Output truncated - N bytes total]`, `(output
+ * truncated)`), and the OpenCode and Grok read tools (`(Showing lines A-B of N`, `(Output
+ * capped at 50 KB`, `(line truncated to N chars)`, `File has more lines`).
+ */
+const TRUNCATED = new RegExp(
+  [
+    String.raw`\b\d+ (?:tokens|chars|characters|lines|bytes) (?:truncated|omitted)\b`,
+    String.raw`omitted \d+ of \d+ lines`,
+    String.raw`\[\+\d+ chars\]`,
+    String.raw`\[\.\.\. truncated \(\d+ chars total\)\]`,
+    String.raw`Output (?:was )?truncated`,
+    String.raw`\(output truncated\)`,
+    String.raw`\(Showing lines \d+-\d+ of \d+`,
+    String.raw`Output capped at \d+`,
+    String.raw`line truncated to \d+ chars`,
+    String.raw`File has more lines`,
+  ].join("|"),
+  "iu",
+);
 const SEGMENT = /(\|\||&&|;|\n|\|)/u;
 const WORD = /'([^']*)'|"([^"]*)"|(\S+)/gu;
 const WRAPPERS = new Set(["command", "exec", "nohup", "time", "env", "sudo"]);
