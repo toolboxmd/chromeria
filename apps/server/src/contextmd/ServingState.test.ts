@@ -340,7 +340,7 @@ describe("ServingState deny lifts", () => {
     );
     assert.deepStrictEqual(h.state.pendingReads("claude", "s1"), []);
     // A later read of the same file that finished with exit code 0 lifts the rule.
-    h.fire({ kind: "tool_result", failed: null, reads: [{ path: target, kind: "shell_partial" }] });
+    h.fire({ kind: "tool_result", failed: null, reads: [{ path: target, kind: "shell_full" }] });
     const [ok] = h.state.pendingReads("claude", "s1");
     assert.strictEqual(
       h.fire({ kind: "pre_tool", candidates: [rule], readChecks: [{ toolUseId: ok!, ok: true }] })
@@ -374,12 +374,24 @@ describe("ServingState deny lifts", () => {
 
   it("lets a call pass without a deny when the target was read first", () => {
     const h = makeHarness();
-    h.fire({ kind: "tool_result", reads: [{ path: target, kind: "shell_partial" }] });
+    h.fire({ kind: "tool_result", reads: [{ path: target, kind: "shell_full" }] });
     assert.strictEqual(
       h.fire({ kind: "pre_tool", candidates: [pointer("vc", target)] }).status,
       204,
     );
     assert.deepStrictEqual(h.outcomes("vc"), ["lifted"]);
+  });
+
+  it("keeps a pointer armed after partial reads, before and after the deny", () => {
+    const h = makeHarness();
+    const rule = pointer("vc", target);
+    h.fire({ kind: "tool_result", reads: [{ path: target, kind: "shell_partial" }] });
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [rule] })), "deny");
+    h.fire({ kind: "tool_result", reads: [{ path: target, kind: "read_partial" }] });
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [rule] })), "deny");
+    h.fire({ kind: "tool_result", reads: [{ path: target, kind: "read_tool" }] });
+    assert.strictEqual(h.fire({ kind: "pre_tool", candidates: [rule] }).status, 204);
+    assert.include(h.outcomes("vc"), "lifted");
   });
 
   it("ignores a read in another session or an earlier epoch", () => {

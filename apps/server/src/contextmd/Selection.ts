@@ -14,7 +14,7 @@ export type MomentKind =
 
 export interface Read {
   readonly path: string;
-  readonly kind: "read_tool" | "shell_full" | "shell_partial";
+  readonly kind: "read_tool" | "read_partial" | "shell_full" | "shell_partial";
 }
 
 export interface Candidate {

@@ -173,6 +173,39 @@ describe("reads", () => {
       assert.deepStrictEqual(yield* r("Edit", { file_path: f }), []);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
+
+  it.effect("call a read full only when it can show the whole file", () =>
+    Effect.gen(function* () {
+      const d = tmp();
+      const f = NodePath.join(d, "a.md");
+      NodeFS.writeFileSync(f, "x\n");
+      const kind = (tool: string, input: unknown) =>
+        reads(tool, input, d, ["Bash"]).pipe(Effect.map((rs) => rs.map((x) => x.kind)));
+      for (const command of [`cat ${f}`, `nl -ba ${f}`, `bat ${f}`, `less ${f}`]) {
+        assert.deepStrictEqual(yield* kind("Bash", { command }), ["shell_full"], command);
+      }
+      for (const command of [
+        `grep -n x ${f}`,
+        `rg x ${f}`,
+        `head -n 40 ${f}`,
+        `tail -n 20 ${f}`,
+        `sed -n '1,200p' ${f}`,
+        `awk 'NR<10' ${f}`,
+        `cat ${f} | head -n 5`,
+      ]) {
+        assert.deepStrictEqual(yield* kind("Bash", { command }), ["shell_partial"], command);
+      }
+      assert.deepStrictEqual(yield* kind("Read", { file_path: f }), ["read_tool"]);
+      assert.deepStrictEqual(yield* kind("Read", { file_path: f, offset: null, limit: null }), [
+        "read_tool",
+      ]);
+      assert.deepStrictEqual(yield* kind("Read", { file_path: f, offset: 10 }), ["read_partial"]);
+      assert.deepStrictEqual(yield* kind("Read", { file_path: f, limit: 50 }), ["read_partial"]);
+      assert.deepStrictEqual(yield* kind("read", { filePath: f, offset: 1, limit: 20 }), [
+        "read_partial",
+      ]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
 });
 
 describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", () => {
@@ -215,7 +248,10 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
         pre.candidates.map((c) => [c.entry, c.rule]),
         [["push", "pointer"]],
       );
-      assert.include(pre.candidates[0]!.deny_text!, `Read ${target}`);
+      assert.include(
+        pre.candidates[0]!.deny_text!,
+        `Read ${target} in full, then run the same call again.`,
+      );
       const read = yield* sel("claude", {
         ...base,
         hook_event_name: "PostToolUse",

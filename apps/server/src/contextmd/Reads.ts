@@ -6,7 +6,10 @@
  * runs a reader (`cat`, `sed`, `head`, `rg` ...), resolved against `cwd` and any
  * `cd` in the command. Only files that exist count, which also drops tokens
  * that are not paths. The serving state records a read at the tool result, and
- * only when the call did not fail.
+ * only when the call did not fail. Only a full read lifts a pointer rule: a
+ * shell command is partial when it runs any reader that shows part of a file
+ * (`grep`, `rg`, `head`, `tail`, `sed`, `awk`, also after a pipe), and a Read
+ * tool call is partial when it names a line offset or limit.
  */
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -31,7 +34,16 @@ const READERS = [
   "grep",
   "view",
 ];
-const PARTIAL = new Set(["grep", "rg", "head"]);
+const PARTIAL = new Set(["grep", "rg", "head", "tail", "sed", "awk"]);
+const RANGE_FIELDS = [
+  "offset",
+  "limit",
+  "start_line",
+  "end_line",
+  "startLine",
+  "endLine",
+  "view_range",
+];
 const READ_CMD = new RegExp(`(?:^|[\\s;&|(\`"'])(${READERS.join("|")})\\s`, "gu");
 const PATH_TOKEN = /[^\s'"`;|&()<>{}=,]+/gu;
 const CD = /(?:^|[;&|(]\s*)cd\s+(\S+)/gu;
@@ -80,7 +92,7 @@ export const reads = Effect.fn("contextmd.reads")(function* (
     if (typeof command !== "string") return [] as Read[];
     const used = [...command.matchAll(READ_CMD)].map((m) => m[1]!);
     if (used.length === 0) return [] as Read[];
-    const kind = used.every((r) => PARTIAL.has(r)) ? "shell_partial" : "shell_full";
+    const kind = used.some((r) => PARTIAL.has(r)) ? "shell_partial" : "shell_full";
     const bases = [
       base,
       ...[...command.matchAll(CD)].map((m) =>
@@ -94,8 +106,15 @@ export const reads = Effect.fn("contextmd.reads")(function* (
     return files.map((p): Read => ({ path: p, kind }));
   }
   if (READ_TOOL.test(tool.split("__").at(-1) ?? "")) {
+    const input = (typeof toolInput === "object" && toolInput !== null ? toolInput : {}) as Record<
+      string,
+      unknown
+    >;
+    const kind = RANGE_FIELDS.some((f) => input[f] !== undefined && input[f] !== null)
+      ? "read_partial"
+      : "read_tool";
     const files = yield* existing(strings(toolInput), [base]);
-    return files.map((p): Read => ({ path: p, kind: "read_tool" }));
+    return files.map((p): Read => ({ path: p, kind }));
   }
   return [] as Read[];
 });

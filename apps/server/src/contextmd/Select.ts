@@ -131,7 +131,7 @@ const outputText = (value: unknown): string => {
 };
 
 const denyText = (e: Store.Entry) =>
-  e.target ? `${e.text}\nRead ${e.target}, then run the same call again.` : e.text;
+  e.target ? `${e.text}\nRead ${e.target} in full, then run the same call again.` : e.text;
 
 /** A path relative to the repository holding it, else the absolute path. */
 const repoRelative = Effect.fn("contextmd.repoRelative")(function* (
