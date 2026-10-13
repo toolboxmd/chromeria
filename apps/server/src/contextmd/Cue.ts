@@ -20,8 +20,8 @@ export const WAIT_MS = 650;
 /** How long a tool result waits for the score its pre-tool moment started. */
 export const COLLECT_MS = 300;
 /** The service drops a request still queued after this. */
-export const DEADLINE_MS = 1500;
-export const CONNECT_MS = 500;
+const DEADLINE_MS = 1500;
+const CONNECT_MS = 500;
 export const PROBE_SECONDS = 30;
 const PENDING_SECONDS = 600;
 const MAX_PENDING = 256;

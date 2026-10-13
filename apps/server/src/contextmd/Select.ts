@@ -140,13 +140,13 @@ const outputText = (value: unknown): string => {
 };
 
 /** A served Cue entry shows this much of its "applies when" text; the scored text stays whole. */
-export const CUE_APPLIES_CHARS = 600;
+const CUE_APPLIES_CHARS = 600;
 
 /**
  * What a Cue fire serves: its "applies when" line first, so a wrong fire is dismissed in one read, then
  * the entry and, with a target, the file to read.
  */
-export const cueText = (e: Store.CueEntry) => {
+const cueText = (e: Store.CueEntry) => {
   const applies =
     e.applies.length <= CUE_APPLIES_CHARS
       ? e.applies
