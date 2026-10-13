@@ -7,7 +7,8 @@ import * as NodeSqlite from "node:sqlite";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, it, vi } from "@effect/vitest";
+import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -20,6 +21,8 @@ import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ContextmdRoute from "./ContextmdRoute.ts";
+import { MOMENT_BUDGET_MS } from "./ContextmdServing.ts";
+import * as Store from "./Store.ts";
 import { isHoldout } from "./ServingState.ts";
 
 // The store and config are ContextMD's data files; the matcher runs in this module.
@@ -115,15 +118,18 @@ const insertAttempt = (input: {
   }).pipe(Effect.orDie);
 
 // Environment sessions are the boundary here: "reader" holds orchestration:read, "weak" holds no scope.
+/** Credentials: `reader` may read, `weak` may not; a `slow-` prefix answers the same after 1.3 s. */
 const layerAuth = Layer.mock(EnvironmentAuth.EnvironmentAuth)({
   authenticateHttpRequest: (request) => {
-    const token = request.headers["authorization"]?.replace(/^Bearer /u, "");
-    if (token !== "reader" && token !== "weak") {
-      return Effect.fail(new EnvironmentAuth.ServerAuthMissingCredentialError({}));
-    }
-    return Effect.succeed({
-      scopes: token === "reader" ? ["orchestration:read"] : [],
-    } as unknown as EnvironmentAuth.AuthenticatedSession);
+    const header = request.headers["authorization"]?.replace(/^Bearer /u, "") ?? "";
+    const token = header.replace(/^slow-/u, "");
+    const answer =
+      token !== "reader" && token !== "weak"
+        ? Effect.fail(new EnvironmentAuth.ServerAuthMissingCredentialError({}))
+        : Effect.succeed({
+            scopes: token === "reader" ? ["orchestration:read"] : [],
+          } as unknown as EnvironmentAuth.AuthenticatedSession);
+    return header.startsWith("slow-") ? Effect.sleep(1300).pipe(Effect.andThen(answer)) : answer;
   },
 });
 
@@ -165,7 +171,11 @@ const writeCue = (dir: string) => {
 };
 
 /** A fake Cue service: records each scoring request and answers with `scores`. */
-const fakeCue = (scores: Record<string, number>, refuse?: { status: number; error: string }) =>
+const fakeCue = (
+  scores: Record<string, number>,
+  refuse?: { status: number; error: string },
+  delayMs = 0,
+) =>
   Effect.acquireRelease(
     Effect.promise(
       () =>
@@ -184,8 +194,15 @@ const fakeCue = (scores: Record<string, number>, refuse?: { status: number; erro
                   res.end(JSON.stringify({ error: refuse.error }));
                   return;
                 }
-                res.writeHead(200, { "content-type": "application/json" });
-                res.end(JSON.stringify({ adapter: "fake-adapter", threshold: 0.5, scores, ms: 5 }));
+                const answer = () => {
+                  res.writeHead(200, { "content-type": "application/json" });
+                  res.end(
+                    JSON.stringify({ adapter: "fake-adapter", threshold: 0.5, scores, ms: 5 }),
+                  );
+                };
+                // @effect-diagnostics-next-line globalTimers:off - a plain Node test server answering late.
+                if (req.url === "/score" && delayMs > 0) setTimeout(answer, delayMs);
+                else answer();
               });
             });
             server.listen(0, "127.0.0.1", () => {
@@ -316,6 +333,21 @@ const serve = <R>(
           // The server may stop reading at the cap and reset the connection.
           Effect.orElseSucceed(() => "reset" as const),
         );
+    const identity = () => {
+      const db = new NodeSqlite.DatabaseSync(NodePath.join(config.stateDir, "contextmd.sqlite"));
+      try {
+        return db
+          .prepare("SELECT kind, status, session, tool_use_id FROM moments ORDER BY id")
+          .all() as Array<{
+          kind: string | null;
+          status: string;
+          session: string | null;
+          tool_use_id: string | null;
+        }>;
+      } finally {
+        db.close();
+      }
+    };
     const outcomes = (entry: string) => {
       const db = new NodeSqlite.DatabaseSync(NodePath.join(config.stateDir, "contextmd.sqlite"));
       try {
@@ -351,7 +383,32 @@ const serve = <R>(
         db.close();
       }
     };
-    return { moment, settle, log, store, chunked, outcomes, database, cueLog };
+    /** Send `raw` in two halves `stallMs` apart; the reply status, or "reset". */
+    const stalled = (raw: unknown, stallMs: number) => {
+      const bytes = new TextEncoder().encode(JSON.stringify(raw));
+      const half = Math.floor(bytes.length / 2);
+      return client
+        .execute(
+          HttpClientRequest.post("/contextmd/v1/moment").pipe(
+            HttpClientRequest.setHeaders({
+              authorization: `Bearer ${token}`,
+              "x-contextmd-harness": "claude",
+              "x-contextmd-delivery": "stalled",
+            }),
+            HttpClientRequest.bodyStream(
+              Stream.concat(
+                Stream.make(bytes.slice(0, half)),
+                Stream.fromEffect(Effect.sleep(stallMs).pipe(Effect.as(bytes.slice(half)))),
+              ),
+            ),
+          ),
+        )
+        .pipe(
+          Effect.map((r) => r.status),
+          Effect.orElseSucceed(() => "reset" as const),
+        );
+    };
+    return { moment, settle, log, identity, store, chunked, stalled, outcomes, database, cueLog };
   });
 
 /** Many tool calls in the thread, each a projected command item, at consecutive ordinals. */
@@ -695,6 +752,159 @@ describe("contextmd routes", () => {
         moments: [{ kind: "user_message", cue_status: "ok", cue_adapter: "fake-adapter" }],
         candidates: [{ entry: "agentsmd-research", outcome: "reserved", score: 2.5 }],
       });
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("serves a slow Cue score that fits the moment's budget (#248)", () =>
+    Effect.gen(function* () {
+      // A 600 ms score timed out at the old 650 ms wait once the moment's own work was added.
+      const cue = yield* fakeCue({ "agentsmd-research": 2.5 }, undefined, 600);
+      const s = yield* serve(
+        Effect.all([
+          insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
+          projectUserMessage("How does the projector handle retries?"),
+        ]).pipe(Effect.asVoid),
+        { cueUrl: cue.url },
+      );
+      const r = yield* s.moment({
+        hook_event_name: "UserPromptSubmit",
+        session_id: servedSession,
+        cwd: "/tmp",
+        prompt: "How does the projector handle retries?",
+      });
+      assert.strictEqual(r.status, 200);
+      assert.deepStrictEqual(s.cueLog().moments, [
+        { kind: "user_message", cue_status: "ok", cue_adapter: "fake-adapter" },
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("replies within the moment's budget when Cue never answers a failed call (#251)", () =>
+    Effect.gen(function* () {
+      const cue = yield* fakeCue({ "agentsmd-research": 2.5 }, undefined, 10_000);
+      const s = yield* serve(
+        Effect.all([
+          insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
+          projectUserMessage("Look at the logs"),
+        ]).pipe(Effect.asVoid),
+        { cueUrl: cue.url },
+      );
+      for (const event of [
+        claude("PostToolUseFailure", servedSession, "echo a"),
+        {
+          hook_event_name: "UserPromptSubmit",
+          session_id: servedSession,
+          cwd: "/tmp",
+          prompt: "Look at the logs",
+        },
+      ]) {
+        const started = yield* Clock.currentTimeMillis;
+        yield* s.moment(event);
+        // Measured by the client: the connection, the moment's work, the Cue wait and the reply.
+        assert.isBelow((yield* Clock.currentTimeMillis) - started, MOMENT_BUDGET_MS);
+      }
+      assert.deepStrictEqual(
+        s.cueLog().moments.map((m) => [m.kind, m.cue_status]),
+        [
+          ["tool_failure", "timeout"],
+          ["user_message", "timeout"],
+        ],
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("logs what a moment cut by its budget knew of itself (#252)", () =>
+    Effect.gen(function* () {
+      const s = yield* serve(
+        insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
+      );
+      // A transaction holds the shared database, so the run lookup after parsing waits past the budget.
+      const sql = Context.get(s.database, SqlClient.SqlClient);
+      yield* Effect.forkScoped(sql.withTransaction(Effect.sleep(2 * MOMENT_BUDGET_MS)));
+      yield* Effect.sleep(50);
+      const started = yield* Clock.currentTimeMillis;
+      const r = yield* s.moment(claude("PreToolUse", servedSession, "echo a"));
+      assert.isBelow((yield* Clock.currentTimeMillis) - started, MOMENT_BUDGET_MS);
+      assert.strictEqual(r.status, 204);
+      // Cut before parsing: nothing about the call is known.
+      yield* s.stalled(claude("PostToolUse", servedSession, "echo a"), 2 * MOMENT_BUDGET_MS);
+      assert.deepStrictEqual(s.identity(), [
+        {
+          kind: "pre_tool",
+          status: "over_budget",
+          session: servedSession,
+          tool_use_id: "toolu-echo a",
+        },
+        { kind: null, status: "over_budget", session: null, tool_use_id: null },
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("logs the parsed call of a moment cut while selection reads its store (#252)", () =>
+    Effect.gen(function* () {
+      const s = yield* serve(
+        insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
+      );
+      // The exact-key store answers only after the budget is spent.
+      const load = Store.load;
+      const spy = vi
+        .spyOn(Store, "load")
+        .mockImplementation((roots, cache) =>
+          Effect.sleep(2 * MOMENT_BUDGET_MS).pipe(Effect.andThen(load(roots, cache))),
+        );
+      yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
+      const r = yield* s.moment(claude("PreToolUse", servedSession, "echo a"));
+      assert.strictEqual(r.status, 204);
+      assert.isAbove(spy.mock.calls.length, 0);
+      assert.deepStrictEqual(s.identity(), [
+        {
+          kind: "pre_tool",
+          status: "over_budget",
+          session: servedSession,
+          tool_use_id: "toolu-echo a",
+        },
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("counts a slow authentication against the moment's budget (#251)", () =>
+    Effect.gen(function* () {
+      const s = yield* serve(
+        insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
+      );
+      // Both a credential that may read and one that may not answer only after 1.3 s.
+      for (const token of ["slow-reader", "slow-unknown"]) {
+        const started = yield* Clock.currentTimeMillis;
+        const r = yield* s.moment(claude("PostToolUse", servedSession, "echo a"), { token });
+        assert.isBelow((yield* Clock.currentTimeMillis) - started, MOMENT_BUDGET_MS);
+        // Cut before the credential is known: nothing is served.
+        assert.strictEqual(r.status, 204);
+      }
+      assert.deepStrictEqual(
+        s.log().map((m) => m.status),
+        ["over_budget", "over_budget"],
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("cuts a moment whose work outruns the budget and logs it over budget (#251)", () =>
+    Effect.gen(function* () {
+      const s = yield* serve(
+        insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
+      );
+      const started = yield* Clock.currentTimeMillis;
+      // The body arrives too slowly for the moment to finish inside its budget.
+      const r = yield* s.stalled(
+        claude("PostToolUse", servedSession, "echo a"),
+        2 * MOMENT_BUDGET_MS,
+      );
+      assert.isBelow((yield* Clock.currentTimeMillis) - started, MOMENT_BUDGET_MS);
+      // The reply may come while the client is still sending, which can reset the connection.
+      assert.include([204, "reset"], r);
+      assert.deepStrictEqual(
+        s.log().map((m) => m.status),
+        ["over_budget"],
+      );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
