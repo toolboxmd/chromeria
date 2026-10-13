@@ -214,13 +214,6 @@ export class ServingState {
     db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA busy_timeout = 100");
     db.exec(SCHEMA);
-    // A carry waits for the next PreToolUse of the server that selected it. One left by an
-    // earlier server (an older build) may hold a rule this build no longer serves (#231).
-    db.exec(
-      `UPDATE candidates SET outcome = 'carry_expired', reason = 'restart'
-       WHERE id IN (SELECT candidate_id FROM carries WHERE state = 'waiting')`,
-    );
-    db.exec("UPDATE carries SET state = 'expired' WHERE state = 'waiting'");
   }
 
   private tx<A>(f: () => A): A {
