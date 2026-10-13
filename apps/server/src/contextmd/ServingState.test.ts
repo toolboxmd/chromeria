@@ -283,6 +283,29 @@ describe("ServingState must-know rules after their action (#231)", () => {
     assert.strictEqual(r.status, 200);
   });
 
+  it("expires carries a previous server left waiting, so an old build's late reminder never prints", () => {
+    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "contextmd-carry-"));
+    const file = NodePath.join(dir, "contextmd.sqlite");
+    const before = makeHarness(file);
+    // An older build carried a must-know rule after its own command.
+    before.db
+      .prepare(
+        `INSERT INTO carries (harness, session, run_id, entry, version, text, candidate_id, state, created_at)
+         VALUES ('grok', 's1', 'run-1', 'vc', 'v1', 'rule vc', 0, 'waiting', 1)`,
+      )
+      .run();
+    before.db.close();
+    const after = makeHarness(file);
+    assert.strictEqual(after.fire({ kind: "pre_tool", profile: GROK }).status, 204);
+    const states = after.db.prepare("SELECT state FROM carries").all() as Array<{ state: string }>;
+    assert.deepStrictEqual(
+      states.map((r) => r.state),
+      ["expired"],
+    );
+    after.db.close();
+    NodeFS.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("carries no must-know rule on Grok after its action", () => {
     const h = makeHarness();
     h.fire({ kind: "tool_result", profile: GROK, candidates: [pointer("vc", target)] });
