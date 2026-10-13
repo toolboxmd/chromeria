@@ -314,10 +314,14 @@ A part is broken instead while any open Issue among its refs has the `bug` label
 PR of the part (a PR ref, or a PR that closes its primary Issue) fails its checks. A merged
 component PR does not finish an open Issue: the part stays planned or working until GitHub closes
 the Issue. A primary ref closed as not planned, or closed unmerged, shows as cancelled. A ref that
-GitHub does not return, because it is private or deleted, shows as unavailable. `context` marks a
-part another project owns; it is drawn grey and never counted as missing.
+GitHub does not return, because it is private or deleted, shows as unavailable. If an open Issue
+has more labels or closing PRs than one GitHub page holds, a part they could break shows as
+incomplete instead of a state. A primary ref the map cannot read shows as unknown; the next ref
+never takes its place. `context` marks a part another project owns; it is drawn grey and never
+counted as missing.
 
 A part that a thread is working on carries a thread icon; select it to open that thread. Select a
 part, or its row in the list under the drawing, to open its primary ref. The gaps list shows parts
-with no refs, Issues bound to more than one part, open Issues on no part, cancelled or unavailable
-refs, and ref lines that name no part.
+with no refs, Issues bound to more than one part, open Issues on no part (marked partial after the
+first 500), cancelled, unavailable or incomplete refs, ref lines that name no part, and refs the map
+cannot read.
