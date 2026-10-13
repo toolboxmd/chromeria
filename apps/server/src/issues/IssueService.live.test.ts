@@ -20,6 +20,7 @@ import * as ClosingReferences from "../issueLinks/closingReferences.ts";
 import * as IssueLinks from "../issueLinks/IssueLinks.ts";
 import { gitHubIdentity } from "../issueLinks/IssueLinks.testFixtures.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitHubApi from "../sourceControl/GitHubApi.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
@@ -68,6 +69,12 @@ const github = GitHubApi.layerWithDependencies.pipe(
 const layer = IssueService.layer.pipe(
   Layer.provide(
     Layer.mock(ProjectService.ProjectService)({ listShells: () => Effect.succeed(projects) }),
+  ),
+  // Every project above carries its identity.
+  Layer.provide(
+    Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
+      resolve: () => Effect.succeed(null),
+    }),
   ),
   // Thread-linked pull requests ride along with the first search page: two merged ones here.
   Layer.provide(

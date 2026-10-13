@@ -8,6 +8,7 @@ import * as Ref from "effect/Ref";
 import * as IssueLinks from "../issueLinks/IssueLinks.ts";
 import { gitHubIdentity } from "../issueLinks/IssueLinks.testFixtures.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as GitHubApi from "../sourceControl/GitHubApi.ts";
 import * as IssueService from "./IssueService.ts";
 
@@ -42,10 +43,19 @@ const page = (endCursor: string | null) =>
     },
   });
 
+/** Resolves no folder to a repository; the shells carry their identity. */
+const noIdentities: RepositoryIdentityResolver.RepositoryIdentityResolver["Service"]["resolve"] =
+  () => Effect.succeed(null);
+
+const resolverLayer = (
+  resolve: RepositoryIdentityResolver.RepositoryIdentityResolver["Service"]["resolve"],
+) => Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({ resolve });
+
 /** The service over a fake GitHub whose GraphQL answers come from `graphql`. */
 const serviceWith = (
   shells: ReadonlyArray<OrchestrationProjectShell>,
   graphql: GitHubApi.GitHubApi["Service"]["graphql"],
+  resolve = noIdentities,
 ) =>
   Effect.provide(
     IssueService.IssueService,
@@ -60,6 +70,7 @@ const serviceWith = (
       Layer.provide(
         Layer.mock(ProjectService.ProjectService)({ listShells: () => Effect.succeed(shells) }),
       ),
+      Layer.provide(resolverLayer(resolve)),
       Layer.provide(
         Layer.mock(IssueLinks.IssueLinks)({
           pullRequestsOfIssueThreads: () => Effect.succeed([]),
@@ -117,6 +128,7 @@ describe("IssueService.list", () => {
               listShells: () => Effect.succeed(projects),
             }),
           ),
+          Layer.provide(resolverLayer(noIdentities)),
           Layer.provide(
             Layer.mock(IssueLinks.IssueLinks)({
               pullRequestsOfIssueThreads: () => Effect.succeed([]),
@@ -130,6 +142,46 @@ describe("IssueService.list", () => {
       expect(yield* Ref.get(searches)).toEqual(["account-1", "account-1"]);
       expect(result.viewers).toEqual([{ host: "github.com", login: "account-1" }]);
       expect(result.errors).toEqual([]);
+    }),
+  );
+});
+
+describe("IssueService.states", () => {
+  // A project shell carries its identity only while the one-minute enrichment cache holds it;
+  // the links panel rereads every minute, so its reads often arrive just after it expired.
+  it.effect("reads linked Issues while a project's identity is not cached", () =>
+    Effect.gen(function* () {
+      const uncached: OrchestrationProjectShell = {
+        ...projects[0]!,
+        workspaceRoot: "/work/contextmd",
+        repositoryIdentity: null,
+      };
+      const issues = yield* serviceWith(
+        [uncached],
+        () =>
+          Effect.succeed(
+            JSON.stringify({
+              data: {
+                issue0: {
+                  state: "OPEN",
+                  stateReason: null,
+                  title: "Capture: extract and judge one machine's sessions",
+                  updatedAt: "2026-10-13T10:57:29Z",
+                  author: { login: "lukemaj", avatarUrl: "https://avatars.example/lukemaj" },
+                },
+              },
+            }),
+          ),
+        (cwd) =>
+          Effect.succeed(cwd === "/work/contextmd" ? gitHubIdentity("toolboxmd/contextmd") : null),
+      );
+
+      const result = yield* issues.states({
+        issues: [{ host: "github.com", repository: "toolboxmd/contextmd", number: 7 }],
+      });
+      expect(result.issues.map((entry) => [entry.number, entry.state, entry.title])).toEqual([
+        [7, "open", "Capture: extract and judge one machine's sessions"],
+      ]);
     }),
   );
 });
