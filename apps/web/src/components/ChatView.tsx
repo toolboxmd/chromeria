@@ -290,6 +290,7 @@ import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavaila
 import { RightPanelTabs } from "./RightPanelTabs";
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
 import { ThreadIssuePanel } from "./issues/ThreadIssuePanel";
+import { FeatureMapPanel } from "./featureMap/FeatureMapPanel";
 import { ThreadLinksPanel } from "./issues/ThreadLinksPanel";
 import { useDeviceState } from "~/state/device";
 import { DeviceSetup } from "./device/DeviceSetup";
@@ -5467,6 +5468,13 @@ export default function ChatView(props: ChatViewProps) {
     if (!activeThreadRef || !linksSurfaceAvailable) return;
     useRightPanelStore.getState().open(activeThreadRef, "pull-requests");
   }, [activeThreadRef, linksSurfaceAvailable]);
+  // Fork: the project's feature map (toolboxmd/chromeria#235).
+  const featureMapSupported = serverConfig?.environment.capabilities.featureMap === true;
+  const mapSurfaceAvailable = isServerThread && activeProject != null && featureMapSupported;
+  const addMapSurface = useCallback(() => {
+    if (!activeThreadRef || !mapSurfaceAvailable) return;
+    useRightPanelStore.getState().open(activeThreadRef, "map");
+  }, [activeThreadRef, mapSurfaceAvailable]);
   const { state: deviceState, loaded: deviceStateLoaded } = useDeviceState(
     activeThreadRef?.environmentId ?? null,
   );
@@ -11057,6 +11065,14 @@ export default function ChatView(props: ChatViewProps) {
         threadRef={activeThreadRef}
         issueLinks={serverConfig?.environment.capabilities.issueLinks === true}
       />
+    ) : renderedRightPanelSurface?.kind === "map" && activeThreadRef ? (
+      <FeatureMapPanel
+        environmentId={activeThread.environmentId}
+        projectId={activeThread.projectId ?? null}
+        threadRef={activeThreadRef}
+        supported={featureMapSupported}
+        theme={resolvedTheme}
+      />
     ) : renderedRightPanelSurface?.kind === "issue" ? (
       <ThreadIssuePanel
         environmentId={renderedRightPanelSurface.environmentId}
@@ -11969,6 +11985,7 @@ export default function ChatView(props: ChatViewProps) {
           onAddPullRequest={addPullRequestSurface}
           onAddPullRequests={addPullRequestsSurface}
           onAddDevice={addDeviceSurface}
+          onAddMap={addMapSurface}
           browserAvailable={canOperatePreview && browserAvailable}
           terminalAvailable={activeProject !== null && canOperateTerminal}
           diffAvailable={isServerThread && isGitRepo}
@@ -11976,6 +11993,7 @@ export default function ChatView(props: ChatViewProps) {
           pullRequestAvailable={pullRequestSurfaceAvailable}
           pullRequestsAvailable={linksSurfaceAvailable}
           deviceAvailable={activeThreadRef !== null}
+          mapAvailable={mapSurfaceAvailable}
         >
           {rightPanelContent}
         </RightPanelTabs>
@@ -12027,6 +12045,7 @@ export default function ChatView(props: ChatViewProps) {
             onAddPullRequest={addPullRequestSurface}
             onAddPullRequests={addPullRequestsSurface}
             onAddDevice={addDeviceSurface}
+            onAddMap={addMapSurface}
             browserAvailable={canOperatePreview && browserAvailable}
             terminalAvailable={activeProject !== null && canOperateTerminal}
             diffAvailable={isServerThread && isGitRepo}
@@ -12034,6 +12053,7 @@ export default function ChatView(props: ChatViewProps) {
             pullRequestAvailable={pullRequestSurfaceAvailable}
             pullRequestsAvailable={linksSurfaceAvailable}
             deviceAvailable={activeThreadRef !== null}
+            mapAvailable={mapSurfaceAvailable}
           >
             {rightPanelContent}
           </RightPanelTabs>

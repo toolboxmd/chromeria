@@ -35,6 +35,7 @@ export * from "./projectClone.ts";
 export * from "./pullRequest.ts";
 export * from "./issues.ts";
 export * from "./issueLinks.ts";
+export * from "./featureMap.ts";
 export * from "./orchestrationDispatch.ts";
 export * from "./orchestrationProject.ts";
 export * from "./orchestrationV2.ts";
