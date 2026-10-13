@@ -212,17 +212,33 @@ describe("reads", () => {
         `cat ${f} > /dev/null`,
         `cat ${f} >&2`,
         `cat <<< ${f}`,
+        `bat -r1:5 ${f}`,
+        `batcat -pr1:5 ${f}`,
+        `echo 'ignore; cat ${f} ; ignore'`,
+        `echo "$(true; cat ${f} ; true)" > /dev/null`,
+        `false && cat ${f}; true`,
+        `cat /dev/null 2< ${f}`,
+        `cat /dev/null 2> ${f}`,
+        `cat ${f} &`,
+        `cat ${f} missing.md`,
       ]) {
         assert.deepStrictEqual(yield* kind("Bash", { command }), ["shell_partial"], command);
       }
       for (const command of [`echo ${f} && cat missing.md`, `ls ${f}`]) {
         assert.deepStrictEqual(yield* kind("Bash", { command }), [], command);
       }
-      assert.deepStrictEqual(yield* kind("Bash", { command: `/bin/cat ${f} 2>/dev/null` }), [
-        "shell_full",
-      ]);
+      for (const command of [
+        `/bin/cat ${f} 2>/dev/null`,
+        `cat -n ${f}`,
+        `cd ${d} && cat a.md`,
+        `nl -ba ${f}`,
+        `bat --plain ${f}`,
+      ]) {
+        assert.deepStrictEqual(yield* kind("Bash", { command }), ["shell_full"], command);
+      }
+      // A full read inside a longer command is not a plain read: logged, never lifting.
       assert.deepStrictEqual(yield* kind("Bash", { command: `grep -n x ${f}; cat ${f}` }), [
-        "shell_full",
+        "shell_partial",
       ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -312,6 +328,14 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
         tool_response: {},
       });
       assert.deepStrictEqual(read.moment.reads, [{ path: target, kind: "read_tool" }]);
+      const cut = yield* sel("grok", {
+        ...base,
+        hook_event_name: "post_tool_use",
+        tool_name: "read_file",
+        tool_input: { target_file: "RULE.md" },
+        toolResult: { type: "ReadFile", tool_output_for_prompt: "# Rules … [+54 chars]" },
+      });
+      assert.deepStrictEqual(cut.moment.reads, [{ path: target, kind: "read_partial" }]);
       const edit = yield* sel("claude", {
         ...base,
         hook_event_name: "PostToolUse",

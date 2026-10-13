@@ -347,9 +347,13 @@ describe("ServingState deny lifts", () => {
         .status,
       204,
     );
-    // The read lifted it; the cap did not.
-    assert.include(h.outcomes("vc"), "lifted");
-    assert.notInclude(h.outcomes("vc"), "not_read_capped");
+    // The read lifted it; the cap did not (the cap logs outcome `lifted`, reason `not_read_capped`).
+    const reasons = (
+      h.db
+        .prepare("SELECT reason FROM candidates WHERE entry = 'vc' AND outcome = 'lifted'")
+        .all() as Array<{ reason: string }>
+    ).map((r) => r.reason);
+    assert.deepStrictEqual(reasons, ["read"]);
   });
 
   it("lifts on a projected full read below the cap, and never on a projected partial read", () => {

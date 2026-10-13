@@ -6,13 +6,15 @@
  * `cwd` and any earlier `cd`. Only files that exist count. The serving state
  * records a read at the tool result, and only when the call did not fail.
  *
- * Only a full read lifts a pointer rule (#225). A shell read is full only when a
- * whole-file reader (`cat`, `nl`, `bat`, `less`, `more`, `view`) runs without a
- * range option and its output is neither piped, redirected nor fed by a
- * here-string; a Read-like call is full only without an offset, limit or line
- * range. Either is partial when the result shows it was cut (a truncation marker
- * in the output, or fewer lines returned than the file has). Unclear shapes count
- * as partial: a missed full read only costs the deny cap.
+ * Only a full read lifts a pointer rule (#225). A shell command is a full read
+ * only when the whole command is one plain whole-file reader call: optional
+ * `cd <dir> &&` steps, then `cat`, `nl`, `bat`, `less`, `more` or `view` with
+ * known whole-file options and file operands, at most `2>/dev/null`, and no
+ * other shell syntax. Shell is open-ended, so every other shape is partial: its
+ * reader operands are still logged, but never lift. A Read-like call is full only
+ * without an offset, limit or line range. Either is partial when the result
+ * shows it was cut (a truncation marker, or fewer lines returned than the file
+ * has). A missed full read only costs the deny cap.
  */
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -33,10 +35,18 @@ const RANGE_FIELDS = [
   "endLine",
   "view_range",
 ];
-/** Reader options that show only part of a file: `bat -r 1:5`, `less +40`. */
-const RANGE_OPTION = /^(?:-r|--line-range(?:=.*)?|\+.*)$/u;
-/** Stdout leaves the agent's view: `> file`, `>> file`, `&> file`, `>&2`; `2>` is fine. */
-const REDIRECT = /(?:^|[^2&])>|&>/u;
+/** Options that keep a reader's output whole; any other option makes the read partial. */
+const WHOLE_OPTIONS: Record<string, ReadonlySet<string>> = {
+  cat: new Set(["-n", "-b", "-s", "-v", "-A", "-e", "-t"]),
+  nl: new Set(["-ba"]),
+  bat: new Set(["-p", "-pp", "--plain", "--paging=never", "--color=never", "--style=plain"]),
+  batcat: new Set(["-p", "-pp", "--plain", "--paging=never", "--color=never", "--style=plain"]),
+  less: new Set(),
+  more: new Set(),
+  view: new Set(),
+};
+/** Shell syntax that can hide, condition, redirect or substitute a read. */
+const SHELL_SYNTAX = /[;|&<>`$(){}*?!\\\n]/u;
 /** How harnesses mark a cut result: Codex, Claude Code, OpenCode, Grok. */
 const TRUNCATED =
   /\b\d+ (?:tokens|chars|characters|lines|bytes) (?:truncated|omitted)\b|omitted \d+ of \d+ lines|\[\+\d+ chars\]|File has more lines|Output (?:was )?truncated/iu;
@@ -84,37 +94,57 @@ const existing = Effect.fn("contextmd.existingFiles")(function* (
   return out;
 });
 
-/** Reader operands per shell segment, each with whether that segment showed whole files. */
-const shellReads = Effect.fn("contextmd.shellReads")(function* (command: string, cwd: string) {
+const readerName = (word: string | undefined) =>
+  (word ?? "").slice((word ?? "").lastIndexOf("/") + 1);
+
+/** The files of a command that is exactly `[cd <dir> && ...] <reader> [options] <files>`. */
+const fullRead = Effect.fn("contextmd.fullRead")(function* (command: string, cwd: string) {
+  const path = yield* Path.Path;
+  const steps = command.replace(/\s+2>\/dev\/null\s*$/u, "").split("&&");
+  if (steps.some((s) => SHELL_SYNTAX.test(s))) return null;
+  let base = cwd;
+  for (const step of steps.slice(0, -1)) {
+    const ws = words(step);
+    if (ws.length !== 2 || ws[0] !== "cd") return null;
+    base = path.resolve(base, expandHomePathWith(ws[1]!, path));
+  }
+  const ws = words(steps.at(-1)!);
+  const allowed = WHOLE_OPTIONS[readerName(ws[0])];
+  if (allowed === undefined || ws.length < 2) return null;
+  const args = ws.slice(1);
+  if (args.some((a) => (a.startsWith("-") || a.startsWith("+")) && !allowed.has(a))) return null;
+  const operands = args.filter((a) => !a.startsWith("-"));
+  const files = yield* existing(operands, base);
+  // Every operand must be a file that exists: anything else is not a plain read.
+  return files.length === operands.length ? files : null;
+});
+
+/** Reader operands anywhere in a command, for the log; these never lift. */
+const partialReads = Effect.fn("contextmd.partialReads")(function* (command: string, cwd: string) {
   const path = yield* Path.Path;
   const parts = command.split(SEGMENT);
   let base = cwd;
-  const out: Read[] = [];
+  const out: string[] = [];
   for (let i = 0; i < parts.length; i += 2) {
-    const segment = parts[i]!;
-    const piped = parts[i + 1] === "|";
-    const ws = words(segment);
+    const ws = words(parts[i]!);
     while (ws.length > 0 && (WRAPPERS.has(ws[0]!) || /^[A-Za-z_][A-Za-z0-9_]*=/u.test(ws[0]!)))
       ws.shift();
-    const name = (ws[0] ?? "").slice((ws[0] ?? "").lastIndexOf("/") + 1);
+    const name = readerName(ws[0]);
     if (name === "cd" && ws[1] !== undefined) {
       base = path.resolve(base, expandHomePathWith(ws[1], path));
       continue;
     }
     if (!FULL_READERS.has(name) && !PARTIAL_READERS.has(name)) continue;
-    const args = ws.slice(1);
-    const full =
-      FULL_READERS.has(name) &&
-      !piped &&
-      !segment.includes("<<<") &&
-      !REDIRECT.test(segment) &&
-      !args.some((a) => RANGE_OPTION.test(a));
-    const operands = args.filter((a) => !a.startsWith("-") && !a.startsWith("+"));
-    for (const file of yield* existing(operands, base)) {
-      out.push({ path: file, kind: full ? "shell_full" : "shell_partial" });
-    }
+    const operands = ws.slice(1).filter((a) => !a.startsWith("-") && !a.startsWith("+"));
+    for (const file of yield* existing(operands, base)) if (!out.includes(file)) out.push(file);
   }
   return out;
+});
+
+const shellReads = Effect.fn("contextmd.shellReads")(function* (command: string, cwd: string) {
+  const full = yield* fullRead(command.trim(), cwd);
+  if (full !== null) return full.map((p): Read => ({ path: p, kind: "shell_full" }));
+  return (yield* partialReads(command, cwd)).map((p): Read => ({ path: p, kind: "shell_partial" }));
 });
 
 /** The files one tool call read, with how it read them; `response` is the tool's result. */
