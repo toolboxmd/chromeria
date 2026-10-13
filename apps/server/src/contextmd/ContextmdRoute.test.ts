@@ -332,6 +332,21 @@ const serve = <R>(
           // The server may stop reading at the cap and reset the connection.
           Effect.orElseSucceed(() => "reset" as const),
         );
+    const identity = () => {
+      const db = new NodeSqlite.DatabaseSync(NodePath.join(config.stateDir, "contextmd.sqlite"));
+      try {
+        return db
+          .prepare("SELECT kind, status, session, tool_use_id FROM moments ORDER BY id")
+          .all() as Array<{
+          kind: string | null;
+          status: string;
+          session: string | null;
+          tool_use_id: string | null;
+        }>;
+      } finally {
+        db.close();
+      }
+    };
     const outcomes = (entry: string) => {
       const db = new NodeSqlite.DatabaseSync(NodePath.join(config.stateDir, "contextmd.sqlite"));
       try {
@@ -392,7 +407,7 @@ const serve = <R>(
           Effect.orElseSucceed(() => "reset" as const),
         );
     };
-    return { moment, settle, log, store, chunked, stalled, outcomes, database, cueLog };
+    return { moment, settle, log, identity, store, chunked, stalled, outcomes, database, cueLog };
   });
 
 /** Many tool calls in the thread, each a projected command item, at consecutive ordinals. */
@@ -794,6 +809,33 @@ describe("contextmd routes", () => {
           ["user_message", "timeout"],
         ],
       );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("logs what a moment cut by its budget knew of itself (#252)", () =>
+    Effect.gen(function* () {
+      const s = yield* serve(
+        insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
+      );
+      // A transaction holds the shared database, so the run lookup after parsing waits past the budget.
+      const sql = Context.get(s.database, SqlClient.SqlClient);
+      yield* Effect.forkScoped(sql.withTransaction(Effect.sleep(2 * MOMENT_BUDGET_MS)));
+      yield* Effect.sleep(50);
+      const started = yield* Clock.currentTimeMillis;
+      const r = yield* s.moment(claude("PreToolUse", servedSession, "echo a"));
+      assert.isBelow((yield* Clock.currentTimeMillis) - started, MOMENT_BUDGET_MS);
+      assert.strictEqual(r.status, 204);
+      // Cut before parsing: nothing about the call is known.
+      yield* s.stalled(claude("PostToolUse", servedSession, "echo a"), 2 * MOMENT_BUDGET_MS);
+      assert.deepStrictEqual(s.identity(), [
+        {
+          kind: "pre_tool",
+          status: "over_budget",
+          session: servedSession,
+          tool_use_id: "toolu-echo a",
+        },
+        { kind: null, status: "over_budget", session: null, tool_use_id: null },
+      ]);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 

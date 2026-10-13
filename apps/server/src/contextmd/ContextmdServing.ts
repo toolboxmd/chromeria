@@ -446,6 +446,8 @@ const make = Effect.gen(function* () {
       // reserve; past that the moment is cut and not served.
       const workBy = startedAt + (MOMENT_BUDGET_MS - REPLY_RESERVE_MS) / 1000;
       const workLeft = Math.max(0, Math.round((workBy - (yield* nowSeconds)) * 1000));
+      // What the moment knew of itself when it was cut, so its log row reads like any other.
+      let known: Partial<Unserved> = {};
       const prepared = yield* Effect.gen(function* () {
         if (!(yield* request.authorized)) {
           yield* unserved("unauthorized");
@@ -498,7 +500,10 @@ const make = Effect.gen(function* () {
           return { reply: { status: 204 } as const };
         }
         let selection = selected.selection;
-        const join = yield* resolveRun(selection.moment.session);
+        const m = selection.moment;
+        known = { kind: m.kind, session: m.session, toolUseId: m.tool_use_id };
+        const join = yield* resolveRun(m.session);
+        if (join.type === "run") known = { ...known, threadId: join.threadId, runId: join.runId };
         let readChecks: ReadonlyArray<ReadCheck> = [];
         let cue: CueMoment | null = null;
         if (join.type === "run") {
@@ -523,7 +528,7 @@ const make = Effect.gen(function* () {
         return { work: { delivery, harness, selection, join, readChecks, cue } };
       }).pipe(Effect.timeoutOption(Duration.millis(workLeft)));
       if (Option.isNone(prepared)) {
-        yield* unserved("over_budget");
+        yield* unserved("over_budget", known);
         return { status: 204 } as const;
       }
       if ("reply" in prepared.value) return prepared.value.reply;
