@@ -32,6 +32,73 @@ const shellPaths = (ws: ReadonlyArray<string>) => {
   return out;
 };
 
+const HEREDOC_START = /^<<-?[ \t]*(['"]?)(\w+)\1/u;
+const SUBSTITUTION = /\$\(([^()]*)\)|`([^`]*)`/gu;
+const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
+
+/**
+ * The parts of a shell command that run, for command keys (#232): heredoc bodies and quoted
+ * strings are dropped, because a key named there is only mentioned; the string after
+ * `sh -c` (`bash`, `zsh -lc`) runs, and so do `$(...)` and backticks inside double quotes.
+ * Unquoted arguments stay, so a bare key still matches a file name passed to a command.
+ */
+export const visibleCommand = (command: string): string => {
+  const text = command;
+  let out = "";
+  let i = 0;
+  const heredocs: string[] = [];
+  while (i < text.length) {
+    const ch = text[i]!;
+    // An unquoted `<<WORD` opens a heredoc: its body, from the next line to WORD, is data.
+    const opening =
+      ch === "<" && text[i + 1] === "<" && text[i + 2] !== "<"
+        ? HEREDOC_START.exec(text.slice(i))
+        : null;
+    if (opening !== null) {
+      heredocs.push(opening[2]!);
+      out += " ";
+      i += opening[0].length;
+      continue;
+    }
+    if (ch === "\n" && heredocs.length > 0) {
+      // Skip each pending heredoc body up to its terminator line.
+      let j = i + 1;
+      for (const word of heredocs) {
+        const end = new RegExp(`(^|\\n)[ \\t]*${word}[ \\t]*(?=\\n|$)`, "u").exec(text.slice(j));
+        j = end === null ? text.length : j + end.index + end[0].length;
+      }
+      heredocs.length = 0;
+      out += "\n";
+      i = j;
+      continue;
+    }
+    if (ch === "\\") {
+      out += text.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
+    if (ch !== "'" && ch !== '"') {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    let j = i + 1;
+    while (j < text.length && text[j] !== ch) j += ch === '"' && text[j] === "\\" ? 2 : 1;
+    const body = text.slice(i + 1, j);
+    const before = out.trimEnd().split(/\s+/u);
+    const shell = (before.at(-2) ?? "").slice((before.at(-2) ?? "").lastIndexOf("/") + 1);
+    if (SHELLS.has(shell) && /^-[a-z]*c$/u.test(before.at(-1) ?? "")) {
+      out += ` ${visibleCommand(body)} `;
+    } else if (ch === '"') {
+      out += ` ${[...body.matchAll(SUBSTITUTION)].map((m) => visibleCommand(m[1] ?? m[2] ?? "")).join(" ; ")} `;
+    } else {
+      out += " ";
+    }
+    i = j + 1;
+  }
+  return out;
+};
+
 /** Tool input whose shape the exact-key matcher cannot read. */
 export class Unsupported extends Error {}
 
@@ -73,8 +140,11 @@ export const extract = (
   if (shellTools.includes(tool)) {
     const command = toolInput["command"];
     if (typeof command !== "string") throw new Unsupported(`${tool}: no command`);
-    const ws = words(command);
-    return { words: ws, paths: shellPaths(ws), error: signature };
+    return {
+      words: words(visibleCommand(command)),
+      paths: shellPaths(words(command)),
+      error: signature,
+    };
   }
   const paths = PATH_FIELDS.map((f) => toolInput[f]).filter(
     (v): v is string => typeof v === "string" && v !== "",

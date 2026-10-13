@@ -67,6 +67,42 @@ describe("command keys", () => {
     }
   });
 
+  it("skip a key only mentioned in quotes or a heredoc, but not commands those run (#232)", () => {
+    for (const command of [
+      "zsh -lc 'gh pr create --fill'",
+      '/bin/bash -c "cd x && gh pr create"',
+      "gh issue view 5 --json body -q .body; gh pr create",
+      "cat > notes.md <<'EOF'\nhello\nEOF\ngh pr create",
+      "gh pr create --title \"x\" --body-file - <<'EOF'\nbody\nEOF",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    // Mentions logged on rocky (#232): strings, heredoc bodies, other programs' code.
+    for (const command of [
+      'echo "live check: gh pr create"',
+      "echo 'gh pr create'",
+      "cat <<'EOF'\nthen run gh pr create\nEOF",
+      "python3 - <<'PY'\nkeys = ['gh pr create']\nPY",
+      "python3 -c \"print('gh pr create')\"",
+      'gh issue create --title t --body "open it with gh pr create"',
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("keeps the first bake's bare key on unquoted arguments (#232, contextmd#39)", () => {
+    const db = (command: string) => hit(command, "chromeria-v2.sqlite");
+    for (const command of [
+      "sqlite3 chromeria-v2.sqlite .tables",
+      "sqlite3 -readonly ~/.t3/userdata/chromeria-v2.sqlite .tables",
+      "sqlite3 /Users/u/.t3/userdata/chromeria-v2.sqlite 'select 1'",
+    ]) {
+      assert.isTrue(db(command), command);
+    }
+    // Quoted, the name is an argument the command key no longer sees; the path key (#234) does.
+    assert.isFalse(db('sqlite3 "/Users/u/.t3/userdata/chromeria-v2.sqlite" .tables'));
+  });
+
   it("let the first word be an executable path", () => {
     assert.isTrue(hasCommand(words("/opt/bin/git push"), ["git", "push"]));
     assert.isFalse(hasCommand(words("git status push"), ["git", "push"]));
