@@ -58,11 +58,12 @@ const SHELL_SYNTAX = /[;|&<>`$(){}[\]*?!\\\n'"]/u;
 /** Operands a full read refuses: `..` after a symlink or `cd -` can name another file. */
 const UNSAFE_PATH = /(?:^|\/)\.\.(?:\/|$)|^-$/u;
 /**
- * How harnesses mark a cut result, from their own sources: Claude Code (`[N characters
- * truncated]`), Codex (`N tokens truncated`, `N chars truncated`), Grok (`[+N chars]`,
- * `[... truncated (N chars total)]`, `[Output truncated - N bytes total]`, `(output
- * truncated)`), and the OpenCode and Grok read tools (`(Showing lines A-B of N`, `(Output
- * capped at 50 KB`, `(line truncated to N chars)`, `File has more lines`).
+ * How harnesses mark a cut result, checked against live hook payloads on 2026-10-13:
+ * Claude Code (`[N characters truncated]`, `Output too large`), Codex (`Warning: truncated
+ * output (original token count: N)`, `N tokens truncated`, `N bytes omitted`), Grok (`[+N
+ * chars]`, `[truncated: showing first/last ...]`, `(output truncated)`), and the OpenCode
+ * and Grok read tools (`(Showing lines A-B` with or without `of N`, `(Output capped at 50 KB`,
+ * `(line truncated to N chars)`).
  */
 const TRUNCATED = new RegExp(
   [
@@ -72,8 +73,11 @@ const TRUNCATED = new RegExp(
     String.raw`\[\.\.\. truncated \(\d+ chars total\)\]`,
     String.raw`Output (?:was )?truncated`,
     String.raw`\(output truncated\)`,
-    String.raw`\(Showing lines \d+-\d+ of \d+`,
+    String.raw`\(Showing lines \d+-\d+`,
     String.raw`Output capped at \d+`,
+    String.raw`truncated output \(original token count`,
+    String.raw`\[truncated: showing`,
+    String.raw`Output too large`,
     String.raw`line truncated to \d+ chars`,
     String.raw`File has more lines`,
   ].join("|"),
@@ -101,6 +105,12 @@ const cutByMetadata = (value: unknown): boolean => {
   if (typeof startLine === "number" && startLine > 1) return true;
   // Claude Code's Read also says so outright, even when the line counts match.
   if (Object.entries(o).some(([k, v]) => /truncat/iu.test(k) && v === true)) return true;
+  // Claude Code saved a long shell output to a file and showed only its start.
+  if (typeof o["persistedOutputPath"] === "string" && o["persistedOutputPath"] !== "") return true;
+  // Grok's read_file: fewer lines returned than the file has, with no footer in the hook.
+  const { total_lines: total, raw_output: raw } = o;
+  if (typeof total === "number" && typeof raw === "string" && raw.split("\n").length < total)
+    return true;
   return Object.values(o).some(cutByMetadata);
 };
 

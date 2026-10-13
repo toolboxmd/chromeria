@@ -468,6 +468,94 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("marks cut reads in each harness's real result shapes (live samples, 2026-10-13)", () =>
+    Effect.gen(function* () {
+      const { ws, target, sel } = setup();
+      const kinds = (harness: string, raw: Record<string, unknown>) =>
+        sel(harness, { session_id: "S", cwd: ws, ...raw }).pipe(
+          Effect.map((r) => r.moment.reads.map((x) => x.kind)),
+        );
+      const lines = (n: number) => Array.from({ length: n }, (_, i) => `line ${i + 1}`).join("\n");
+      // Claude Code: a long shell output reaches the hook as the first 30,000 characters of
+      // stdout, without a marker, plus where the rest was saved.
+      assert.deepStrictEqual(
+        yield* kinds("claude", {
+          hook_event_name: "PostToolUse",
+          tool_name: "Bash",
+          tool_input: { command: "cat RULE.md" },
+          tool_response: {
+            stdout: lines(3000).slice(0, 30000),
+            stderr: "",
+            interrupted: false,
+            isImage: false,
+            noOutputExpected: false,
+            persistedOutputPath: "/Users/u/.claude/projects/p/s/tool-results/b1.txt",
+            persistedOutputSize: 1988895,
+          },
+        }),
+        ["shell_partial"],
+      );
+      // Codex: the hook gets the same cut text the model sees.
+      assert.deepStrictEqual(
+        yield* kinds("codex", {
+          hook_event_name: "PostToolUse",
+          tool_name: "Bash",
+          tool_input: { command: "cat RULE.md" },
+          tool_response:
+            "Warning: truncated output (original token count: 19974)\nTotal output lines: 3000\n\nline 1\nline 81 o…18974 tokens truncated…e",
+        }),
+        ["shell_partial"],
+      );
+      // Grok 1.0.13 read_file: no footer in the hook payload, only fewer lines than total_lines.
+      const grokRead = (rawOutput: string, totalLines: number) =>
+        kinds("grok", {
+          hook_event_name: "post_tool_use",
+          tool_name: "read_file",
+          tool_input: { target_file: "RULE.md" },
+          toolResult: {
+            type: "ReadFile",
+            FileContent: {
+              content: rawOutput,
+              content_concise: rawOutput,
+              absolute_path: target,
+              offset: null,
+              raw_output: rawOutput,
+              total_lines: totalLines,
+            },
+          },
+        });
+      assert.deepStrictEqual(yield* grokRead(`${lines(1000)}\n`, 3001), ["read_partial"]);
+      assert.deepStrictEqual(yield* grokRead(`${lines(4)}\n`, 5), ["read_tool"]);
+      // Grok's read-tool footer, which has no "of N" (Grok review of #226).
+      assert.deepStrictEqual(
+        yield* kinds("grok", {
+          hook_event_name: "post_tool_use",
+          tool_name: "read_file",
+          tool_input: { target_file: "RULE.md" },
+          toolResult: {
+            type: "ReadFile",
+            output_for_prompt: "1→# Rules\n(Showing lines 1-2000. Use offset=2001 to continue.)",
+          },
+        }),
+        ["read_partial"],
+      );
+      // Grok shell: the cut notice in output_for_prompt.
+      assert.deepStrictEqual(
+        yield* kinds("grok", {
+          hook_event_name: "post_tool_use",
+          tool_name: "run_terminal_command",
+          tool_input: { command: "cat RULE.md" },
+          toolResult: {
+            exit_code: 0,
+            output_for_prompt:
+              "exit: 0 [truncated: showing first/last 25.8 KB of 1.9 MB - full output at: /x/call-3.log]",
+          },
+        }),
+        ["shell_partial"],
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("reads Grok's snake_case events, exit code and compaction", () =>
     Effect.gen(function* () {
       const { ws, target, sel } = setup();
