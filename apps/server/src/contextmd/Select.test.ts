@@ -173,6 +173,155 @@ describe("reads", () => {
       assert.deepStrictEqual(yield* r("Edit", { file_path: f }), []);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
+
+  it.effect("call a read full only when it can show the whole file", () =>
+    Effect.gen(function* () {
+      const d = tmp();
+      const f = NodePath.join(d, "a.md");
+      NodeFS.writeFileSync(f, "x\n");
+      NodeFS.mkdirSync(NodePath.join(d, "x")); // so x/../a.md exists
+      NodeFS.writeFileSync(NodePath.join(d, "a[.]md"), "y\n"); // a glob could expand elsewhere
+      const kind = (tool: string, input: unknown) =>
+        reads(tool, input, d, ["Bash"]).pipe(Effect.map((rs) => rs.map((x) => x.kind)));
+      for (const command of [`cat ${f}`, `nl -ba ${f}`, `bat ${f}`, `less ${f}`]) {
+        assert.deepStrictEqual(yield* kind("Bash", { command }), ["shell_full"], command);
+      }
+      for (const command of [
+        `grep -n x ${f}`,
+        `rg x ${f}`,
+        `head -n 40 ${f}`,
+        `tail -n 20 ${f}`,
+        `sed -n '1,200p' ${f}`,
+        `awk 'NR<10' ${f}`,
+        `cat ${f} | head -n 5`,
+      ]) {
+        assert.deepStrictEqual(yield* kind("Bash", { command }), ["shell_partial"], command);
+      }
+      assert.deepStrictEqual(yield* kind("Read", { file_path: f }), ["read_tool"]);
+      assert.deepStrictEqual(yield* kind("Read", { file_path: f, offset: null, limit: null }), [
+        "read_tool",
+      ]);
+      assert.deepStrictEqual(yield* kind("Read", { file_path: f, offset: 10 }), ["read_partial"]);
+      assert.deepStrictEqual(yield* kind("Read", { file_path: f, limit: 50 }), ["read_partial"]);
+      assert.deepStrictEqual(yield* kind("Read", { file_path: f, pages: "1" }), ["read_partial"]);
+      // Only file-reading tools, and only their file field, count.
+      assert.deepStrictEqual(
+        yield* kind("mcp__t3_code__t3_thread_update", { action: "rename", title: f }),
+        [],
+      );
+      assert.deepStrictEqual(yield* kind("Read", { file_path: "missing.md", note: f }), []);
+      assert.deepStrictEqual(yield* kind("read", { filePath: `${d}/x/../a.md` }), []);
+      assert.deepStrictEqual(yield* kind("read", { filePath: f, offset: 1, limit: 20 }), [
+        "read_partial",
+      ]);
+      // Range options, output that never reaches the agent, and paths that are not operands.
+      for (const command of [
+        `bat -r 1:5 ${f}`,
+        `batcat --line-range 1:5 ${f}`,
+        `less +40 ${f}`,
+        `cat ${f} > /dev/null`,
+        `cat ${f} >&2`,
+        `cat <<< ${f}`,
+        `bat -r1:5 ${f}`,
+        `batcat -pr1:5 ${f}`,
+        `echo 'ignore; cat ${f} ; ignore'`,
+        `echo "$(true; cat ${f} ; true)" > /dev/null`,
+        `false && cat ${f}; true`,
+        `cat /dev/null 2< ${f}`,
+        `cat /dev/null 2> ${f}`,
+        `cat ${f} &`,
+        `cat ${f} missing.md`,
+        `cat "${f}"-n`,
+        `cat '${f}'`,
+        `cat ${d}/a[.]md`, // the glob matches a.md, not this file
+        `cat ${d}/x/../a.md`,
+      ]) {
+        assert.deepStrictEqual(yield* kind("Bash", { command }), ["shell_partial"], command);
+      }
+      for (const command of [`echo ${f} && cat missing.md`, `ls ${f}`, `cd - && cat a.md`]) {
+        assert.deepStrictEqual(yield* kind("Bash", { command }), [], command);
+      }
+      for (const command of [
+        `/bin/cat ${f} 2>/dev/null`,
+        `cat -n ${f}`,
+        `cd ${d} && cat a.md`,
+        `nl -ba ${f}`,
+        `bat --plain ${f}`,
+      ]) {
+        assert.deepStrictEqual(yield* kind("Bash", { command }), ["shell_full"], command);
+      }
+      // A full read inside a longer command is not a plain read: logged, never lifting.
+      assert.deepStrictEqual(yield* kind("Bash", { command: `grep -n x ${f}; cat ${f}` }), [
+        "shell_partial",
+      ]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("call a read partial when its result shows it was cut", () =>
+    Effect.gen(function* () {
+      const d = tmp();
+      const f = NodePath.join(d, "a.md");
+      NodeFS.writeFileSync(f, "x\n");
+      const kind = (tool: string, input: unknown, response: unknown) =>
+        reads(tool, input, d, ["Bash"], response).pipe(Effect.map((rs) => rs.map((x) => x.kind)));
+      const cat = { command: `cat ${f}` };
+      assert.deepStrictEqual(yield* kind("Bash", cat, "x\n"), ["shell_full"]);
+      for (const output of [
+        "Total output lines: 900\n[... omitted 400 of 900 lines ...]",
+        "x\n…2048 tokens truncated…",
+        "x … [+54 chars]",
+        "x\n... [12045 characters truncated] ...\ny",
+        "x\n…812 chars truncated…\ny",
+        "x [... truncated (90000 chars total)]",
+        "[Output truncated - 120000 bytes total]",
+        "x\n... (output truncated) ...",
+        { stdout: "x", stderr: "", note: "Output truncated" },
+      ]) {
+        assert.deepStrictEqual(yield* kind("Bash", cat, output), ["shell_partial"], String(output));
+      }
+      const file = (numLines: number, startLine: number, totalLines: number) => ({
+        type: "text",
+        file: { filePath: f, content: "x", numLines, startLine, totalLines },
+      });
+      assert.deepStrictEqual(yield* kind("Read", { file_path: f }, file(10, 1, 10)), ["read_tool"]);
+      assert.deepStrictEqual(
+        yield* kind(
+          "Read",
+          { file_path: f },
+          {
+            type: "text",
+            file: {
+              filePath: f,
+              content: "x",
+              numLines: 1,
+              startLine: 1,
+              totalLines: 1,
+              truncatedByTokenCap: true,
+            },
+          },
+        ),
+        ["read_partial"],
+      );
+      assert.deepStrictEqual(yield* kind("Read", { file_path: f }, file(2000, 1, 2600)), [
+        "read_partial",
+      ]);
+      assert.deepStrictEqual(
+        yield* kind(
+          "read",
+          { filePath: f },
+          {
+            output: "x... (line truncated to 2000 chars)",
+            metadata: { truncated: false },
+          },
+        ),
+        ["read_partial"],
+      );
+      assert.deepStrictEqual(
+        yield* kind("read", { filePath: f }, "x\n(File has more lines. Use 'offset')"),
+        ["read_partial"],
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
 });
 
 describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", () => {
@@ -215,7 +364,10 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
         pre.candidates.map((c) => [c.entry, c.rule]),
         [["push", "pointer"]],
       );
-      assert.include(pre.candidates[0]!.deny_text!, `Read ${target}`);
+      assert.include(
+        pre.candidates[0]!.deny_text!,
+        `Read ${target} in full, then run the same call again.`,
+      );
       const read = yield* sel("claude", {
         ...base,
         hook_event_name: "PostToolUse",
@@ -224,6 +376,14 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
         tool_response: {},
       });
       assert.deepStrictEqual(read.moment.reads, [{ path: target, kind: "read_tool" }]);
+      const cut = yield* sel("grok", {
+        ...base,
+        hook_event_name: "post_tool_use",
+        tool_name: "read_file",
+        tool_input: { target_file: "RULE.md" },
+        toolResult: { type: "ReadFile", tool_output_for_prompt: "# Rules … [+54 chars]" },
+      });
+      assert.deepStrictEqual(cut.moment.reads, [{ path: target, kind: "read_partial" }]);
       const edit = yield* sel("claude", {
         ...base,
         hook_event_name: "PostToolUse",
@@ -308,6 +468,94 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("marks cut reads in each harness's real result shapes (live samples, 2026-10-13)", () =>
+    Effect.gen(function* () {
+      const { ws, target, sel } = setup();
+      const kinds = (harness: string, raw: Record<string, unknown>) =>
+        sel(harness, { session_id: "S", cwd: ws, ...raw }).pipe(
+          Effect.map((r) => r.moment.reads.map((x) => x.kind)),
+        );
+      const lines = (n: number) => Array.from({ length: n }, (_, i) => `line ${i + 1}`).join("\n");
+      // Claude Code: a long shell output reaches the hook as the first 30,000 characters of
+      // stdout, without a marker, plus where the rest was saved.
+      assert.deepStrictEqual(
+        yield* kinds("claude", {
+          hook_event_name: "PostToolUse",
+          tool_name: "Bash",
+          tool_input: { command: "cat RULE.md" },
+          tool_response: {
+            stdout: lines(3000).slice(0, 30000),
+            stderr: "",
+            interrupted: false,
+            isImage: false,
+            noOutputExpected: false,
+            persistedOutputPath: "/Users/u/.claude/projects/p/s/tool-results/b1.txt",
+            persistedOutputSize: 1988895,
+          },
+        }),
+        ["shell_partial"],
+      );
+      // Codex: the hook gets the same cut text the model sees.
+      assert.deepStrictEqual(
+        yield* kinds("codex", {
+          hook_event_name: "PostToolUse",
+          tool_name: "Bash",
+          tool_input: { command: "cat RULE.md" },
+          tool_response:
+            "Warning: truncated output (original token count: 19974)\nTotal output lines: 3000\n\nline 1\nline 81 o…18974 tokens truncated…e",
+        }),
+        ["shell_partial"],
+      );
+      // Grok 1.0.13 read_file: no footer in the hook payload, only fewer lines than total_lines.
+      const grokRead = (rawOutput: string, totalLines: number) =>
+        kinds("grok", {
+          hook_event_name: "post_tool_use",
+          tool_name: "read_file",
+          tool_input: { target_file: "RULE.md" },
+          toolResult: {
+            type: "ReadFile",
+            FileContent: {
+              content: rawOutput,
+              content_concise: rawOutput,
+              absolute_path: target,
+              offset: null,
+              raw_output: rawOutput,
+              total_lines: totalLines,
+            },
+          },
+        });
+      assert.deepStrictEqual(yield* grokRead(`${lines(1000)}\n`, 3001), ["read_partial"]);
+      assert.deepStrictEqual(yield* grokRead(`${lines(4)}\n`, 5), ["read_tool"]);
+      // Grok's read-tool footer, which has no "of N" (Grok review of #226).
+      assert.deepStrictEqual(
+        yield* kinds("grok", {
+          hook_event_name: "post_tool_use",
+          tool_name: "read_file",
+          tool_input: { target_file: "RULE.md" },
+          toolResult: {
+            type: "ReadFile",
+            output_for_prompt: "1→# Rules\n(Showing lines 1-2000. Use offset=2001 to continue.)",
+          },
+        }),
+        ["read_partial"],
+      );
+      // Grok shell: the cut notice in output_for_prompt.
+      assert.deepStrictEqual(
+        yield* kinds("grok", {
+          hook_event_name: "post_tool_use",
+          tool_name: "run_terminal_command",
+          tool_input: { command: "cat RULE.md" },
+          toolResult: {
+            exit_code: 0,
+            output_for_prompt:
+              "exit: 0 [truncated: showing first/last 25.8 KB of 1.9 MB - full output at: /x/call-3.log]",
+          },
+        }),
+        ["shell_partial"],
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("reads Grok's snake_case events, exit code and compaction", () =>
     Effect.gen(function* () {
       const { ws, target, sel } = setup();
@@ -336,7 +584,7 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
 
   it.effect("reads OpenCode plugin events", () =>
     Effect.gen(function* () {
-      const { ws, sel } = setup();
+      const { ws, target, sel } = setup();
       const before = yield* sel("opencode", {
         hook: "tool.execute.before",
         directory: ws,
@@ -355,6 +603,26 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
         output: { metadata: { exit: 1 }, output: "" },
       });
       assert.strictEqual(after.moment.kind, "tool_failure");
+      // A read OpenCode cut at 2000 lines or 50 KB, as the plugin posts it: no offset or limit
+      // in the args, the footer at the end of the forwarded output (Grok review of #226).
+      const readOf = (output: string, metadata: Record<string, unknown> = { exit: undefined }) =>
+        sel("opencode", {
+          hook: "tool.execute.after",
+          directory: ws,
+          input: { tool: "read", sessionID: "ses_1", callID: "c2", args: { filePath: target } },
+          output: { metadata, output },
+        }).pipe(Effect.map((r) => r.moment.reads.map((x) => x.kind)));
+      assert.deepStrictEqual(yield* readOf("# Rules\n"), ["read_tool"]);
+      for (const footer of [
+        "(Showing lines 1-2000 of 5000. Use offset=2001 to continue.)",
+        "(Output capped at 50 KB. Showing lines 1-120. Use offset=121 to continue.)",
+      ]) {
+        assert.deepStrictEqual(yield* readOf(`# Rules\n${footer}`), ["read_partial"], footer);
+      }
+      // The plugin's own flag, set when the marker fell outside its 4 KB slice.
+      assert.deepStrictEqual(yield* readOf("# Rules\n", { exit: undefined, truncated: true }), [
+        "read_partial",
+      ]);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 

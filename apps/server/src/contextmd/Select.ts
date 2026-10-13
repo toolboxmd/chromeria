@@ -131,7 +131,7 @@ const outputText = (value: unknown): string => {
 };
 
 const denyText = (e: Store.Entry) =>
-  e.target ? `${e.text}\nRead ${e.target}, then run the same call again.` : e.text;
+  e.target ? `${e.text}\nRead ${e.target} in full, then run the same call again.` : e.text;
 
 /** A path relative to the repository holding it, else the absolute path. */
 const repoRelative = Effect.fn("contextmd.repoRelative")(function* (
@@ -201,7 +201,8 @@ export const select = Effect.fn("contextmd.select")(function* (
   // state holds it until the projected command item shows exit code 0.
   const momentReads =
     kind === "tool_result" || kind === "tool_failure"
-      ? yield* reads(tool ?? "", toolInput, cwd, harness.shellTools)
+      ? // The whole event goes in: harnesses keep output and truncation marks in different fields.
+        yield* reads(tool ?? "", toolInput, cwd, harness.shellTools, raw)
       : [];
 
   if (kind === "session_start") {

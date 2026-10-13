@@ -30,6 +30,8 @@ export const DENY_BUDGET_BYTES = 2_000;
 const DENY_CAP = 3;
 /** A denied call is projected within seconds; after this a deny without its item stays unproven. */
 const CHECK_GIVE_UP_SECONDS = 60;
+/** Read kinds that lift a pointer rule: the agent saw the whole target (#225). */
+const FULL_READS: ReadonlySet<string> = new Set(["read_tool", "shell_full"]);
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (harness TEXT NOT NULL, session TEXT NOT NULL, epoch INTEGER NOT NULL,
@@ -761,7 +763,7 @@ export class ServingState {
     }
   }
 
-  /** Lift every pointer rule waiting on this file in this session and epoch. */
+  /** Lift every pointer rule waiting on this file in this session and epoch, on a full read. */
   private liftOnRead(
     harness: string,
     session: string,
@@ -770,6 +772,7 @@ export class ServingState {
     momentId: number,
     now: number,
   ) {
+    if (!FULL_READS.has(read.kind)) return;
     const waiting = this.all<{
       entry: string;
       version: string;
@@ -872,7 +875,8 @@ export class ServingState {
   private wasRead(harness: string, session: string, epoch: number, target: string) {
     return (
       this.get(
-        "SELECT 1 FROM reads WHERE harness = ? AND session = ? AND epoch = ? AND path = ? AND pending_tool_use_id IS NULL",
+        `SELECT 1 FROM reads WHERE harness = ? AND session = ? AND epoch = ? AND path = ?
+         AND pending_tool_use_id IS NULL AND kind IN (${[...FULL_READS].map((k) => `'${k}'`).join(", ")})`,
         harness,
         session,
         epoch,
