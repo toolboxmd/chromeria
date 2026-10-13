@@ -17,8 +17,12 @@
  */
 import * as NodeHttp from "node:http";
 
-/** How long a moment waits for a score it needs now (the hook gives up after one second). */
-export const WAIT_MS = 650;
+/**
+ * How long a moment waits for a score it needs now. The hook's cut-off is 2 s while Cue is new
+ * ("first we make it work, then we make it better"; user, 2026-10-13, #248), so the reply still
+ * leaves room for the moment's own work; the faster aim is #248.
+ */
+export const WAIT_MS = 1500;
 /** How long a tool result waits for the score its pre-tool moment started. */
 export const COLLECT_MS = 300;
 /** The service drops a request still queued after this. */

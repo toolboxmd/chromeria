@@ -8,6 +8,7 @@ import * as NodeSqlite from "node:sqlite";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -165,7 +166,11 @@ const writeCue = (dir: string) => {
 };
 
 /** A fake Cue service: records each scoring request and answers with `scores`. */
-const fakeCue = (scores: Record<string, number>, refuse?: { status: number; error: string }) =>
+const fakeCue = (
+  scores: Record<string, number>,
+  refuse?: { status: number; error: string },
+  delayMs = 0,
+) =>
   Effect.acquireRelease(
     Effect.promise(
       () =>
@@ -184,8 +189,15 @@ const fakeCue = (scores: Record<string, number>, refuse?: { status: number; erro
                   res.end(JSON.stringify({ error: refuse.error }));
                   return;
                 }
-                res.writeHead(200, { "content-type": "application/json" });
-                res.end(JSON.stringify({ adapter: "fake-adapter", threshold: 0.5, scores, ms: 5 }));
+                const answer = () => {
+                  res.writeHead(200, { "content-type": "application/json" });
+                  res.end(
+                    JSON.stringify({ adapter: "fake-adapter", threshold: 0.5, scores, ms: 5 }),
+                  );
+                };
+                // @effect-diagnostics-next-line globalTimers:off - a plain Node test server answering late.
+                if (req.url === "/score" && delayMs > 0) setTimeout(answer, delayMs);
+                else answer();
               });
             });
             server.listen(0, "127.0.0.1", () => {
@@ -696,6 +708,34 @@ describe("contextmd routes", () => {
         candidates: [{ entry: "agentsmd-research", outcome: "reserved", score: 2.5 }],
       });
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live(
+    "waits long enough for a slow Cue score at the user message, inside the 2 s cut-off (#248)",
+    () =>
+      Effect.gen(function* () {
+        // A 1 s score timed out at the old 650 ms wait; the cut-off is now 2 s while Cue is new.
+        const cue = yield* fakeCue({ "agentsmd-research": 2.5 }, undefined, 1000);
+        const s = yield* serve(
+          Effect.all([
+            insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
+            projectUserMessage("How does the projector handle retries?"),
+          ]).pipe(Effect.asVoid),
+          { cueUrl: cue.url },
+        );
+        const started = yield* Clock.currentTimeMillis;
+        const r = yield* s.moment({
+          hook_event_name: "UserPromptSubmit",
+          session_id: servedSession,
+          cwd: "/tmp",
+          prompt: "How does the projector handle retries?",
+        });
+        assert.isBelow((yield* Clock.currentTimeMillis) - started, 2000);
+        assert.strictEqual(r.status, 200);
+        assert.deepStrictEqual(s.cueLog().moments, [
+          { kind: "user_message", cue_status: "ok", cue_adapter: "fake-adapter" },
+        ]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.live("starts Cue before a tool call and serves its fire with the tool result", () =>
