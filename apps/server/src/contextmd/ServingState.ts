@@ -1200,8 +1200,11 @@ export class ServingState {
         if (out.overLimit(text)) {
           // A pointer's deny opens with "Read <target> in full", which must never be cut (#229):
           // cut what follows, then give up the head; if that still cannot fit, deny nothing.
-          const keep = text.indexOf(" in full");
-          const readLine = c.rule === "pointer" && keep >= 0 ? text.slice(0, keep + 8) : "";
+          // Built from the entry's own target, never found by searching the text: a path may
+          // itself contain " in full".
+          const opening =
+            c.rule === "pointer" && c.target !== null ? `Read ${c.target} in full` : "";
+          const readLine = text.startsWith(opening) ? opening : "";
           if (utf8(readLine) > out.room()) out.dropHead();
           if (utf8(readLine) > out.room()) {
             this.insertCandidate(momentId, {

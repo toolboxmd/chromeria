@@ -548,6 +548,14 @@ describe("ServingState deny length, long targets (#229, Sol review)", () => {
     assert.include(reason, `Read ${target} in full`);
   });
 
+  it("protects the whole target even when the path itself contains ' in full' (Sol review)", () => {
+    const h = makeHarness();
+    const target = `/Users/u/dev/work in full/${"a".repeat(170)}/procedures/version-control/index.md`; // 232 bytes
+    const reason = h.text(h.fire({ kind: "pre_tool", profile, candidates: [pointerTo(target)] }))!;
+    assert.isAtMost(Buffer.byteLength(reason), 256);
+    assert.include(reason, `Read ${target} in full`);
+  });
+
   it("denies nothing when even the read line cannot fit, and says why", () => {
     const h = makeHarness();
     const target = `/Users/u/dev/${"a".repeat(240)}/index.md`;
