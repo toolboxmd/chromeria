@@ -1,4 +1,6 @@
 import {
+  FEATURE_MAP_WS_METHODS,
+  type FeatureMapReadInput,
   ISSUE_LINKS_WS_METHODS,
   type IssueCommentInput,
   type IssueListInput,
@@ -18,6 +20,7 @@ export function makeIssueRpcHandlers(issues: IssueService["Service"]) {
     [ISSUE_WS_METHODS.issuesStates]: (input: IssueStatesInput) => issues.states(input),
     [ISSUE_WS_METHODS.issuesComment]: (input: IssueCommentInput) => issues.comment(input),
     [ISSUE_WS_METHODS.issuesSetState]: (input: IssueSetStateInput) => issues.setState(input),
+    [FEATURE_MAP_WS_METHODS.read]: (input: FeatureMapReadInput) => issues.readFeatureMap(input),
   };
 }
 
@@ -28,6 +31,7 @@ export const ISSUE_RPC_AGGREGATES = {
   [ISSUE_WS_METHODS.issuesStates]: "issues",
   [ISSUE_WS_METHODS.issuesComment]: "issues",
   [ISSUE_WS_METHODS.issuesSetState]: "issues",
+  [FEATURE_MAP_WS_METHODS.read]: "featureMap",
   [ISSUE_LINKS_WS_METHODS.forThread]: "issueLinks",
   [ISSUE_LINKS_WS_METHODS.threadsForIssues]: "issueLinks",
   [ISSUE_LINKS_WS_METHODS.link]: "issueLinks",

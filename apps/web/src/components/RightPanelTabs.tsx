@@ -31,6 +31,7 @@ import { horizontalListSortingStrategy, SortableContext, useSortable } from "@dn
 import { CSS } from "@dnd-kit/utilities";
 import {
   CircleDot,
+  Network,
   Smartphone,
   ChevronDown,
   ChevronLeft,
@@ -148,6 +149,8 @@ interface RightPanelTabsProps {
   onAddPullRequest: () => void;
   onAddPullRequests: () => void;
   onAddDevice: () => void;
+  /** Fork: the project's feature map (toolboxmd/chromeria#235); absent where there is none. */
+  onAddMap?: () => void;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -155,6 +158,7 @@ interface RightPanelTabsProps {
   pullRequestAvailable: boolean;
   pullRequestsAvailable: boolean;
   deviceAvailable: boolean;
+  mapAvailable?: boolean;
   pullRequestStatusSeeds?: Readonly<Record<string, PullRequestTabStatusSeed>>;
   children: ReactNode;
 }
@@ -183,6 +187,7 @@ const SURFACE_DISABLED_REASONS = {
   pullRequest: "This thread's branch has no pull request yet.",
   pullRequests: "No linked pull requests are available for this thread.",
   device: "Devices are only available from a thread.",
+  map: "The map is only available for a GitHub project on a server that reads it.",
 } as const;
 
 /** Overlays that must win over the launcher's letter shortcuts. */
@@ -206,6 +211,7 @@ const SURFACE_UNAVAILABLE_HINTS = {
   pullRequest: "No pull request on this branch yet.",
   pullRequests: "No linked pull requests available.",
   device: "Available from a thread.",
+  map: "Available for GitHub projects.",
 } as const;
 
 type TabContextMenuAction =
@@ -346,6 +352,8 @@ function RightPanelEmptyState(props: {
   onAddPullRequest: () => void;
   onAddPullRequests: () => void;
   onAddDevice: () => void;
+  /** Fork: the project's feature map (toolboxmd/chromeria#235); absent where there is none. */
+  onAddMap?: () => void;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -353,6 +361,7 @@ function RightPanelEmptyState(props: {
   pullRequestAvailable: boolean;
   pullRequestsAvailable: boolean;
   deviceAvailable: boolean;
+  mapAvailable?: boolean;
 }) {
   // -1 means no highlight: it only appears on hover or arrow use.
   const [highlight, setHighlight] = useState(-1);
@@ -415,6 +424,15 @@ function RightPanelEmptyState(props: {
       available: props.deviceAvailable,
       disabledReason: SURFACE_UNAVAILABLE_HINTS.device,
       onClick: props.onAddDevice,
+    },
+    {
+      // Fork: the project's feature map (toolboxmd/chromeria#235).
+      label: "Map",
+      icon: Network,
+      shortcut: "A",
+      available: props.mapAvailable === true && props.onAddMap !== undefined,
+      disabledReason: SURFACE_UNAVAILABLE_HINTS.map,
+      onClick: () => props.onAddMap?.(),
     },
   ] as const;
 
@@ -629,6 +647,8 @@ function surfaceTitle(
       const issue = parseIssueUrl(surface.url);
       return issue === null ? "Issue" : `#${issue.number}`;
     }
+    case "map":
+      return "Map";
     case "device":
       return surface.title ?? surface.target?.name ?? "Device";
     case "preview": {
@@ -714,6 +734,8 @@ function SurfaceIcon({
       return <PullRequestGlyph.link className="size-3 shrink-0" />;
     case "issue":
       return <CircleDot className="size-3 shrink-0" />;
+    case "map":
+      return <Network className="size-3 shrink-0" />;
     case "device":
       return surface.target?.platform === "ios" ? (
         <AppleIcon className="size-3 shrink-0" />
@@ -1004,6 +1026,15 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       available: props.deviceAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.device,
       onClick: props.onAddDevice,
+    },
+    {
+      // Fork: the project's feature map (toolboxmd/chromeria#235).
+      label: "Map",
+      icon: Network,
+      shortcut: "A",
+      available: props.mapAvailable === true && props.onAddMap !== undefined,
+      disabledReason: SURFACE_DISABLED_REASONS.map,
+      onClick: () => props.onAddMap?.(),
     },
   ] as const;
 
@@ -1497,6 +1528,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddPullRequest={props.onAddPullRequest}
             onAddPullRequests={props.onAddPullRequests}
             onAddDevice={props.onAddDevice}
+            {...(props.onAddMap === undefined ? {} : { onAddMap: props.onAddMap })}
             browserAvailable={props.browserAvailable}
             terminalAvailable={props.terminalAvailable}
             diffAvailable={props.diffAvailable}
@@ -1504,6 +1536,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             pullRequestAvailable={props.pullRequestAvailable}
             pullRequestsAvailable={props.pullRequestsAvailable}
             deviceAvailable={props.deviceAvailable}
+            mapAvailable={props.mapAvailable === true}
           />
         ) : (
           props.children
