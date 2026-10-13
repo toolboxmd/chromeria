@@ -1,14 +1,15 @@
 /**
  * Exact keys from structured tool input: command words, paths and error text.
  *
- * Ported unchanged from ContextMD's `keys.py` (PR #23). A shell command is not
- * parsed. It is cut into words at whitespace, quotes, backslashes and shell
- * punctuation, and a command key matches wherever its words appear in that
- * order, including inside quotes, heredocs, `bash -c` strings and
- * substitutions. The first word of a key also matches an executable path
- * (`/usr/bin/git`). Words that only appear as data therefore also match: a rare
- * false deny costs one model round and still delivers the rule, while modeling
- * shell syntax missed commands that ran.
+ * A shell command is not parsed in general. Command keys match on the parts that
+ * run (`visibleCommand`, #232): quoted strings and heredoc bodies are only
+ * mentions and are skipped, while `sh -c` strings, unescaped `$(...)` and
+ * backticks inside double quotes or an unquoted-marker heredoc, and a quoted
+ * command word still count. The remaining text is cut into words at
+ * whitespace and shell punctuation, and a key matches where its words appear
+ * in order; the first word may be an executable path (`/usr/bin/git`), and an
+ * unquoted argument still matches a bare key. Path keys see every word (#234).
+ * contextmd's `keys.py` follows the same rule.
  */
 
 const WORD_BREAK = /[\s;&|()<>`$"'\\{}]+/u;
