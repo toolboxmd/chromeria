@@ -20,9 +20,14 @@
  *   denies the next matching call passes, logged `not_read_capped`.
  * - Compaction starts a new context epoch, which re-arms denies and resets
  *   dedupe.
+ * - Cue (`intent`) candidates are scored on the GPU serving host. Each is logged with its score; one at
+ *   or above the adapter's threshold is served like any other match, except in a holdout session (one in
+ *   ten), where it is logged `holdout` and never charged or printed. Each moment records Cue's status,
+ *   adapter and latency, so an outage's cost is countable.
  */
 import type * as NodeSqlite from "node:sqlite";
 
+import type { CueReply } from "./Cue.ts";
 import type { Candidate, Selection } from "./Selection.ts";
 
 export const SERVE_BUDGET_BYTES = 8_000;
@@ -74,6 +79,22 @@ CREATE INDEX IF NOT EXISTS candidates_entry ON candidates(entry, served_at);
 CREATE TABLE IF NOT EXISTS heartbeats (at REAL PRIMARY KEY);
 `;
 
+/** Columns added after a table first shipped: created on open when an older state file lacks them. */
+const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, type: string]> = [
+  ["moments", "cue_status", "TEXT"],
+  ["moments", "cue_ms", "REAL"],
+  ["moments", "cue_wait_ms", "REAL"],
+  ["moments", "cue_json", "TEXT"],
+  ["carries", "matcher", "TEXT"],
+  ["carries", "score", "REAL"],
+];
+
+/** Cue's part of one moment: its reply, and the candidate each scored entry would be. */
+export interface CueMoment {
+  readonly reply: CueReply;
+  readonly candidates: ReadonlyArray<Candidate>;
+}
+
 /** How the moment joined to Chromeria: a running run, or why it did not. */
 export type RunJoin =
   | { readonly type: "run"; readonly runId: string; readonly threadId: string }
@@ -87,6 +108,8 @@ export interface MomentInput {
   readonly join: RunJoin;
   /** Projected exit status of earlier calls whose reads are pending (Codex). */
   readonly readChecks?: ReadonlyArray<ReadCheck>;
+  /** Cue's reply for this moment, when Cue was asked. */
+  readonly cue?: CueMoment | null;
   readonly now: number;
   readonly startedAt: number;
 }
@@ -162,6 +185,7 @@ interface CandidateRow {
   readonly stage?: string | null;
   readonly outcome: string;
   readonly reason?: string | null;
+  readonly score?: number | null;
   readonly bytes?: number | null;
   readonly extra?: Record<string, unknown>;
 }
@@ -230,6 +254,14 @@ export class ServingState {
     db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA busy_timeout = 100");
     db.exec(SCHEMA);
+    for (const [table, column, type] of ADDED_COLUMNS) {
+      const has = (
+        db.prepare(`SELECT name FROM pragma_table_info('${table}')`).all() as Array<{
+          name: string;
+        }>
+      ).some((c) => c.name === column);
+      if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
   }
 
   private tx<A>(f: () => A): A {
@@ -530,11 +562,13 @@ export class ServingState {
     epoch?: number | null;
     holdout?: boolean | null;
     owners?: Record<string, string | null>;
+    cue?: CueReply | null;
   }) {
+    const cue = m.cue ?? null;
     const result = this.run(
       `INSERT INTO moments (received_at, harness, kind, session, thread_id, run_id, tool_use_id, epoch, holdout,
-         status, reason, owners_json, cue_adapter, server_ms, delivery)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+         status, reason, owners_json, cue_adapter, server_ms, delivery, cue_status, cue_ms, cue_wait_ms, cue_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       m.now,
       m.harness,
       m.kind ?? null,
@@ -547,8 +581,13 @@ export class ServingState {
       m.status,
       m.reason ?? null,
       m.owners ? JSON.stringify(m.owners) : null,
+      cue?.adapter ?? null,
       m.serverMs,
       m.delivery,
+      cue?.status ?? null,
+      cue?.ms ?? null,
+      cue?.waitMs ?? null,
+      cue?.detail ? JSON.stringify(cue.detail) : null,
     );
     return Number(result.lastInsertRowid);
   }
@@ -556,7 +595,7 @@ export class ServingState {
   private insertCandidate(momentId: number, c: CandidateRow) {
     const result = this.run(
       `INSERT INTO candidates (moment_id, matcher, entry, version, key, seam, stage, outcome, reason, score, bytes, extra_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       momentId,
       c.matcher,
       c.entry ?? null,
@@ -566,6 +605,7 @@ export class ServingState {
       c.stage ?? null,
       c.outcome,
       c.reason ?? null,
+      c.score ?? null,
       c.bytes ?? null,
       c.extra ? JSON.stringify(c.extra) : null,
     );
@@ -621,9 +661,11 @@ export class ServingState {
     // A delivery id decided while this moment was selecting gets that same reply.
     const replay = this.replayed(input.delivery);
     if (replay !== undefined) return replay;
-    const { harness, selection: sel, now } = input;
+    const { harness, now } = input;
+    let sel = input.selection;
     const m = sel.moment;
     const epoch = this.epochFor(harness, sel);
+    const holdout = isHoldout(harness, m.session);
     const joined = input.join.type === "run" ? input.join : null;
     const status = input.join.type === "run" ? "ok" : input.join.type;
     const momentId = this.insertMoment({
@@ -638,8 +680,9 @@ export class ServingState {
       runId: joined?.runId ?? null,
       toolUseId: m.tool_use_id,
       epoch,
-      holdout: isHoldout(harness, m.session),
+      holdout,
       owners: sel.owners,
+      cue: input.cue?.reply ?? null,
     });
     for (const note of sel.notes) {
       this.insertCandidate(momentId, {
@@ -674,6 +717,8 @@ export class ServingState {
       }
       return finish({ status: 204 });
     }
+    const fires = this.cueFires(input.cue ?? null, holdout, momentId);
+    if (fires.length > 0) sel = { ...sel, candidates: [...sel.candidates, ...fires] };
     this.expireCarries(harness, m.session, joined.runId);
     this.applyReadChecks(harness, m.session, input.readChecks ?? [], momentId, now);
     if ((m.kind === "tool_result" || m.kind === "tool_failure") && m.failed !== true) {
@@ -687,9 +732,11 @@ export class ServingState {
         return finish(
           ...this.preTool(harness, sel, epoch, momentId, joined.runId, input.delivery, now),
         );
+      case "user_message":
       case "tool_result":
       case "tool_failure": {
         const after = this.dropAfterAction(sel, momentId);
+        if (after.candidates.length === 0) return finish({ status: 204 });
         if (!delivering && after.profile.carry_to !== null) {
           this.carry(harness, after, epoch, momentId, joined.runId, now);
           return finish({ status: 204 });
@@ -726,7 +773,40 @@ export class ServingState {
   }
 
   private base(c: Candidate) {
-    return { matcher: c.matcher, entry: c.entry, version: c.version, key: c.key };
+    return {
+      matcher: c.matcher,
+      entry: c.entry,
+      version: c.version,
+      key: c.key,
+      score: c.score ?? null,
+    };
+  }
+
+  /**
+   * Log every entry Cue scored and return the ones to serve: at or above the adapter's threshold, outside
+   * the holdout. A holdout session's would-fires are logged `holdout` and go no further.
+   */
+  private cueFires(cue: CueMoment | null, holdout: boolean, momentId: number): Candidate[] {
+    const reply = cue?.reply;
+    if (cue === null || reply === undefined || reply.status !== "ok") return [];
+    const threshold = reply.threshold ?? Number.POSITIVE_INFINITY;
+    const fires: Candidate[] = [];
+    for (const c of cue.candidates) {
+      const score = reply.scores?.[c.entry];
+      if (score === undefined) {
+        this.insertCandidate(momentId, { ...this.base(c), outcome: "not_scored" });
+        continue;
+      }
+      const scored = { ...c, score };
+      if (score < threshold) {
+        this.insertCandidate(momentId, { ...this.base(scored), outcome: "below_threshold" });
+      } else if (holdout) {
+        this.insertCandidate(momentId, { ...this.base(scored), outcome: "holdout" });
+      } else {
+        fires.push(scored);
+      }
+    }
+    return fires;
   }
 
   /**
@@ -1258,8 +1338,9 @@ export class ServingState {
         outcome: "carried",
       });
       this.run(
-        `INSERT INTO carries (harness, session, run_id, entry, version, text, candidate_id, state, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'waiting', ?)`,
+        `INSERT INTO carries (harness, session, run_id, entry, version, text, candidate_id, state, created_at,
+           matcher, score)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'waiting', ?, ?, ?)`,
         harness,
         sel.moment.session,
         runId,
@@ -1268,6 +1349,8 @@ export class ServingState {
         c.text,
         id,
         now,
+        c.matcher,
+        c.score ?? null,
       );
     }
   }
@@ -1293,8 +1376,15 @@ export class ServingState {
     runId: string,
     delivery: string,
   ): [Reply, { runId: string; serve: number; deny: number }?] {
-    const waiting = this.all<{ id: number; entry: string; version: string; text: string }>(
-      "SELECT id, entry, version, text FROM carries WHERE harness = ? AND session = ? AND run_id = ? AND state = 'waiting' ORDER BY id",
+    const waiting = this.all<{
+      id: number;
+      entry: string;
+      version: string;
+      text: string;
+      matcher: string | null;
+      score: number | null;
+    }>(
+      "SELECT id, entry, version, text, matcher, score FROM carries WHERE harness = ? AND session = ? AND run_id = ? AND state = 'waiting' ORDER BY id",
       harness,
       sel.moment.session,
       runId,
@@ -1308,7 +1398,12 @@ export class ServingState {
     );
     const claims: Claim[] = [];
     for (const w of waiting) {
-      const base = { matcher: "exact_key", entry: w.entry, version: w.version };
+      const base = {
+        matcher: w.matcher ?? "exact_key",
+        entry: w.entry,
+        version: w.version,
+        score: w.score,
+      };
       if (!out.fits(w.text)) {
         this.insertCandidate(momentId, {
           ...base,
