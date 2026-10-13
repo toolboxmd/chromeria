@@ -514,6 +514,46 @@ describe("ServingState deny evidence (two hooks deny one call)", () => {
     );
   });
 
+  it("counts a deny Grok showed cut as shown and truncated, not hidden (#228)", () => {
+    const GROK_EVIDENCE: Profile = { ...GROK, deny_evidence: "projection" };
+    // Grok shows a hook's deny reason up to 256 characters, then `… [+N chars]`.
+    const grokShown = (text: string) =>
+      [
+        {
+          type: "content",
+          content: {
+            type: "text",
+            text: `Hook denied: ${text.slice(0, 256)}… [+${text.length - 256} chars]`,
+          },
+        },
+      ].flatMap((p) => [p.content.text]);
+    const rule = inline(
+      "long",
+      `Commits need the Refs trailer. ${"Explain why in the body. ".repeat(12)}`,
+    );
+    const denies = () => {
+      const r = h.fire({ kind: "pre_tool", profile: GROK_EVIDENCE, candidates: [rule] });
+      for (const c of h.state.pendingChecks("grok", "s1")) {
+        h.state.applyChecks(
+          [{ claim: c.claim, output: grokShown(`deny-head\n\n${rule.text}`) }],
+          h.now(),
+        );
+      }
+      return h.decision(r);
+    };
+    const h = makeHarness();
+    assert.strictEqual(denies(), "deny");
+    assert.deepStrictEqual(h.outcomes("long"), ["truncated"]);
+    // Cut, so not read: the inline rule stays armed, and each cut deny counts toward the cap.
+    assert.strictEqual(denies(), "deny");
+    assert.strictEqual(denies(), "deny");
+    assert.strictEqual(
+      h.fire({ kind: "pre_tool", profile: GROK_EVIDENCE, candidates: [rule] }).status,
+      204,
+    );
+    assert.notInclude(h.outcomes("long"), "hidden");
+  });
+
   it("needs the whole rule: a rule sharing a prefix with the shown one stays armed", () => {
     const h = makeHarness();
     // Both rules share far more than a short probe: the first 70 characters are equal.
