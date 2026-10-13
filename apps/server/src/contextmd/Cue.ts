@@ -8,6 +8,8 @@
  * - A connect failure marks the service unavailable for this whole environment (the machine); later moments
  *   skip Cue (`not_called`) until a probe every `PROBE_SECONDS` sees `/health` answer. A slow reply is
  *   `timeout` for that call only.
+ * - A 4xx reply is `rejected`: the service refused this request (its reason is logged), the service stays
+ *   available.
  * - A collect with no request for that call is `lost` (a restart dropped it), or `not_called` while the
  *   service is unavailable.
  *
@@ -30,9 +32,11 @@ export type CueStatus =
   | "ok"
   | "started"
   | "not_called"
+  | "no_window"
   | "timeout"
   | "connect_failed"
   | "overload"
+  | "rejected"
   | "lost"
   | "error";
 
@@ -140,6 +144,17 @@ interface Pending {
 
 const parseScore = (status: number, body: string, ms: number): CueReply => {
   if (status === 503) return { status: "overload", ms, waitMs: null };
+  if (status >= 400 && status < 500) {
+    let reason = "";
+    try {
+      const error = (JSON.parse(body) as Record<string, unknown>)["error"];
+      // The service names the problem (`NoMessage: no user message`); keep it short, it is not window text.
+      reason = typeof error === "string" ? error.slice(0, 120) : "";
+    } catch {
+      reason = "";
+    }
+    return { status: "rejected", ms, waitMs: null, detail: { http: status, error: reason } };
+  }
   if (status !== 200) return { status: "error", ms, waitMs: null, detail: { http: status } };
   try {
     const out = JSON.parse(body) as Record<string, unknown>;
@@ -290,6 +305,7 @@ export class CueClient {
 
 /** A projected turn item, as the serving module reads it for the window. */
 export interface TranscriptRow {
+  readonly ordinal: number;
   readonly type: string;
   readonly payload_json: string;
 }

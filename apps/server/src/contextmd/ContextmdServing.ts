@@ -60,6 +60,10 @@ import {
 } from "./ServingState.ts";
 
 export const MAX_BODY_BYTES = 1_048_576;
+/** Cue's window reads the last user messages, the replies between them and the work since the last one. */
+const TRANSCRIPT_USERS = 6;
+const TRANSCRIPT_REPLIES = 100;
+const TRANSCRIPT_SINCE = 100;
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
 export interface MomentRequest {
@@ -306,14 +310,34 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  /**
+   * The thread's items Cue's window is built from, oldest first. The window needs the last few user
+   * messages and the agent's replies between them, then the agent's work since the current message, so
+   * each part is read with its own bound: however long a turn runs, its user message stays in.
+   */
   const transcript = (threadId: string) =>
-    sql<TranscriptRow>`
-      SELECT type, payload_json FROM orchestration_v2_projection_turn_items
-      WHERE thread_id = ${threadId} AND type IN ('user_message', 'assistant_message', 'command_execution',
-        'dynamic_tool', 'file_change', 'file_search', 'web_search')
-      ORDER BY ordinal DESC LIMIT 200`.pipe(
-      Effect.map((rows) => transcriptItems(rows.toReversed())),
-    );
+    Effect.gen(function* () {
+      const users = yield* sql<TranscriptRow>`
+        SELECT ordinal, type, payload_json FROM orchestration_v2_projection_turn_items
+        WHERE thread_id = ${threadId} AND type = 'user_message'
+        ORDER BY ordinal DESC LIMIT ${TRANSCRIPT_USERS}`;
+      if (users.length === 0) return [];
+      const first = users.at(-1)!.ordinal;
+      const current = users[0]!.ordinal;
+      const replies = yield* sql<TranscriptRow>`
+        SELECT ordinal, type, payload_json FROM orchestration_v2_projection_turn_items
+        WHERE thread_id = ${threadId} AND type = 'assistant_message'
+          AND ordinal > ${first} AND ordinal < ${current}
+        ORDER BY ordinal DESC LIMIT ${TRANSCRIPT_REPLIES}`;
+      const since = yield* sql<TranscriptRow>`
+        SELECT ordinal, type, payload_json FROM orchestration_v2_projection_turn_items
+        WHERE thread_id = ${threadId} AND ordinal > ${current} AND type IN ('assistant_message',
+          'command_execution', 'dynamic_tool', 'file_change', 'file_search', 'web_search')
+        ORDER BY ordinal DESC LIMIT ${TRANSCRIPT_SINCE}`;
+      return transcriptItems(
+        [...users, ...replies, ...since].toSorted((a, b) => a.ordinal - b.ordinal),
+      );
+    });
 
   /** Ask Cue about this moment, when Cue is configured and the moment is one it scores at. */
   const askCue = (
@@ -347,13 +371,17 @@ const make = Effect.gen(function* () {
       let reply: CueReply;
       if (m.kind === "tool_result") {
         reply = yield* Effect.promise(() => client.collect(key, COLLECT_MS));
-      } else if (m.kind === "pre_tool") {
-        const req = yield* request(m.kind);
-        reply = client.start(key, req);
       } else {
         if (m.kind === "tool_failure") client.drop(key);
         const req = yield* request(m.kind);
-        reply = yield* Effect.promise(() => client.score(req, WAIT_MS));
+        if (!req.items.some(([kind]) => kind === "user")) {
+          // Nothing to score: the thread has no user message (a session started outside Chromeria).
+          reply = { status: "no_window", ms: null, waitMs: 0 };
+        } else if (m.kind === "pre_tool") {
+          reply = client.start(key, req);
+        } else {
+          reply = yield* Effect.promise(() => client.score(req, WAIT_MS));
+        }
       }
       return {
         moment: {

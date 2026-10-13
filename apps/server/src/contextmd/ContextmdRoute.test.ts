@@ -165,7 +165,7 @@ const writeCue = (dir: string) => {
 };
 
 /** A fake Cue service: records each scoring request and answers with `scores`. */
-const fakeCue = (scores: Record<string, number>) =>
+const fakeCue = (scores: Record<string, number>, refuse?: { status: number; error: string }) =>
   Effect.acquireRelease(
     Effect.promise(
       () =>
@@ -178,6 +178,11 @@ const fakeCue = (scores: Record<string, number>) =>
               req.on("end", () => {
                 if (req.url === "/score") {
                   requests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+                }
+                if (refuse !== undefined && req.url === "/score") {
+                  res.writeHead(refuse.status, { "content-type": "application/json" });
+                  res.end(JSON.stringify({ error: refuse.error }));
+                  return;
                 }
                 res.writeHead(200, { "content-type": "application/json" });
                 res.end(JSON.stringify({ adapter: "fake-adapter", threshold: 0.5, scores, ms: 5 }));
@@ -348,6 +353,22 @@ const serve = <R>(
     };
     return { moment, settle, log, store, chunked, outcomes, database, cueLog };
   });
+
+/** Many tool calls in the thread, each a projected command item, at consecutive ordinals. */
+const projectToolCalls = (from: number, count: number) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    for (let k = 0; k < count; k++) {
+      const ordinal = from + k;
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_turn_items (
+          turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json
+        ) VALUES (
+          ${`turn-item:tool:${ordinal}`}, 'thread-of-run-1', 'run-1', ${ordinal}, 'command_execution',
+          'completed', '', ${JSON.stringify({ type: "command_execution", input: `ls ${ordinal}` })}
+        )`;
+    }
+  }).pipe(Effect.orDie);
 
 /** A thread's user message as Chromeria projects it. */
 const projectUserMessage = (text: string, ordinal = 1) =>
@@ -727,6 +748,75 @@ describe("contextmd routes", () => {
         s.cueLog().moments.map((m) => m.cue_status),
         ["connect_failed", "not_called", "not_called"],
       );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("keeps the current user message in Cue's window after hundreds of tool calls", () =>
+    Effect.gen(function* () {
+      const cue = yield* fakeCue({ "agentsmd-research": 2.5 });
+      const s = yield* serve(
+        Effect.all([
+          insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
+          projectUserMessage("Earlier request", 1),
+          projectUserMessage("Find out why the projector retries", 2),
+          projectToolCalls(3, 450),
+        ]).pipe(Effect.asVoid),
+        { cueUrl: cue.url },
+      );
+      yield* s.moment(claude("PreToolUse", servedSession, "echo a"));
+      yield* s.moment(claude("PostToolUse", servedSession, "echo a"));
+      assert.strictEqual(cue.requests.length, 1);
+      const items = cue.requests[0]!["items"] as Array<[string, string]>;
+      const users = items.filter(([kind]) => kind === "user").map(([, text]) => text);
+      assert.deepStrictEqual(users, ["Earlier request", "Find out why the projector retries"]);
+      // The tool tail is bounded and newest-last.
+      const tools = items.filter(([kind]) => kind === "tool");
+      assert.isAtMost(tools.length, 100);
+      assert.strictEqual(tools.at(-1)![1], "command_execution: ls 452");
+      assert.strictEqual(items.indexOf(items.find(([k]) => k === "tool")!), 2);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live(
+    "logs a request the Cue service refuses as rejected, with its reason, and keeps exact keys",
+    () =>
+      Effect.gen(function* () {
+        const cue = yield* fakeCue({}, { status: 400, error: "NoMessage: no user message" });
+        const s = yield* serve(
+          Effect.all([
+            insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
+            projectUserMessage("Ship it"),
+          ]).pipe(Effect.asVoid),
+          { cueUrl: cue.url },
+        );
+        yield* s.moment(claude("PreToolUse", servedSession, "echo a"));
+        const result = yield* s.moment(claude("PostToolUse", servedSession, "echo a"));
+        assert.include(result.body, "rule a");
+        assert.deepStrictEqual(
+          s.cueLog().moments.map((m) => m.cue_status),
+          ["started", "rejected"],
+        );
+        // A refusal is about this request: the next moment still asks Cue.
+        yield* s.moment({
+          hook_event_name: "UserPromptSubmit",
+          session_id: servedSession,
+          cwd: "/tmp",
+        });
+        assert.strictEqual(s.cueLog().moments.at(-1)!.cue_status, "rejected");
+        assert.strictEqual(cue.requests.length, 2);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("does not ask Cue when the thread has no user message", () =>
+    Effect.gen(function* () {
+      const cue = yield* fakeCue({ "agentsmd-research": 2.5 });
+      const s = yield* serve(
+        insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
+        { cueUrl: cue.url },
+      );
+      yield* s.moment(claude("PreToolUse", servedSession, "echo a"));
+      assert.strictEqual(s.cueLog().moments[0]!.cue_status, "no_window");
+      assert.strictEqual(cue.requests.length, 0);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

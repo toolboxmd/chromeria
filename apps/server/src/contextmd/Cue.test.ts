@@ -84,6 +84,19 @@ describe("Cue client", () => {
     assert.isTrue(c.isAvailable());
   });
 
+  it("logs a refused request as rejected with the service's reason, and keeps the service available", async () => {
+    const { transport } = scripted([
+      { kind: "reply", status: 400, body: JSON.stringify({ error: "NoMessage: no user message" }) },
+      { kind: "reply", status: 200, body: OK },
+    ]);
+    const c = new CueClient(transport);
+    const r = await c.score(REQ);
+    assert.strictEqual(r.status, "rejected");
+    assert.deepStrictEqual(r.detail, { http: 400, error: "NoMessage: no user message" });
+    assert.isTrue(c.isAvailable());
+    assert.strictEqual((await c.score(REQ)).status, "ok");
+  });
+
   it("collects what a pre-tool moment started, once, and calls a missing start lost", async () => {
     let answer!: (r: Awaited<ReturnType<Transport>>) => void;
     const pending = new Promise<Awaited<ReturnType<Transport>>>((resolve) => (answer = resolve));
@@ -178,7 +191,9 @@ describe("Cue HTTP transport", () => {
 
 describe("transcript items", () => {
   it("keeps user and agent text and one short line per tool call, in order", () => {
+    let ordinal = 0;
     const row = (type: string, payload: Record<string, unknown>) => ({
+      ordinal: ++ordinal,
       type,
       payload_json: JSON.stringify(payload),
     });
@@ -190,7 +205,7 @@ describe("transcript items", () => {
       row("file_change", { fileName: "/repo/a.ts", diffStr: "huge diff" }),
       row("assistant_message", { text: "Done." }),
       row("reasoning", { text: "hidden" }),
-      { type: "user_message", payload_json: "{not json" },
+      { ordinal: 99, type: "user_message", payload_json: "{not json" },
     ]);
     assert.deepStrictEqual(items, [
       ["user", "Fix the bug"],
