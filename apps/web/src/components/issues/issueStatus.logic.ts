@@ -188,7 +188,9 @@ export function issueStatusInputOf(
  */
 export function issueThreadTargets(
   entries: ReadonlyArray<
-    Pick<IssueListEntry, "host" | "repository" | "number" | "closingPullRequests">
+    Pick<IssueListEntry, "host" | "repository" | "number"> & {
+      readonly closingPullRequests: ReadonlyArray<Pick<IssuePullRequest, "repository" | "number">>;
+    }
   >,
   linkEnvironments: ReadonlySet<EnvironmentId>,
 ): ReadonlyArray<{ readonly environmentId: EnvironmentId; readonly input: ThreadsForIssuesInput }> {

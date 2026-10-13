@@ -1254,3 +1254,44 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "keywords": ["contextmd", "ContextMD", "/contextmd/v1", "contextmd.sqlite", "contextmd-hook"]
 }
 ```
+
+## feature-map
+
+```json
+{
+  "id": "feature-map",
+  "purpose": "Draw a project's docs/map.md in a right-panel Map tab, each part coloured planned, working, broken or done from GitHub, with working-thread icons and a gaps list.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/235"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/247"],
+  "newFiles": [
+    "apps/server/src/issues/featureMap.test.ts",
+    "apps/server/src/issues/featureMap.ts",
+    "apps/web/src/components/featureMap/FeatureMapPanel.tsx",
+    "apps/web/src/components/featureMap/featureMap.logic.test.ts",
+    "apps/web/src/components/featureMap/featureMap.logic.ts",
+    "apps/web/src/components/featureMap/featureMap.mermaid.test.tsx",
+    "apps/web/src/state/featureMap.ts",
+    "packages/contracts/src/featureMap.ts"
+  ],
+  "upstreamFiles": ["apps/web/src/components/chat/MermaidDiagram.tsx"],
+  "sharedFiles": [
+    "apps/server/src/auth/RpcAuthorization.ts",
+    "apps/server/src/environment/ServerEnvironment.ts",
+    "apps/server/src/issues/IssueService.test.ts",
+    "apps/server/src/issues/IssueService.ts",
+    "apps/server/src/issues/issueRpcHandlers.ts",
+    "apps/web/src/components/ChatView.tsx",
+    "apps/web/src/components/RightPanelTabs.tsx",
+    "apps/web/src/components/issues/issueStatus.logic.ts",
+    "apps/web/src/components/issues/useIssueRowThreads.ts",
+    "apps/web/src/rightPanelStore.test.ts",
+    "apps/web/src/rightPanelStore.ts",
+    "docs/user/source-control.md",
+    "packages/contracts/src/environment.ts",
+    "packages/contracts/src/index.ts",
+    "packages/contracts/src/issues.test.ts",
+    "packages/contracts/src/rpc.ts"
+  ],
+  "keywords": ["featureMap", "feature map", "docs/map.md", "primary ref", "context part"]
+}
+```

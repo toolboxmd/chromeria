@@ -29,6 +29,7 @@ const RIGHT_PANEL_KINDS = [
   "pull-requests",
   "side-chat",
   "issue",
+  "map",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -84,7 +85,8 @@ export type RightPanelSurface =
     }
   | { id: "pull-requests"; kind: "pull-requests" }
   | { id: `side-chat:${string}`; kind: "side-chat"; threadId: ThreadId }
-  | { id: "issue"; kind: "issue"; environmentId: string; url: string };
+  | { id: "issue"; kind: "issue"; environmentId: string; url: string }
+  | { id: "map"; kind: "map" };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 const RIGHT_PANEL_STORAGE_VERSION = 14;
@@ -228,6 +230,8 @@ const singletonSurface = (
       return { id: "pull-requests", kind };
     case "device":
       return { id: "device", kind };
+    case "map":
+      return { id: "map", kind };
   }
 };
 
@@ -507,6 +511,10 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                       const { folderTrail: _invalid, ...rest } = surface;
                       surface = rest;
                     }
+                    // A kind this build does not know cannot render; drop it rather than show an
+                    // empty tab.
+                    if (!(RIGHT_PANEL_KINDS as ReadonlyArray<string | undefined>).includes(kind))
+                      return [];
                     if (surface.kind === "issue") {
                       if (
                         surface.id !== "issue" ||

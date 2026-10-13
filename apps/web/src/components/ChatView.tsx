@@ -1981,6 +1981,14 @@ export default function ChatView(props: ChatViewProps) {
   const linksSurfaceAvailable =
     pullRequestsSurfaceAvailable ||
     (isServerThread && serverConfig?.environment.capabilities.issueLinks === true);
+  // Fork: the project's feature map (toolboxmd/chromeria#235).
+  const featureMapSupported = serverConfig?.environment.capabilities.featureMap === true;
+  const mapSurfaceAvailable = isServerThread && activeProject != null && featureMapSupported;
+  const addMapSurface = () => {
+    if (!activeThreadRef || !mapSurfaceAvailable) return;
+    useRightPanelStore.getState().open(activeThreadRef, "map");
+  };
+  const addMapSurfaceStable = useStableCallback(addMapSurface);
   const { state: deviceState, loaded: deviceStateLoaded } = useDeviceState(
     activeThreadRef?.environmentId ?? null,
   );
@@ -3253,6 +3261,7 @@ export default function ChatView(props: ChatViewProps) {
             ? addPullRequestsSurfaceStable
             : undefined,
       }}
+      map={{ supported: featureMapSupported, theme: resolvedTheme }}
       files={{
         projectName: activeProject?.title ?? null,
         workspaceRoot: activeWorkspaceRoot,
@@ -4021,6 +4030,7 @@ export default function ChatView(props: ChatViewProps) {
           onAddPullRequests={addPullRequestsSurfaceStable}
           onAddDevice={addDeviceSurfaceStable}
           onAddSideChat={sideChatsOffered ? openSideChatStable : undefined}
+          onAddMap={addMapSurfaceStable}
           browserAvailable={canOperatePreview && browserAvailable}
           terminalAvailable={activeProject !== null && canOperateTerminal}
           diffAvailable={isServerThread && isGitRepo}
@@ -4030,6 +4040,7 @@ export default function ChatView(props: ChatViewProps) {
           deviceAvailable={activeThreadRef !== null}
           sideChatAvailable={sideChat.available}
           sideChatDisabledReason={sideChatDisabledReason}
+          mapAvailable={mapSurfaceAvailable}
         >
           {rightPanelContent}
         </ChatRightPanel>

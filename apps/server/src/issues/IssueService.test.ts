@@ -185,3 +185,165 @@ describe("IssueService.states", () => {
     }),
   );
 });
+
+describe("IssueService.readFeatureMap", () => {
+  const contextmd: OrchestrationProjectShell = {
+    ...projects[0]!,
+    id: ProjectId.make("contextmd"),
+    workspaceRoot: "/work/contextmd",
+    repositoryIdentity: gitHubIdentity("toolboxmd/contextmd"),
+  };
+  const map = [
+    "# Map",
+    "",
+    "```mermaid",
+    "flowchart TD",
+    '    C["Capture"]',
+    "    %% C: #7 PR #22",
+    '    SR["Serve report"]',
+    "    %% SR: PR #38 #15",
+    "    C --> SR",
+    "```",
+  ].join("\n");
+  const head = JSON.stringify({
+    data: { repository: { defaultBranchRef: { name: "main", target: { oid: "3f2a1c0abc" } } } },
+  });
+  const blob = (text: string | null) =>
+    JSON.stringify({ data: { repository: { object: text === null ? null : { text } } } });
+  const issuesPage = (numbers: ReadonlyArray<number>, endCursor: string | null) => ({
+    repository: {
+      issues: {
+        pageInfo: { hasNextPage: endCursor !== null, endCursor },
+        nodes: numbers.map((number) => ({
+          number,
+          title: `Issue ${number}`,
+          url: `https://github.com/toolboxmd/contextmd/issues/${number}`,
+        })),
+      },
+    },
+  });
+  const openIssue = {
+    __typename: "Issue",
+    url: "https://github.com/toolboxmd/contextmd/issues/7",
+    state: "OPEN",
+    stateReason: null,
+    labels: { pageInfo: { hasNextPage: false }, nodes: [] },
+    closedByPullRequestsReferences: { pageInfo: { hasNextPage: false }, nodes: [] },
+  };
+
+  it.effect(
+    "reads the map at the default branch's head commit, then every ref and open Issue",
+    () =>
+      Effect.gen(function* () {
+        const requests = yield* Ref.make<ReadonlyArray<GitHubApi.GitHubGraphQlInput>>([]);
+        const issues = yield* serviceWith([contextmd], (input) =>
+          Ref.updateAndGet(requests, (all) => [...all, input]).pipe(
+            Effect.map(() => {
+              if (input.operation === "featureMapHead") return head;
+              if (input.operation === "featureMapFile") return blob(map);
+              const after = input.variables?.after ?? null;
+              return JSON.stringify({
+                data:
+                  after === null
+                    ? {
+                        ref0: openIssue,
+                        ref1: null,
+                        ref2: null,
+                        ref3: null,
+                        ...issuesPage([7, 9], "c1"),
+                      }
+                    : issuesPage([15], null),
+              });
+            }),
+          ),
+        );
+
+        const snapshot = yield* issues.readFeatureMap({ projectId: contextmd.id });
+        const sent = yield* Ref.get(requests);
+        expect(sent.map((input) => input.operation)).toEqual([
+          "featureMapHead",
+          "featureMapFile",
+          "featureMapFacts",
+          "featureMapFacts",
+        ]);
+        // The file is read at the commit the head read returned, not at a moving branch name.
+        expect(sent[1]?.variables).toMatchObject({ expression: "3f2a1c0abc:docs/map.md" });
+        if (snapshot._tag !== "Map") throw new Error(`expected a map, got ${snapshot._tag}`);
+        expect(snapshot).toMatchObject({
+          host: "github.com",
+          repository: "toolboxmd/contextmd",
+          branch: "main",
+          commit: "3f2a1c0abc",
+          openIssuesPartial: false,
+        });
+        expect(snapshot.parts.map((part) => part.id)).toEqual(["C", "SR"]);
+        expect(snapshot.facts.map((fact) => [fact.number, fact.fact?.kind ?? null])).toEqual([
+          [7, "issue"],
+          [22, null],
+          [38, null],
+          [15, null],
+        ]);
+        expect(snapshot.openIssues.map((issue) => issue.number)).toEqual([7, 9, 15]);
+      }),
+  );
+
+  it.effect("answers NoMap when the default branch has no docs/map.md", () =>
+    Effect.gen(function* () {
+      const issues = yield* serviceWith([contextmd], (input) =>
+        Effect.succeed(input.operation === "featureMapHead" ? head : blob(null)),
+      );
+      const snapshot = yield* issues.readFeatureMap({ projectId: contextmd.id });
+      expect(snapshot).toMatchObject({ _tag: "NoMap", reason: "missing", commit: "3f2a1c0abc" });
+    }),
+  );
+
+  it.effect("stops reading open Issues at the cap and marks the gap partial", () =>
+    Effect.gen(function* () {
+      const facts = yield* Ref.make(0);
+      const issues = yield* serviceWith([contextmd], (input) => {
+        if (input.operation === "featureMapHead") return Effect.succeed(head);
+        if (input.operation === "featureMapFile") return Effect.succeed(blob(map));
+        return Ref.updateAndGet(facts, (count) => count + 1).pipe(
+          Effect.map((count) => JSON.stringify({ data: issuesPage([count], `cursor-${count}`) })),
+        );
+      });
+      const snapshot = yield* issues.readFeatureMap({ projectId: contextmd.id });
+      expect(yield* Ref.get(facts)).toBe(5);
+      expect(snapshot).toMatchObject({ _tag: "Map", openIssuesPartial: true });
+    }),
+  );
+
+  it.effect("fails, rather than answering an empty map, when GitHub cannot be read", () =>
+    Effect.gen(function* () {
+      const issues = yield* serviceWith([contextmd], (input) =>
+        Effect.fail(
+          new GitHubApi.GitHubApiRequestError({
+            host: input.host,
+            operation: input.operation,
+            cause: new Error("offline"),
+          }),
+        ),
+      );
+      const error = yield* issues.readFeatureMap({ projectId: contextmd.id }).pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "IssueOperationError",
+        detail: "Could not reach GitHub at github.com.",
+      });
+    }),
+  );
+
+  it.effect("refuses a project that is not on GitHub before any read", () =>
+    Effect.gen(function* () {
+      let reads = 0;
+      const issues = yield* serviceWith([contextmd], () => {
+        reads++;
+        return Effect.succeed(head);
+      });
+      const error = yield* issues
+        .readFeatureMap({ projectId: ProjectId.make("elsewhere") })
+        .pipe(Effect.flip);
+      expect(error._tag).toBe("IssueOperationError");
+      expect(reads).toBe(0);
+    }),
+  );
+});

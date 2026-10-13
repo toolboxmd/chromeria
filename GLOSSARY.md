@@ -212,6 +212,24 @@ A child doing implementation work; one of the Prism roles.
 A child that reviews a candidate and returns a verdict.
 _Avoid_: approver
 
+**Feature map**:
+A project's `docs/map.md`: one Mermaid flowchart of its parts, each bound to
+its Issues and PRs, which Chromeria's Map tab colours from GitHub.
+_Avoid_: status map, roadmap, architecture diagram
+
+**Part**:
+One node of a feature map: a piece of the project that is planned, working,
+broken or done.
+_Avoid_: feature, component, node (for the tracked piece)
+
+**Primary ref**:
+The first Issue or PR on a part's ref line; it alone decides planned, working
+or done.
+
+**Context part**:
+A part a feature map draws but does not track, because another project owns
+it.
+
 ## Learning and observation
 
 **Capture**:
