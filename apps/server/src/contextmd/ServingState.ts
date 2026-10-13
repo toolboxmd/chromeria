@@ -116,7 +116,7 @@ export interface MomentInput {
 
 export type Reply = { readonly status: 200; readonly body: string } | { readonly status: 204 };
 
-/** A moment that never reached selection: why, for the log. */
+/** A moment that was not served: why, and what of it was known by then, for the log. */
 export interface Unserved {
   readonly harness: string | null;
   readonly delivery: string | null;
@@ -126,8 +126,14 @@ export interface Unserved {
     | "bad_event"
     | "oversize"
     | "unauthorized"
-    | "bad_request";
+    | "bad_request"
+    | "over_budget";
   readonly reason?: string;
+  readonly kind?: string;
+  readonly session?: string;
+  readonly toolUseId?: string | null;
+  readonly threadId?: string | null;
+  readonly runId?: string | null;
   readonly now: number;
   readonly startedAt: number;
 }
@@ -320,6 +326,11 @@ export class ServingState {
         reason: u.reason ?? null,
         now: u.now,
         serverMs: u.now - u.startedAt,
+        ...(u.kind === undefined ? {} : { kind: u.kind }),
+        ...(u.session === undefined ? {} : { session: u.session }),
+        toolUseId: u.toolUseId ?? null,
+        threadId: u.threadId ?? null,
+        runId: u.runId ?? null,
       });
     });
   }
