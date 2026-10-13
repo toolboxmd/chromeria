@@ -14,6 +14,24 @@
 const WORD_BREAK = /[\s;&|()<>`$"'\\{}]+/u;
 const PATH_FIELDS = ["file_path", "notebook_path", "path", "filePath", "target_file"] as const;
 
+/**
+ * Words of a shell command that name a file, so `path:` keys match files reached through
+ * the shell (#234): anything with a `/` or a leading `~`, a `file:` URI without its query,
+ * the value of `VAR=path`, and a bare name with an extension (relative to the cwd). No
+ * general shell parsing: a word is a path by its shape. Web URLs are not paths.
+ */
+const shellPaths = (ws: ReadonlyArray<string>) => {
+  const out: string[] = [];
+  for (const word of ws) {
+    let w = word.replace(/^[A-Za-z_][A-Za-z0-9_]*=/u, "");
+    if (w.startsWith("file:")) w = w.replace(/^file:(?:\/\/)?/u, "").replace(/[?#].*$/u, "");
+    else if (w.includes("://") || w.startsWith("-")) continue;
+    const shaped = w.includes("/") || w.startsWith("~") || /^[^/]+\.[A-Za-z0-9]{1,10}$/u.test(w);
+    if (shaped && w !== "" && !out.includes(w)) out.push(w);
+  }
+  return out;
+};
+
 /** Tool input whose shape the exact-key matcher cannot read. */
 export class Unsupported extends Error {}
 
@@ -55,7 +73,8 @@ export const extract = (
   if (shellTools.includes(tool)) {
     const command = toolInput["command"];
     if (typeof command !== "string") throw new Unsupported(`${tool}: no command`);
-    return { words: words(command), paths: [], error: signature };
+    const ws = words(command);
+    return { words: ws, paths: shellPaths(ws), error: signature };
   }
   const paths = PATH_FIELDS.map((f) => toolInput[f]).filter(
     (v): v is string => typeof v === "string" && v !== "",
