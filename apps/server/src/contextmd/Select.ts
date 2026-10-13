@@ -59,6 +59,8 @@ const ServingConfigFile = Schema.fromJsonString(
         Schema.Struct({ path: Schema.String, max_chars: Schema.optional(Schema.Number) }),
       ),
     ),
+    cue: Schema.optional(Schema.Array(Schema.String)),
+    cue_url: Schema.optional(Schema.String),
   }),
 );
 const decodeServingConfig = Schema.decodeUnknownEffect(ServingConfigFile, {
@@ -68,6 +70,9 @@ const decodeServingConfig = Schema.decodeUnknownEffect(ServingConfigFile, {
 export interface ServingConfig {
   readonly exactKeys: ReadonlyArray<string>;
   readonly sessionStart: ReadonlyArray<{ readonly path: string; readonly maxChars: number }>;
+  /** Cue entry directories; Cue runs only with these and `cueUrl`. */
+  readonly cue: ReadonlyArray<string>;
+  readonly cueUrl: string | null;
 }
 
 /** Where ContextMD's serving config lives: `CONTEXTMD_SERVING_CONFIG`, else the default. */
@@ -85,6 +90,8 @@ export const loadConfig = Effect.fn("contextmd.loadConfig")(function* (file: str
     return {
       exactKeys: ["~/.local/share/contextmd/exact-keys"],
       sessionStart: [],
+      cue: [],
+      cueUrl: null,
     } satisfies ServingConfig;
   }
   const raw = yield* decodeServingConfig(text.value).pipe(
@@ -96,6 +103,8 @@ export const loadConfig = Effect.fn("contextmd.loadConfig")(function* (file: str
       path: f.path,
       maxChars: f.max_chars ?? 4000,
     })),
+    cue: raw.cue ?? [],
+    cueUrl: raw.cue_url ?? null,
   } satisfies ServingConfig;
 });
 
@@ -129,6 +138,34 @@ const outputText = (value: unknown): string => {
     return Object.values(value).map(outputText).join("\n");
   return "";
 };
+
+/** A served Cue entry shows this much of its "applies when" text; the scored text stays whole. */
+const CUE_APPLIES_CHARS = 600;
+
+/**
+ * What a Cue fire serves: its "applies when" line first, so a wrong fire is dismissed in one read, then
+ * the entry and, with a target, the file to read.
+ */
+const cueText = (e: Store.CueEntry) => {
+  const applies =
+    e.applies.length <= CUE_APPLIES_CHARS
+      ? e.applies
+      : `${e.applies.slice(0, CUE_APPLIES_CHARS - 5).replace(/\s+\S*$/u, "")} [...]`;
+  const read = e.target ? ` Read ${e.target} in full.` : "";
+  return `${e.name} applies when: ${applies}\nCue judged that this holds now; if it does not, ignore this. ${e.text}${read}`;
+};
+
+/** The candidate a Cue entry becomes; its score arrives from the Cue service. */
+export const cueCandidate = (e: Store.CueEntry): Candidate => ({
+  matcher: "intent",
+  entry: e.id,
+  version: e.version,
+  key: null,
+  text: cueText(e),
+  must_know: false,
+  rule: null,
+  target: e.target,
+});
 
 const denyText = (e: Store.Entry) =>
   e.target ? `${e.text}\nRead ${e.target} in full, then run the same call again.` : e.text;
@@ -286,6 +323,14 @@ export const select = Effect.fn("contextmd.select")(function* (
       source: text(at(raw, f.source)),
       failed,
       reads: momentReads,
+      call: toolKind ? `${tool ?? ""}: ${text(toolInput) ?? ""}`.slice(0, 2000) : null,
+      output:
+        kind === "tool_failure"
+          ? [text(at(raw, f.error)), output]
+              .filter((t) => t)
+              .join("\n")
+              .slice(-2000)
+          : null,
     },
     candidates,
     notes,

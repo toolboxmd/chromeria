@@ -13,6 +13,11 @@
  * that marks outage windows in the log. If the run-attempt columns it reads are
  * missing, it serves nothing and logs every moment `unmapped`.
  *
+ * With Cue configured (`cue` entry directories and `cue_url`), a joined moment also asks the Cue service
+ * (`Cue.ts`): a user message and a failed call score at once, a pre-tool moment starts a score its tool
+ * result collects. The window items come from the thread's projected turn items. Cue never holds the
+ * exact-key lane up: an unreachable service is skipped machine-wide until a probe sees it again.
+ *
  * @module ContextmdServing
  */
 import * as NodeSqlite from "node:sqlite";
@@ -31,9 +36,22 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
 import * as ServerActivation from "../serverActivation.ts";
+import {
+  COLLECT_MS,
+  CueClient,
+  PROBE_SECONDS,
+  WAIT_MS,
+  httpTransport,
+  transcriptItems,
+  type CueReply,
+  type TranscriptRow,
+} from "./Cue.ts";
 import * as Select from "./Select.ts";
+import type { Selection } from "./Selection.ts";
+import * as Store from "./Store.ts";
 import type { ParseCache } from "./Store.ts";
 import {
+  type CueMoment,
   ServingState,
   type ReadCheck,
   type Reply,
@@ -42,6 +60,10 @@ import {
 } from "./ServingState.ts";
 
 export const MAX_BODY_BYTES = 1_048_576;
+/** Cue's window reads the last user messages, the replies between them and the work since the last one. */
+const TRANSCRIPT_USERS = 6;
+const TRANSCRIPT_REPLIES = 100;
+const TRANSCRIPT_SINCE = 100;
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
 export interface MomentRequest {
@@ -169,6 +191,17 @@ const make = Effect.gen(function* () {
   }
   const { db, state } = opened.value;
   const parsed: ParseCache = new Map();
+  const cueParsed: ParseCache = new Map();
+  // One client per Cue service URL, so its availability is shared by every moment on this machine.
+  const cueClients = new Map<string, CueClient>();
+  const cueClient = (url: string) => {
+    let client = cueClients.get(url);
+    if (client === undefined) {
+      client = new CueClient(httpTransport(url));
+      cueClients.set(url, client);
+    }
+    return client;
+  };
   const servingConfig = yield* Select.configFile;
   const mapped = yield* checkContract(sql);
   if (!mapped) {
@@ -195,6 +228,19 @@ const make = Effect.gen(function* () {
         Effect.repeat(Schedule.spaced("30 seconds")),
       );
     }),
+  );
+  // An unavailable Cue service is probed until it answers again.
+  yield* ServerActivation.forkParked(
+    Effect.suspend(() =>
+      Effect.forEach(
+        [...cueClients.values()].filter((c) => !c.isAvailable()),
+        (c) => Effect.promise(() => c.probe()),
+        { discard: true },
+      ),
+    ).pipe(
+      Effect.catchCause((cause) => Effect.logWarning("ContextMD Cue probe failed", { cause })),
+      Effect.repeat(Schedule.spaced(`${PROBE_SECONDS} seconds`)),
+    ),
   );
 
   const resolveRun = (session: string) =>
@@ -264,6 +310,100 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  /**
+   * The thread's items Cue's window is built from, oldest first. The window needs the last few user
+   * messages and the agent's replies between them, then the agent's work since the current message, so
+   * each part is read with its own bound: however long a turn runs, its user message stays in.
+   */
+  const transcript = (threadId: string) =>
+    Effect.gen(function* () {
+      const users = yield* sql<TranscriptRow>`
+        SELECT ordinal, type, payload_json FROM orchestration_v2_projection_turn_items
+        WHERE thread_id = ${threadId} AND type = 'user_message'
+        ORDER BY ordinal DESC LIMIT ${TRANSCRIPT_USERS}`;
+      if (users.length === 0) return [];
+      const first = users.at(-1)!.ordinal;
+      const current = users[0]!.ordinal;
+      const replies = yield* sql<TranscriptRow>`
+        SELECT ordinal, type, payload_json FROM orchestration_v2_projection_turn_items
+        WHERE thread_id = ${threadId} AND type = 'assistant_message'
+          AND ordinal > ${first} AND ordinal < ${current}
+        ORDER BY ordinal DESC LIMIT ${TRANSCRIPT_REPLIES}`;
+      const since = yield* sql<TranscriptRow>`
+        SELECT ordinal, type, payload_json FROM orchestration_v2_projection_turn_items
+        WHERE thread_id = ${threadId} AND ordinal > ${current} AND type IN ('assistant_message',
+          'command_execution', 'dynamic_tool', 'file_change', 'file_search', 'web_search')
+        ORDER BY ordinal DESC LIMIT ${TRANSCRIPT_SINCE}`;
+      return transcriptItems(
+        [...users, ...replies, ...since].toSorted((a, b) => a.ordinal - b.ordinal),
+      );
+    });
+
+  /** Ask Cue about this moment, when Cue is configured and the moment is one it scores at. */
+  const askCue = (
+    harness: string,
+    selection: Selection,
+    threadId: string,
+    config: Select.ServingConfig,
+  ) =>
+    Effect.gen(function* () {
+      const m = selection.moment;
+      if (config.cueUrl === null || config.cue.length === 0) return null;
+      if (!["user_message", "pre_tool", "tool_result", "tool_failure"].includes(m.kind))
+        return null;
+      if (m.kind !== "user_message" && m.tool_use_id === null) return null;
+      const store = yield* Store.loadCue(config.cue, cueParsed);
+      if (store.entries.length === 0) return null;
+      const client = cueClient(config.cueUrl);
+      const key = `${harness}\0${m.session}\0${m.tool_use_id ?? ""}`;
+      const request = (kind: string) =>
+        transcript(threadId).pipe(
+          Effect.map((items) => ({
+            items,
+            moment: {
+              kind,
+              ...(m.call ? { call: m.call } : {}),
+              ...(m.output ? { output: m.output } : {}),
+            },
+            entries: store.entries.map((e) => ({ id: e.id, doc: `${e.name}: ${e.applies}` })),
+          })),
+        );
+      let reply: CueReply;
+      if (m.kind === "tool_result") {
+        reply = yield* Effect.promise(() => client.collect(key, COLLECT_MS));
+      } else {
+        if (m.kind === "tool_failure") client.drop(key);
+        const req = yield* request(m.kind);
+        if (!req.items.some(([kind]) => kind === "user")) {
+          // Nothing to score: the thread has no user message (a session started outside Chromeria).
+          reply = { status: "no_window", ms: null, waitMs: 0 };
+        } else if (m.kind === "pre_tool") {
+          reply = client.start(key, req);
+        } else {
+          reply = yield* Effect.promise(() => client.score(req, WAIT_MS));
+        }
+      }
+      return {
+        moment: {
+          reply,
+          candidates: store.entries.map(Select.cueCandidate),
+        } satisfies CueMoment,
+        owners: store.owners,
+      };
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("ContextMD Cue request failed", { cause }).pipe(
+          Effect.as({
+            moment: {
+              reply: { status: "error", ms: null, waitMs: null },
+              candidates: [],
+            } satisfies CueMoment,
+            owners: {},
+          }),
+        ),
+      ),
+    );
+
   const moment: ContextmdServing["Service"]["moment"] = (request) =>
     Effect.gen(function* () {
       const startedAt = yield* nowSeconds;
@@ -307,11 +447,14 @@ const make = Effect.gen(function* () {
       }
       const harness = request.harness;
       const selected = yield* Select.loadConfig(servingConfig).pipe(
-        Effect.flatMap((config) => Select.select(harness, raw.value, config, parsed)),
+        Effect.flatMap((config) =>
+          Select.select(harness, raw.value, config, parsed).pipe(
+            Effect.map((selection) => ({ selection, config })),
+          ),
+        ),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
         Effect.provideService(Crypto.Crypto, crypto),
-        Effect.map((selection) => ({ selection })),
         Effect.catchTags({
           ContextmdBadConfig: (e) =>
             Effect.succeed({ status: "bad_config" as const, reason: e.reason }),
@@ -323,12 +466,22 @@ const make = Effect.gen(function* () {
         yield* unserved(selected.status, { reason: selected.reason });
         return { status: 204 } as const;
       }
-      const selection = selected.selection;
+      let selection = selected.selection;
       const join = yield* resolveRun(selection.moment.session);
       let readChecks: ReadonlyArray<ReadCheck> = [];
+      let cue: CueMoment | null = null;
       if (join.type === "run") {
         yield* checkDenies(harness, selection.moment.session, join.threadId);
         readChecks = yield* checkReads(harness, selection.moment.session, join.threadId);
+        const asked = yield* askCue(harness, selection, join.threadId, selected.config).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          Effect.provideService(Crypto.Crypto, crypto),
+        );
+        if (asked !== null) {
+          cue = asked.moment;
+          selection = { ...selection, owners: { ...selection.owners, ...asked.owners } };
+        }
       }
       const now = yield* nowSeconds;
       return state.decide({
@@ -337,6 +490,7 @@ const make = Effect.gen(function* () {
         selection,
         join,
         readChecks,
+        cue,
         now,
         startedAt,
       });

@@ -337,7 +337,7 @@ describe("keys from files a shell command names (#234)", () => {
     entry(keys, "by-word", "Open the projection database read-only (bake entry).", {
       command: "chromeria-v2.sqlite",
     });
-    const config: ServingConfig = { exactKeys: [keys], sessionStart: [] };
+    const config: ServingConfig = { exactKeys: [keys], sessionStart: [], cue: [], cueUrl: null };
     const matched = (command: string, cwd = d) =>
       select(
         "claude",
@@ -417,7 +417,7 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
     });
     entry(keys, "err", "Use the deploy key alias.", { error: "Permission denied (publickey)" });
     entry(keys, "skills", "SKILL.md edits need a pressure scenario.", { path: "**/SKILL.md" });
-    const config: ServingConfig = { exactKeys: [keys], sessionStart: [] };
+    const config: ServingConfig = { exactKeys: [keys], sessionStart: [], cue: [], cueUrl: null };
     const sel = (harness: string, raw: unknown) => select(harness, raw, config, new Map());
     return { ws, target, sel };
   };
@@ -711,7 +711,7 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
 
   it.effect("refuses unknown harnesses and events", () =>
     Effect.gen(function* () {
-      const config: ServingConfig = { exactKeys: [], sessionStart: [] };
+      const config: ServingConfig = { exactKeys: [], sessionStart: [], cue: [], cueUrl: null };
       const refused = (harness: string, raw: unknown) =>
         select(harness, raw, config, new Map()).pipe(
           Effect.flip,

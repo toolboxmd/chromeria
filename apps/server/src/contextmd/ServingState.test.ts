@@ -8,11 +8,13 @@ import * as NodeSqlite from "node:sqlite";
 import { assert, describe, it } from "@effect/vitest";
 
 import type { Candidate, MomentKind, Profile, Selection } from "./Selection.ts";
+import type { CueReply } from "./Cue.ts";
 import {
   DENY_BUDGET_BYTES,
   SERVE_BUDGET_BYTES,
   ServingState,
   isHoldout,
+  type CueMoment,
   type Reply,
   type RunJoin,
 } from "./ServingState.ts";
@@ -91,6 +93,7 @@ interface Fire {
   readonly settle?: boolean;
   readonly readChecks?: ReadonlyArray<{ readonly toolUseId: string; readonly ok: boolean | null }>;
   readonly toolUseId?: string | null;
+  readonly cue?: CueMoment;
 }
 
 const makeHarness = (file = ":memory:") => {
@@ -130,6 +133,7 @@ const makeHarness = (file = ":memory:") => {
       },
       join: f.join ?? { type: "run", runId: f.run ?? "run-1", threadId: "thread-1" },
       ...(f.readChecks === undefined ? {} : { readChecks: f.readChecks }),
+      ...(f.cue === undefined ? {} : { cue: f.cue }),
       now,
       startedAt: now,
     });
@@ -825,5 +829,163 @@ describe("ServingState log", () => {
     for (let i = 0; i < 10_000; i++) if (isHoldout("claude", `session-${i}`)) held += 1;
     assert.isAbove(held, 900);
     assert.isBelow(held, 1100);
+  });
+});
+
+const cueEntry = (id: string, text = `${id} applies when: x\nprocedure ${id}`): Candidate => ({
+  matcher: "intent",
+  entry: id,
+  version: "c1",
+  key: null,
+  text,
+  must_know: false,
+  rule: null,
+  target: null,
+});
+
+const cueOk = (scores: Record<string, number>, threshold = 0.5): CueMoment => ({
+  reply: { status: "ok", ms: 340, waitMs: 340, adapter: "q4b-w8a8c", threshold, scores },
+  candidates: Object.keys(scores).map((id) => cueEntry(id)),
+});
+
+/** The first session id, counting up, that the holdout hash puts in (or out of) the holdout arm. */
+const sessionIn = (holdout: boolean, harness = "claude") => {
+  for (let i = 0; ; i++) if (isHoldout(harness, `s${i}`) === holdout) return `s${i}`;
+};
+
+describe("ServingState Cue", () => {
+  const scores = (db: NodeSqlite.DatabaseSync) =>
+    db
+      .prepare("SELECT entry, outcome, score FROM candidates WHERE matcher = 'intent' ORDER BY id")
+      .all() as Array<{ entry: string; outcome: string; score: number }>;
+  const moments = (db: NodeSqlite.DatabaseSync) =>
+    db
+      .prepare(
+        "SELECT kind, holdout, cue_status, cue_adapter, cue_ms, cue_wait_ms FROM moments ORDER BY id",
+      )
+      .all() as Array<Record<string, unknown>>;
+
+  it("serves fires at the user message and logs every score", () => {
+    const h = makeHarness();
+    const session = sessionIn(false);
+    const r = h.fire({
+      kind: "user_message",
+      session,
+      cue: cueOk({ research: 1.5, grilling: 0.25, specify: 0.5 }),
+    });
+    const text = h.text(r)!;
+    assert.include(text, "procedure research");
+    assert.include(text, "procedure specify");
+    assert.notInclude(text, "procedure grilling");
+    assert.deepStrictEqual(scores(h.db), [
+      { entry: "grilling", outcome: "below_threshold", score: 0.25 },
+      { entry: "research", outcome: "injected", score: 1.5 },
+      { entry: "specify", outcome: "injected", score: 0.5 },
+    ]);
+    assert.deepStrictEqual(moments(h.db), [
+      {
+        kind: "user_message",
+        holdout: 0,
+        cue_status: "ok",
+        cue_adapter: "q4b-w8a8c",
+        cue_ms: 340,
+        cue_wait_ms: 340,
+      },
+    ]);
+  });
+
+  it("logs a holdout session's would-fires without printing or charging them", () => {
+    const h = makeHarness();
+    const session = sessionIn(true);
+    const r = h.fire({ kind: "user_message", session, cue: cueOk({ research: 1.5 }) });
+    assert.strictEqual(r.status, 204);
+    assert.deepStrictEqual(scores(h.db), [{ entry: "research", outcome: "holdout", score: 1.5 }]);
+    assert.strictEqual(moments(h.db)[0]!["holdout"], 1);
+    // The holdout cost nothing: the whole serve budget is left for exact keys.
+    const big = h.fire({
+      kind: "tool_result",
+      session,
+      candidates: [entry("e", "y".repeat(1800))],
+    });
+    assert.strictEqual(big.status, 200);
+  });
+
+  it("serves a collected fire beside the tool result with the exact-key matches, once per run", () => {
+    const h = makeHarness();
+    const session = sessionIn(false);
+    const first = h.fire({
+      kind: "tool_result",
+      session,
+      candidates: [entry("a", "rule a")],
+      cue: cueOk({ research: 2 }),
+    });
+    assert.include(h.text(first)!, "rule a");
+    assert.include(h.text(first)!, "procedure research");
+    h.fire({ kind: "tool_result", session, cue: cueOk({ research: 2 }) });
+    assert.deepStrictEqual(
+      scores(h.db).map((c) => c.outcome),
+      ["injected", "deduped"],
+    );
+  });
+
+  it("carries a Grok fire from the user message to the next PreToolUse", () => {
+    const h = makeHarness();
+    const session = sessionIn(false, "grok");
+    assert.strictEqual(
+      h.fire({ kind: "user_message", session, profile: GROK, cue: cueOk({ research: 2 }) }).status,
+      204,
+    );
+    const printed = h.fire({ kind: "pre_tool", session, profile: GROK });
+    assert.include(h.text(printed)!, "procedure research");
+    assert.deepStrictEqual(
+      scores(h.db).map((c) => [c.outcome, c.score]),
+      [
+        ["carried", 2],
+        ["injected", 2],
+      ],
+    );
+  });
+
+  it("records an unreachable or slow Cue per moment and still serves exact keys", () => {
+    const h = makeHarness();
+    const failed = (status: CueReply["status"]): CueMoment => ({
+      reply: { status, ms: status === "not_called" ? null : 12, waitMs: 0 },
+      candidates: [cueEntry("research")],
+    });
+    h.fire({ kind: "user_message", cue: failed("connect_failed") });
+    const r = h.fire({
+      kind: "tool_result",
+      candidates: [entry("a", "rule a")],
+      cue: failed("not_called"),
+    });
+    assert.include(h.text(r)!, "rule a");
+    h.fire({
+      kind: "pre_tool",
+      cue: { reply: { status: "started", ms: null, waitMs: 0 }, candidates: [] },
+    });
+    assert.deepStrictEqual(
+      moments(h.db).map((m) => m["cue_status"]),
+      ["connect_failed", "not_called", "started"],
+    );
+    assert.deepStrictEqual(scores(h.db), []);
+  });
+
+  it("adds the Cue columns to a state file from an earlier build", () => {
+    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "contextmd-state-"));
+    const file = NodePath.join(dir, "contextmd.sqlite");
+    const old = new NodeSqlite.DatabaseSync(file);
+    old.exec(`CREATE TABLE moments (id INTEGER PRIMARY KEY, received_at REAL NOT NULL, harness TEXT,
+      kind TEXT, session TEXT, thread_id TEXT, run_id TEXT, tool_use_id TEXT, epoch INTEGER,
+      holdout INTEGER, status TEXT NOT NULL, reason TEXT, owners_json TEXT,
+      cue_adapter TEXT, server_ms REAL, delivery TEXT);
+      CREATE TABLE carries (id INTEGER PRIMARY KEY, harness TEXT NOT NULL, session TEXT NOT NULL,
+      run_id TEXT NOT NULL, entry TEXT NOT NULL, version TEXT NOT NULL, text TEXT NOT NULL,
+      candidate_id INTEGER NOT NULL, state TEXT NOT NULL, delivery TEXT, created_at REAL NOT NULL);`);
+    old.close();
+    const h = makeHarness(file);
+    h.fire({ kind: "user_message", session: sessionIn(false), cue: cueOk({ research: 2 }) });
+    assert.strictEqual(moments(h.db)[0]!["cue_status"], "ok");
+    h.db.close();
+    NodeFS.rmSync(dir, { recursive: true, force: true });
   });
 });
