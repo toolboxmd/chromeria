@@ -1,6 +1,6 @@
 import DOMPurify from "dompurify";
 import type { Mermaid } from "mermaid";
-import { use, useState } from "react";
+import { use, useLayoutEffect, useRef, useState } from "react";
 
 import { Button } from "../ui/button";
 
@@ -160,14 +160,23 @@ function mermaidImageUrl(svg: string): string {
 export function MermaidDiagram({
   source,
   theme,
-  onExpand,
+  ...mode
 }: {
   source: string;
   theme: "light" | "dark";
-  onExpand: (imageUrl: string) => void;
-}) {
+} & (
+  | { onExpand: (imageUrl: string) => void; onRendered?: never }
+  | { onRendered: (svg: SVGSVGElement) => void; onExpand?: never }
+)) {
   const [, setAttempt] = useState(0);
   const result = use(mermaidRenderPromise(source.trim(), theme));
+  const containerRef = useRef<HTMLDivElement>(null);
+  const onRendered = mode.onRendered;
+  const renderedSvg = result.status === "rendered" ? result.svg : null;
+  useLayoutEffect(() => {
+    const svg = renderedSvg === null ? null : containerRef.current?.querySelector("svg");
+    if (onRendered && svg) onRendered(svg);
+  }, [onRendered, renderedSvg]);
 
   if (result.status === "error") {
     return (
@@ -198,13 +207,23 @@ export function MermaidDiagram({
     );
   }
 
+  if (mode.onRendered) {
+    return (
+      <div
+        ref={containerRef}
+        className="flex justify-center [&_svg]:h-auto [&_svg]:max-w-full"
+        dangerouslySetInnerHTML={{ __html: result.svg }}
+      />
+    );
+  }
+
   return (
     <div className="overflow-x-auto">
       <button
         type="button"
         aria-label="Expand diagram"
         className="flex w-full cursor-zoom-in justify-center rounded-md focus-visible:outline-2 focus-visible:outline-ring [&_svg]:h-auto [&_svg]:max-w-full"
-        onClick={() => onExpand(mermaidImageUrl(result.svg))}
+        onClick={() => mode.onExpand(mermaidImageUrl(result.svg))}
         dangerouslySetInnerHTML={{ __html: result.svg }}
       />
     </div>
