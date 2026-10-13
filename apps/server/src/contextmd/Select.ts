@@ -190,11 +190,13 @@ const repoRelative = Effect.fn("contextmd.repoRelative")(function* (
   }
 });
 
-export const select = Effect.fn("contextmd.select")(function* (
+/**
+ * What a hook event says about itself, read before any file is touched: the harness, the moment's
+ * kind (a reported or printed failure turns a result into `tool_failure`), the session and the call.
+ */
+export const identify = Effect.fn("contextmd.identify")(function* (
   harnessName: string,
   raw: unknown,
-  config: ServingConfig,
-  cache: Store.ParseCache,
 ) {
   const harness: Harness | undefined = HARNESSES[harnessName];
   if (harness === undefined)
@@ -209,8 +211,6 @@ export const select = Effect.fn("contextmd.select")(function* (
   if (typeof session !== "string" || session === "") {
     return yield* new BadEvent({ reason: `${harnessName}: no session id` });
   }
-  const tool = text(at(raw, f.tool));
-  const cwd = text(at(raw, f.cwd));
   const output = outputText(at(raw, f.output));
   const notes: Note[] = [];
   let kind = declared;
@@ -231,6 +231,31 @@ export const select = Effect.fn("contextmd.select")(function* (
       notes.push({ matcher: "failure", outcome: "failed_by_output" });
     }
   }
+  return {
+    harness,
+    declared,
+    kind,
+    failed,
+    session,
+    toolUseId: text(at(raw, f.toolUseId)),
+    output,
+    notes,
+  };
+});
+
+export const select = Effect.fn("contextmd.select")(function* (
+  harnessName: string,
+  raw: unknown,
+  config: ServingConfig,
+  cache: Store.ParseCache,
+) {
+  const { harness, declared, kind, failed, session, toolUseId, output, notes } = yield* identify(
+    harnessName,
+    raw,
+  );
+  const f = harness.fields;
+  const tool = text(at(raw, f.tool));
+  const cwd = text(at(raw, f.cwd));
   const candidates: Candidate[] = [];
   const owners: Record<string, string | null> = {};
   const toolKind = kind === "pre_tool" || kind === "tool_result" || kind === "tool_failure";
@@ -319,7 +344,7 @@ export const select = Effect.fn("contextmd.select")(function* (
       kind,
       event: EVENT_OUT[declared] ?? null,
       session,
-      tool_use_id: text(at(raw, f.toolUseId)),
+      tool_use_id: toolUseId,
       tool,
       source: text(at(raw, f.source)),
       failed,
