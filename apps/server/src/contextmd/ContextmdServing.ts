@@ -80,6 +80,8 @@ const TRANSCRIPT_SINCE = 100;
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
 export interface MomentRequest {
+  /** Whether the hook's credential may read; checked inside the moment's budget. */
+  readonly authorized: Effect.Effect<boolean>;
   readonly harness: string | undefined;
   readonly delivery: string | undefined;
   readonly contentLength: number | undefined;
@@ -98,7 +100,7 @@ export class StateOpenError extends Schema.TaggedError<StateOpenError>()(
   }
 }
 
-export type MomentResponse = Reply | { readonly status: 400 };
+export type MomentResponse = Reply | { readonly status: 400 } | { readonly status: 401 };
 
 export class ContextmdServing extends Context.Service<
   ContextmdServing,
@@ -440,35 +442,40 @@ const make = Effect.gen(function* () {
             });
           }),
         );
-      if (request.delivery === undefined || request.harness === undefined) {
-        yield* unserved("bad_request");
-        return { status: 400 } as const;
-      }
-      if (request.contentLength !== undefined && request.contentLength > MAX_BODY_BYTES) {
-        yield* unserved("oversize");
-        return { status: 204 } as const;
-      }
-      const replay = state.replayed(request.delivery);
-      if (replay !== undefined) return replay;
-      state.releaseStale(startedAt);
-      if (!mapped) {
-        yield* unserved("unmapped");
-        return { status: 204 } as const;
-      }
-      const harness = request.harness;
-      // The moment's work must leave the reply its reserve; past that it is cut and not served.
+      // Everything from arrival to the decision, authentication included, must leave the reply its
+      // reserve; past that the moment is cut and not served.
       const workBy = startedAt + (MOMENT_BUDGET_MS - REPLY_RESERVE_MS) / 1000;
       const workLeft = Math.max(0, Math.round((workBy - (yield* nowSeconds)) * 1000));
       const prepared = yield* Effect.gen(function* () {
+        if (!(yield* request.authorized)) {
+          yield* unserved("unauthorized");
+          return { reply: { status: 401 } as const };
+        }
+        const { delivery, harness } = request;
+        if (delivery === undefined || harness === undefined) {
+          yield* unserved("bad_request");
+          return { reply: { status: 400 } as const };
+        }
+        if (request.contentLength !== undefined && request.contentLength > MAX_BODY_BYTES) {
+          yield* unserved("oversize");
+          return { reply: { status: 204 } as const };
+        }
+        const replay = state.replayed(delivery);
+        if (replay !== undefined) return { reply: replay };
+        state.releaseStale(startedAt);
+        if (!mapped) {
+          yield* unserved("unmapped");
+          return { reply: { status: 204 } as const };
+        }
         const body = yield* request.body;
         if (body === null || Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
           yield* unserved("oversize");
-          return null;
+          return { reply: { status: 204 } as const };
         }
         const raw = decodeJson(body);
         if (Option.isNone(raw)) {
           yield* unserved("bad_event", { reason: "json" });
-          return null;
+          return { reply: { status: 204 } as const };
         }
         const selected = yield* Select.loadConfig(servingConfig).pipe(
           Effect.flatMap((config) =>
@@ -488,7 +495,7 @@ const make = Effect.gen(function* () {
         );
         if (!("selection" in selected)) {
           yield* unserved(selected.status, { reason: selected.reason });
-          return null;
+          return { reply: { status: 204 } as const };
         }
         let selection = selected.selection;
         const join = yield* resolveRun(selection.moment.session);
@@ -513,18 +520,18 @@ const make = Effect.gen(function* () {
             selection = { ...selection, owners: { ...selection.owners, ...asked.owners } };
           }
         }
-        return { selection, join, readChecks, cue };
+        return { work: { delivery, harness, selection, join, readChecks, cue } };
       }).pipe(Effect.timeoutOption(Duration.millis(workLeft)));
       if (Option.isNone(prepared)) {
         yield* unserved("over_budget");
         return { status: 204 } as const;
       }
-      if (prepared.value === null) return { status: 204 } as const;
-      const { selection, join, readChecks, cue } = prepared.value;
+      if ("reply" in prepared.value) return prepared.value.reply;
+      const { delivery, harness, selection, join, readChecks, cue } = prepared.value.work;
       const now = yield* nowSeconds;
       return state.decide({
         harness,
-        delivery: request.delivery,
+        delivery,
         selection,
         join,
         readChecks,

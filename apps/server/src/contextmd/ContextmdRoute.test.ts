@@ -117,15 +117,18 @@ const insertAttempt = (input: {
   }).pipe(Effect.orDie);
 
 // Environment sessions are the boundary here: "reader" holds orchestration:read, "weak" holds no scope.
+/** Credentials: `reader` may read, `weak` may not; a `slow-` prefix answers the same after 1.3 s. */
 const layerAuth = Layer.mock(EnvironmentAuth.EnvironmentAuth)({
   authenticateHttpRequest: (request) => {
-    const token = request.headers["authorization"]?.replace(/^Bearer /u, "");
-    if (token !== "reader" && token !== "weak") {
-      return Effect.fail(new EnvironmentAuth.ServerAuthMissingCredentialError({}));
-    }
-    return Effect.succeed({
-      scopes: token === "reader" ? ["orchestration:read"] : [],
-    } as unknown as EnvironmentAuth.AuthenticatedSession);
+    const header = request.headers["authorization"]?.replace(/^Bearer /u, "") ?? "";
+    const token = header.replace(/^slow-/u, "");
+    const answer =
+      token !== "reader" && token !== "weak"
+        ? Effect.fail(new EnvironmentAuth.ServerAuthMissingCredentialError({}))
+        : Effect.succeed({
+            scopes: token === "reader" ? ["orchestration:read"] : [],
+          } as unknown as EnvironmentAuth.AuthenticatedSession);
+    return header.startsWith("slow-") ? Effect.sleep(1300).pipe(Effect.andThen(answer)) : answer;
   },
 });
 
@@ -790,6 +793,26 @@ describe("contextmd routes", () => {
           ["tool_failure", "timeout"],
           ["user_message", "timeout"],
         ],
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("counts a slow authentication against the moment's budget (#251)", () =>
+    Effect.gen(function* () {
+      const s = yield* serve(
+        insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
+      );
+      // Both a credential that may read and one that may not answer only after 1.3 s.
+      for (const token of ["slow-reader", "slow-unknown"]) {
+        const started = yield* Clock.currentTimeMillis;
+        const r = yield* s.moment(claude("PostToolUse", servedSession, "echo a"), { token });
+        assert.isBelow((yield* Clock.currentTimeMillis) - started, MOMENT_BUDGET_MS);
+        // Cut before the credential is known: nothing is served.
+        assert.strictEqual(r.status, 204);
+      }
+      assert.deepStrictEqual(
+        s.log().map((m) => m.status),
+        ["over_budget", "over_budget"],
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
