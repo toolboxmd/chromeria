@@ -109,6 +109,20 @@ export interface Unserved {
 
 const utf8 = (text: string) => Buffer.byteLength(text, "utf8");
 
+/** A harness's cut mark: Grok ends a clipped hook reason with `… [+N chars]`. */
+const CUT_MARK = /…\s*\[\+\d+ chars\]/u;
+/**
+ * The model saw the start of this deny, cut by the harness: before the cut mark the text
+ * holds the probe's opening and then only more of the probe.
+ */
+const shownCut = (text: string, probe: string) => {
+  const mark = CUT_MARK.exec(text);
+  if (mark === null) return false;
+  const seen = text.slice(0, mark.index);
+  const start = seen.indexOf(probe.slice(0, Math.min(40, probe.length)));
+  return start >= 0 && probe.startsWith(seen.slice(start));
+};
+
 /** The longest prefix of `text` within `bytes` UTF-8 bytes, never splitting a character. */
 const cutBytes = (text: string, bytes: number) => {
   const buf = Buffer.from(text, "utf8").subarray(0, Math.max(0, bytes));
@@ -425,6 +439,16 @@ export class ServingState {
               r.claim,
               c.candidate_id,
             );
+            this.denyShown(r.claim, now);
+          }
+          continue;
+        }
+        // Grok shows a deny reason only up to a length, then `… [+N chars]` (#228): the model
+        // saw the rule cut, so the deny counts toward the cap but the rule is not read.
+        if (r.output.some((text) => shownCut(text, c.probe))) {
+          if (this.adjudicate(r.claim, "shown")) {
+            this.run("UPDATE claims SET whole = 0 WHERE rowid = ?", r.claim);
+            this.run("UPDATE candidates SET outcome = 'truncated' WHERE id = ?", c.candidate_id);
             this.denyShown(r.claim, now);
           }
           continue;
