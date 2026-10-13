@@ -337,7 +337,7 @@ describe("keys from files a shell command names (#234)", () => {
     entry(keys, "by-word", "Open the projection database read-only (bake entry).", {
       command: "chromeria-v2.sqlite",
     });
-    const config: ServingConfig = { exactKeys: [keys], sessionStart: [] };
+    const config: ServingConfig = { exactKeys: [keys], sessionStart: [], cue: [], cueUrl: null };
     const matched = (command: string, cwd = d) =>
       select(
         "claude",
