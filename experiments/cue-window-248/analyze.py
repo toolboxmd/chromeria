@@ -23,10 +23,14 @@ def pct(xs, q):
     return xs[min(len(xs) - 1, int(q * len(xs)))] if xs else float("nan")
 
 
+RUN_START = 1791913020  # 2026-10-13T17:37Z: the replay shared the GPU after this, slowing live Cue
+
+
 def live_curve():
-    """Live service ms by window tokens: (tokens sorted, ms) for a nearest-neighbour median over 50 calls."""
+    """Live service ms by window tokens, before the replay: a nearest-neighbour median over 50 calls."""
     rows = sorted((j["window_tokens"], j["ms"]) for j in (json.loads(c) for (c,) in sqlite3.connect(CM, uri=True)
-                  .execute("SELECT cue_json FROM moments WHERE cue_status = 'ok' AND cue_json IS NOT NULL")))
+                  .execute("SELECT cue_json FROM moments WHERE cue_status = 'ok' AND cue_json IS NOT NULL AND received_at < ?",
+                  (RUN_START,))))
     toks = [t for t, _ in rows]
 
     def at(t):
