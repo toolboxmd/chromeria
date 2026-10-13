@@ -526,6 +526,40 @@ describe("ServingState deny length (#229)", () => {
   });
 });
 
+describe("ServingState deny length, long targets (#229, Sol review)", () => {
+  const profile: Profile = {
+    ...GROK,
+    deny_limit_bytes: 256,
+    heads: { deny: "The user's own ContextMD rule stopped this call:", context: "context-head" },
+  };
+  const pointerTo = (target: string) =>
+    entry("vc", "AgentsMD: follow the version-control procedure before committing.", {
+      must_know: true,
+      rule: "pointer",
+      target,
+      deny_text: `Read ${target} in full, then run the same call again.\nAgentsMD: follow the version-control procedure before committing.`,
+    });
+
+  it("drops the head rather than cut a target that fits without it", () => {
+    const h = makeHarness();
+    const target = `/Users/u/dev/${"a".repeat(180)}/procedures/version-control/index.md`; // 229 bytes
+    const reason = h.text(h.fire({ kind: "pre_tool", profile, candidates: [pointerTo(target)] }))!;
+    assert.isAtMost(Buffer.byteLength(reason), 256);
+    assert.include(reason, `Read ${target} in full`);
+  });
+
+  it("denies nothing when even the read line cannot fit, and says why", () => {
+    const h = makeHarness();
+    const target = `/Users/u/dev/${"a".repeat(240)}/index.md`;
+    const r = h.fire({ kind: "pre_tool", profile, candidates: [pointerTo(target)] });
+    assert.strictEqual(r.status, 204);
+    const rows = h.db
+      .prepare("SELECT outcome, reason FROM candidates WHERE entry = 'vc'")
+      .all() as Array<{ outcome: string; reason: string }>;
+    assert.deepStrictEqual(rows, [{ outcome: "cut_budget", reason: "target" }]);
+  });
+});
+
 describe("ServingState deny evidence (two hooks deny one call)", () => {
   const CLAUDE: Profile = { ...PROFILE, deny_evidence: "projection" };
   /** The strings of a denied call's projected `output`: what the model was shown. */
