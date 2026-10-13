@@ -1,7 +1,7 @@
 /**
  * Which files a tool call read, so a pointer rule can lift once its target is read in full.
  *
- * A Read-like tool's path arguments count, and in a shell command the operands of
+ * A file-reading tool's file argument counts, and in a shell command the operands of
  * a reader (`cat`, `sed`, `head`, `rg` ...) in its own segment, resolved against
  * `cwd` and any earlier `cd`. Only files that exist count. The serving state
  * records a read at the tool result, and only when the call did not fail.
@@ -11,8 +11,9 @@
  * `cd <dir> &&` steps, then `cat`, `nl`, `bat`, `less`, `more` or `view` with
  * known whole-file options and file operands, at most `2>/dev/null`, and no
  * other shell syntax. Shell is open-ended, so every other shape is partial: its
- * reader operands are still logged, but never lift. A Read-like call is full only
- * without an offset, limit or line range. Either is partial when the result
+ * reader operands are still logged, but never lift. A file-reading tool (Claude
+ * Code `Read`, OpenCode `read`, Grok `read_file`) counts only for its file field,
+ * and is full only without an offset, limit, line or page range. Either is partial when the result
  * shows it was cut (a truncation marker, or fewer lines returned than the file
  * has). A missed full read only costs the deny cap.
  */
@@ -34,7 +35,14 @@ const RANGE_FIELDS = [
   "startLine",
   "endLine",
   "view_range",
+  "pages",
 ];
+/** File-reading tools and the input field naming their file: Claude Code, OpenCode, Grok. */
+const READ_TOOLS: Record<string, string> = {
+  Read: "file_path",
+  read: "filePath",
+  read_file: "target_file",
+};
 /** Options that keep a reader's output whole; any other option makes the read partial. */
 const WHOLE_OPTIONS: Record<string, ReadonlySet<string>> = {
   cat: new Set(["-n", "-b", "-s", "-v", "-A", "-e", "-t"]),
@@ -46,14 +54,15 @@ const WHOLE_OPTIONS: Record<string, ReadonlySet<string>> = {
   view: new Set(),
 };
 /** Shell syntax that can hide, condition, redirect or substitute a read. */
-const SHELL_SYNTAX = /[;|&<>`$(){}*?!\\\n]/u;
+const SHELL_SYNTAX = /[;|&<>`$(){}*?!\\\n'"]/u;
+/** Operands a full read refuses: `..` after a symlink or `cd -` can name another file. */
+const UNSAFE_PATH = /(?:^|\/)\.\.(?:\/|$)|^-$/u;
 /** How harnesses mark a cut result: Codex, Claude Code, OpenCode, Grok. */
 const TRUNCATED =
   /\b\d+ (?:tokens|chars|characters|lines|bytes) (?:truncated|omitted)\b|omitted \d+ of \d+ lines|\[\+\d+ chars\]|File has more lines|Output (?:was )?truncated/iu;
 const SEGMENT = /(\|\||&&|;|\n|\|)/u;
 const WORD = /'([^']*)'|"([^"]*)"|(\S+)/gu;
 const WRAPPERS = new Set(["command", "exec", "nohup", "time", "env", "sudo"]);
-const READ_TOOL = /read|view|open/iu;
 
 const strings = (value: unknown): string[] => {
   if (typeof value === "string") return [value];
@@ -71,6 +80,8 @@ const cutByMetadata = (value: unknown): boolean => {
   if (typeof numLines === "number" && typeof totalLines === "number" && numLines < totalLines)
     return true;
   if (typeof startLine === "number" && startLine > 1) return true;
+  // Claude Code's Read also says so outright, even when the line counts match.
+  if (Object.entries(o).some(([k, v]) => /truncat/iu.test(k) && v === true)) return true;
   return Object.values(o).some(cutByMetadata);
 };
 
@@ -105,7 +116,7 @@ const fullRead = Effect.fn("contextmd.fullRead")(function* (command: string, cwd
   let base = cwd;
   for (const step of steps.slice(0, -1)) {
     const ws = words(step);
-    if (ws.length !== 2 || ws[0] !== "cd") return null;
+    if (ws.length !== 2 || ws[0] !== "cd" || UNSAFE_PATH.test(ws[1]!)) return null;
     base = path.resolve(base, expandHomePathWith(ws[1]!, path));
   }
   const ws = words(steps.at(-1)!);
@@ -114,6 +125,7 @@ const fullRead = Effect.fn("contextmd.fullRead")(function* (command: string, cwd
   const args = ws.slice(1);
   if (args.some((a) => (a.startsWith("-") || a.startsWith("+")) && !allowed.has(a))) return null;
   const operands = args.filter((a) => !a.startsWith("-"));
+  if (operands.some((a) => UNSAFE_PATH.test(a))) return null;
   const files = yield* existing(operands, base);
   // Every operand must be a file that exists: anything else is not a plain read.
   return files.length === operands.length ? files : null;
@@ -164,11 +176,13 @@ export const reads = Effect.fn("contextmd.reads")(function* (
   if (shellTools.includes(tool)) {
     if (typeof input["command"] !== "string") return [] as Read[];
     found = yield* shellReads(input["command"], base);
-  } else if (READ_TOOL.test(tool.split("__").at(-1) ?? "")) {
+  } else if (READ_TOOLS[tool] !== undefined) {
+    const target = input[READ_TOOLS[tool]];
+    if (typeof target !== "string") return [] as Read[];
     const kind = RANGE_FIELDS.some((f) => input[f] !== undefined && input[f] !== null)
       ? "read_partial"
       : "read_tool";
-    found = (yield* existing(strings(toolInput), base)).map((p): Read => ({ path: p, kind }));
+    found = (yield* existing([target], base)).map((p): Read => ({ path: p, kind }));
   }
   const cut = cutByMetadata(response) || strings(response).some((s) => TRUNCATED.test(s));
   // A file read in full by one segment stays full even if another segment only grepped it.

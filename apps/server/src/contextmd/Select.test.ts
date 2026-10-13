@@ -179,6 +179,7 @@ describe("reads", () => {
       const d = tmp();
       const f = NodePath.join(d, "a.md");
       NodeFS.writeFileSync(f, "x\n");
+      NodeFS.mkdirSync(NodePath.join(d, "x")); // so x/../a.md exists
       const kind = (tool: string, input: unknown) =>
         reads(tool, input, d, ["Bash"]).pipe(Effect.map((rs) => rs.map((x) => x.kind)));
       for (const command of [`cat ${f}`, `nl -ba ${f}`, `bat ${f}`, `less ${f}`]) {
@@ -201,6 +202,13 @@ describe("reads", () => {
       ]);
       assert.deepStrictEqual(yield* kind("Read", { file_path: f, offset: 10 }), ["read_partial"]);
       assert.deepStrictEqual(yield* kind("Read", { file_path: f, limit: 50 }), ["read_partial"]);
+      assert.deepStrictEqual(yield* kind("Read", { file_path: f, pages: "1" }), ["read_partial"]);
+      // Only file-reading tools, and only their file field, count.
+      assert.deepStrictEqual(
+        yield* kind("mcp__t3_code__t3_thread_update", { action: "rename", title: f }),
+        [],
+      );
+      assert.deepStrictEqual(yield* kind("Read", { file_path: "missing.md", note: f }), []);
       assert.deepStrictEqual(yield* kind("read", { filePath: f, offset: 1, limit: 20 }), [
         "read_partial",
       ]);
@@ -221,10 +229,13 @@ describe("reads", () => {
         `cat /dev/null 2> ${f}`,
         `cat ${f} &`,
         `cat ${f} missing.md`,
+        `cat "${f}"-n`,
+        `cat '${f}'`,
+        `cat ${d}/x/../a.md`,
       ]) {
         assert.deepStrictEqual(yield* kind("Bash", { command }), ["shell_partial"], command);
       }
-      for (const command of [`echo ${f} && cat missing.md`, `ls ${f}`]) {
+      for (const command of [`echo ${f} && cat missing.md`, `ls ${f}`, `cd - && cat a.md`]) {
         assert.deepStrictEqual(yield* kind("Bash", { command }), [], command);
       }
       for (const command of [
@@ -265,6 +276,24 @@ describe("reads", () => {
         file: { filePath: f, content: "x", numLines, startLine, totalLines },
       });
       assert.deepStrictEqual(yield* kind("Read", { file_path: f }, file(10, 1, 10)), ["read_tool"]);
+      assert.deepStrictEqual(
+        yield* kind(
+          "Read",
+          { file_path: f },
+          {
+            type: "text",
+            file: {
+              filePath: f,
+              content: "x",
+              numLines: 1,
+              startLine: 1,
+              totalLines: 1,
+              truncatedByTokenCap: true,
+            },
+          },
+        ),
+        ["read_partial"],
+      );
       assert.deepStrictEqual(yield* kind("Read", { file_path: f }, file(2000, 1, 2600)), [
         "read_partial",
       ]);
