@@ -347,6 +347,37 @@ describe("ServingState deny lifts", () => {
         .status,
       204,
     );
+    // The read lifted it; the cap did not.
+    assert.include(h.outcomes("vc"), "lifted");
+    assert.notInclude(h.outcomes("vc"), "not_read_capped");
+  });
+
+  it("lifts on a projected full read below the cap, and never on a projected partial read", () => {
+    for (const kind of ["shell_partial", "read_partial"] as const) {
+      const h = makeHarness();
+      const rule = pointer("vc", target);
+      h.fire({ kind: "pre_tool", candidates: [rule] });
+      h.fire({ kind: "tool_result", failed: null, reads: [{ path: target, kind }] });
+      const [id] = h.state.pendingReads("claude", "s1");
+      const next = h.fire({
+        kind: "pre_tool",
+        candidates: [rule],
+        readChecks: [{ toolUseId: id!, ok: true }],
+      });
+      assert.strictEqual(h.decision(next), "deny", kind);
+      assert.notInclude(h.outcomes("vc"), "lifted", kind);
+    }
+    const h = makeHarness();
+    const rule = pointer("vc", target);
+    h.fire({ kind: "pre_tool", candidates: [rule] });
+    h.fire({ kind: "tool_result", failed: null, reads: [{ path: target, kind: "shell_full" }] });
+    const [id] = h.state.pendingReads("claude", "s1");
+    assert.strictEqual(
+      h.fire({ kind: "pre_tool", candidates: [rule], readChecks: [{ toolUseId: id!, ok: true }] })
+        .status,
+      204,
+    );
+    assert.deepStrictEqual(h.outcomes("vc"), ["injected", "lifted", "passed"]);
   });
 
   it("does not count a read that can never be checked (no failure signal, no tool-use id)", () => {

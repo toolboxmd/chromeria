@@ -204,6 +204,58 @@ describe("reads", () => {
       assert.deepStrictEqual(yield* kind("read", { filePath: f, offset: 1, limit: 20 }), [
         "read_partial",
       ]);
+      // Range options, output that never reaches the agent, and paths that are not operands.
+      for (const command of [
+        `bat -r 1:5 ${f}`,
+        `batcat --line-range 1:5 ${f}`,
+        `less +40 ${f}`,
+        `cat ${f} > /dev/null`,
+        `cat ${f} >&2`,
+        `cat <<< ${f}`,
+      ]) {
+        assert.deepStrictEqual(yield* kind("Bash", { command }), ["shell_partial"], command);
+      }
+      for (const command of [`echo ${f} && cat missing.md`, `ls ${f}`]) {
+        assert.deepStrictEqual(yield* kind("Bash", { command }), [], command);
+      }
+      assert.deepStrictEqual(yield* kind("Bash", { command: `/bin/cat ${f} 2>/dev/null` }), [
+        "shell_full",
+      ]);
+      assert.deepStrictEqual(yield* kind("Bash", { command: `grep -n x ${f}; cat ${f}` }), [
+        "shell_full",
+      ]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("call a read partial when its result shows it was cut", () =>
+    Effect.gen(function* () {
+      const d = tmp();
+      const f = NodePath.join(d, "a.md");
+      NodeFS.writeFileSync(f, "x\n");
+      const kind = (tool: string, input: unknown, response: unknown) =>
+        reads(tool, input, d, ["Bash"], response).pipe(Effect.map((rs) => rs.map((x) => x.kind)));
+      const cat = { command: `cat ${f}` };
+      assert.deepStrictEqual(yield* kind("Bash", cat, "x\n"), ["shell_full"]);
+      for (const output of [
+        "Total output lines: 900\n[... omitted 400 of 900 lines ...]",
+        "x\n…2048 tokens truncated…",
+        "x … [+54 chars]",
+        { stdout: "x", stderr: "", note: "Output truncated" },
+      ]) {
+        assert.deepStrictEqual(yield* kind("Bash", cat, output), ["shell_partial"], String(output));
+      }
+      const file = (numLines: number, startLine: number, totalLines: number) => ({
+        type: "text",
+        file: { filePath: f, content: "x", numLines, startLine, totalLines },
+      });
+      assert.deepStrictEqual(yield* kind("Read", { file_path: f }, file(10, 1, 10)), ["read_tool"]);
+      assert.deepStrictEqual(yield* kind("Read", { file_path: f }, file(2000, 1, 2600)), [
+        "read_partial",
+      ]);
+      assert.deepStrictEqual(
+        yield* kind("read", { filePath: f }, "x\n(File has more lines. Use 'offset')"),
+        ["read_partial"],
+      );
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

@@ -201,7 +201,7 @@ export const select = Effect.fn("contextmd.select")(function* (
   // state holds it until the projected command item shows exit code 0.
   const momentReads =
     kind === "tool_result" || kind === "tool_failure"
-      ? yield* reads(tool ?? "", toolInput, cwd, harness.shellTools)
+      ? yield* reads(tool ?? "", toolInput, cwd, harness.shellTools, at(raw, f.output))
       : [];
 
   if (kind === "session_start") {
