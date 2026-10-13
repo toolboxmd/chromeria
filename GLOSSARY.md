@@ -176,10 +176,9 @@ _Avoid_: submission, prompt (as a record)
 
 **Created by**:
 Who wrote an input. T3 `createdBy` is `user`, `agent` or `system`; Agent
-Observer's `origin` is `human`, `agent` or `unknown` today, where `human` maps
-to `user`, `unknown` means evidence is missing, and `system` has no Observer
-value. Observer's rename to `created_by` and `user` is planned.
-_Avoid_: origin (in new names)
+Observer's `created_by` is `user`, `agent` or `unknown`. `system` is T3-only and
+`unknown`, meaning evidence is missing, is Observer-only.
+_Avoid_: origin, human (Observer's old names, kept as aliases for one release)
 
 ## Work and roles
 
@@ -244,9 +243,8 @@ _Avoid_: intervention
 
 **Intervention**:
 A user message, interrupt or tool-call rejection in a main session that Agent
-Observer selects for a judge. Observer's code says moment until its planned
-schema-3 rename.
-_Avoid_: moment (in new names)
+Observer selects for a judge.
+_Avoid_: moment (Observer's old command name, kept as an alias)
 
 **Correction**:
 An intervention that changes what an agent did, as a judge rules it.
