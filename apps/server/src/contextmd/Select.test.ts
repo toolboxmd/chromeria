@@ -438,9 +438,11 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
         pre.candidates.map((c) => [c.entry, c.rule]),
         [["push", "pointer"]],
       );
-      assert.include(
-        pre.candidates[0]!.deny_text!,
-        `Read ${target} in full, then run the same call again.`,
+      // The target comes first, so a harness that cuts a long deny cuts the rule text, not the path.
+      assert.isTrue(
+        pre.candidates[0]!.deny_text!.startsWith(
+          `Read ${target} in full, then run the same call again.\n`,
+        ),
       );
       const read = yield* sel("claude", {
         ...base,
@@ -697,6 +699,18 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
       assert.deepStrictEqual(yield* readOf("# Rules\n", { exit: undefined, truncated: true }), [
         "read_partial",
       ]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("gives Grok a deny that fits its 256-character reason, with a short head (#229)", () =>
+    Effect.gen(function* () {
+      const { ws, sel } = setup();
+      const grok = yield* sel("grok", { hook_event_name: "stop", session_id: "S", cwd: ws });
+      const claude = yield* sel("claude", { hook_event_name: "Stop", session_id: "S", cwd: ws });
+      assert.strictEqual(grok.profile.deny_limit_bytes, 256);
+      assert.isAtMost(Buffer.byteLength(grok.profile.heads.deny), 80);
+      assert.include(grok.profile.heads.deny, "user's own");
+      assert.isUndefined(claude.profile.deny_limit_bytes);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
