@@ -23,6 +23,7 @@ import * as Result from "effect/Result";
 
 import * as IssueLinks from "../issueLinks/IssueLinks.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as GitHubApi from "../sourceControl/GitHubApi.ts";
 import { type GraphQlDocument, readGraphQlPages } from "../sourceControl/githubGraphQl.ts";
 import {
@@ -101,6 +102,7 @@ const restRepository = (repository: string) => {
 const make = Effect.gen(function* () {
   const api = yield* GitHubApi.GitHubApi;
   const projects = yield* ProjectService.ProjectService;
+  const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const issueLinks = yield* IssueLinks.IssueLinks;
 
   /**
@@ -129,6 +131,21 @@ const make = Effect.gen(function* () {
   const workspace = projects.listShells().pipe(
     Effect.mapError((cause) =>
       failure("listProjects", cause, "The project list could not be read."),
+    ),
+    // A shell carries its identity only while a short cache holds it, and resolves a missing one
+    // in the background. A read needs it now, so it waits for the missing ones, as pull request
+    // discovery does.
+    Effect.flatMap((shells) =>
+      Effect.forEach(
+        shells,
+        (shell) =>
+          shell.repositoryIdentity
+            ? Effect.succeed(shell)
+            : repositoryIdentities
+                .resolve(shell.workspaceRoot)
+                .pipe(Effect.map((repositoryIdentity) => ({ ...shell, repositoryIdentity }))),
+        { concurrency: 16 },
+      ),
     ),
     Effect.map((shells): Workspace => {
       const repositories: Array<IssueListRepository> = [];
