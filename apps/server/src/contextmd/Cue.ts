@@ -79,6 +79,11 @@ export const httpTransport =
         resolve({ kind: "connect_failed" });
         return;
       }
+      // Only plain HTTP over the tailnet: any other scheme can never connect.
+      if (url.protocol !== "http:") {
+        resolve({ kind: "connect_failed" });
+        return;
+      }
       let done = false;
       const finish = (r: Awaited<ReturnType<Transport>>) => {
         if (done) return;
@@ -88,10 +93,16 @@ export const httpTransport =
         req.destroy();
         resolve(r);
       };
-      const req = NodeHttp.request(url, {
-        method,
-        headers: body === null ? {} : { "content-type": "application/json" },
-      });
+      let req: NodeHttp.ClientRequest;
+      try {
+        req = NodeHttp.request(url, {
+          method,
+          headers: body === null ? {} : { "content-type": "application/json" },
+        });
+      } catch {
+        resolve({ kind: "connect_failed" });
+        return;
+      }
       const connectTimer = setTimeout(() => finish({ kind: "connect_failed" }), CONNECT_MS);
       const totalTimer = setTimeout(() => finish({ kind: "timeout" }), timeoutMs);
       req.on("socket", (socket) => {
@@ -174,21 +185,27 @@ export class CueClient {
     return this.available;
   }
 
+  /** Never rejects: a transport that throws counts as an error for this call. */
   private request(req: CueRequest): Promise<CueReply> {
     const t0 = this.clock();
-    return this.transport(
-      "POST",
-      "/score",
-      JSON.stringify({ ...req, deadline_ms: DEADLINE_MS }),
-      DEADLINE_MS + 500,
-    ).then((r) => {
-      const ms = this.clock() - t0;
-      if (r.kind !== "reply") {
-        if (r.kind === "connect_failed") this.markUnavailable();
-        return { status: r.kind, ms, waitMs: null } satisfies CueReply;
-      }
-      return parseScore(r.status, r.body, ms);
-    });
+    return Promise.resolve()
+      .then(() =>
+        this.transport(
+          "POST",
+          "/score",
+          JSON.stringify({ ...req, deadline_ms: DEADLINE_MS }),
+          DEADLINE_MS + 500,
+        ),
+      )
+      .then((r) => {
+        const ms = this.clock() - t0;
+        if (r.kind !== "reply") {
+          if (r.kind === "connect_failed") this.markUnavailable();
+          return { status: r.kind, ms, waitMs: null } satisfies CueReply;
+        }
+        return parseScore(r.status, r.body, ms);
+      })
+      .catch((): CueReply => ({ status: "error", ms: this.clock() - t0, waitMs: null }));
   }
 
   private markUnavailable() {
@@ -202,6 +219,8 @@ export class CueClient {
     try {
       const r = await this.transport("GET", "/health", null, 2000);
       if (r.kind === "reply" && r.status === 200) this.available = true;
+      return this.available;
+    } catch {
       return this.available;
     } finally {
       this.probing = false;

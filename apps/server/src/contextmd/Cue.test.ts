@@ -100,6 +100,17 @@ describe("Cue client", () => {
     assert.strictEqual((await c.collect("never-started", 20)).status, "lost");
   });
 
+  it("never rejects or throws when the transport does, so the server keeps running", async () => {
+    const throwing: Transport = () => {
+      throw new Error("boom");
+    };
+    const c = new CueClient(throwing);
+    assert.strictEqual((await c.score(REQ)).status, "error");
+    assert.strictEqual(c.start("k", REQ).status, "started");
+    assert.strictEqual((await c.collect("k", 50)).status, "error");
+    assert.isTrue(await c.probe());
+  });
+
   it("waits at most the given time for a score it needs now", async () => {
     const { transport } = scripted([new Promise(() => {})]);
     const t0 = Date.now();
@@ -132,6 +143,14 @@ describe("Cue HTTP transport", () => {
       });
     } finally {
       slow.close();
+    }
+  });
+
+  it("treats a URL that is not plain HTTP as unreachable instead of throwing", async () => {
+    for (const base of ["https://127.0.0.1:1", "ftp://example", "not a url"]) {
+      assert.deepStrictEqual(await httpTransport(base)("GET", "/health", null, 1000), {
+        kind: "connect_failed",
+      });
     }
   });
 

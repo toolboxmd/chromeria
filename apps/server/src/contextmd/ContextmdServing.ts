@@ -233,7 +233,10 @@ const make = Effect.gen(function* () {
         (c) => Effect.promise(() => c.probe()),
         { discard: true },
       ),
-    ).pipe(Effect.repeat(Schedule.spaced(`${PROBE_SECONDS} seconds`))),
+    ).pipe(
+      Effect.catchCause((cause) => Effect.logWarning("ContextMD Cue probe failed", { cause })),
+      Effect.repeat(Schedule.spaced(`${PROBE_SECONDS} seconds`)),
+    ),
   );
 
   const resolveRun = (session: string) =>
