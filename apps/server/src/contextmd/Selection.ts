@@ -27,6 +27,8 @@ export interface Candidate {
   readonly rule: "pointer" | "inline" | null;
   readonly target: string | null;
   readonly deny_text?: string | null;
+  /** Cue's score (logit yes minus no) for an `intent` candidate. */
+  readonly score?: number | null;
 }
 
 /** A finding that is not a candidate: an unreadable key, a missing file, failure evidence. */
@@ -63,6 +65,10 @@ export interface Selection {
     /** True on failure evidence, false on proven success, null when the harness cannot tell. */
     readonly failed: boolean | null;
     readonly reads: ReadonlyArray<Read>;
+    /** The tool call, `<tool>: <input>`, for Cue's window at tool moments; never logged. */
+    readonly call?: string | null;
+    /** The end of a tool's output, for Cue's window after a failure; never logged. */
+    readonly output?: string | null;
   };
   readonly candidates: ReadonlyArray<Candidate>;
   readonly notes: ReadonlyArray<Note>;
