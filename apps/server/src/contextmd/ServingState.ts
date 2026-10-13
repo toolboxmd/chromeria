@@ -663,21 +663,40 @@ export class ServingState {
         );
       case "tool_result":
       case "tool_failure": {
-        if (!delivering && sel.profile.carry_to !== null) {
-          this.carry(harness, sel, epoch, momentId, joined.runId, now);
+        const after = this.dropAfterAction(sel, momentId);
+        if (!delivering && after.profile.carry_to !== null) {
+          this.carry(harness, after, epoch, momentId, joined.runId, now);
           return finish({ status: 204 });
         }
         if (!delivering) {
-          for (const c of sel.candidates) {
+          for (const c of after.candidates) {
             this.insertCandidate(momentId, { ...this.base(c), outcome: "no_seam" });
           }
           return finish({ status: 204 });
         }
-        return finish(...this.serveContext(sel, epoch, momentId, joined.runId, input.delivery));
+        return finish(...this.serveContext(after, epoch, momentId, joined.runId, input.delivery));
       }
       default:
         return finish({ status: 204 });
     }
+  }
+
+  /**
+   * A must-know rule matched by a command or path key governs that very call, which has
+   * now run: serving it as context would remind the agent after the action (#231). Rules
+   * keyed on an error only exist after the call and stay.
+   */
+  private dropAfterAction(sel: Selection, momentId: number): Selection {
+    const late = (c: Candidate) =>
+      c.must_know && c.key !== null && /^(?:command|path):/u.test(c.key);
+    for (const c of sel.candidates.filter(late)) {
+      this.insertCandidate(momentId, {
+        ...this.base(c),
+        outcome: "suppressed",
+        reason: "after_action",
+      });
+    }
+    return { ...sel, candidates: sel.candidates.filter((c) => !late(c)) };
   }
 
   private base(c: Candidate) {
