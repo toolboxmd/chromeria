@@ -1182,7 +1182,7 @@ export class ServingState {
     const left = this.budgetLeft(runId);
     const out = new Composer(
       sel.profile.heads.deny,
-      sel.profile.limit_bytes,
+      Math.min(sel.profile.limit_bytes, sel.profile.deny_limit_bytes ?? sel.profile.limit_bytes),
       Math.max(left.deny, 0),
     );
     const claims: Claim[] = [];
