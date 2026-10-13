@@ -136,11 +136,14 @@ are evidence for review, not proof that a feature has been adopted upstream.
 {
   "id": "glossary",
   "purpose": "Keep Chromeria and its product family terminology consistent.",
-  "issues": ["https://github.com/toolboxmd/t3code/issues/11"],
+  "issues": [
+    "https://github.com/toolboxmd/t3code/issues/11",
+    "https://github.com/toolboxmd/chromeria/issues/218"
+  ],
   "prs": ["https://github.com/toolboxmd/t3code/pull/11"],
   "newFiles": ["GLOSSARY.md"],
   "upstreamFiles": [],
-  "sharedFiles": [],
+  "sharedFiles": ["AGENTS.md"],
   "keywords": ["Chromeria", "Luxin", "Drafter", "Prism"]
 }
 ```
