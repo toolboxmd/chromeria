@@ -12,6 +12,9 @@ import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import { ThreadCommandExecutor } from "../orchestration-v2/ThreadCommandExecutor.ts";
 import { readRetirementState } from "./retirement.ts";
 
+const isUndeliveredKind = (request: { readonly kind: string }) =>
+  request.kind === "dynamic_tool_call" || request.kind === "auth_refresh";
+
 /** Acquires each recipient lock itself. Call outside thread locks and pass the
  * already-serialized dispatch path, which must not acquire that lock again. */
 export const reconcileChildRequests = Effect.fn("childThreads.reconcileRequests")(function* <E>(
@@ -22,6 +25,9 @@ export const reconcileChildRequests = Effect.fn("childThreads.reconcileRequests"
   const serialization = yield* ThreadCommandExecutor;
   const receiptsStore = yield* CommandReceiptStoreV2;
   const child = yield* projections.getThreadRecords(childId, ["runtimeRequests"]);
+  // Startup runs this for every subagent thread; without requests to deliver,
+  // loading the ancestors only reads large parent threads once per child (#256).
+  if (child.runtimeRequests.every(isUndeliveredKind)) return;
   const ancestors: Array<ThreadId> = [];
   const seen = new Set<ThreadId>([childId]);
   let lineage = child.thread.lineage;
@@ -44,7 +50,7 @@ export const reconcileChildRequests = Effect.fn("childThreads.reconcileRequests"
           const parent = yield* projections.getThreadRecords(parentId, ["runs", "messages"]);
           const parentRetirement = yield* readRetirementState(parentId);
           for (const request of current.runtimeRequests) {
-            if (request.kind === "dynamic_tool_call" || request.kind === "auth_refresh") continue;
+            if (isUndeliveredKind(request)) continue;
             const identity = `child-request:${childId}:${request.id}:${parentId}`;
             const messageId = MessageId.make(identity);
             const pending =
