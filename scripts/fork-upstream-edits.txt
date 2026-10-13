@@ -195,3 +195,4 @@ apps/server/src/provider/acp/XAiAcpExtension.test.ts
 apps/server/src/provider/acp/XAiAcpExtension.ts
 apps/server/src/orchestration-v2/Adapters/GrokAdapterV2.test.ts
 apps/server/src/orchestration-v2/Adapters/GrokAdapterV2.ts
+apps/web/src/components/chat/MermaidDiagram.tsx

@@ -123,6 +123,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   issues: Schema.optionalKey(Schema.Boolean),
   /** Fork: server serves thread ↔ GitHub Issue links (`issueLinks.*`, toolboxmd/t3code#28). */
   issueLinks: Schema.optionalKey(Schema.Boolean),
+  /** Fork: server reads a project's feature map (`featureMap.read`, toolboxmd/chromeria#235). */
+  featureMap: Schema.optionalKey(Schema.Boolean),
   pullRequestStackActions: Schema.optionalKey(Schema.Boolean),
   serverSelfUpdate: Schema.optionalKey(ServerSelfUpdateCapability),
   /** Manual commands must update this install, not the host's default global prefix. */

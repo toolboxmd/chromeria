@@ -22,6 +22,7 @@ import {
   AuthRelayReadScope,
   AuthRelayWriteScope,
   AuthTerminalOperateScope,
+  FEATURE_MAP_WS_METHODS,
   ISSUE_WS_METHODS,
   ORCHESTRATION_V2_WS_METHODS,
   AuthTerminalReadScope,
@@ -211,6 +212,8 @@ export const RPC_REQUIRED_SCOPES = {
   [ISSUE_WS_METHODS.issuesList]: AuthOrchestrationReadScope,
   [ISSUE_WS_METHODS.issuesDetail]: AuthOrchestrationReadScope,
   [ISSUE_WS_METHODS.issuesStates]: AuthOrchestrationReadScope,
+  // Fork: feature map (toolboxmd/chromeria#235).
+  [FEATURE_MAP_WS_METHODS.read]: AuthOrchestrationReadScope,
   // Fork: Issue links (toolboxmd/t3code#28).
   ...ISSUE_LINK_RPC_SCOPES,
 } as const satisfies Readonly<Record<WsRpcMethod, AuthEnvironmentScope>>;

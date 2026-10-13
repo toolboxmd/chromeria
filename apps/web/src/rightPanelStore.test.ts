@@ -92,6 +92,33 @@ describe("rightPanelStore", () => {
     }
   });
 
+  it("opens the Map as one tab per thread and restores it, dropping kinds this build lacks", () => {
+    const store = useRightPanelStore.getState();
+    store.open(refA, "map");
+    store.open(refA, "map");
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces).toEqual([{ id: "map", kind: "map" }]);
+    expect(state.activeSurfaceId).toBe("map");
+
+    const restored = migratePersistedRightPanelState({
+      byThreadKey: {
+        thread: {
+          isOpen: true,
+          activeSurfaceId: "map",
+          surfaces: [
+            { id: "map", kind: "map" },
+            { id: "timeline", kind: "timeline" },
+          ],
+        },
+      },
+    }).byThreadKey.thread;
+    expect(restored).toEqual({
+      isOpen: true,
+      activeSurfaceId: "map",
+      surfaces: [{ id: "map", kind: "map" }],
+    });
+  });
+
   it("records single and bulk tab closes, newest first", () => {
     const store = useRightPanelStore.getState();
     const pr = pullRequestSurface({

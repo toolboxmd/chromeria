@@ -369,3 +369,46 @@ but not change them; give it the permission with a fresh pairing link, as descri
 To link a thread by hand, open its **Linked PRs and Issues** panel, choose **Link** and enter the
 Issue's number or URL; the same panel removes a link, and a removed branch link stays removed.
 Agents can link and unlink their own thread with the `link_issue` and `unlink_issue` MCP tools.
+
+## Feature map
+
+The **Map** tab beside a thread draws the thread's project from `docs/map.md` on its GitHub default
+branch, and colours each part by what GitHub shows now: planned, working, broken or done. Open it
+from the add-tab menu (`A`). The tab rereads GitHub every minute while shown and when the window
+regains focus. If GitHub is unreachable, it keeps the last map and shows when it was read.
+
+The file holds one fenced `mermaid` flowchart. Declare each part once as `ID["Name"]`, and bind it
+on its own comment line, which GitHub ignores:
+
+```text
+C["Capture"]
+%% C: #7 PR #22
+SR["Serve report"]
+%% SR: PR #38 #15
+S["Session"]
+%% S: context
+```
+
+A ref is `#7`, `PR #38`, `owner/repo#231` or `owner/repo PR #227`, on the project's GitHub host. The
+first ref is the primary ref, and it alone decides planned, working or done:
+
+| Primary ref | Planned                                     | Working                                                  | Done                                 |
+| ----------- | ------------------------------------------- | -------------------------------------------------------- | ------------------------------------ |
+| Issue       | Open, with no open closing PR and no thread | Open, with an open closing PR or a linked working thread | Closed as completed                  |
+| PR          | (never)                                     | Open, or merged into a branch other than the default     | Merged into its repository's default |
+
+A part is broken instead while any open Issue among its refs has the `bug` label, or while an open
+PR of the part (a PR ref, or a PR that closes its primary Issue) fails its checks. A merged
+component PR does not finish an open Issue: the part stays planned or working until GitHub closes
+the Issue. A primary ref closed as not planned, or closed unmerged, shows as cancelled. A ref that
+GitHub does not return, because it is private or deleted, shows as unavailable. If an open Issue
+has more labels or closing PRs than one GitHub page holds, a part they could break shows as
+incomplete instead of a state. A primary ref the map cannot read shows as unknown; the next ref
+never takes its place. `context` marks a part another project owns; it is drawn grey and never
+counted as missing.
+
+A part that a thread is working on carries a thread icon; select it to open that thread. Select a
+part, or its row in the list under the drawing, to open its primary ref. The gaps list shows parts
+with no refs, Issues bound to more than one part, open Issues on no part (marked partial after the
+first 500), cancelled, unavailable or incomplete refs, ref lines that name no part, and refs the map
+cannot read.

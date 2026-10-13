@@ -21,6 +21,7 @@ import { pullRequestPanelContext } from "../pullRequest/pullRequestDetail.logic"
 import { PullRequestDetailPanel } from "../pullRequest/PullRequestDetailPanel";
 import { PullRequestDetailGhost } from "../pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "../pullRequest/PullRequestsUnavailableState";
+import { FeatureMapPanel } from "../featureMap/FeatureMapPanel";
 import { ThreadIssuePanel } from "../issues/ThreadIssuePanel";
 import { ThreadLinksPanel } from "../issues/ThreadLinksPanel";
 
@@ -77,6 +78,7 @@ export function RightPanelSurfaceContent(props: {
   readonly terminal: RightPanelTerminalProps;
   readonly pullRequest: RightPanelPullRequestProps;
   readonly files: RightPanelFileProps;
+  readonly map: { readonly supported: boolean; readonly theme: "light" | "dark" };
 }) {
   const { surface, threadRef, visible } = props;
   if (surface === null) return null;
@@ -167,6 +169,8 @@ export function RightPanelSurfaceContent(props: {
     }
     case "pull-requests":
       return <ThreadLinksPanel threadRef={threadRef} issueLinks={props.pullRequest.issueLinks} />;
+    case "map":
+      return <FeatureMapPanel environmentId={props.environmentId} projectId={props.pullRequest.projectId} threadRef={threadRef} supported={props.map.supported} theme={props.map.theme} />;
     case "issue":
       return <ThreadIssuePanel environmentId={surface.environmentId} url={surface.url} />;
     case "device":

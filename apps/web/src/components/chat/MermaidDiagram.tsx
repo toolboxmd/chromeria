@@ -221,11 +221,14 @@ function diagramImageUrl(svg: SVGSVGElement): string {
 
 export function MermaidDiagram({
   source,
-  onExpand,
+  ...mode
 }: {
   source: string;
-  onExpand: (imageUrl: string) => void;
-}) {
+} & (
+  | { onExpand: (imageUrl: string) => void; onRendered?: never }
+  // Fork: the feature map pans and zooms the rendered SVG itself (toolboxmd/chromeria#235).
+  | { onRendered: (svg: SVGSVGElement) => void; onExpand?: never }
+)) {
   const [, setAttempt] = useState(0);
   const [renderError, setRenderError] = useState<string | null>(null);
   const trimmedSource = source.trim();
@@ -233,6 +236,7 @@ export function MermaidDiagram({
   const type = core.status === "loaded" ? detectDiagramType(core.pele, trimmedSource) : null;
   const load = core.status === "loaded" && type ? use(loadDiagramType(core.pele, type)) : core;
   const math = trimmedSource.includes("$$") ? use(loadMath()) : null;
+  const onRendered = mode.onRendered;
 
   // Re-created, and so remounted, whenever the renderer, math support or source changes.
   const mountDiagram = (container: HTMLSpanElement) => {
@@ -244,7 +248,11 @@ export function MermaidDiagram({
       // Keep the author's direction; a wide diagram scales down to fit instead of turning vertical.
       autoDirection: false,
       ...(math ? { math, sanitize: sanitizeMathDiagramSvg } : { sanitize: sanitizeDiagramSvg }),
-      onRender: () => setRenderError(null),
+      onRender: () => {
+        setRenderError(null);
+        const svg = container.querySelector("svg");
+        if (onRendered && svg) onRendered(svg);
+      },
       onError: (error) =>
         setRenderError(
           error instanceof Error ? error.message : "The diagram could not be rendered.",
@@ -274,6 +282,13 @@ export function MermaidDiagram({
       data-markdown-copy={serializeCodeBlockToMarkdown(source, "mermaid")}
     >
       {renderError ? <DiagramError message={renderError} source={source} /> : null}
+      {mode.onRendered ? (
+        <span
+          ref={mountDiagram}
+          hidden={renderError !== null}
+          className="flex w-full justify-center"
+        />
+      ) : (
       <button
         type="button"
         aria-label="Expand diagram"
@@ -281,11 +296,12 @@ export function MermaidDiagram({
         className="block w-full cursor-zoom-in rounded-md focus-visible:outline-2 focus-visible:outline-ring"
         onClick={(event) => {
           const svg = event.currentTarget.querySelector("svg");
-          if (svg) onExpand(diagramImageUrl(svg));
+          if (svg) mode.onExpand?.(diagramImageUrl(svg));
         }}
       >
         <span ref={mountDiagram} className="flex w-full justify-center" />
       </button>
+      )}
     </div>
   );
 }

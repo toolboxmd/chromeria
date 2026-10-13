@@ -40,6 +40,7 @@ import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { IssueRpcs } from "./issues.ts";
+import { FeatureMapRpcs } from "./featureMap.ts";
 import { IssueLinksRpcGroup } from "./issueLinks.ts";
 import { SpectrumRpcGroup } from "./spectrumRpc.ts";
 import {
@@ -2133,6 +2134,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2SubscribeCommandOutputRpc,
   // Fork: GitHub Issues (toolboxmd/t3code#27).
   ...IssueRpcs,
+  // Fork: feature map (toolboxmd/chromeria#235).
+  ...FeatureMapRpcs,
 )
   // Fork: Issue links (toolboxmd/t3code#28).
   .merge(PromachosHomeRpcGroup)
