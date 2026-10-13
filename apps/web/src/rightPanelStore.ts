@@ -31,6 +31,7 @@ const RIGHT_PANEL_KINDS = [
   "pull-request",
   "pull-requests",
   "issue",
+  "map",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -91,7 +92,9 @@ export type RightPanelSurface =
    * Fork: a GitHub Issue opened beside a thread, read through `environmentId`. One tab, so
    * opening another Issue replaces it.
    */
-  | { id: "issue"; kind: "issue"; environmentId: string; url: string };
+  | { id: "issue"; kind: "issue"; environmentId: string; url: string }
+  /** Fork: the thread's project as its feature map (toolboxmd/chromeria#235). */
+  | { id: "map"; kind: "map" };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 // v9 removed the "plan" surface kind (plans render inline in the transcript).
@@ -232,6 +235,8 @@ const singletonSurface = (
       return { id: "pull-requests", kind };
     case "device":
       return { id: "device", kind };
+    case "map":
+      return { id: "map", kind };
   }
 };
 
@@ -478,6 +483,10 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                     // Removed surfaces: plans render inline, agents in thread lineage.
                     const kind = (surface as { kind?: string }).kind;
                     if (kind === "plan" || kind === "agents") return [];
+                    // A kind this build does not know cannot render; drop it rather than show an
+                    // empty tab.
+                    if (!(RIGHT_PANEL_KINDS as ReadonlyArray<string | undefined>).includes(kind))
+                      return [];
                     if (surface.kind === "issue") {
                       if (
                         surface.id !== "issue" ||

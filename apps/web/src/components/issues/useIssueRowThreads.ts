@@ -37,5 +37,6 @@ export function useIssueRowThreads(
     (): ReadonlySet<string> => new Set(workingKey.length === 0 ? [] : workingKey.split("\n")),
     [workingKey],
   );
-  return { threadsByIssue, working };
+  // The first server that could not answer, so a view can say whose threads it is missing.
+  return { threadsByIssue, working, error: query.error };
 }

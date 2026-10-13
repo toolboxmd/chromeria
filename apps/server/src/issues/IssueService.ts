@@ -1,4 +1,7 @@
 import {
+  type FeatureMapReadInput,
+  type FeatureMapRefFact,
+  type FeatureMapSnapshot,
   gitHubRepositoryOf,
   type IssueCommentInput,
   type IssueDetail,
@@ -17,6 +20,7 @@ import {
 } from "@t3tools/contracts";
 import { sourceControlRepositorySelector } from "@t3tools/shared/sourceControl";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
@@ -24,6 +28,20 @@ import * as Result from "effect/Result";
 import * as IssueLinks from "../issueLinks/IssueLinks.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import {
+  decodeFeatureMapFactsJson,
+  decodeFeatureMapFileJson,
+  decodeFeatureMapHeadJson,
+  FEATURE_MAP_FILE_QUERY,
+  FEATURE_MAP_HEAD_QUERY,
+  FEATURE_MAP_OPEN_ISSUE_PAGES,
+  FEATURE_MAP_PATH,
+  FEATURE_MAP_REFS_PER_READ,
+  featureMapFactsDocument,
+  featureMapFactsOf,
+  featureMapRefsOf,
+  parseFeatureMapFile,
+} from "./featureMap.ts";
 import * as GitHubApi from "../sourceControl/GitHubApi.ts";
 import { type GraphQlDocument, readGraphQlPages } from "../sourceControl/githubGraphQl.ts";
 import {
@@ -63,8 +81,21 @@ export class IssueService extends Context.Service<
     ) => Effect.Effect<IssueStatesResult, IssueOperationError>;
     readonly comment: (input: IssueCommentInput) => Effect.Effect<void, IssueOperationError>;
     readonly setState: (input: IssueSetStateInput) => Effect.Effect<void, IssueOperationError>;
+    /** A project's feature map and its refs' GitHub facts, read as one snapshot. */
+    readonly readFeatureMap: (
+      input: FeatureMapReadInput,
+    ) => Effect.Effect<FeatureMapSnapshot, IssueOperationError>;
   }
 >()("t3/issues/IssueService") {}
+
+type OpenIssuePage = {
+  readonly pageInfo: { readonly hasNextPage: boolean; readonly endCursor: string | null };
+  readonly nodes: ReadonlyArray<{
+    readonly number: number;
+    readonly title: string;
+    readonly url: string;
+  } | null>;
+};
 
 interface Workspace {
   readonly repositories: ReadonlyArray<IssueListRepository>;
@@ -549,7 +580,122 @@ const make = Effect.gen(function* () {
           },
         });
 
-  return IssueService.of({ list, detail, states, comment, setState });
+  /**
+   * The project's `docs/map.md` at its default branch's head commit, every ref it names, and the
+   * repository's open Issues, under one pinned credential. The file is read by commit, so a push
+   * between the reads cannot pair one version's parts with another's file.
+   */
+  const readFeatureMap: IssueService["Service"]["readFeatureMap"] = (input) =>
+    Effect.gen(function* () {
+      const shells = yield* projects
+        .listShells()
+        .pipe(
+          Effect.mapError((cause) =>
+            failure("listProjects", cause, "The project list could not be read."),
+          ),
+        );
+      const shell = shells.find((candidate) => candidate.id === input.projectId);
+      const identity =
+        shell === undefined
+          ? null
+          : (shell.repositoryIdentity ??
+            (yield* repositoryIdentities.resolve(shell.workspaceRoot)));
+      const gitHub = identity ? gitHubRepositoryOf(identity) : null;
+      if (gitHub === null) {
+        return yield* new IssueOperationError({
+          operation: "readFeatureMap",
+          detail: "This project has no GitHub repository to read a map from.",
+        });
+      }
+      const { host, repository } = gitHub;
+      const { owner, name } = repositoryParts(repository);
+      const pinned = yield* pinnedCredentials([host]);
+      return yield* pinned(
+        host,
+        Effect.gen(function* () {
+          const headAnswer = yield* graphqlRead({
+            host,
+            operation: "featureMapHead",
+            document: { query: FEATURE_MAP_HEAD_QUERY, variables: { owner, name } },
+            decode: decodeFeatureMapHeadJson,
+          });
+          const head = headAnswer.data.repository?.defaultBranchRef ?? null;
+          if (head === null) {
+            return yield* new IssueOperationError({
+              operation: "readFeatureMap",
+              detail: `${repository} has no default branch GitHub can read.`,
+            });
+          }
+          const location = {
+            host,
+            repository,
+            branch: head.name,
+            commit: head.target.oid,
+          };
+          const fileAnswer = yield* graphqlRead({
+            host,
+            operation: "featureMapFile",
+            document: {
+              query: FEATURE_MAP_FILE_QUERY,
+              variables: { owner, name, expression: `${head.target.oid}:${FEATURE_MAP_PATH}` },
+            },
+            decode: decodeFeatureMapFileJson,
+          });
+          const text = fileAnswer.data.repository?.object?.text ?? null;
+          const parsed = text === null ? null : parseFeatureMapFile(text, { host, repository });
+          if (parsed === null) {
+            return {
+              _tag: "NoMap" as const,
+              ...location,
+              reason: text === null ? ("missing" as const) : ("no-diagram" as const),
+              fetchedAt: DateTime.formatIso(yield* DateTime.now),
+            };
+          }
+
+          const refs = featureMapRefsOf(parsed.parts);
+          const facts: Array<FeatureMapRefFact> = [];
+          const openIssues: Array<{ number: number; title: string; url: string }> = [];
+          let after: string | null = null;
+          let issuePages = 0;
+          let moreIssues = true;
+          // Each request carries the next refs and the next open-Issue page, until both run out.
+          for (
+            let start = 0;
+            start < refs.length || (moreIssues && issuePages < FEATURE_MAP_OPEN_ISSUE_PAGES);
+            start += FEATURE_MAP_REFS_PER_READ
+          ) {
+            const chunk = refs.slice(start, start + FEATURE_MAP_REFS_PER_READ);
+            const answer: {
+              readonly openIssues: OpenIssuePage | null;
+              readonly aliases: Readonly<Record<string, unknown>>;
+            } = yield* graphqlRead({
+              host,
+              operation: "featureMapFacts",
+              document: featureMapFactsDocument({ refs: chunk, repository, after }),
+              decode: decodeFeatureMapFactsJson,
+            });
+            facts.push(...featureMapFactsOf(chunk, answer.aliases));
+            if (!moreIssues || issuePages >= FEATURE_MAP_OPEN_ISSUE_PAGES) continue;
+            issuePages++;
+            const page = answer.openIssues;
+            for (const issue of page?.nodes ?? []) if (issue !== null) openIssues.push(issue);
+            after = page?.pageInfo.endCursor ?? null;
+            moreIssues = page?.pageInfo.hasNextPage === true && after !== null;
+          }
+          return {
+            _tag: "Map" as const,
+            ...location,
+            ...parsed,
+            facts,
+            openIssues,
+            openIssuesPartial: moreIssues,
+            fetchedAt: DateTime.formatIso(yield* DateTime.now),
+          };
+        }),
+      );
+    });
+
+  return IssueService.of({ list, detail, states, comment, setState, readFeatureMap });
 });
 
 export const layer = Layer.effect(IssueService, make);
