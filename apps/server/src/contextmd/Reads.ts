@@ -54,12 +54,12 @@ const WHOLE_OPTIONS: Record<string, ReadonlySet<string>> = {
   view: new Set(),
 };
 /** Shell syntax that can hide, condition, redirect or substitute a read. */
-const SHELL_SYNTAX = /[;|&<>`$(){}*?!\\\n'"]/u;
+const SHELL_SYNTAX = /[;|&<>`$(){}[\]*?!\\\n'"]/u;
 /** Operands a full read refuses: `..` after a symlink or `cd -` can name another file. */
 const UNSAFE_PATH = /(?:^|\/)\.\.(?:\/|$)|^-$/u;
 /** How harnesses mark a cut result: Codex, Claude Code, OpenCode, Grok. */
 const TRUNCATED =
-  /\b\d+ (?:tokens|chars|characters|lines|bytes) (?:truncated|omitted)\b|omitted \d+ of \d+ lines|\[\+\d+ chars\]|File has more lines|Output (?:was )?truncated/iu;
+  /\b\d+ (?:tokens|chars|characters|lines|bytes) (?:truncated|omitted)\b|omitted \d+ of \d+ lines|\[\+\d+ chars\]|File has more lines|Output (?:was )?truncated|line truncated to \d+ chars/iu;
 const SEGMENT = /(\|\||&&|;|\n|\|)/u;
 const WORD = /'([^']*)'|"([^"]*)"|(\S+)/gu;
 const WRAPPERS = new Set(["command", "exec", "nohup", "time", "env", "sudo"]);
@@ -179,6 +179,8 @@ export const reads = Effect.fn("contextmd.reads")(function* (
   } else if (READ_TOOLS[tool] !== undefined) {
     const target = input[READ_TOOLS[tool]];
     if (typeof target !== "string") return [] as Read[];
+    // `..` after a symlinked directory names another file than the collapsed path (#225).
+    if (target.split("/").includes("..")) return [] as Read[];
     const kind = RANGE_FIELDS.some((f) => input[f] !== undefined && input[f] !== null)
       ? "read_partial"
       : "read_tool";

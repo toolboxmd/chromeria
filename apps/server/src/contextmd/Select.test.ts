@@ -180,6 +180,7 @@ describe("reads", () => {
       const f = NodePath.join(d, "a.md");
       NodeFS.writeFileSync(f, "x\n");
       NodeFS.mkdirSync(NodePath.join(d, "x")); // so x/../a.md exists
+      NodeFS.writeFileSync(NodePath.join(d, "a[.]md"), "y\n"); // a glob could expand elsewhere
       const kind = (tool: string, input: unknown) =>
         reads(tool, input, d, ["Bash"]).pipe(Effect.map((rs) => rs.map((x) => x.kind)));
       for (const command of [`cat ${f}`, `nl -ba ${f}`, `bat ${f}`, `less ${f}`]) {
@@ -209,6 +210,7 @@ describe("reads", () => {
         [],
       );
       assert.deepStrictEqual(yield* kind("Read", { file_path: "missing.md", note: f }), []);
+      assert.deepStrictEqual(yield* kind("read", { filePath: `${d}/x/../a.md` }), []);
       assert.deepStrictEqual(yield* kind("read", { filePath: f, offset: 1, limit: 20 }), [
         "read_partial",
       ]);
@@ -231,6 +233,7 @@ describe("reads", () => {
         `cat ${f} missing.md`,
         `cat "${f}"-n`,
         `cat '${f}'`,
+        `cat ${d}/a[.]md`, // the glob matches a.md, not this file
         `cat ${d}/x/../a.md`,
       ]) {
         assert.deepStrictEqual(yield* kind("Bash", { command }), ["shell_partial"], command);
@@ -297,6 +300,17 @@ describe("reads", () => {
       assert.deepStrictEqual(yield* kind("Read", { file_path: f }, file(2000, 1, 2600)), [
         "read_partial",
       ]);
+      assert.deepStrictEqual(
+        yield* kind(
+          "read",
+          { filePath: f },
+          {
+            output: "x... (line truncated to 2000 chars)",
+            metadata: { truncated: false },
+          },
+        ),
+        ["read_partial"],
+      );
       assert.deepStrictEqual(
         yield* kind("read", { filePath: f }, "x\n(File has more lines. Use 'offset')"),
         ["read_partial"],
