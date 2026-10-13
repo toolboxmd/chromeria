@@ -1,5 +1,7 @@
-// @effect-diagnostics nodeBuiltinImport:off - the test writes a ContextMD store on disk and reads the serving log.
+// @effect-diagnostics nodeBuiltinImport:off - the test writes a ContextMD store on disk, reads the serving log and runs a fake Cue service.
 import * as NodeFS from "node:fs";
+import * as NodeHttp from "node:http";
+import type * as NodeNet from "node:net";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 
@@ -18,6 +20,7 @@ import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ContextmdRoute from "./ContextmdRoute.ts";
+import { isHoldout } from "./ServingState.ts";
 
 // The store and config are ContextMD's data files; the matcher runs in this module.
 const writeStore = (dir: string) => {
@@ -148,10 +151,67 @@ const projectCommand = (input: {
       )`;
   }).pipe(Effect.orDie);
 
+/** A Cue entry directory beside the exact keys, with one entry pointing at a procedure file. */
+const writeCue = (dir: string) => {
+  const cue = NodePath.join(dir, "cue");
+  NodeFS.mkdirSync(cue, { recursive: true });
+  const procedure = NodePath.join(dir, "research.md");
+  NodeFS.writeFileSync(procedure, "# Research\n");
+  NodeFS.writeFileSync(
+    NodePath.join(cue, "research.md"),
+    `---\nid: agentsmd-research\nname: Research\napplies: The request asks for facts beyond what is at hand.\ntarget: ${procedure}\n---\nAgentsMD: follow the research procedure.\n`,
+  );
+  return { cue, procedure };
+};
+
+/** A fake Cue service: records each scoring request and answers with `scores`. */
+const fakeCue = (scores: Record<string, number>) =>
+  Effect.acquireRelease(
+    Effect.promise(
+      () =>
+        new Promise<{ url: string; requests: Array<Record<string, any>>; close: () => void }>(
+          (resolve) => {
+            const requests: Array<Record<string, any>> = [];
+            const server = NodeHttp.createServer((req, res) => {
+              const chunks: Buffer[] = [];
+              req.on("data", (c: Buffer) => chunks.push(c));
+              req.on("end", () => {
+                if (req.url === "/score") {
+                  requests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+                }
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ adapter: "fake-adapter", threshold: 0.5, scores, ms: 5 }));
+              });
+            });
+            server.listen(0, "127.0.0.1", () => {
+              const { port } = server.address() as NodeNet.AddressInfo;
+              resolve({ url: `http://127.0.0.1:${port}`, requests, close: () => server.close() });
+            });
+          },
+        ),
+    ),
+    (s) => Effect.sync(() => s.close()),
+  );
+
+/** A port nothing listens on. */
+const closedPort = () =>
+  new Promise<string>((resolve) => {
+    const server = NodeHttp.createServer();
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as NodeNet.AddressInfo;
+      server.close(() => resolve(`http://127.0.0.1:${port}`));
+    });
+  });
+
+/** The first session id that the holdout hash keeps out of the holdout arm. */
+const servedSession = (() => {
+  for (let i = 0; ; i++) if (!isHoldout("claude", `S${i}`)) return `S${i}`;
+})();
+
 /** Serve the contextmd routes on a test server over a migrated database prepared by `setup`. */
 const serve = <R>(
   setup: Effect.Effect<void, never, R | SqlClient.SqlClient>,
-  options: { readonly breakStateFile?: boolean } = {},
+  options: { readonly breakStateFile?: boolean; readonly cueUrl?: string } = {},
 ) =>
   Effect.gen(function* () {
     const configContext = yield* Layer.build(
@@ -159,6 +219,13 @@ const serve = <R>(
     );
     const config = Context.get(configContext, ServerConfig.ServerConfig);
     const store = writeStore(config.baseDir);
+    if (options.cueUrl !== undefined) {
+      const { cue } = writeCue(config.baseDir);
+      NodeFS.writeFileSync(
+        store.config,
+        JSON.stringify({ exact_keys: [store.keys], cue: [cue], cue_url: options.cueUrl }),
+      );
+    }
     // A directory where the state file belongs: SQLite cannot open it.
     if (options.breakStateFile) {
       NodeFS.mkdirSync(NodePath.join(config.stateDir, "contextmd.sqlite"), { recursive: true });
@@ -258,8 +325,42 @@ const serve = <R>(
         db.close();
       }
     };
-    return { moment, settle, log, store, chunked, outcomes, database };
+    const cueLog = () => {
+      const db = new NodeSqlite.DatabaseSync(NodePath.join(config.stateDir, "contextmd.sqlite"));
+      try {
+        return {
+          moments: db
+            .prepare("SELECT kind, cue_status, cue_adapter FROM moments ORDER BY id")
+            .all() as Array<{
+            kind: string;
+            cue_status: string | null;
+            cue_adapter: string | null;
+          }>,
+          candidates: db
+            .prepare(
+              "SELECT entry, outcome, score FROM candidates WHERE matcher = 'intent' ORDER BY id",
+            )
+            .all() as Array<{ entry: string; outcome: string; score: number | null }>,
+        };
+      } finally {
+        db.close();
+      }
+    };
+    return { moment, settle, log, store, chunked, outcomes, database, cueLog };
   });
+
+/** A thread's user message as Chromeria projects it. */
+const projectUserMessage = (text: string, ordinal = 1) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO orchestration_v2_projection_turn_items (
+        turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json
+      ) VALUES (
+        ${`turn-item:message:${ordinal}`}, 'thread-of-run-1', 'run-1', ${ordinal}, 'user_message',
+        'completed', '', ${JSON.stringify({ type: "user_message", text })}
+      )`;
+  }).pipe(Effect.orDie);
 
 describe("contextmd routes", () => {
   it.live("joins the running attempt of a run, across a steering restart", () =>
@@ -532,6 +633,99 @@ describe("contextmd routes", () => {
       assert.deepStrictEqual(
         s.log().map((r) => r.status),
         ["unmapped"],
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("serves a Cue fire at the user message, scored on the thread's transcript", () =>
+    Effect.gen(function* () {
+      const cue = yield* fakeCue({ "agentsmd-research": 2.5 });
+      const s = yield* serve(
+        Effect.all([
+          insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
+          projectUserMessage("How does the projector handle retries?"),
+        ]).pipe(Effect.asVoid),
+        { cueUrl: cue.url },
+      );
+      const r = yield* s.moment({
+        hook_event_name: "UserPromptSubmit",
+        session_id: servedSession,
+        cwd: "/tmp",
+        prompt: "How does the projector handle retries?",
+      });
+      assert.strictEqual(r.status, 200);
+      const served = JSON.parse(r.body).hookSpecificOutput.additionalContext as string;
+      assert.include(
+        served,
+        "Research applies when: The request asks for facts beyond what is at hand.",
+      );
+      assert.include(served, "research.md in full.");
+      const [request] = cue.requests;
+      assert.deepStrictEqual(request!["items"], [
+        ["user", "How does the projector handle retries?"],
+      ]);
+      assert.deepStrictEqual(request!["entries"], [
+        {
+          id: "agentsmd-research",
+          doc: "Research: The request asks for facts beyond what is at hand.",
+        },
+      ]);
+      assert.deepStrictEqual(s.cueLog(), {
+        moments: [{ kind: "user_message", cue_status: "ok", cue_adapter: "fake-adapter" }],
+        candidates: [{ entry: "agentsmd-research", outcome: "reserved", score: 2.5 }],
+      });
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("starts Cue before a tool call and serves its fire with the tool result", () =>
+    Effect.gen(function* () {
+      const cue = yield* fakeCue({ "agentsmd-research": 2.5 });
+      const s = yield* serve(
+        Effect.all([
+          insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
+          projectUserMessage("Look at the logs"),
+        ]).pipe(Effect.asVoid),
+        { cueUrl: cue.url },
+      );
+      assert.strictEqual(
+        (yield* s.moment(claude("PreToolUse", servedSession, "echo a"))).status,
+        204,
+      );
+      const result = yield* s.moment(claude("PostToolUse", servedSession, "echo a"));
+      assert.include(result.body, "rule a");
+      assert.include(result.body, "Research applies when");
+      assert.strictEqual(cue.requests.length, 1);
+      assert.strictEqual(cue.requests[0]!["moment"]["kind"], "pre_tool");
+      assert.include(cue.requests[0]!["moment"]["call"], "echo a");
+      assert.deepStrictEqual(
+        s.cueLog().moments.map((m) => m.cue_status),
+        ["started", "ok"],
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("skips an unreachable Cue for later moments and keeps serving exact keys", () =>
+    Effect.gen(function* () {
+      const s = yield* serve(
+        Effect.all([
+          insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
+          projectUserMessage("Ship it"),
+        ]).pipe(Effect.asVoid),
+        { cueUrl: yield* Effect.promise(closedPort) },
+      );
+      const message = yield* s.moment({
+        hook_event_name: "UserPromptSubmit",
+        session_id: servedSession,
+        cwd: "/tmp",
+        prompt: "Ship it",
+      });
+      assert.strictEqual(message.status, 204);
+      yield* s.moment(claude("PreToolUse", servedSession, "echo a"));
+      const result = yield* s.moment(claude("PostToolUse", servedSession, "echo a"));
+      assert.include(result.body, "rule a");
+      assert.deepStrictEqual(
+        s.cueLog().moments.map((m) => m.cue_status),
+        ["connect_failed", "not_called", "not_called"],
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
