@@ -42,9 +42,9 @@ export const layer = HttpRouter.use((router) =>
       `${PREFIX}/moment`,
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
-        if (!(yield* authorized(request))) return yield* unauthorized(request);
         const length = request.headers["content-length"];
         const reply = yield* serving.moment({
+          authorized: authorized(request),
           harness: request.headers["x-contextmd-harness"],
           delivery: request.headers["x-contextmd-delivery"],
           contentLength: length === undefined ? undefined : Number(length),
