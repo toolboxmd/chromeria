@@ -479,6 +479,12 @@ const make = Effect.gen(function* () {
           yield* unserved("bad_event", { reason: "json" });
           return { reply: { status: 204 } as const };
         }
+        // Known before any file is read; an event it rejects is reported by selection below.
+        const identity = yield* Effect.option(Select.identify(harness, raw.value));
+        if (Option.isSome(identity)) {
+          const { kind, session, toolUseId } = identity.value;
+          known = { kind, session, toolUseId };
+        }
         const selected = yield* Select.loadConfig(servingConfig).pipe(
           Effect.flatMap((config) =>
             Select.select(harness, raw.value, config, parsed).pipe(
@@ -501,7 +507,6 @@ const make = Effect.gen(function* () {
         }
         let selection = selected.selection;
         const m = selection.moment;
-        known = { kind: m.kind, session: m.session, toolUseId: m.tool_use_id };
         const join = yield* resolveRun(m.session);
         if (join.type === "run") known = { ...known, threadId: join.threadId, runId: join.runId };
         let readChecks: ReadonlyArray<ReadCheck> = [];

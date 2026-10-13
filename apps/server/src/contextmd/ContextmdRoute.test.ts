@@ -7,7 +7,7 @@ import * as NodeSqlite from "node:sqlite";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, it, vi } from "@effect/vitest";
 import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
@@ -22,6 +22,7 @@ import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ContextmdRoute from "./ContextmdRoute.ts";
 import { MOMENT_BUDGET_MS } from "./ContextmdServing.ts";
+import * as Store from "./Store.ts";
 import { isHoldout } from "./ServingState.ts";
 
 // The store and config are ContextMD's data files; the matcher runs in this module.
@@ -835,6 +836,33 @@ describe("contextmd routes", () => {
           tool_use_id: "toolu-echo a",
         },
         { kind: null, status: "over_budget", session: null, tool_use_id: null },
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("logs the parsed call of a moment cut while selection reads its store (#252)", () =>
+    Effect.gen(function* () {
+      const s = yield* serve(
+        insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
+      );
+      // The exact-key store answers only after the budget is spent.
+      const load = Store.load;
+      const spy = vi
+        .spyOn(Store, "load")
+        .mockImplementation((roots, cache) =>
+          Effect.sleep(2 * MOMENT_BUDGET_MS).pipe(Effect.andThen(load(roots, cache))),
+        );
+      yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
+      const r = yield* s.moment(claude("PreToolUse", servedSession, "echo a"));
+      assert.strictEqual(r.status, 204);
+      assert.isAbove(spy.mock.calls.length, 0);
+      assert.deepStrictEqual(s.identity(), [
+        {
+          kind: "pre_tool",
+          status: "over_budget",
+          session: servedSession,
+          tool_use_id: "toolu-echo a",
+        },
       ]);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
