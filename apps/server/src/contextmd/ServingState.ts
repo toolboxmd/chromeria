@@ -193,7 +193,7 @@ interface CandidateRow {
 /** Collects the parts of one output under the per-output byte limit and one budget. */
 class Composer {
   readonly parts: Array<{ text: string; claim: Claim }> = [];
-  private readonly head: string;
+  private head: string;
   private readonly limit: number;
   private budgetLeft: number;
   private used: number;
@@ -216,6 +216,12 @@ class Composer {
   };
   /** Room left for one more part under the output limit. */
   room = () => this.limit - this.used - 2;
+  /** Give up the head for a first part that cannot fit beside it. */
+  dropHead = () => {
+    if (this.parts.length > 0) return;
+    this.used -= utf8(this.head);
+    this.head = "";
+  };
   text = () => {
     if (this.parts.length === 0) return null;
     const body = this.parts.map((p) => p.text).join("\n\n");
@@ -1182,7 +1188,7 @@ export class ServingState {
     const left = this.budgetLeft(runId);
     const out = new Composer(
       sel.profile.heads.deny,
-      sel.profile.limit_bytes,
+      Math.min(sel.profile.limit_bytes, sel.profile.deny_limit_bytes ?? sel.profile.limit_bytes),
       Math.max(left.deny, 0),
     );
     const claims: Claim[] = [];
@@ -1192,6 +1198,23 @@ export class ServingState {
       let whole = true;
       if (i === 0) {
         if (out.overLimit(text)) {
+          // A pointer's deny opens with "Read <target> in full", which must never be cut (#229):
+          // cut what follows, then give up the head; if that still cannot fit, deny nothing.
+          // Built from the entry's own target, never found by searching the text: a path may
+          // itself contain " in full".
+          const opening =
+            c.rule === "pointer" && c.target !== null ? `Read ${c.target} in full` : "";
+          const readLine = text.startsWith(opening) ? opening : "";
+          if (utf8(readLine) > out.room()) out.dropHead();
+          if (utf8(readLine) > out.room()) {
+            this.insertCandidate(momentId, {
+              ...this.base(c),
+              seam: "deny",
+              outcome: "cut_budget",
+              reason: "target",
+            });
+            return;
+          }
           part = cutBytes(text, out.room());
           whole = false;
         }
@@ -1239,7 +1262,8 @@ export class ServingState {
         now,
       );
     });
-    const text = out.text()!;
+    const text = out.text();
+    if (text === null) return [{ status: 204 }];
     const bytes = utf8(text);
     this.charge(runId, 0, bytes);
     this.writeClaims(delivery, harness, sel.moment.session, epoch, runId, claims, {

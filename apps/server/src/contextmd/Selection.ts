@@ -51,6 +51,8 @@ export interface Profile {
   readonly templates: { readonly context: unknown; readonly deny: unknown };
   readonly heads: { readonly deny: string; readonly context: string };
   readonly deny_evidence?: "projection" | "none";
+  /** A deny reason the harness shows only up to this many bytes; unset means `limit_bytes`. */
+  readonly deny_limit_bytes?: number;
 }
 
 export interface Selection {

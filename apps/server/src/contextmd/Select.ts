@@ -168,7 +168,8 @@ export const cueCandidate = (e: Store.CueEntry): Candidate => ({
 });
 
 const denyText = (e: Store.Entry) =>
-  e.target ? `${e.text}\nRead ${e.target} in full, then run the same call again.` : e.text;
+  // The target first: where a harness cuts a long deny, it cuts the rule text, not the path.
+  e.target ? `Read ${e.target} in full, then run the same call again.\n${e.text}` : e.text;
 
 /** A path relative to the repository holding it, else the absolute path. */
 const repoRelative = Effect.fn("contextmd.repoRelative")(function* (
@@ -344,8 +345,9 @@ export const select = Effect.fn("contextmd.select")(function* (
       session_start_limit_bytes: harness.sessionStartLimitBytes,
       new_epoch_sources: harness.newEpochSources,
       templates: harness.templates,
-      heads: { deny: DENY_HEAD, context: CONTEXT_HEAD },
+      heads: { deny: harness.denyHead ?? DENY_HEAD, context: CONTEXT_HEAD },
       deny_evidence: harness.denyEvidence,
+      ...(harness.denyLimitBytes === undefined ? {} : { deny_limit_bytes: harness.denyLimitBytes }),
     },
   } satisfies Selection;
 });

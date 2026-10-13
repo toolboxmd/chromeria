@@ -41,6 +41,10 @@ export interface Harness {
   readonly templates: { readonly context: unknown; readonly deny: unknown };
   /** Where the module can see what the model was shown for a denied call. */
   readonly denyEvidence: "projection" | "none";
+  /** A deny reason the harness shows only up to this many bytes (Grok cuts at 256, #229). */
+  readonly denyLimitBytes?: number;
+  /** A shorter deny head where the reason is that short. */
+  readonly denyHead?: string;
 }
 
 const HOOK_OUTPUT = {
@@ -147,6 +151,8 @@ export const HARNESSES: Readonly<Record<string, Harness>> = {
     sessionStartLimitBytes: 0,
     templates: HOOK_OUTPUT,
     denyEvidence: "projection",
+    denyLimitBytes: 256,
+    denyHead: "The user's own ContextMD rule stopped this call:",
   },
   // The plugin adds served text to the user message (rule text in tool output was doubted,
   // obedience test 2026-10-12) and throws to deny; OpenCode has no before-done hook.
