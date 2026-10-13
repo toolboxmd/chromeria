@@ -4,7 +4,7 @@
  * entries, without ever holding a local lane up.
  *
  * - A `pre_tool` moment only starts a request; the call's `tool_result` collects it (latency hidden behind the
- *   tool run). A `user_message` or a failed call scores at once and waits up to `WAIT_MS`.
+ *   tool run). A `user_message` or a failed call scores at once and waits what is left of the moment's budget.
  * - A connect failure marks the service unavailable for this whole environment (the machine); later moments
  *   skip Cue (`not_called`) until a probe every `PROBE_SECONDS` sees `/health` answer. A slow reply is
  *   `timeout` for that call only.
@@ -17,9 +17,7 @@
  */
 import * as NodeHttp from "node:http";
 
-/** How long a moment waits for a score it needs now (the hook gives up after one second). */
-export const WAIT_MS = 650;
-/** How long a tool result waits for the score its pre-tool moment started. */
+/** At most how long a tool result waits for the score its pre-tool moment started. */
 export const COLLECT_MS = 300;
 /** The service drops a request still queued after this. */
 const DEADLINE_MS = 1500;
@@ -283,7 +281,7 @@ export class CueClient {
   }
 
   /** Score now and wait at most `waitMs`. */
-  async score(req: CueRequest, waitMs: number = WAIT_MS): Promise<CueReply> {
+  async score(req: CueRequest, waitMs: number): Promise<CueReply> {
     if (!this.available) return { status: "not_called", ms: null, waitMs: 0 };
     const t0 = this.clock();
     const r = await this.within(this.request(req), waitMs);
