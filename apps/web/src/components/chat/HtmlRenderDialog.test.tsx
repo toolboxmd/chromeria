@@ -7,19 +7,60 @@ import { htmlRenderTheme, HTML_RENDER_DEFAULT_FONTS } from "@t3tools/shared/html
 import { T3_CODE_DARK_THEME_COLORS } from "@t3tools/shared/themePalettes";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 
+import { readLocalApi } from "~/localApi";
+import { selectActiveRightPanelSurface, useRightPanelStore } from "~/rightPanelStore";
+
 import { HtmlRenderDialog } from "./HtmlRenderDialog";
 import { HtmlRenderFrame } from "./HtmlRenderFrame";
 
-const { refresh, showError, openLink, openChangeRequestLink } = vi.hoisted(() => ({
+const {
+  refresh,
+  showError,
+  openLink,
+  openChangeRequestLink,
+  sourceControlRead,
+  linkEnvironment,
+  navigate,
+} = vi.hoisted(() => ({
   refresh: vi.fn(),
   showError: vi.fn(),
   openLink: vi.fn(),
   openChangeRequestLink: vi.fn(),
+  // The forge read behind an Issue link. A result here is not a live GitHub response.
+  sourceControlRead: vi.fn(async () => ({ _tag: "Failure" as const })),
+  linkEnvironment: {
+    configs: new Map<
+      string,
+      {
+        environment: {
+          capabilities: { issues: boolean; pullRequests: boolean; threadPullRequests: boolean };
+        };
+      }
+    >(),
+    projects: [] as ReadonlyArray<unknown>,
+  },
+  navigate: vi.fn(),
 }));
 vi.mock("~/browser/useOpenLink", () => ({ useOpenLink: () => openLink }));
-vi.mock("~/lib/openPullRequestLink", () => ({
-  useOpenChangeRequestLink: () => openChangeRequestLink,
+vi.mock("~/lib/openPullRequestLink", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("~/lib/openPullRequestLink")>();
+  return { ...actual, useOpenChangeRequestLink: () => openChangeRequestLink };
+});
+vi.mock("~/state/entities", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("~/state/entities")>();
+  return {
+    ...actual,
+    useProjects: () => linkEnvironment.projects,
+    useServerConfigs: () => linkEnvironment.configs,
+  };
+});
+vi.mock("~/state/use-atom-query-runner", () => ({
+  useAtomQueryRunner: () => sourceControlRead,
 }));
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tanstack/react-router")>();
+  return { ...actual, useNavigate: () => navigate };
+});
 vi.mock("~/assets/assetUrls", () => ({
   useAssetUrlState: () => ({
     _tag: "Success",
@@ -28,7 +69,10 @@ vi.mock("~/assets/assetUrls", () => ({
   }),
   useAssetUrlRefresh: () => refresh,
 }));
-vi.mock("../ui/toast", () => ({ toastManager: { add: showError } }));
+vi.mock("../ui/toast", () => ({
+  toastManager: { add: showError },
+  stackedThreadToast: (toast: unknown) => toast,
+}));
 
 vi.mock("~/hooks/useHtmlRenderTheme", () => ({
   useHtmlRenderTheme: () =>
@@ -37,10 +81,38 @@ vi.mock("~/hooks/useHtmlRenderTheme", () => ({
 
 let root: Root;
 let container: HTMLDivElement;
+let shellOpen: ReturnType<typeof vi.spyOn>;
 const onClose = vi.fn();
+const capableEnvironmentId = EnvironmentId.make("environment");
+const otherEnvironmentId = EnvironmentId.make("other-environment");
+const threadId = ThreadId.make("thread");
+const issueUrl = "https://github.com/toolboxmd/t3code/issues/40";
+
+function issuesConfig(issues: boolean) {
+  return {
+    environment: {
+      capabilities: { issues, pullRequests: false, threadPullRequests: false },
+    },
+  };
+}
+
+function threadOn(environmentId: typeof capableEnvironmentId) {
+  return { environmentId, threadId };
+}
+
+function activeIssue(environmentId: typeof capableEnvironmentId) {
+  return selectActiveRightPanelSurface(
+    useRightPanelStore.getState().byThreadKey,
+    threadOn(environmentId),
+  );
+}
 
 beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  Object.defineProperty(navigator, "userActivation", {
+    configurable: true,
+    value: { isActive: true },
+  });
   vi.stubGlobal(
     "ResizeObserver",
     class {
@@ -52,8 +124,14 @@ beforeEach(async () => {
   refresh.mockReset();
   openLink.mockReset().mockResolvedValue(undefined);
   openChangeRequestLink.mockReset().mockReturnValue(false);
+  sourceControlRead.mockReset().mockResolvedValue({ _tag: "Failure" });
+  navigate.mockClear();
   showError.mockClear();
   onClose.mockClear();
+  linkEnvironment.configs = new Map();
+  linkEnvironment.projects = [];
+  useRightPanelStore.setState({ byThreadKey: {} });
+  shellOpen = vi.spyOn(readLocalApi()!.shell, "openExternal").mockResolvedValue(undefined);
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -69,6 +147,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  shellOpen.mockRestore();
   await act(() => root.unmount());
   container.remove();
   vi.unstubAllGlobals();
@@ -108,19 +187,56 @@ it("closes with the close button or Escape", async () => {
   expect(onClose).toHaveBeenCalledOnce();
 });
 
-async function renderInline() {
+async function renderInline(environmentId = capableEnvironmentId) {
   await act(() =>
     root.render(
       <HtmlRenderFrame
-        environmentId={EnvironmentId.make("environment")}
+        environmentId={environmentId}
         htmlRender={{ attachmentId: "html", title: "Diagram", height: 400 }}
-        threadRef={{
-          environmentId: EnvironmentId.make("environment"),
-          threadId: ThreadId.make("thread"),
-        }}
+        threadRef={threadOn(environmentId)}
       />,
     ),
   );
+}
+
+function linkMessage(url: string, modifiers?: { metaKey?: boolean; ctrlKey?: boolean }) {
+  return {
+    jsonrpc: "2.0",
+    id: "link",
+    method: "ui/open-link",
+    params: {
+      url,
+      metaKey: modifiers?.metaKey === true,
+      ctrlKey: modifiers?.ctrlKey === true,
+    },
+  };
+}
+
+async function postLink(
+  frame: HTMLIFrameElement,
+  url: string,
+  options?: { metaKey?: boolean; ctrlKey?: boolean; source?: MessageEventSource | null },
+) {
+  const readsBefore = sourceControlRead.mock.calls.length;
+  await act(async () => {
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        source: options && "source" in options ? options.source : frame.contentWindow,
+        data: linkMessage(url, options),
+      }),
+    );
+    await Promise.all(
+      sourceControlRead.mock.results.slice(readsBefore).map((result) => result.value),
+    );
+  });
+}
+
+async function expandedFrame() {
+  refresh.mockResolvedValue("https://environment.test/renewed.html");
+  await click("Open full screen");
+  const frame = document.querySelector<HTMLIFrameElement>('[role="dialog"] iframe')!;
+  frame.focus();
+  return frame;
 }
 
 it("offers only full screen and opens with a fresh URL while keeping the inline page loaded", async () => {
@@ -168,6 +284,144 @@ it("routes links from the expanded page through its thread", async () => {
     EnvironmentId.make("environment"),
   );
   expect(openLink).not.toHaveBeenCalled();
+});
+
+function allowIssues() {
+  linkEnvironment.configs = new Map([
+    [capableEnvironmentId, issuesConfig(true)],
+    [otherEnvironmentId, issuesConfig(false)],
+  ]);
+}
+
+it("opens an Issue once from the inline page and from the expanded page", async () => {
+  allowIssues();
+  sourceControlRead.mockResolvedValue({ _tag: "Success", value: {} });
+  await renderInline();
+  const inlineFrame = document.querySelector("iframe")!;
+  inlineFrame.focus();
+  await act(async () => {
+    for (let time = 0; time < 2; time += 1) {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          source: inlineFrame.contentWindow,
+          data: linkMessage(issueUrl),
+        }),
+      );
+    }
+    await sourceControlRead.mock.results[0]?.value;
+  });
+  expect(sourceControlRead).toHaveBeenCalledTimes(1);
+  expect(activeIssue(capableEnvironmentId)).toEqual({
+    id: "issue",
+    kind: "issue",
+    environmentId: capableEnvironmentId,
+    url: issueUrl,
+  });
+  expect(openLink).not.toHaveBeenCalled();
+  expect(openChangeRequestLink).not.toHaveBeenCalled();
+  expect(shellOpen).not.toHaveBeenCalled();
+  expect(navigate).not.toHaveBeenCalled();
+
+  const expandedIssue = "https://github.com/toolboxmd/t3code/issues/41";
+  const dialogFrame = await expandedFrame();
+  await postLink(dialogFrame, expandedIssue);
+  expect(sourceControlRead).toHaveBeenCalledTimes(2);
+  expect(activeIssue(capableEnvironmentId)).toEqual({
+    id: "issue",
+    kind: "issue",
+    environmentId: capableEnvironmentId,
+    url: expandedIssue,
+  });
+  expect(openLink).not.toHaveBeenCalled();
+  expect(shellOpen).not.toHaveBeenCalled();
+});
+
+it("leaves an ordinary link to the general opener", async () => {
+  allowIssues();
+  await renderInline();
+  const frame = document.querySelector("iframe")!;
+  frame.focus();
+  const url = "https://example.com/release-notes";
+  await postLink(frame, url);
+  expect(sourceControlRead).not.toHaveBeenCalled();
+  expect(openChangeRequestLink).toHaveBeenCalledTimes(1);
+  expect(openLink).toHaveBeenCalledTimes(1);
+  expect(openLink).toHaveBeenCalledWith(url, { event: { metaKey: false, ctrlKey: false } });
+  expect(activeIssue(capableEnvironmentId)).toBeNull();
+  expect(shellOpen).not.toHaveBeenCalled();
+});
+
+it("uses one external fallback when an Issue link cannot be opened in the app", async () => {
+  allowIssues();
+  await renderInline();
+  const frame = document.querySelector("iframe")!;
+  frame.focus();
+  await postLink(frame, issueUrl);
+  expect(sourceControlRead).toHaveBeenCalledTimes(1);
+  expect(openLink).toHaveBeenCalledTimes(1);
+  expect(openLink).toHaveBeenCalledWith(issueUrl);
+  expect(openChangeRequestLink).not.toHaveBeenCalled();
+  expect(shellOpen).not.toHaveBeenCalled();
+  expect(activeIssue(capableEnvironmentId)).toBeNull();
+});
+
+it.each([
+  ["metaKey", { metaKey: true }],
+  ["ctrlKey", { ctrlKey: true }],
+] as const)("sends a %s Issue click to the system browser once", async (_name, modifiers) => {
+  allowIssues();
+  sourceControlRead.mockResolvedValue({ _tag: "Success", value: {} });
+  await renderInline();
+  const frame = document.querySelector("iframe")!;
+  frame.focus();
+  await postLink(frame, issueUrl, modifiers);
+  expect(shellOpen).toHaveBeenCalledTimes(1);
+  expect(shellOpen).toHaveBeenCalledWith(issueUrl);
+  expect(sourceControlRead).not.toHaveBeenCalled();
+  expect(openLink).not.toHaveBeenCalled();
+  expect(openChangeRequestLink).not.toHaveBeenCalled();
+  expect(activeIssue(capableEnvironmentId)).toBeNull();
+});
+
+it("does not open an Issue for an environment that does not list Issues", async () => {
+  allowIssues();
+  sourceControlRead.mockResolvedValue({ _tag: "Success", value: {} });
+  await renderInline(otherEnvironmentId);
+  const frame = document.querySelector("iframe")!;
+  frame.focus();
+  await postLink(frame, issueUrl);
+  expect(sourceControlRead).not.toHaveBeenCalled();
+  expect(openLink).toHaveBeenCalledTimes(1);
+  expect(openLink).toHaveBeenCalledWith(issueUrl, { event: { metaKey: false, ctrlKey: false } });
+  expect(activeIssue(otherEnvironmentId)).toBeNull();
+  expect(activeIssue(capableEnvironmentId)).toBeNull();
+  expect(shellOpen).not.toHaveBeenCalled();
+});
+
+it("ignores a link from another window, an unfocused frame, or an inactive activation", async () => {
+  allowIssues();
+  sourceControlRead.mockResolvedValue({ _tag: "Success", value: {} });
+  await renderInline();
+  const frame = document.querySelector("iframe")!;
+  const stranger = document.createElement("iframe");
+  document.body.append(stranger);
+  expect(stranger.contentWindow).not.toBe(frame.contentWindow);
+  frame.focus();
+  await postLink(frame, issueUrl, { source: stranger.contentWindow });
+  document.querySelector<HTMLButtonElement>('[aria-label="Open full screen"]')!.focus();
+  await postLink(frame, issueUrl);
+  Object.defineProperty(navigator, "userActivation", {
+    configurable: true,
+    value: { isActive: false },
+  });
+  frame.focus();
+  await postLink(frame, issueUrl);
+  stranger.remove();
+  expect(sourceControlRead).not.toHaveBeenCalled();
+  expect(openLink).not.toHaveBeenCalled();
+  expect(openChangeRequestLink).not.toHaveBeenCalled();
+  expect(shellOpen).not.toHaveBeenCalled();
+  expect(activeIssue(capableEnvironmentId)).toBeNull();
 });
 
 it.each([null, new Error("Disconnected")])(
