@@ -1,3 +1,4 @@
+import * as McpRouting from "../../McpRouting.ts";
 import {
   BackgroundActivityProfile,
   BackgroundActivityProfileSelection,
@@ -38,6 +39,7 @@ const shared = {
   ],
 };
 const EnvironmentReadTool = Tool.make("t3_environment_read", {
+  parameters: Schema.Struct(McpRouting.fields),
   ...shared,
   description:
     "Read this server's identity and selected environment preferences. Provider/model availability is exposed by orchestrator_capabilities. Writing instructions are limited to 4,000 characters.",
@@ -55,13 +57,15 @@ const EnvironmentPreferencesTool = Tool.make("t3_environment_preferences_update"
   ...shared,
   description:
     "Update selected environment-wide preferences through normal settings persistence and notifications. Requires a live full-access/default calling thread. Omitted fields are preserved; empty customInstructions clears them.",
-  parameters: Schema.Struct({
-    defaultThreadEnvMode: ServerSettingsPatch.fields.defaultThreadEnvMode,
-    newWorktreesStartFromOrigin: ServerSettingsPatch.fields.newWorktreesStartFromOrigin,
-    enableProviderUpdateChecks: ServerSettingsPatch.fields.enableProviderUpdateChecks,
-    backgroundActivity: Schema.optionalKey(Schema.Struct({ profile: BackgroundActivityProfile })),
-    sourceControlWritingStyle: ServerSettingsPatch.fields.sourceControlWritingStyle,
-  }),
+  parameters: McpRouting.parameters(
+    Schema.Struct({
+      defaultThreadEnvMode: ServerSettingsPatch.fields.defaultThreadEnvMode,
+      newWorktreesStartFromOrigin: ServerSettingsPatch.fields.newWorktreesStartFromOrigin,
+      enableProviderUpdateChecks: ServerSettingsPatch.fields.enableProviderUpdateChecks,
+      backgroundActivity: Schema.optionalKey(Schema.Struct({ profile: BackgroundActivityProfile })),
+      sourceControlWritingStyle: ServerSettingsPatch.fields.sourceControlWritingStyle,
+    }),
+  ),
   success: Schema.Struct(PreferenceFields),
 }).annotate(Tool.Destructive, true);
 export const EnvironmentToolkit = Toolkit.make(EnvironmentReadTool, EnvironmentPreferencesTool);
