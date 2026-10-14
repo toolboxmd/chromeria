@@ -32,6 +32,7 @@ import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as PreviewManager from "../../../preview/Manager.ts";
 import * as SourceControlRepositoryService from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as IssueLinks from "../../../issueLinks/IssueLinks.ts";
+import * as SpectrumLaunch from "../../../spectrum/LaunchService.ts";
 import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpSessionRegistry from "../../McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
@@ -60,6 +61,7 @@ const layerStubServices = Layer.mergeAll(
   Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
   Layer.mock(ThreadSearch.ThreadSearch)({}),
   Layer.mock(IssueLinks.IssueLinks)({}),
+  Layer.mock(SpectrumLaunch.SpectrumLaunchService)({}),
 );
 
 const ToolsListPayload = Schema.fromJsonString(

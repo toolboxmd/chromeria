@@ -1,6 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
-  GrokSettings,
   type ModelSelection,
   ProjectId,
   ProviderInstanceId,
@@ -8,6 +7,7 @@ import {
   type RuntimeMode,
   ThreadId,
 } from "@t3tools/contracts";
+import { GrokSettings } from "@t3tools/provider-grok/settings";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
 import * as EffectAcpErrors from "effect-acp/errors";
