@@ -958,6 +958,7 @@ it.effect("cancels workflow members and child roots without run ids after restar
       Layer.mergeAll(
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getRecoveryThreadIds: () => Effect.succeed([parentThreadId, childThreadId]),
+          getUnresolvedRestartCuts: () => Effect.succeed([]),
           getRuntimeRecoveryProjection: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
         }),
