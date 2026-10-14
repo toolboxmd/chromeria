@@ -805,6 +805,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "packages/contracts/src/orchestratorMcp.ts",
     "apps/server/src/orchestration-v2/SubagentProjection.ts",
     "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryPerformance.test.ts",
+    "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts",
     "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
     "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
     "apps/server/src/orchestration-v2/RestartContinuation.ts",
@@ -818,6 +819,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/orchestration-v2/ProjectionStore.ts",
     "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts",
     "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
+    "apps/server/src/peer/RemoteDelegation.test.ts",
     "packages/client-runtime/src/t3ToolSummary.ts",
     "packages/shared/src/t3McpToolPresentation.ts"
   ],

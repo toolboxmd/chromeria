@@ -221,6 +221,7 @@ apps/server/src/mcp/WorktreeMcpService.ts
 apps/server/src/mcp/toolkits/attachment/handlers.ts
 apps/server/src/mcp/toolkits/orchestrator/handlers.ts
 apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts
+apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts
 apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts
 apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts
 apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts
