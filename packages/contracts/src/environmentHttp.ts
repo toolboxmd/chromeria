@@ -11,6 +11,10 @@ import * as HttpServerResponse from "effect/http/HttpServerResponse";
 
 import {
   AuthAccessTokenResult,
+  AuthSessionRenewRequest,
+  AuthSessionRenewResult,
+  AuthRenewalEnrollmentRequest,
+  AuthRenewalEnrollmentResult,
   AuthBrowserSessionRequest,
   AuthBrowserSessionResult,
   AuthClientSession,
@@ -107,6 +111,7 @@ export type EnvironmentAuthInvalidReason = typeof EnvironmentAuthInvalidReason.T
 export const EnvironmentOperationForbiddenReason = Schema.Literals([
   "current_session_revoke_not_allowed",
   "unknown_person",
+  "renewal_pending_approval",
 ]);
 export type EnvironmentOperationForbiddenReason = typeof EnvironmentOperationForbiddenReason.Type;
 
@@ -462,6 +467,32 @@ class EnvironmentMetadataHttpApi extends HttpApiGroup.make("metadata").add(
 ) {}
 
 class EnvironmentAuthHttpApi extends HttpApiGroup.make("auth")
+  .add(
+    HttpApiEndpoint.post("renewSession", "/api/auth/session/renew", {
+      payload: AuthSessionRenewRequest,
+      success: AuthSessionRenewResult,
+      error: [
+        EnvironmentAuthInvalidError,
+        EnvironmentOperationForbiddenError,
+        EnvironmentHttpConflictError,
+        EnvironmentInternalError,
+      ],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("enrollRenewal", "/api/auth/session/renewal/enroll", {
+      headers: OptionalBearerHeaders,
+      payload: AuthRenewalEnrollmentRequest,
+      success: AuthRenewalEnrollmentResult,
+      error: [
+        EnvironmentAuthInvalidError,
+        EnvironmentOperationForbiddenError,
+        EnvironmentHttpConflictError,
+        EnvironmentInternalError,
+      ],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+
   .add(
     HttpApiEndpoint.get("session", "/api/auth/session", {
       headers: OptionalBearerHeaders,

@@ -8,6 +8,7 @@ import {
   EnvironmentHttpApi,
 } from "@t3tools/contracts";
 import { RelayClientTracer } from "@t3tools/shared/relayTracing";
+import { renewalCommitment } from "@t3tools/shared/sessionRenewal";
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -146,8 +147,12 @@ it.effect("sets the selected browser session cookies through the HTTP route", ()
           );
           expect(pairingResponse.status).toBe(200);
           const pairing = (await pairingResponse.json()) as { credential: string };
+          const renewalSecret = "a".repeat(43);
           const restrictedResponse = await environmentA.handler(
-            postJson("/api/auth/browser-session", { credential: pairing.credential }),
+            postJson("/api/auth/browser-session", {
+              credential: pairing.credential,
+              renewal_commitment: renewalCommitment(renewalSecret),
+            }),
             requestContext,
           );
           expect(restrictedResponse.status).toBe(200);
@@ -155,6 +160,26 @@ it.effect("sets the selected browser session cookies through the HTTP route", ()
           expect(restrictedCookies).toHaveLength(1);
           expect(restrictedCookies[0]).toMatch(/^t3_session_/);
           expect(restrictedCookies[0]).not.toContain("t3_dev_session_");
+          const renewed = await environmentA.handler(
+            postJson("/api/auth/session/renew", {
+              secret: renewalSecret,
+              next: renewalCommitment("b".repeat(43)),
+            }),
+            requestContext,
+          );
+          expect(renewed.status).toBe(200);
+          expect(await renewed.json()).toMatchObject({ outcome: "current", generation: 0 });
+          expect(renewed.headers.getSetCookie()).toContainEqual(
+            expect.stringMatching(/^t3_session_.*HttpOnly/),
+          );
+          const unknown = await environmentA.handler(
+            postJson("/api/auth/session/renew", {
+              secret: "z".repeat(43),
+              next: renewalCommitment("b".repeat(43)),
+            }),
+            requestContext,
+          );
+          expect(unknown.status).toBe(401);
         }),
       ([environmentA, environmentB]) =>
         Effect.promise(() => Promise.all([environmentA.dispose(), environmentB.dispose()])),

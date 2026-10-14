@@ -20,6 +20,7 @@ import { PersistenceSqlError } from "../persistence/Errors.ts";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
+import * as SessionRenewal from "./SessionRenewal.ts";
 import * as SessionStore from "./SessionStore.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
 import { base64UrlDecodeUtf8, base64UrlEncode, signPayload } from "./utils.ts";
@@ -108,6 +109,7 @@ const layerFailingSessionLookupCredential = Layer.effect(
   SessionStore.SessionStore,
   SessionStore.make,
 ).pipe(
+  Layer.provide(SessionRenewal.layer),
   Layer.provide(layerFailingSessionLookupRepository),
   Layer.provide(ServerSecretStore.layer),
   Layer.provide(SqlitePersistence.layerMemory),

@@ -6,6 +6,8 @@ import { installNotificationBadge } from "./methods/notificationBadge.ts";
 import { getClientSettings, setClientSettings } from "./methods/clientSettings.ts";
 import {
   clearConnectionCatalog,
+  getRenewalRecord,
+  compareRenewalRecord,
   getConnectionCatalog,
   setConnectionCatalog,
 } from "./methods/connectionCatalog.ts";
@@ -104,6 +106,8 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(getClientSettings);
   yield* ipc.handle(setClientSettings);
   yield* ipc.handle(getConnectionCatalog);
+  yield* ipc.handle(getRenewalRecord);
+  yield* ipc.handle(compareRenewalRecord);
   yield* ipc.handle(getSnapShotState);
   yield* ipc.handle(setupSnapShot);
   yield* ipc.handle(previewSnapShotConfig);
