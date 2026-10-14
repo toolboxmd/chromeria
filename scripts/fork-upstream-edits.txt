@@ -198,3 +198,5 @@ apps/server/src/orchestration-v2/Adapters/GrokAdapterV2.ts
 apps/web/src/components/chat/MermaidDiagram.tsx
 apps/server/src/cli/invocation.test.ts
 apps/server/src/environment/ServerEnvironment.test.ts
+apps/server/src/auth/ServerSecretStore.test.ts
+apps/server/src/auth/ServerSecretStore.ts
