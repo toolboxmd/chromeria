@@ -12,6 +12,7 @@ import {
   IsoDateTime,
   isProviderNativeSubagentThread,
   MessageId,
+  NodeId,
   type ModelSelection,
   type OrchestrationV2DelegatedCompletionDelivery,
   type OrchestrationV2ProviderCapabilities,
@@ -1797,6 +1798,7 @@ describe("orchestrator MCP toolkit", () => {
               childRunId: delegated.childRunId,
               status: "completed",
               summary: delegatedResult,
+              resultContextTransferId: delegatedStatus.resultContextTransferId,
               hasPendingChildRuns: false,
               latestTerminalRunId: childFollowup.runId,
               latestTerminalStatus: "completed",
@@ -1841,6 +1843,20 @@ describe("orchestrator MCP toolkit", () => {
             };
             const legacyDelegatedRun = delegatedTaskRun(legacyChildProjection, completedTask!);
             expect(legacyDelegatedRun?.id).toBe(delegated.childRunId);
+            const legacyTaskId = NodeId.make("node:legacy-follow-up-record");
+            expect(
+              delegatedTaskRun(
+                {
+                  ...activeChildProjection,
+                  runs: activeChildProjection.runs.map((run) =>
+                    run.id === activeChildFollowup.runId
+                      ? { ...run, delegatedTaskId: legacyTaskId }
+                      : run,
+                  ),
+                },
+                { ...completedTask!, id: legacyTaskId },
+              )?.id,
+            ).toBe(activeChildFollowup.runId);
             expect(hasPendingChildRuns(legacyChildProjection, legacyDelegatedRun)).toBe(true);
             expect(
               hasPendingChildRuns(
@@ -3961,10 +3977,16 @@ describe("orchestrator MCP toolkit", () => {
           expect(delegated.latestTerminalResultContextTransferId).toBe(
             delegated.resultContextTransferId,
           );
+          const originalTask = (yield* orchestrator.getThreadProjection(
+            parentThreadId,
+          )).subagents.find((task) => task.id === delegated.taskId)!;
 
           const delegatedChild = yield* orchestrator.getThreadProjection(delegated.childThreadId);
           expect(delegatedChild.thread.lineage.relationshipToParent).toBe("subagent");
           expect(isProviderNativeSubagentThread(delegatedChild.thread)).toBe(false);
+          expect(
+            delegatedChild.runs.find((run) => run.id === delegated.childRunId)?.delegatedTaskId,
+          ).toBe(delegated.taskId);
           const followupStartSequence = yield* orchestrator.getThreadEventSequence(
             delegated.childThreadId,
           );
@@ -4061,6 +4083,7 @@ describe("orchestrator MCP toolkit", () => {
           });
 
           const finalSequence = yield* orchestrator.getThreadEventSequence(delegated.childThreadId);
+          const finalParentSequence = yield* orchestrator.getThreadEventSequence(parentThreadId);
           const interruptCall = yield* invoke("t3_thread_interrupt", {
             threadId: delegated.childThreadId,
             runId: runningFollowup.runId,
@@ -4105,32 +4128,55 @@ describe("orchestrator MCP toolkit", () => {
           yield* orchestrator
             .streamStoredEventsFrom({
               threadId: parentThreadId,
-              afterSequence: finalSequence,
+              afterSequence: finalParentSequence,
             })
             .pipe(
               Stream.filter(
                 (stored) =>
-                  stored.event.type === "subagent.updated" &&
-                  stored.event.payload.id === followupTasks[1]!.id &&
-                  stored.event.payload.status === "completed",
+                  stored.event.type === "context-transfer.created" &&
+                  stored.event.payload.type === "subagent_result" &&
+                  stored.event.payload.sourceThreadId === delegated.childThreadId &&
+                  stored.event.payload.sourcePoint.runId === queuedFollowup.runId,
               ),
               Stream.runHead,
               Effect.flatMap(
                 Option.match({
-                  onNone: () => Effect.die("Follow-up task did not settle."),
+                  onNone: () => Effect.die("Queued follow-up result did not reach the parent."),
                   onSome: () => Effect.void,
                 }),
               ),
             );
           const finishedParent = yield* orchestrator.getThreadProjection(parentThreadId);
           expect(
-            finishedParent.subagents.find((task) => task.id === followupTasks[0]!.id)?.status,
-          ).toBe("interrupted");
+            finishedParent.contextTransfers.some(
+              (transfer) =>
+                transfer.type === "subagent_result" &&
+                transfer.sourceThreadId === delegated.childThreadId &&
+                transfer.sourcePoint.runId === runningFollowup.runId,
+            ),
+          ).toBe(true);
+          const finishedTask = finishedParent.subagents.find(
+            (task) => task.id === delegated.taskId,
+          )!;
+          const {
+            completionDelivery: _firstDelivery,
+            updatedAt: _firstUpdatedAt,
+            ...firstResult
+          } = originalTask;
+          const {
+            completionDelivery: _delivery,
+            updatedAt: _updatedAt,
+            ...stableResult
+          } = finishedTask;
+          expect(stableResult).toEqual(firstResult);
           expect(
-            finishedParent.subagents.find((task) => task.id === followupTasks[1]!.id),
-          ).toMatchObject({
+            finishedParent.subagents.filter(
+              (task) => task.childThreadId === delegated.childThreadId,
+            ),
+          ).toHaveLength(1);
+          expect(finishedTask).toMatchObject({
             status: "completed",
-            result: queuedFollowupResult,
+            result: delegatedResult,
           });
           expect(
             finishedParent.contextTransfers.filter(
@@ -4139,10 +4185,7 @@ describe("orchestrator MCP toolkit", () => {
                 transfer.sourceThreadId === delegated.childThreadId,
             ),
           ).toHaveLength(3);
-          expect(
-            finishedParent.subagents.find((task) => task.id === followupTasks[1]!.id)
-              ?.completionDelivery?.state,
-          ).toBe("claimed");
+          expect(finishedTask.completionDelivery?.state).toBe("claimed");
           const finalStatusCall = yield* invoke("task_status", {
             taskId: delegated.taskId,
           });

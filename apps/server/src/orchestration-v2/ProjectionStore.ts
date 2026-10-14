@@ -71,6 +71,15 @@ import {
   isOrchestrationV2SupersededInterrupt,
 } from "@t3tools/shared/orchestrationV2Timeline";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import {
+  untransferredDelegatedRuns,
+  pendingDelegatedChildTasks,
+  withPendingDelegatedChildWork,
+} from "../childThreads/delegatedFollowups.ts";
+import {
+  delegatedFollowupRecoveryQuery,
+  pendingDelegatedChildQuery,
+} from "../childThreads/delegatedFollowupQueries.ts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -573,32 +582,34 @@ function needsRecovery(
       return projection.runs.some((run) => run.delegatedCompletion?.delivery != null);
     case "subagent-results": {
       const parentThreadId = projection.thread.lineage.parentThreadId;
+      const originalTaskId =
+        projection.thread.forkedFrom?.type === "node"
+          ? projection.thread.forkedFrom.nodeId
+          : undefined;
       return (
-        projection.thread.lineage.relationshipToParent === "subagent" &&
-        parentThreadId !== null &&
-        projection.thread.forkedFrom?.type === "node" &&
-        ((parent?.subagents ?? []).some(
-          (task) =>
-            task.origin === "app_owned" &&
-            task.result === null &&
-            task.childThreadId === projection.thread.id &&
-            projection.runs.some(
-              (run) =>
-                run.delegatedTaskId === task.id &&
-                ["completed", "interrupted", "failed", "cancelled", "rolled_back"].includes(
-                  run.status,
-                ),
-            ),
-        ) ||
-          (["completed", "interrupted", "failed", "cancelled", "rolled_back"].includes(
+        (projection.thread.lineage.relationshipToParent === "subagent" &&
+          parentThreadId !== null &&
+          projection.thread.forkedFrom?.type === "node" &&
+          (parent?.subagents ?? []).some(
+            (task) =>
+              task.origin === "app_owned" &&
+              task.childThreadId === projection.thread.id &&
+              (task.result === null || task.id === originalTaskId) &&
+              untransferredDelegatedRuns(projection, task.id, parent?.contextTransfers ?? [])
+                .length > 0,
+          )) ||
+        (projection.thread.lineage.relationshipToParent === "subagent" &&
+          parentThreadId !== null &&
+          projection.thread.forkedFrom?.type === "node" &&
+          ["completed", "interrupted", "failed", "cancelled", "rolled_back"].includes(
             latestUnheldRun(projection.runs)?.status ?? "idle",
           ) &&
-            ![...projection.contextTransfers, ...(parent?.contextTransfers ?? [])].some(
-              (transfer) =>
-                transfer.type === "subagent_result" &&
-                transfer.sourceThreadId === projection.thread.id &&
-                transfer.targetThreadId === parentThreadId,
-            )))
+          ![...projection.contextTransfers, ...(parent?.contextTransfers ?? [])].some(
+            (transfer) =>
+              transfer.type === "subagent_result" &&
+              transfer.sourceThreadId === projection.thread.id &&
+              transfer.targetThreadId === parentThreadId,
+          ))
       );
     }
     case "runtime":
@@ -1433,6 +1444,7 @@ function secretRequestAsPendingInput(
 
 export function threadShellFromProjection(
   projection: OrchestrationV2ThreadProjection,
+  pendingChildTasks: ReadonlyArray<OrchestrationV2Subagent> = [],
 ): OrchestrationV2ThreadShell {
   const providerSession =
     projection.providerSessions
@@ -1551,7 +1563,12 @@ export function threadShellFromProjection(
     hasActionableProposedPlan: projection.plans.some(
       (plan) => plan.kind === "proposed_plan" && plan.status === "active",
     ),
-    pendingBackgroundTasks: [...pendingBackgroundTasks],
+    pendingBackgroundTasks: withPendingDelegatedChildWork({
+      pending: pendingBackgroundTasks,
+      latestRunStatus: latestRun?.status,
+      hasActiveRun: activeRun !== null,
+      tasks: pendingChildTasks,
+    }),
     providerInstanceHistory: providerInstanceHistoryForShell({
       threadId: projection.thread.id,
       providerThreads: projection.providerThreads,
@@ -3677,36 +3694,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   ELSE 0 END
               `;
             case "subagent-results":
-              return sql`
-                SELECT child.thread_id FROM orchestration_v2_projection_threads AS child
-                WHERE CASE WHEN json_valid(child.payload_json) THEN
-                  json_extract(child.payload_json, '$.lineage.relationshipToParent') = 'subagent'
-                  AND json_extract(child.payload_json, '$.lineage.parentThreadId') IS NOT NULL
-                  AND json_extract(child.payload_json, '$.forkedFrom.type') = 'node'
-                  AND (EXISTS (
-                    SELECT 1 FROM orchestration_v2_projection_runs AS requested
-                    JOIN orchestration_v2_projection_subagents AS task
-                      ON task.subagent_id = json_extract(requested.payload_json, '$.delegatedTaskId')
-                    WHERE requested.thread_id = child.thread_id
-                      AND requested.status IN ('completed', 'interrupted', 'failed', 'cancelled', 'rolled_back')
-                      AND task.child_thread_id = child.thread_id
-                      AND json_extract(task.payload_json, '$.origin') = 'app_owned'
-                      AND json_extract(task.payload_json, '$.result') IS NULL
-                  ) OR (
-                    -- The original task still waits for the latest unheld work.
-                    (SELECT status FROM orchestration_v2_projection_runs
-                     WHERE thread_id = child.thread_id
-                       AND NOT (status = 'queued' AND json_extract(payload_json, '$.queueHeld') IS 1)
-                     ORDER BY ordinal DESC LIMIT 1
-                    ) IN ('completed', 'interrupted', 'failed', 'cancelled', 'rolled_back')
-                    AND NOT EXISTS (
-                    SELECT 1 FROM orchestration_v2_projection_context_transfers
-                    WHERE source_thread_id = child.thread_id
-                      AND target_thread_id = json_extract(child.payload_json, '$.lineage.parentThreadId')
-                      AND type = 'subagent_result'
-                  )))
-                  ELSE 0 END
-              `;
+              return delegatedFollowupRecoveryQuery(sql);
             case "runtime":
               return sql`
                 WITH pending_provider_threads AS MATERIALIZED (
@@ -5554,6 +5542,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     const pendingBackgroundDataByThreadId = (input: {
       readonly providerThreadRows: ReadonlyArray<PayloadRow & { readonly thread_id: string }>;
       readonly pendingTurnItemRows: ReadonlyArray<ShellPendingTurnItemRow>;
+      readonly pendingChildRows: ReadonlyArray<PayloadRow & { readonly thread_id: string }>;
     }) =>
       Effect.gen(function* () {
         const providerThreadsByThreadId = new Map<
@@ -5590,7 +5579,19 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           pendingTurnItemsByThreadId.set(threadId, existing);
         }
 
-        return { providerThreadsByThreadId, pendingTurnItemsByThreadId };
+        const pendingChildTasksByThreadId = new Map<ThreadId, Array<OrchestrationV2Subagent>>();
+        for (const row of input.pendingChildRows) {
+          const task = yield* decodeSubagentPayload(row.payload_json);
+          const threadId = ThreadId.make(row.thread_id);
+          const tasks = pendingChildTasksByThreadId.get(threadId) ?? [];
+          tasks.push(task);
+          pendingChildTasksByThreadId.set(threadId, tasks);
+        }
+        return {
+          providerThreadsByThreadId,
+          pendingTurnItemsByThreadId,
+          pendingChildTasksByThreadId,
+        };
       });
 
     const getSettlementCandidates: ProjectionStoreV2Shape["getSettlementCandidates"] = (threadId) =>
@@ -5644,11 +5645,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           `;
             if (rows.length === 0) return [];
             const threadIds = rows.map((row) => ThreadId.make(row.thread_id));
-            const { providerThreadsByThreadId, pendingTurnItemsByThreadId } =
-              yield* pendingBackgroundDataByThreadId({
-                providerThreadRows: yield* selectShellProviderThreadRows(threadIds),
-                pendingTurnItemRows: yield* selectShellPendingTurnItemRows(threadIds),
-              });
+            const {
+              providerThreadsByThreadId,
+              pendingTurnItemsByThreadId,
+              pendingChildTasksByThreadId,
+            } = yield* pendingBackgroundDataByThreadId({
+              providerThreadRows: yield* selectShellProviderThreadRows(threadIds),
+              pendingTurnItemRows: yield* selectShellPendingTurnItemRows(threadIds),
+              pendingChildRows: yield* pendingDelegatedChildQuery(sql, threadIds),
+            });
             return yield* Effect.forEach(rows, (row) =>
               Effect.gen(function* () {
                 const thread = yield* decodeThreadPayload(row.payload_json);
@@ -5687,16 +5692,21 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   activityRunStatus: null,
                   activityRunStartedAt: null,
                   pendingRuntimeRequest: null,
-                  pendingBackgroundTasks: derivePendingBackgroundWork({
-                    latestRun:
-                      latestRunId === null || status === "idle"
-                        ? null
-                        : { id: latestRunId, ordinal: 0, status },
-                    providerThreads: providerThreadsByThreadId.get(thread.id) ?? [],
-                    turnItems: pendingTurnItemsByThreadId.get(thread.id) ?? [],
-                    activeProviderThreadId: thread.activeProviderThreadId,
+                  pendingBackgroundTasks: withPendingDelegatedChildWork({
+                    latestRunStatus: status,
                     hasActiveRun: false,
-                    pullRequests: thread.pullRequests,
+                    tasks: pendingChildTasksByThreadId.get(thread.id) ?? [],
+                    pending: derivePendingBackgroundWork({
+                      latestRun:
+                        latestRunId === null || status === "idle"
+                          ? null
+                          : { id: latestRunId, ordinal: 0, status },
+                      providerThreads: providerThreadsByThreadId.get(thread.id) ?? [],
+                      turnItems: pendingTurnItemsByThreadId.get(thread.id) ?? [],
+                      activeProviderThreadId: thread.activeProviderThreadId,
+                      hasActiveRun: false,
+                      pullRequests: thread.pullRequests,
+                    }),
                   }),
                 } satisfies ProjectionSettlementCandidate;
               }),
@@ -5760,6 +5770,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         ThreadId,
         ReadonlyArray<OrchestrationV2TurnItem>
       >;
+      readonly pendingChildTasksByThreadId: ReadonlyMap<
+        ThreadId,
+        ReadonlyArray<OrchestrationV2Subagent>
+      >;
     }) =>
       Effect.gen(function* () {
         const {
@@ -5768,6 +5782,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           itemCountsByThreadId,
           providerThreadsByThreadId,
           pendingTurnItemsByThreadId,
+          pendingChildTasksByThreadId,
         } = input;
         const thread = yield* decodeThreadPayload(row.payload_json);
         const pendingRuntimeRequest =
@@ -5823,8 +5838,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 : DateTime.makeUnsafe(row.blocking_run_completed_at);
           }
         }
-        const pendingBackgroundTasks = [
-          ...derivePendingBackgroundWork({
+        const pendingBackgroundTasks = withPendingDelegatedChildWork({
+          latestRunStatus,
+          hasActiveRun: row.active_run_id !== null,
+          tasks: pendingChildTasksByThreadId.get(thread.id) ?? [],
+          pending: derivePendingBackgroundWork({
             latestRun:
               latestRunId === null || latestRunStatus === "idle"
                 ? null
@@ -5839,7 +5857,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             hasActiveRun: row.active_run_id !== null,
             pullRequests: thread.pullRequests,
           }),
-        ];
+        });
         return {
           thread,
           latestRunId,
@@ -5924,19 +5942,26 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           read: (ids: ReadonlyArray<ThreadId>) => Effect.Effect<ReadonlyArray<A>, unknown>,
           ids: ReadonlyArray<ThreadId> = threadIds,
         ) => (ids.length === 0 ? Effect.succeed([] as ReadonlyArray<A>) : read(ids));
-        const [runRows, itemCountRows, sequenceRows, providerThreadRows, pendingTurnItemRows] =
-          yield* Effect.all([
-            readForThreadIds(selectShellRunRows, forkSourceIds),
-            readForThreadIds(selectShellRunItemCounts, forkSourceIds),
-            sql<{ readonly snapshot_sequence: number | null }>`
+        const [
+          runRows,
+          itemCountRows,
+          sequenceRows,
+          providerThreadRows,
+          pendingTurnItemRows,
+          pendingChildRows,
+        ] = yield* Effect.all([
+          readForThreadIds(selectShellRunRows, forkSourceIds),
+          readForThreadIds(selectShellRunItemCounts, forkSourceIds),
+          sql<{ readonly snapshot_sequence: number | null }>`
         SELECT MAX(sequence) AS snapshot_sequence
         FROM orchestration_events
         WHERE application_event_version = 2
           AND aggregate_kind = 'thread'
       `,
-            readForThreadIds(selectShellProviderThreadRows),
-            readForThreadIds(selectShellPendingTurnItemRows),
-          ]);
+          readForThreadIds(selectShellProviderThreadRows),
+          readForThreadIds(selectShellPendingTurnItemRows),
+          readForThreadIds((ids) => pendingDelegatedChildQuery(sql, ids)),
+        ]);
         return {
           targetThreadIds,
           threadRows,
@@ -5945,6 +5970,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           sequenceRows,
           providerThreadRows,
           pendingTurnItemRows,
+          pendingChildRows,
         };
       });
 
@@ -5956,14 +5982,22 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       sequenceRows,
       providerThreadRows,
       pendingTurnItemRows,
+      pendingChildRows,
     }: Effect.Success<ReturnType<typeof readShellSnapshotRows>>) =>
       Effect.gen(function* () {
         const { runOrdinalsByThreadId, itemCountsByThreadId } = runMapsByThreadId({
           runRows,
           itemCountRows,
         });
-        const { providerThreadsByThreadId, pendingTurnItemsByThreadId } =
-          yield* pendingBackgroundDataByThreadId({ providerThreadRows, pendingTurnItemRows });
+        const {
+          providerThreadsByThreadId,
+          pendingTurnItemsByThreadId,
+          pendingChildTasksByThreadId,
+        } = yield* pendingBackgroundDataByThreadId({
+          providerThreadRows,
+          pendingTurnItemRows,
+          pendingChildRows,
+        });
         const states = yield* Effect.forEach(threadRows, (row) =>
           shellThreadStateFromRow({
             row,
@@ -5971,6 +6005,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             itemCountsByThreadId,
             providerThreadsByThreadId,
             pendingTurnItemsByThreadId,
+            pendingChildTasksByThreadId,
           }),
         );
         const statesByThreadId = new Map(states.map((state) => [state.thread.id, state]));
@@ -6033,23 +6068,36 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
 
             const threadIds = [...rowsByThreadId.keys()];
             const forkSourceIds = shellForkSourceIds([...rowsByThreadId.values()]);
-            const [runRows, itemCountRows, providerThreadRows, pendingTurnItemRows] =
-              yield* Effect.all([
-                forkSourceIds.length === 0
-                  ? Effect.succeed([] as ReadonlyArray<ShellRunRow>)
-                  : selectShellRunRows(forkSourceIds),
-                forkSourceIds.length === 0
-                  ? Effect.succeed([] as ReadonlyArray<ShellRunItemCountRow>)
-                  : selectShellRunItemCounts(forkSourceIds),
-                selectShellProviderThreadRows(threadIds),
-                selectShellPendingTurnItemRows(threadIds),
-              ]);
+            const [
+              runRows,
+              itemCountRows,
+              providerThreadRows,
+              pendingTurnItemRows,
+              pendingChildRows,
+            ] = yield* Effect.all([
+              forkSourceIds.length === 0
+                ? Effect.succeed([] as ReadonlyArray<ShellRunRow>)
+                : selectShellRunRows(forkSourceIds),
+              forkSourceIds.length === 0
+                ? Effect.succeed([] as ReadonlyArray<ShellRunItemCountRow>)
+                : selectShellRunItemCounts(forkSourceIds),
+              selectShellProviderThreadRows(threadIds),
+              selectShellPendingTurnItemRows(threadIds),
+              pendingDelegatedChildQuery(sql, threadIds),
+            ]);
             const { runOrdinalsByThreadId, itemCountsByThreadId } = runMapsByThreadId({
               runRows,
               itemCountRows,
             });
-            const { providerThreadsByThreadId, pendingTurnItemsByThreadId } =
-              yield* pendingBackgroundDataByThreadId({ providerThreadRows, pendingTurnItemRows });
+            const {
+              providerThreadsByThreadId,
+              pendingTurnItemsByThreadId,
+              pendingChildTasksByThreadId,
+            } = yield* pendingBackgroundDataByThreadId({
+              providerThreadRows,
+              pendingTurnItemRows,
+              pendingChildRows,
+            });
 
             const states = yield* Effect.forEach([...rowsByThreadId.values()], (row) =>
               shellThreadStateFromRow({
@@ -6058,6 +6106,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 itemCountsByThreadId,
                 providerThreadsByThreadId,
                 pendingTurnItemsByThreadId,
+                pendingChildTasksByThreadId,
               }),
             );
             const statesByThreadId = new Map(states.map((state) => [state.thread.id, state]));
@@ -6172,7 +6221,16 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
           const shells = yield* Effect.forEach(
             selectedThreadIds.toSorted((left, right) => String(left).localeCompare(String(right))),
             (threadId) =>
-              service.getThreadProjection(threadId).pipe(Effect.map(threadShellFromProjection)),
+              service
+                .getThreadProjection(threadId)
+                .pipe(
+                  Effect.map((projection) =>
+                    threadShellFromProjection(
+                      projection,
+                      pendingDelegatedChildTasks(projection, existing),
+                    ),
+                  ),
+                ),
           );
           const visible = shells.filter((thread) => thread.deletedAt === null);
           return {
@@ -6192,7 +6250,14 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
           }
           const shell = yield* service
             .getThreadProjection(threadId)
-            .pipe(Effect.map(threadShellFromProjection));
+            .pipe(
+              Effect.map((projection) =>
+                threadShellFromProjection(
+                  projection,
+                  pendingDelegatedChildTasks(projection, existing),
+                ),
+              ),
+            );
           return shell.deletedAt === null ? shell : null;
         }),
       getThread: (threadId) =>
@@ -6219,7 +6284,10 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
                 !runtimeRequests.some((request) => request.status === "pending"),
             )
             .map((projection) => {
-              const shell = threadShellFromProjection(projection);
+              const shell = threadShellFromProjection(
+                projection,
+                pendingDelegatedChildTasks(projection, projections),
+              );
               return {
                 ...shell,
                 lastSnoozeWakeAt: projection.thread.lastSnoozeWakeAt ?? null,
@@ -6281,7 +6349,12 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
                   thread.archivedAt === null &&
                   thread.settledOverride !== "settled",
               )
-              .map(threadShellFromProjection)
+              .map((projection) =>
+                threadShellFromProjection(
+                  projection,
+                  pendingDelegatedChildTasks(projection, state.projections),
+                ),
+              )
               .filter(
                 (thread) =>
                   thread.status === "failed" &&

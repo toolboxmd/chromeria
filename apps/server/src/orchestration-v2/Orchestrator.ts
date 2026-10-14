@@ -6,6 +6,13 @@ import {
   reconcileChildRequests,
   reconcilePendingChildRequests,
 } from "../childThreads/requestWake.ts";
+import {
+  delegatedTaskRuns,
+  delegatedResultTransfers,
+  untransferredDelegatedRuns,
+  restartContinuationRuns,
+} from "../childThreads/delegatedFollowups.ts";
+import { pendingDelegatedChildQuery } from "../childThreads/delegatedFollowupQueries.ts";
 import * as PrismRecovery from "../prism/RecoveryHooks.ts";
 import { ForkDispatchPlans } from "../fork/ForkDispatchPlans.ts";
 import type {
@@ -6888,6 +6895,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Delegated child thread ${childThreadId} did not create a run.`,
         });
       }
+      yield* emitEvent({
+        type: "run.updated",
+        threadId: childThreadId,
+        runId: childRun.id,
+        providerInstanceId: command.modelSelection.instanceId,
+        occurredAt: now,
+        payload: { ...childRun, delegatedTaskId: task.id },
+      });
       const spawnTransferId = yield* mapDispatchError(command)(
         idAllocator.allocate.contextTransfer({
           sourceThreadId: command.parentThreadId,
@@ -6970,7 +6985,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (run === undefined || run.delegatedTaskId !== undefined) return;
     const parent = yield* projectionStore
       .getThreadRecords(parentThreadId, ["runs", "subagents", "providerTurns", "attempts"])
-      .pipe(mapDispatchError(command));
+      .pipe(
+        Effect.catchTags({
+          ProjectionStoreThreadNotFoundError: (error) =>
+            command.createdBy === "user" ? Effect.succeed(undefined) : Effect.fail(error),
+        }),
+        mapDispatchError(command),
+      );
+    // A human may override incomplete ancestry; no missing parent owns a task binding.
+    if (parent === undefined) return;
     const original = parent.subagents.find(
       (task) =>
         task.origin === "app_owned" &&
@@ -6980,16 +7003,44 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // Fork (#213): requested follow-ups keep the original task identity. Its
     // result remains stable; latestTerminal fields and new result transfers own later turns.
     if (original === undefined) return;
-    yield* emit(
-      events,
-      command,
-    )({
+    const emitEvent = emit(events, command);
+    yield* emitEvent({
       type: "run.updated",
       threadId: child.id,
       runId: run.id,
       occurredAt: message.createdAt,
       payload: { ...run, delegatedTaskId: original.id },
     });
+    // Shell streams refetch the parent aggregate when its derived child work changes.
+    yield* emitEvent({
+      type: "subagent.updated",
+      threadId: parentThreadId,
+      ...(original.runId === null ? {} : { runId: original.runId }),
+      nodeId: original.id,
+      driver: original.driver,
+      providerInstanceId: original.providerInstanceId,
+      occurredAt: message.createdAt,
+      payload: { ...original, updatedAt: message.createdAt },
+    });
+    const parentRun = parent.runs.find((candidate) => candidate.id === original.runId);
+    // A new requested turn can resume a stopped cohort. A Stop after intake
+    // keeps it stopped, and task_cancel's disposed delivery stays disposed.
+    if (
+      original.result !== null &&
+      original.completionDelivery?.state !== "disposed" &&
+      parentRun?.delegatedCompletion?.disposition === "stopped"
+    ) {
+      yield* emitEvent({
+        type: "run.updated",
+        threadId: parentThreadId,
+        runId: parentRun.id,
+        occurredAt: message.createdAt,
+        payload: {
+          ...parentRun,
+          delegatedCompletion: { ...parentRun.delegatedCompletion, disposition: "open" },
+        },
+      });
+    }
   });
 
   // The wait path uses this when its blocking window ends without a terminal
@@ -8861,6 +8912,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       }
       const cohortRunIds = new Set(input.cohortRunIds);
+      // A completed task can still own requested child runs. Stop closes that
+      // cohort without replacing the first result or its acknowledgment.
+      const pendingChildTasks = yield* pendingDelegatedChildQuery(forkSql, [thread.id]).pipe(
+        mapDispatchError(input.command),
+      );
+      const pendingChildIds = new Set(pendingChildTasks.map((row) => row.subagent_id));
       for (const run of runs) {
         if (run.delegatedCompletion?.delivery != null) cohortRunIds.add(run.id);
       }
@@ -8869,9 +8926,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         if (
           task.origin === "app_owned" &&
           task.runId !== null &&
-          delivery !== "acknowledged" &&
-          delivery !== "delivered" &&
-          delivery !== "disposed"
+          ((delivery !== "acknowledged" && delivery !== "delivered" && delivery !== "disposed") ||
+            pendingChildIds.has(task.id))
         ) {
           cohortRunIds.add(task.runId);
         }
@@ -10056,7 +10112,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     options: {
       readonly settledContinuationOf?: RunId;
       readonly taskId: NodeId;
-      readonly resultRun?: OrchestrationV2Run;
+      readonly resultRun: OrchestrationV2Run;
     },
   ) =>
     Effect.gen(function* () {
@@ -10069,29 +10125,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ) {
         return;
       }
-      const taskRuns = childControls.runs.filter((run) => run.delegatedTaskId === options.taskId);
-      const childRun =
-        taskRuns.length === 0
-          ? options.taskId === forkedFrom.nodeId
-            ? options.resultRun
-            : undefined
-          : taskRuns.toSorted((a, b) => b.ordinal - a.ordinal)[0];
-      if (childRun === undefined) return;
+      const taskRuns = delegatedTaskRuns(childControls, options.taskId);
+      const childRun = options.resultRun;
       const outcome = runOutcome(childRun);
       const terminalStatus = delegatedTaskTerminalStatus(outcome);
       if (terminalStatus === null) {
         return;
       }
-      if (
-        yield* childAwaitsRestartContinuation(
-          taskRuns.length === 0 ? childControls.runs : taskRuns,
-          childRun,
-          options?.settledContinuationOf,
-        )
-      ) {
-        return;
-      }
-
       const childResult = yield* projectionStore.getThreadRecords(
         childThreadId,
         ["messages", "turnItems"],
@@ -10131,13 +10171,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (task === undefined) {
         return;
       }
-      const priorResultTransfers = parentProjection.contextTransfers.filter(
-        (transfer) =>
-          transfer.type === "subagent_result" &&
-          transfer.sourceThreadId === childThreadId &&
-          transfer.targetThreadId === parentThreadId &&
-          (transfer.sourcePoint.runId === childRun.id ||
-            (options.taskId === forkedFrom.nodeId && transfer.sourcePoint.runId === undefined)),
+      const priorResultTransfers = delegatedResultTransfers(
+        childControls,
+        task.id,
+        parentProjection.contextTransfers,
+        parentThreadId,
       );
       // Fork (pingdotgg/t3code#13490): each finished turn transfers once, so a
       // follow-up turn wakes the parent too. A legacy transfer without a run
@@ -10151,6 +10189,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return;
       }
       const followUp = priorResultTransfers.length > 0;
+      // The first result keeps the native whole-child barrier. Later requested
+      // turns owe their own result even while another follow-up is queued.
+      if (
+        yield* childAwaitsRestartContinuation(
+          followUp
+            ? restartContinuationRuns(childControls.runs, childRun)
+            : options.taskId === forkedFrom.nodeId || taskRuns.length === 0
+              ? childControls.runs
+              : taskRuns,
+          childRun,
+          options.settledContinuationOf,
+        )
+      ) {
+        return;
+      }
       if (yield* prismRecovery.holdsFinalization(childThreadId, childRun.id)) return;
 
       const now = yield* DateTime.now;
@@ -10163,12 +10216,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const parentTurnItem = parentProjection.turnItems.find(
         (candidate) => candidate.type === "subagent" && candidate.subagentId === task.id,
       );
+      // Stop records the terminal result but cannot reserve another parent wake.
+      // A plain interruption has no request and still delivers its result.
+      const explicitlyStopped =
+        followUp &&
+        childRun.status === "interrupted" &&
+        (yield* projectionStore.getThreadRecords(childThreadId, ["turnItems"], {
+          turnItemTypes: ["run_interrupt_request"],
+          turnItemRunIds: [childRun.id],
+        })).turnItems.length > 0;
       const { completionDelivery: observedDelivery, ...unobservedTask } = task;
       // A follow-up keeps the task's first result (task_status reports the
       // later one as latestTerminal*) and reopens a wake the parent already
       // observed. A cancelled task (disposed) stays quiet.
       const updatedTask: OrchestrationV2Subagent = followUp
-        ? observedDelivery?.state === "acknowledged" || observedDelivery?.state === "delivered"
+        ? !explicitlyStopped &&
+          (observedDelivery?.state === "acknowledged" || observedDelivery?.state === "delivered")
           ? { ...unobservedTask, updatedAt: now }
           : task
         : {
@@ -10181,33 +10244,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           };
       // The parent sent the follow-up after the delegating turn, so no blocking
       // wait owns it and a stop of that turn does not cancel it.
-      const planned = yield* planDelegatedCompletionDelivery({
-        parentProjection,
-        parentRun:
-          followUp && parentRun?.delegatedCompletion !== undefined
-            ? {
-                ...parentRun,
-                delegatedCompletion: { ...parentRun.delegatedCompletion, disposition: "open" },
-              }
-            : parentRun,
-        task: followUp ? { ...task, completionWake: "always" } : task,
-        updatedTask,
-        now,
-      });
-      // A follow-up Stop writes run_interrupt_request, then the run becomes
-      // interrupted. task_cancel disposes delivery only after that stop, so a
-      // new wake claimed here would offer a continuation Stop already ended.
-      // The task's first result still plans normally, and a delivery already
-      // in flight stays pending because that plan does not offer. A plain
-      // interrupt has no request and still wakes.
-      const explicitlyStopped =
-        followUp &&
-        planned.offer &&
-        childRun.status === "interrupted" &&
-        (yield* projectionStore.getThreadRecords(childThreadId, ["turnItems"], {
-          turnItemTypes: ["run_interrupt_request"],
-          turnItemRunIds: [childRun.id],
-        })).turnItems.length > 0;
       const completionPlan = explicitlyStopped
         ? {
             task: updatedTask,
@@ -10215,7 +10251,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             message: undefined,
             offer: false,
           }
-        : planned;
+        : yield* planDelegatedCompletionDelivery({
+            parentProjection,
+            parentRun:
+              followUp &&
+              childRun.delegatedTaskId === undefined &&
+              parentRun?.delegatedCompletion !== undefined
+                ? {
+                    ...parentRun,
+                    delegatedCompletion: {
+                      ...parentRun.delegatedCompletion,
+                      disposition: "open",
+                    },
+                  }
+                : parentRun,
+            task: followUp ? { ...task, completionWake: "always" } : task,
+            updatedTask,
+            now,
+          });
       const resultTransferId = yield* idAllocator.allocate.contextTransfer({
         sourceThreadId: childThreadId,
         targetThreadId: parentThreadId,
@@ -10421,23 +10474,42 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         "contextTransfers",
       ]);
       for (const task of parent.subagents) {
-        if (
-          task.origin !== "app_owned" ||
-          task.childThreadId !== childThreadId ||
-          (task.id === childControls.thread.forkedFrom.nodeId &&
-            progress.state !== "result_available") ||
-          (task.result !== null &&
-            parent.contextTransfers.some(
-              (transfer) =>
-                transfer.type === "subagent_result" && transfer.sourceThreadId === childThreadId,
-            ))
-        )
+        if (task.origin !== "app_owned" || task.childThreadId !== childThreadId) continue;
+        const isOriginalTask = task.id === childControls.thread.forkedFrom.nodeId;
+        if (!isOriginalTask && task.result !== null) continue;
+        const taskRuns = delegatedTaskRuns(childControls, task.id);
+        const priorResults = delegatedResultTransfers(
+          childControls,
+          task.id,
+          parent.contextTransfers,
+          parentThreadId,
+        );
+        if (priorResults.length === 0) {
+          if (isOriginalTask && progress.state !== "result_available") continue;
+          const resultRun = isOriginalTask
+            ? progress.resultRun
+            : taskRuns
+                .filter((run) => !(run.status === "queued" && run.queueHeld === true))
+                .toSorted((a, b) => b.ordinal - a.ordinal)[0];
+          if (resultRun === undefined) continue;
+          yield* finalizeAppOwnedSubagentTask(childControls, {
+            ...options,
+            taskId: task.id,
+            resultRun,
+          });
           continue;
-        yield* finalizeAppOwnedSubagentTask(childControls, {
-          ...options,
-          taskId: task.id,
-          ...(progress.resultRun === undefined ? {} : { resultRun: progress.resultRun }),
-        });
+        }
+        for (const resultRun of untransferredDelegatedRuns(
+          childControls,
+          task.id,
+          parent.contextTransfers,
+        )) {
+          yield* finalizeAppOwnedSubagentTask(childControls, {
+            ...options,
+            taskId: task.id,
+            resultRun,
+          });
+        }
       }
 
       const { resultRun } = progress;
@@ -11670,9 +11742,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ["runs", "messages", "subagents", "providerThreads", "providerTurns", "attempts"],
         { messageRoles: ["user"] },
       );
-      if (taskId !== undefined) {
-        const runs = child.runs.filter((run) => run.delegatedTaskId === taskId);
-        const run = runs.toSorted((a, b) => b.ordinal - a.ordinal)[0];
+      if (
+        taskId !== undefined &&
+        !(child.thread.forkedFrom?.type === "node" && child.thread.forkedFrom.nodeId === taskId)
+      ) {
+        const runs = delegatedTaskRuns(child, taskId);
+        const run = runs
+          .filter((run) => !(run.status === "queued" && run.queueHeld === true))
+          .toSorted((a, b) => b.ordinal - a.ordinal)[0];
         if (run === undefined || delegatedTaskTerminalStatus(run.status) === null) return true;
         return yield* childAwaitsRestartContinuation(runs, run);
       }
