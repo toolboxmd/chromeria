@@ -335,6 +335,7 @@ patchedDependencies:
   # Android: Maven-resolved gradle plugins (expo-widgets) have no sourceDir; without this
   # skip, the fingerprint silently drops every Expo native module and OTAs reach stale binaries.
   "@expo/fingerprint@0.21.5": patches/@expo__fingerprint@0.21.5.patch
+  vitest@5.0.1: patches/vitest@5.0.1.patch
 
 peerDependencyRules:
   allowAny:

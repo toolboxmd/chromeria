@@ -226,11 +226,13 @@ are evidence for review, not proof that a feature has been adopted upstream.
   "purpose": "Keep the fork stack small, checked and rebasable on GitHub-hosted CI.",
   "issues": [
     "https://github.com/toolboxmd/t3code/issues/6",
-    "https://github.com/toolboxmd/t3code/issues/20"
+    "https://github.com/toolboxmd/t3code/issues/20",
+    "https://github.com/toolboxmd/chromeria/issues/308"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/9",
-    "https://github.com/toolboxmd/t3code/pull/24"
+    "https://github.com/toolboxmd/t3code/pull/24",
+    "https://github.com/toolboxmd/chromeria/pull/309"
   ],
   "newFiles": [
     ".github/workflows/fork.yml",
@@ -240,7 +242,9 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "scripts/fork-features.mjs",
     "scripts/fork-maintenance.test.ts",
     "scripts/fork-rebase.sh",
-    "scripts/fork-upstream-edits.txt"
+    "scripts/fork-upstream-edits.txt",
+    "patches/vitest@5.0.1.patch",
+    "scripts/lib/vitest-cache.test.ts"
   ],
   "upstreamFiles": [
     ".github/workflows/ci.yml",
@@ -250,10 +254,20 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts",
     "apps/server/src/orchestration-v2/V1ImportBoundary.test.ts",
     "apps/server/src/vcs/GitVcsDriverCore.test.ts",
-    "knip.jsonc"
+    "knip.jsonc",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml"
   ],
   "sharedFiles": [],
-  "keywords": ["fork", "rebase", "upstream", "blacksmith", "ELECTRON_RUN_AS_NODE", "TMPDIR"]
+  "keywords": [
+    "fork",
+    "rebase",
+    "upstream",
+    "blacksmith",
+    "ELECTRON_RUN_AS_NODE",
+    "TMPDIR",
+    "vitest"
+  ]
 }
 ```
 
