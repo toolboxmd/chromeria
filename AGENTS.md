@@ -135,11 +135,11 @@ Before fixing a bug or building a feature, search `pingdotgg/t3code` main, open 
 
 ## Installing merged builds
 
-Chromeria is the user's daily app on bestia, rocky and cavallo. Once a PR merges to `main`, you may stage that build on any of them, then quit and restart the running app to swap it in, without asking (user decision 2026-10-14). A restart cuts every running turn, and Chromeria continues only some of them ([#264](https://github.com/toolboxmd/chromeria/issues/264)). Before staging or restarting, read `~/dev/runbook/cavallo/CHROMERIA.md` in full, plus `~/dev/runbook/bestia/README.md` for bestia:
+Chromeria is the user's daily app on bestia, rocky and cavallo. Once a PR merges to `main`, you may stage that build on any of them, then quit and restart the running app to swap it in, without asking (user decision 2026-10-14). A restart cuts every running turn, and Chromeria continues only some of them ([#264](https://github.com/toolboxmd/chromeria/issues/264)). Before staging or restarting, read `~/dev/runbook/cavallo/CHROMERIA.md` in full, plus `~/dev/runbook/rocky/CHROMERIA.md` for rocky or `~/dev/runbook/bestia/README.md` for bestia:
 
 - Restart only with that machine's tool: `chromeria-restart-and-resume` on rocky and cavallo, `chromeria-server-update` on bestia.
 - Before restarting, run the runbook's pre-check of running threads and wait while it says work would be lost.
-- After the restart, run its post-check: confirm the build, and wake every cut thread Chromeria did not continue. A coordinator wakes its own children. Tell the user about held queues; agents cannot resume them.
+- After the restart, run its post-check: confirm the build, and wake each cut top-level thread Chromeria did not continue. Leave delegated children to their coordinator, which gets their `cancelled` result and decides whether to wake them. Tell the user about held queues; agents cannot resume them.
 - Record each stage and restart in that machine's runbook `CHANGES.md`.
 
 ## Documentation
