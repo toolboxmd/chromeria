@@ -94,6 +94,10 @@ function curatedCauseMessages(cause: unknown): {
       if (typeof cause !== "object") break;
       const tag = (cause as Record<string, unknown>)._tag;
       switch (tag) {
+        case "BareLaunchError":
+          return { known: stringField(cause, "reason"), category: categoryMessage() };
+        case "BareHistoryTransferUnsupported":
+          return { known: "bare history transfer unsupported", category: categoryMessage() };
         case "ContextHandoffBudgetError":
           return { known: new ContextHandoffBudgetError().message, category: categoryMessage() };
         case "ContextHandoffBackgroundWorkError":
@@ -148,7 +152,7 @@ export function knownProviderFailureMessage(cause: unknown): string | undefined 
   return curatedCauseMessages(cause).known;
 }
 
-function stringField(value: unknown, key: "message" | "code"): string | undefined {
+function stringField(value: unknown, key: "message" | "code" | "reason"): string | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   try {
     const candidate = (value as Record<string, unknown>)[key];

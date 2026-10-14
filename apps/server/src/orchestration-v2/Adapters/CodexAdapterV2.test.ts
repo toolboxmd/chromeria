@@ -471,6 +471,7 @@ describe("CodexAdapterV2 fork boundary", () => {
 });
 
 const DEFAULT_CODEX_SETTINGS = Schema.decodeSync(CodexSettings)({});
+const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
 const CODEX_TEST_MODEL_SELECTION = {
   instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
   model: "gpt-5.4",
@@ -6471,6 +6472,228 @@ describe("CodexAdapterV2 post-settle continuation", () => {
 
   const errorCauseChainText = (error: unknown): string =>
     error instanceof Error ? `${error.message} ${errorCauseChainText(error.cause)}` : String(error);
+
+  it.effect.each(["existing", "managed"] as const)(
+    "opens bare fork and resumed processes against the persisted native home owner: %s",
+    (setupMode) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const serverConfig = yield* makeReplayServerConfig(`bare-owner-${setupMode}`);
+        const sourceHome = yield* fs.makeTempDirectoryScoped();
+        yield* fs.writeFileString(`${sourceHome}/auth.json`, "FAKE_TEST_CREDENTIAL");
+        const settings = yield* decodeCodexSettings({
+          setupMode,
+          homePath: sourceHome,
+        });
+        const ownerId = ThreadId.make("bare-codex-owner");
+        const forkId = ThreadId.make("bare-codex-fork");
+        const chainId = ThreadId.make("bare-codex-fork-chain");
+        const runtimePolicy = {
+          ...CODEX_TEST_RUNTIME_POLICY,
+          bare: { additions: [], nativeHomeOwnerThreadId: ownerId },
+        };
+        const home = `${serverConfig.stateDir}/bare/codex/codex/thread-9727934f3f9d2c89a76c8041c6b7e4b410f8345c0129f2185936004ea4316c9f`;
+        const sourceNativeId = "native-bare-source";
+        const forkNativeId = "native-bare-fork";
+        const chainNativeId = "native-bare-fork-chain";
+        const handshake = codexReplayPreamble({
+          nativeThreadId: "unused",
+          nativeTurnId: "unused",
+          prompt: "unused",
+        }).slice(0, 3);
+        const params = CodexAdapterV2.codexThreadRuntimeParams({
+          mcpSession: undefined,
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          runtimePolicy,
+        });
+        const nativeFork = (
+          source: string,
+          target: string,
+        ): Array<CodexReplay.CodexAppServerReplayEntry> => [
+          ...handshake,
+          {
+            type: "expect_outbound",
+            frame: { id: 2, method: "thread/fork", params: { threadId: source, ...params } },
+          },
+          {
+            type: "emit_inbound",
+            frame: {
+              id: 2,
+              result: codexReplayThreadResult({ nativeThreadId: target, forkedFromId: source }),
+            },
+          },
+        ];
+        const transcripts = new Map<string, ReadonlyArray<CodexReplay.CodexAppServerReplayEntry>>([
+          ["source", []],
+          [
+            "fork",
+            [
+              ...nativeFork(sourceNativeId, forkNativeId),
+              {
+                type: "expect_outbound",
+                frame: {
+                  id: 3,
+                  method: "mcpServerStatus/list",
+                  params: { threadId: forkNativeId },
+                },
+              },
+              { type: "emit_inbound", frame: { id: 3, result: { data: [], nextCursor: null } } },
+              {
+                type: "expect_outbound",
+                frame: { id: 4, method: "skills/list", params: { cwds: ["/workspace"] } },
+              },
+              { type: "emit_inbound", frame: { id: 4, result: { data: [] } } },
+            ],
+          ],
+          [
+            "reopened",
+            [
+              ...handshake,
+              {
+                type: "expect_outbound",
+                frame: {
+                  id: 2,
+                  method: "thread/resume",
+                  params: { threadId: forkNativeId, excludeTurns: true, ...params },
+                },
+              },
+              {
+                type: "emit_inbound",
+                frame: { id: 2, result: { thread: { id: forkNativeId, updatedAt: 1782622440 } } },
+              },
+            ],
+          ],
+          ["chain", nativeFork(forkNativeId, chainNativeId)],
+        ]);
+        const opened: Array<
+          Parameters<CodexAdapterV2.CodexAppServerClientFactoryShape["open"]>[0]
+        > = [];
+        const adapter = yield* CodexAdapterV2.makeCodexAdapterV2({
+          instanceId: CODEX_TEST_MODEL_SELECTION.instanceId,
+          settings,
+          environment: setupMode === "managed" ? { ACCESS_TOKEN: "FAKE_MANAGED_TOKEN" } : {},
+          fileSystem: fs,
+          crypto: yield* Crypto.Crypto,
+          idAllocator: yield* IdAllocator.IdAllocatorV2,
+          serverConfig,
+          clientFactory: {
+            open: (launch) => {
+              opened.push(launch);
+              const entries = transcripts.get(launch.providerSessionId);
+              if (entries === undefined) return Effect.die("Unexpected app-server process");
+              return Layer.build(
+                CodexReplay.layerReplay(
+                  makeCodexReplayTranscript({
+                    scenario: `bare-${launch.providerSessionId}`,
+                    entries,
+                  }),
+                ),
+              ).pipe(
+                Effect.flatMap((context) =>
+                  Effect.service(CodexClient.CodexAppServerClient).pipe(Effect.provide(context)),
+                ),
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapter.ProviderAdapterOpenSessionError({
+                      driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+                      providerSessionId: launch.providerSessionId,
+                      cause,
+                    }),
+                ),
+              );
+            },
+          },
+        });
+        const open = (threadId: ThreadId, id: string, initialNativeThreadId?: string) =>
+          adapter.openSession({
+            threadId,
+            providerSessionId: ProviderSessionId.make(id),
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy,
+            ...(initialNativeThreadId === undefined ? {} : { initialNativeThreadId }),
+          });
+        yield* open(ownerId, "source");
+        const now = yield* DateTime.now;
+        const source: OrchestrationV2ProviderThread = {
+          id: ProviderThreadId.make("bare-source-provider-thread"),
+          driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+          providerInstanceId: CODEX_TEST_MODEL_SELECTION.instanceId,
+          providerSessionId: ProviderSessionId.make("source"),
+          appThreadId: ownerId,
+          ownerNodeId: null,
+          nativeThreadRef: {
+            driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+            nativeId: sourceNativeId,
+            strength: "strong",
+          },
+          nativeConversationHeadRef: null,
+          status: "idle",
+          firstRunOrdinal: 1,
+          lastRunOrdinal: 1,
+          handoffIds: [],
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        const forkRuntime = yield* open(forkId, "fork");
+        const forked = yield* forkRuntime.forkThread({
+          sourceProviderThread: source,
+          targetThreadId: forkId,
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          runtimePolicy,
+        });
+        assert.equal(forked.nativeThreadRef?.nativeId, forkNativeId);
+        assert.equal(forked.providerSessionId, ProviderSessionId.make("fork"));
+        const getBareReceipt = forkRuntime.getBareReceipt;
+        if (getBareReceipt === undefined) throw new Error("Bare Codex session has no receipt.");
+        const receipt = yield* getBareReceipt(forked);
+        assert.deepEqual(receipt.nativeRecord, {
+          harness: "codex",
+          root: `${home}/sessions`,
+          sessionId: forkNativeId,
+        });
+        const reopened = yield* open(forkId, "reopened", forkNativeId);
+        const resumed = yield* reopened.resumeThread({
+          threadId: forkId,
+          providerThread: forked,
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          runtimePolicy,
+        });
+        assert.equal(resumed.nativeThreadRef?.nativeId, forkNativeId);
+        const chained = yield* (yield* open(chainId, "chain")).forkThread({
+          sourceProviderThread: resumed,
+          targetThreadId: chainId,
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          runtimePolicy,
+        });
+        assert.equal(chained.nativeThreadRef?.nativeId, chainNativeId);
+        assert.lengthOf(opened, 4);
+        assert.deepEqual(
+          opened.map((launch) => launch.threadId),
+          [ownerId, forkId, forkId, chainId],
+        );
+        for (const launch of opened) {
+          assert.equal(launch.settings.homePath, home);
+          assert.equal(launch.environment.CODEX_HOME, home);
+        }
+        yield* fs.rename(home, `${home}-removed`);
+        const missing = yield* open(forkId, "must-not-spawn", forkNativeId).pipe(Effect.flip);
+        assert.include(errorCauseChainText(missing), "native home is missing");
+        const missingSource = yield* open(ownerId, "must-not-spawn", sourceNativeId).pipe(
+          Effect.flip,
+        );
+        assert.include(errorCauseChainText(missingSource), "native home is missing");
+        assert.lengthOf(opened, 4);
+        assert.isFalse(yield* fs.exists(home));
+        assert.deepEqual(yield* fs.readDirectory(`${serverConfig.stateDir}/bare/codex/codex`), [
+          "thread-9727934f3f9d2c89a76c8041c6b7e4b410f8345c0129f2185936004ea4316c9f-removed",
+        ]);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
 
   const codexReplaySourceTurn = (input: {
     readonly id: string;

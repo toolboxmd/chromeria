@@ -1,3 +1,15 @@
+import * as Path from "effect/Path";
+import * as FileSystem from "effect/FileSystem";
+import {
+  bareHome,
+  prepareOpenCodeBareEnvironment,
+} from "@t3tools/provider-core/server/BareProviderRuntime";
+import {
+  BareLaunchError,
+  bareReceipt,
+  bareInventoryEvidence,
+  namesT3Mcp,
+} from "@t3tools/provider-core/server/bareLaunch";
 import type {
   Event as OpenCodeEvent,
   Message as OpenCodeMessage,
@@ -592,7 +604,7 @@ const OPENCODE_RESTRICTED_PERMISSIONS = [
 ] as const;
 
 /** OpenCode has no OS sandbox; permission rules must enforce non-interactive policies too. */
-export function openCodePermissionRules(
+function normalOpenCodePermissionRules(
   runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
 ): PermissionRuleset {
   const sandboxPolicy = recordValue(runtimePolicy, "sandboxPolicy");
@@ -680,6 +692,56 @@ export function openCodePermissionRules(
   }
 
   return rules;
+}
+
+/** Agent tool configuration is permission sugar in v1. Session rules must retain
+ * both the admitted ceiling and that positive filter when they override it. */
+export function openCodePermissionRules(
+  policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+  plan?: {
+    readonly agent: string;
+    readonly plansDirectory: string;
+    readonly plansPattern?: string;
+  },
+): PermissionRuleset {
+  const rules = normalOpenCodePermissionRules(policy);
+  if (policy.bare === undefined) return rules;
+  const native = [
+    "bash",
+    "read",
+    "edit",
+    "glob",
+    "grep",
+    "list",
+    "external_directory",
+    ...(namesT3Mcp(policy.bare) ? ["t3-code_*", "t3_code_*"] : []),
+  ];
+  const filtered: PermissionRuleset = [
+    { permission: "*", pattern: "*", action: "deny" },
+    ...rules.flatMap((rule) =>
+      rule.permission === "*"
+        ? native.map((permission) => ({ ...rule, permission }))
+        : native.includes(rule.permission)
+          ? [rule]
+          : [],
+    ),
+  ];
+  if ((plan?.agent ?? (policy.interactionMode === "plan" ? "plan" : "build")) === "plan") {
+    const action =
+      filtered.toReversed().find((rule) => rule.permission === "edit" && rule.pattern === "*")
+        ?.action ?? "ask";
+    filtered.push(
+      { permission: "edit", pattern: "*", action: "deny" },
+      { permission: "edit", pattern: ".opencode/plans/*.md", action },
+    );
+    if (plan !== undefined)
+      filtered.push({
+        permission: "edit",
+        pattern: plan.plansPattern ?? `${plan.plansDirectory}/*.md`,
+        action,
+      });
+  }
+  return filtered;
 }
 
 function permissionRuleEquals(
@@ -916,28 +978,96 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
   const runtime = yield* OpenCodeRuntime.OpenCodeRuntime;
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const host = yield* ProviderHost.ProviderHost;
+  const fileSystem = yield* FileSystem.FileSystem;
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const messageIdClock = yield* Ref.make({ epochMillis: -1, counter: 0 });
 
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: options.instanceId,
     driver: OPENCODE_PROVIDER,
+<<<<<<< HEAD
     getCapabilities: Effect.fn("OpencodeAdapter.getCapabilities")(function () {
       return Effect.succeed(OpenCodeProviderCapabilitiesV2);
     }),
     planSelectionTransition: Effect.fn("OpencodeAdapter.planSelectionTransition")(function () {
       return Effect.succeed(turnScopedSelectionTransition());
     }),
+=======
+    bareSupport: Effect.succeed(
+      options.settings.serverUrl?.trim()
+        ? { supported: false, reason: "Bare OpenCode cannot isolate an external serverUrl." }
+        : { supported: true },
+    ),
+    getCapabilities: () => Effect.succeed(OpenCodeProviderCapabilitiesV2),
+    planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
+>>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
     openSession: Effect.fn("OpenCodeAdapterV2.openSession")(
       function* (input: ProviderAdapter.ProviderAdapterV2OpenSessionInput) {
         const scope = yield* Effect.scope;
         const cwd = input.runtimePolicy.cwd ?? host.paths.cwd;
+        const bare = input.runtimePolicy.bare;
+        let bareEvidence: ReadonlyArray<import("@t3tools/contracts").BareEvidence> = [];
+        const home = bareHome(host.paths.stateDir, options.instanceId, "opencode");
+        let environment = options.environment;
+        let effectiveAgent =
+          getModelSelectionStringOptionValue(input.modelSelection, "agent") ??
+          (input.runtimePolicy.interactionMode === "plan" ? "plan" : "build");
+        if (bare !== undefined) {
+          if (options.settings.serverUrl?.trim())
+            return yield* new ProviderAdapter.ProviderAdapterOpenSessionError({
+              driver: OPENCODE_PROVIDER,
+              providerSessionId: input.providerSessionId,
+              cause: "Bare OpenCode cannot isolate an external serverUrl.",
+            });
+          if (effectiveAgent !== "build" && effectiveAgent !== "plan")
+            return yield* new ProviderAdapter.ProviderAdapterOpenSessionError({
+              driver: OPENCODE_PROVIDER,
+              providerSessionId: input.providerSessionId,
+              cause: new BareLaunchError({
+                reason: `Bare OpenCode agent ${effectiveAgent} is unsupported; choose build or plan.`,
+              }),
+            });
+          environment = yield* prepareOpenCodeBareEnvironment({
+            home,
+            environment,
+            namedMcp: namesT3Mcp(bare),
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapter.ProviderAdapterOpenSessionError({
+                  driver: OPENCODE_PROVIDER,
+                  providerSessionId: input.providerSessionId,
+                  cause,
+                }),
+            ),
+          );
+        }
         const connection = yield* runtime.connectToOpenCodeServer({
           binaryPath: options.settings.binaryPath,
           directory: cwd,
           serverUrl: options.settings.serverUrl,
-          environment: options.environment,
+          environment,
+          ...(bare === undefined ? {} : { pure: true }),
         });
+        const plansDirectory = `${options.environment.XDG_DATA_HOME ?? `${options.environment.HOME ?? "~"}/.local/share`}/opencode/plans`;
+        const plansPattern = yield* Path.Path.pipe(
+          Effect.map((path) => path.relative(cwd, `${plansDirectory}/*.md`)),
+          Effect.provide(Path.layer),
+        );
+        const permissions = (policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy) =>
+          permissionsFor(policy, input.modelSelection);
+        const permissionsFor = (
+          policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+          selection: ModelSelection,
+        ) =>
+          openCodePermissionRules(policy, {
+            agent:
+              getModelSelectionStringOptionValue(selection, "agent") ??
+              (policy.interactionMode === "plan" ? "plan" : "build"),
+            plansDirectory,
+            plansPattern,
+          });
         const client = runtime.createOpenCodeSdkClient({
           baseUrl: connection.url,
           directory: cwd,
@@ -947,11 +1077,19 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
         });
 
         const mcpSession = yield* mcpSessions.read(input.threadId);
+<<<<<<< HEAD
         const hasT3Mcp = mcpSession !== undefined && !connection.external;
         const orchestrationSystemPrompt = t3OrchestrationSystemPrompt(
           hasT3Mcp,
           mcpSession?.capabilities?.has("device") === true,
         );
+=======
+        const hasT3Mcp =
+          mcpSession !== undefined &&
+          !connection.external &&
+          (bare === undefined || namesT3Mcp(bare));
+        const orchestrationSystemPrompt = t3OrchestrationSystemPrompt(hasT3Mcp);
+>>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
         if (hasT3Mcp) {
           yield* OpenCodeRuntime.runOpenCodeSdk("mcp.add", () =>
             client.mcp.add({
@@ -966,6 +1104,104 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           );
         }
 
+        const inspectBare = Effect.gen(function* () {
+          if (bare === undefined) return;
+          const configResponse = yield* OpenCodeRuntime.runOpenCodeSdk("config.get", () =>
+            client.config.get({ directory: cwd }),
+          );
+          const config = unwrapData("config.get", configResponse);
+          for (const name of ["build", "plan"]) {
+            const agent = config.agent?.[name];
+            if (
+              agent?.prompt !== "." ||
+              agent.tools?.["*"] !== false ||
+              Object.entries(agent.tools).some(
+                ([tool, enabled]) =>
+                  enabled &&
+                  ![
+                    "bash",
+                    "read",
+                    "write",
+                    "edit",
+                    "glob",
+                    "grep",
+                    "list",
+                    ...(namesT3Mcp(bare) ? ["t3-code_*", "t3_code_*"] : []),
+                  ].includes(tool),
+              )
+            )
+              return yield* new OpenCodeRuntime.OpenCodeRuntimeError({
+                operation: "bare.config",
+                detail: `OpenCode bare ${name} prompt or tool restriction is missing.`,
+              });
+          }
+          if (
+            config.agent?.title?.disable !== true ||
+            (config.instructions?.length ?? 0) > 0 ||
+            (config.plugin?.length ?? 0) > 0
+          )
+            return yield* new OpenCodeRuntime.OpenCodeRuntimeError({
+              operation: "bare.config",
+              detail:
+                "OpenCode bare title suppression, instructions or plugins differ from its isolated config.",
+            });
+          const status = unwrapData(
+            "mcp.status",
+            yield* OpenCodeRuntime.runOpenCodeSdk("mcp.status", () =>
+              client.mcp.status({ directory: cwd }),
+            ),
+          );
+          const active = Object.entries(status)
+            .filter(([, state]) => state.status !== "disabled")
+            .map(([name]) => name);
+          if (active.some((name) => name !== "t3-code" || !namesT3Mcp(bare)))
+            return yield* new OpenCodeRuntime.OpenCodeRuntimeError({
+              operation: "bare.mcp",
+              detail: "OpenCode bare has an unexpected MCP server identity.",
+            });
+          const parsed = OpenCodeRuntime.parseOpenCodeModelSlug(input.modelSelection.model);
+          if (parsed !== null) {
+            const registry = unwrapData(
+              "tool.list",
+              yield* OpenCodeRuntime.runOpenCodeSdk("tool.list", () =>
+                client.tool.list({
+                  directory: cwd,
+                  provider: parsed.providerID,
+                  model: parsed.modelID,
+                }),
+              ),
+            );
+            bareEvidence = [
+              {
+                category: "tools",
+                status: "unobserved",
+                identities: registry
+                  .filter((tool) => config.agent?.[effectiveAgent]?.tools?.[tool.id] === true)
+                  .map((tool) => tool.id),
+                source: `OpenCode tool.list and config.get ${effectiveAgent}; registry filtered by native agent config, outbound tool request unobserved`,
+              },
+            ];
+          }
+          bareEvidence = [
+            ...bareEvidence,
+            bareInventoryEvidence(
+              "mcp",
+              active,
+              namesT3Mcp(bare) ? ["t3-code"] : [],
+              "OpenCode mcp.status before inference",
+            ),
+          ];
+        });
+        yield* inspectBare.pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapter.ProviderAdapterOpenSessionError({
+                driver: OPENCODE_PROVIDER,
+                providerSessionId: input.providerSessionId,
+                cause,
+              }),
+          ),
+        );
         const now = yield* DateTime.now;
         let sessionEntity: OrchestrationV2ProviderSession = {
           id: input.providerSessionId,
@@ -3023,6 +3259,37 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
         });
 
         const runtimeSession: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
+          ...(bare === undefined
+            ? {}
+            : {
+                getBareReceipt: (thread: OrchestrationV2ProviderThread) =>
+                  Effect.succeed(
+                    bareReceipt({
+                      driver: OPENCODE_PROVIDER,
+                      bare,
+                      mode: input.runtimePolicy.runtimeMode,
+                      effective: `OpenCode agent ${effectiveAgent}; ${input.runtimePolicy.runtimeMode}; native plan restrictions preserved`,
+                      controls: [
+                        "own serve --pure",
+                        "shadow XDG_CONFIG_HOME",
+                        "discovery disabled",
+                        "build/plan prompt '.'",
+                        "positive native tools",
+                        "title disabled",
+                      ],
+                      retained: [
+                        "system text '.'",
+                        "model identity and environment block",
+                        "native subdirectory AGENTS.md may arrive after file reads",
+                      ],
+                      root: options.environment.XDG_DATA_HOME
+                        ? `${options.environment.XDG_DATA_HOME}/opencode`
+                        : `${options.environment.HOME ?? "~"}/.local/share/opencode`,
+                      sessionId: thread.nativeThreadRef?.nativeId ?? null,
+                      evidence: bareEvidence,
+                    }),
+                  ),
+              }),
           instanceId: options.instanceId,
           driver: OPENCODE_PROVIDER,
           providerSessionId: input.providerSessionId,
@@ -3038,8 +3305,18 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               }
               const permission = openCodePermissionRules(threadInput.runtimePolicy);
               // OpenCode generates a title only when session.create leaves it unset.
+<<<<<<< HEAD
               const response = yield* sdkCall("session.create", { permission }, () =>
                 client.session.create({ permission }),
+=======
+              const response = yield* sdkCall(
+                "session.create",
+                { permission: permissions(threadInput.runtimePolicy) },
+                () =>
+                  client.session.create({
+                    permission: permissions(threadInput.runtimePolicy),
+                  }),
+>>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
               );
               const nativeSession = unwrapData("session.create", response);
               const createdAt = yield* DateTime.now;
@@ -3134,6 +3411,25 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                   detail: `OpenCode provider thread ${turnInput.providerThread.id} already has an active turn`,
                   reason: "previous_turn_active",
                 });
+              }
+              const agent =
+                getModelSelectionStringOptionValue(turnInput.modelSelection, "agent") ??
+                (turnInput.runtimePolicy.interactionMode === "plan" ? "plan" : undefined);
+              if (bare !== undefined) {
+                effectiveAgent = agent ?? "build";
+                if (effectiveAgent !== "build" && effectiveAgent !== "plan")
+                  return yield* new BareLaunchError({
+                    reason: `Bare OpenCode agent ${effectiveAgent} is unsupported.`,
+                  });
+                // An existing session may move between build and plan. Its
+                // session rules override agent defaults, so reconcile the
+                // current plan restriction before every prompt, including resume.
+                yield* sdkCall("session.update", { sessionID: sessionId }, () =>
+                  client.session.update({
+                    sessionID: sessionId,
+                    permission: permissionsFor(turnInput.runtimePolicy, turnInput.modelSelection),
+                  }),
+                );
               }
               const parsedModel = OpenCodeRuntime.parseOpenCodeModelSlug(
                 turnInput.modelSelection.model,
@@ -3263,9 +3559,6 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               ]
                 .filter(Boolean)
                 .join("\n\n");
-              const agent =
-                getModelSelectionStringOptionValue(turnInput.modelSelection, "agent") ??
-                (turnInput.runtimePolicy.interactionMode === "plan" ? "plan" : undefined);
               const variant = getModelSelectionStringOptionValue(
                 turnInput.modelSelection,
                 "variant",
@@ -3279,7 +3572,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                   model: parsedModel,
                   ...(agent === undefined ? {} : { agent }),
                   ...(variant === undefined ? {} : { variant }),
-                  system: systemPrompt,
+                  ...(turnInput.runtimePolicy.bare === undefined ? { system: systemPrompt } : {}),
                   parts,
                 },
                 admissionAbortController!,
@@ -3616,7 +3909,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 yield* sdkCall("session.update", { sessionID: fork.id }, () =>
                   client.session.update({
                     sessionID: fork.id,
-                    permission: openCodePermissionRules(input.runtimePolicy),
+                    permission: permissions(input.runtimePolicy),
                   }),
                 );
                 retainedThread = {
@@ -3736,6 +4029,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
 });
 
 export type OpenCodeAdapterV2DriverEnv =
+  | FileSystem.FileSystem
   | OpenCodeRuntime.OpenCodeRuntime
   | IdAllocator.IdAllocatorV2
   | McpProviderSessions.McpProviderSessions

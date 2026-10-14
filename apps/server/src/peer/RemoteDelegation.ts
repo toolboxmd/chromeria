@@ -248,6 +248,7 @@ const make = Effect.gen(function* () {
         `command:mcp:${encodeURIComponent(scope.requestNamespace)}:remote-delegate:${encodeURIComponent(key)}`,
       );
       const launch = {
+        ...(input.bare === undefined ? {} : { bare: input.bare }),
         requestNamespace: scope.requestNamespace,
         clientRequestId: `delegate:${scope.thread.threadId}:${key}`,
         linkIdentity: link.launchIdentity,
@@ -446,6 +447,7 @@ const make = Effect.gen(function* () {
           remote.environmentId,
           {
             projectId: launch.projectId,
+            ...(launch.bare === undefined ? {} : { bare: launch.bare }),
             title: launch.title,
             ...(launch.modelSelection === undefined
               ? {}

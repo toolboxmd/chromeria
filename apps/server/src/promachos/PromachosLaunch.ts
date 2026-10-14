@@ -14,12 +14,14 @@ import * as Providers from "../provider/ProviderRegistry.ts";
 export class PromachosLaunchError extends Schema.TaggedError<PromachosLaunchError>()(
   "PromachosLaunchError",
   {
-    reason: Schema.Literals(["initial-only", "routing", "read-thread"]),
+    reason: Schema.Literals(["initial-only", "routing", "read-thread", "bare"]),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message() {
     switch (this.reason) {
+      case "bare":
+        return "Promachos persona cannot be combined with bare launch.";
       case "initial-only":
         return "Prism can select the Promachos model only when creating a new top-level conversation.";
       case "routing":
@@ -51,6 +53,7 @@ const make = Effect.gen(function* () {
   const prepare = Effect.fn("PromachosLaunch.prepare")(function* (input: PromachosLaunchInput) {
     const { prismRole, ...launch } = input;
     if (prismRole === undefined) return launch;
+    if (input.bare !== undefined) return yield* new PromachosLaunchError({ reason: "bare" });
     if (input.reuseExistingThread === true || input.initialMessage === undefined) {
       return yield* new PromachosLaunchError({ reason: "initial-only" });
     }

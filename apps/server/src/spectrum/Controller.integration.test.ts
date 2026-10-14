@@ -1,3 +1,4 @@
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
@@ -42,9 +43,12 @@ import { ForkCommandInterceptor } from "../fork/ForkCommandInterceptor.ts";
 import { spectrumLaunchAdmission } from "./launchAdmission.ts";
 
 const dependencies = Layer.mergeAll(base, serialization);
-const services = Layer.mergeAll(Launch.layer, Round.layer, Transcript.layer, Reports.layer).pipe(
-  Layer.provideMerge(dependencies),
-);
+const services = Layer.mergeAll(
+  Launch.layer.pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({}))),
+  Round.layer,
+  Transcript.layer,
+  Reports.layer,
+).pipe(Layer.provideMerge(dependencies));
 const runtime = Layer.fresh(
   Layer.mergeAll(
     CommandPlans.layer.pipe(Layer.provide(dependencies)),

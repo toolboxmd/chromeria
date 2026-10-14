@@ -1,3 +1,5 @@
+import { getDefaultSdkStateRoot } from "./sdk.ts";
+import { bareReceipt, namesT3Mcp } from "@t3tools/provider-core/server/bareLaunch";
 import type {
   AgentMessage,
   AgentOptions,
@@ -302,8 +304,25 @@ export function makeCursorAgentOptions(input: {
   readonly platform: NodeJS.Platform;
 }): AgentOptions {
   const policy = cursorRuntimeAgentPolicy(input.runtimePolicy, input.platform);
-  const mcpServers = cursorMcpServers(input.mcpSession);
+  const mcpServers =
+    input.runtimePolicy.bare !== undefined && !namesT3Mcp(input.runtimePolicy.bare)
+      ? undefined
+      : cursorMcpServers(input.mcpSession);
   return {
+    ...(input.runtimePolicy.bare === undefined
+      ? {}
+      : {
+          tools: [
+            "shell",
+            "read",
+            "edit",
+            "grep",
+            "glob",
+            "ls",
+            "delete",
+            ...(namesT3Mcp(input.runtimePolicy.bare) ? ["mcp" as const] : []),
+          ],
+        }),
     model: cursorSdkModelSelection(input.modelSelection),
     name: `T3 Code ${input.threadId}`,
     mode: input.runtimePolicy.interactionMode === "plan" ? "plan" : "agent",
@@ -311,7 +330,9 @@ export function makeCursorAgentOptions(input: {
     local: {
       ...(input.runtimePolicy.cwd === null ? {} : { cwd: input.runtimePolicy.cwd }),
       autoReview: policy.autoReview,
-      settingSources: [...CURSOR_AGENT_SETTING_SOURCES],
+      ...(input.runtimePolicy.bare === undefined
+        ? { settingSources: [...CURSOR_AGENT_SETTING_SOURCES] }
+        : {}),
       sandboxOptions: {
         enabled: policy.sandboxEnabled,
       },
@@ -968,12 +989,18 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CursorAgentSdk.CURSOR_PROVIDER,
+<<<<<<< HEAD
     getCapabilities: Effect.fn("CursorAdapter.getCapabilities")(function () {
       return Effect.succeed(CursorProviderCapabilitiesV2);
     }),
     planSelectionTransition: Effect.fn("CursorAdapter.planSelectionTransition")(function () {
       return Effect.succeed(turnScopedSelectionTransition());
     }),
+=======
+    bareSupport: Effect.succeed({ supported: true }),
+    getCapabilities: () => Effect.succeed(CursorProviderCapabilitiesV2),
+    planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
+>>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
     openSession: Effect.fn("CursorAdapterV2.openSession")(
       function* (input: ProviderAdapter.ProviderAdapterV2OpenSessionInput) {
         const sessionScope = yield* Effect.scope;
@@ -2277,7 +2304,11 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
           if (rawText.trim() === "/compress" && turnInput.message.attachments.length === 0) {
             return "/compress";
           }
-          if (hasCursorSkillMention(rawText) && cursorSkillNames === undefined) {
+          if (
+            turnInput.runtimePolicy.bare === undefined &&
+            hasCursorSkillMention(rawText) &&
+            cursorSkillNames === undefined
+          ) {
             const skills = yield* discoverCursorSkills(
               turnInput.runtimePolicy.cwd ?? undefined,
               adapterOptions.environment,
@@ -2301,10 +2332,15 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               resolveAttachmentPath: host.resolveAttachmentPath,
               resolveExtractedTextPath: host.resolveExtractedTextPath,
             }),
+<<<<<<< HEAD
             hasT3Mcp: mcpServers !== undefined,
             hasDeviceTools,
             orchestrationDelivered: delivered.orchestration,
             deviceInstructionsDelivered: delivered.device,
+=======
+            runOrdinal: turnInput.runOrdinal,
+            hasT3Mcp: turnInput.runtimePolicy.bare === undefined && mcpServers !== undefined,
+>>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
           });
           const images = yield* Effect.forEach(
             turnInput.message.attachments.filter(isProviderNativeImageAttachment),
@@ -2341,7 +2377,10 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               detail: "Cursor turn requires non-empty text or attachments.",
             });
           }
-          const text = `${userText}\n\n${buildRuntimeInstructions({ harness: "Cursor", model: turnInput.modelSelection.model })}`;
+          const text =
+            turnInput.runtimePolicy.bare !== undefined
+              ? userText
+              : `${userText}\n\n${buildRuntimeInstructions({ harness: "Cursor", model: turnInput.modelSelection.model })}`;
           return images.length === 0
             ? text
             : ({
@@ -2585,6 +2624,31 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
         yield* Effect.addFinalizer(() => closeSession());
 
         const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
+          ...(input.runtimePolicy.bare === undefined
+            ? {}
+            : {
+                getBareReceipt: (thread: OrchestrationV2ProviderThread) =>
+                  Effect.succeed(
+                    bareReceipt({
+                      driver: CursorAgentSdk.CURSOR_PROVIDER,
+                      bare: input.runtimePolicy.bare!,
+                      mode: input.runtimePolicy.runtimeMode,
+                      effective: `Cursor sandbox ${cursorRuntimeAgentPolicy(input.runtimePolicy).sandboxEnabled ? "enabled" : "disabled"}, auto-review ${cursorRuntimeAgentPolicy(input.runtimePolicy).autoReview}`,
+                      controls: [
+                        "positive tools on create/resume",
+                        "settingSources omitted",
+                        "no Chromeria suffix",
+                      ],
+                      retained: [
+                        "native harness prompt; replacement access is account-gated and unknown",
+                        "native user_info",
+                        "sandbox policy files",
+                      ],
+                      root: getDefaultSdkStateRoot(input.runtimePolicy.cwd ?? host.paths.cwd),
+                      sessionId: thread.nativeThreadRef?.nativeId ?? null,
+                    }),
+                  ),
+              }),
           instanceId: adapterOptions.instanceId,
           driver: CursorAgentSdk.CURSOR_PROVIDER,
           providerSessionId: input.providerSessionId,

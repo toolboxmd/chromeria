@@ -1,3 +1,6 @@
+import * as BareLaunch from "../BareLaunch.ts";
+import * as ProviderRegistry from "../../provider/ProviderRegistry.ts";
+import * as GitWorkflow from "../../git/GitWorkflowService.ts";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -370,8 +373,21 @@ export function layerWithRegistry<Error>(
   const layerCheckpointServiceProvided = CheckpointService.layer.pipe(
     Layer.provide(Layer.mergeAll(layerCheckpointStore, IdAllocator.layer)),
   );
+  const layerBareLaunch = BareLaunch.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerProvidedRegistry,
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.succeed([]),
+          refreshWorkspaceSnapshot: () => Effect.succeed([]),
+        }),
+        Layer.mock(GitWorkflow.GitWorkflowService)({}),
+      ),
+    ),
+    Layer.provide(NodeServices.layer),
+  );
   const layerContextHandoffServiceProvided = ContextHandoffService.layer.pipe(
-    Layer.provide(IdAllocator.layer),
+    Layer.provide(Layer.merge(IdAllocator.layer, layerStores)),
   );
   const layerPersistence = Layer.mergeAll(
     layerStores,
@@ -430,6 +446,7 @@ export function layerWithRegistry<Error>(
     Layer.provide(layerContextmd),
     Layer.provide(
       Layer.mergeAll(
+        layerBareLaunch,
         layerContextHandoffServiceProvided,
         layerEventSinkProvided,
         IdAllocator.layer,

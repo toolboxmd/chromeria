@@ -91,6 +91,14 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
     incoming.type === "message.dispatch" ? yield* withGuestAttachments(incoming) : incoming;
   const threads = yield* ThreadManagement.ThreadManagementService;
   if (
+    (command.type === "thread.create" || command.type === "delegated_task.request") &&
+    command.bare !== undefined
+  )
+    return yield* new AttachmentClaims.AttachmentClaimError({
+      message: "Only the server resolves bare launch state; use launchThread or the launch tools.",
+    });
+
+  if (
     command.type === "delegated_task.request" &&
     (command.projectId !== undefined || command.workspaceStrategy !== undefined)
   )

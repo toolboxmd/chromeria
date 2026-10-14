@@ -1,3 +1,4 @@
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import { assert, it } from "@effect/vitest";
 import { AuthOrchestrationOperateScope, AuthSessionId, CommandId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -21,9 +22,12 @@ const runtime = Layer.mergeAll(
   Runtime.layerAdmission.pipe(Layer.provide(dependencies)),
   Controller.layer.pipe(
     Layer.provideMerge(
-      Layer.mergeAll(Launch.layer, Reports.layer, Round.layer, Transcript.layer).pipe(
-        Layer.provideMerge(dependencies),
-      ),
+      Layer.mergeAll(
+        Launch.layer.pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({}))),
+        Reports.layer,
+        Round.layer,
+        Transcript.layer,
+      ).pipe(Layer.provideMerge(dependencies)),
     ),
   ),
 );

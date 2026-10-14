@@ -1,4 +1,7 @@
 import * as DocumentText from "../provider/DocumentText.ts";
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
+import { layerLaunchCatalog } from "../peer/PeerLinks.testkit.ts";
+import * as Settings from "../serverSettings.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -115,7 +118,7 @@ const layerLaunches = Layer.effect(
 );
 
 const layerTools = Layer.mergeAll(
-  McpHttpServer.layerOrchestratorToolkit,
+  McpHttpServer.layerOrchestratorToolkit.pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({}))),
   McpHttpServer.layerThreadToolkit,
   McpHttpServer.layerProjectRegistration,
 ).pipe(

@@ -816,9 +816,14 @@ describe("AcpAdapterV2", () => {
     }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
-  it.effect.each([false, true])(
-    "receipts cover Grok open/fallback and rollback creation, fallback=%s",
-    (fallback) =>
+  it.effect.each([
+    { fallback: false, bare: false },
+    { fallback: true, bare: false },
+    { fallback: false, bare: true },
+    { fallback: true, bare: true },
+  ])(
+    "Grok native instructions respect bare at open/fallback and rollback: %s",
+    ({ fallback, bare }) =>
       Effect.gen(function* () {
         const requests: Array<AcpSessionRuntime.AcpSessionRequestLogEvent> = [];
         const native = makeMockRuntime({
@@ -850,6 +855,7 @@ describe("AcpAdapterV2", () => {
           runtimeMode: "full-access",
           interactionMode: "default",
           cwd: process.cwd(),
+          ...(bare ? { bare: { additions: [] } } : {}),
         });
         const selection = { instanceId, model: "default" };
         const runtime = yield* adapter.openSession({
@@ -861,15 +867,20 @@ describe("AcpAdapterV2", () => {
           ...(fallback ? { initialNativeThreadId: "missing-session" } : {}),
         });
         const receipts = runtime.createdSessions!();
-        assert.lengthOf(receipts, 1);
-        assert.strictEqual(receipts[0]!.text, "installed A");
-        assert.strictEqual(receipts[0]!.site, fallback ? "fallback" : "open");
+        if (bare) assert.deepEqual(receipts, []);
+        else {
+          assert.lengthOf(receipts, 1);
+          assert.strictEqual(receipts[0]!.text, "installed A");
+          assert.strictEqual(receipts[0]!.site, fallback ? "fallback" : "open");
+        }
         const thread = yield* runtime.ensureThread({
           threadId,
           modelSelection: selection,
           runtimePolicy: policy,
         });
-        assert.strictEqual(thread.nativeThreadRef?.nativeId, receipts[0]!.nativeSessionId);
+        assert.isString(thread.nativeThreadRef?.nativeId);
+        if (!bare)
+          assert.strictEqual(thread.nativeThreadRef?.nativeId, receipts[0]!.nativeSessionId);
         const replacement = yield* runtime.rollbackThread({
           providerThread: thread,
           target: {
@@ -881,20 +892,30 @@ describe("AcpAdapterV2", () => {
           newSessionInstructions: "installed B",
         });
         const all = runtime.createdSessions!();
-        assert.lengthOf(all, 2);
-        assert.strictEqual(all[1]!.site, "rollback");
-        assert.strictEqual(all[1]!.text, "installed B");
-        assert.strictEqual(
-          all[1]!.nativeSessionId,
-          replacement.providerThread.nativeThreadRef?.nativeId,
-        );
+        if (bare) assert.deepEqual(all, []);
+        else {
+          assert.lengthOf(all, 2);
+          assert.strictEqual(all[1]!.site, "rollback");
+          assert.strictEqual(all[1]!.text, "installed B");
+          assert.strictEqual(
+            all[1]!.nativeSessionId,
+            replacement.providerThread.nativeThreadRef?.nativeId,
+          );
+        }
         const calls = requests.filter((event) => event.status === "started");
-        assert.deepStrictEqual(
-          calls
-            .filter((event) => event.method === "session/new")
-            .map((event) => (event.payload as { _meta: { rules: string } })._meta.rules),
-          ["installed A", "installed B"],
-        );
+        const created = calls.filter((event) => event.method === "session/new");
+        assert.lengthOf(created, 2);
+        if (bare) {
+          for (const event of calls)
+            assert.notNestedProperty((event.payload ?? {}) as object, "_meta.rules");
+          assert.notInclude(JSON.stringify(calls), "installed A");
+          assert.notInclude(JSON.stringify(calls), "installed B");
+        } else {
+          assert.deepStrictEqual(
+            created.map((event) => (event.payload as { _meta: { rules: string } })._meta.rules),
+            ["installed A", "installed B"],
+          );
+        }
         assert.isFalse(calls.some((event) => event.method === "session/prompt"));
         for (const event of calls.filter(
           (event) => event.method === "initialize" || event.method === "session/load",

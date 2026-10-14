@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   type ModelSelection,
+  OrchestratorMcpCreateThreadsInput,
   ProjectId,
   MessageId,
   NodeId,
@@ -26,8 +27,11 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import type * as EffectAcpSchema from "effect-acp/compat";
 
@@ -39,6 +43,7 @@ import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegist
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as RuntimePolicy from "../RuntimePolicy.ts";
 import { acpPermissionDisposition } from "@t3tools/provider-acp/server/clientPolicy";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
@@ -56,6 +61,7 @@ import { makeAcpReplayRuntime, type AcpReplayTranscript } from "./AcpAdapterV2.t
 const LAUNCH_TEST_GROK_SETTINGS = Schema.decodeSync(GrokSettings)({
   binaryPath: "grok-launch-test",
 });
+const decodeCreateThreadsInput = Schema.decodeUnknownEffect(OrchestratorMcpCreateThreadsInput);
 
 function permissionRequest(
   kind: EffectAcpSchema.ToolKind,
@@ -286,6 +292,134 @@ describe("Grok launch permission mode", () => {
       cwd: process.cwd(),
       ...override,
     });
+
+  it.effect("prepares isolated, reopenable bare homes for maximum-length MCP request IDs", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const host = yield* ProviderHost.ProviderHost;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const nativeHome = path.join(root, "native");
+      const cwd = path.join(root, "destination");
+      yield* fs.makeDirectory(nativeHome);
+      yield* fs.makeDirectory(cwd);
+      yield* fs.writeFileString(path.join(nativeHome, "auth.json"), "FAKE_TEST_AUTH");
+      const request = yield* decodeCreateThreadsInput({
+        clientRequestId: "a".repeat(256),
+        threads: [
+          { bare: {}, prompt: "first" },
+          { bare: {}, prompt: "second" },
+        ],
+      });
+      // The public create_threads identity includes its caller namespace and request key.
+      const threadIds = request.threads.map((_, index) =>
+        ThreadId.make(
+          `thread:mcp:123e4567-e89b-12d3-a456-426614174000:${request.clientRequestId}:${index}`,
+        ),
+      );
+      assert.equal(new TextEncoder().encode(encodeURIComponent(threadIds[0]!)).length, 314);
+      const instanceId = ProviderInstanceId.make("grok-launch-test");
+      const launches: Array<{ home: string; args: ReadonlyArray<string> }> = [];
+      const inspectedHomes: Array<string> = [];
+      const spawner = ChildProcessSpawner.make((command) =>
+        Effect.gen(function* () {
+          assert.equal(command._tag, "StandardCommand");
+          if (command._tag !== "StandardCommand") return yield* Effect.die("Unexpected pipe");
+          const home = command.options.env?.GROK_HOME;
+          assert.isString(home);
+          assert.equal(command.options.cwd, cwd);
+          if (command.args[0] === "inspect") {
+            inspectedHomes.push(home!);
+            assert.equal(
+              yield* fs.readLink(path.join(home!, "auth.json")),
+              path.join(nativeHome, "auth.json"),
+            );
+            assert.include(
+              yield* fs.readFileString(path.join(home!, "config.toml")),
+              "[workflows]\nenabled = false",
+            );
+            return ChildProcessSpawner.makeHandle({
+              pid: ChildProcessSpawner.ProcessId(1),
+              exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+              isRunning: Effect.succeed(false),
+              kill: () => Effect.void,
+              unref: Effect.succeed(Effect.void),
+              stdin: Sink.drain,
+              stdout: Stream.encodeText(Stream.make('{"skills":[],"plugins":[],"hooks":[]}')),
+              stderr: Stream.empty,
+              all: Stream.empty,
+              getInputFd: () => Sink.drain,
+              getOutputFd: () => Stream.empty,
+            });
+          }
+          launches.push({ home: home!, args: command.args });
+          // Stop at the native process boundary without launching Grok.
+          return yield* PlatformError.systemError({
+            _tag: "NotFound",
+            module: "grok-launch-test",
+            method: "spawn",
+          });
+        }),
+      );
+      const open = (threadId: ThreadId, bare: boolean) =>
+        Effect.gen(function* () {
+          const adapter = yield* makeGrokAdapterV2({
+            instanceId,
+            settings: LAUNCH_TEST_GROK_SETTINGS,
+            environment: { HOME: root, GROK_HOME: nativeHome },
+            hostPlatform: "darwin",
+            selfInvocation: yield* resolveSelfInvocation(),
+          });
+          yield* adapter.openSession({
+            threadId,
+            providerSessionId: ProviderSessionId.make(`session:${threadId}`),
+            modelSelection: { instanceId, model: "grok-build" },
+            runtimePolicy: policy("full-access", {
+              cwd,
+              ...(bare ? { bare: { additions: [] } } : {}),
+            }),
+          });
+        }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.scoped,
+          Effect.ignore,
+        );
+      for (const threadId of threadIds) yield* open(threadId, true);
+      assert.equal(launches.length, 2);
+      const [first, second] = launches;
+      assert.notEqual(first!.home, second!.home);
+      for (const { home, args } of launches) {
+        assert.equal(
+          path.dirname(home),
+          path.join(host.paths.stateDir, "bare", instanceId, "grok"),
+        );
+        assert.isAtMost(new TextEncoder().encode(path.basename(home)).length, 255);
+        assert.deepEqual(args, ["agent", "--always-approve", "--no-leader", "stdio"]);
+      }
+      yield* fs.makeDirectory(path.join(first!.home, "sessions"));
+      yield* fs.writeFileString(path.join(first!.home, "sessions", "native-marker"), "retained");
+      yield* open(threadIds[0]!, true);
+      assert.equal(launches[2]!.home, first!.home);
+      assert.equal(
+        yield* fs.readFileString(path.join(launches[2]!.home, "sessions", "native-marker")),
+        "retained",
+      );
+      assert.deepEqual(
+        inspectedHomes,
+        launches.map(({ home }) => home),
+      );
+      yield* open(threadIds[0]!, false);
+      assert.equal(inspectedHomes.length, 3);
+      assert.deepEqual(launches[3], {
+        home: nativeHome,
+        args: ["agent", "--always-approve", "stdio"],
+      });
+    }).pipe(
+      Effect.provideService(HostProcess.Platform, "darwin"),
+      Effect.provide(layerTest),
+      Effect.scoped,
+    ),
+  );
 
   it.effect.each(
     (

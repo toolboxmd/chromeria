@@ -17,11 +17,17 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
+import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
+import * as EventStore from "./EventStore.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
@@ -198,6 +204,140 @@ it.effect("a persisted fork leaves PR watching with its parent until explicitly 
     assert.deepEqual(stoppedFork?.pendingBackgroundTasks, []);
     assert.deepEqual(yield* orchestrator.getThreadShell(sourceThreadId), parentBefore);
   }).pipe(Effect.provide(forkCases[0]!.layer)),
+);
+
+it.effect(
+  "persists a fresh bare home owner and preserves it through native fork chains and event replay",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const store = yield* EventStore.EventStoreV2;
+      const now = yield* DateTime.now;
+      const sourceId = ThreadId.make("bare-owner-source");
+      const driver = ProviderDriverKind.make("codex");
+      const instanceId = ProviderInstanceId.make("codex");
+      const modelSelection = { instanceId, model: "test-model" };
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("bare-owner-create"),
+        threadId: sourceId,
+        projectId: ProjectId.make("bare-owner-project"),
+        title: "Bare owner",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        bare: { additions: [], nativeHomeOwnerThreadId: ThreadId.make("caller-cannot-choose") },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      let parentId = sourceId;
+      for (const targetId of [
+        ThreadId.make("bare-owner-first-fork"),
+        ThreadId.make("bare-owner-second-fork"),
+      ]) {
+        const providerThreadId = ProviderThreadId.make(`native:${parentId}`);
+        const runId = RunId.make(`run:${parentId}`);
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make(`provider:${parentId}`),
+              type: "provider-thread.updated",
+              threadId: parentId,
+              occurredAt: now,
+              payload: {
+                id: providerThreadId,
+                driver,
+                providerInstanceId: instanceId,
+                providerSessionId: null,
+                appThreadId: parentId,
+                ownerNodeId: null,
+                nativeThreadRef: { driver, nativeId: `native:${parentId}`, strength: "strong" },
+                nativeConversationHeadRef: null,
+                status: "idle",
+                firstRunOrdinal: 1,
+                lastRunOrdinal: 1,
+                handoffIds: [],
+                forkedFrom: null,
+                createdAt: now,
+                updatedAt: now,
+              },
+            },
+            {
+              id: EventId.make(`run:${parentId}`),
+              type: "run.created",
+              threadId: parentId,
+              runId,
+              occurredAt: now,
+              payload: {
+                id: runId,
+                threadId: parentId,
+                ordinal: 1,
+                providerInstanceId: instanceId,
+                modelSelection,
+                providerThreadId,
+                userMessageId: MessageId.make(`input:${parentId}`),
+                rootNodeId: null,
+                activeAttemptId: null,
+                status: "completed",
+                requestedAt: now,
+                startedAt: now,
+                completedAt: now,
+                checkpointId: null,
+                contextHandoffId: null,
+              },
+            },
+          ],
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.fork",
+          commandId: CommandId.make(`fork:${targetId}`),
+          sourceThreadId: parentId,
+          targetThreadId: targetId,
+          sourcePoint: { type: "run", runId },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const projection = yield* orchestrator.getThreadProjection(targetId);
+        assert.equal(projection.thread.bare?.nativeHomeOwnerThreadId, sourceId);
+        parentId = targetId;
+      }
+      const events = yield* store.read().pipe(Stream.runCollect);
+      yield* Effect.gen(function* () {
+        const recovered = yield* ProjectionStore.ProjectionStoreV2;
+        for (const row of events) yield* recovered.apply(row.event);
+        for (const id of [sourceId, ThreadId.make("bare-owner-first-fork"), parentId]) {
+          const thread = yield* recovered.getThread(id);
+          assert.equal(thread.bare?.nativeHomeOwnerThreadId, sourceId);
+          const policy = yield* (yield* RuntimePolicy.RuntimePolicyV2).resolve({
+            thread,
+            modelSelection,
+          });
+          assert.equal(policy.bare?.nativeHomeOwnerThreadId, sourceId);
+        }
+      }).pipe(Effect.provide(Layer.merge(ProjectionStore.layerMemory, RuntimePolicy.layer)));
+    }).pipe(
+      Effect.provide(
+        Layer.merge(
+          ProviderReplayHarness.layerWithRegistry(
+            { name: "bare-owner-fork" },
+            ProviderAdapterRegistry.layerFromAdapters([
+              {
+                instanceId: ProviderInstanceId.make("codex"),
+                driver: ProviderDriverKind.make("codex"),
+                getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+                planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
+                openSession: () => Effect.die("Native execution is covered by adapter replay"),
+              },
+            ]),
+            { databaseLayer: SqlitePersistence.layerMemory, runEffectWorker: false },
+          ),
+          EventStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+        ),
+      ),
+    ),
 );
 
 it.effect.each(forkCases)(

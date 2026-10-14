@@ -6,6 +6,7 @@ import { assert, it } from "@effect/vitest";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import {
   EnvironmentId,
+  type BareSupport,
   type ModelSelection,
   type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
@@ -326,6 +327,7 @@ function unimplemented(detail: string) {
 const makeProviderAdapter = Effect.fnUntraced(function* (
   state: Ref.Ref<TestProviderRuntimeState>,
   options: {
+    readonly bareSupport?: Effect.Effect<BareSupport>;
     readonly failEventStream?: boolean;
     readonly capabilities?: OrchestrationV2ProviderCapabilities;
     readonly mcpConfigs?: Ref.Ref<
@@ -364,6 +366,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: ProviderInstanceId.make("codex"),
     driver: CODEX_DRIVER,
+    ...(options.bareSupport === undefined ? {} : { bareSupport: options.bareSupport }),
     getCapabilities: () => Effect.succeed(options.capabilities ?? CodexCapabilities),
     planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
     openSession: (input) =>
@@ -470,6 +473,7 @@ function layerTest(input: {
   readonly state: Ref.Ref<TestProviderRuntimeState>;
   readonly idleTimeoutMs: number;
   readonly maxIdlePinMs?: number;
+  readonly bareSupport?: Effect.Effect<BareSupport>;
   readonly failEventStream?: boolean;
   readonly capabilities?: OrchestrationV2ProviderCapabilities;
   readonly mcpConfigs?: Ref.Ref<
@@ -513,6 +517,7 @@ function layerTest(input: {
   const layerRegistry = Layer.unwrap(
     makeProviderAdapter(input.state, {
       failEventStream: input.failEventStream ?? false,
+      ...(input.bareSupport === undefined ? {} : { bareSupport: input.bareSupport }),
       ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
       ...(input.mcpConfigs === undefined ? {} : { mcpConfigs: input.mcpConfigs }),
       ...(input.beforeOpen === undefined ? {} : { beforeOpen: input.beforeOpen }),
@@ -1147,6 +1152,58 @@ it.effect(
       yield* effect.pipe(
         Effect.provide(layerTest({ state, idleTimeoutMs: 60_000 })),
         Effect.provideService(AgentScope, agentScope),
+      );
+    }),
+);
+
+it.effect(
+  "bare session open drops accidental native ContextMD instructions at the adapter boundary",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const forwarded = yield* Ref.make<Array<string | undefined>>([]);
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-bare-native-instructions");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const input = {
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy: { ...runtimePolicy, bare: { additions: [] } },
+          newSessionInstructions: "UNNAMED_CONTEXTMD_NATIVE_POINTER",
+        };
+        const first = yield* manager.open(input);
+        const cached = yield* manager.open(input);
+        assert.strictEqual(cached, first);
+        assert.deepEqual(yield* Ref.get(forwarded), [undefined]);
+        assert.equal((yield* Ref.get(state)).openCount, 1);
+        yield* manager.close(providerSessionId);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            bareSupport: Effect.succeed({ supported: true }),
+            beforeOpen: (input) =>
+              Effect.sync(() => {
+                assert.notProperty(input, "newSessionInstructions");
+              }).pipe(
+                Effect.andThen(
+                  Ref.update(forwarded, (values) => [...values, input.newSessionInstructions]),
+                ),
+              ),
+          }),
+        ),
       );
     }),
 );
@@ -3719,6 +3776,7 @@ it.effect(
     }),
 );
 
+<<<<<<< HEAD
 // Device instructions reach delegated children only because their own sessions hold `device`.
 it.effect("ProviderSessionManagerV2 gives a delegated child its project's device access", () =>
   Effect.gen(function* () {
@@ -3729,5 +3787,97 @@ it.effect("ProviderSessionManagerV2 gives a delegated child its project's device
       delegatedBy: ThreadId.make("thread-provider-session-manager-parent"),
     });
     assert.isTrue(child?.capabilities?.has("device"));
+=======
+it.effect.each([false, true])(
+  "bare sessions issue T3 MCP credentials only when named (named=%s)",
+  (named) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const mcpConfigs = yield* Ref.make<
+        ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
+      >([]);
+      yield* Effect.gen(function* () {
+        const sink = yield* EventSink.EventSinkV2;
+        const ids = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const threadId = ThreadId.make("thread:bare-mcp");
+        const now = yield* DateTime.now;
+        yield* sink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now })],
+        });
+        const providerSessionId = yield* ids.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        const bare = {
+          additions: named ? [{ type: "mcp" as const, server: "t3-code" as const }] : [],
+        };
+        yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy: { ...runtimePolicy, bare },
+        });
+        const captured = yield* Ref.get(mcpConfigs);
+        assert.equal(captured.length, 1);
+        assert.equal(captured[0] !== undefined, named);
+        if (named) assert.equal(captured[0]?.threadId, threadId);
+        yield* manager.close(providerSessionId);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            mcpConfigs,
+            idleTimeoutMs: 60_000,
+            bareSupport: Effect.succeed({ supported: true }),
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect("bare session opens recheck support and refuse cached process sharing", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const supported = yield* Ref.make(true);
+    const bareSupport = Ref.get(supported).pipe(
+      Effect.map((value): BareSupport =>
+        value ? { supported: true } : { supported: false, reason: "runtime generation changed" },
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const ids = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const threadId = ThreadId.make("thread:bare-cache");
+      const now = yield* DateTime.now;
+      yield* sink.write({
+        events: [yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now })],
+      });
+      const providerSessionId = yield* ids.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      const input = {
+        threadId,
+        providerSessionId,
+        modelSelection,
+        runtimePolicy: { ...runtimePolicy, bare: { additions: [] } },
+      };
+      yield* manager.open(input);
+      yield* Ref.set(supported, false);
+      const refused = yield* manager.open(input).pipe(Effect.flip);
+      assert.deepInclude(refused.cause, { reason: "runtime generation changed" });
+      yield* Ref.set(supported, true);
+      const mixed = yield* manager.open({ ...input, runtimePolicy }).pipe(Effect.flip);
+      assert.include(String((mixed.cause as Error).message), "cannot share");
+      const other = yield* manager
+        .open({ ...input, threadId: ThreadId.make("thread:other") })
+        .pipe(Effect.flip);
+      assert.include(String((other.cause as Error).message), "cannot share");
+      assert.equal((yield* Ref.get(state)).openCount, 1);
+      yield* manager.close(providerSessionId);
+    }).pipe(Effect.provide(layerTest({ state, bareSupport, idleTimeoutMs: 60_000 })));
+>>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
   }),
 );

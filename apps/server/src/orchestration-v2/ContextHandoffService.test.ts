@@ -1,3 +1,5 @@
+import { idleThreadProjection, liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 import { assert, it } from "@effect/vitest";
 import {
   MessageId,
@@ -15,7 +17,72 @@ import * as Layer from "effect/Layer";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 
-const layerTest = ContextHandoffService.layer.pipe(Layer.provide(IdAllocator.layer));
+it.effect(
+  "every history entry point refuses bare text transfer, including either side of a fork delta",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* ContextHandoffService.ContextHandoffServiceV2;
+      const bare = ThreadId.make("bare-history");
+      const normal = ThreadId.make("normal-history");
+      const shared = {
+        threadId: bare,
+        targetRunId: RunId.make("run"),
+        toProviderThreadId: ProviderThreadId.make("native"),
+        toProviderInstanceId: ProviderInstanceId.make("codex"),
+        fromProviderThreadIds: [],
+        fromProviderInstanceId: ProviderInstanceId.make("codex"),
+        coveredRunOrdinals: { from: 1, to: 2 },
+        items: [],
+        deltaItems: [],
+        transferId: null,
+        createdAt: DateTime.makeUnsafe("2026-10-14T00:00:00Z"),
+      };
+      const outcomes = [
+        yield* service.prepare(shared).pipe(Effect.flip),
+        yield* service.prepareLegacyImport(shared).pipe(Effect.flip),
+        yield* service
+          .prepareProviderHandoff({ ...shared, strategy: "full_thread_summary" })
+          .pipe(Effect.flip),
+        yield* service
+          .prepareProviderHandoff({ ...shared, strategy: "delta_since_target_last_seen" })
+          .pipe(Effect.flip),
+        yield* service
+          .prepareForkDelta({ ...shared, sourceThreadId: bare, targetThreadId: normal })
+          .pipe(Effect.flip),
+        yield* service
+          .prepareForkDelta({ ...shared, sourceThreadId: normal, targetThreadId: bare })
+          .pipe(Effect.flip),
+      ];
+      for (const outcome of outcomes)
+        assert.strictEqual(outcome._tag, "BareHistoryTransferUnsupported");
+    }).pipe(
+      Effect.provide(
+        ContextHandoffService.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              Layer.mock(ProjectionStore.ProjectionStoreV2)({
+                getThread: (id) =>
+                  Effect.succeed({
+                    ...idleThreadProjection(liveThreadShell(id)).thread,
+                    ...(id === "bare-history" ? { bare: { additions: [] } } : {}),
+                  }),
+              }),
+            ),
+          ),
+        ),
+      ),
+    ),
+);
+
+const layerTest = ContextHandoffService.layer.pipe(
+  Layer.provide(
+    Layer.mock(ProjectionStore.ProjectionStoreV2)({
+      getThread: (id) => Effect.succeed(idleThreadProjection(liveThreadShell(id)).thread),
+    }),
+  ),
+  Layer.provide(IdAllocator.layer),
+);
 
 function importedItem(
   input:

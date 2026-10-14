@@ -10,7 +10,11 @@ import {
   EventId,
   GuestMessageId,
   MessageId,
+  NodeId,
+  ProjectId,
+  ProviderInstanceId,
   RuntimeRequestId,
+  RunId,
   ThreadId,
   TurnItemId,
   type OrchestrationV2Command,
@@ -63,6 +67,55 @@ const layerFailingDispatchHandler =
       }),
     );
   };
+
+it.effect.each(["thread.create", "delegated_task.request"] as const)(
+  "refuses server-owned bare home identity on client dispatch: %s",
+  (type) =>
+    Effect.gen(function* () {
+      const common = {
+        commandId: CommandId.make("client-forged-bare-owner"),
+        createdBy: "user" as const,
+        creationSource: "web" as const,
+        bare: { additions: [], nativeHomeOwnerThreadId: ThreadId.make("another-thread") },
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test" },
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+      };
+      const command =
+        type === "thread.create"
+          ? {
+              ...common,
+              type,
+              threadId: ThreadId.make("client-thread"),
+              projectId: ProjectId.make("client-project"),
+              title: "Forged bare owner",
+              branch: null,
+              worktreePath: null,
+            }
+          : {
+              ...common,
+              type,
+              parentThreadId: ThreadId.make("parent-thread"),
+              parentRunId: RunId.make("parent-run"),
+              parentNodeId: NodeId.make("parent-node"),
+              task: "Forge an owner",
+            };
+      const captured: OrchestrationV2ServerCommand[] = [];
+      const error = yield* dispatchCommand(command).pipe(
+        Effect.provide(
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            dispatch: (input) => {
+              captured.push(input);
+              return Effect.die("Client-owned home identity must never reach dispatch");
+            },
+          }),
+        ),
+        Effect.flip,
+      );
+      expect(error.message).toContain("Only the server resolves bare launch state");
+      expect(captured).toEqual([]);
+    }).pipe(Effect.provide(layerIntakeTest)),
+);
 
 const layerFailingDispatch = (captured: OrchestrationV2ServerCommand[]) =>
   Layer.mock(ThreadManagementService.ThreadManagementService)({

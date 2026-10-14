@@ -1,3 +1,4 @@
+import * as BareProviders from "../provider/ProviderRegistry.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -110,9 +111,14 @@ const layerTestProviderInstanceRegistry = Layer.succeed(
 );
 
 const layerTest = Layer.mergeAll(
+<<<<<<< HEAD
   RuntimeLayer.layer,
   RuntimeLayer.layerEventSink,
   ThreadCommandExecutor.layer,
+=======
+  RuntimeLayer.layer.pipe(Layer.provide(Layer.mock(BareProviders.ProviderRegistry)({}))),
+  RuntimeLayer.layerEventSink,
+>>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
 ).pipe(
   Layer.provideMerge(RuntimeLayer.layerProjectService),
   Layer.provide(

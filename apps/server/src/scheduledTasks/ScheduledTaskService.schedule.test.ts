@@ -1,3 +1,4 @@
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
@@ -54,7 +55,14 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
       expect((yield* service.list()).tasks).toEqual([]);
 
       expect((yield* service.upsert(input)).task.id).toBe(created.task.id);
-    }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))));
+    }).pipe(
+      Effect.provide(
+        ScheduledTaskService.layer.pipe(
+          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+          Layer.provide(layerDependencies),
+        ),
+      ),
+    );
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
@@ -113,7 +121,14 @@ it.effect("preserves a due run when a save only pads the scheduled hour", () =>
       expect(rescheduled.task.nextRunAt).toBe(
         DateTime.formatIso(DateTime.toUtc(DateTime.add(dueAt, { minutes: 30 }))),
       );
-    }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))));
+    }).pipe(
+      Effect.provide(
+        ScheduledTaskService.layer.pipe(
+          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+          Layer.provide(layerDependencies),
+        ),
+      ),
+    );
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 

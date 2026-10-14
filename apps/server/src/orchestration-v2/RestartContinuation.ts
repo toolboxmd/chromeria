@@ -329,7 +329,9 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
       projection.attempts,
     );
     const noteText =
-      note.work.length === 0 ? undefined : restartCancelledBackgroundWorkNote(note.work);
+      projection.thread.bare !== undefined || note.work.length === 0
+        ? undefined
+        : restartCancelledBackgroundWorkNote(note.work);
     const text =
       noteText === undefined
         ? CONTINUE_PROMPT

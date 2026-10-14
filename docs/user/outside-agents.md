@@ -119,3 +119,29 @@ result that always includes the thread id.
 Approved agents appear under **Settings → Sharing & access** like other clients.
 Revoke one there to cut off its access immediately. A sign-in lasts 30 days;
 after that the agent asks you to approve it again.
+
+## Launch with only named context
+
+Pass `bare: {}` to `t3_thread_launch`, `delegate_task`, a `create_threads` entry,
+`schedule_task`, or a Spectrum Color to strip the context that harness can disable.
+Bare keeps native shell and file tools. Permissions use your approved ceiling;
+it cannot give a child more access than its caller.
+
+Name additions in order, for example
+`bare: { additions: [{ type: "skillFile", path: "/project/library/testing/SKILL.md" }] }`.
+A skill contributes its body only. Its dependencies are not enabled. `skill` looks
+up a name in the destination's skill inventory; `file` includes a readable absolute
+path. Named `mcp` server `t3-code` is supported except on Grok; exact plugins, apps,
+other MCP servers and individual MCP tools currently return an unsupported reason.
+Missing additions fail before inference. A changed addition fails when a new native
+context needs its body again.
+
+The thread shows a bare receipt with its permissions, planned stripping, native
+evidence, unobserved categories and native record location. Native content that
+cannot be disabled remains disclosed there. Cursor's custom prompt access remains
+unverified. OpenCode 2, external OpenCode servers, Antigravity and generic ACP
+adapters currently refuse bare launches.
+
+Bare is fixed when the thread starts. Native forks inherit it; importing or
+transferring portable history is unsupported. Start a normal thread to use ordinary
+context. A bare schedule without an explicit bind starts a fresh thread each time.

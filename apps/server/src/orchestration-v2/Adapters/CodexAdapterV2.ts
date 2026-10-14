@@ -1,5 +1,18 @@
+<<<<<<< HEAD
 import { pipe } from "effect/Function";
 import * as DocumentText from "../../provider/DocumentText.ts";
+=======
+import {
+  bareHome,
+  nativeHome,
+  prepareCodexBareHome,
+} from "@t3tools/provider-core/server/BareProviderRuntime";
+import {
+  bareReceipt,
+  bareInventoryEvidence,
+  namesT3Mcp,
+} from "@t3tools/provider-core/server/bareLaunch";
+>>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
@@ -81,6 +94,7 @@ import * as CodexSchema from "effect-codex-app-server/schema";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
+import * as Hex from "effect/encoding/Hex";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -754,13 +768,13 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
         : getCodexServiceTierOptionValue(input.modelSelection);
     // MCP-written app context must be quoted user input, not developer instructions.
     const appContext = Object.fromEntries(
-      (input.appContext ?? []).map((entry) => [
+      (input.runtimePolicy.bare === undefined ? (input.appContext ?? []) : []).map((entry) => [
         entry.key,
         { kind: "untrusted" as const, value: entry.text },
       ]),
     );
     const t3Context =
-      input.hasT3Mcp === true
+      input.runtimePolicy.bare === undefined && input.hasT3Mcp === true
         ? buildCodexAdditionalContext(
             { model: input.modelSelection.model, reasoningEffort: effort ?? undefined },
             {
@@ -1326,13 +1340,23 @@ function codexThreadRuntimeParams(input: {
   readonly cwd?: string;
   readonly model?: string;
   readonly config: Readonly<Record<string, Schema.Json>>;
+  readonly baseInstructions?: string;
+  readonly developerInstructions?: null;
 } {
-  const { mcpSession } = input;
+  const mcpSession =
+    input.runtimePolicy?.bare !== undefined && !namesT3Mcp(input.runtimePolicy.bare)
+      ? undefined
+      : input.mcpSession;
   return {
     ...(input.runtimePolicy?.cwd == null ? {} : { cwd: input.runtimePolicy.cwd }),
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
+    ...(input.runtimePolicy?.bare === undefined
+      ? {}
+      : { baseInstructions: "", developerInstructions: null }),
     config: {
-      ...CODEX_THREAD_CONFIG,
+      ...(input.runtimePolicy?.bare === undefined
+        ? CODEX_THREAD_CONFIG
+        : { "tools.update_plan.enabled": false }),
       ...(mcpSession === undefined
         ? {}
         : {
@@ -1624,12 +1648,32 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CODEX_PROVIDER,
+<<<<<<< HEAD
     getCapabilities: Effect.fn("CodexAdapterV2.getCapabilities")(function () {
       return Effect.succeed(CodexProviderCapabilitiesV2);
     }),
     planSelectionTransition: Effect.fn("CodexAdapterV2.planSelectionTransition")(function () {
       return Effect.succeed(turnScopedSelectionTransition());
     }),
+=======
+    bareSupport: Effect.gen(function* () {
+      if (adapterOptions.settings.setupMode === "managed") return { supported: true as const };
+      const source =
+        adapterOptions.settings.homePath ||
+        nativeHome(adapterOptions.environment, "CODEX_HOME", ".codex");
+      return (yield* fileSystem
+        .exists(`${source}/auth.json`)
+        .pipe(Effect.orElseSucceed(() => false)))
+        ? { supported: true as const }
+        : {
+            supported: false as const,
+            reason:
+              "Codex native keyring-only auth is unsupported for bare; no auth.json credential owner.",
+          };
+    }),
+    getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+    planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
+>>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
     openSession: Effect.fn("CodexAdapterV2.openSession")(
       function* (input) {
         const scope = yield* Scope.Scope;
@@ -1646,13 +1690,65 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     }),
                 ),
               );
+        let launchSettings = resolvedRuntime?.config ?? adapterOptions.settings;
+        let launchEnvironment = resolvedRuntime?.environment ?? adapterOptions.environment;
+        const bare = input.runtimePolicy.bare;
+        const owner = bare?.nativeHomeOwnerThreadId;
+        // Fresh threads isolate native bootstrap state. Native forks retain the
+        // source's initialized store, with a separate app-server and native id.
+        const homeRoot = bareHome(serverConfig.stateDir, adapterOptions.instanceId, "codex");
+        // Derived MCP thread ids can exceed a filesystem component's length.
+        const home =
+          bare === undefined
+            ? homeRoot
+            : `${homeRoot}/thread-${Hex.encode(yield* crypto.digest("SHA-256", new TextEncoder().encode(owner ?? input.threadId)))}`;
+        if (input.runtimePolicy.bare !== undefined) {
+          if (owner === undefined)
+            return yield* new ProviderAdapter.ProviderAdapterOpenSessionError({
+              driver: CODEX_PROVIDER,
+              providerSessionId: input.providerSessionId,
+              cause: "Bare Codex launch is missing its server-owned native home identity.",
+            });
+          if (
+            (owner !== input.threadId || input.initialNativeThreadId !== undefined) &&
+            !(yield* fileSystem.exists(home))
+          )
+            return yield* new ProviderAdapter.ProviderAdapterOpenSessionError({
+              driver: CODEX_PROVIDER,
+              providerSessionId: input.providerSessionId,
+              cause: "Bare Codex native home is missing; native history cannot be reconstructed.",
+            });
+          yield* prepareCodexBareHome({
+            home,
+            managed: launchSettings.setupMode === "managed",
+            sourceHome:
+              launchSettings.homePath || nativeHome(launchEnvironment, "CODEX_HOME", ".codex"),
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapter.ProviderAdapterOpenSessionError({
+                  driver: CODEX_PROVIDER,
+                  providerSessionId: input.providerSessionId,
+                  cause,
+                }),
+            ),
+          );
+          launchSettings = {
+            ...launchSettings,
+            homePath: home,
+            launchArgs: `${launchSettings.setupMode === "managed" ? launchSettings.launchArgs : ""} --strict-config`,
+          };
+          launchEnvironment = { ...launchEnvironment, CODEX_HOME: home };
+          delete launchEnvironment.T3CODE_CODEX_LAUNCH_ARGS;
+        }
         const client = yield* clientFactory.open({
           instanceId: adapterOptions.instanceId,
           threadId: input.threadId,
           providerSessionId: input.providerSessionId,
           runtimePolicy: input.runtimePolicy,
-          settings: resolvedRuntime?.config ?? adapterOptions.settings,
-          environment: resolvedRuntime?.environment ?? adapterOptions.environment,
+          settings: launchSettings,
+          environment: launchEnvironment,
         });
         const additionalContextByThread = yield* Ref.make(
           new Map<
@@ -6717,6 +6813,62 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         };
 
         const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
+          ...(input.runtimePolicy.bare === undefined
+            ? {}
+            : {
+                getBareReceipt: (thread: OrchestrationV2ProviderThread) =>
+                  Effect.gen(function* () {
+                    const nativeId = thread.nativeThreadRef?.nativeId;
+                    const evidence: Array<import("@t3tools/contracts").BareEvidence> = [];
+                    if (nativeId !== undefined) {
+                      const status = yield* client
+                        .request("mcpServerStatus/list", { threadId: nativeId })
+                        .pipe(Effect.option);
+                      if (Option.isSome(status))
+                        evidence.push(
+                          bareInventoryEvidence(
+                            "mcp",
+                            status.value.data.map((server) => server.name),
+                            namesT3Mcp(input.runtimePolicy.bare!) ? ["t3-code"] : [],
+                            `Codex mcpServerStatus/list ${nativeId}`,
+                          ),
+                        );
+                      const skills = yield* client
+                        .request("skills/list", {
+                          cwds: input.runtimePolicy.cwd === null ? [] : [input.runtimePolicy.cwd],
+                        })
+                        .pipe(Effect.option);
+                      if (Option.isSome(skills))
+                        evidence.push({
+                          category: "skills",
+                          status: "unobserved",
+                          identities: skills.value.data.flatMap((entry) =>
+                            entry.skills.map((skill) => skill.name),
+                          ),
+                          source: `Codex skills/list ${nativeId}; discovery inventory does not certify prompt inclusion`,
+                        });
+                    }
+                    return bareReceipt({
+                      driver: CODEX_PROVIDER,
+                      bare: input.runtimePolicy.bare!,
+                      mode: input.runtimePolicy.runtimeMode,
+                      effective: `Codex ${input.runtimePolicy.runtimeMode}`,
+                      controls: [
+                        "own CODEX_HOME and app-server",
+                        "native forks retain the initialized native home owner",
+                        "strict-config",
+                        "empty base/developer instructions",
+                        "skills.include_instructions=false",
+                        "skip_host_skill_discovery",
+                        "tools.update_plan.enabled=false",
+                      ],
+                      retained: ["native shell/file tool schemas"],
+                      root: `${home}/sessions`,
+                      sessionId: nativeId ?? null,
+                      evidence,
+                    });
+                  }),
+              }),
           instanceId: adapterOptions.instanceId,
           driver: CODEX_PROVIDER,
           providerSessionId: input.providerSessionId,

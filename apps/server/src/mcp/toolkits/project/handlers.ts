@@ -16,6 +16,7 @@ import * as Hex from "effect/encoding/Hex";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
+import type { BareReadGrant } from "../../../orchestration-v2/bareReadGrant.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
@@ -135,6 +136,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 ),
               )).projectId
             : yield* resolveProjectId(context, input.projectId);
+<<<<<<< HEAD
         const readProject = Project.ProjectService.pipe(
           Effect.flatMap((projects) => projects.getById(projectId)),
           Effect.mapError(unavailable),
@@ -169,6 +171,104 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             Effect.mapError(
               (error) =>
                 new OrchestratorMcpFailure({
+=======
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const result = yield* launches
+          .replayOrLaunch(
+            {
+              commandId,
+              threadId,
+              projectId,
+              runtimeMode,
+              interactionMode,
+              createdBy: "agent",
+              ...(input.bare === undefined ? {} : { bare: input.bare }),
+              ...(linkOrigin === undefined ? {} : { linkOrigin }),
+              ...(input.message === undefined && attachments.length === 0 ? {} : { messageId }),
+            },
+            Effect.gen(function* () {
+              const readProject = Project.ProjectService.pipe(
+                Effect.flatMap((projects) => projects.getById(projectId)),
+                Effect.mapError(unavailable),
+                Effect.map(Option.getOrUndefined),
+              );
+              if (input.workspaceStrategy?.type === "existing_worktree") {
+                const project = yield* readProject;
+                if (project === undefined)
+                  return yield* new OrchestratorMcpFailure({
+                    code: "invalid_request",
+                    message: "The project was not found.",
+                  });
+                yield* assertProjectWorktree(
+                  project.workspaceRoot,
+                  input.workspaceStrategy.worktreePath,
+                );
+              }
+              // Reject unresolved base refs before accepting a launch; worktree provisioning happens later.
+              const strategy = input.workspaceStrategy;
+              if (strategy?.type === "worktree")
+                yield* ThreadLaunch.ThreadLaunchService.pipe(
+                  Effect.flatMap((launches) =>
+                    launches.checkWorktreeBase({ projectId, workspaceStrategy: strategy }),
+                  ),
+                  Effect.mapError(
+                    (error) =>
+                      new OrchestratorMcpFailure({
+                        code: "invalid_request",
+                        message: `${error.message} No thread was created. Pass a branch, tag, or commit that exists there${
+                          strategy.startFromOrigin === true
+                            ? "; the project has no usable remote to fetch it from."
+                            : ", or set startFromOrigin:true if it exists only on a remote."
+                        }`,
+                      }),
+                  ),
+                );
+              // A caller outside a thread has nothing to inherit, so it starts with the
+              // project's effective defaults, as the composer does. Its mode stays
+              // within the ceiling it was approved with.
+              const projectDefaults =
+                caller === undefined
+                  ? yield* ServerSettings.ServerSettingsService.pipe(
+                      Effect.flatMap((settings) => settings.getSettings),
+                      Effect.mapError(unavailable),
+                      Effect.flatMap((settings) =>
+                        Effect.map(
+                          readProject,
+                          (project) =>
+                            resolveProjectSettings(settings, projectId, project).settings,
+                        ),
+                      ),
+                    )
+                  : undefined;
+              const inherited =
+                input.modelSelection ??
+                caller?.modelSelection ??
+                projectDefaults?.defaultModelSelection ??
+                undefined;
+              const prism = yield* Prism.PrismService;
+              const adapters = yield* ProviderAdapterRegistryV2;
+              const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+              if (input.bare !== undefined && input.prismRole === "promachos")
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: "Promachos persona cannot be combined with bare launch.",
+                });
+              const { modelSelection, kitText } = yield* prism.resolve({
+                bare: input.bare !== undefined,
+                projectId,
+                role: input.prismRole ?? "planner",
+                lane: input.lane,
+                explicit: input.modelSelection,
+                inherited,
+                validate: (selection) =>
+                  Prism.validateLaunchSelection(selection, input.bare !== undefined).pipe(
+                    Effect.provideService(ProviderAdapterRegistryV2, adapters),
+                    Effect.provideService(ProviderRegistry.ProviderRegistry, providerRegistry),
+                  ),
+              });
+              if (modelSelection === undefined)
+                return yield* new OrchestratorMcpFailure({
+>>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
                   code: "invalid_request",
                   message:
                     "Pass modelSelection: the project has no default model. orchestrator_capabilities lists providers and models.",
@@ -179,9 +279,34 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                       Effect.orElseSucceed(() => runtimeMode),
                     )
                   : runtimeMode;
+              let bareReadGrant: BareReadGrant | undefined;
+              if (input.bare !== undefined) {
+                if (context.limits.runtimeMode === "full-access") bareReadGrant = { type: "all" };
+                else {
+                  const callerRoot =
+                    caller?.worktreePath ??
+                    (caller === undefined
+                      ? undefined
+                      : yield* Project.ProjectService.pipe(
+                          Effect.flatMap((projects) => projects.getById(caller.projectId)),
+                          Effect.mapError(unavailable),
+                          Effect.map((project) => Option.getOrUndefined(project)?.workspaceRoot),
+                        ));
+                  bareReadGrant = {
+                    type: "roots",
+                    roots: callerRoot === undefined ? [] : [callerRoot],
+                  };
+                }
+              }
               return yield* ThreadMessageIntake.launchThread({
                 commandId,
                 threadId,
+                ...(input.bare === undefined
+                  ? {}
+                  : {
+                      bare: input.bare,
+                      bareReadGrant,
+                    }),
                 projectId,
                 title: input.title,
                 modelSelection,

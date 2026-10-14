@@ -1,4 +1,19 @@
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import { bareHome } from "@t3tools/provider-core/server/BareProviderRuntime";
+import {
+  prepareGrokBare,
+  GROK_BARE_TOOLS,
+  GROK_BARE_COMMANDS,
+  grokBareSessionMeta,
+  grokBareHistoryEvidence,
+} from "./GrokBareRuntime.ts";
+import {
+  bareReceipt,
+  bareInventoryEvidence,
+  namesT3Mcp,
+} from "@t3tools/provider-core/server/bareLaunch";
+import * as Deferred from "effect/Deferred";
+import * as Option from "effect/Option";
 import {
   XAiPromptFailureText,
   isXAiTaskCompletedWakeNotification,
@@ -16,6 +31,7 @@ import {
 } from "@t3tools/contracts";
 import { GrokSettings } from "../settings.ts";
 import * as Crypto from "effect/Crypto";
+import * as Hex from "effect/encoding/Hex";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -421,18 +437,213 @@ export function makeGrokAcpAdapterFlavor(
   };
 }
 
+const decodeBareTools = Schema.decodeUnknownOption(
+  Schema.Struct({ _meta: Schema.Struct({ tools: Schema.Array(Schema.String) }) }),
+);
+
 export const makeGrokAdapterV2 = Effect.fn("makeGrokAdapterV2")(function* (
   options: GrokAdapterV2Options,
 ) {
-  return yield* makeAcpAdapterV2({
+  const context = yield* Effect.context<Effect.Services<ReturnType<typeof makeAcpAdapterV2>>>();
+  const host = yield* ProviderHost.ProviderHost;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const crypto = yield* Crypto.Crypto;
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const flavor = makeGrokAcpAdapterFlavor(options, yield* HostProcess.HomeDirectory);
+  const normal = yield* makeAcpAdapterV2({
     instanceId: options.instanceId,
-    flavor: makeGrokAcpAdapterFlavor(options, yield* HostProcess.HomeDirectory),
+    flavor,
     selfInvocation: options.selfInvocation,
     ...(options.nativeLogging === undefined ? {} : { nativeLogging: options.nativeLogging }),
     ...(options.continuationRequests === undefined
       ? {}
       : { continuationRequests: options.continuationRequests }),
     ...(options.testHooks === undefined ? {} : { testHooks: options.testHooks }),
+  });
+  return ProviderAdapter.ProviderAdapterV2.of({
+    ...normal,
+    bareSupport: Effect.succeed({ supported: true }),
+    openSession: (input) =>
+      input.runtimePolicy.bare === undefined
+        ? normal.openSession(input)
+        : Effect.gen(function* () {
+            const bare = input.runtimePolicy.bare!;
+            if (namesT3Mcp(bare))
+              return yield* new ProviderAdapter.ProviderAdapterOpenSessionError({
+                driver: GROK_PROVIDER,
+                providerSessionId: input.providerSessionId,
+                cause:
+                  "Grok bare named MCP needs search_tool/use_tool; the exact attach path is unsupported.",
+              });
+            const threadHash = Hex.encode(
+              yield* crypto.digest("SHA-256", new TextEncoder().encode(input.threadId)).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapter.ProviderAdapterOpenSessionError({
+                      driver: GROK_PROVIDER,
+                      providerSessionId: input.providerSessionId,
+                      cause,
+                    }),
+                ),
+              ),
+            );
+            const home = `${bareHome(host.paths.stateDir, options.instanceId, "grok")}/thread-${threadHash}`;
+            const cwd = input.runtimePolicy.cwd ?? host.paths.cwd;
+            let gate = yield* Deferred.make<void, EffectAcpErrors.AcpError>();
+            let metadataError: string | undefined;
+            let evidence: ReadonlyArray<import("@t3tools/contracts").BareEvidence> = [];
+            let plannedSkills: ReadonlyArray<string> = [];
+            let plannedPlugins: ReadonlyArray<string> = [];
+            const fail = (reason: string) =>
+              new EffectAcpErrors.AcpRequestError({ code: -32602, errorMessage: reason });
+            const bareFlavor: AcpAdapterV2Flavor = {
+              ...flavor,
+              beforePrompt: Effect.suspend(() =>
+                Deferred.await(gate).pipe(
+                  Effect.timeoutOption("30 seconds"),
+                  Effect.flatMap((ready) =>
+                    Option.isNone(ready)
+                      ? Effect.fail(
+                          fail("Grok bare is missing before-prompt tool and command metadata."),
+                        )
+                      : metadataError === undefined
+                        ? Effect.void
+                        : Effect.fail(fail(metadataError)),
+                  ),
+                ),
+              ),
+              onAvailableCommandsUpdate: (commands, notification) =>
+                Effect.gen(function* () {
+                  const decoded = decodeBareTools(notification?.update);
+                  const tools = Option.isSome(decoded) ? decoded.value._meta.tools : [];
+                  const names = commands.map((command) => command.name);
+                  const source = `Grok available_commands_update ${notification?.sessionId ?? "unknown"}; before session/prompt`;
+                  evidence = [
+                    bareInventoryEvidence("tools", tools, GROK_BARE_TOOLS, source),
+                    bareInventoryEvidence(
+                      "slash_commands",
+                      names,
+                      GROK_BARE_COMMANDS,
+                      source,
+                      true,
+                    ),
+                    ...evidence.filter(
+                      (entry) => entry.category !== "tools" && entry.category !== "slash_commands",
+                    ),
+                  ];
+                  const extras = [
+                    ...tools.filter(
+                      (name) => !GROK_BARE_TOOLS.includes(name as (typeof GROK_BARE_TOOLS)[number]),
+                    ),
+                    ...names.filter(
+                      (name) =>
+                        !GROK_BARE_COMMANDS.includes(name as (typeof GROK_BARE_COMMANDS)[number]),
+                    ),
+                  ];
+                  const missing = [
+                    ...GROK_BARE_TOOLS.filter((name) => !tools.includes(name)),
+                    ...GROK_BARE_COMMANDS.filter((name) => !names.includes(name)),
+                  ];
+                  metadataError =
+                    Option.isNone(decoded) || extras.length > 0 || missing.length > 0
+                      ? `Grok bare inventory mismatch: unexpected ${extras.join(", ") || "none"}; missing ${missing.join(", ") || "none"}.`
+                      : undefined;
+                  yield* Deferred.succeed(gate, undefined);
+                }),
+              makeRuntime: (runtimeInput) =>
+                Effect.gen(function* () {
+                  gate = yield* Deferred.make<void, EffectAcpErrors.AcpError>();
+                  metadataError = undefined;
+                  const prepared = yield* prepareGrokBare({
+                    home,
+                    cwd,
+                    environment: options.environment,
+                    binary: options.settings.binaryPath || "grok",
+                  }).pipe(
+                    Effect.provideService(FileSystem.FileSystem, fileSystem),
+                    Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+                    Effect.mapError((cause) =>
+                      fail(cause instanceof Error ? cause.message : "Grok bare discovery failed."),
+                    ),
+                  );
+                  plannedSkills = prepared.skills;
+                  plannedPlugins = prepared.plugins;
+                  evidence = [
+                    {
+                      category: "skills",
+                      status: "observed_clean",
+                      identities: prepared.observedDisabledSkills,
+                      source:
+                        "native grok inspect; observed disabled identities, not hook execution proof",
+                    },
+                  ];
+                  if (options.makeRuntime !== undefined)
+                    return yield* options.makeRuntime(runtimeInput);
+                  const { runtimePolicy, ...nativeInput } = runtimeInput;
+                  return yield* makeGrokAcpRuntime({
+                    ...nativeInput,
+                    grokSettings: options.settings,
+                    environment: prepared.environment,
+                    runtimeMode: grokLaunchRuntimeMode(runtimePolicy),
+                    bare: true,
+                    sessionMeta: grokBareSessionMeta(
+                      grokLaunchRuntimeMode(runtimePolicy) === "full-access",
+                    ),
+                  });
+                }),
+            };
+            const adapter = yield* makeAcpAdapterV2({
+              instanceId: options.instanceId,
+              flavor: bareFlavor,
+              selfInvocation: options.selfInvocation,
+              ...(options.nativeLogging === undefined
+                ? {}
+                : { nativeLogging: options.nativeLogging }),
+              ...(options.testHooks === undefined ? {} : { testHooks: options.testHooks }),
+            }).pipe(Effect.provide(context));
+            const runtime = yield* adapter.openSession(input);
+            return {
+              ...runtime,
+              getBareReceipt: (
+                thread: import("@t3tools/contracts").OrchestrationV2ProviderThread,
+              ) =>
+                Effect.gen(function* () {
+                  const sessionId = thread.nativeThreadRef?.nativeId ?? null;
+                  const history =
+                    sessionId === null
+                      ? []
+                      : yield* grokBareHistoryEvidence(home, cwd, sessionId).pipe(
+                          Effect.provideService(FileSystem.FileSystem, fileSystem),
+                          Effect.catch(() => Effect.succeed([])),
+                        );
+                  return bareReceipt({
+                    driver: GROK_PROVIDER,
+                    bare,
+                    mode: input.runtimePolicy.runtimeMode,
+                    effective: `Grok ${grokLaunchRuntimeMode(input.runtimePolicy)}`,
+                    controls: [
+                      "own GROK_HOME and --no-leader",
+                      "systemPromptOverride='.'",
+                      "agentProfile.disallowedTools (14)",
+                      "compat/memory/workflows/subagents off",
+                      ...plannedSkills.map((name) => `skills.disabled:${name}`),
+                      ...plannedPlugins.map((name) => `plugins.disabled:${name}`),
+                    ],
+                    retained: [
+                      "system text '.'",
+                      "native user-info/environment/rules block",
+                      "native task wrapper",
+                      "native title/helper requests",
+                      `native commands: ${GROK_BARE_COMMANDS.join(", ")}`,
+                      "six native tool schemas",
+                    ],
+                    root: `${home}/sessions`,
+                    sessionId,
+                    evidence: [...evidence, ...history],
+                  });
+                }),
+            };
+          }),
   });
 });
 

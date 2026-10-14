@@ -1,3 +1,5 @@
+import { ProviderAdapterOpenSessionError } from "@t3tools/provider-core/server/ProviderAdapter";
+import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
 import { ProviderDriverKind } from "@t3tools/contracts";
 import { OpenCodeSettings } from "../settings.ts";
 import * as Crypto from "effect/Crypto";
@@ -112,11 +114,39 @@ function selectOpenCodeRuntimeAdapter(input: {
   return {
     instanceId: input.v1.instanceId,
     driver: DRIVER_KIND,
+    bareSupport: Effect.flatMap(
+      hot,
+      (adapter) =>
+        adapter.bareSupport ??
+        Effect.succeed({
+          supported: false as const,
+          reason: "OpenCode 2.x has no demonstrated bare stripping interface.",
+        }),
+    ),
     getCapabilities: () => Effect.flatMap(hot, (adapter) => adapter.getCapabilities()),
     planSelectionTransition: (transition) =>
       Effect.flatMap(hot, (adapter) => adapter.planSelectionTransition(transition)),
     openSession: (session) =>
-      Effect.flatMap(pick(input.probe.get), (adapter) => adapter.openSession(session)),
+      Effect.flatMap(pick(input.probe.get), (adapter) =>
+        Effect.gen(function* () {
+          if (session.runtimePolicy.bare !== undefined) {
+            const support =
+              adapter.bareSupport === undefined
+                ? {
+                    supported: false as const,
+                    reason: "OpenCode 2.x has no demonstrated bare stripping interface.",
+                  }
+                : yield* adapter.bareSupport;
+            if (!support.supported)
+              return yield* new ProviderAdapterOpenSessionError({
+                driver: DRIVER_KIND,
+                providerSessionId: session.providerSessionId,
+                cause: new BareLaunchError({ reason: support.reason }),
+              });
+          }
+          return yield* adapter.openSession(session);
+        }),
+      ),
   };
 }
 

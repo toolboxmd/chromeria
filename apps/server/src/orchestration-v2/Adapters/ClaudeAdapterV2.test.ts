@@ -2763,6 +2763,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly subagentLaunchToolUseId?: string;
     readonly nativeSessionId?: string;
     readonly settings?: ClaudeSettings;
+    readonly runtimePolicy?: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
+    // A CLI process opened after the first streams from its own queue, so the
+    // first one can exit (Queue.shutdown) and a later turn can start another.
     readonly freshQueueOnReopen?: boolean;
     readonly forkSession?: ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerShape["forkSession"];
     readonly allocateSessionId?: Effect.Effect<string>;
@@ -2917,16 +2920,17 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         },
       });
       const threadId = ThreadId.make("thread-claude-wake");
+      const runtimePolicy = options?.runtimePolicy ?? CLAUDE_TEST_RUNTIME_POLICY;
       const runtime = yield* adapter.openSession({
         threadId,
         providerSessionId: ProviderSessionId.make("provider-session-claude-wake"),
         modelSelection: CLAUDE_TEST_MODEL_SELECTION,
-        runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
+        runtimePolicy,
       });
       const providerThread = yield* runtime.ensureThread({
         threadId,
         modelSelection: CLAUDE_TEST_MODEL_SELECTION,
-        runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
+        runtimePolicy,
       });
       const events: Array<ProviderAdapter.ProviderAdapterV2Event> = [];
       yield* runtime.events.pipe(
@@ -4250,6 +4254,65 @@ describe("ClaudeAdapterV2 background wake turns", () => {
   );
 
   // regression: #15475 MCP title arriving after the tool starts must survive to completion
+  it.effect.each([
+    { extraPlugins: [], expectedStatus: "observed_retained" },
+    { extraPlugins: ["unknown-plugin"], expectedStatus: "observed_unexpected" },
+  ] as const)(
+    "receipts native builtin plugin IDs as retained and flags unknown plugins: $expectedStatus",
+    ({ extraPlugins, expectedStatus }) =>
+      Effect.gen(function* () {
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          ...CLAUDE_TEST_RUNTIME_POLICY,
+          bare: { additions: [] },
+        });
+        const harness = yield* makeWakeHarnessWithOptions({ runtimePolicy });
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-bare-plugin-inventory"),
+            text: "Run the task.",
+            attachments: [],
+            runtimePolicy,
+          }),
+        );
+        const builtinPlugins = [
+          "cc-plugin-agents-md",
+          "cc-plugin-telemetry",
+          "cc-plugin-plugin-authoring",
+        ];
+        const plugins = [...builtinPlugins, ...extraPlugins];
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "init",
+            uuid: "00000000-0000-4000-8000-000000000111",
+            session_id: WAKE_NATIVE_SESSION,
+            permissionMode: "bypassPermissions",
+            tools: ["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
+            skills: [],
+            plugins: plugins.map((name) => ({ name, path: `/builtin/${name}` })),
+            mcp_servers: [],
+            slash_commands: [],
+          }),
+        );
+        const getBareReceipt = harness.runtime.getBareReceipt;
+        if (getBareReceipt === undefined) throw new Error("Bare Claude session has no receipt.");
+        const receipt = yield* getBareReceipt(harness.providerThread);
+        const inventory = receipt.evidence.find((entry) => entry.category === "plugins");
+        assert.equal(inventory?.status, expectedStatus);
+        assert.deepEqual(inventory?.identities, plugins);
+        assert.include(inventory?.source, "observed after prompt offered");
+        assert.include(inventory?.source, "pre-inference timing not certified");
+        assert.include(receipt.knownRetained, `builtin plugins: ${builtinPlugins.join(", ")}`);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
   it.effect.each([
     {
       environment: {},

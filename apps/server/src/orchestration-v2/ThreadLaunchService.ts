@@ -1,3 +1,7 @@
+import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
+import type { BareReadGrant } from "./bareReadGrant.ts";
+import * as BareLaunch from "./BareLaunch.ts";
+import { type BareLaunchRequest } from "@t3tools/contracts";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
@@ -78,6 +82,8 @@ export interface ThreadLaunchInitialMessage {
 }
 
 export interface ThreadLaunchInput {
+  readonly bare?: BareLaunchRequest | undefined;
+  readonly bareReadGrant?: BareReadGrant | undefined;
   readonly commandId: CommandId;
   readonly threadId?: ThreadId;
   readonly reuseExistingThread?: boolean;
@@ -141,7 +147,10 @@ type ThreadLaunchReplayInput = Pick<
   | "interactionMode"
   | "createdBy"
   | "linkOrigin"
+  | "bare"
 > & { readonly messageId?: MessageId };
+
+const isBareLaunchError = Schema.is(BareLaunchError);
 
 export class ThreadLaunchError extends Schema.TaggedError<ThreadLaunchError>()(
   "ThreadLaunchError",
@@ -165,6 +174,7 @@ export class ThreadLaunchError extends Schema.TaggedError<ThreadLaunchError>()(
   },
 ) {
   override get message(): string {
+    if (isBareLaunchError(this.cause)) return this.cause.reason;
     return `Thread launch ${this.commandId} failed during ${this.operation}.`;
   }
 }
@@ -223,6 +233,7 @@ function failureDetail(error: unknown): string {
 }
 
 const make = Effect.gen(function* () {
+  const bareLaunch = yield* BareLaunch.BareLaunch;
   const projects = yield* ProjectService.ProjectService;
   const setupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
   const cloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
@@ -282,6 +293,12 @@ const make = Effect.gen(function* () {
     const projection = yield* threads
       .getThreadProjection(threadId)
       .pipe(Effect.mapError(mapError(input, "create-thread", threadId)));
+    if ((input.bare !== undefined) !== (projection.thread.bare !== undefined))
+      return yield* mapError(
+        input,
+        "read-receipt",
+        threadId,
+      )(new BareLaunchError({ reason: "Launch bare intent changed." }));
     if (projection.thread.projectId !== input.projectId)
       return yield* mapError(input, "resolve-project", threadId)("Project identity changed.");
     if (projection.thread.linkOrigin?.sessionId !== input.linkOrigin?.sessionId)
@@ -963,7 +980,7 @@ const make = Effect.gen(function* () {
           yield* validateReusableThread(input, candidateThreadId);
         }
 
-        const workspaceStrategy: ThreadLaunchWorkspaceStrategy =
+        let workspaceStrategy: ThreadLaunchWorkspaceStrategy =
           input.workspaceStrategy.type === "root" && Option.isNone(launchReceipt)
             ? Option.match(
                 yield* managedFolders
@@ -979,6 +996,87 @@ const make = Effect.gen(function* () {
                 },
               )
             : input.workspaceStrategy;
+        let resolvedBare: import("@t3tools/contracts").ThreadBare | undefined;
+        if (
+          Option.isSome(launchReceipt) &&
+          launchReceipt.value.status === "accepted" &&
+          launchReceipt.value.threadId === candidateThreadId &&
+          launchReceipt.value.commandType ===
+            (input.reuseExistingThread ? "thread.metadata.update" : "thread.create")
+        ) {
+          const stored = yield* threads
+            .getThreadRecords(candidateThreadId, [])
+            .pipe(Effect.mapError(mapError(input, "read-receipt", candidateThreadId)));
+          if ((input.bare !== undefined) !== (stored.thread.bare !== undefined))
+            return yield* mapError(
+              input,
+              "read-receipt",
+              candidateThreadId,
+            )(new BareLaunchError({ reason: "Launch bare intent changed." }));
+          resolvedBare = stored.thread.bare;
+          if (resolvedBare !== undefined) {
+            workspaceStrategy =
+              stored.thread.worktreePath === null
+                ? { type: "root", branch: stored.thread.branch ?? undefined }
+                : {
+                    type: "existing_worktree",
+                    worktreePath: stored.thread.worktreePath,
+                    branch: stored.thread.branch ?? undefined,
+                  };
+          }
+        }
+        if (input.bare !== undefined && Option.isNone(launchReceipt)) {
+          if (input.importedNativeThread !== undefined)
+            return yield* mapError(
+              input,
+              "create-thread",
+            )(new BareLaunchError({ reason: "Bare native import is unsupported." }));
+          if (input.reuseExistingThread) {
+            const existing = yield* threads
+              .getThreadRecords(candidateThreadId, [])
+              .pipe(Effect.mapError(mapError(input, "read-receipt")));
+            if (existing.thread.bare === undefined)
+              return yield* mapError(
+                input,
+                "create-thread",
+              )(new BareLaunchError({ reason: "Cannot reuse a normal thread for bare launch." }));
+            resolvedBare = existing.thread.bare;
+            if ((input.bare.additions?.length ?? 0) > 0)
+              return yield* mapError(
+                input,
+                "create-thread",
+              )(
+                new BareLaunchError({
+                  reason: "A reused bare thread keeps its original additions.",
+                }),
+              );
+          } else {
+            const prepared = yield* bareLaunch
+              .prepare({
+                request: input.bare,
+                instanceId: input.modelSelection.instanceId,
+                projectRoot: project.workspaceRoot,
+                workspaceStrategy,
+                readGrant:
+                  input.bareReadGrant ??
+                  (input.runtimeMode === "full-access"
+                    ? { type: "all" }
+                    : { type: "roots", roots: [project.workspaceRoot] }),
+              })
+              .pipe(Effect.mapError(mapError(input, "create-thread")));
+            workspaceStrategy = prepared.workspaceStrategy;
+            resolvedBare = prepared.bare;
+          }
+        } else if (input.reuseExistingThread && Option.isNone(launchReceipt)) {
+          const existing = yield* threads
+            .getThreadRecords(candidateThreadId, [])
+            .pipe(Effect.mapError(mapError(input, "read-receipt")));
+          if (existing.thread.bare !== undefined)
+            return yield* mapError(
+              input,
+              "create-thread",
+            )(new BareLaunchError({ reason: "Cannot reuse a bare thread for a normal launch." }));
+        }
         const initialBranch = workspaceStrategy.branch ?? null;
         const initialWorktreePath =
           workspaceStrategy.type === "existing_worktree" ? workspaceStrategy.worktreePath : null;
@@ -992,6 +1090,7 @@ const make = Effect.gen(function* () {
               })
             : threads.dispatch({
                 type: "thread.create",
+                ...(resolvedBare === undefined ? {} : { bare: resolvedBare }),
                 commandId: input.commandId,
                 threadId: candidateThreadId,
                 projectId: input.projectId,

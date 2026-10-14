@@ -37,6 +37,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as ProjectHandlers from "./handlers.ts";
 import { ProjectToolkit } from "./tools.ts";
+import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
 
 const prismDependencies = Layer.mergeAll(
   Layer.mock(AdapterRegistry.ProviderAdapterRegistryV2)({
@@ -92,6 +93,99 @@ const prismDependencies = Layer.mergeAll(
     ]),
   }),
 );
+
+it.effect.each(["full-access", "approval-required"] as const)(
+  "bare launch reads under the %s caller grant even when the child is restricted in another project",
+  (runtimeMode) =>
+    Effect.gen(function* () {
+      const caller = {
+        ...liveThreadShell(ThreadId.make("bare-caller"), { runtimeMode }),
+        worktreePath: "/caller",
+      };
+      const destination = ProjectId.make("other-project");
+      let launched: ThreadLaunch.ThreadLaunchInput | undefined;
+      const dependencies = Layer.mergeAll(
+        prismDependencies,
+        NodeServices.layer,
+        NodeCrypto.layer,
+        Layer.mock(AdapterRegistry.ProviderAdapterRegistryV2)({
+          list: () => Effect.succeed([caller.providerInstanceId]),
+          get: () =>
+            Effect.succeed({
+              instanceId: caller.providerInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+              bareSupport: Effect.succeed({ supported: true }),
+              getCapabilities: () => Effect.die("unused"),
+              planSelectionTransition: () => Effect.die("unused"),
+              openSession: () => Effect.die("unused"),
+            }),
+        }),
+        Layer.succeed(McpInvocationContext.McpInvocationContext, {
+          environmentId: EnvironmentId.make("here"),
+          requestNamespace: "bare-caller",
+          thread: {
+            threadId: caller.id,
+            providerSessionId: "session",
+            providerInstanceId: caller.providerInstanceId,
+          },
+          client: undefined,
+          issuedAt: 0,
+          capabilities: new Set(["orchestration"] as const),
+        }),
+        Layer.mock(ThreadManagement.ThreadManagementService)({
+          getThreadShell: () => Effect.succeed(caller),
+        }),
+        Layer.mock(ThreadLaunch.ThreadLaunchService)({
+          replayOrLaunch: (_input, launch) => launch,
+          launch: (input) => {
+            launched = input;
+            return Effect.succeed({
+              threadId: input.threadId,
+              projection: {
+                thread: {
+                  id: input.threadId,
+                  projectId: destination,
+                  modelSelection: caller.modelSelection,
+                },
+                runs: [],
+              },
+              resumed: false,
+            } as unknown as ThreadLaunch.ThreadLaunchResult);
+          },
+        }),
+        Layer.mock(Project.ProjectService)({}),
+        Layer.mock(PeerForwarding.PeerForwarding)({}),
+        Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-bare-grant-" }).pipe(
+          Layer.provide(NodeServices.layer),
+        ),
+      );
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      yield* toolkit
+        .handle("t3_thread_launch", {
+          projectId: destination,
+          title: "Bare",
+          bare: {},
+          runtimeMode: "approval-required",
+          message: "Only task text",
+          modelSelection: caller.modelSelection,
+        })
+        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+      expect(launched?.runtimeMode).toBe("approval-required");
+      expect(launched?.bareReadGrant).toEqual(
+        runtimeMode === "full-access" ? { type: "all" } : { type: "roots", roots: ["/caller"] },
+      );
+      expect(launched?.initialMessage?.text).toBe("Only task text");
+    }),
+);
+
 
 const clientLaunchHarness = (input: {
   readonly runtimeModeCeiling: RuntimeMode;

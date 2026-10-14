@@ -1,3 +1,4 @@
+import { ThreadBare, type BareSupport } from "@t3tools/contracts";
 import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
   ChatAttachment,
@@ -46,6 +47,7 @@ import type {
 } from "./selectionTransition.ts";
 
 export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
+  bare: Schema.optional(ThreadBare),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   cwd: Schema.NullOr(Schema.String),
@@ -548,6 +550,9 @@ export interface ProviderAdapterV2SessionRuntime {
     readonly text: string;
     readonly site: "open" | "fallback" | "rollback";
   }>;
+  readonly getBareReceipt?: (
+    thread: OrchestrationV2ProviderThread,
+  ) => Effect.Effect<import("@t3tools/contracts").BareReceipt>;
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
   readonly providerSessionId: ProviderSessionId;
@@ -640,6 +645,7 @@ export interface ProviderAdapterV2SessionRuntime {
 export class ProviderAdapterV2 extends Context.Service<
   ProviderAdapterV2,
   {
+    readonly bareSupport?: Effect.Effect<BareSupport>;
     readonly instanceId: ProviderInstanceId;
     readonly driver: ProviderDriverKind;
     readonly getCapabilities: () => Effect.Effect<

@@ -2089,6 +2089,14 @@ export const layerWsRpc = (
                     ...(input.generateTitle === undefined
                       ? {}
                       : { generateTitle: input.generateTitle }),
+                    ...(input.bare === undefined
+                      ? {}
+                      : {
+                          bare: input.bare,
+                          bareReadGrant: currentSession.scopes.includes("filesystem:read")
+                            ? { type: "all" as const }
+                            : { type: "none" as const },
+                        }),
                     modelSelection: input.modelSelection,
                     runtimeMode: input.runtimeMode,
                     interactionMode: input.interactionMode,
@@ -2188,7 +2196,12 @@ export const layerWsRpc = (
           scheduledTasks.list().pipe(Effect.map(withVisibleWebhookUrls)),
         [WS_METHODS.scheduledTasksSubscribe]: (_input) =>
           scheduledTasks.subscribeList().pipe(Stream.map(withVisibleWebhookUrls)),
-        [WS_METHODS.scheduledTasksUpsert]: (input) => scheduledTasks.upsert(input),
+        [WS_METHODS.scheduledTasksUpsert]: (input) =>
+          scheduledTasks.upsert(input, {
+            bareReadGrant: currentSession.scopes.includes("filesystem:read")
+              ? { type: "all" }
+              : { type: "none" },
+          }),
         [WS_METHODS.scheduledTasksSetEnabled]: (input) =>
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
             Effect.andThen(scheduledTasks.setEnabled(input)),

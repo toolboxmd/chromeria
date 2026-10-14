@@ -1,4 +1,13 @@
+<<<<<<< HEAD
 import * as DocumentText from "../../provider/DocumentText.ts";
+=======
+import {
+  bareReceipt,
+  bareInventoryEvidence,
+  namesT3Mcp,
+} from "@t3tools/provider-core/server/bareLaunch";
+import { nativeHome } from "@t3tools/provider-core/server/BareProviderRuntime";
+>>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import { claudeTaskOutputRoot, tailClaudeTaskOutput } from "./ClaudeTaskOutputTail.ts";
 import {
@@ -207,6 +216,11 @@ import {
 
 export const CLAUDE_PROVIDER = ProviderDriverKind.make("claudeAgent");
 const CLAUDE_AGENT_SDK_QUERY_PROTOCOL = "claude-agent-sdk.query" as const;
+const CLAUDE_BARE_BUILTIN_PLUGINS = [
+  "cc-plugin-agents-md",
+  "cc-plugin-telemetry",
+  "cc-plugin-plugin-authoring",
+] as const;
 
 function claudeContextWindow(modelSelection: ModelSelection): number | null {
   return (
@@ -1448,6 +1462,7 @@ const subagentDeviceInstructions: HookCallback = () =>
   });
 
 export function makeClaudeQueryOptions(input: {
+  readonly bare?: import("@t3tools/contracts").ThreadBare;
   readonly modelSelection: ModelSelection;
   readonly nativeThreadId: string;
   readonly resume: boolean;
@@ -1596,7 +1611,31 @@ export function makeClaudeQueryOptions(input: {
   ];
   const withDirectories =
     additionalDirectories.length === 0 ? options : { ...options, additionalDirectories };
-  return input.cwd === null ? withDirectories : { ...withDirectories, cwd: input.cwd };
+  const final = input.cwd === null ? withDirectories : { ...withDirectories, cwd: input.cwd };
+  if (input.bare === undefined) return final;
+  return {
+    ...final,
+    systemPrompt: ".",
+    settingSources: [],
+    strictMcpConfig: true,
+    skills: [],
+    tools: ["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
+    mcpServers: namesT3Mcp(input.bare) ? (input.mcpServers ?? {}) : {},
+    permissionMode: input.permissionMode ?? "default",
+    settings: {
+      ...(typeof final.settings === "object" ? final.settings : {}),
+      disableAllHooks: true,
+      disableBundledSkills: true,
+      autoMemoryEnabled: false,
+      disableClaudeAiConnectors: true,
+    },
+    extraArgs: { "disable-slash-commands": null },
+    env: {
+      ...input.environment,
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+    },
+  };
 }
 
 /**
@@ -4537,14 +4576,21 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CLAUDE_PROVIDER,
+<<<<<<< HEAD
     getCapabilities: Effect.fn("ClaudeAdapterV2.getCapabilities")(function () {
       return Effect.succeed(ClaudeProviderCapabilitiesV2);
     }),
     planSelectionTransition: Effect.fn("ClaudeAdapterV2.planSelectionTransition")(function () {
       return Effect.succeed(turnScopedSelectionTransition());
     }),
+=======
+    bareSupport: Effect.succeed({ supported: true }),
+    getCapabilities: () => Effect.succeed(ClaudeProviderCapabilitiesV2),
+    planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
+>>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
     openSession: Effect.fn("ClaudeAdapterV2.openSession")(
       function* (input: ProviderAdapter.ProviderAdapterV2OpenSessionInput) {
+        let bareEvidence: ReadonlyArray<import("@t3tools/contracts").BareEvidence> = [];
         const sessionScope = yield* Effect.scope;
         const now = yield* DateTime.now;
         const session = providerSession({
@@ -9913,6 +9959,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             launchArgSettings,
           );
           const queryOptions = makeClaudeQueryOptions({
+            ...(turnInput.runtimePolicy.bare === undefined
+              ? {}
+              : { bare: turnInput.runtimePolicy.bare }),
             modelSelection: turnInput.modelSelection,
             nativeThreadId,
             resume: shouldResume,
@@ -10019,6 +10068,44 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   ) {
                     context.permissionMode = message.permissionMode;
                   }
+                  if (
+                    input.runtimePolicy.bare !== undefined &&
+                    message.type === "system" &&
+                    message.subtype === "init"
+                  ) {
+                    const source = `Claude system/init ${message.session_id}; observed after prompt offered, pre-inference timing not certified`;
+                    const namedMcp = namesT3Mcp(input.runtimePolicy.bare);
+                    const tools = message.tools.filter(
+                      (name) =>
+                        !(
+                          namedMcp &&
+                          (name.startsWith("mcp__t3-code__") || name.startsWith("mcp__t3_code__"))
+                        ),
+                    );
+                    bareEvidence = [
+                      bareInventoryEvidence(
+                        "tools",
+                        tools,
+                        ["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
+                        source,
+                      ),
+                      bareInventoryEvidence("skills", message.skills, [], source),
+                      bareInventoryEvidence(
+                        "plugins",
+                        message.plugins.map((plugin) => plugin.name),
+                        CLAUDE_BARE_BUILTIN_PLUGINS,
+                        source,
+                        true,
+                      ),
+                      bareInventoryEvidence(
+                        "mcp",
+                        message.mcp_servers.map((server) => server.name),
+                        namedMcp ? ["t3-code"] : [],
+                        source,
+                      ),
+                      bareInventoryEvidence("slash_commands", message.slash_commands, [], source),
+                    ];
+                  }
                   return handleSdkMessage({ query: querySession, message });
                 }),
               ),
@@ -10113,15 +10200,21 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               promptUuid === null
                 ? null
                 : yield* makeClaudeUserMessageWithAttachments({
-                    text: applyClaudePromptEffortPrefix(
-                      turnInput.message.text,
-                      compileClaudeModelSelection(turnInput.modelSelection).promptEffort,
-                    ),
+                    text:
+                      turnInput.runtimePolicy.bare !== undefined
+                        ? turnInput.message.text
+                        : applyClaudePromptEffortPrefix(
+                            turnInput.message.text,
+                            compileClaudeModelSelection(turnInput.modelSelection).promptEffort,
+                          ),
                     attachments: turnInput.message.attachments,
                     attachmentsDir,
                     fileSystem,
                     pdfReservation,
-                    skills: yield* userInvocableSkills(turnInput.runtimePolicy.cwd),
+                    skills:
+                      turnInput.runtimePolicy.bare === undefined
+                        ? yield* userInvocableSkills(turnInput.runtimePolicy.cwd)
+                        : new Map<string, ClaudeSkillTarget>(),
                     uuid: promptUuid,
                   }).pipe(
                     Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -10574,7 +10667,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               attachmentsDir,
               fileSystem,
               pdfReservation,
-              skills: yield* userInvocableSkills(currentTurn.input.runtimePolicy.cwd),
+              skills:
+                currentTurn.input.runtimePolicy.bare === undefined
+                  ? yield* userInvocableSkills(currentTurn.input.runtimePolicy.cwd)
+                  : new Map<string, ClaudeSkillTarget>(),
             }).pipe(
               Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
               Effect.provideService(Path.Path, path),
@@ -10710,6 +10806,44 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         );
 
         const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
+          ...(input.runtimePolicy.bare === undefined
+            ? {}
+            : {
+                getBareReceipt: (thread: OrchestrationV2ProviderThread) =>
+                  Effect.gen(function* () {
+                    const query = yield* Ref.get(queryContext);
+                    return bareReceipt({
+                      driver: CLAUDE_PROVIDER,
+                      bare: input.runtimePolicy.bare!,
+                      mode: input.runtimePolicy.runtimeMode,
+                      effective:
+                        query?.permissionMode ??
+                        permissionModeForClaudeRuntimePolicy(input.runtimePolicy),
+                      controls: [
+                        "custom system '.'",
+                        "settingSources=[]",
+                        "strictMcpConfig",
+                        "disable-slash-commands",
+                        "disableAllHooks",
+                        "disableBundledSkills",
+                        "autoMemoryEnabled=false",
+                        "disableClaudeAiConnectors",
+                        "CLAUDE_CODE_DISABLE_CLAUDE_MDS",
+                        "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+                      ],
+                      retained: [
+                        "system text '.'",
+                        `builtin plugins: ${CLAUDE_BARE_BUILTIN_PLUGINS.join(", ")}`,
+                        "managed policy settings and hooks",
+                        "environment/date/session metadata",
+                        "native tool schemas",
+                      ],
+                      root: `${nativeHome(adapterOptions.environment ?? {}, "CLAUDE_CONFIG_DIR", ".claude")}/projects`,
+                      sessionId: thread.nativeThreadRef?.nativeId ?? null,
+                      evidence: bareEvidence,
+                    });
+                  }),
+              }),
           instanceId: adapterOptions.instanceId,
           driver: CLAUDE_PROVIDER,
           providerSessionId: input.providerSessionId,

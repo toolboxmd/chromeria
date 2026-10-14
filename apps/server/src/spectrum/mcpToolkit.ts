@@ -1,3 +1,4 @@
+import { BareLaunchRequest } from "@t3tools/contracts";
 import * as McpRouting from "../mcp/McpRouting.ts";
 import {
   CommandId,
@@ -25,6 +26,7 @@ import * as Launch from "./LaunchService.ts";
 import { assertSameLink } from "../mcp/linkOrigin.ts";
 
 const Color = Schema.Struct({
+  bare: Schema.optional(BareLaunchRequest),
   label: TrimmedNonEmptyString,
   role: Schema.optional(PrismRole),
   lane: Schema.optional(PrismLane),

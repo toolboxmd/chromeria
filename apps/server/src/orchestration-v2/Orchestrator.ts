@@ -1109,10 +1109,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly adapter: ProviderAdapter.ProviderAdapterV2["Service"];
     readonly providerInstanceId: ProviderInstanceId;
     readonly threadId: ThreadId;
+    readonly bare?: import("@t3tools/contracts").ThreadBare | undefined;
   }) =>
     input.adapter.getCapabilities().pipe(
       Effect.flatMap((capabilities) =>
-        capabilities.sessions.supportsMultipleProviderThreadsPerSession
+        input.bare === undefined && capabilities.sessions.supportsMultipleProviderThreadsPerSession
           ? Effect.succeed(
               idAllocator.derive.providerSession({
                 providerInstanceId: input.providerInstanceId,
@@ -1809,6 +1810,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         projection.thread.historyOrigin === "v1_import"
           ? yield* readHandoffItems(threadId, [null])
           : [];
+      if (
+        projection.thread.bare !== undefined &&
+        needsFullContext &&
+        (coveredRuns.length > 0 || legacyImportItems.length > 0)
+      )
+        return yield* new OrchestratorDispatchError({
+          commandId,
+          commandType: "message.dispatch",
+          cause: "bare history transfer unsupported",
+        });
       const handoffStrategy = needsFullContext
         ? ("full_thread_summary" as const)
         : ("delta_since_target_last_seen" as const);
@@ -1941,6 +1952,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (yield* providerAdapters.get(queuedRun.providerInstanceId).pipe(
           Effect.flatMap((adapter) =>
             providerSessionIdFor({
+              bare: projection.thread.bare,
               adapter,
               providerInstanceId: queuedRun.providerInstanceId,
               threadId,
@@ -2608,6 +2620,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
     const thread: OrchestrationV2AppThread = {
+      ...(command.bare === undefined
+        ? {}
+        : { bare: { ...command.bare, nativeHomeOwnerThreadId: command.threadId } }),
       ...(command.owner === undefined ? {} : { owner: command.owner }),
       createdBy: command.createdBy,
       creationSource: command.creationSource,
@@ -4182,6 +4197,30 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     const sourceProviderThread = providerThreadForRun(sourceProjection, sourceRun);
+    if (sourceProjection.thread.bare !== undefined) {
+      const adapter = yield* providerAdapters
+        .get(sourceProjection.thread.providerInstanceId)
+        .pipe(mapDispatchError(command));
+      const capabilities = yield* adapter.getCapabilities().pipe(mapDispatchError(command));
+      const execution = yield* commandPolicy
+        .decideForkExecution({
+          commandId: command.commandId,
+          threadId: command.targetThreadId,
+          providerInstanceId: sourceProjection.thread.providerInstanceId,
+          capabilities,
+          sameProvider: true,
+          hasStrongNativeSource: sourceProviderThread?.nativeThreadRef?.strength === "strong",
+          sourceRunStatus: sourceRun.status,
+          fromSpecificTurn: true,
+        })
+        .pipe(mapDispatchError(command));
+      if (execution !== "native_fork")
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "bare history transfer unsupported",
+        });
+    }
     const now = command.createdAt ?? (yield* DateTime.now);
     const emitEvent = emit(events, command);
     const transferId = yield* mapDispatchError(command)(
@@ -4729,6 +4768,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const requiresProviderThreadHandoff =
       (providerInstanceChanged && !canResumeAcrossInstances) ||
       selectionTransition?.type === "create_with_handoff";
+    if (
+      input.projection.thread.bare !== undefined &&
+      (providerInstanceChanged || selectionTransition?.type === "create_with_handoff")
+    )
+      return yield* new OrchestratorDispatchError({
+        commandId: input.command.commandId,
+        commandType: input.command.type,
+        cause: "bare history transfer unsupported",
+      });
     const requiresProviderSessionRestart =
       canResumeAcrossInstances || selectionTransition?.type === "restart_session";
     if (requiresProviderThreadHandoff) {
@@ -4769,6 +4817,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         existingTargetProviderThread?.providerSessionId ??
         (yield* mapDispatchError(input.command)(
           providerSessionIdFor({
+            bare: input.projection.thread.bare,
             adapter: targetAdapter,
             providerInstanceId: input.modelSelection.instanceId,
             threadId: input.command.threadId,
@@ -6050,6 +6099,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         activeProviderThread?.providerSessionId ??
         (yield* mapDispatchError(command)(
           providerSessionIdFor({
+            bare: projection.thread.bare,
             adapter,
             providerInstanceId: modelSelection.instanceId,
             threadId: command.threadId,
@@ -6434,6 +6484,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       (canResumeAcrossInstances ? undefined : targetProviderThread?.providerSessionId) ??
       (yield* mapDispatchError(command)(
         providerSessionIdFor({
+          bare: projection.thread.bare,
           adapter,
           providerInstanceId: modelSelection.instanceId,
           threadId: command.threadId,
@@ -6483,6 +6534,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           );
     const canResolveForkNatively = forkExecution === "native_fork";
     const requiresPortableFork = forkExecution === "portable_context";
+    if (projection.thread.bare !== undefined && (requiresPortableFork || isProviderSwitch))
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "bare history transfer unsupported",
+      });
 
     if (canResolveForkNatively) {
       yield* mapDispatchError(command)(
@@ -7402,19 +7459,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ? { type: "worktree" as const, baseRef: "HEAD" }
             : { type: "root" as const }))
         : undefined;
+      const { bare: _parentBare, ...childTemplate } = makeSubagentChildThread({
+        parentThread: parentProjection.thread,
+        childThreadId,
+        parentNodeId: taskNodeId,
+        activeProviderThreadId: null,
+        providerInstanceId: command.modelSelection.instanceId,
+        modelSelection: command.modelSelection,
+        title: taskTitle,
+        now,
+        createdBy: command.createdBy,
+        creationSource: command.creationSource,
+      });
       const childThread: OrchestrationV2AppThread = {
-        ...makeSubagentChildThread({
-          parentThread: parentProjection.thread,
-          childThreadId,
-          parentNodeId: taskNodeId,
-          activeProviderThreadId: null,
-          providerInstanceId: command.modelSelection.instanceId,
-          modelSelection: command.modelSelection,
-          title: taskTitle,
-          now,
-          createdBy: command.createdBy,
-          creationSource: command.creationSource,
-        }),
+        ...childTemplate,
+        ...(command.bare === undefined
+          ? {}
+          : { bare: { ...command.bare, nativeHomeOwnerThreadId: childThreadId } }),
         projectId: destinationProjectId,
         ...(workspaceStrategy === undefined
           ? {}

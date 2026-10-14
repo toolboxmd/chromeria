@@ -77,8 +77,12 @@ import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinkRequests from "../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
+import { delegatedTaskRun, hasPendingChildRuns } from "./OrchestratorMcpService.ts";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
+  Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
   Layer.provide(PrismServerSettings.layerTest()),
   Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
   Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
@@ -520,7 +524,9 @@ describe("orchestrator MCP toolkit", () => {
           registry,
         );
         const layers = Layer.merge(
-          McpHttpServer.layerOrchestratorToolkit,
+          McpHttpServer.layerOrchestratorToolkit.pipe(
+            Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+          ),
           McpHttpServer.toolkitRegistration(AttachmentToolkit, AttachmentHandlers.layer),
         ).pipe(
           Layer.provide(PrismServerSettings.layerTest()),
