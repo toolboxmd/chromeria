@@ -1,6 +1,6 @@
 import { applyThreadPullRequestLinkUpdate } from "@t3tools/shared/threadPullRequests";
 import { keepContinuationSource } from "../prism/continuationProjection.ts";
-import { mergeRestartCut } from "@t3tools/shared/restartCut";
+import { mergeRestartCut, RESTART_CUT_REASONS } from "@t3tools/shared/restartCut";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
 import { makeThreadFind, findProjectedThreadItems } from "./ThreadFind.ts";
@@ -693,6 +693,10 @@ function needsRecovery(
         )[0];
       if (
         restartResult !== undefined &&
+        !(
+          restartResult.restartCut?.continuation === "declined" &&
+          restartResult.restartCut.reason === RESTART_CUT_REASONS.TASK_SETTLED
+        ) &&
         ((restartResult.status === "cancelled" && restartResult.restartCut !== undefined) ||
           restartResult.restartContinuationOfRunId !== undefined)
       ) {
