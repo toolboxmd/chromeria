@@ -66,6 +66,8 @@ export interface Selection {
     readonly tool_use_id: string | null;
     readonly tool: string | null;
     readonly source: string | null;
+    readonly transcript_path?: string | null;
+    readonly native_turn?: string | null;
     /** True on failure evidence, false on proven success, null when the harness cannot tell. */
     readonly failed: boolean | null;
     readonly reads: ReadonlyArray<Read>;

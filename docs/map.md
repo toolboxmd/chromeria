@@ -41,7 +41,7 @@ flowchart TD
     CK["Command keys"]
     %% CK: #232 PR #243
     SP["Shown proof"]
-    %% SP: #245
+    %% SP: #245 PR #313
     TF["Test Server 6 flake"]
     %% TF: #259 PR #278
     XM["Cross-machine control"]

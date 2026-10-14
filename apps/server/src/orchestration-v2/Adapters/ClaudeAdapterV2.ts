@@ -146,6 +146,7 @@ import * as ServerSettings from "../../serverSettings.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { spawnAndCollect } from "@t3tools/provider-core/server/snapshotProbe";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import { withClaudeRequestRecords } from "../../contextmd/Harnesses.ts";
 import {
   claudeSignedOutMessage,
   makeClaudeEnvironment,
@@ -9921,7 +9922,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             settings: adapterOptions.settings,
             ...(launchArgSettings === undefined ? {} : { sdkSettings: launchArgSettings }),
             environment: claudeQueryEnvironment(
-              adapterOptions.environment,
+              withClaudeRequestRecords(adapterOptions.environment),
               turnInput.appThread,
               turnInput.appThread.lineage.relationshipToParent === "subagent"
                 ? yield* resolveSubagentPromptCacheTtl(turnInput.runtimePolicy.cwd)

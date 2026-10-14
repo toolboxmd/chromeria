@@ -4251,6 +4251,52 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
   // regression: #15475 MCP title arriving after the tool starts must survive to completion
   it.effect.each([
+    {
+      environment: {},
+      expected: { CLAUDE_CODE_ELEGANT_MEADOW: "1", CLAUDE_CODE_TETHER_LIVE: "0" },
+    },
+    {
+      environment: {
+        CLAUDE_CODE_ELEGANT_MEADOW: "0",
+        CLAUDE_CODE_TETHER_LIVE: "1",
+        CLAUDE_CODE_EXTRA_BODY: '{"messages":[]}',
+      },
+      expected: {
+        CLAUDE_CODE_ELEGANT_MEADOW: "0",
+        CLAUDE_CODE_TETHER_LIVE: "1",
+        CLAUDE_CODE_EXTRA_BODY: '{"messages":[]}',
+      },
+    },
+  ])(
+    "applies ContextMD recording defaults at the agent-session query seam: $environment",
+    ({ environment, expected }) =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({ environment });
+        const now = yield* DateTime.now;
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-shown-environment"),
+            text: "Continue.",
+            attachments: [],
+          }),
+        );
+        assert.deepEqual(harness.getOpenedOptions()?.env, expected);
+        yield* Queue.offer(
+          harness.sdkMessages,
+          makeResultFrame({ uuid: "recording-result", result: "done" }),
+        );
+        yield* Queue.take(harness.terminalReceipts);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
+  it.effect.each([
     { isError: false, title: "Check weather" },
     { isError: true, title: "Check weather" },
     { isError: false, title: undefined },
