@@ -555,7 +555,7 @@ describe("orchestration v2 provider switching", () => {
               dispatchMode: { type: "start_immediately" },
             });
           const wait = (ordinal: number) =>
-            orchestrator.streamStoredEvents.pipe(
+            orchestrator.streamStoredEventsFrom({ afterSequence: 0 }).pipe(
               Stream.filter(
                 ({ event }) =>
                   event.type === "run.updated" &&
@@ -954,7 +954,7 @@ describe("orchestration v2 provider switching", () => {
                 dispatchMode: { type: "start_immediately" },
               });
             const wait = (ordinal: number, status: "failed" | "completed") =>
-              orchestrator.streamStoredEvents.pipe(
+              orchestrator.streamStoredEventsFrom({ afterSequence: 0 }).pipe(
                 Stream.filter(
                   ({ event }) =>
                     event.type === "run.updated" &&
@@ -1103,7 +1103,7 @@ describe("orchestration v2 provider switching", () => {
                 modelSelection: CLAUDE_MODEL_SELECTION,
                 dispatchMode: { type: "start_immediately" },
               });
-              yield* orchestrator.streamStoredEvents.pipe(
+              yield* orchestrator.streamStoredEventsFrom({ afterSequence: 0 }).pipe(
                 Stream.filter(
                   ({ event }) =>
                     event.type === "run.updated" &&
@@ -1226,7 +1226,7 @@ describe("orchestration v2 provider switching", () => {
               modelSelection: CLAUDE_MODEL_SELECTION,
               dispatchMode: { type: "start_immediately" },
             });
-            yield* orchestrator.streamStoredEvents.pipe(
+            yield* orchestrator.streamStoredEventsFrom({ afterSequence: 0 }).pipe(
               Stream.filter(
                 ({ event }) =>
                   event.type === "run.updated" &&
@@ -1348,7 +1348,7 @@ describe("orchestration v2 provider switching", () => {
             ordinal: number,
             expectedStatus: "completed" | "failed" | "interrupted",
           ) =>
-            orchestrator.streamStoredEvents.pipe(
+            orchestrator.streamStoredEventsFrom({ afterSequence: 0 }).pipe(
               Stream.filter(
                 ({ event }) =>
                   event.type === "run.updated" &&
@@ -1703,16 +1703,18 @@ describe("orchestration v2 provider switching", () => {
               },
             ],
           });
-          const queuedClaudeCompleted = yield* orchestrator.streamStoredEvents.pipe(
-            Stream.filter(
-              (event) =>
-                event.event.type === "run.updated" &&
-                event.event.runId === beforeSteer.runs[2]?.id &&
-                event.event.payload.status === "completed",
-            ),
-            Stream.runHead,
-            Effect.forkScoped,
-          );
+          const queuedClaudeCompleted = yield* orchestrator
+            .streamStoredEventsFrom({ afterSequence: 0 })
+            .pipe(
+              Stream.filter(
+                (event) =>
+                  event.event.type === "run.updated" &&
+                  event.event.runId === beforeSteer.runs[2]?.id &&
+                  event.event.payload.status === "completed",
+              ),
+              Stream.runHead,
+              Effect.forkScoped,
+            );
           yield* dispatch("grok-steer", GROK_MODEL_SELECTION, {
             type: "steer_active",
             targetRunId: beforeSteer.runs[0]!.id,
@@ -1937,7 +1939,7 @@ describe("orchestration v2 provider switching", () => {
             ],
           });
           yield* orchestrator.resumeQueuedRuns;
-          yield* orchestrator.streamStoredEvents.pipe(
+          yield* orchestrator.streamStoredEventsFrom({ afterSequence: 0 }).pipe(
             Stream.filter(
               (event) =>
                 event.event.type === "run.updated" &&
@@ -2127,7 +2129,7 @@ describe("orchestration v2 provider switching", () => {
             ],
           });
           yield* orchestrator.resumeQueuedRuns;
-          yield* orchestrator.streamStoredEvents.pipe(
+          yield* orchestrator.streamStoredEventsFrom({ afterSequence: 0 }).pipe(
             Stream.filter(
               (event) =>
                 event.event.type === "run.updated" &&
@@ -2137,11 +2139,13 @@ describe("orchestration v2 provider switching", () => {
             Stream.runHead,
           );
           yield* worker.drain();
-          const detachEvents = yield* eventSink.stream({ threadId: queuedThreadId }).pipe(
-            Stream.filter((stored) => stored.event.type === "provider-session.detached"),
-            Stream.take(1),
-            Stream.runCollect,
-          );
+          const detachEvents = yield* eventSink
+            .stream({ threadId: queuedThreadId, afterSequence: 0 })
+            .pipe(
+              Stream.filter((stored) => stored.event.type === "provider-session.detached"),
+              Stream.take(1),
+              Stream.runCollect,
+            );
           assert.equal(
             detachEvents[0]?.event.type === "provider-session.detached"
               ? detachEvents[0].event.payload.providerSessionId
@@ -2380,7 +2384,7 @@ describe("orchestration v2 provider switching", () => {
             ],
           });
           yield* orchestrator.resumeQueuedRuns;
-          yield* orchestrator.streamStoredEvents.pipe(
+          yield* orchestrator.streamStoredEventsFrom({ afterSequence: 0 }).pipe(
             Stream.filter(
               (event) =>
                 event.event.type === "run.updated" &&
@@ -2657,7 +2661,7 @@ describe("orchestration v2 provider switching", () => {
               [queued.runs[0]?.id],
             );
             yield* Deferred.succeed(releaseFirstTurn, undefined);
-            yield* orchestrator.streamStoredEvents.pipe(
+            yield* orchestrator.streamStoredEventsFrom({ afterSequence: 0 }).pipe(
               Stream.filter(
                 (event) =>
                   event.event.type === "run.updated" &&
