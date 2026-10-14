@@ -299,7 +299,10 @@ are evidence for review, not proof that a feature has been adopted upstream.
 {
   "id": "provider-auto-update",
   "purpose": "Let each environment opt in to installing provider CLI updates without a click.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/159"],
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/159",
+    "https://github.com/toolboxmd/chromeria/issues/266"
+  ],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/160"],
   "newFiles": [
     "apps/server/src/provider/forkProviderMaintenance.ts",
@@ -309,7 +312,9 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "apps/server/src/provider/providerAutoUpdate.test.ts",
     "apps/server/src/provider/providerAutoUpdate.ts",
     "apps/server/src/provider/providerAutoUpdateState.ts",
-    "apps/web/src/components/settings/AutoUpdateProvidersSetting.tsx"
+    "apps/web/src/components/settings/AutoUpdateProvidersSetting.tsx",
+    "apps/web/src/components/settings/ProviderUpdateSettingsRows.tsx",
+    "apps/web/src/components/settings/providerUpdateSettingsSearch.test.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
@@ -318,6 +323,7 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "apps/server/src/provider/providerMaintenanceRunner.ts",
     "apps/server/src/server.ts",
     "apps/server/src/ws.ts",
+    "apps/web/src/components/settings/ProviderSettingsPanel.tsx",
     "apps/web/src/components/settings/SettingsPanels.tsx",
     "apps/web/src/components/settings/settingsSearch.ts",
     "docs/user/updating.md"

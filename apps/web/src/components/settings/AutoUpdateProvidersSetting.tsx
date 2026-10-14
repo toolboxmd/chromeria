@@ -6,7 +6,7 @@ import { ScopedSwitch } from "./ScopedSwitch";
 import { SettingResetButton, SettingsRow } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
 
-/** Environment-wide toggle shown under "Provider update checks", which it depends on. */
+/** Environment-wide toggle shown under Provider update checks, which it depends on. */
 export function AutoUpdateProvidersSetting({
   value,
   checksEnabled,

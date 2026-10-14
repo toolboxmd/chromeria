@@ -98,6 +98,7 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
 import { ExpandableText } from "./ExpandableText";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
+import { ProviderUpdateSettingsRows } from "./ProviderUpdateSettingsRows";
 import { UsageProviderSettings } from "./UsageProviderSettings";
 import { ProviderSetupSection, readAntigravityAuthMethod } from "./ProviderSetupSection";
 import { ProviderAuthenticationSection } from "./ProviderAuthenticationSection";
@@ -356,6 +357,8 @@ function ProviderSettingsPanelContent(target: ProviderSettingsTarget) {
     } else if (
       !target.scoped &&
       (searchTargetId === searchableSetting("provider-health-check-interval").id ||
+        searchTargetId === searchableSetting("provider-update-checks").id ||
+        searchTargetId === searchableSetting("auto-update-providers").id ||
         searchTargetId === searchableSetting("usage-providers").id) &&
       !selectedEnvironmentCanRenderSettings &&
       searchableEnvironmentId !== undefined
@@ -1153,6 +1156,7 @@ export function EnvironmentProviderSettings({
           }
         />
         <CompactIdleThreadsRow />
+        <ProviderUpdateSettingsRows />
       </SettingsSection>
 
       {isAddInstanceDialogOpen && !readOnly ? (
