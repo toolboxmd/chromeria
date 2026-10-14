@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
+  type OrchestrationV2LinkOrigin,
   CommandId,
   EventId,
   ProviderDriverKind,
@@ -26,6 +27,15 @@ import { buildUnavailableProviderSnapshot } from "../provider/unavailableProvide
 import * as Settings from "../serverSettings.ts";
 import * as Prism from "../prism/PrismService.ts";
 import * as Launch from "./LaunchService.ts";
+import { assertSameLink, assertNotLinked } from "../mcp/linkOrigin.ts";
+import * as Invocation from "../mcp/McpInvocationContext.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import * as Forwarding from "../peer/PeerForwarding.ts";
+import * as PeerLinks from "../peer/PeerLinks.ts";
+import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import { EnvironmentId } from "@t3tools/contracts";
+import { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
 import * as Round from "./RoundService.ts";
 import { applySpectrumMutation, ensureSpectrumSchema, readSpectrum } from "./store.ts";
 import { makeThread, NOW } from "./testFixtures.ts";
@@ -94,32 +104,36 @@ const input: Launch.SpectrumStart = {
     { label: "Red", role: "reviewer" },
   ],
 };
-const setup = Effect.gen(function* () {
-  yield* ensureSpectrumSchema;
-  const sink = yield* EventSink.EventSinkV2;
-  const caller = {
-    ...makeThread(),
-    id: input.callerThreadId,
-    owner: "alice",
-    lineage: {
-      parentThreadId: null,
-      relationshipToParent: null,
-      rootThreadId: input.callerThreadId,
-    },
-  } as const;
-  yield* sink.write({
-    events: [
-      {
-        id: EventId.make("caller:create"),
-        type: "thread.created",
-        threadId: caller.id,
-        occurredAt: NOW,
-        payload: caller,
+const setupWithOrigin = (linkOrigin?: OrchestrationV2LinkOrigin) =>
+  Effect.gen(function* () {
+    yield* ensureSpectrumSchema;
+    const sink = yield* EventSink.EventSinkV2;
+    const caller = {
+      ...makeThread(),
+      id: input.callerThreadId,
+      owner: "alice",
+      ...(linkOrigin === undefined ? {} : { linkOrigin }),
+      lineage: {
+        parentThreadId: null,
+        relationshipToParent: null,
+        rootThreadId: input.callerThreadId,
       },
-    ],
+    } as const;
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("caller:create"),
+          type: "thread.created",
+          threadId: caller.id,
+          occurredAt: NOW,
+          payload: caller,
+        },
+      ],
+    });
+    return caller;
   });
-  return caller;
-});
+
+const setup = setupWithOrigin();
 
 it.effect("resolves Colors through Prism, inherits ownership and launches exact lineage runs", () =>
   Effect.gen(function* () {
@@ -262,5 +276,73 @@ it.effect("legacy Color instance and model overrides keep Prism role instruction
     }
     const projections = yield* Projection.ProjectionStoreV2;
     assert.strictEqual((yield* projections.getThread(state.threadId)).title, "My council");
+  }).pipe(Effect.provide(runtime)),
+);
+
+it.effect("persists peer origin on the Spectrum and Colors, fencing each descendant", () =>
+  Effect.gen(function* () {
+    const origin = { sessionId: "peer-session", label: "Peer" };
+    yield* setupWithOrigin(origin);
+    const state = yield* (yield* Launch.SpectrumLaunchService).register(input);
+    const projections = yield* Projection.ProjectionStoreV2;
+    for (const id of [state.threadId, ...state.participants.map((p) => p.threadId)]) {
+      const child = yield* projections.getThread(id);
+      assert.deepStrictEqual(child.linkOrigin, origin);
+      const scope: Invocation.McpInvocationScope = {
+        environmentId: EnvironmentId.make("destination"),
+        thread: {
+          threadId: id,
+          providerInstanceId: child.providerInstanceId,
+          providerSessionId: "color",
+        },
+        client: undefined,
+        capabilities: new Set(["orchestration"]),
+        requestNamespace: "color",
+        issuedAt: 1,
+      };
+      const shell = yield* (yield* Orchestrator.OrchestratorV2).getThreadShell(id);
+      if (shell === null) return yield* Effect.die("Persisted Spectrum shell missing");
+      const context = { scope, caller: shell };
+      const foreign = { ...child, linkOrigin: undefined };
+      assert.strictEqual(
+        (yield* assertSameLink(context, foreign).pipe(Effect.flip)).code,
+        "capability_denied",
+      );
+      assert.strictEqual(
+        (yield* assertNotLinked(context, "change projects").pipe(Effect.flip)).code,
+        "capability_denied",
+      );
+      const denied = yield* Effect.gen(function* () {
+        const forwarding = yield* Forwarding.PeerForwarding;
+        return yield* forwarding.call(
+          scope,
+          OrchestratorToolkit.tools.t3_thread_list,
+          EnvironmentId.make("third-machine"),
+          {},
+        );
+      }).pipe(
+        Effect.provide(
+          Forwarding.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                NodeCrypto.layer,
+                Layer.mock(ThreadManagement.ThreadManagementService)({
+                  getThreadShell: () => Effect.succeed(shell),
+                }),
+                Layer.mock(PeerLinks.PeerLinks)({
+                  get: () => Effect.die("Must not use onward links"),
+                }),
+                Layer.mock(PeerMcpClient.PeerMcpClient)({
+                  call: () => Effect.die("Must not reach an onward peer"),
+                }),
+              ),
+            ),
+          ),
+        ),
+        Effect.provideService(Invocation.McpInvocationContext, scope),
+        Effect.flip,
+      );
+      assert.strictEqual(denied.code, "capability_denied");
+    }
   }).pipe(Effect.provide(runtime)),
 );

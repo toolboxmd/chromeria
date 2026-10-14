@@ -1257,3 +1257,21 @@ it.effect("a passed check waits for bound reports, then reruns before it settles
     assert.equal((yield* h.state()).runs[0]?.stage, "done");
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
+
+it.effect("checked launches and crash replays keep their persisted peer origin", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    const h = yield* harness();
+    yield* h.save({ checkCommand: "check", checkReason: "outcome" });
+    const origin = { sessionId: "peer-timer", label: "Peer" };
+    const linked = task({ threadId: null, linkOrigin: origin });
+    const decision = yield* h.decide("scheduled", NOW, linked);
+    assert.equal(decision._tag, "fork");
+    const pinned = (yield* h.state()).runs[0]!.sends[0]!.payload!;
+    assert.deepStrictEqual(pinned.linkOrigin, origin);
+    h.set({ landed: false, busy: false });
+    yield* h.runs.drive({ ...linked, linkOrigin: { sessionId: "another-peer", label: "Other" } });
+    assert.deepStrictEqual((yield* h.state()).runs[0]!.sends[0]!.payload, pinned);
+    assert.equal(h.sent.length, 1);
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);

@@ -18,9 +18,9 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import type * as Tool from "effect/ai/Tool";
 
-import { assertNotLinked } from "../mcp/linkOrigin.ts";
+import { assertNotLinked, callerLinkOrigin } from "../mcp/linkOrigin.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
-import { readCaller, unavailable } from "../mcp/threadAccess.ts";
+import { loadCaller, unavailable } from "../mcp/threadAccess.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
@@ -45,16 +45,24 @@ type Scope = McpInvocationContext.McpInvocationScope;
 export class PeerForwarding extends Context.Service<
   PeerForwarding,
   {
-    /**
-     * Runs `tool` in the linked environment `environmentId` with `params`. A
-     * `t3_thread_wait` goes in pieces short enough to survive any route.
-     */
+    /** Runs `tool` in the linked environment `environmentId` with `params`. */
     readonly call: <T extends Tool.Any>(
       scope: Scope,
       tool: T,
       environmentId: EnvironmentId,
       params: Tool.Parameters<T>,
+      options?: { readonly expectedLinkIdentity: string },
     ) => Effect.Effect<Tool.Success<T>, OrchestratorMcpFailure>;
+    /**
+     * Runs `here` unless `params.environmentId` names a linked environment, in
+     * which case `tool` runs there with the same parameters.
+     */
+    readonly route: <T extends Tool.Any, A, E, R>(
+      scope: Scope,
+      tool: T,
+      params: Tool.Parameters<T> & { readonly environmentId?: EnvironmentId | undefined },
+      here: Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A | Tool.Success<T>, E | OrchestratorMcpFailure, R>;
     /** `t3_thread_read` there. */
     readonly readThread: (
       scope: Scope,
@@ -80,13 +88,6 @@ export class PeerForwarding extends Context.Service<
   }
 >()("t3/peer/PeerForwarding") {}
 
-/** What an agent hears when it names another machine while the beta is off here. */
-export const linkedEnvironmentsOff = new OrchestratorMcpFailure({
-  code: "capability_denied",
-  message:
-    "Linked environments is off on this machine, so no tool can act on another machine. Leave out environmentId to work here; the user can turn it on in Settings → Labs.",
-});
-
 /** The linked environment a call names, or nothing when it names this one. */
 export const remoteTarget = (scope: Scope, environmentId: EnvironmentId | undefined) =>
   environmentId === scope.environmentId ? undefined : environmentId;
@@ -98,14 +99,23 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
 
   /**
-   * The caller's own limits, which travel with every forwarded call: the peer sees only the
-   * link's credential, so a caller that may not control threads here is refused here. Work a
-   * link started never uses this environment's links, since the peer would see this
-   * environment's session instead of that link, and its fence could not hold.
+   * The caller's own limits here, which travel with every call it forwards.
+   * Work a link started here never uses this environment's own links: the
+   * peer would see this environment's session, not the link the work came
+   * from, so its fence could not hold.
    */
   const callerLimits = (scope: Scope) =>
-    readCaller().pipe(
-      Effect.tap((caller) => assertNotLinked(caller, "use this environment's links")),
+    loadCaller().pipe(
+      Effect.tap((caller) =>
+        callerLinkOrigin(caller) === undefined
+          ? assertNotLinked(caller, "use this environment's links")
+          : Effect.fail(
+              new OrchestratorMcpFailure({
+                code: "capability_denied",
+                message: "A peer link cannot forward through another environment's links.",
+              }),
+            ),
+      ),
       Effect.map((caller) => caller.limits),
       Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
       Effect.provideService(ThreadManagement.ThreadManagementService, threads),
@@ -123,37 +133,60 @@ const make = Effect.gen(function* () {
     );
 
   /** Tool and contract schemas are plain data: they encode and decode without services. */
-  const forward = Effect.fn("PeerForwarding.forward")(function* <A>(
+  const forward = <A>(
     scope: Scope,
     toolName: string,
     parameters: Schema.Top,
     success: Schema.Top,
     environmentId: EnvironmentId,
     params: unknown,
-  ) {
-    const limits = yield* callerLimits(scope);
-    const encoded = (yield* Schema.encodeUnknownEffect(parameters as Schema.Encoder<unknown>)(
-      params,
-    ).pipe(Effect.mapError(unavailable))) as Record<string, unknown>;
-    const { environmentId: _target, ...args } = encoded;
-    // A pending upload lives here, so it cannot go with the call.
-    if (Array.isArray(args.attachments) && args.attachments.length > 0) {
-      return yield* new OrchestratorMcpFailure({
-        code: "invalid_request",
-        message: "A launch in a linked environment cannot carry attachments yet.",
+    options?: { readonly expectedLinkIdentity: string },
+  ) =>
+    Effect.gen(function* () {
+      const limits = yield* callerLimits(scope);
+      const encoded = (yield* Schema.encodeUnknownEffect(parameters as Schema.Encoder<unknown>)(
+        params,
+      ).pipe(Effect.mapError(unavailable))) as Record<string, unknown>;
+      const { environmentId: _target, ...args } = encoded;
+      // A pending upload lives here, so it cannot go with the call.
+      if (
+        (toolName === "t3_thread_launch" || toolName === "delegate_task") &&
+        Array.isArray(args.attachments) &&
+        args.attachments.length > 0
+      ) {
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "A launch in a linked environment cannot carry attachments yet.",
+        });
+      }
+      if (typeof args.clientRequestId === "string") {
+        args.clientRequestId = yield* scopedRequestId(scope.requestNamespace, args.clientRequestId);
+      }
+      return yield* peers.call({
+        environmentId,
+        tool: toolName,
+        arguments: args,
+        limits,
+        success: success as Schema.Decoder<A>,
+        ...(options === undefined ? {} : options),
       });
-    }
-    if (typeof args.clientRequestId === "string") {
-      args.clientRequestId = yield* scopedRequestId(scope.requestNamespace, args.clientRequestId);
-    }
-    return yield* peers.call({
-      environmentId,
-      tool: toolName,
-      arguments: args,
-      limits,
-      success: success as Schema.Decoder<A>,
     });
-  });
+
+  const call: PeerForwarding["Service"]["call"] = (scope, tool, environmentId, params, options) =>
+    forward(
+      scope,
+      tool.name,
+      tool.parametersSchema,
+      tool.successSchema,
+      environmentId,
+      params,
+      options,
+    );
+
+  const route: PeerForwarding["Service"]["route"] = (scope, tool, params, here) => {
+    const target = remoteTarget(scope, params.environmentId);
+    return target === undefined ? here : call(scope, tool, target, params);
+  };
 
   const readThread: PeerForwarding["Service"]["readThread"] = (scope, environmentId, input) =>
     forward<OrchestratorMcpThreadReadResult>(
@@ -179,76 +212,37 @@ const make = Effect.gen(function* () {
       input,
     );
 
-  const waitForThread: PeerForwarding["Service"]["waitForThread"] = Effect.fn(
-    "PeerForwarding.waitForThread",
-  )(function* (scope, environmentId, input) {
-    let remaining = Math.min(
-      MAX_WAIT_TIMEOUT_MS,
-      Math.max(1, input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS),
-    );
-    let runId = input.runId;
-    while (true) {
-      const chunk = Math.min(remaining, FORWARDED_WAIT_CHUNK_MS);
-      const result = yield* forward<OrchestratorMcpThreadWaitResult>(
-        scope,
-        "t3_thread_wait",
-        OrchestratorMcpThreadWaitInput,
-        OrchestratorMcpThreadWaitResult,
-        environmentId,
-        {
-          threadId: input.threadId,
-          ...(runId === undefined ? {} : { runId }),
-          timeoutMs: chunk,
-          ...(input.untilDelegatedWorkSettled === undefined
-            ? {}
-            : { untilDelegatedWorkSettled: input.untilDelegatedWorkSettled }),
-        },
+  const waitForThread: PeerForwarding["Service"]["waitForThread"] = (scope, environmentId, input) =>
+    Effect.gen(function* () {
+      let remaining = Math.min(
+        MAX_WAIT_TIMEOUT_MS,
+        Math.max(1, input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS),
       );
-      remaining -= chunk;
-      if (!result.timedOut || remaining <= 0) return result;
-      // Later pieces wait for the run the first one picked, not a newer one.
-      runId = result.runId ?? undefined;
-    }
-  });
-
-  // While the beta is off, agents start nothing over links. Tasks already running there keep
-  // following through readThread, waitForThread and interruptThread, so they still finish.
-  const requireEnabled = links.enabled.pipe(
-    Effect.flatMap((enabled) => (enabled ? Effect.void : Effect.fail(linkedEnvironmentsOff))),
-  );
-
-  const call: PeerForwarding["Service"]["call"] = (scope, tool, environmentId, params) => {
-    const forwarded: Effect.Effect<
-      Tool.Success<typeof tool>,
-      OrchestratorMcpFailure
-    > = tool.name === "t3_thread_wait"
-      ? (waitForThread(
+      let runId = input.runId;
+      while (true) {
+        const chunk = Math.min(remaining, FORWARDED_WAIT_CHUNK_MS);
+        const result = yield* forward<OrchestratorMcpThreadWaitResult>(
           scope,
+          "t3_thread_wait",
+          OrchestratorMcpThreadWaitInput,
+          OrchestratorMcpThreadWaitResult,
           environmentId,
-          params as OrchestratorMcpThreadWaitInput,
-        ) as Effect.Effect<Tool.Success<typeof tool>, OrchestratorMcpFailure>)
-      : forward(scope, tool.name, tool.parametersSchema, tool.successSchema, environmentId, params);
-    return Effect.andThen(requireEnabled, forwarded);
-  };
+          { threadId: input.threadId, ...(runId === undefined ? {} : { runId }), timeoutMs: chunk },
+        );
+        remaining -= chunk;
+        if (!result.timedOut || remaining <= 0) return result;
+        // Later pieces wait for the run the first one picked, not a newer one.
+        runId = result.runId ?? undefined;
+      }
+    });
 
-  /**
-   * The next step for an agent whose machine is not linked: without it, an
-   * empty list reads as a dead end and agents go looking elsewhere.
-   */
-  const NOT_LISTED =
-    "Not listed: not linked yet. Call t3_environment_link with a hint from the user's words.";
-
-  const listLinks: PeerForwarding["Service"]["links"] = Effect.fn("PeerForwarding.listLinks")(
-    function* (scope) {
-      yield* callerLimits(scope);
-      yield* requireEnabled;
-      const listed = yield* links.list.pipe(
-        Effect.mapError(
-          (error) =>
-            new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
-        ),
-      );
-      return {
+  const listLinks: PeerForwarding["Service"]["links"] = (scope) =>
+    links.list.pipe(
+      Effect.mapError(
+        (error) =>
+          new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
+      ),
+      Effect.map((listed) => ({
         environmentId: scope.environmentId,
         links: listed.map((link) => ({
           environmentId: link.environmentId,
@@ -258,13 +252,12 @@ const make = Effect.gen(function* () {
           expiresAt: DateTime.formatIso(link.expiresAt),
           lastError: link.lastError,
         })),
-        notListed: NOT_LISTED,
-      };
-    },
-  );
+      })),
+    );
 
   return PeerForwarding.of({
     call,
+    route,
     readThread,
     interruptThread,
     waitForThread,

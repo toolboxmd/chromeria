@@ -6,6 +6,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
+import { clientModeCeiling } from "./McpInvocationContext.ts";
 import type { Caller } from "./threadAccess.ts";
 
 /**
@@ -17,7 +18,9 @@ import type { Caller } from "./threadAccess.ts";
 
 /** The link a caller acts for: its own session, or the link that started its thread. */
 export const callerLinkOrigin = (
-  caller: Pick<Caller, "scope" | "caller">,
+  caller: Pick<Caller, "scope"> & {
+    readonly caller: Pick<OrchestrationV2ThreadShell, "linkOrigin"> | undefined;
+  },
 ): OrchestrationV2LinkOrigin | undefined =>
   caller.caller?.linkOrigin ??
   (caller.scope.client?.linked === true

@@ -22,6 +22,9 @@ export function spectrumRegistrationPlan(
         if (
           current.deletedAt !== null ||
           current.projectId !== caller.projectId ||
+          current.runtimeMode !== caller.runtimeMode ||
+          current.interactionMode !== caller.interactionMode ||
+          current.linkOrigin?.sessionId !== caller.linkOrigin?.sessionId ||
           threadOwner(current) !== threadOwner(caller)
         )
           return yield* new ForkCommitGuardRejected({ threadId, kind: "state_conflict" });

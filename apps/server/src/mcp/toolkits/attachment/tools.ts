@@ -1,3 +1,4 @@
+import * as McpRouting from "../../McpRouting.ts";
 import { McpAttachmentInput } from "./input.ts";
 import {
   AttachmentCreateUploadUrlInput,
@@ -34,14 +35,14 @@ const shared = {
 const AttachmentUploadTool = Tool.make("t3_attachment_prepare_upload", {
   ...shared,
   description:
-    "Get an upload URL. POST the file's exact bytes to `relativeUrl` on this MCP server's HTTP origin, then send via `t3_thread_send_attachments` with the returned `attachmentId`.",
-  parameters: Schema.Struct({ upload: AttachmentCreateUploadUrlInput }),
+    "Get an upload URL. POST the file's exact bytes to `relativeUrl` on the returned `uploadOrigin`, or on this MCP server's HTTP origin when none is returned, then send via `t3_thread_send_attachments` with the returned `attachmentId`.",
+  parameters: McpRouting.parameters(Schema.Struct({ upload: AttachmentCreateUploadUrlInput })),
   success: AttachmentCreateUploadUrlResult,
 }).annotate(Tool.Destructive, true);
 const AttachmentDiscardTool = Tool.make("t3_attachment_discard", {
   ...shared,
   description: "Discard a pending upload (not a sent attachment).",
-  parameters: AttachmentDeleteInput,
+  parameters: McpRouting.parameters(AttachmentDeleteInput),
   success: Schema.Struct({}),
 }).annotate(Tool.Destructive, true);
 const AttachmentSendTool = Tool.make("t3_thread_send_attachments", {
@@ -49,14 +50,14 @@ const AttachmentSendTool = Tool.make("t3_thread_send_attachments", {
   dependencies: [...shared.dependencies, DocumentText.DocumentText],
   description:
     "Send uploaded attachments as a new message to a thread. A descendant agent's send to an ordinary ancestor is a child notice queued behind active work, without steering its turn; Stopped ancestors stay stopped. No retry key. Target modes cannot exceed yours. Success does not mean the provider read them or finished.",
-  parameters: Schema.Struct({
+  parameters: McpRouting.parameters(Schema.Struct({
     threadId: Schema.optional(ThreadId),
     message: Schema.optional(Schema.String.check(Schema.isMaxLength(120000))),
     attachments: Schema.Array(McpAttachmentInput).check(
       Schema.isMinLength(1),
       Schema.isMaxLength(8),
     ),
-  }),
+  })),
   success: Schema.Struct({
     threadId: ThreadId,
     messageId: MessageId,
