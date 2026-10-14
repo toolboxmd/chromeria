@@ -6,7 +6,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import * as ChildProcess from "effect/process/ChildProcess";
-import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { collectUint8StreamText } from "@t3tools/provider-core/server/collectStreamText";
 import { BareLaunchError, writeBareConfig } from "@t3tools/provider-core/server/bareLaunch";
 import { linkBareAuth, nativeHome } from "@t3tools/provider-core/server/BareProviderRuntime";
@@ -66,14 +66,17 @@ const Inventory = Schema.Struct({
     }),
   ),
 });
-export type GrokBareInventory = typeof Inventory.Type;
-export function grokBareConfig(
+const decodeInventory = Schema.decodeEffect(Schema.fromJsonString(Inventory));
+const encodeNames = Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)));
+const encodeValue = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+type GrokBareInventory = typeof Inventory.Type;
+function grokBareConfig(
   home: string,
   realHome: string,
   skills: ReadonlyArray<string>,
   plugins: ReadonlyArray<string>,
 ): string {
-  return `[workflows]\nenabled = false\n[skills]\nignore = ${Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)))([`${home}/bundled`, `${realHome}/.agents/skills`])}\ndisabled = ${Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)))([...skills].sort())}\n[plugins]\ndisabled = ${Schema.encodeSync(Schema.fromJsonString(Schema.Array(Schema.String)))([...plugins].sort())}\n[compat.claude]\nskills = false\nrules = false\nagents = false\nmcps = false\nhooks = false\n[compat.cursor]\nskills = false\nrules = false\nagents = false\nmcps = false\nhooks = false\n[compat.codex]\nskills = false\nhooks = false\n[memory]\nenabled = false\n[memory_v2]\nenabled = false\n[subagents]\nenabled = false\n[features]\nsubagent_bundle = false\ntitle_refresh = false\n`;
+  return `[workflows]\nenabled = false\n[skills]\nignore = ${encodeNames([`${home}/bundled`, `${realHome}/.agents/skills`])}\ndisabled = ${encodeNames([...skills].sort())}\n[plugins]\ndisabled = ${encodeNames([...plugins].sort())}\n[compat.claude]\nskills = false\nrules = false\nagents = false\nmcps = false\nhooks = false\n[compat.cursor]\nskills = false\nrules = false\nagents = false\nmcps = false\nhooks = false\n[compat.codex]\nskills = false\nhooks = false\n[memory]\nenabled = false\n[memory_v2]\nenabled = false\n[subagents]\nenabled = false\n[features]\nsubagent_bundle = false\ntitle_refresh = false\n`;
 }
 export function grokInventoryStable(
   inventory: GrokBareInventory,
@@ -101,24 +104,17 @@ export const prepareGrokBare = Effect.fn("GrokBareRuntime.prepare")(function* (i
   cwd: string;
   environment: NodeJS.ProcessEnv;
   binary: string;
-  spawner: ChildProcessSpawner.ChildProcessSpawner["Service"];
 }) {
   const fs = yield* FileSystem.FileSystem;
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const path = yield* Path.Path;
   const home = input.home;
   const source = nativeHome(input.environment, "GROK_HOME", ".grok");
   yield* fs.makeDirectory(home, { recursive: true, mode: 0o700 });
+  yield* fs.chmod(home, 0o700);
   yield* linkBareAuth(path.join(source, "auth.json"), path.join(home, "auth.json"));
-  const lock = path.join(home, "auth.json.lock");
-  if (!(yield* fs.exists(lock))) {
-    // The native lock may not exist between refreshes. Keep its shared identity anyway.
-    yield* fs.symlink(path.join(source, "auth.json.lock"), lock).pipe(
-      Effect.catchIf(
-        (error) => error.reason._tag === "AlreadyExists",
-        () => Effect.void,
-      ),
-    );
-  }
+  // Native refresh owns this lock; its path can be absent between refreshes.
+  yield* linkBareAuth(path.join(source, "auth.json.lock"), path.join(home, "auth.json.lock"), true);
   const environment = {
     ...input.environment,
     GROK_HOME: home,
@@ -130,7 +126,7 @@ export const prepareGrokBare = Effect.fn("GrokBareRuntime.prepare")(function* (i
   const plugins = new Set<string>();
   const inspect = Effect.scoped(
     Effect.gen(function* () {
-      const process = yield* input.spawner.spawn(
+      const process = yield* spawner.spawn(
         ChildProcess.make(input.binary || "grok", ["inspect", "--json"], {
           cwd: input.cwd,
           env: environment,
@@ -150,7 +146,7 @@ export const prepareGrokBare = Effect.fn("GrokBareRuntime.prepare")(function* (i
           reason: "Grok bare native inventory failed or exceeded its bound.",
         });
       void err;
-      return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Inventory))(out.text).pipe(
+      return yield* decodeInventory(out.text).pipe(
         Effect.mapError(
           (cause) =>
             new BareLaunchError({
@@ -196,6 +192,7 @@ export const prepareGrokBare = Effect.fn("GrokBareRuntime.prepare")(function* (i
   });
 }, Effect.provide(Path.layer));
 const HistoryEntry = Schema.Struct({ type: Schema.String, content: Schema.Unknown });
+const decodeHistoryEntry = Schema.decodeEffect(Schema.fromJsonString(HistoryEntry));
 /** Read the native history, rather than mistaking prompt_context for the whole input. */
 export const grokBareHistoryEvidence = Effect.fn("GrokBareRuntime.history")(function* (
   home: string,
@@ -208,7 +205,7 @@ export const grokBareHistoryEvidence = Effect.fn("GrokBareRuntime.history")(func
   if (info.size > BigInt(4 * 1024 * 1024)) return [];
   const text = yield* fs.readFileString(record);
   const entries = yield* Effect.forEach(text.split("\n").filter(Boolean), (line) =>
-    Schema.decodeUnknownEffect(Schema.fromJsonString(HistoryEntry))(line),
+    decodeHistoryEntry(line),
   );
   const hash = (value: string) => bytesToHex(sha256(new TextEncoder().encode(value)));
   const system = entries.filter((entry) => entry.type === "system");
@@ -220,18 +217,14 @@ export const grokBareHistoryEvidence = Effect.fn("GrokBareRuntime.history")(func
       status: system.every((entry) => entry.content === ".")
         ? "observed_retained"
         : "observed_unexpected",
-      identities: system.map((entry) =>
-        hash(Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))(entry.content)),
-      ),
+      identities: system.map((entry) => hash(encodeValue(entry.content))),
       source: record,
     });
   if (reminders.length > 0)
     evidence.push({
       category: "instructions",
       status: "observed_unexpected",
-      identities: reminders.map((entry) =>
-        hash(Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))(entry.content)),
-      ),
+      identities: reminders.map((entry) => hash(encodeValue(entry.content))),
       source: record,
     });
   return evidence;

@@ -5,6 +5,7 @@ import {
   prepareOpenCodeBareEnvironment,
 } from "@t3tools/provider-core/server/BareProviderRuntime";
 import {
+  BareLaunchError,
   bareReceipt,
   bareInventoryEvidence,
   namesT3Mcp,
@@ -751,7 +752,7 @@ export function openCodePermissionRules(
   ];
   if ((plan?.agent ?? (policy.interactionMode === "plan" ? "plan" : "build")) === "plan") {
     const action =
-      [...filtered].reverse().find((rule) => rule.permission === "edit" && rule.pattern === "*")
+      filtered.toReversed().find((rule) => rule.permission === "edit" && rule.pattern === "*")
         ?.action ?? "ask";
     filtered.push(
       { permission: "edit", pattern: "*", action: "deny" },
@@ -1039,7 +1040,9 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             return yield* new ProviderAdapter.ProviderAdapterOpenSessionError({
               driver: OPENCODE_PROVIDER,
               providerSessionId: input.providerSessionId,
-              cause: `Bare OpenCode agent ${effectiveAgent} is unsupported; choose build or plan.`,
+              cause: new BareLaunchError({
+                reason: `Bare OpenCode agent ${effectiveAgent} is unsupported; choose build or plan.`,
+              }),
             });
           environment = yield* prepareOpenCodeBareEnvironment({
             home,
@@ -1070,9 +1073,14 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           Effect.provide(Path.layer),
         );
         const permissions = (policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy) =>
+          permissionsFor(policy, input.modelSelection);
+        const permissionsFor = (
+          policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
+          selection: ModelSelection,
+        ) =>
           openCodePermissionRules(policy, {
             agent:
-              getModelSelectionStringOptionValue(input.modelSelection, "agent") ??
+              getModelSelectionStringOptionValue(selection, "agent") ??
               (policy.interactionMode === "plan" ? "plan" : "build"),
             plansDirectory,
             plansPattern,
@@ -1136,10 +1144,15 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 detail: `OpenCode bare ${name} prompt or tool restriction is missing.`,
               });
           }
-          if ((config.instructions?.length ?? 0) > 0 || (config.plugin?.length ?? 0) > 0)
+          if (
+            config.agent?.title?.disable !== true ||
+            (config.instructions?.length ?? 0) > 0 ||
+            (config.plugin?.length ?? 0) > 0
+          )
             return yield* new OpenCodeRuntime.OpenCodeRuntimeError({
               operation: "bare.config",
-              detail: "OpenCode bare has unexpected instruction or plugin identities.",
+              detail:
+                "OpenCode bare title suppression, instructions or plugins differ from its isolated config.",
             });
           const status = unwrapData(
             "mcp.status",
@@ -3377,6 +3390,25 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                   `OpenCode provider thread ${turnInput.providerThread.id} already has an active turn`,
                 );
               }
+              const agent =
+                getModelSelectionStringOptionValue(turnInput.modelSelection, "agent") ??
+                (turnInput.runtimePolicy.interactionMode === "plan" ? "plan" : undefined);
+              if (bare !== undefined) {
+                effectiveAgent = agent ?? "build";
+                if (effectiveAgent !== "build" && effectiveAgent !== "plan")
+                  return yield* new BareLaunchError({
+                    reason: `Bare OpenCode agent ${effectiveAgent} is unsupported.`,
+                  });
+                // An existing session may move between build and plan. Its
+                // session rules override agent defaults, so reconcile the
+                // current plan restriction before every prompt, including resume.
+                yield* sdkCall("session.update", { sessionID: sessionId }, () =>
+                  client.session.update({
+                    sessionID: sessionId,
+                    permission: permissionsFor(turnInput.runtimePolicy, turnInput.modelSelection),
+                  }),
+                );
+              }
               const parsedModel = OpenCodeRuntime.parseOpenCodeModelSlug(
                 turnInput.modelSelection.model,
               );
@@ -3506,20 +3538,6 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               ]
                 .filter(Boolean)
                 .join("\n\n");
-              const agent =
-                getModelSelectionStringOptionValue(turnInput.modelSelection, "agent") ??
-                (turnInput.runtimePolicy.interactionMode === "plan" ? "plan" : undefined);
-              if (turnInput.runtimePolicy.bare !== undefined) {
-                effectiveAgent = agent ?? "build";
-                if (effectiveAgent !== "build" && effectiveAgent !== "plan")
-                  return yield* new ProviderAdapter.ProviderAdapterTurnStartError({
-                    driver: OPENCODE_PROVIDER,
-                    threadId: turnInput.threadId,
-                    providerThreadId: turnInput.providerThread.id,
-                    runId: turnInput.runId,
-                    cause: `Bare OpenCode agent ${effectiveAgent} is unsupported.`,
-                  });
-              }
               const variant = getModelSelectionStringOptionValue(
                 turnInput.modelSelection,
                 "variant",

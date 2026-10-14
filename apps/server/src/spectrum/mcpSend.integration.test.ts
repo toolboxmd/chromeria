@@ -16,9 +16,10 @@ const runtime = Layer.fresh(
   Layer.mergeAll(
     Plans.layer.pipe(Layer.provide(base)),
     Mcp.layer.pipe(Layer.provide(base)),
-    Launch.layer
-      .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
-      .pipe(Layer.provideMerge(base)),
+    Launch.layer.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+      Layer.provideMerge(base),
+    ),
   ),
 );
 it.effect(

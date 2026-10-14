@@ -1588,16 +1588,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 run.ordinal <= latestHandoffRun.ordinal,
             );
       const needsFullContext = deliveryProviderThread.nativeThreadRef === null;
-      if (projection.thread.bare !== undefined && needsFullContext)
+      const legacyImportItems =
+        projection.thread.historyOrigin === "v1_import"
+          ? yield* readHandoffItems(threadId, [null])
+          : [];
+      if (
+        projection.thread.bare !== undefined &&
+        needsFullContext &&
+        (coveredRuns.length > 0 || legacyImportItems.length > 0)
+      )
         return yield* new OrchestratorDispatchError({
           commandId,
           commandType: "message.dispatch",
           cause: "bare history transfer unsupported",
         });
-      const legacyImportItems =
-        projection.thread.historyOrigin === "v1_import"
-          ? yield* readHandoffItems(threadId, [null])
-          : [];
       const handoffStrategy = needsFullContext
         ? ("full_thread_summary" as const)
         : ("delta_since_target_last_seen" as const);

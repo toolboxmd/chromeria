@@ -176,9 +176,10 @@ it.effect(
         assert.strictEqual(normalInterruptCalls, 1);
       }).pipe(
         Effect.provide(
-          Mcp.layer
-            .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
-            .pipe(Layer.provide(dependencies)),
+          Mcp.layer.pipe(
+            Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+            Layer.provide(dependencies),
+          ),
         ),
         Effect.provideService(SpectrumMcpInterrupt, {
           interrupt: (_threads, request) =>

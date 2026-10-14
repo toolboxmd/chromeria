@@ -246,6 +246,30 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
       Effect.orElseSucceed(() => DEFAULT_HANDOFF_TOKEN_CAP),
     );
 
+    const assertHistoryAllowed = Effect.fn("ContextHandoff.assertHistoryAllowed")(
+      function* (input: {
+        readonly threadId: ThreadId;
+        readonly targetRunId: RunId;
+        readonly toProviderThreadId: ProviderThreadId;
+        readonly fromProviderThreadIds?: ReadonlyArray<ProviderThreadId>;
+      }) {
+        const thread = yield* projections.getThread(input.threadId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ContextHandoffPrepareError({
+                threadId: input.threadId,
+                targetRunId: input.targetRunId,
+                fromProviderThreadIds: input.fromProviderThreadIds ?? [],
+                toProviderThreadId: input.toProviderThreadId,
+                cause,
+              }),
+          ),
+        );
+        if (thread.bare !== undefined)
+          return yield* new BareHistoryTransferUnsupported({ threadId: input.threadId });
+      },
+    );
+
     const prepareLegacyImport = Effect.fn("orchestrationV2.contextHandoff.prepareLegacyImport")(
       function* (input: {
         readonly threadId: ThreadId;
@@ -255,6 +279,7 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
         readonly items: ReadonlyArray<OrchestrationV2TurnItem>;
         readonly createdAt: DateTime.Utc;
       }) {
+        yield* assertHistoryAllowed(input);
         const handoffId = yield* idAllocator.allocate
           .contextHandoff({
             threadId: input.threadId,
@@ -313,6 +338,7 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
       readonly fromProviderThreadIds: ReadonlyArray<ProviderThreadId>;
       readonly toProviderThreadId: ProviderThreadId;
     }) {
+      yield* assertHistoryAllowed(input);
       const now = yield* DateTime.now;
       const handoffId = yield* idAllocator.allocate
         .contextHandoff({
@@ -364,6 +390,8 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
         readonly deltaItems: ReadonlyArray<OrchestrationV2TurnItem>;
         readonly createdAt: DateTime.Utc;
       }) {
+        yield* assertHistoryAllowed({ ...input, threadId: input.targetThreadId });
+        yield* assertHistoryAllowed({ ...input, threadId: input.sourceThreadId });
         const handoffId = yield* idAllocator.allocate
           .contextHandoff({
             threadId: input.targetThreadId,
@@ -439,20 +467,7 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
       readonly items: ReadonlyArray<OrchestrationV2TurnItem>;
       readonly createdAt: DateTime.Utc;
     }) {
-      const thread = yield* projections.getThread(input.threadId).pipe(
-        Effect.mapError(
-          (cause) =>
-            new ContextHandoffPrepareError({
-              threadId: input.threadId,
-              targetRunId: input.targetRunId,
-              fromProviderThreadIds: input.fromProviderThreadIds,
-              toProviderThreadId: input.toProviderThreadId,
-              cause,
-            }),
-        ),
-      );
-      if (thread.bare !== undefined)
-        return yield* new BareHistoryTransferUnsupported({ threadId: thread.id });
+      yield* assertHistoryAllowed(input);
       const handoffId = yield* idAllocator.allocate
         .contextHandoff({
           threadId: input.threadId,

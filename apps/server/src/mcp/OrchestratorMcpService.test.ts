@@ -47,13 +47,12 @@ import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import * as DelegatedTaskModes from "./delegatedTaskModes.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
-const layerOrchestratorService = OrchestratorMcpService.layer
-  .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
-  .pipe(
-    Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
-    Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
-    Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
-  );
+const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
+  Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+  Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+  Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+  Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+);
 import { restartCutView } from "@t3tools/shared/restartCut";
 
 describe("OrchestratorMcpService", () => {

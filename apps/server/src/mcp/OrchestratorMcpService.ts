@@ -1,3 +1,4 @@
+import type { BareReadGrant } from "../orchestration-v2/bareReadGrant.ts";
 import * as BareRuntime from "@t3tools/provider-core/server/bareLaunch";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import { callerLinkOrigin, assertSameLink } from "./linkOrigin.ts";
@@ -888,6 +889,18 @@ const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
 
+  const bareTarget = Effect.fnUntraced(function* (selection: ModelSelection) {
+    const adapter = yield* providerAdapters
+      .get(selection.instanceId)
+      .pipe(Effect.mapError(() => failure("provider_unavailable", "Bare adapter unavailable.")));
+    const support =
+      adapter.bareSupport === undefined
+        ? BareRuntime.unsupportedBare(adapter.driver)
+        : yield* adapter.bareSupport;
+    if (!support.supported) return yield* failure("provider_unavailable", support.reason);
+    return selection;
+  });
+
   /** A caller-named project, which must exist before anything is recorded against it. */
   const requireProject = (projectId: ProjectId) =>
     projects.getById(projectId).pipe(
@@ -902,6 +915,21 @@ const make = Effect.gen(function* () {
         }),
       ),
     );
+
+  const scheduledBareGrant = Effect.fn("OrchestratorMcp.scheduledBareGrant")(function* (
+    parent: Pick<OrchestrationV2ThreadProjection, "thread"> | undefined,
+    mode: RuntimeMode,
+  ): Effect.fn.Return<BareReadGrant, OrchestratorMcpFailure> {
+    if (mode === "full-access") return { type: "all" };
+    if (parent === undefined) return { type: "roots", roots: [] };
+    return {
+      type: "roots",
+      roots: [
+        parent.thread.worktreePath ??
+          (yield* requireProject(parent.thread.projectId)).workspaceRoot,
+      ],
+    };
+  });
 
   /** A client has no thread to inherit a model from, so it falls back to the project default. */
   const projectDefaultModelSelection = (
@@ -1822,10 +1850,16 @@ const make = Effect.gen(function* () {
                 }),
               }),
         };
+        const bareReadGrant =
+          input.bare === undefined
+            ? undefined
+            : yield* scheduledBareGrant(parent, limits.runtimeMode);
         const { task } = yield* forkTasks
           .schedule(
             { input, projectId, parent, bindToCurrentThread, scope },
-            scheduledTasks.upsert,
+            bareReadGrant === undefined
+              ? scheduledTasks.upsert
+              : (request) => scheduledTasks.upsert(request, { bareReadGrant }),
           )(upsertInput)
           .pipe(
             Effect.mapError((error) =>
@@ -1900,10 +1934,16 @@ const make = Effect.gen(function* () {
           createdBy: existing.createdBy,
           creationSource: existing.creationSource,
         };
+        const bareReadGrant =
+          input.bare === undefined
+            ? undefined
+            : yield* scheduledBareGrant(parent, limits.runtimeMode);
         const { task } = yield* forkTasks
           .update(
             { input, existing, threadId, parent },
-            scheduledTasks.upsert,
+            bareReadGrant === undefined
+              ? scheduledTasks.upsert
+              : (request) => scheduledTasks.upsert(request, { bareReadGrant }),
           )(upsertInput)
           .pipe(
             Effect.mapError((error) =>
@@ -2240,9 +2280,14 @@ const make = Effect.gen(function* () {
                       runtimeTarget = resolved;
                       return resolved.modelSelection;
                     }),
+                    Effect.flatMap((selection) =>
+                      input.bare === undefined ? Effect.succeed(selection) : bareTarget(selection),
+                    ),
                   )
               : undefined,
         });
+        if (input.bare !== undefined && !isRetryOfAcceptedDelegation)
+          yield* bareTarget(target.modelSelection);
         const runtimeMode = yield* resolveRuntimeMode(
           parent.thread.runtimeMode,
           input.runtimeMode,
@@ -2267,20 +2312,25 @@ const make = Effect.gen(function* () {
             );
           workspaceStrategy = { type: "worktree", baseRef: base.commitSha, startFromOrigin: false };
         }
-        const preparedBare =
+        const bareDestination =
           input.bare === undefined || isRetryOfAcceptedDelegation
+            ? undefined
+            : yield* requireProject(input.projectId ?? parent.thread.projectId);
+        const preparedBare =
+          input.bare === undefined || bareDestination === undefined
             ? undefined
             : yield* bareLaunch
                 .prepare({
                   request: input.bare,
                   instanceId: target.modelSelection.instanceId,
-                  projectRoot: (yield* requireProject(input.projectId ?? parent.thread.projectId))
-                    .workspaceRoot,
+                  projectRoot: bareDestination.workspaceRoot,
                   workspaceStrategy:
                     workspaceStrategy ??
                     input.workspaceStrategy ??
                     (input.projectId !== undefined && input.projectId !== parent.thread.projectId
-                      ? { type: "root" }
+                      ? bareDestination.defaultThreadEnvMode === "worktree"
+                        ? { type: "worktree", baseRef: "HEAD" }
+                        : { type: "root" }
                       : parent.thread.worktreePath === null
                         ? { type: "root", branch: parent.thread.branch ?? undefined }
                         : {
@@ -2354,6 +2404,13 @@ const make = Effect.gen(function* () {
         }
         const taskId = taskEvent.event.payload.id;
         const childThreadId = taskEvent.event.payload.childThreadId;
+        if (input.bare !== undefined && isRetryOfAcceptedDelegation && childThreadId !== null) {
+          const child = yield* threadManagement
+            .getThreadRecords(childThreadId, [])
+            .pipe(Effect.mapError(threadManagementFailure));
+          if ((input.bare !== undefined) !== (child.thread.bare !== undefined))
+            return yield* failure("invalid_request", "Delegation bare intent changed.");
+        }
         const childRunEvent = result.storedEvents.find(
           (stored) =>
             stored.event.type === "run.created" && stored.event.threadId === childThreadId,
@@ -2645,8 +2702,21 @@ const make = Effect.gen(function* () {
                 title: request.title,
                 index,
               });
-              const bare =
-                request.bare === undefined
+              const wasAccepted =
+                request.bare !== undefined &&
+                (yield* threadManagement.hasReceipt(
+                  stableCommandId({ scope, requestKey: key, operation: "create-thread", index }),
+                ));
+              const storedBare = wasAccepted
+                ? (yield* threadManagement
+                    .getThreadRecords(threadId, [])
+                    .pipe(Effect.mapError(threadManagementFailure))).thread.bare
+                : undefined;
+              if (wasAccepted && (request.bare !== undefined) !== (storedBare !== undefined))
+                return yield* failure("invalid_request", "Thread bare intent changed.");
+              const bare = wasAccepted
+                ? storedBare
+                : request.bare === undefined
                   ? undefined
                   : yield* bareLaunch
                       .resolve({
@@ -2656,7 +2726,7 @@ const make = Effect.gen(function* () {
                           parent.thread.worktreePath ??
                           (yield* requireProject(parent.thread.projectId)).workspaceRoot,
                         readGrant:
-                          runtimeMode === "full-access"
+                          parent.thread.runtimeMode === "full-access"
                             ? { type: "all" }
                             : {
                                 type: "roots",

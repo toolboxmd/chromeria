@@ -93,9 +93,10 @@ const decodeToolsListPayload = Schema.decodeUnknownEffect(ToolsListPayload);
 it.effect("production mcp layer lists worktree tools over http", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const layerRoutes = McpHttpServer.layer
-        .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
-        .pipe(Layer.provide(McpSessionRegistry.layer));
+      const layerRoutes = McpHttpServer.layer.pipe(
+        Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+        Layer.provide(McpSessionRegistry.layer),
+      );
       yield* HttpRouter.serve(layerRoutes, {
         disableListenLog: true,
         disableLogger: true,

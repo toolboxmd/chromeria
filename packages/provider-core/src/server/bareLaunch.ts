@@ -99,6 +99,7 @@ export function bareReceipt(input: {
   };
 }
 export function bareNoticeMessage(receipt: BareReceipt): string {
+  const bounds = [256, 224, 320, 256, 320, 180, 256, 100];
   return [
     `Bare launch. Admitted permissions: ${receipt.permissions.admitted}; effective: ${receipt.permissions.effective}.`,
     `Planned removal: ${receipt.planned.removes.join(", ")}.`,
@@ -114,10 +115,13 @@ export function bareNoticeMessage(receipt: BareReceipt): string {
       .filter((e) => e.status === "unobserved")
       .map((e) => e.category)
       .join(", ")}.`,
-    `Native record: ${receipt.nativeRecord.root ?? "unknown"}; session ${receipt.nativeRecord.sessionId ?? "unknown"}.`,
+    `Native record: ${receipt.nativeRecord.root ?? "unknown"}.`,
+    `Native session: ${receipt.nativeRecord.sessionId ?? "unknown"}.`,
   ]
-    .join("\n")
-    .slice(0, 2000);
+    .map((line, index) =>
+      line.length <= bounds[index]! ? line : `${line.slice(0, bounds[index]! - 3)}...`,
+    )
+    .join("\n");
 }
 
 /** Inventories describe identities only; absence of an inventory stays unobserved. */

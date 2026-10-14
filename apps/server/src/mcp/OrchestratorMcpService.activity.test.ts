@@ -33,13 +33,12 @@ import { restartCutView } from "@t3tools/shared/restartCut";
 import type * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 
-const layerOrchestratorService = OrchestratorMcpService.layer
-  .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
-  .pipe(
-    Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
-    Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
-    Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
-  );
+const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
+  Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+  Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+  Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+  Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+);
 
 const environmentId = EnvironmentId.make("environment-mcp-orchestrator-detail");
 const projectId = ProjectId.make("project-mcp-orchestrator-detail");

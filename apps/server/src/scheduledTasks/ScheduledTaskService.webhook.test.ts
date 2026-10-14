@@ -107,9 +107,10 @@ const withService = <A, E>(
       return yield* body({ service, launches, secretsByRef });
     }).pipe(
       Effect.provide(
-        ScheduledTaskService.layer
-          .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
-          .pipe(Layer.provide(layerDependencies)),
+        ScheduledTaskService.layer.pipe(
+          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+          Layer.provide(layerDependencies),
+        ),
       ),
     );
   }).pipe(Effect.provide(SqlitePersistence.layerMemory));

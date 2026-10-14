@@ -229,7 +229,7 @@ function makeHarness(options: HarnessOptions = {}) {
       }),
   );
   const bareLayer = options.bare
-    ? BareLaunch.layer.pipe(
+    ? Layer.fresh(BareLaunch.layer).pipe(
         Layer.provide(Layer.mergeAll(layerRegistry, layerExternalServices)),
         Layer.provide(NodeServices.layer),
       )
@@ -273,6 +273,7 @@ function makeHarness(options: HarnessOptions = {}) {
     ),
   );
   return {
+    bareLayer,
     layer: Layer.mergeAll(
       layerRegistry,
       layerLaunch,
@@ -348,18 +349,17 @@ it.effect.each(
   "attributes $createdBy-configured automations in $target threads without changing their prompt",
   ({ target, createdBy }) => {
     const harness = makeHarness();
-    const layerScheduledTasks = ScheduledTasks.layer
-      .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
-      .pipe(
-        Layer.provide(
-          Layer.mergeAll(
-            harness.layer,
-            NodeCrypto.layer,
-            Scheduler.layer,
-            Layer.mock(SecretRequests.SecretRequests)({}),
-          ),
+    const layerScheduledTasks = ScheduledTasks.layer.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+      Layer.provide(
+        Layer.mergeAll(
+          harness.layer,
+          NodeCrypto.layer,
+          Scheduler.layer,
+          Layer.mock(SecretRequests.SecretRequests)({}),
         ),
-      );
+      ),
+    );
     return Effect.gen(function* () {
       const tasks = yield* ScheduledTasks.ScheduledTaskService;
       const launches = yield* ThreadLaunch.ThreadLaunchService;
@@ -3438,21 +3438,21 @@ it.effect(
       Scheduler.layer,
       Layer.mock(SecretRequests.SecretRequests)({}),
     );
-    const tasksLayer = ScheduledTasks.layer
-      .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
-      .pipe(Layer.provideMerge(schedulerDeps));
-    const mcp = OrchestratorMcp.layer
-      .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
-      .pipe(
-        Layer.provideMerge(
-          Layer.mergeAll(
-            tasksLayer,
-            NodeServices.layer,
-            Layer.mock(GitVcsDriver.GitVcsDriver)({}),
-            Layer.mock(RemoteDelegation.RemoteDelegation)({}),
-          ),
+    const tasksLayer = ScheduledTasks.layer.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+      Layer.provideMerge(schedulerDeps),
+    );
+    const mcp = OrchestratorMcp.layer.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+      Layer.provideMerge(
+        Layer.mergeAll(
+          tasksLayer,
+          NodeServices.layer,
+          Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         ),
-      );
+      ),
+    );
     return Effect.gen(function* () {
       const origin = { sessionId: "peer-schedule", label: "Peer" };
       const scope: Invocation.McpInvocationScope = {
@@ -3506,9 +3506,10 @@ it.effect(
         assert.strictEqual(run.task.lastRunStatus, "succeeded");
       }).pipe(
         Effect.provide(
-          ScheduledTasks.layer
-            .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
-            .pipe(Layer.provide(Layer.succeedContext(persistedServices))),
+          ScheduledTasks.layer.pipe(
+            Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+            Layer.provide(Layer.succeedContext(persistedServices)),
+          ),
         ),
       );
       const threads = yield* ThreadManagement.ThreadManagementService;
@@ -3606,6 +3607,7 @@ it.effect(
             workspace: { type: "worktree", baseRef: "main", branch: "bare-final" },
           }),
           runtimeMode: "approval-required" as const,
+          bareReadGrant: { type: "roots" as const, roots: [] },
           bare: { additions: [{ type: "file" as const, path: `${root}/input.txt` }] },
         };
         const result = yield* launches.launch(input);
@@ -3618,7 +3620,9 @@ it.effect(
         expect(result.projection.thread.runtimeMode).toBe("approval-required");
         expect(result.projection.thread.bare?.additions[0]).not.toHaveProperty("body");
         expect(h.createWorktree).toHaveBeenCalledTimes(1);
-        yield* launches.launch(input);
+        yield* fs.writeFileString(`${root}/input.txt`, "Changed after acceptance");
+        const replay = yield* launches.launch(input);
+        expect(replay.projection.thread.bare).toEqual(result.projection.thread.bare);
         expect(h.createWorktree).toHaveBeenCalledTimes(1);
       }).pipe(Effect.provide(h.layer));
     }).pipe(Effect.provide(NodeServices.layer)),
@@ -3663,4 +3667,120 @@ it.effect(
       expect(normal.projection.thread).not.toHaveProperty("bare");
     }).pipe(Effect.provide(h.layer));
   },
+);
+
+it.effect.each(["full-access", "approval-required"] as const)(
+  "MCP delegate and batch launches retain bare intent and the %s caller ceiling",
+  (mode) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      yield* fs.writeFileString(`${root}/named.txt`, "Named body");
+      const h = makeHarness({
+        bare: true,
+        serverSettings: {
+          prismRoles: { worker: { instructions: "UNASKED_ROLE_KIT", skills: ["unasked-skill"] } },
+        },
+        providers: [
+          {
+            instanceId: modelSelection.instanceId,
+            driver: ProviderDriverKind.make("codex"),
+            enabled: true,
+            installed: true,
+            version: "test",
+            checkedAt: "2026-10-14T00:00:00Z",
+            slashCommands: [],
+            skills: [],
+            status: "ready",
+            auth: { status: "authenticated" },
+            models: [
+              { slug: modelSelection.model, name: "Test", isCustom: false, capabilities: null },
+            ],
+          },
+        ],
+      });
+      const mcp = OrchestratorMcpService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            h.layer,
+            h.bareLayer,
+            NodeCrypto.layer,
+            Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+            Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
+            Layer.mock(SecretRequests.SecretRequests)({}),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const parentId = ThreadId.make("bare:mcp:parent");
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO projection_projects (project_id,title,workspace_root,scripts_json,created_at,updated_at)
+        VALUES (${projectId},${project.title},${project.workspaceRoot},'[]',${project.createdAt},${project.updatedAt})`;
+        yield* threads.dispatch({
+          ...launchInput({ command: "mcp:create-parent", thread: parentId }),
+          type: "thread.create",
+          runtimeMode: mode,
+          branch: null,
+          worktreePath: root,
+        });
+        yield* threads.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("mcp:start-parent"),
+          threadId: parentId,
+          messageId: MessageId.make("mcp:parent-input"),
+          text: "Launch children",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const scope: Invocation.McpInvocationScope = {
+          environmentId: EnvironmentId.make("bare:mcp"),
+          requestNamespace: "bare:mcp",
+          thread: {
+            threadId: parentId,
+            providerInstanceId: modelSelection.instanceId,
+            providerSessionId: "parent-session",
+          },
+          capabilities: new Set(["orchestration"]),
+          client: undefined,
+          issuedAt: 1,
+        };
+        const bare = { additions: [{ type: "file" as const, path: `${root}/named.txt` }] };
+        const intent = {
+          task: "Only the caller task",
+          role: "implementation" as const,
+          bare,
+          clientRequestId: "bare-delegate",
+          target: { providerInstanceId: modelSelection.instanceId, model: modelSelection.model },
+        };
+        const delegated = yield* service.delegateTask(scope, intent);
+        assert.isNotNull(delegated.childThreadId);
+        const child = yield* threads.getThreadProjection(delegated.childThreadId!);
+        expect(child.thread.runtimeMode).toBe(mode);
+        expect(child.thread.bare?.additions[0]).toMatchObject({ type: "file", byteCount: 10 });
+        expect(child.messages[0]?.text).toBe(intent.task);
+        const batchInput = {
+          clientRequestId: "bare-batch",
+          threads: [{ bare, prompt: "Batch task" }, { prompt: "Ordinary task" }],
+        };
+        const batch = yield* service.createThreads(scope, batchInput);
+        const bareBatch = yield* threads.getThreadProjection(batch.threads[0]!.threadId);
+        const normalBatch = yield* threads.getThreadProjection(batch.threads[1]!.threadId);
+        expect(bareBatch.thread.bare).toEqual(child.thread.bare);
+        expect(bareBatch.thread.runtimeMode).toBe(mode);
+        expect(bareBatch.messages[0]?.text).toBe("Batch task");
+        expect(normalBatch.thread).not.toHaveProperty("bare");
+        yield* fs.writeFileString(`${root}/named.txt`, "Changed after acceptance");
+        expect((yield* service.delegateTask(scope, intent)).taskId).toBe(delegated.taskId);
+        expect((yield* service.createThreads(scope, batchInput)).threads[0]!.threadId).toBe(
+          bareBatch.thread.id,
+        );
+        expect((yield* threads.getThreadProjection(child.thread.id)).thread.bare).toEqual(
+          child.thread.bare,
+        );
+      }).pipe(Effect.provide(Layer.merge(h.layer, mcp)));
+    }).pipe(Effect.provide(NodeServices.layer)),
 );

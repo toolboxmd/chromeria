@@ -423,6 +423,10 @@ export function makeGrokAcpAdapterFlavor(
   };
 }
 
+const decodeBareTools = Schema.decodeUnknownOption(
+  Schema.Struct({ _meta: Schema.Struct({ tools: Schema.Array(Schema.String) }) }),
+);
+
 export const makeGrokAdapterV2 = Effect.fn("makeGrokAdapterV2")(function* (
   options: GrokAdapterV2Options,
 ) {
@@ -483,9 +487,7 @@ export const makeGrokAdapterV2 = Effect.fn("makeGrokAdapterV2")(function* (
               ),
               onAvailableCommandsUpdate: (commands, notification) =>
                 Effect.gen(function* () {
-                  const decoded = Schema.decodeUnknownOption(
-                    Schema.Struct({ _meta: Schema.Struct({ tools: Schema.Array(Schema.String) }) }),
-                  )(notification?.update);
+                  const decoded = decodeBareTools(notification?.update);
                   const tools = Option.isSome(decoded) ? decoded.value._meta.tools : [];
                   const names = commands.map((command) => command.name);
                   const source = `Grok available_commands_update ${notification?.sessionId ?? "unknown"}; before session/prompt`;
@@ -530,9 +532,9 @@ export const makeGrokAdapterV2 = Effect.fn("makeGrokAdapterV2")(function* (
                     cwd,
                     environment: options.environment,
                     binary: options.settings.binaryPath || "grok",
-                    spawner: spawner,
                   }).pipe(
                     Effect.provideService(FileSystem.FileSystem, fileSystem),
+                    Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
                     Effect.mapError((cause) =>
                       fail(cause instanceof Error ? cause.message : "Grok bare discovery failed."),
                     ),

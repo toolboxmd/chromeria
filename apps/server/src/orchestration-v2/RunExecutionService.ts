@@ -1,3 +1,4 @@
+import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
 import { bareNoticeMessage } from "@t3tools/provider-core/server/bareLaunch";
 import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
 import * as StreamClock from "../prism/streamClock.ts";
@@ -1226,79 +1227,83 @@ export const layer: Layer.Layer<
             }
             return true;
           });
-          const writeBareReceipt = (beforeInference: boolean) =>
-            Effect.gen(function* () {
-              if (
-                input.appThread.bare === undefined ||
-                input.nativeThreadHasTurns === true ||
-                input.session.getBareReceipt === undefined
+          const writeBareReceipt = Effect.fn("RunExecution.writeBareReceipt")(function* (
+            beforeInference: boolean,
+          ) {
+            if (
+              input.appThread.bare === undefined ||
+              input.nativeThreadHasTurns === true ||
+              input.session.getBareReceipt === undefined
+            )
+              return;
+            const thread = yield* Ref.get(latestProviderThread);
+            const receipt = yield* input.session.getBareReceipt(thread);
+            if (
+              beforeInference &&
+              receipt.evidence.some(
+                (entry) =>
+                  entry.status === "observed_unexpected" &&
+                  ["tools", "mcp", "skills", "plugins", "slash_commands"].includes(entry.category),
               )
-                return;
-              const thread = yield* Ref.get(latestProviderThread);
-              const receipt = yield* input.session.getBareReceipt(thread);
-              if (
-                beforeInference &&
-                receipt.evidence.some(
-                  (entry) =>
-                    entry.status === "observed_unexpected" &&
-                    ["tools", "mcp", "skills", "plugins", "slash_commands"].includes(
-                      entry.category,
-                    ),
-                )
-              )
-                return yield* new RunExecutionStartError({
-                  commandId: input.commandId,
-                  runId: input.run.id,
-                  cause: "Bare runtime reported an unexpected removable identity before inference.",
-                });
-              const now = yield* DateTime.now;
-              yield* eventSink
-                .write({
-                  events: [
-                    {
-                      id: yield* idAllocator.allocate
-                        .event({ threadId: input.run.threadId })
-                        .pipe(
-                          Effect.mapError(
-                            (cause) => new RunExecutionIngestError({ runId: input.run.id, cause }),
-                          ),
+            )
+              return yield* new RunExecutionStartError({
+                commandId: input.commandId,
+                runId: input.run.id,
+                cause: new BareLaunchError({
+                  reason: `Bare runtime reported unexpected removable identities before inference: ${receipt.evidence
+                    .filter((entry) => entry.status === "observed_unexpected")
+                    .map((entry) => `${entry.category}: ${entry.identities.join(", ")}`)
+                    .join("; ")}.`,
+                }),
+              });
+            const now = yield* DateTime.now;
+            yield* eventSink
+              .write({
+                events: [
+                  {
+                    id: yield* idAllocator.allocate
+                      .event({ threadId: input.run.threadId })
+                      .pipe(
+                        Effect.mapError(
+                          (cause) => new RunExecutionIngestError({ runId: input.run.id, cause }),
                         ),
-                      type: "turn-item.updated",
+                      ),
+                    type: "turn-item.updated",
+                    threadId: input.run.threadId,
+                    runId: input.run.id,
+                    nodeId: input.rootNode.id,
+                    providerInstanceId: input.run.providerInstanceId,
+                    occurredAt: now,
+                    payload: {
+                      type: "system_notice",
+                      id: TurnItemId.make(
+                        `bare-receipt:${thread.id}:${thread.nativeThreadRef?.nativeId ?? "pending"}`,
+                      ),
                       threadId: input.run.threadId,
                       runId: input.run.id,
                       nodeId: input.rootNode.id,
-                      providerInstanceId: input.run.providerInstanceId,
-                      occurredAt: now,
-                      payload: {
-                        type: "system_notice",
-                        id: TurnItemId.make(
-                          `bare-receipt:${thread.id}:${thread.nativeThreadRef?.nativeId ?? "pending"}`,
-                        ),
-                        threadId: input.run.threadId,
-                        runId: input.run.id,
-                        nodeId: input.rootNode.id,
-                        providerThreadId: thread.id,
-                        providerTurnId: null,
-                        nativeItemRef: null,
-                        parentItemId: null,
-                        ordinal: 0,
-                        status: "completed",
-                        title: "Bare launch receipt",
-                        startedAt: now,
-                        completedAt: now,
-                        updatedAt: now,
-                        message: bareNoticeMessage(receipt),
-                        bareReceipt: receipt,
-                      },
+                      providerThreadId: thread.id,
+                      providerTurnId: null,
+                      nativeItemRef: null,
+                      parentItemId: null,
+                      ordinal: 0,
+                      status: "completed",
+                      title: "Bare launch receipt",
+                      startedAt: now,
+                      completedAt: now,
+                      updatedAt: now,
+                      message: bareNoticeMessage(receipt),
+                      bareReceipt: receipt,
                     },
-                  ],
-                })
-                .pipe(
-                  Effect.mapError(
-                    (cause) => new RunExecutionIngestError({ runId: input.run.id, cause }),
-                  ),
-                );
-            });
+                  },
+                ],
+              })
+              .pipe(
+                Effect.mapError(
+                  (cause) => new RunExecutionIngestError({ runId: input.run.id, cause }),
+                ),
+              );
+          });
           yield* StreamClock.beginExecutionAttempt(streamClock, input);
           const filterAssistantEvent = makeAssistantStreamingFilter(responseStreamingMode);
           const providerEventFiber = yield* eventSubscription.events.pipe(
@@ -1502,7 +1507,6 @@ export const layer: Layer.Layer<
                   key: `mcp_app_${entry.itemId.replace(/[^\w.-]/g, "_")}`,
                   text: entry.text,
                 }));
-          yield* writeBareReceipt(true);
           const turnInput = {
             appThread: input.appThread,
             threadId: input.run.threadId,
@@ -1540,7 +1544,10 @@ export const layer: Layer.Layer<
                 }),
               ))
             : input.session.startTurn(turnInput);
-          yield* Effect.andThen(shouldStart, startTurn).pipe(
+          yield* Effect.andThen(
+            shouldStart,
+            Effect.andThen(writeBareReceipt(true), startTurn),
+          ).pipe(
             Effect.catchCause((cause) =>
               Effect.logError("orchestration V2 provider turn start failed", {
                 runId: input.run.id,

@@ -1,3 +1,4 @@
+import type { BareReadGrant } from "./bareReadGrant.ts";
 import * as BareRuntime from "@t3tools/provider-core/server/bareLaunch";
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -5,7 +6,6 @@ import { ProviderInstanceId, ProviderDriverKind, type BareLaunchRequest } from "
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Path from "effect/Path";
 import * as BareLaunch from "./BareLaunch.ts";
 import * as Adapters from "./ProviderAdapterRegistry.ts";
 import * as Providers from "../provider/ProviderRegistry.ts";
@@ -81,7 +81,7 @@ it.layer(NodeServices.layer)("bare destination resolution", (it) => {
         yield* fs.writeFileString(`${dir}/outside`, "private");
         yield* fs.symlink(`${dir}/outside`, `${dir}/allowed/escape`);
         const bare = yield* BareLaunch.BareLaunch;
-        const resolve = (path: string, readGrant: BareLaunch.BareReadGrant) =>
+        const resolve = (path: string, readGrant: BareReadGrant) =>
           bare.resolve({
             request: { additions: [{ type: "file", path }] },
             instanceId,
@@ -203,5 +203,8 @@ describe("bare receipt", () => {
     expect(receipt.evidence.every((entry) => entry.status === "unobserved")).toBe(true);
     expect(BareRuntime.bareNoticeMessage(receipt).length).toBeLessThanOrEqual(2000);
     expect(BareRuntime.bareNoticeMessage(receipt)).toContain("Planned");
+    expect(BareRuntime.bareNoticeMessage(receipt)).toContain("Unobserved:");
+    expect(BareRuntime.bareNoticeMessage(receipt)).toContain("Native record: /records");
+    expect(BareRuntime.bareNoticeMessage(receipt)).toContain("Native session: native");
   });
 });

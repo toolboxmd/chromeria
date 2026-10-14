@@ -1732,11 +1732,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
     instanceId: adapterOptions.instanceId,
     driver: CODEX_PROVIDER,
     bareSupport: Effect.gen(function* () {
-      if (
-        adapterOptions.settings.setupMode === "managed" ||
-        adapterOptions.resolveRuntime !== undefined
-      )
-        return { supported: true as const };
+      if (adapterOptions.settings.setupMode === "managed") return { supported: true as const };
       const source =
         adapterOptions.settings.homePath ||
         nativeHome(adapterOptions.environment, "CODEX_HOME", ".codex");

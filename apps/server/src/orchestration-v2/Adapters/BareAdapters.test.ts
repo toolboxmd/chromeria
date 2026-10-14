@@ -1,11 +1,29 @@
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ProviderInstanceId, ThreadId, type RuntimeMode } from "@t3tools/contracts";
+import {
+  CodexSettings,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderSessionId,
+  ThreadId,
+  type RuntimeMode,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
+import * as Crypto from "effect/Crypto";
+import * as Layer from "effect/Layer";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { makeClaudeQueryOptions } from "./ClaudeAdapterV2.ts";
-import { codexThreadRuntimeParams, buildCodexTurnStartParams } from "./CodexAdapterV2.ts";
+import {
+  codexThreadRuntimeParams,
+  buildCodexTurnStartParams,
+  makeCodexAdapterV2,
+  type CodexAppServerClientFactoryShape,
+} from "./CodexAdapterV2.ts";
+import * as ServerConfig from "../../config.ts";
 import { makeCursorAgentOptions } from "../../../../../packages/provider-cursor/src/server/adapter.ts";
 import { openCodePermissionRules } from "../../../../../packages/provider-opencode/src/server/adapter.ts";
 import {
@@ -127,13 +145,80 @@ it("Cursor uses a positive tool list on the common create/resume options and lea
   expect(normal).not.toHaveProperty("tools");
 });
 
+it.effect(
+  "managed Codex keeps its runtime token and launch arguments in its own bare home without auth.json",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const settings = yield* Schema.decodeEffect(CodexSettings)({ setupMode: "managed" });
+      const launchArgs = "-c 'model_provider=managed-test'";
+      let spawned: Parameters<CodexAppServerClientFactoryShape["open"]>[0] | undefined;
+      const adapter = yield* makeCodexAdapterV2({
+        instanceId: selection.instanceId,
+        settings,
+        environment: {},
+        resolveRuntime: Effect.succeed({
+          revision: "test",
+          config: { ...settings, launchArgs },
+          environment: {
+            ACCESS_TOKEN: "FAKE_MANAGED_TOKEN",
+            T3CODE_CODEX_LAUNCH_ARGS: "unwanted override",
+          },
+        }),
+        crypto: yield* Crypto.Crypto,
+        fileSystem: fs,
+        idAllocator: yield* IdAllocator.IdAllocatorV2,
+        serverConfig,
+        clientFactory: {
+          open: (input) => {
+            spawned = input;
+            return Effect.fail(
+              new ProviderAdapter.ProviderAdapterOpenSessionError({
+                driver: ProviderDriverKind.make("codex"),
+                providerSessionId: input.providerSessionId,
+                cause: "Stopped at the process boundary in this test",
+              }),
+            );
+          },
+        },
+      });
+      yield* adapter
+        .openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("bare-managed"),
+          modelSelection: selection,
+          runtimePolicy: policy("approval-required"),
+        })
+        .pipe(Effect.flip);
+      expect(spawned?.environment.ACCESS_TOKEN).toBe("FAKE_MANAGED_TOKEN");
+      expect(spawned?.settings.launchArgs).toBe(`${launchArgs} --strict-config`);
+      const home = `${serverConfig.stateDir}/bare/codex/codex`;
+      expect(spawned?.environment.CODEX_HOME).toBe(home);
+      expect(spawned?.environment).not.toHaveProperty("T3CODE_CODEX_LAUNCH_ARGS");
+      expect(yield* fs.exists(`${home}/auth.json`)).toBe(false);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          ServerConfig.layerTest(process.cwd(), { prefix: "t3-bare-managed-" }).pipe(
+            Layer.provide(NodeServices.layer),
+          ),
+        ),
+      ),
+    ),
+);
+
 it("OpenCode filters effective permissions instead of re-enabling every tool with a session wildcard", () => {
   expect(OPEN_CODE_BARE_CONFIG.agent.build.prompt).toBe(".");
   expect(OPEN_CODE_BARE_CONFIG.agent.plan.prompt).toBe(".");
   const rules = openCodePermissionRules(policy("full-access"));
   const action = (name: string) =>
-    [...rules]
-      .reverse()
+    rules
+      .toReversed()
       .find((rule) => rule.pattern === "*" && (rule.permission === name || rule.permission === "*"))
       ?.action;
   expect(action("bash")).toBe("allow");
@@ -146,7 +231,7 @@ it("OpenCode filters effective permissions instead of re-enabling every tool wit
     plansPattern: "../../data/plans/*.md",
   });
   expect(
-    [...plan].reverse().find((rule) => rule.permission === "edit" && rule.pattern === "*")?.action,
+    plan.toReversed().find((rule) => rule.permission === "edit" && rule.pattern === "*")?.action,
   ).toBe("deny");
   expect(plan).toContainEqual({
     permission: "edit",
@@ -154,7 +239,7 @@ it("OpenCode filters effective permissions instead of re-enabling every tool wit
     action: "allow",
   });
   const restricted = openCodePermissionRules(policy("approval-required"));
-  expect([...restricted].reverse().find((rule) => rule.permission === "bash")?.action).toBe("ask");
+  expect(restricted.toReversed().find((rule) => rule.permission === "bash")?.action).toBe("ask");
   expect(
     openCodePermissionRules({
       runtimeMode: "full-access",
@@ -202,11 +287,16 @@ it.layer(NodeServices.layer)("bare homes", (it) => {
         const root = yield* fs.makeTempDirectoryScoped();
         yield* fs.makeDirectory(`${root}/native`);
         yield* fs.writeFileString(`${root}/native/auth.json`, "FAKE_TEST_CREDENTIAL");
-        yield* prepareCodexBareHome({
-          home: `${root}/bare`,
-          sourceHome: `${root}/native`,
-          managed: false,
-        });
+        yield* Effect.all(
+          [1, 2].map(() =>
+            prepareCodexBareHome({
+              home: `${root}/bare`,
+              sourceHome: `${root}/native`,
+              managed: false,
+            }),
+          ),
+          { concurrency: "unbounded" },
+        );
         expect(yield* fs.readLink(`${root}/bare/auth.json`)).toBe(`${root}/native/auth.json`);
         expect(yield* fs.readFileString(`${root}/bare/config.toml`)).toContain(
           "[skills]\ninclude_instructions = false",
@@ -218,6 +308,14 @@ it.layer(NodeServices.layer)("bare homes", (it) => {
           managed: true,
         });
         expect(yield* fs.exists(`${root}/managed/auth.json`)).toBe(false);
+        yield* prepareCodexBareHome({
+          home: `${root}/bare`,
+          sourceHome: `${root}/native`,
+          managed: true,
+        });
+        expect(yield* fs.exists(`${root}/bare/auth.json`)).toBe(false);
+        expect(yield* fs.exists(`${root}/native/auth.json`)).toBe(true);
+        expect((yield* fs.stat(`${root}/bare`)).mode & 0o777).toBe(0o700);
       }),
   );
   it.effect("shadows only OpenCode config while preserving native shell app configuration", () =>

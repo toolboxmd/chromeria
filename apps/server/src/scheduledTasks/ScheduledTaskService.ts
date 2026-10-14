@@ -1,5 +1,6 @@
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
-import { BareLaunchRequest } from "@t3tools/contracts";
+import type { BareReadGrant } from "../orchestration-v2/bareReadGrant.ts";
+import { decodeScheduledBare, encodeScheduledBare, readScheduledBare } from "./bareState.ts";
 import {
   CommandId,
   MessageId,
@@ -234,6 +235,7 @@ export class ScheduledTaskService extends Context.Service<
     readonly subscribeList: () => Stream.Stream<ScheduledTaskListResult, ScheduledTaskError>;
     readonly upsert: (
       input: ScheduledTaskUpsertInput,
+      options?: { readonly bareReadGrant: BareReadGrant },
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
     /** Partial update flipping only the enabled flag; never touches other fields. */
     readonly setEnabled: (
@@ -328,9 +330,7 @@ const decodeRow = (row: ScheduledTaskRow, origin: WebhookOrigin | null = null) =
       ...(row.bare_json == null
         ? {}
         : {
-            bare: yield* Schema.decodeUnknownEffect(Schema.fromJsonString(BareLaunchRequest))(
-              row.bare_json,
-            ),
+            bare: (yield* decodeScheduledBare(row.bare_json)).request,
           }),
       // The stored id decodes through the task schema so a corrupt value fails
       // as a typed parse error, not a `ScheduledTaskId.make` defect.
@@ -554,6 +554,7 @@ export const layer = Layer.effect(
         /** False when the save carried no new secret, so a concurrent change survives. */
         readonly secretChanged: boolean;
       },
+      bareReadGrant: BareReadGrant | undefined,
     ) =>
       sql<{ task_id: string }>`
         INSERT INTO scheduled_tasks (
@@ -596,7 +597,7 @@ export const layer = Layer.effect(
           ${task.interactionMode},
           ${task.createdBy},
           ${task.creationSource},
-          ${task.bare === undefined ? null : JSON.stringify(task.bare)},
+          ${task.bare === undefined || bareReadGrant === undefined ? null : encodeScheduledBare({ request: task.bare, readGrant: bareReadGrant })},
           ${task.linkOrigin === undefined ? null : JSON.stringify(task.linkOrigin)},
           ${task.createdAt},
           ${task.updatedAt},
@@ -866,6 +867,18 @@ export const layer = Layer.effect(
         // Effect.exit (not Effect.result) so defects and interruptions in the
         // dispatch are also captured and recorded as a failed run instead of
         // aborting before markCompleted.
+        const bareAuthority =
+          active.bare === undefined
+            ? undefined
+            : yield* readScheduledBare(active.id).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.mapError((cause) =>
+                  taskError("Could not read bare schedule authority.", {
+                    taskId: active.id,
+                    cause,
+                  }),
+                ),
+              );
         const result =
           active.threadId === null
             ? yield* Effect.exit(
@@ -874,7 +887,14 @@ export const layer = Layer.effect(
                   threadLaunch.launch,
                 )({
                   commandId,
-                  ...(active.bare === undefined ? {} : { bare: active.bare }),
+                  ...(active.bare === undefined
+                    ? {}
+                    : {
+                        bare: active.bare,
+                        ...(bareAuthority === undefined
+                          ? {}
+                          : { bareReadGrant: bareAuthority.readGrant }),
+                      }),
                   projectId: active.projectId,
                   title: active.title,
                   modelSelection: active.modelSelection,
@@ -1080,7 +1100,7 @@ export const layer = Layer.effect(
         }),
       );
 
-    const upsert: ScheduledTaskService["Service"]["upsert"] = (input) =>
+    const upsert: ScheduledTaskService["Service"]["upsert"] = (input, options) =>
       Effect.gen(function* () {
         const now = yield* localNow;
         const uuid =
@@ -1103,9 +1123,30 @@ export const layer = Layer.effect(
         // of silently resetting an existing row.
         const existingTask = yield* findTask(id);
         const bare = input.bare ?? existingTask?.bare;
+        const previousBare =
+          existingTask?.bare === undefined
+            ? undefined
+            : yield* readScheduledBare(id).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.mapError((cause) =>
+                  taskError("Could not read bare schedule authority.", { taskId: id, cause }),
+                ),
+              );
+        const bareReadGrant =
+          bare === undefined
+            ? undefined
+            : ((input.bare === undefined ? previousBare?.readGrant : options?.bareReadGrant) ??
+              previousBare?.readGrant ??
+              (input.runtimeMode === "full-access"
+                ? { type: "all" as const }
+                : { type: "roots" as const, roots: [] }));
         if (bare !== undefined)
           yield* bareLaunch
-            .validate({ request: bare, instanceId: input.modelSelection.instanceId })
+            .validate({
+              request: bare,
+              instanceId: input.modelSelection.instanceId,
+              readGrant: bareReadGrant,
+            })
             .pipe(Effect.mapError((cause) => taskError(cause.message, { cause })));
         const linkOrigin = existingTask === null ? input.linkOrigin : existingTask.linkOrigin;
         yield* validateBinding({
@@ -1201,7 +1242,7 @@ export const layer = Layer.effect(
           lastRunError: existingTask?.lastRunError ?? null,
           runCount: existingTask?.runCount ?? 0,
         };
-        yield* saveTask(task, input.requireExisting === true, webhook);
+        yield* saveTask(task, input.requireExisting === true, webhook, bareReadGrant);
         yield* notifyChanged;
         return { task: (yield* findTask(id)) ?? task };
       });

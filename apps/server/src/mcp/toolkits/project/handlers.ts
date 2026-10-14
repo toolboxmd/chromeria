@@ -14,6 +14,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
+import type { BareReadGrant } from "../../../orchestration-v2/bareReadGrant.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
@@ -142,6 +143,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               runtimeMode,
               interactionMode,
               createdBy: "agent",
+              ...(input.bare === undefined ? {} : { bare: input.bare }),
               ...(linkOrigin === undefined ? {} : { linkOrigin }),
               ...(input.message === undefined && attachments.length === 0 ? {} : { messageId }),
             },
@@ -215,6 +217,25 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                   message:
                     "Pass modelSelection: the project has no default model. orchestrator_capabilities lists providers and models.",
                 });
+              let bareReadGrant: BareReadGrant | undefined;
+              if (input.bare !== undefined) {
+                if (context.limits.runtimeMode === "full-access") bareReadGrant = { type: "all" };
+                else {
+                  const callerRoot =
+                    caller?.worktreePath ??
+                    (caller === undefined
+                      ? undefined
+                      : yield* Project.ProjectService.pipe(
+                          Effect.flatMap((projects) => projects.getById(caller.projectId)),
+                          Effect.mapError(unavailable),
+                          Effect.map((project) => Option.getOrUndefined(project)?.workspaceRoot),
+                        ));
+                  bareReadGrant = {
+                    type: "roots",
+                    roots: callerRoot === undefined ? [] : [callerRoot],
+                  };
+                }
+              }
               return yield* ThreadMessageIntake.launchThread({
                 commandId,
                 threadId,
@@ -222,15 +243,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                   ? {}
                   : {
                       bare: input.bare,
-                      bareReadGrant:
-                        runtimeMode === "full-access"
-                          ? { type: "all" as const }
-                          : {
-                              type: "roots" as const,
-                              roots: [
-                                caller?.worktreePath ?? (yield* readProject)?.workspaceRoot ?? "",
-                              ],
-                            },
+                      bareReadGrant,
                     }),
                 projectId,
                 title: input.title,

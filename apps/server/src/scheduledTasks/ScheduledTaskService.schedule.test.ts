@@ -52,9 +52,10 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
       expect((yield* service.upsert(input)).task.id).toBe(created.task.id);
     }).pipe(
       Effect.provide(
-        ScheduledTaskService.layer
-          .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
-          .pipe(Layer.provide(layerDependencies)),
+        ScheduledTaskService.layer.pipe(
+          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+          Layer.provide(layerDependencies),
+        ),
       ),
     );
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
@@ -114,9 +115,10 @@ it.effect("preserves a due run when a save only pads the scheduled hour", () =>
       );
     }).pipe(
       Effect.provide(
-        ScheduledTaskService.layer
-          .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
-          .pipe(Layer.provide(layerDependencies)),
+        ScheduledTaskService.layer.pipe(
+          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+          Layer.provide(layerDependencies),
+        ),
       ),
     );
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),

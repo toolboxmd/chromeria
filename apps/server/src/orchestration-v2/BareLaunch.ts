@@ -1,3 +1,4 @@
+import type { BareReadGrant } from "./bareReadGrant.ts";
 import { BareLaunchError, unsupportedBare } from "@t3tools/provider-core/server/bareLaunch";
 import { sha256 } from "@noble/hashes/sha2";
 import { bytesToHex } from "@noble/hashes/utils";
@@ -18,13 +19,8 @@ import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import type { ThreadLaunchWorkspaceStrategy } from "./ThreadLaunchService.ts";
 import * as Adapters from "./ProviderAdapterRegistry.ts";
 
-export type BareReadGrant =
-  | { readonly type: "all" }
-  | { readonly type: "none" }
-  | { readonly type: "roots"; readonly roots: ReadonlyArray<string> };
-
 /** Hash exactly what the harness receives, including a skill body's whitespace. */
-export function bareBody(text: string, skill: boolean): string {
+function bareBody(text: string, skill: boolean): string {
   return skill
     ? text.replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/, "")
     : text;
@@ -39,6 +35,7 @@ export class BareLaunch extends Context.Service<
     readonly validate: (input: {
       readonly request: BareLaunchRequest;
       readonly instanceId: ProviderInstanceId;
+      readonly readGrant?: BareReadGrant | undefined;
     }) => Effect.Effect<void, BareLaunchError>;
     readonly resolve: (input: {
       readonly request: BareLaunchRequest;
@@ -78,6 +75,10 @@ const make = Effect.gen(function* () {
   ) {
     if (grant.type === "none")
       return yield* new BareLaunchError({ reason: "Bare path additions require filesystem:read." });
+    if (!path.isAbsolute(file))
+      return yield* new BareLaunchError({
+        reason: "Bare addition paths must be absolute on the destination environment.",
+      });
     const real = yield* fs
       .realPath(file)
       .pipe(
@@ -156,6 +157,13 @@ const make = Effect.gen(function* () {
           reason: `Bare launch is not supported for ${adapter.driver}: ${support.reason}`,
         });
       for (const addition of input.request.additions ?? []) {
+        if (
+          input.readGrant?.type === "none" &&
+          (addition.type === "file" || addition.type === "skillFile")
+        )
+          return yield* new BareLaunchError({
+            reason: "Bare path additions require filesystem:read.",
+          });
         if (
           addition.type === "plugin" ||
           addition.type === "app" ||
@@ -269,6 +277,8 @@ const make = Effect.gen(function* () {
   );
   const prepare: BareLaunch["Service"]["prepare"] = Effect.fn("BareLaunch.prepare")(
     function* (input) {
+      yield* validate(input);
+      let createdPath: string | undefined;
       let workspaceStrategy = input.workspaceStrategy;
       if (workspaceStrategy.type === "worktree") {
         let startRef = workspaceStrategy.baseRef;
@@ -311,6 +321,7 @@ const make = Effect.gen(function* () {
             path: null,
           })
           .pipe(Effect.mapError(provisionError));
+        createdPath = worktree.worktree.path;
         workspaceStrategy = {
           type: "existing_worktree",
           worktreePath: worktree.worktree.path,
@@ -330,7 +341,15 @@ const make = Effect.gen(function* () {
         instanceId: input.instanceId,
         cwd,
         readGrant: grant,
-      });
+      }).pipe(
+        Effect.onError(() =>
+          createdPath === undefined
+            ? Effect.void
+            : git
+                .removeWorktree({ cwd: input.projectRoot, path: createdPath, force: false })
+                .pipe(Effect.ignore),
+        ),
+      );
       return { bare, workspaceStrategy, cwd };
     },
   );

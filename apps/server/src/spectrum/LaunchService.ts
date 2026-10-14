@@ -196,7 +196,10 @@ const make = Effect.gen(function* () {
             ),
         });
         const selection = target.modelSelection;
-        const project = yield* projects.get(caller.projectId);
+        const project =
+          color.bare === undefined || caller.worktreePath !== null
+            ? Option.none()
+            : yield* projects.get(caller.projectId);
         const cwd =
           caller.worktreePath ?? (Option.isSome(project) ? project.value.workspaceRoot : undefined);
         if (color.bare !== undefined && cwd === undefined)

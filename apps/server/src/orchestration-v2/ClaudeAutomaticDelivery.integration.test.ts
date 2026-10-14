@@ -314,30 +314,29 @@ it.effect.each(["child completion", "scheduled message", "user steering"] as con
               assert.equal(ran.task.lastRunStatus, "succeeded");
             }).pipe(
               Effect.provide(
-                ScheduledTaskService.layer
-                  .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
-                  .pipe(
-                    Layer.provide(ThreadManagementService.layer),
-                    Layer.provide(ServerSettings.layerTest()),
-                    Layer.provide(
-                      Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
-                        ensureTranscript: () =>
-                          Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 }),
-                      }),
-                    ),
-                    Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
-                    Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
-                    Layer.provide(
-                      CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
-                    ),
-                    Layer.provide(
-                      Layer.mergeAll(
-                        NodeCrypto.layer,
-                        Scheduler.layer,
-                        SqlitePersistence.layerMemory,
-                      ),
+                ScheduledTaskService.layer.pipe(
+                  Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+                  Layer.provide(ThreadManagementService.layer),
+                  Layer.provide(ServerSettings.layerTest()),
+                  Layer.provide(
+                    Layer.mock(LegacyV1ThreadImporter.LegacyV1ThreadImporter)({
+                      ensureTranscript: () =>
+                        Effect.succeed({ importedThreadCount: 0, importedMessageCount: 0 }),
+                    }),
+                  ),
+                  Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+                  Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+                  Layer.provide(
+                    CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
+                  ),
+                  Layer.provide(
+                    Layer.mergeAll(
+                      NodeCrypto.layer,
+                      Scheduler.layer,
+                      SqlitePersistence.layerMemory,
                     ),
                   ),
+                ),
               ),
             );
           } else {

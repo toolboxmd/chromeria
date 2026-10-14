@@ -134,9 +134,10 @@ const withDispatchBarrier = (barrier: DispatchBarrier) =>
             ),
           ),
       };
-      return ScheduledTaskService.layer
-        .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
-        .pipe(Layer.provide(Layer.succeed(ScheduledTaskDispatchPolicy, held)));
+      return ScheduledTaskService.layer.pipe(
+        Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+        Layer.provide(Layer.succeed(ScheduledTaskDispatchPolicy, held)),
+      );
     }),
   );
 

@@ -1,10 +1,12 @@
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import { homedir } from "node:os";
+import * as NodeOS from "node:os";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import { type ProviderInstanceId } from "@t3tools/contracts";
 import { BareLaunchError, writeBareConfig } from "./bareLaunch.ts";
+
+const encodeConfig = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 export const bareHome = (stateDir: string, instanceId: ProviderInstanceId, harness: string) =>
   `${stateDir}/bare/${encodeURIComponent(instanceId)}/${harness}`;
@@ -43,37 +45,43 @@ multi_agent_mode_hint_text = ""
 export const linkBareAuth = Effect.fn("BareProviderRuntime.linkAuth")(function* (
   source: string,
   target: string,
-  required = true,
+  sourceMayBeMissing = false,
 ) {
   const fs = yield* FileSystem.FileSystem;
-  if (!(yield* fs.exists(source))) {
-    if (required)
-      return yield* new BareLaunchError({
-        reason:
-          "Native file authentication is required for this bare runtime; keyring-only authentication is unsupported.",
-      });
-    return;
-  }
+  if (!sourceMayBeMissing && !(yield* fs.exists(source)))
+    return yield* new BareLaunchError({
+      reason:
+        "Native file authentication is required for this bare runtime; keyring-only authentication is unsupported.",
+    });
   const path = yield* Path.Path;
   yield* fs.makeDirectory(path.dirname(target), { recursive: true, mode: 0o700 });
-  if (yield* fs.exists(target)) {
-    const link = yield* fs.readLink(target).pipe(
-      Effect.mapError(
-        (cause) =>
-          new BareLaunchError({
-            reason: "Bare auth target must be a link to its existing credential owner.",
-            cause,
+  const verify = fs.readLink(target).pipe(
+    Effect.mapError(
+      (cause) =>
+        new BareLaunchError({
+          reason: "Bare auth target must be a link to its existing credential owner.",
+          cause,
+        }),
+    ),
+    Effect.flatMap((link) =>
+      link === source
+        ? Effect.void
+        : new BareLaunchError({
+            reason: "Bare auth link points to a different credential owner.",
           }),
-      ),
-    );
-    if (link !== source)
-      return yield* new BareLaunchError({
-        reason: "Bare auth link points to a different credential owner.",
-      });
-  } else yield* fs.symlink(source, target);
+    ),
+  );
+  // Concurrent bare sessions can create the same link. A collision must verify
+  // the existing target, never replace an account file or trust a stale link.
+  yield* fs.symlink(source, target).pipe(
+    Effect.catchIf(
+      (error) => error.reason._tag === "AlreadyExists",
+      () => verify,
+    ),
+  );
 }, Effect.provide(Path.layer));
 export const nativeHome = (environment: NodeJS.ProcessEnv, key: string, folder: string) =>
-  environment[key] || `${environment.HOME || homedir()}/${folder}`;
+  environment[key] || `${environment.HOME || NodeOS.homedir()}/${folder}`;
 
 export const prepareCodexBareHome = Effect.fn("BareProviderRuntime.codex")(function* (input: {
   home: string;
@@ -82,15 +90,17 @@ export const prepareCodexBareHome = Effect.fn("BareProviderRuntime.codex")(funct
 }) {
   const fs = yield* FileSystem.FileSystem;
   yield* fs.makeDirectory(input.home, { recursive: true, mode: 0o700 });
+  yield* fs.chmod(input.home, 0o700);
   if (!input.managed)
     yield* linkBareAuth(`${input.sourceHome}/auth.json`, `${input.home}/auth.json`);
+  else yield* fs.remove(`${input.home}/auth.json`, { force: true });
   yield* writeBareConfig(
     `${input.home}/config.toml`,
     `${input.managed ? "" : 'cli_auth_credentials_store = "file"\n'}${CODEX_BARE_CONFIG}`,
   );
 });
 
-export const OPEN_CODE_BARE_TOOLS = {
+const OPEN_CODE_BARE_TOOLS = {
   "*": false,
   bash: true,
   read: true,
@@ -116,9 +126,11 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
     const path = yield* Path.Path;
     const source =
       input.environment.XDG_CONFIG_HOME ||
-      path.join(input.environment.HOME || homedir(), ".config");
+      path.join(input.environment.HOME || NodeOS.homedir(), ".config");
     const target = path.join(input.home, "xdg-config");
     yield* fs.makeDirectory(target, { recursive: true, mode: 0o700 });
+    yield* fs.chmod(input.home, 0o700);
+    yield* fs.chmod(target, 0o700);
     if (yield* fs.exists(source)) {
       for (const entry of yield* fs.readDirectory(source)) {
         if (entry === "opencode") continue;
@@ -146,9 +158,7 @@ export const prepareOpenCodeBareEnvironment = Effect.fn("BareProviderRuntime.ope
       OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
       OPENCODE_DISABLE_PROJECT_CONFIG: "1",
       OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
-      OPENCODE_CONFIG_CONTENT: yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
-        config,
-      ).pipe(Effect.orDie),
+      OPENCODE_CONFIG_CONTENT: yield* encodeConfig(config).pipe(Effect.orDie),
     };
     // These discovery selectors could otherwise escape the isolated config root.
     delete environment.OPENCODE_CONFIG;

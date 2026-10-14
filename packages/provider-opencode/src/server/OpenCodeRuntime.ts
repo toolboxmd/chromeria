@@ -282,7 +282,6 @@ export class OpenCodeRuntime extends Context.Service<
       readonly binaryPath: string;
       readonly args: ReadonlyArray<string>;
       readonly environment?: NodeJS.ProcessEnv;
-      readonly pure?: boolean;
       readonly cwd?: string;
       readonly maxOutputBytes?: number;
     }) => Effect.Effect<OpenCodeCommandResult, OpenCodeRuntimeError>;
@@ -301,13 +300,11 @@ export class OpenCodeRuntime extends Context.Service<
       readonly binaryPath: string;
       readonly cwd: string;
       readonly environment?: NodeJS.ProcessEnv;
-      readonly pure?: boolean;
     }) => Effect.Effect<OpenCodeInventory, OpenCodeRuntimeError>;
     readonly loadSkillsFromCli: (input: {
       readonly binaryPath: string;
       readonly cwd: string;
       readonly environment?: NodeJS.ProcessEnv;
-      readonly pure?: boolean;
     }) => Effect.Effect<ReadonlyArray<OpenCodeSkill>, OpenCodeRuntimeError>;
   }
 >()("@t3tools/provider-opencode/server/OpenCodeRuntime") {}
@@ -680,7 +677,6 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     createOpencodeClient({
       baseUrl: input.baseUrl,
       directory: input.directory,
-
       ...(input.serverPassword
         ? {
             headers: {

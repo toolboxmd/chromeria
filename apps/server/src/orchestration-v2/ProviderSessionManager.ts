@@ -1,5 +1,9 @@
 import { AgentScope } from "@t3tools/shared/AgentScope";
-import { namesT3Mcp, unsupportedBare } from "@t3tools/provider-core/server/bareLaunch";
+import {
+  BareLaunchError,
+  namesT3Mcp,
+  unsupportedBare,
+} from "@t3tools/provider-core/server/bareLaunch";
 import { applyProviderStartAdmission } from "../provider/forkProviderStartAdmission.ts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -213,6 +217,7 @@ interface LiveSessionEntry {
    * outbox executes the old session's detach).
    */
   readonly mcpCredentialIdByThread: ReadonlyMap<ThreadId, string>;
+  readonly bareThreadId: ThreadId | null;
   readonly supportsMultipleProviderThreads: boolean;
   readonly runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime;
   readonly exposedRuntime: ProviderAdapter.ProviderAdapterV2SessionRuntime;
@@ -2054,9 +2059,45 @@ export const layerWithOptions = (
                   });
                 }
               }
+              const loadAdapter = registry.get(input.modelSelection.instanceId).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderSessionOpenError({
+                      instanceId: input.modelSelection.instanceId,
+                      providerSessionId: input.providerSessionId,
+                      cause,
+                    }),
+                ),
+              );
+              const bareAdapter =
+                input.runtimePolicy.bare === undefined ? undefined : yield* loadAdapter;
+              if (bareAdapter !== undefined) {
+                const support =
+                  bareAdapter.bareSupport === undefined
+                    ? unsupportedBare(bareAdapter.driver)
+                    : yield* bareAdapter.bareSupport;
+                if (!support.supported)
+                  return yield* new ProviderSessionOpenError({
+                    instanceId: input.modelSelection.instanceId,
+                    providerSessionId: input.providerSessionId,
+                    cause: new BareLaunchError({ reason: support.reason }),
+                  });
+              }
               const key = sessionKey(input.providerSessionId);
               const existing = (yield* Ref.get(sessions)).get(key);
               if (existing !== undefined) {
+                if (
+                  existing.bareThreadId !==
+                  (input.runtimePolicy.bare === undefined ? null : input.threadId)
+                )
+                  return yield* new ProviderSessionOpenError({
+                    instanceId: input.modelSelection.instanceId,
+                    providerSessionId: input.providerSessionId,
+                    cause: new BareLaunchError({
+                      reason:
+                        "Bare provider sessions cannot share a process with another thread or a normal launch.",
+                    }),
+                  });
                 const attached = existing.attachedThreadIds.has(input.threadId);
                 if (!attached && !existing.supportsMultipleProviderThreads) {
                   return yield* new ProviderSessionOpenError({
@@ -2076,28 +2117,7 @@ export const layerWithOptions = (
                 return existing.exposedRuntime;
               }
 
-              const adapter = yield* registry.get(input.modelSelection.instanceId).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new ProviderSessionOpenError({
-                      instanceId: input.modelSelection.instanceId,
-                      providerSessionId: input.providerSessionId,
-                      cause,
-                    }),
-                ),
-              );
-              if (input.runtimePolicy.bare !== undefined) {
-                const support =
-                  adapter.bareSupport === undefined
-                    ? unsupportedBare(adapter.driver)
-                    : yield* adapter.bareSupport;
-                if (!support.supported)
-                  return yield* new ProviderSessionOpenError({
-                    instanceId: input.modelSelection.instanceId,
-                    providerSessionId: input.providerSessionId,
-                    cause: support.reason,
-                  });
-              }
+              const adapter = bareAdapter ?? (yield* loadAdapter);
               const prepared = yield* prepareMcpSession(
                 input.threadId,
                 input.modelSelection.instanceId,
@@ -2192,7 +2212,9 @@ export const layerWithOptions = (
                   mcpCredentialId === undefined
                     ? new Map()
                     : new Map([[input.threadId, mcpCredentialId]]),
+                bareThreadId: input.runtimePolicy.bare === undefined ? null : input.threadId,
                 supportsMultipleProviderThreads:
+                  input.runtimePolicy.bare === undefined &&
                   runtime.providerSession.capabilities.sessions
                     .supportsMultipleProviderThreadsPerSession,
                 runtime,

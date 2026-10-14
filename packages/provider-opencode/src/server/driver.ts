@@ -1,4 +1,5 @@
 import { ProviderAdapterOpenSessionError } from "@t3tools/provider-core/server/ProviderAdapter";
+import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
 /**
  * OpenCodeDriver — `ProviderDriver` for the OpenCode runtime.
  *
@@ -163,7 +164,7 @@ function selectOpenCodeRuntimeAdapter(input: {
               return yield* new ProviderAdapterOpenSessionError({
                 driver: DRIVER_KIND,
                 providerSessionId: session.providerSessionId,
-                cause: support.reason,
+                cause: new BareLaunchError({ reason: support.reason }),
               });
           }
           return yield* adapter.openSession(session);

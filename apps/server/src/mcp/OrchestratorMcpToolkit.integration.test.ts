@@ -98,13 +98,12 @@ import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import { delegatedTaskRun, hasPendingChildRuns } from "./OrchestratorMcpService.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
-const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit
-  .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
-  .pipe(
-    Layer.provide(PrismServerSettings.layerTest()),
-    Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
-    Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
-  );
+const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
+  Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+  Layer.provide(PrismServerSettings.layerTest()),
+  Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+  Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+);
 
 /** A task delegated here always has a local child thread. */
 const localChild = (childThreadId: ThreadId | null): ThreadId => {

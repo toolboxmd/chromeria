@@ -1,3 +1,4 @@
+import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
 import * as BareLaunch from "./BareLaunch.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
@@ -84,6 +85,8 @@ export class ProviderTurnStartServiceV2 extends Context.Service<
   ProviderTurnStartServiceV2,
   ProviderTurnStartServiceV2Shape
 >()("t3/orchestration-v2/ProviderTurnStartService/ProviderTurnStartServiceV2") {}
+
+const isTurnStartError = Schema.is(ProviderAdapter.ProviderAdapterTurnStartError);
 
 export const layer: Layer.Layer<
   ProviderTurnStartServiceV2,
@@ -783,14 +786,20 @@ export const layer: Layer.Layer<
                 ),
             ))
         )
-          return yield* new ProviderAdapter.ProviderAdapterTurnStartError({
-            driver: session.driver,
-            threadId: projection.thread.id,
-            providerThreadId: providerThread.id,
-            runId,
-            cause:
-              "The bare thread's native session could not be resumed; Chromeria will not substitute a summary.",
-          });
+          return yield* loadFromProvider(
+            Effect.fail(
+              new ProviderAdapter.ProviderAdapterTurnStartError({
+                driver: session.driver,
+                threadId: projection.thread.id,
+                providerThreadId: providerThread.id,
+                runId,
+                cause: new BareLaunchError({
+                  reason:
+                    "The bare thread's native session could not be resumed; Chromeria will not substitute a summary.",
+                }),
+              }),
+            ),
+          );
         yield* Effect.logWarning("Provider resume failed; attempting a fresh native session", {
           driver: session.driver,
           providerThreadId: providerThread.id,
@@ -1078,10 +1087,13 @@ export const layer: Layer.Layer<
       const routableSubagents = projection.subagents.filter((subagent) =>
         RunExecutionService.canRouteRelatedSubagent(subagent.status),
       );
-      const userText = projectComposerContextForProvider({
-        text: message.text,
-        records: message.context?.records ?? [],
-      });
+      const userText =
+        projection.thread.bare === undefined
+          ? projectComposerContextForProvider({
+              text: message.text,
+              records: message.context?.records ?? [],
+            })
+          : message.text;
       // Delivered once: this run's provider turn marks the work as told. A
       // restart continuation is prompted by its own text or resumes natively.
       const noteContinuation = isRestartNoteContinuation(
@@ -1131,7 +1143,10 @@ export const layer: Layer.Layer<
       const acceptedAttempts = projection.attempts.filter(
         (source) =>
           source.providerThreadId === providerThread.id &&
-          projection.runs.some((run) => run.id === source.runId && run.status !== "rolled_back") &&
+          (projection.thread.bare === undefined ||
+            projection.runs.some(
+              (run) => run.id === source.runId && run.status !== "rolled_back",
+            )) &&
           deliveredAttemptIds.has(source.id),
       );
       const nativeInputRunIds = new Set(
@@ -1380,14 +1395,6 @@ export const layer: Layer.Layer<
                   source.nativeThreadId === runningProviderThread.nativeThreadRef?.nativeId,
               ),
           );
-        if (missedItems.some((item) => item.type !== "user_message"))
-          return yield* new ProviderAdapter.ProviderAdapterTurnStartError({
-            driver: session.driver,
-            threadId: projection.thread.id,
-            providerThreadId: providerThread.id,
-            runId,
-            cause: "bare history transfer unsupported: missed history is not user text",
-          });
         const missedText = missedItems
           .filter((item) => item.type === "user_message")
           .map((item) => item.text)
@@ -1395,6 +1402,10 @@ export const layer: Layer.Layer<
         // This is the final adapter-facing boundary, after recovery selected the native thread.
         deliverySession = makeDeliverySession(session, (turnInput, compact) =>
           Effect.gen(function* () {
+            if (missedItems.some((item) => item.type !== "user_message"))
+              return yield* new BareLaunchError({
+                reason: "bare history transfer unsupported: missed history is not user text",
+              });
             const additions = survivingAccepted ? "" : yield* bareLaunch.deliveryText(bare);
             const text = [additions, missedText, userText]
               .filter((part) => part !== "")
@@ -1403,7 +1414,7 @@ export const layer: Layer.Layer<
             yield* start({ ...turnInput, message: { ...turnInput.message, text } });
           }).pipe(
             Effect.mapError((cause) =>
-              Schema.is(ProviderAdapter.ProviderAdapterTurnStartError)(cause)
+              isTurnStartError(cause)
                 ? cause
                 : new ProviderAdapter.ProviderAdapterTurnStartError({
                     driver: session.driver,
