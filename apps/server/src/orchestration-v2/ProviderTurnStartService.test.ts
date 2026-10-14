@@ -37,6 +37,7 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as ContextmdServing from "../contextmd/ContextmdServing.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -90,6 +91,12 @@ it("does not commit running state when inherited background routing cannot be re
   const pruneWorktrees = vi.fn(() => Effect.void);
   const createWorktree = vi.fn(() => Effect.succeed({} as never));
   const layer = ProviderTurnStart.layer.pipe(
+    Layer.provide(
+      Layer.mock(ContextmdServing.ContextmdServing)({
+        releaseSessionInstructions: () => Effect.void,
+        recordNativeFork: () => Effect.void,
+      }),
+    ),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
@@ -484,6 +491,12 @@ function makeLocalCommandHarness(input: {
         }),
   );
   const layer = ProviderTurnStart.layer.pipe(
+    Layer.provide(
+      Layer.mock(ContextmdServing.ContextmdServing)({
+        releaseSessionInstructions: () => Effect.void,
+        recordNativeFork: () => Effect.void,
+      }),
+    ),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({

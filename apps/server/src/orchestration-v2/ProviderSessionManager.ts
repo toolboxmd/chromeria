@@ -159,6 +159,7 @@ export type ProviderSessionManagerV2Error = typeof ProviderSessionManagerV2Error
 export interface ProviderSessionManagerV2Shape {
   readonly shutdown: Effect.Effect<void>;
   readonly open: (input: {
+    readonly newSessionInstructions?: string;
     readonly threadId: ThreadId;
     readonly providerSessionId: ProviderSessionId;
     readonly modelSelection: ModelSelection;
@@ -2086,6 +2087,9 @@ export const layerWithOptions = (
               const sessionScope = yield* Scope.fork(sessionScopes);
               const runtime = yield* adapter
                 .openSession({
+                  ...(input.newSessionInstructions === undefined
+                    ? {}
+                    : { newSessionInstructions: input.newSessionInstructions }),
                   threadId: input.threadId,
                   providerSessionId: input.providerSessionId,
                   modelSelection: input.modelSelection,

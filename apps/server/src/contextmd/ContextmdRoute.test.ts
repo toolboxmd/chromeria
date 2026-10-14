@@ -22,6 +22,7 @@ import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ContextmdRoute from "./ContextmdRoute.ts";
 import { MOMENT_BUDGET_MS } from "./ContextmdServing.ts";
+import * as ContextmdServing from "./ContextmdServing.ts";
 import * as Store from "./Store.ts";
 import { isHoldout } from "./ServingState.ts";
 
@@ -276,6 +277,7 @@ const serve = <R>(
     yield* setup.pipe(Effect.provide(database));
     const services = yield* Layer.build(
       HttpRouter.serve(ContextmdRoute.layer, { disableListenLog: true }).pipe(
+        Layer.provideMerge(ContextmdServing.layer),
         Layer.provideMerge(Layer.succeedContext(database)),
         Layer.provideMerge(Layer.succeedContext(configContext)),
         Layer.provideMerge(layerAuth),

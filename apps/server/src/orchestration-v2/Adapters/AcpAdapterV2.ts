@@ -131,6 +131,7 @@ export const ACP_PROTOCOL = "acp.ndjson-jsonrpc" as const;
 const ACP_DEFERRED_FINALIZE_DEBOUNCE: Duration.Input = "3000 millis";
 
 export interface AcpAdapterV2RuntimeInput {
+  readonly newSessionRules?: string;
   readonly cwd: string;
   /**
    * Policy the session opened with. A runtime-mode change reopens the session,
@@ -2116,9 +2117,11 @@ export function makeAcpAdapterV2(
           resumeSessionId?: string,
           onTermination: AcpAdapterV2RuntimeInput["onTermination"] = () =>
             handleRuntimeTerminationAtGeneration(runtimeGeneration),
+          newSessionRules?: string,
         ): AcpAdapterV2RuntimeInput => {
           const mcpContext = acpMcpContext(threadId, self);
           return {
+            ...(newSessionRules === undefined ? {} : { newSessionRules }),
             cwd: input.runtimePolicy.cwd ?? process.cwd(),
             runtimePolicy: input.runtimePolicy,
             mcpServers: mcpContext.servers,
@@ -6062,6 +6065,7 @@ export function makeAcpAdapterV2(
         const spawnAcpRuntime = Effect.fnUntraced(function* (
           threadId: ThreadId | null,
           resumeSessionId?: string,
+          newSessionRules?: string,
         ) {
           if (runtimeScope !== undefined) {
             yield* Scope.close(runtimeScope, Exit.void);
@@ -6070,7 +6074,15 @@ export function makeAcpAdapterV2(
           runtimeMcpBridge = yield* makeRuntimeMcpBridge(threadId, runtimeScope);
           const runtimeGeneration = yield* Ref.get(runtimeCallbackGeneration);
           runtime = yield* flavor
-            .makeRuntime(makeRuntimeInput(runtimeGeneration, threadId, resumeSessionId))
+            .makeRuntime(
+              makeRuntimeInput(
+                runtimeGeneration,
+                threadId,
+                resumeSessionId,
+                undefined,
+                newSessionRules,
+              ),
+            )
             .pipe(
               Effect.provideService(Scope.Scope, runtimeScope),
               Effect.provideService(Crypto.Crypto, options.crypto),
@@ -6080,9 +6092,10 @@ export function makeAcpAdapterV2(
         const startAcpRuntime = Effect.fnUntraced(function* (
           threadId: ThreadId | null,
           resumeSessionId?: string,
+          newSessionRules?: string,
         ) {
           const startup = Effect.gen(function* () {
-            yield* spawnAcpRuntime(threadId, resumeSessionId);
+            yield* spawnAcpRuntime(threadId, resumeSessionId, newSessionRules);
             yield* wireAcpRuntimeHandlers(runtime, yield* Ref.get(runtimeCallbackGeneration));
             return yield* runtime.start();
           });
@@ -6099,6 +6112,7 @@ export function makeAcpAdapterV2(
           commitSessionState: (
             replacement: AcpSessionRuntime.AcpSessionRuntimeStartResult,
           ) => Effect.Effect<void>,
+          newSessionRules?: string,
         ) {
           const previousScope = runtimeScope;
           const previousGeneration = yield* Ref.get(runtimeCallbackGeneration);
@@ -6146,6 +6160,7 @@ export function makeAcpAdapterV2(
                   threadId,
                   undefined,
                   handleCandidateTermination,
+                  newSessionRules,
                 ),
               )
               .pipe(
@@ -6258,8 +6273,28 @@ export function makeAcpAdapterV2(
           return replacementExit.value.started;
         });
 
+        const createdWith: Array<{
+          nativeSessionId: string;
+          text: string;
+          site: "open" | "fallback" | "rollback";
+        }> = [];
+        const rememberCreation = (
+          result: AcpSessionRuntime.AcpSessionRuntimeStartResult,
+          site: "open" | "fallback" | "rollback",
+        ) => {
+          if (driver === "grok" && result.newSessionRules !== undefined)
+            createdWith.push({
+              nativeSessionId: result.sessionId,
+              text: result.newSessionRules,
+              site,
+            });
+        };
         const initialStart = yield* Effect.result(
-          startAcpRuntime(input.threadId, input.initialNativeThreadId),
+          startAcpRuntime(
+            input.threadId,
+            input.initialNativeThreadId,
+            input.newSessionInstructions,
+          ).pipe(Effect.tap((result) => Effect.sync(() => rememberCreation(result, "open")))),
         );
         const started = Result.isSuccess(initialStart)
           ? initialStart.success
@@ -6279,7 +6314,13 @@ export function makeAcpAdapterV2(
               itemIdentityVersion = 2;
               yield* Ref.set(runtimeRestartRequired, false);
               prepareClaimableTerminalEnvironment(input.threadId);
-              return yield* startAcpRuntime(input.threadId);
+              return yield* startAcpRuntime(
+                input.threadId,
+                undefined,
+                input.newSessionInstructions,
+              ).pipe(
+                Effect.tap((result) => Effect.sync(() => rememberCreation(result, "fallback"))),
+              );
             });
         yield* Ref.set(activeSessionId, started.sessionId);
         yield* Ref.set(activeSessionSetup, started);
@@ -7374,6 +7415,7 @@ export function makeAcpAdapterV2(
         );
 
         const sessionRuntime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
+          createdSessions: () => createdWith.slice(),
           instanceId: options.instanceId,
           driver,
           providerSessionId: input.providerSessionId,
@@ -7998,7 +8040,9 @@ export function makeAcpAdapterV2(
                           }),
                         );
                       }),
+                    rollbackInput.newSessionInstructions,
                   ).pipe(Effect.retry({ times: 1 }));
+                  rememberCreation(replacement, "rollback");
                   const now = yield* DateTime.now;
                   return {
                     providerThread: {
