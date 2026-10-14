@@ -92,6 +92,7 @@ const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, type
   ["moments", "cue_ms", "REAL"],
   ["moments", "cue_wait_ms", "REAL"],
   ["moments", "cue_json", "TEXT"],
+  ["moments", "source", "TEXT"],
   ["carries", "matcher", "TEXT"],
   ["carries", "score", "REAL"],
   ["deliveries", "transcript_path", "TEXT"],
@@ -147,7 +148,10 @@ interface NativeForkInput {
   readonly runId: string;
   readonly line: Candidate;
   readonly boundaryAt: number;
-  readonly compactedAt: number | null;
+  readonly compactions: ReadonlyArray<{
+    readonly runId: string | null;
+    readonly startedAt: number;
+  }>;
   readonly reverted: ReadonlySet<string>;
   readonly now: number;
   readonly delivery: string;
@@ -1045,8 +1049,10 @@ export class ServingState {
         outcome: string;
         received_at: number;
         run_id: string;
+        moment_id: number;
+        epoch: number;
       }>(
-        `SELECT c.delivery, c.version, k.bytes, k.outcome, m.received_at, m.run_id FROM claims c
+        `SELECT c.delivery, c.version, k.bytes, k.outcome, m.received_at, m.run_id, m.id AS moment_id, m.epoch FROM claims c
          JOIN candidates k ON k.id = c.candidate_id AND k.matcher = 'great_library'
          JOIN moments m ON m.id = k.moment_id
          WHERE c.harness = ? AND c.session = ? AND c.settled = 1 AND m.received_at <= ?`,
@@ -1054,8 +1060,45 @@ export class ServingState {
         fork.source,
         fork.boundaryAt,
       ).filter((row) => row.outcome === "inherited" || !fork.reverted.has(row.run_id));
+      const compactions = fork.compactions.filter(
+        (c) => c.startedAt <= fork.boundaryAt && (c.runId === null || !fork.reverted.has(c.runId)),
+      );
+      const compactedAt =
+        compactions.length === 0 ? null : Math.max(...compactions.map((c) => c.startedAt));
+      const epochMoments =
+        fork.harness === "claude"
+          ? this.all<{
+              id: number;
+              epoch: number;
+              run_id: string | null;
+              source: string;
+            }>(
+              `SELECT id, epoch, run_id, source FROM moments
+          WHERE harness = ? AND session = ? AND kind = 'session_start' AND source IN ('compact', 'clear')
+            AND epoch IS NOT NULL AND received_at <= ? ORDER BY id`,
+              fork.harness,
+              fork.source,
+              fork.boundaryAt,
+            ).filter((m) => m.run_id === null || !fork.reverted.has(m.run_id))
+          : [];
+      const sourceEpoch = epochMoments.at(-1)?.epoch;
+      const latest = compactions.filter((c) => c.startedAt === compactedAt);
+      const compactRun = latest[0]?.runId;
+      let compactHookId: number | null = null;
+      if (compactRun != null && latest.every((c) => c.runId === compactRun)) {
+        const hooks = epochMoments.filter((m) => m.run_id === compactRun && m.source === "compact");
+        // Claude emits SessionStart(compact) before compact_boundary reaches its SDK stream.
+        // Pair the last hook with the last surviving compaction only when that run's counts agree.
+        // A missing or failed last re-serve cannot borrow an older epoch's settled copy.
+        if (hooks.length === compactions.filter((c) => c.runId === compactRun).length)
+          compactHookId = hooks.at(-1)?.id ?? null;
+      }
       const retained = delivered.filter(
-        (row) => fork.compactedAt === null || row.received_at > fork.compactedAt,
+        (row) =>
+          (sourceEpoch === undefined || row.epoch === sourceEpoch) &&
+          (compactedAt === null ||
+            row.received_at > compactedAt ||
+            row.moment_id === compactHookId),
       );
       const from = retained.find((row) => row.version === fork.line.version);
       const reason =
@@ -1090,7 +1133,8 @@ export class ServingState {
           source_delivery: from?.delivery ?? null,
           source_bytes: from?.bytes ?? null,
           boundary_at: fork.boundaryAt,
-          compacted_at: fork.compactedAt,
+          compacted_at: compactedAt,
+          compact_hook_moment_id: from?.moment_id === compactHookId ? compactHookId : null,
         },
       });
       this.run(
@@ -1256,6 +1300,7 @@ export class ServingState {
     now: number;
     startedAt: number;
     kind?: string;
+    source?: string | null;
     session?: string;
     threadId?: string | null;
     runId?: string | null;
@@ -1268,8 +1313,8 @@ export class ServingState {
     const cue = m.cue ?? null;
     const result = this.run(
       `INSERT INTO moments (received_at, harness, kind, session, thread_id, run_id, tool_use_id, epoch, holdout,
-         status, reason, owners_json, cue_adapter, server_ms, delivery, cue_status, cue_ms, cue_wait_ms, cue_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         status, reason, owners_json, cue_adapter, server_ms, delivery, cue_status, cue_ms, cue_wait_ms, cue_json, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       m.now,
       m.harness,
       m.kind ?? null,
@@ -1289,6 +1334,7 @@ export class ServingState {
       cue?.ms ?? null,
       cue?.waitMs ?? null,
       cue?.detail ? JSON.stringify(cue.detail) : null,
+      m.source ?? null,
     );
     return Number(result.lastInsertRowid);
   }
@@ -1382,6 +1428,7 @@ export class ServingState {
       now,
       startedAt: input.startedAt,
       kind: m.kind,
+      source: m.source,
       session: m.session,
       threadId: joined?.threadId ?? null,
       runId: joined?.runId ?? null,

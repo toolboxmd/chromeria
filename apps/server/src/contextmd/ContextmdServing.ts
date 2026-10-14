@@ -511,10 +511,6 @@ const make = Effect.gen(function* () {
       SELECT run_id, json_extract(payload_json, '$.startedAt') AS started_at FROM orchestration_v2_projection_turn_items
       WHERE thread_id = ${fork.sourceThreadId} AND provider_thread_id = ${fork.source.id} AND type = 'compaction'`;
       const boundaryAt = DateTime.toEpochMillis(fork.boundaryAt) / 1000;
-      const starts = compactions
-        .filter((row) => row.run_id === null || !reverted.has(row.run_id))
-        .map((row) => (row.started_at === null ? boundaryAt : Date.parse(row.started_at) / 1000))
-        .filter((at) => at <= boundaryAt);
       state.recordNativeFork({
         harness,
         source,
@@ -523,7 +519,10 @@ const make = Effect.gen(function* () {
         runId: fork.runId,
         line,
         boundaryAt,
-        compactedAt: starts.length === 0 ? null : Math.max(...starts),
+        compactions: compactions.map((row) => ({
+          runId: row.run_id,
+          startedAt: row.started_at === null ? boundaryAt : Date.parse(row.started_at) / 1000,
+        })),
         reverted,
         now: yield* nowSeconds,
         delivery: yield* crypto.randomUUIDv4.pipe(Effect.orDie),
