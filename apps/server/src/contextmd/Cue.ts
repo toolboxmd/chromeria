@@ -6,8 +6,8 @@
  * - A `pre_tool` moment only starts a request; the call's `tool_result` collects it (latency hidden behind the
  *   tool run). A `user_message` or a failed call scores at once and waits what is left of the moment's budget.
  * - A connect failure marks the service unavailable for this whole environment (the machine); later moments
- *   skip Cue (`not_called`) until a probe every `PROBE_SECONDS` sees `/health` answer. A slow reply is
- *   `timeout` for that call only.
+ *   skip Cue (`not_called`) until a probe every `PROBE_SECONDS` gets the Cue health document (`ok` and
+ *   `adapter`). A slow reply is `timeout` for that call only.
  * - A 4xx reply is `rejected`: the service refused this request (its reason is logged), the service stays
  *   available.
  * - A collect with no request for that call is `lost` (a restart dropped it), or `not_called` while the
@@ -181,16 +181,45 @@ const parseScore = (status: number, body: string, ms: number): CueReply => {
   }
 };
 
+/** What `/health` returns while Cue is actually serving. A status line alone is not enough. */
+const healthDocument = (body: string): boolean => {
+  try {
+    const v = JSON.parse(body) as Record<string, unknown>;
+    return v["ok"] === true && typeof v["adapter"] === "string" && v["adapter"] !== "";
+  } catch {
+    return false;
+  }
+};
+
 export class CueClient {
-  private available = true;
+  private available: boolean;
   private probing = false;
   private readonly pending = new Map<string, Pending>();
   private readonly transport: Transport;
   private readonly clock: () => number;
+  private readonly onAvailability: ((available: boolean) => void) | undefined;
 
-  constructor(transport: Transport, clock: () => number = Date.now) {
+  constructor(
+    transport: Transport,
+    clock: () => number = Date.now,
+    initiallyAvailable = true,
+    onAvailability?: (available: boolean) => void,
+  ) {
     this.transport = transport;
     this.clock = clock;
+    this.available = initiallyAvailable;
+    this.onAvailability = onAvailability;
+  }
+
+  private setAvailable(available: boolean) {
+    if (this.available === available) return;
+    this.available = available;
+    // Recording the belief is best-effort: a disk error must not fail the moment.
+    try {
+      this.onAvailability?.(available);
+    } catch {
+      return;
+    }
   }
 
   /** Whether the service is believed reachable (false between a connect failure and a good probe). */
@@ -213,7 +242,7 @@ export class CueClient {
       .then((r) => {
         const ms = this.clock() - t0;
         if (r.kind !== "reply") {
-          if (r.kind === "connect_failed") this.markUnavailable();
+          if (r.kind === "connect_failed") this.setAvailable(false);
           return { status: r.kind, ms, waitMs: null } satisfies CueReply;
         }
         return parseScore(r.status, r.body, ms);
@@ -221,17 +250,13 @@ export class CueClient {
       .catch((): CueReply => ({ status: "error", ms: this.clock() - t0, waitMs: null }));
   }
 
-  private markUnavailable() {
-    this.available = false;
-  }
-
-  /** One health probe; marks the service available again when it answers. */
+  /** One health probe; marks the service available again only for a Cue health document. */
   async probe(): Promise<boolean> {
     if (this.probing) return this.available;
     this.probing = true;
     try {
       const r = await this.transport("GET", "/health", null, 2000);
-      if (r.kind === "reply" && r.status === 200) this.available = true;
+      if (r.kind === "reply" && r.status === 200 && healthDocument(r.body)) this.setAvailable(true);
       return this.available;
     } catch {
       return this.available;
