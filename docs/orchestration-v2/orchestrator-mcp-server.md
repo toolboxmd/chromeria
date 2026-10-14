@@ -427,10 +427,14 @@ detail also exposes an in-flight title regeneration.
 
 Sends a message to any ordinary or delegated thread in the environment:
 
-- `auto` starts an idle thread, steers a fully active turn, or queues behind a
-  turn that is not yet steerable;
+- `auto` starts an idle thread. On a fully active turn it steers when that
+  provider can take the message without cancelling running tools, and queues
+  when a steer would cancel those tools and the provider would report the
+  cancel as a user refusal;
 - `queue` creates a separate follow-up run after active work;
-- `steer` requires a steerable active provider turn; and
+- `steer` requires a steerable active provider turn. When a steer would cancel
+  running tools and the provider would report that as a user refusal, the
+  message queues instead and the send reports delivery `queued`; and
 - `restart` requires an active provider turn and uses the orchestrator's
   interrupt-and-restart path.
 

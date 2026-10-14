@@ -27,6 +27,9 @@ apps/server/src/mcp/toolkits/thread/handlers.ts
 apps/server/src/mcp/toolkits/thread/tools.ts
 apps/server/src/mcp/toolkits/worktree/registration.test.ts
 apps/server/src/observability/RpcInstrumentation.ts
+apps/server/src/orchestration-v2/ClaudeAutomaticDelivery.integration.test.ts
+apps/server/src/orchestration-v2/CommandPolicy.test.ts
+apps/server/src/orchestration-v2/CommandPolicy.ts
 apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts
 apps/server/src/orchestration-v2/EffectOutbox.ts
 apps/server/src/orchestration-v2/EffectWorker.ts
@@ -95,6 +98,7 @@ apps/web/src/rightPanelStore.test.ts
 apps/web/src/rightPanelStore.ts
 apps/web/src/routes/_chat.pull-requests.tsx
 apps/web/src/state/pullRequests.ts
+docs/orchestration-v2/orchestrator-mcp-server.md
 docs/user/source-control.md
 docs/user/updating.md
 knip.jsonc
@@ -197,6 +201,8 @@ packages/provider-acp/src/server/adapter.ts
 apps/server/src/orchestration-v2/testkit/fixtures/index.ts
 packages/provider-grok/src/server/xaiAcpExtension.test.ts
 packages/provider-grok/src/server/xaiAcpExtension.ts
+apps/server/src/orchestration-v2/testkit/fixtures/message_steering/claude_output.ts
+apps/server/src/orchestration-v2/testkit/fixtures/shared.ts
 apps/server/src/orchestration-v2/Adapters/GrokAdapterV2.test.ts
 packages/provider-grok/src/server/adapter.ts
 apps/web/src/components/chat/MermaidDiagram.tsx

@@ -744,9 +744,13 @@ export function materializeFixtureInput(input: {
           );
           {
             const nextStepType = input.fixtureInput.steps[stepIndex + 1]?.type;
+            // A following replay gate is holding this turn's result. Waiting
+            // for idle here never returns, because releasing that gate is what
+            // lets the turn finish and the queued steer start.
             if (
               nextStepType !== "approve_next_runtime_request" &&
-              nextStepType !== "answer_next_user_input_request"
+              nextStepType !== "answer_next_user_input_request" &&
+              nextStepType !== "release_replay_gate"
             ) {
               if (activeRunDispatchKeys.delete(`run:${step.targetRunIndex}`)) {
                 steps.push({ type: "await", key: `run:${step.targetRunIndex}` });

@@ -56,7 +56,8 @@ import { grokPromptErrorInput } from "./grok_prompt_error/input.ts";
 import { assertGrokPromptErrorOutput } from "./grok_prompt_error/output.ts";
 import { grokSubagentLineageInput } from "./grok_subagent_lineage/input.ts";
 import { assertGrokSubagentLineageOutput } from "./grok_subagent_lineage/output.ts";
-import { assertClaudeMessageSteeringOutput } from "./message_steering/claude_output.ts";
+import { claudeQueuedSteerInput } from "./claude_queued_steer/input.ts";
+import { assertClaudeQueuedSteerOutput } from "./claude_queued_steer/output.ts";
 import { assertMessageSteeringOutput } from "./message_steering/codex_output.ts";
 import { assertCursorMessageSteeringOutput } from "./message_steering/cursor_output.ts";
 import { assertGrokMessageSteeringOutput } from "./message_steering/grok_output.ts";
@@ -1582,12 +1583,6 @@ export const ORCHESTRATOR_REPLAY_FIXTURES: ReadonlyArray<OrchestratorReplayFixtu
         assertOutput: assertMessageSteeringOutput,
       },
       {
-        driver: ProviderDriverKind.make("claudeAgent"),
-        transcriptFile: new URL("./message_steering/claude_transcript.ndjson", import.meta.url),
-        modelSelection: CLAUDE_MODEL_SELECTION,
-        assertOutput: assertClaudeMessageSteeringOutput,
-      },
-      {
         driver: ProviderDriverKind.make("cursor"),
         transcriptFile: new URL("./message_steering/cursor_transcript.ndjson", import.meta.url),
         modelSelection: CURSOR_MODEL_SELECTION,
@@ -1616,6 +1611,18 @@ export const ORCHESTRATOR_REPLAY_FIXTURES: ReadonlyArray<OrchestratorReplayFixtu
         transcriptFile: new URL("./message_steering/pi_transcript.ndjson", import.meta.url),
         modelSelection: PI_MODEL_SELECTION,
         assertOutput: assertPiMessageSteeringOutput,
+      },
+    ],
+  },
+  {
+    name: "claude_queued_steer",
+    buildInput: claudeQueuedSteerInput,
+    providers: [
+      {
+        driver: ProviderDriverKind.make("claudeAgent"),
+        transcriptFile: new URL("./claude_queued_steer/claude_transcript.ndjson", import.meta.url),
+        modelSelection: CLAUDE_MODEL_SELECTION,
+        assertOutput: assertClaudeQueuedSteerOutput,
       },
     ],
   },

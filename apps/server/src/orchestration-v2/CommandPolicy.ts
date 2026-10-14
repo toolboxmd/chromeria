@@ -89,6 +89,32 @@ export function goalCommandStopsActiveRun(
   }
 }
 
+type DispatchProjection = Pick<
+  OrchestrationV2ThreadProjection,
+  "runs" | "providerThreads" | "providerSessions"
+>;
+
+/**
+ * True when this run's provider cancels running tools to take a steer and
+ * reports that cancel as a user refusal. Callers queue instead of steering.
+ * The check reads this run's own session.
+ */
+export function steeringCancelsRunningTools(
+  projection: DispatchProjection,
+  runId: OrchestrationV2Run["id"],
+): boolean {
+  const run = projection.runs.find((candidate) => candidate.id === runId);
+  const providerThread = projection.providerThreads.find(
+    (candidate) => candidate.id === run?.providerThreadId,
+  );
+  if (providerThread?.providerSessionId == null) return false;
+  const providerSession = projection.providerSessions.find(
+    (candidate) => candidate.id === providerThread.providerSessionId,
+  );
+  return providerSession?.capabilities.turns.activeSteeringInterruptsTools === true;
+}
+
+/** Resolve client intent from the state serialized by the thread dispatch lock. */
 export function resolveMessageDispatchIntent(
   projection: OrchestrationV2ThreadProjection,
   requestedMode: MessageDispatchMode,
@@ -109,7 +135,10 @@ function resolveDeliveryIntent(
   requestedMode: MessageDispatchMode,
   deliveryIntent?: "auto" | "steer" | "restart",
 ): MessageDispatchMode {
-  if (deliveryIntent === undefined) return requestedMode;
+  if (deliveryIntent === undefined) {
+    if (requestedMode.type === "steer_active" && steeringCancelsRunningTools(projection, requestedMode.targetRunId)) return { type: "queue_after_active" };
+    return requestedMode;
+  }
 
   const activeRun = projection.runs.findLast(
     (run) =>
@@ -120,7 +149,12 @@ function resolveDeliveryIntent(
   );
   if (activeRun === undefined) return { type: "start_immediately" };
   if (deliveryIntent === "steer") {
-    return { type: "steer_active", targetRunId: activeRun.id };
+    const targetId =
+      requestedMode.type === "steer_active" ? requestedMode.targetRunId : activeRun.id;
+    if (steeringCancelsRunningTools(projection, targetId)) {
+      return { type: "queue_after_active" };
+    }
+    return { type: "steer_active", targetRunId: targetId };
   }
   if (deliveryIntent === "restart") {
     return { type: "restart_active", targetRunId: activeRun.id };
@@ -147,10 +181,16 @@ function resolveDeliveryIntent(
           (candidate) => candidate.id === providerThread.providerSessionId,
         );
   const capabilities = providerSession?.capabilities.turns;
-  if (capabilities?.supportsActiveSteering === true) {
+  if (
+    capabilities?.supportsActiveSteering === true &&
+    capabilities.activeSteeringInterruptsTools !== true
+  ) {
     return { type: "steer_active", targetRunId: activeRun.id };
   }
-  if (capabilities?.supportsQueuedMessages === true) {
+  if (
+    capabilities?.activeSteeringInterruptsTools === true ||
+    capabilities?.supportsQueuedMessages === true
+  ) {
     return { type: "queue_after_active" };
   }
   if (capabilities?.supportsSteeringByInterruptRestart === true) {
