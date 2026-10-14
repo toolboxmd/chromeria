@@ -510,6 +510,10 @@
     "./cloneUrl": {
       "types": "./src/cloneUrl.ts",
       "import": "./src/cloneUrl.ts"
+    },
+    "./forkToolInstructions": {
+      "types": "./src/forkToolInstructions.ts",
+      "import": "./src/forkToolInstructions.ts"
     }
   },
   "scripts": {

@@ -1,5 +1,5 @@
 import { CommandId, MessageId, ThreadId, type ServerSettingsError } from "@t3tools/contracts";
-import { randomUuidV4 } from "../orchestration-v2/RandomUuid.ts";
+import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";

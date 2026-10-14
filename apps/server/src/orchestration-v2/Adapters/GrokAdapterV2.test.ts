@@ -14,7 +14,6 @@ import {
   type RuntimeMode,
   ThreadId,
 } from "@t3tools/contracts";
-import { GrokSettings } from "@t3tools/provider-grok/settings";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
 import * as EffectAcpErrors from "effect-acp/errors";
@@ -47,6 +46,7 @@ import { acpCompletedTurnShouldTerminalizeTool } from "@t3tools/provider-acp/ser
 import {
   makeGrokAcpAdapterFlavor,
   makeGrokAdapterV2,
+  type GrokAdapterV2Options,
   GROK_PROVIDER,
   GROK_ACP_INITIALIZE_META,
 } from "@t3tools/provider-grok/testing";
@@ -596,9 +596,12 @@ describe("Grok native questions", () => {
 });
 
 describe("Grok model selection carries the reasoning effort", () => {
-  const flavor = makeGrokAcpAdapterFlavor({
-    makeRuntime: () => Effect.never,
-  } as unknown as GrokAdapterV2Options);
+  const flavor = makeGrokAcpAdapterFlavor(
+    {
+      makeRuntime: () => Effect.never,
+    } as unknown as GrokAdapterV2Options,
+    "/test-home",
+  );
   const select = (model: string, effort?: string): ModelSelection =>
     ({
       instanceId: "grok",

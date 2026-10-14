@@ -1,8 +1,8 @@
 // Fork: agents continue a stopped delegated job in its own thread (toolboxmd/chromeria#203).
 import { assert, describe, it } from "@effect/vitest";
 
-import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "../provider/T3OrchestrationInstructions.ts";
-import { T3_CODE_TOOL_USE_INSTRUCTIONS } from "./toolInstructions.ts";
+import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "@t3tools/provider-core/server/orchestrationInstructions";
+import { T3_CODE_TOOL_USE_INSTRUCTIONS } from "@t3tools/shared/forkToolInstructions";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
 
 describe("delegated task continuation guidance", () => {

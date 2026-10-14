@@ -1,11 +1,20 @@
 import { assert, it } from "@effect/vitest";
-import { CommandId, MessageId, RunId, ScheduledTaskId, ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  MessageId,
+  RunId,
+  ScheduledTaskId,
+  ThreadId,
+  type OrchestrationV2Run,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as Outbox from "../orchestration-v2/EffectOutbox.ts";
 import * as Recovery from "../prism/RecoveryHistory.ts";
 import {
   followRun,
@@ -34,6 +43,7 @@ const run = (input: {
   readonly userMessageId?: string;
   readonly restartOf?: string;
   readonly prismSourceOf?: string;
+  readonly restartCancelledBackgroundWork?: OrchestrationV2Run["restartCancelledBackgroundWork"];
 }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -51,6 +61,9 @@ const run = (input: {
         id: input.id,
         threadId,
         userMessageId: input.userMessageId ?? `message:${input.id}`,
+        ...(input.restartCancelledBackgroundWork === undefined
+          ? {}
+          : { restartCancelledBackgroundWork: input.restartCancelledBackgroundWork }),
         ...(input.restartOf === undefined ? {} : { restartContinuationOfRunId: input.restartOf }),
         ...(input.prismSourceOf === undefined
           ? {}
@@ -143,6 +156,83 @@ it.effect("upstream's restart continuation is followed before any recovery fact"
       kind: "completed",
       runId: "run:restart",
     });
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect.each(["monitor", "subagent", "task"] as const)(
+  "a completed run that lost awaited %s work holds through pending restart and follows its successor",
+  (kind) =>
+    Effect.gen(function* () {
+      yield* setup;
+      const sourceId = "run:lost-work";
+      yield* run({
+        id: sourceId,
+        status: "completed",
+        restartCancelledBackgroundWork: [{ kind, id: "lost", label: "Awaited work" }],
+      });
+      const outbox = yield* Outbox.EffectOutboxV2;
+      const effectId = `effect:restart-continuation:${sourceId}`;
+      yield* outbox.enqueue([
+        {
+          id: effectId,
+          commandId: CommandId.make("command:runtime-reconcile:fixture"),
+          threadId,
+          request: { type: "provider-runtime.continue", sourceRunId: RunId.make(sourceId) },
+        },
+      ]);
+      assert.deepEqual(yield* followRun(sourceId), { kind: "waiting" });
+      const claimed = yield* outbox.claimNext({ workerId: "restart", leaseDurationMs: 10_000 });
+      assert.isTrue(Option.isSome(claimed));
+      assert.deepEqual(yield* followRun(sourceId), { kind: "waiting" });
+
+      yield* run({ id: "run:continued", status: "running", restartOf: sourceId });
+      assert.isTrue(yield* outbox.succeed({ effectId, workerId: "restart" }));
+      assert.deepEqual(yield* followRun(sourceId), { kind: "waiting" });
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'completed'
+        WHERE run_id = 'run:continued'`;
+      assert.deepEqual(yield* followRun(sourceId), { kind: "completed", runId: "run:continued" });
+    }).pipe(Effect.provide(Outbox.layer), Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect.each(["completed", "cancelled"] as const)(
+  "a %s restart source ends without delivery when its continuation declines",
+  (status) =>
+    Effect.gen(function* () {
+      yield* setup;
+      const sourceId = "run:declined";
+      yield* run({
+        id: sourceId,
+        status,
+        restartCancelledBackgroundWork: [{ kind: "monitor", id: "lost", label: "Awaited work" }],
+      });
+      const outbox = yield* Outbox.EffectOutboxV2;
+      const effectId = `effect:restart-continuation:${sourceId}`;
+      yield* outbox.enqueue([
+        {
+          id: effectId,
+          commandId: CommandId.make("command:runtime-reconcile:fixture"),
+          threadId,
+          request: { type: "provider-runtime.continue", sourceRunId: RunId.make(sourceId) },
+        },
+      ]);
+      assert.deepEqual(yield* followRun(sourceId), { kind: "waiting" });
+      const claimed = yield* outbox.claimNext({ workerId: "restart", leaseDurationMs: 10_000 });
+      assert.isTrue(Option.isSome(claimed));
+      assert.isTrue(yield* outbox.succeed({ effectId, workerId: "restart" }));
+      assert.deepEqual(yield* followRun(sourceId), { kind: "ended", runId: sourceId });
+    }).pipe(Effect.provide(Outbox.layer), Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("a completed run with only a cancelled background shell still completes", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    yield* run({
+      id: "run:shell",
+      status: "completed",
+      restartCancelledBackgroundWork: [{ kind: "shell", id: "shell", label: "Dev server" }],
+    });
+    assert.deepEqual(yield* followRun("run:shell"), { kind: "completed", runId: "run:shell" });
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 

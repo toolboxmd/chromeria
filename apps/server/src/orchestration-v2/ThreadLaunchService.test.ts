@@ -2416,10 +2416,9 @@ it.effect(
           runId: run.id,
           projectId: otherProjectId,
         };
-        yield* Effect.all(
-          [launches.prepareRun(input), launches.prepareRun(input)],
-          { concurrency: "unbounded" },
-        );
+        yield* Effect.all([launches.prepareRun(input), launches.prepareRun(input)], {
+          concurrency: "unbounded",
+        });
         yield* Deferred.await(entered);
         assert.equal(harness.createWorktree.mock.calls.length, 1);
         assert.equal(harness.runSetup.mock.calls.length, 1);

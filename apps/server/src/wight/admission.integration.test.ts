@@ -25,9 +25,10 @@ import * as Outbox from "../orchestration-v2/EffectOutbox.ts";
 import * as Stream from "effect/Stream";
 import * as Projection from "../orchestration-v2/ProjectionStore.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as CommandReceipts from "../orchestration-v2/CommandReceiptStore.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as Registry from "../orchestration-v2/ProviderAdapterRegistry.ts";
-import type { ProviderAdapterV2Shape } from "../orchestration-v2/ProviderAdapter.ts";
+import type { ProviderAdapterV2 } from "@t3tools/provider-core/server/ProviderAdapter";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as Harness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import { ServerActivation } from "../serverActivation.ts";
@@ -48,7 +49,7 @@ const adapter = {
   getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
   openSession: () => Effect.die("These tests prove committed dispatch without a provider process"),
-} as ProviderAdapterV2Shape;
+} satisfies ProviderAdapterV2["Service"];
 const provider = {
   instanceId,
   enabled: true,
@@ -61,6 +62,7 @@ const database = Persistence.layerMemory;
 const foundation = Layer.mergeAll(
   database,
   Settings.layerTest(),
+  CommandReceipts.layer.pipe(Layer.provide(database)),
   Projection.layer.pipe(Layer.provide(database)),
   Layer.mock(Providers.ProviderRegistry)({ getProviders: Effect.succeed([provider]) }),
 );
@@ -77,7 +79,7 @@ const dependencies = Layer.mergeAll(
   foundation,
   replay,
   hooks,
-  Threads.layer.pipe(Layer.provide(replay)),
+  Threads.layer.pipe(Layer.provide(Layer.merge(replay, foundation))),
   Layer.succeed(ServerActivation, Effect.never),
 );
 const layer = Layer.mergeAll(dependencies, Wight.layer.pipe(Layer.provide(dependencies)));

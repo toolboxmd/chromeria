@@ -7554,108 +7554,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         task.childThreadId === child.id &&
         task.id === (child.forkedFrom?.type === "node" ? child.forkedFrom.nodeId : undefined),
     );
-    if (original === undefined || original.result === null) return;
-    const owner =
-      parent.runs.filter(isBlockingRun).toSorted((a, b) => b.ordinal - a.ordinal)[0] ??
-      latestExecutedRun(parent.runs);
-    if (owner === null || owner.rootNodeId === null) return;
-    const now = message.createdAt;
-    const adapter = yield* providerAdapters.get(run.providerInstanceId);
-    const taskId = idAllocator.derive.delegatedTaskNode({ commandId: command.commandId });
-    const task: OrchestrationV2Subagent = {
-      ...original,
-      createdBy: command.createdBy,
-      driver: adapter.driver,
-      id: taskId,
-      runId: owner.id,
-      parentNodeId: owner.rootNodeId,
-      providerInstanceId: run.providerInstanceId,
-      providerThreadId: run.providerThreadId,
-      model: run.modelSelection.model,
-      modelSelection: run.modelSelection,
-      prompt: command.text,
-      title: child.title,
-      completionWake: "always",
-      completionDelivery: { state: "pending", observedByRunId: null },
-      status: run.status === "queued" ? (run.queueHeld === true ? "idle" : "pending") : "running",
-      progress: undefined,
-      result: null,
-      startedAt: now,
-      completedAt: null,
-      updatedAt: now,
-    };
-    const node: OrchestrationV2ExecutionNode = {
-      id: taskId,
-      threadId: parentThreadId,
-      runId: owner.id,
-      parentNodeId: owner.rootNodeId,
-      rootNodeId: owner.rootNodeId,
-      kind: "subagent",
-      status: task.status,
-      countsForRun: false,
-      providerThreadId: run.providerThreadId,
-      providerTurnId: null,
-      nativeItemRef: null,
-      runtimeRequestId: null,
-      checkpointScopeId: null,
-      startedAt: now,
-      completedAt: null,
-    };
-    const turnItem: OrchestrationV2TurnItem = {
-      id: idAllocator.derive.delegatedTaskTurnItem({ commandId: command.commandId }),
-      threadId: parentThreadId,
-      runId: owner.id,
-      nodeId: taskId,
-      providerThreadId: owner.providerThreadId,
-      providerTurnId: providerTurnForRun(parent, owner)?.id ?? null,
-      nativeItemRef: null,
-      parentItemId: null,
-      ordinal: yield* nextTurnItemOrdinal(parent),
-      status: task.status,
-      title: child.title,
-      startedAt: now,
-      completedAt: null,
-      updatedAt: now,
-      type: "subagent",
-      subagentId: taskId,
-      origin: "app_owned",
-      driver: task.driver,
-      providerInstanceId: task.providerInstanceId,
-      childThreadId: child.id,
-      prompt: command.text,
-      result: null,
-    };
-    const emitEvent = emit(events, command);
-    yield* emitEvent({
+    // Fork (#213): requested follow-ups keep the original task identity. Its
+    // result remains stable; latestTerminal fields and new result transfers own later turns.
+    if (original === undefined) return;
+    yield* emit(
+      events,
+      command,
+    )({
       type: "run.updated",
       threadId: child.id,
       runId: run.id,
-      occurredAt: now,
-      payload: { ...run, delegatedTaskId: taskId },
-    });
-    yield* emitEvent({
-      type: "node.updated",
-      threadId: parentThreadId,
-      runId: owner.id,
-      nodeId: taskId,
-      occurredAt: now,
-      payload: node,
-    });
-    yield* emitEvent({
-      type: "subagent.updated",
-      threadId: parentThreadId,
-      runId: owner.id,
-      nodeId: taskId,
-      occurredAt: now,
-      payload: task,
-    });
-    yield* emitEvent({
-      type: "turn-item.updated",
-      threadId: parentThreadId,
-      runId: owner.id,
-      nodeId: taskId,
-      occurredAt: now,
-      payload: turnItem,
+      occurredAt: message.createdAt,
+      payload: { ...run, delegatedTaskId: original.id },
     });
   });
 

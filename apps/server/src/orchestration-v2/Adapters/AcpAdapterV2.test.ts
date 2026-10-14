@@ -3732,18 +3732,14 @@ describe("AcpAdapterV2", () => {
   it.live("hands the flavor the selection a live session was last configured with", () =>
     Effect.gen(function* () {
       const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const fileSystem = yield* FileSystem.FileSystem;
-      const idAllocator = yield* IdAllocator.IdAllocatorV2;
       const path = yield* Path.Path;
-      const serverConfig = yield* ServerConfig.ServerConfig;
       const selfInvocation = yield* resolveSelfInvocation();
       const mockAgentPath = yield* path.fromFileUrl(
         new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
       );
       const instanceId = ProviderInstanceId.make("acp-test-previous-selection");
       const previousSelections: Array<ModelSelection | null> = [];
-      const adapter = makeAcpAdapterV2({
-        crypto: yield* Crypto.Crypto,
+      const adapter = yield* makeAcpAdapterV2({
         instanceId,
         flavor: {
           driver: ACP_TEST_DRIVER,
@@ -3755,13 +3751,10 @@ describe("AcpAdapterV2", () => {
               return modelSelection.model;
             }),
         },
-        fileSystem,
-        idAllocator,
-        serverConfig,
         selfInvocation,
       });
       const threadId = ThreadId.make("thread-acp-previous-selection");
-      const runtimePolicy = ProviderAdapterV2RuntimePolicy.make({
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
         runtimeMode: "full-access",
         interactionMode: "default",
         cwd: process.cwd(),

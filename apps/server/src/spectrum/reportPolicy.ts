@@ -19,6 +19,7 @@ import type { SqlError } from "effect/sql/SqlError";
 
 import { ForkCommitGuardRejected, type ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import { runOutcome } from "../orchestration-v2/RestartBackgroundNote.ts";
 import * as Recovery from "../prism/RecoveryHistory.ts";
 import { followSend } from "../scheduledTaskChecks/handoff.ts";
 import { SpectrumState, type SpectrumMutation } from "./state.ts";
@@ -255,7 +256,7 @@ export function reportUndeliveredGuard(
       Effect.gen(function* () {
         const projections = yield* ProjectionStore.ProjectionStoreV2;
         const { runs } = yield* projections.getThreadRecords(report.threadId, ["runs"]);
-        if (reachableRuns(runs, report.messageId).some((run) => run.status === "completed"))
+        if (reachableRuns(runs, report.messageId).some((run) => runOutcome(run) === "completed"))
           return yield* conflict(threadId);
       }).pipe(Effect.mapError((error) => guardError(threadId, error))),
     ],
@@ -279,6 +280,7 @@ export interface ReportChain {
   readonly messageId: MessageId;
   readonly runIds: ReadonlyArray<RunId>;
   readonly tailStatus: OrchestrationV2Run["status"];
+  readonly tailOutcome: OrchestrationV2Run["status"];
   readonly stopped: boolean;
   /** The tail's typed root failure, which alone can make a failure retryable. */
   readonly failure: OrchestrationV2ProviderFailure | null;
@@ -392,6 +394,7 @@ export const attemptOutcome = Effect.fn("SpectrumReport.attemptOutcome")(functio
     messageId: attempt.messageId,
     runIds,
     tailStatus: tail.status,
+    tailOutcome: runOutcome(tail),
     stopped,
     failure,
     decision: recovery.decision,
@@ -401,10 +404,12 @@ export const attemptOutcome = Effect.fn("SpectrumReport.attemptOutcome")(functio
         : null,
   };
   const end = yield* followSend(threadId, attempt.messageId);
-  if (tail.status === "completed")
-    return end.kind === "completed" && end.runId === tail.id
-      ? { kind: "delivered", chain }
-      : { kind: "held" };
+  if (tail.status === "completed") {
+    if (end.kind === "completed" && end.runId === tail.id) return { kind: "delivered", chain };
+    if (end.kind === "ended" && end.runId === tail.id)
+      return { kind: "needs-you", reason: stopped ? REPORT_STOPPED : REPORT_NOT_RETRYABLE, chain };
+    return { kind: "held" };
+  }
   if (tail.status === "cancelled") {
     const cancelledBy = yield* sql<{ readonly command_id: string | null }>`
       SELECT command_id FROM orchestration_events
@@ -415,7 +420,11 @@ export const attemptOutcome = Effect.fn("SpectrumReport.attemptOutcome")(functio
     `;
     const command = cancelledBy[0]?.command_id;
     // Restart reconciliation comes first: a continuation may still follow, so its successor stays unresolved.
-    if (command == null || command.startsWith(RESTART_CANCEL)) return { kind: "held" };
+    if (command == null) return { kind: "held" };
+    if (command.startsWith(RESTART_CANCEL))
+      return end.kind === "ended" && end.runId === tail.id
+        ? { kind: "needs-you", reason: stopped ? REPORT_STOPPED : REPORT_NOT_RETRYABLE, chain }
+        : { kind: "held" };
   }
   // Explicit Stop on the exact tail, or any other cancellation without a recovery decision.
   if (stopped || (tail.status === "cancelled" && recovery.decision === null))
@@ -547,6 +556,7 @@ const chainUnchanged = Effect.fnUntraced(function* (chain: ReportChain) {
   if (
     tail === undefined ||
     tail.status !== chain.tailStatus ||
+    runOutcome(tail) !== chain.tailOutcome ||
     !linksHold(records.runs, chain) ||
     records.runs.some(
       (run) =>

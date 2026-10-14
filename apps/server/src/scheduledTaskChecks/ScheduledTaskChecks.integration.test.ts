@@ -39,7 +39,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
-import type { ProviderAdapterV2Shape } from "../orchestration-v2/ProviderAdapter.ts";
+import type { ProviderAdapterV2 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Registry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import { continuationAdmission } from "../prism/continuationAdmission.ts";
@@ -87,7 +87,7 @@ const adapter = {
   getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
   openSession: () => Effect.die("These tests prove committed dispatch without a provider process"),
-} as ProviderAdapterV2Shape;
+} satisfies ProviderAdapterV2["Service"];
 
 /** Production wiring of upstream's scheduler with outcome checks, on a real orchestrator. */
 type Database = Layer.Layer<

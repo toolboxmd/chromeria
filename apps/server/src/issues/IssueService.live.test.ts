@@ -22,7 +22,10 @@ import { gitHubIdentity } from "../issueLinks/IssueLinks.testFixtures.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import * as GitHubApi from "../sourceControl/GitHubApi.ts";
+import * as ServerSourceControlHost from "../sourceControl/ServerSourceControlHost.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
+import * as GitHubApi from "@t3tools/source-control-github/server/GitHubApi";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as IssueService from "./IssueService.ts";
 
@@ -60,8 +63,14 @@ const projects = [
 ];
 
 const github = GitHubApi.layerWithDependencies.pipe(
-  Layer.provide(ServerSettings.layerTest({})),
-  Layer.provide(VcsProcess.layer),
+  Layer.provide(
+    ServerSourceControlHost.layer.pipe(
+      Layer.provide(ServerSettings.layerTest({})),
+      Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+      Layer.provide(Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({})),
+      Layer.provide(VcsProcess.layer),
+    ),
+  ),
   Layer.provide(FetchHttpClient.layer),
   Layer.provide(NodeServices.layer),
 );

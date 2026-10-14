@@ -22,6 +22,8 @@ import { liveThreadShell, idleThreadProjection } from "../mcp/McpToolAccess.test
 import { layer as handlers } from "../mcp/toolkits/thread/handlers.ts";
 import { ThreadToolkit } from "../mcp/toolkits/thread/tools.ts";
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
+import * as ThreadSearch from "../orchestration-v2/ThreadSearch.ts";
+import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
 
 const root = ThreadId.make("root");
 const child = ThreadId.make("child");
@@ -158,6 +160,8 @@ it.effect.each([
       const server = McpHttpServer.toolkitRegistration(ThreadToolkit, handlers).pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
         Layer.provideMerge(threads),
+        Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
+        Layer.provide(Layer.mock(ScheduledTasks.ScheduledTaskService)({})),
         Layer.provideMerge(NodeServices.layer),
       );
       const result = yield* McpServer.McpServer.pipe(

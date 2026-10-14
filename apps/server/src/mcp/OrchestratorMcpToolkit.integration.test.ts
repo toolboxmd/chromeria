@@ -28,7 +28,6 @@ import { CodexOrchestratorReplayHarness } from "../orchestration-v2/Adapters/Cod
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
-import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -437,12 +436,14 @@ describe("orchestrator MCP toolkit", () => {
             (task) =>
               task.childThreadId === delegated.childThreadId && task.id !== delegated.taskId,
           );
-          expect(followupTasks).toHaveLength(2);
-          expect(followupTasks.every((task) => task.result === null)).toBe(true);
-          expect(followupTasks.map((task) => task.id)).toEqual([
-            runningFollowup.taskId,
-            queuedFollowup.taskId,
-          ]);
+          // Fork: requested turns belong to the same job, so no sibling task is minted.
+          expect(followupTasks).toHaveLength(0);
+          expect(
+            pendingProjection.runs.find((run) => run.id === runningFollowup.runId)?.delegatedTaskId,
+          ).toBe(delegated.taskId);
+          expect(
+            pendingProjection.runs.find((run) => run.id === queuedFollowup.runId)?.delegatedTaskId,
+          ).toBe(delegated.taskId);
           expect(
             pendingProjection.runs.find((run) => run.id === delegated.childRunId)?.status,
           ).toBe("completed");
@@ -605,8 +606,8 @@ describe("orchestrator MCP toolkit", () => {
           expect(read.isError).not.toBe(true);
           const afterRead = yield* orchestrator.getThreadProjection(parentThreadId);
           expect(
-            afterRead.subagents.find((task) => task.id === delegated.taskId)
-              ?.completionDelivery?.state,
+            afterRead.subagents.find((task) => task.id === delegated.taskId)?.completionDelivery
+              ?.state,
           ).toBe("acknowledged");
         }).pipe(Effect.provide(layerTest));
       }),

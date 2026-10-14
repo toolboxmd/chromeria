@@ -29,12 +29,12 @@ import * as Checkpoints from "../orchestration-v2/CheckpointService.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Projection from "../orchestration-v2/ProjectionStore.ts";
-import * as IdAllocator from "../orchestration-v2/IdAllocator.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as Ingestor from "../orchestration-v2/ProviderEventIngestor.ts";
 import type {
   ProviderAdapterV2Event,
   ProviderAdapterV2SessionRuntime,
-} from "../orchestration-v2/ProviderAdapter.ts";
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import * as RunExecution from "../orchestration-v2/RunExecutionService.ts";
 import * as ThreadCommands from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as Decorator from "./ProviderEventIngestor.ts";

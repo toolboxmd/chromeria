@@ -17,7 +17,7 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as Projection from "../orchestration-v2/ProjectionStore.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
-import type { ProviderAdapterV2Shape } from "../orchestration-v2/ProviderAdapter.ts";
+import type { ProviderAdapterV2 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Adapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as Harness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as Database from "../persistence/Sqlite.ts";
@@ -38,7 +38,7 @@ const adapter = {
   getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
   openSession: () => Effect.die("No provider process runs in this test"),
-} as ProviderAdapterV2Shape;
+} satisfies ProviderAdapterV2["Service"];
 const adapters = Adapters.layerFromAdapters([adapter]);
 const database = Database.layerMemory;
 const registry = Layer.mock(Providers.ProviderRegistry)({

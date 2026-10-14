@@ -22,7 +22,7 @@ import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexA
 import * as CommandReceipts from "../orchestration-v2/CommandReceiptStore.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
-import type { ProviderAdapterV2Shape } from "../orchestration-v2/ProviderAdapter.ts";
+import type { ProviderAdapterV2 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Adapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as Projection from "../orchestration-v2/ProjectionStore.ts";
 import * as Harness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
@@ -65,7 +65,7 @@ const adapter = {
   getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
   openSession: () => Effect.die("No provider process runs in this test"),
-} as ProviderAdapterV2Shape;
+} satisfies ProviderAdapterV2["Service"];
 const adapters = Adapters.layerFromAdapters([adapter]);
 const database = Database.layerMemory;
 const registry = Layer.mock(Providers.ProviderRegistry)({
@@ -613,6 +613,173 @@ it.effect(
         (yield* runsFor(report.messageId)).map((run) => run.status),
         ["cancelled"],
       );
+    }).pipe(Effect.provide(runtime)),
+);
+
+it.effect("a completed report with lost awaited work holds until its exact restart completes", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    const reports = yield* Report.SpectrumReportService;
+    const threadId = yield* start("lost-work");
+    yield* reports.settle(threadId, "Report waiting for background work");
+    const report = (yield* reports.deliver(threadId)).report!;
+    const source = yield* runFor(report.messageId);
+    const sink = yield* EventSink.EventSinkV2;
+    const commandId = CommandId.make(`command:runtime-reconcile:startup:${CALLER}:lost-work`);
+    yield* sink.commitCommand({
+      commandId,
+      threadId: CALLER,
+      commandType: "fixture",
+      acceptedAt: NOW,
+      events: [
+        runEvent("run.updated", {
+          ...source,
+          status: "completed",
+          completedAt: NOW,
+          restartCancelledBackgroundWork: [{ kind: "monitor", id: "lost", label: "Awaited work" }],
+        }),
+      ],
+      effects: [
+        {
+          id: `effect:restart-continuation:${source.id}`,
+          commandId,
+          threadId: CALLER,
+          request: { type: "provider-runtime.continue", sourceRunId: source.id },
+        },
+      ],
+    });
+    assert.strictEqual((yield* attemptOutcome(CALLER, report)).kind, "held");
+    assert.deepStrictEqual((yield* reports.deliver(threadId)).report, report);
+    assert.strictEqual(yield* needsYou("lost-work"), null);
+    assert.deepStrictEqual(yield* reportsFence(scheduled("lost-work")), { kind: "waiting" });
+
+    // Admission writes the successor before the continuation effect settles.
+    const successor = {
+      ...source,
+      id: RunId.make("run:lost-work:successor"),
+      ordinal: source.ordinal + 1,
+      userMessageId: MessageId.make("message:lost-work:successor"),
+      restartContinuationOfRunId: source.id,
+      status: "running" as const,
+      completedAt: null,
+    };
+    yield* commit([runEvent("run.created", successor)]);
+    assert.strictEqual((yield* attemptOutcome(CALLER, report)).kind, "open");
+    assert.deepStrictEqual(yield* reportsFence(scheduled("lost-work")), { kind: "waiting" });
+    yield* commit([ended(successor, "completed")]);
+    assert.strictEqual((yield* attemptOutcome(CALLER, report)).kind, "delivered");
+    assert.deepStrictEqual(yield* reportsFence(scheduled("lost-work")), { kind: "released" });
+    assert.strictEqual(
+      (yield* reports.abandon(threadId, report.commandId, "alice").pipe(Effect.flip)).cause,
+      "The Spectrum report was already delivered",
+    );
+  }).pipe(Effect.provide(runtime)),
+);
+
+it.effect.each(["completed", "cancelled"] as const)(
+  "a %s report whose restart declines needs the user and can be abandoned without another attempt",
+  (status) =>
+    Effect.gen(function* () {
+      yield* setup;
+      const reports = yield* Report.SpectrumReportService;
+      const name = `restart-declined:${status}`;
+      const threadId = yield* start(name);
+      yield* reports.settle(threadId, "Report with cancelled awaited work");
+      const report = (yield* reports.deliver(threadId)).report!;
+      const source = yield* runFor(report.messageId);
+      const sink = yield* EventSink.EventSinkV2;
+      const commandId = CommandId.make(`command:runtime-reconcile:startup:${CALLER}:${status}`);
+      const effectId = `effect:restart-continuation:${source.id}`;
+      yield* sink.commitCommand({
+        commandId,
+        threadId: CALLER,
+        commandType: "fixture",
+        acceptedAt: NOW,
+        events: [
+          runEvent("run.updated", {
+            ...source,
+            status,
+            completedAt: NOW,
+            restartCancelledBackgroundWork: [{ kind: "task", id: "lost", label: "Awaited task" }],
+          }),
+        ],
+        effects: [
+          {
+            id: effectId,
+            commandId,
+            threadId: CALLER,
+            request: { type: "provider-runtime.continue", sourceRunId: source.id },
+          },
+        ],
+      });
+      assert.strictEqual((yield* attemptOutcome(CALLER, report)).kind, "held");
+      // Native continuation can succeed by declining, without a new run or event.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE orchestration_v2_effect_outbox SET status = 'succeeded'
+        WHERE effect_id = ${effectId}`;
+      const outcome = yield* attemptOutcome(CALLER, report);
+      assert.strictEqual(outcome.kind, "needs-you");
+      assert.deepStrictEqual(yield* needsYou(name), {
+        commandId: report.commandId,
+        reason: REPORT_NOT_RETRYABLE,
+      });
+      assert.deepStrictEqual(yield* reportsFence(scheduled(name)), {
+        kind: "needs-you",
+        reason: REPORT_NOT_RETRYABLE,
+      });
+      assert.deepStrictEqual((yield* reports.deliver(threadId)).report, report);
+      const abandoned = yield* reports.abandon(threadId, report.commandId, "alice");
+      assert.strictEqual(abandoned.reportAbandonment?.commandId, report.commandId);
+      assert.deepStrictEqual(yield* reportsFence(scheduled(name)), { kind: "released" });
+    }).pipe(Effect.provide(runtime)),
+);
+
+it.effect(
+  "a report chain guard rejects newly lost awaited work even when raw status is unchanged",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const reports = yield* Report.SpectrumReportService;
+      const threadId = yield* start("loss-race");
+      yield* reports.settle(threadId, "Report that appeared complete");
+      const report = (yield* reports.deliver(threadId)).report!;
+      const source = yield* runFor(report.messageId);
+      yield* commit([ended(source, "completed")]);
+      const outcome = yield* attemptOutcome(CALLER, report);
+      assert.strictEqual(outcome.kind, "delivered");
+      if (outcome.kind !== "delivered") return;
+      yield* commit([
+        {
+          id: EventId.make("event:loss-race:background-work"),
+          type: "run.background-work-cancelled",
+          threadId: CALLER,
+          runId: source.id,
+          providerInstanceId: source.providerInstanceId,
+          occurredAt: NOW,
+          payload: {
+            runId: source.id,
+            restartCancelledBackgroundWork: [
+              { kind: "subagent", id: "lost", label: "Awaited child" },
+            ],
+          },
+        },
+      ]);
+      assert.strictEqual((yield* runFor(report.messageId)).status, "completed");
+      const rejected = yield* (yield* EventSink.EventSinkV2)
+        .commitCommand({
+          commandId: CommandId.make("stale:loss-race:evidence"),
+          threadId,
+          commandType: "fixture",
+          acceptedAt: NOW,
+          events: [],
+          effects: [],
+          forkPlans: [reportChainsUnchanged(threadId, [outcome.chain])],
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(rejected._tag, "ForkCommitGuardRejected");
+      // A lost-work source never blocks the human's abandonment as a delivered turn.
+      const abandoned = yield* reports.abandon(threadId, report.commandId, "alice");
+      assert.strictEqual(abandoned.reportAbandonment?.commandId, report.commandId);
     }).pipe(Effect.provide(runtime)),
 );
 
