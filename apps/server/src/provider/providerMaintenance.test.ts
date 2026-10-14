@@ -86,6 +86,10 @@ exec "$(mise where claude)/claude" "$@"
 const miseWhichLauncher = `#!/bin/bash
 exec "$(mise which codex)" "$@"
 `;
+const nativeClaudeWithMiseComment = `#!/bin/sh
+# Previous setup used mise where claude.
+exec "$HOME/.local/share/claude/versions/2.1.299" "$@"
+`;
 const installedPackageToolProvider: ServerProvider = {
   instanceId: ProviderInstanceId.make("packageTool"),
   driver: driver("packageTool"),
@@ -611,6 +615,48 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
 
         expect(capabilities.update).toMatchObject({
           executable: link,
+          args: ["update"],
+          lockKey: "claudeAgent-native",
+        });
+      }),
+  );
+
+  it.effect.skipIf(!symlinksSupported || windowsHost)(
+    "keeps a ~/.local/bin/claude symlink into the Homebrew mise keg manual-only",
+    () =>
+      Effect.gen(function* () {
+        const tempDir = yield* makeTempDir("t3-claude-mise-keg");
+        const target = NodePath.join(tempDir, "Cellar", "mise", "2026.10.4", "bin", "mise");
+        writeExecutable(target);
+        const link = NodePath.join(tempDir, ".local", "bin", "claude");
+        NodeFS.mkdirSync(NodePath.dirname(link), { recursive: true });
+        NodeFS.symlinkSync(target, link);
+
+        const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
+          claudeNativeUpdate,
+          { binaryPath: link, env: { PATH: "" } },
+        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn));
+
+        expect(capabilities.update).toBeNull();
+      }),
+  );
+
+  it.effect.skipIf(windowsHost)(
+    "keeps claude update when a native launcher only mentions mise in a comment",
+    () =>
+      Effect.gen(function* () {
+        const tempDir = yield* makeTempDir("t3-claude-mise-comment");
+        const nativePath = NodePath.join(tempDir, ".local", "bin", "claude");
+        writeExecutable(nativePath);
+        NodeFS.writeFileSync(nativePath, nativeClaudeWithMiseComment);
+
+        const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
+          claudeNativeUpdate,
+          { binaryPath: nativePath, env: { PATH: "" } },
+        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn));
+
+        expect(capabilities.update).toMatchObject({
+          executable: nativePath,
           args: ["update"],
           lockKey: "claudeAgent-native",
         });
