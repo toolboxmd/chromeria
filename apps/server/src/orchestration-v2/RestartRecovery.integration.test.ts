@@ -1,4 +1,4 @@
-import { backup, DatabaseSync } from "node:sqlite";
+import * as NodeSqlite from "node:sqlite";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
@@ -28,6 +28,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as OrchestratorMcpService from "../mcp/OrchestratorMcpService.ts";
 import type { McpThreadInvocationScope } from "../mcp/McpInvocationContext.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
@@ -199,6 +200,7 @@ it.live(
             Layer.provide(
               Layer.mergeAll(
                 Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+                Layer.mock(RemoteDelegation.RemoteDelegation)({}),
                 Layer.mock(ProjectService.ProjectService)({}),
                 Layer.mock(SecretRequests.SecretRequests)({}),
                 Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
@@ -435,8 +437,8 @@ it.live(
 
 const snapshot = (sourcePath: string, targetPath: string) =>
   Effect.acquireUseRelease(
-    Effect.sync(() => new DatabaseSync(sourcePath, { readOnly: true })),
-    (source) => Effect.promise(() => backup(source, targetPath)),
+    Effect.sync(() => new NodeSqlite.DatabaseSync(sourcePath, { readOnly: true })),
+    (source) => Effect.promise(() => NodeSqlite.backup(source, targetPath)),
     (source) => Effect.sync(() => source.close()),
   );
 
