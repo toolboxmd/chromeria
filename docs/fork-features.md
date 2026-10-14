@@ -1678,7 +1678,7 @@ sources and reasons.
   "id": "paired-session-renewal",
   "purpose": "Keep paired desktop, web and mobile sessions active through rotating device-held renewal authority, with headless approval for existing devices.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/323"],
-  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...feat/323-paired-session-renewal"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/334"],
   "newFiles": [
     "apps/desktop/src/app/DesktopRenewalStore.test.ts",
     "apps/desktop/src/app/DesktopRenewalStore.ts",
