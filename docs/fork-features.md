@@ -255,6 +255,37 @@ are evidence for review, not proof that a feature has been adopted upstream.
 }
 ```
 
+## claude-steer-queue
+
+```json
+{
+  "id": "claude-steer-queue",
+  "purpose": "Queue a steer into Claude instead of cancelling running tools and reporting that as a user refusal.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/280"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/282"],
+  "newFiles": [
+    "apps/server/src/orchestration-v2/testkit/fixtures/claude_queued_steer/claude_transcript.ndjson",
+    "apps/server/src/orchestration-v2/testkit/fixtures/claude_queued_steer/input.ts",
+    "apps/server/src/orchestration-v2/testkit/fixtures/claude_queued_steer/output.ts"
+  ],
+  "upstreamFiles": [
+    "apps/server/src/orchestration-v2/ClaudeAutomaticDelivery.integration.test.ts",
+    "apps/server/src/orchestration-v2/CommandPolicy.test.ts",
+    "apps/server/src/orchestration-v2/CommandPolicy.ts",
+    "apps/server/src/orchestration-v2/testkit/fixtures/message_steering/claude_output.ts",
+    "apps/server/src/orchestration-v2/testkit/fixtures/shared.ts",
+    "docs/orchestration-v2/orchestrator-mcp-server.md"
+  ],
+  "sharedFiles": [
+    "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+    "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "apps/server/src/orchestration-v2/testkit/fixtures/index.ts",
+    "packages/client-runtime/src/operations/commands.ts"
+  ],
+  "keywords": ["activeSteeringInterruptsTools", "steeringCancelsRunningTools", "queue_after_active"]
+}
+```
+
 ## query-interrupt-retry
 
 ```json
