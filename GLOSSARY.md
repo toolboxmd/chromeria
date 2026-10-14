@@ -37,11 +37,13 @@ own repo with its direction, its Library and its tasks. Shown as Area in the UI.
 _Avoid_: business, space, workspace, domain
 
 **Library**:
-A Satrapy's own skills, playbooks and tools, kept in that Satrapy's repo.
+A Satrapy's skills, playbooks, tools and other durable knowledge, served from
+the flat `library/` folder in its repo.
 _Avoid_: shared folder
 
 **Great Library**:
-Skills, playbooks and tools used by two or more Satrapies, kept once and
+Skills, playbooks, tools and other knowledge used by two or more Satrapies,
+kept once as flat entries in the Promachos home's `library/` folder and
 available to every Satrapy.
 _Avoid_: shared layer, global skills
 
