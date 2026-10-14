@@ -16,6 +16,7 @@ are evidence for review, not proof that a feature has been adopted upstream.
   "newFiles": [
     "apps/mobile/src/features/settings/spectrumReportAction.tsx",
     "apps/server/src/fork/ForkCommandInterceptor.ts",
+    "apps/server/src/fork/ForkProviderlessMessages.ts",
     "apps/server/src/spectrum/Controller.integration.test.ts",
     "apps/server/src/spectrum/Controller.ts",
     "apps/server/src/spectrum/Launch.integration.test.ts",
@@ -76,6 +77,7 @@ are evidence for review, not proof that a feature has been adopted upstream.
   "sharedFiles": [
     "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
     "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+    "apps/server/src/orchestration-v2/ThreadManagementService.ts",
     "apps/mobile/src/features/settings/SettingsScheduledTasksRouteScreen.tsx",
     "apps/mobile/src/features/settings/scheduledTaskFork.tsx",
     "apps/server/src/childThreads/ForkCommitPlan.ts",
@@ -245,7 +247,6 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "apps/server/src/auth/PairingGrantStore.test.ts",
     "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts",
     "apps/server/src/orchestration-v2/V1ImportBoundary.test.ts",
-    "apps/server/src/persistence/AuthPairingLinks.ts",
     "apps/server/src/vcs/GitVcsDriverCore.test.ts",
     "knip.jsonc"
   ],
@@ -320,10 +321,10 @@ are evidence for review, not proof that a feature has been adopted upstream.
   "upstreamFiles": [
     "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
     "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
-    "apps/server/src/provider/Drivers/GrokDriver.test.ts",
-    "apps/server/src/provider/Drivers/GrokDriver.ts",
-    "apps/server/src/provider/providerMaintenance.test.ts",
-    "apps/server/src/provider/providerMaintenance.ts",
+    "packages/provider-grok/src/server/driver.test.ts",
+    "packages/provider-grok/src/server/driver.ts",
+    "packages/provider-core/src/server/maintenanceResolver.test.ts",
+    "packages/provider-core/src/server/maintenanceResolver.ts",
     "apps/server/src/provider/providerMaintenanceRunner.test.ts",
     "apps/server/src/provider/providerMaintenanceRunner.ts",
     "apps/server/src/server.ts",
@@ -685,7 +686,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/orchestration-v2/Orchestrator.ts",
     "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
     "packages/contracts/src/orchestrationV2.ts",
-    "apps/server/src/orchestration-v2/SubagentProjection.ts"
+    "packages/provider-core/src/server/subagentProjection.ts"
   ],
   "keywords": ["thread ownership", "coOwners", "person picker", "thread.share"]
 }
@@ -741,7 +742,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts",
     "packages/contracts/src/orchestrationV2.ts",
     "packages/contracts/src/orchestratorMcp.ts",
-    "apps/server/src/orchestration-v2/SubagentProjection.ts"
+    "packages/provider-core/src/server/subagentProjection.ts"
   ],
   "sharedFiles": [
     "apps/server/src/persistence/forkV1Backfills.ts",
@@ -775,10 +776,10 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "sharedFiles": [
     "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
     "apps/server/src/mcp/delegatedTaskContinuation.test.ts",
-    "apps/server/src/mcp/toolInstructions.ts",
+    "packages/shared/src/forkToolInstructions.ts",
     "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
     "apps/server/src/orchestration-v2/Orchestrator.ts",
-    "apps/server/src/provider/T3OrchestrationInstructions.ts"
+    "packages/provider-core/src/server/orchestrationInstructions.ts"
   ],
   "keywords": ["13490", "finalizeAppOwnedSubagent", "priorResultTransfers", "follow-up turn"]
 }
@@ -808,11 +809,12 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash_unpolled/output.ts"
   ],
   "upstreamFiles": [
+    "packages/provider-grok/src/testing.ts",
     "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
-    "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.ts",
+    "packages/provider-acp/src/server/adapter.ts",
     "apps/server/src/orchestration-v2/testkit/fixtures/index.ts",
-    "apps/server/src/provider/acp/XAiAcpExtension.test.ts",
-    "apps/server/src/provider/acp/XAiAcpExtension.ts"
+    "packages/provider-grok/src/server/xaiAcpExtension.test.ts",
+    "packages/provider-grok/src/server/xaiAcpExtension.ts"
   ],
   "sharedFiles": [],
   "keywords": ["17144", "15888", "endReportedOutOfBand", "XAI_TASK_ID_RE", "KillTask"]
@@ -834,11 +836,11 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "newFiles": [],
   "upstreamFiles": [
     "apps/server/src/orchestration-v2/Adapters/GrokAdapterV2.test.ts",
-    "apps/server/src/orchestration-v2/Adapters/GrokAdapterV2.ts"
+    "packages/provider-grok/src/server/adapter.ts"
   ],
   "sharedFiles": [
     "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
-    "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.ts"
+    "packages/provider-acp/src/server/adapter.ts"
   ],
   "keywords": ["15319", "15251", "reasoning_effort", "reasoningEffort"]
 }
@@ -965,14 +967,15 @@ Child creation paths are owned by child-threads and shared with thread-people.
   ],
   "newFiles": [
     "apps/server/src/mcp/delegatedTaskContinuation.test.ts",
-    "apps/server/src/mcp/toolInstructions.ts",
+    "packages/shared/src/forkToolInstructions.ts",
     "apps/server/src/prism/ReplayInstructions.test.ts"
   ],
   "upstreamFiles": [
+    "packages/shared/package.json",
     "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
-    "apps/server/src/provider/RuntimeInstructions.ts",
-    "apps/server/src/provider/T3OrchestrationInstructions.ts",
-    "apps/server/src/orchestration-v2/testkit/ReplayTranscriptNdjson.ts"
+    "packages/provider-core/src/server/runtimeInstructions.ts",
+    "packages/provider-core/src/server/orchestrationInstructions.ts",
+    "apps/server/src/orchestration-v2/testkit/ReplayRuntimeInstructions.ts"
   ],
   "sharedFiles": [
     "apps/server/src/mcp/toolkits/project/tools.ts",

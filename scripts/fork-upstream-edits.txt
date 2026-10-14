@@ -45,14 +45,13 @@ apps/server/src/orchestration-v2/ThreadPullRequestService.ts
 apps/server/src/orchestration-v2/ThreadStop.test.ts
 apps/server/src/orchestration-v2/V1ImportBoundary.test.ts
 apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts
-apps/server/src/persistence/AuthPairingLinks.ts
 apps/server/src/persistence/initializeV2Database.test.ts
 apps/server/src/project/RepositoryIdentityResolver.test.ts
 apps/server/src/project/RepositoryIdentityResolver.ts
-apps/server/src/provider/Drivers/GrokDriver.test.ts
-apps/server/src/provider/Drivers/GrokDriver.ts
-apps/server/src/provider/providerMaintenance.test.ts
-apps/server/src/provider/providerMaintenance.ts
+packages/provider-grok/src/server/driver.test.ts
+packages/provider-grok/src/server/driver.ts
+packages/provider-core/src/server/maintenanceResolver.test.ts
+packages/provider-core/src/server/maintenanceResolver.ts
 apps/server/src/provider/providerMaintenanceRunner.test.ts
 apps/server/src/provider/providerMaintenanceRunner.ts
 apps/server/src/pullRequest/PullRequestService.test.ts
@@ -142,20 +141,20 @@ docs/README.md
 packages/contracts/src/auth.ts
 packages/contracts/src/environmentHttp.ts
 packages/contracts/src/orchestrationV2.ts
-apps/server/src/orchestration-v2/SubagentProjection.ts
+packages/provider-core/src/server/subagentProjection.ts
 # Prism routing, settings and shared runtime guidance (#169)
 apps/server/src/mcp/toolkits/orchestrator/tools.ts
 apps/server/src/mcp/toolkits/project/handlers.test.ts
 apps/server/src/mcp/toolkits/project/handlers.ts
 apps/server/src/mcp/toolkits/project/tools.ts
 apps/server/src/orchestration-v2/runtimeLayer.ts
-apps/server/src/provider/RuntimeInstructions.ts
-apps/server/src/provider/T3OrchestrationInstructions.ts
+packages/provider-core/src/server/runtimeInstructions.ts
+packages/provider-core/src/server/orchestrationInstructions.ts
 apps/web/src/components/settings/SettingsSidebarNav.tsx
 apps/web/src/routeTree.gen.ts
 packages/contracts/src/index.ts
 apps/web/src/components/settings/SettingsPanels.restore.test.tsx
-apps/server/src/orchestration-v2/testkit/ReplayTranscriptNdjson.ts
+apps/server/src/orchestration-v2/testkit/ReplayRuntimeInstructions.ts
 
 # Attempt-owned stream observation before presentation buffering (#172)
 apps/server/src/orchestration-v2/RunExecutionService.ts
@@ -194,14 +193,18 @@ apps/mobile/src/features/threads/ThreadRouteScreen.tsx
 apps/mobile/src/state/use-thread-selection.ts
 packages/client-runtime/src/state/threadCommands.ts
 apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts
-apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.ts
+packages/provider-acp/src/server/adapter.ts
 apps/server/src/orchestration-v2/testkit/fixtures/index.ts
-apps/server/src/provider/acp/XAiAcpExtension.test.ts
-apps/server/src/provider/acp/XAiAcpExtension.ts
+packages/provider-grok/src/server/xaiAcpExtension.test.ts
+packages/provider-grok/src/server/xaiAcpExtension.ts
 apps/server/src/orchestration-v2/Adapters/GrokAdapterV2.test.ts
-apps/server/src/orchestration-v2/Adapters/GrokAdapterV2.ts
+packages/provider-grok/src/server/adapter.ts
 apps/web/src/components/chat/MermaidDiagram.tsx
 apps/server/src/cli/invocation.test.ts
 apps/server/src/environment/ServerEnvironment.test.ts
 apps/server/src/auth/ServerSecretStore.test.ts
 apps/server/src/auth/ServerSecretStore.ts
+
+# Exports used by carried fork instructions and ACP regressions.
+packages/shared/package.json
+packages/provider-grok/src/testing.ts
