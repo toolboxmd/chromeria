@@ -58,19 +58,38 @@ describe("Cue client", () => {
     const { transport, calls } = scripted([
       { kind: "connect_failed" },
       { kind: "connect_failed" },
-      { kind: "reply", status: 200, body: "{}" },
+      { kind: "reply", status: 200, body: "ok" },
+      { kind: "reply", status: 200, body: JSON.stringify({ ok: true, adapter: "v1" }) },
       { kind: "reply", status: 200, body: OK },
     ]);
-    const c = new CueClient(transport);
+    const changes: boolean[] = [];
+    const c = new CueClient(transport, Date.now, true, (up) => changes.push(up));
     assert.strictEqual((await c.score(REQ, WAIT)).status, "connect_failed");
     assert.isFalse(c.isAvailable());
+    assert.deepStrictEqual(changes, [false]);
     assert.strictEqual((await c.score(REQ, WAIT)).status, "not_called");
     assert.strictEqual(c.start("k", REQ).status, "not_called");
     assert.strictEqual((await c.collect("k")).status, "not_called");
     assert.strictEqual((await c.collect("no-start-while-down")).status, "not_called");
     assert.strictEqual(calls.length, 1);
     assert.isFalse(await c.probe());
+    assert.isFalse(await c.probe());
     assert.isTrue(await c.probe());
+    assert.deepStrictEqual(changes, [false, true]);
+    assert.strictEqual((await c.score(REQ, WAIT)).status, "ok");
+  });
+
+  it("stays skipped when constructed down, until a health document arrives", async () => {
+    const { transport, calls } = scripted([
+      { kind: "reply", status: 200, body: JSON.stringify({ ok: true, adapter: "v1" }) },
+      { kind: "reply", status: 200, body: OK },
+    ]);
+    const c = new CueClient(transport, Date.now, false);
+    assert.strictEqual((await c.score(REQ, WAIT)).status, "not_called");
+    assert.strictEqual(c.start("k", REQ).status, "not_called");
+    assert.strictEqual(calls.length, 0);
+    assert.isTrue(await c.probe());
+    assert.strictEqual(calls.at(-1)!.path, "/health");
     assert.strictEqual((await c.score(REQ, WAIT)).status, "ok");
   });
 

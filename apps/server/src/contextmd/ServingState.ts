@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS candidates (id INTEGER PRIMARY KEY, moment_id INTEGER
 CREATE INDEX IF NOT EXISTS candidates_moment ON candidates(moment_id);
 CREATE INDEX IF NOT EXISTS candidates_entry ON candidates(entry, served_at);
 CREATE TABLE IF NOT EXISTS heartbeats (at REAL PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS cue_down (url TEXT PRIMARY KEY, since REAL NOT NULL);
 `;
 
 /** Columns added after a table first shipped: created on open when an older state file lacks them. */
@@ -322,6 +323,20 @@ export class ServingState {
 
   heartbeat(now: number) {
     this.run("INSERT OR IGNORE INTO heartbeats (at) VALUES (?)", now);
+  }
+
+  /** Whether this machine last saw Cue's connect fail and has not had a health document since. */
+  cueDown(url: string): boolean {
+    return this.get<{ url: string }>("SELECT url FROM cue_down WHERE url = ?", url) !== undefined;
+  }
+
+  /** Remember a connect failure so the next process skips Cue until health returns. */
+  markCueDown(url: string, now: number) {
+    this.run("INSERT OR REPLACE INTO cue_down (url, since) VALUES (?, ?)", url, now);
+  }
+
+  clearCueDown(url: string) {
+    this.run("DELETE FROM cue_down WHERE url = ?", url);
   }
 
   /** Log a moment that was not served for a reason outside selection. */

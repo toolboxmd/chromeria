@@ -233,13 +233,21 @@ const servedSession = (() => {
 /** Serve the contextmd routes on a test server over a migrated database prepared by `setup`. */
 const serve = <R>(
   setup: Effect.Effect<void, never, R | SqlClient.SqlClient>,
-  options: { readonly breakStateFile?: boolean; readonly cueUrl?: string } = {},
+  options: {
+    readonly breakStateFile?: boolean;
+    readonly cueUrl?: string;
+    /** A serving database already marked, so this server starts as the next process would. */
+    readonly seedState?: string;
+  } = {},
 ) =>
   Effect.gen(function* () {
     const configContext = yield* Layer.build(
       ServerConfig.layerTest(process.cwd(), { prefix: "contextmd-route-test-" }),
     );
     const config = Context.get(configContext, ServerConfig.ServerConfig);
+    if (options.seedState !== undefined) {
+      NodeFS.copyFileSync(options.seedState, NodePath.join(config.stateDir, "contextmd.sqlite"));
+    }
     const store = writeStore(config.baseDir);
     if (options.cueUrl !== undefined) {
       const { cue } = writeCue(config.baseDir);
@@ -410,6 +418,7 @@ const serve = <R>(
           Effect.orElseSucceed(() => "reset" as const),
         );
     };
+    const sqlitePath = NodePath.join(config.stateDir, "contextmd.sqlite");
     return {
       moment,
       settle,
@@ -422,6 +431,7 @@ const serve = <R>(
       outcomes,
       database,
       cueLog,
+      sqlitePath,
     };
   });
 
@@ -989,6 +999,49 @@ describe("contextmd routes", () => {
       assert.include(result.body, "rule a");
       assert.deepStrictEqual(
         s.cueLog().moments.map((m) => m.cue_status),
+        ["connect_failed", "not_called", "not_called"],
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("a restarted server keeps Cue skipped until its health document is back", () =>
+    Effect.gen(function* () {
+      const url = yield* Effect.promise(closedPort);
+      const setup = Effect.all([
+        insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
+        projectUserMessage("Ship it"),
+      ]).pipe(Effect.asVoid);
+      const first = yield* serve(setup, { cueUrl: url });
+      assert.strictEqual(
+        (yield* first.moment({
+          hook_event_name: "UserPromptSubmit",
+          session_id: servedSession,
+          cwd: "/tmp",
+          prompt: "Ship it",
+        })).status,
+        204,
+      );
+      assert.strictEqual(first.cueLog().moments[0]!.cue_status, "connect_failed");
+      const db = new NodeSqlite.DatabaseSync(first.sqlitePath);
+      db.exec("PRAGMA wal_checkpoint(FULL)");
+      db.close();
+      const seed = `${first.sqlitePath}.seed`;
+      NodeFS.copyFileSync(first.sqlitePath, seed);
+      const second = yield* serve(setup, { cueUrl: url, seedState: seed });
+      yield* second.moment(
+        {
+          hook_event_name: "UserPromptSubmit",
+          session_id: servedSession,
+          cwd: "/tmp",
+          prompt: "Ship it",
+        },
+        { delivery: "second-user" },
+      );
+      yield* second.moment(claude("PreToolUse", servedSession, "echo a"), {
+        delivery: "second-pre",
+      });
+      assert.deepStrictEqual(
+        second.cueLog().moments.map((m) => m.cue_status),
         ["connect_failed", "not_called", "not_called"],
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
