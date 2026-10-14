@@ -179,6 +179,15 @@ Before fixing a bug or building a feature, search `pingdotgg/t3code` main, open 
 - A PR that adds, splits, merges or removes a part of [`docs/map.md`](docs/map.md), or that ships work for a part, updates the map in the same PR. Add a secondary `PR #N` ref only for an open PR that does not close the primary Issue, so failing checks can mark the part broken. The Map tab colours parts from GitHub, so closing an Issue needs no map edit.
 - When babysitting: call `watch_pull_request` and end your turn. T3 Code wakes you on checks, comments, or conflicts. Do not poll or sleep. Verify each bot finding against the source, fix real ones, dismiss false positives with a written reason. Stay quiet when nothing is new. Stop when the bots are green on the latest commit.
 
+## Installing merged builds
+
+Chromeria is the user's daily app on bestia, rocky and cavallo. Once a PR merges to `main`, you may stage that build on any of them, then quit and restart the running app to swap it in, without asking (user decision 2026-10-14). A restart cuts every running turn, and Chromeria continues only some of them ([#264](https://github.com/toolboxmd/chromeria/issues/264)). Before staging or restarting, read `~/dev/runbook/cavallo/CHROMERIA.md` in full, plus `~/dev/runbook/bestia/README.md` for bestia:
+
+- Restart only with that machine's tool: `chromeria-restart-and-resume` on rocky and cavallo, `chromeria-server-update` on bestia.
+- Before restarting, run the runbook's pre-check of running threads and wait while it says work would be lost.
+- After the restart, run its post-check: confirm the build, and wake every cut thread Chromeria did not continue. A coordinator wakes its own children. Tell the user about held queues; agents cannot resume them.
+- Record each stage and restart in that machine's runbook `CHANGES.md`.
+
 ## Documentation
 
 Most code changes do not need an internal documentation change. Agents can read the code.
