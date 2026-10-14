@@ -2,7 +2,8 @@
  * HTTP transport for ContextMD serving: `POST /contextmd/v1/moment` takes one
  * raw harness hook event and answers with the bytes the hook prints (200) or
  * nothing (204); `POST /contextmd/v1/settle/<delivery>` confirms the hook wrote
- * that reply.
+ * that reply; `POST /contextmd/v1/release/<delivery>` frees a reply the hook
+ * dropped before the model saw it.
  *
  * Hooks authenticate like any other client: a bearer session issued by this
  * environment (`t3 auth session issue`, run by `contextmd-serve install`) with
@@ -71,6 +72,18 @@ export const layer = HttpRouter.use((router) =>
         const url = HttpServerRequest.toURL(request);
         if (Option.isNone(url)) return HttpServerResponse.empty({ status: 400 });
         const reply = yield* serving.settle(url.value.pathname.slice(`${PREFIX}/settle/`.length));
+        return HttpServerResponse.empty({ status: reply.status });
+      }).pipe(Effect.withTracerEnabled(false)),
+    );
+    yield* router.add(
+      "POST",
+      `${PREFIX}/release/*`,
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        if (!(yield* authorized(request))) return yield* unauthorized(request);
+        const url = HttpServerRequest.toURL(request);
+        if (Option.isNone(url)) return HttpServerResponse.empty({ status: 400 });
+        const reply = yield* serving.release(url.value.pathname.slice(`${PREFIX}/release/`.length));
         return HttpServerResponse.empty({ status: reply.status });
       }).pipe(Effect.withTracerEnabled(false)),
     );

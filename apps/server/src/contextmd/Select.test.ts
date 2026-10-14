@@ -190,6 +190,8 @@ describe("reads", () => {
         `grep -n x ${f}`,
         `rg x ${f}`,
         `head -n 40 ${f}`,
+        `/usr/bin/head -n 5 ${f}`,
+        `"${NodePath.relative(d, "/usr/bin/head")}" -n 5 ${f}`,
         `tail -n 20 ${f}`,
         `sed -n '1,200p' ${f}`,
         `awk 'NR<10' ${f}`,
@@ -243,6 +245,7 @@ describe("reads", () => {
       }
       for (const command of [
         `/bin/cat ${f} 2>/dev/null`,
+        `${NodePath.relative(d, "/bin/cat")} ${f}`,
         `cat -n ${f}`,
         `cd ${d} && cat a.md`,
         `nl -ba ${f}`,

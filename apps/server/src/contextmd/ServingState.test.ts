@@ -756,6 +756,58 @@ describe("ServingState settlement", () => {
     assert.strictEqual(used.serve_used, Buffer.byteLength(h.text(first)!));
   });
 
+  it("releases a dropped OpenCode reservation at once and returns its bytes", () => {
+    const h = makeHarness();
+    const opencode: Profile = {
+      ...PROFILE,
+      harness: "opencode",
+      settle_within_ms: 120_000,
+      templates: { context: { context: "{{text}}" }, deny: { deny: "{{text}}" } },
+    };
+    const held = h.fire({
+      kind: "tool_result",
+      profile: opencode,
+      candidates: [entry("a", "A".repeat(1500))],
+      settle: false,
+    });
+    const budget = (run: string) =>
+      h.db.prepare("SELECT serve_used, deny_used FROM budgets WHERE run_id = ?").get(run) as {
+        serve_used: number;
+        deny_used: number;
+      };
+    const reserved = budget("run-1").serve_used;
+    assert.isAbove(reserved, 0);
+    // Inside OpenCode's 120 s window the sweep does not free it.
+    h.advance(10_000);
+    h.state.releaseStale(h.now());
+    assert.strictEqual(budget("run-1").serve_used, reserved);
+    assert.strictEqual(h.state.releaseReservation(held.delivery), true);
+    assert.strictEqual(budget("run-1").serve_used, 0);
+    assert.deepStrictEqual(h.outcomes("a"), ["delivery_unverified"]);
+    assert.strictEqual(h.state.releaseReservation(held.delivery), false);
+    assert.strictEqual(h.state.settle(held.delivery, h.now()), false);
+    const again = h.fire({
+      kind: "tool_result",
+      profile: opencode,
+      candidates: [entry("a", "A".repeat(1500))],
+    });
+    assert.strictEqual(again.status, 200);
+    // A reply the model was shown is not a drop.
+    assert.strictEqual(h.state.releaseReservation(again.delivery), false);
+    assert.strictEqual(budget("run-1").serve_used, reserved);
+    const denied = h.fire({
+      kind: "pre_tool",
+      profile: opencode,
+      run: "run-deny",
+      candidates: [inline("pr", "R".repeat(400))],
+      settle: false,
+    });
+    assert.isAbove(budget("run-deny").deny_used, 0);
+    assert.strictEqual(h.state.releaseReservation(denied.delivery), true);
+    assert.strictEqual(budget("run-deny").deny_used, 0);
+    assert.deepStrictEqual(h.outcomes("pr"), ["delivery_unverified"]);
+  });
+
   it("keeps a reply reserved for the harness's own settle window (OpenCode settles when the model reads it)", () => {
     const h = makeHarness();
     const opencode: Profile = { ...PROFILE, harness: "opencode", settle_within_ms: 120_000 };
