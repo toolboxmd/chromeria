@@ -50,6 +50,8 @@ export const grokBareSessionMeta = (fullAccess: boolean) => ({
   agentProfile: {
     name: "bare",
     description: "Bare launch",
+    // The positive list suppresses background/scheduler defaults; the denylist removes auxiliary tools.
+    tools: [...GROK_BARE_TOOLS],
     disallowedTools: [...GROK_BARE_DISALLOWED],
   },
 });
