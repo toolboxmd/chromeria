@@ -52,6 +52,7 @@ import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
+import type * as Orchestrator from "./Orchestrator.ts";
 import * as IdAllocator from "./IdAllocator.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -352,6 +353,27 @@ it.effect("keeps other database work runnable while discovering compaction candi
   ).pipe(Effect.provide(layerTest)),
 );
 
+// `@ts-expect-error` fails the build if a missing cursor, or the removed
+// cursorless stream, ever compiles. Never called.
+export function cursorRequiredAtCompileTime(
+  sink: EventSink.EventSinkV2Shape,
+  orchestrator: Orchestrator.OrchestratorV2Shape,
+  threadId: ThreadId,
+): void {
+  // @ts-expect-error stream requires afterSequence
+  const missingArguments: unknown = sink.stream();
+  // @ts-expect-error a thread filter is not a cursor
+  const missingCursor: unknown = sink.stream({ threadId });
+  // @ts-expect-error streamStoredEventsFrom requires afterSequence
+  const missingStoredCursor: unknown = orchestrator.streamStoredEventsFrom({ threadId });
+  // @ts-expect-error streamStoredEvents was removed
+  const removedStream: unknown = orchestrator.streamStoredEvents;
+  void missingArguments;
+  void missingCursor;
+  void missingStoredCursor;
+  void removedStream;
+}
+
 it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
   it.effect("projects oversized tool bodies before both replay and live RPC retention", () =>
     Effect.scoped(
@@ -621,7 +643,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
             `.pipe(Effect.orDie),
         );
         const pull = yield* Stream.toPull(
-          sink.stream({ threadId: thread.id, eventType: "run.updated" }),
+          sink.stream({ threadId: thread.id, eventType: "run.updated", afterSequence: 0 }),
         );
         assert.deepEqual(
           (yield* pull).map((stored) => stored.sequence),
@@ -686,6 +708,73 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         replayed.map((stored) => stored.sequence),
         Array.from({ length: eventCount }, (_, index) => index + 1),
       );
+    }),
+  );
+
+  it.effect("replays only the paged events after the cursor", () =>
+    Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:foundation-cursor-replay");
+      const otherThreadId = ThreadId.make("thread:foundation-cursor-replay-other");
+      const thread = makeThread(threadId, now);
+      const other = makeThread(otherThreadId, now);
+      const metadata = (
+        id: string,
+        target: ThreadId,
+        title: string,
+      ): OrchestrationV2DomainEvent => ({
+        id: EventId.make(id),
+        type: "thread.metadata-updated",
+        threadId: target,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...(target === threadId ? thread : other),
+          title,
+        },
+      });
+      const before = yield* eventSink.write({
+        events: [
+          threadCreatedEvent({ id: "event:cursor-replay:created", thread, now }),
+          threadCreatedEvent({ id: "event:cursor-replay:other-created", thread: other, now }),
+          metadata("event:cursor-replay:before", threadId, "before"),
+        ],
+      });
+      const cursor = before.at(-1)!.sequence;
+      const afterCount = 501;
+      const written = yield* eventSink.write({
+        events: [
+          ...Array.from({ length: 250 }, (_, index) =>
+            metadata(`event:cursor-replay:a:${index}`, threadId, `a ${index}`),
+          ),
+          metadata("event:cursor-replay:other-during", otherThreadId, "during"),
+          ...Array.from({ length: afterCount - 250 }, (_, index) =>
+            metadata(`event:cursor-replay:b:${index}`, threadId, `b ${index}`),
+          ),
+        ],
+      });
+      const expected = written
+        .filter((stored) => stored.event.threadId === threadId)
+        .map((stored) => stored.sequence);
+      assert.lengthOf(expected, afterCount);
+      assert.isAbove(Math.min(...expected), cursor);
+
+      const collect = (bounded: boolean) =>
+        eventSink
+          .stream({
+            threadId,
+            afterSequence: cursor,
+            ...(bounded ? { bounded: true } : {}),
+          })
+          .pipe(
+            Stream.take(afterCount),
+            Stream.runCollect,
+            Effect.map((events) => Array.from(events).map((stored) => stored.sequence)),
+          );
+
+      assert.deepEqual(yield* collect(false), expected);
+      assert.deepEqual(yield* collect(true), expected);
     }),
   );
 

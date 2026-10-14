@@ -177,9 +177,10 @@ export interface EventSinkV2Shape {
     readonly rejectedAt: DateTime.Utc;
     readonly error: string;
   }) => Effect.Effect<CommandReceiptStore.ProjectCommandReceiptV2, EventSinkV2Error>;
-  readonly stream: (input?: {
+  readonly stream: (input: {
+    /** Required. `0` is a deliberate full replay of the matched range. */
+    readonly afterSequence: number;
     readonly threadId?: ThreadId;
-    readonly afterSequence?: number;
     /** Filter before queuing live events so a busy worker retains only the events it handles. */
     readonly eventType?: OrchestrationV2DomainEvent["type"];
     /** Bound RPC subscribers; internal workers must not drop their subscription under load. */
@@ -750,57 +751,26 @@ const layerBase: Layer.Layer<
       );
     });
 
-    const catchUp = (input: {
-      readonly afterSequence: number;
-      readonly throughSequence: number;
-      readonly threadId?: ThreadId;
-      readonly eventType?: OrchestrationV2DomainEvent["type"];
-    }): Stream.Stream<OrchestrationV2StoredEvent, unknown> => {
-      const pageSize = 256;
-      const loop = (afterSequence: number): Stream.Stream<OrchestrationV2StoredEvent, unknown> =>
-        Stream.unwrap(
-          eventStore
-            .read({
-              afterSequence,
-              throughSequence: input.throughSequence,
-              ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
-              ...(input.eventType === undefined ? {} : { eventType: input.eventType }),
-              limit: pageSize,
-            })
-            .pipe(
-              Stream.runCollect,
-              Effect.map((chunk) => Array.from(chunk)),
-              Effect.map((events) => {
-                if (events.length === 0) {
-                  return Stream.empty;
-                }
-                const current = Stream.fromIterable(events);
-                const last = events.at(-1)?.sequence ?? input.throughSequence;
-                return events.length < pageSize || last >= input.throughSequence
-                  ? current
-                  : Stream.concat(current, loop(last));
-              }),
-            ),
-        );
-      return loop(input.afterSequence);
-    };
-
-    const stream = (input?: Parameters<EventSinkV2Shape["stream"]>[0]) => {
-      const afterSequence = input?.afterSequence ?? 0;
+    const stream = (input: Parameters<EventSinkV2Shape["stream"]>[0]) => {
+      const afterSequence = input.afterSequence;
       const matches = (stored: OrchestrationV2StoredEvent) =>
-        (input?.threadId === undefined || stored.event.threadId === input.threadId) &&
-        (input?.eventType === undefined || stored.event.type === input.eventType);
+        (input.threadId === undefined || stored.event.threadId === input.threadId) &&
+        (input.eventType === undefined || stored.event.type === input.eventType);
+      // Historical replay pages are released as they are consumed. The live
+      // subscription stays unbounded and can retain events published during replay.
       const replay = (throughSequence: number) =>
-        catchUp({
-          afterSequence,
-          throughSequence,
-          ...(input?.threadId === undefined ? {} : { threadId: input.threadId }),
-          ...(input?.eventType === undefined ? {} : { eventType: input.eventType }),
-        }).pipe(Stream.filter(matches));
+        eventStore
+          .read({
+            afterSequence,
+            throughSequence,
+            ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+            ...(input.eventType === undefined ? {} : { eventType: input.eventType }),
+          })
+          .pipe(Stream.filter(matches));
       return Stream.unwrap(
         Effect.gen(function* () {
           let pubsub = liveEvents;
-          if (input?.eventType !== undefined) {
+          if (input.eventType !== undefined) {
             const existing = liveEventsByType.get(input.eventType);
             if (existing !== undefined) {
               pubsub = existing;
@@ -810,7 +780,7 @@ const layerBase: Layer.Layer<
               liveEventsByType.set(input.eventType, pubsub);
             }
           }
-          if (input?.bounded === true) {
+          if (input.bounded === true) {
             return replayAndBufferProjectedLiveEvents({
               subscribe: PubSub.subscribe(pubsub),
               latestSequence: eventStore.latestSequence(),
@@ -918,10 +888,8 @@ const layerBase: Layer.Layer<
           Stream.mapError(
             (cause) =>
               new EventSinkStreamError({
-                ...(input?.threadId === undefined ? {} : { threadId: input.threadId }),
-                ...(input?.afterSequence === undefined
-                  ? {}
-                  : { afterSequence: input.afterSequence }),
+                ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+                afterSequence: input.afterSequence,
                 cause,
               }),
           ),
