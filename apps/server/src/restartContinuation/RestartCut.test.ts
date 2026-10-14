@@ -256,7 +256,7 @@ it("protects against cycles, ambiguous links, and foreign replacements", () => {
 it("exports only bounded fixed reasons and does not echo unrecognized persisted detail", () => {
   assert.strictEqual(
     RESTART_CUT_REASONS.BACKGROUND_ONLY,
-    "This run was waiting; only unfinished root turns are continued.",
+    "The run had no unfinished root turn or awaited work to continue.",
   );
   for (const reason of Object.values(RESTART_CUT_REASONS))
     assert.isTrue(reason.length > 0 && reason.length <= 512);
