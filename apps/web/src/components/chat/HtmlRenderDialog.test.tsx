@@ -346,7 +346,9 @@ it("leaves an ordinary link to the general opener", async () => {
   expect(sourceControlRead).not.toHaveBeenCalled();
   expect(openChangeRequestLink).toHaveBeenCalledTimes(1);
   expect(openLink).toHaveBeenCalledTimes(1);
-  expect(openLink).toHaveBeenCalledWith(url, { event: { metaKey: false, ctrlKey: false } });
+  expect(openLink).toHaveBeenCalledWith(url, {
+    event: { id: "link", url, metaKey: false, ctrlKey: false },
+  });
   expect(activeIssue(capableEnvironmentId)).toBeNull();
   expect(shellOpen).not.toHaveBeenCalled();
 });
@@ -392,7 +394,9 @@ it("does not open an Issue for an environment that does not list Issues", async 
   await postLink(frame, issueUrl);
   expect(sourceControlRead).not.toHaveBeenCalled();
   expect(openLink).toHaveBeenCalledTimes(1);
-  expect(openLink).toHaveBeenCalledWith(issueUrl, { event: { metaKey: false, ctrlKey: false } });
+  expect(openLink).toHaveBeenCalledWith(issueUrl, {
+    event: { id: "link", url: issueUrl, metaKey: false, ctrlKey: false },
+  });
   expect(activeIssue(otherEnvironmentId)).toBeNull();
   expect(activeIssue(capableEnvironmentId)).toBeNull();
   expect(shellOpen).not.toHaveBeenCalled();
