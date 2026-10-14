@@ -13,7 +13,7 @@ import { ForkDispatchPlans } from "../fork/ForkDispatchPlans.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Projection from "../orchestration-v2/ProjectionStore.ts";
 import { lifecycleEvents, lifecyclePlan } from "./lifecycle.ts";
-import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import {
   abandonedState,
   attemptOutcome,
@@ -68,7 +68,7 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const sink = yield* EventSink.EventSinkV2;
   const projections = yield* Projection.ProjectionStoreV2;
-  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const threads = yield* Threads.ThreadManagementService;
   const withSql = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
     Effect.provideService(effect, SqlClient.SqlClient, sql);
   const fail = (threadId: ThreadId, cause: string) => new SpectrumReportError({ threadId, cause });
@@ -112,7 +112,7 @@ const make = Effect.gen(function* () {
   });
   /** A rejected send is still a send: its durable receipt is the attempt's outcome. */
   const dispatch = (command: OrchestrationV2Command, plans: ReadonlyArray<ForkCommitPlan>) =>
-    orchestrator.dispatch(command).pipe(
+    threads.dispatch(command).pipe(
       Effect.provideService(ForkDispatchPlans, plans),
       Effect.asVoid,
       Effect.catch((cause) =>
@@ -164,6 +164,7 @@ const make = Effect.gen(function* () {
     retired: boolean,
   ) {
     const state = yield* read(threadId);
+    const plans: ForkCommitPlan[] = [];
     if (state.report !== null) {
       const attempt = reportAttempt(state);
       if (attempt?.generation === state.generation && attempt.cycle === state.cycle) return state;
@@ -171,6 +172,7 @@ const make = Effect.gen(function* () {
       const outcome = yield* withSql(attemptOutcome(state.callerThreadId, state.report));
       if (outcome.kind !== "delivered")
         return yield* fail(threadId, "An earlier Spectrum report is still undelivered");
+      plans.push(reportChainsUnchanged(threadId, [outcome.chain]));
     }
     const next = { ...makeInitialReport(state, text, retired), revision: state.revision + 1 };
     return yield* persist(
@@ -178,6 +180,7 @@ const make = Effect.gen(function* () {
       "spectrum.report.settle",
       state,
       next,
+      plans,
     );
   });
 

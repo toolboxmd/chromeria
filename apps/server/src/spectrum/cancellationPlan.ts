@@ -91,6 +91,17 @@ export function ownedRunsDrainedPlan(
           )
             return yield* new ForkCommitGuardRejected({ threadId, kind: "state_conflict" });
         }
+        const sql = yield* SqlClient.SqlClient;
+        const pending =
+          descendants.length === 0
+            ? []
+            : yield* sql`
+          SELECT 1 FROM orchestration_v2_effect_outbox
+          WHERE thread_id IN ${sql.in(descendants)} AND status IN ('pending','running')
+            AND json_extract(payload_json,'$.type') IN ('provider-turn.start','provider-turn.restart','provider-turn.interrupt','provider-runtime.continue')
+          LIMIT 1`;
+        if (pending.length > 0)
+          return yield* new ForkCommitGuardRejected({ threadId, kind: "state_conflict" });
       }).pipe(
         Effect.mapError((error) =>
           error._tag === "ForkCommitGuardRejected"

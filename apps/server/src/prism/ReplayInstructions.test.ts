@@ -2,10 +2,8 @@ import { ProviderDriverKind } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "@effect/vitest";
-import {
-  decodeProviderReplayNdjson,
-  materializeReplayTranscriptRuntimeInstructions,
-} from "@t3tools/provider-testing/replayTranscript";
+import { decodeProviderReplayNdjson } from "@t3tools/provider-testing/replayTranscript";
+import { materializeReplayTranscriptRuntimeInstructions } from "../orchestration-v2/testkit/ReplayRuntimeInstructions.ts";
 
 const museDriver = Schema.decodeUnknownSync(ProviderDriverKind)("muse");
 
