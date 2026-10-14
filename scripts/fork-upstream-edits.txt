@@ -329,6 +329,7 @@ apps/server/src/orchestration-v2/ProjectSettingsUpgrade.integration.test.ts
 apps/server/src/orchestration-v2/ProviderSwitchService.ts
 apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts
 apps/server/src/orchestration-v2/ProviderTurnStartService.ts
+apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs
 apps/server/src/orchestration-v2/RuntimePolicy.ts
 apps/server/src/scheduledTasks/ScheduledTaskService.schedule.test.ts
 apps/server/src/scheduledTasks/ScheduledTaskService.test.ts

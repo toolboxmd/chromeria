@@ -30,6 +30,7 @@ import {
 } from "@t3tools/contracts";
 import { GrokSettings } from "../settings.ts";
 import * as Crypto from "effect/Crypto";
+import * as Hex from "effect/encoding/Hex";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -433,6 +434,7 @@ export const makeGrokAdapterV2 = Effect.fn("makeGrokAdapterV2")(function* (
   const context = yield* Effect.context<Effect.Services<ReturnType<typeof makeAcpAdapterV2>>>();
   const host = yield* ProviderHost.ProviderHost;
   const fileSystem = yield* FileSystem.FileSystem;
+  const crypto = yield* Crypto.Crypto;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const flavor = makeGrokAcpAdapterFlavor(options, yield* HostProcess.HomeDirectory);
   const normal = yield* makeAcpAdapterV2({
@@ -460,7 +462,19 @@ export const makeGrokAdapterV2 = Effect.fn("makeGrokAdapterV2")(function* (
                 cause:
                   "Grok bare named MCP needs search_tool/use_tool; the exact attach path is unsupported.",
               });
-            const home = `${bareHome(host.paths.stateDir, options.instanceId, "grok")}/${encodeURIComponent(input.threadId)}`;
+            const threadHash = Hex.encode(
+              yield* crypto.digest("SHA-256", new TextEncoder().encode(input.threadId)).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderAdapter.ProviderAdapterOpenSessionError({
+                      driver: GROK_PROVIDER,
+                      providerSessionId: input.providerSessionId,
+                      cause,
+                    }),
+                ),
+              ),
+            );
+            const home = `${bareHome(host.paths.stateDir, options.instanceId, "grok")}/thread-${threadHash}`;
             const cwd = input.runtimePolicy.cwd ?? host.paths.cwd;
             let gate = yield* Deferred.make<void, EffectAcpErrors.AcpError>();
             let metadataError: string | undefined;
