@@ -1,3 +1,4 @@
+import * as McpRouting from "../mcp/McpRouting.ts";
 import {
   CommandId,
   ThreadId,
@@ -55,7 +56,7 @@ export const SpectrumToolkit = Toolkit.make(
   Tool.make("start_spectrum", {
     description:
       "Open a visible provider-less Spectrum transcript with Drafter Colors chosen through Prism. Council runs independent answers, at least two relay barriers and moderator synthesis; free mode takes ordered turns. All replies are relayed verbatim. Send normal messages to join at the next barrier, reopen to continue after the report finishes or is explicitly abandoned, and Stop to cancel owned Drafter work. limit is council relay rounds (default2) or free turns (default3 per Color).",
-    parameters: StartSpectrumInput,
+    parameters: McpRouting.parameters(StartSpectrumInput),
     success: StartSpectrumResult,
     failure: OrchestratorMcpFailure,
     failureMode: "return",

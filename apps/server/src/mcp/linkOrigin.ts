@@ -5,6 +5,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
+import { clientModeCeiling } from "./McpInvocationContext.ts";
 import type { Caller } from "./threadAccess.ts";
 
 /**
@@ -45,10 +46,23 @@ export const assertSameLink = (
     : Effect.fail(outsideLink(origin, `it may change only threads that link started.`));
 };
 
-/** Linked work never changes the environment itself: projects, settings, scheduled runs. */
+/** Direct peer calls may use the full access granted by the user.
+ * Descendants retain their origin fence; narrowed/plan calls never qualify.
+ */
+const directFullAccessPeer = (caller: Pick<Caller, "scope" | "caller">) => {
+  const ceiling = clientModeCeiling(caller.scope.client);
+  return (
+    caller.caller === undefined &&
+    caller.scope.client?.linked === true &&
+    ceiling.runtimeMode === "full-access" &&
+    ceiling.interactionMode === "default"
+  );
+};
+
+/** Linked descendants cannot change the environment; direct full-access links can. */
 export const assertNotLinked = (caller: Pick<Caller, "scope" | "caller">, what: string) => {
   const origin = callerLinkOrigin(caller);
-  return origin === undefined
+  return origin === undefined || directFullAccessPeer(caller)
     ? Effect.void
     : Effect.fail(outsideLink(origin, `it cannot ${what}.`));
 };

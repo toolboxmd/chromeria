@@ -912,6 +912,11 @@ const make = Effect.gen(function* () {
         } as const;
       }
       const parent = yield* loadProjection(scope.thread.threadId);
+      if (scope.client !== undefined) {
+        const ceiling = clientModeCeiling(scope.client);
+        yield* resolveRuntimeMode(ceiling.runtimeMode, parent.thread.runtimeMode);
+        yield* resolveInteractionMode(ceiling.interactionMode, parent.thread.interactionMode);
+      }
       return {
         parent,
         limits: {
@@ -927,6 +932,11 @@ const make = Effect.gen(function* () {
       yield* requireCapability(scope);
       const threadScope = yield* requireThreadScope(scope, operation);
       const parent = yield* loadProjection(threadScope.thread.threadId);
+      if (scope.client !== undefined) {
+        const ceiling = clientModeCeiling(scope.client);
+        yield* resolveRuntimeMode(ceiling.runtimeMode, parent.thread.runtimeMode);
+        yield* resolveInteractionMode(ceiling.interactionMode, parent.thread.interactionMode);
+      }
       return { scope: threadScope, parent } as const;
     });
 

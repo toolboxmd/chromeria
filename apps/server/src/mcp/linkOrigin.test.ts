@@ -289,7 +289,7 @@ it.layer(
     }),
   );
 
-  it.effect("changes only that link's threads, and never the environment", () =>
+  it.effect("changes only that link's threads and retains narrowed environment restrictions", () =>
     Effect.gen(function* () {
       const projections = yield* ProjectionStore.ProjectionStoreV2;
       const users = yield* usersOwnThread;
@@ -323,14 +323,21 @@ it.layer(
         assert.equal(failureCode(result), "capability_denied", name);
       }
 
-      // Nor the environment itself: projects and settings (one declaration
-      // covers both), and scheduled tasks.
+      // Narrowed links cannot change projects/settings or scheduled tasks.
+      // Full-access direct peer calls are covered by PeerToolRouting.test.ts.
+      const narrowed = {
+        ...laptop,
+        client: {
+          ...laptop.client!,
+          narrowedTo: { runtimeMode: "auto" as const, interactionMode: "default" as const },
+        },
+      };
       assert.equal(
-        failureCode(yield* call(laptop, "t3_project_update", { projectId, title: "Mine now" })),
+        failureCode(yield* call(narrowed, "t3_project_update", { projectId, title: "Mine now" })),
         "capability_denied",
       );
       assert.equal(
-        failureCode(yield* call(laptop, "delete_scheduled_task", { scheduledTaskId: "any" })),
+        failureCode(yield* call(narrowed, "delete_scheduled_task", { scheduledTaskId: "any" })),
         "capability_denied",
       );
 

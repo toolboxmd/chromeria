@@ -5,6 +5,7 @@ import {
   type RuntimeMode,
   type ThreadId,
 } from "@t3tools/contracts";
+import * as McpRouting from "./McpRouting.ts";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
 import * as Struct from "effect/Struct";
@@ -47,7 +48,7 @@ const refuseOutsideConstruction = (token: symbol) => {
 /** Builds a declaration; only the declaration functions below call it. */
 let declare: <P, A, E, R>(
   handle: (params: P) => Effect.Effect<A, E, R>,
-) => Declaration<(params: P) => Effect.Effect<A, E, R>>;
+) => Declaration<(params: P) => Effect.Effect<A, E | OrchestratorMcpFailure, R>>;
 
 type CheckedHandlerOf<D> = D extends Declaration<infer Handler> ? Handler : never;
 
@@ -94,7 +95,8 @@ export class Declaration<out Handler> {
     this.#handle = handle;
   }
   static {
-    declare = (handle) => new Declaration(builtHere, handle);
+    declare = (handle) =>
+      new Declaration(builtHere, (params) => McpRouting.withContext(params, handle(params)));
     checkedHandler = Struct.lambda<CheckedHandler>((declaration) => declaration.#handle);
   }
 }
@@ -136,11 +138,13 @@ const requireThreadCaller = McpInvocationContext.McpInvocationContext.pipe(
 
 /** Changes nothing, so every caller may call it. */
 export const reads = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
-  declare((params: P) => handle(params));
+  declare((params: P) => McpRouting.invoke(params, handle));
 
 /** Reads what belongs to the calling T3 thread, such as its preview tabs or devices. */
 export const readsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
-  declare((params: P) => requireThreadCaller.pipe(Effect.flatMap(() => handle(params))));
+  declare((params: P) =>
+    requireThreadCaller.pipe(Effect.flatMap(() => McpRouting.invoke(params, handle))),
+  );
 
 /**
  * Acts as the calling T3 thread (its subagents, preview tabs, devices,
@@ -151,7 +155,7 @@ export const actsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A,
   declare((params: P) =>
     requireThreadCaller.pipe(
       Effect.flatMap(() => writingCaller),
-      Effect.flatMap(() => handle(params)),
+      Effect.flatMap(() => McpRouting.invoke(params, handle)),
     ),
   );
 
@@ -174,7 +178,7 @@ export const writes = <P, A, E, R>(
           ? Effect.void
           : assertNotLinked(caller, "change this environment's scheduled tasks"),
       ),
-      Effect.flatMap(() => handle(params)),
+      Effect.flatMap(() => McpRouting.invoke(params, handle)),
     ),
   );
 
@@ -194,7 +198,9 @@ export const writesThreads = <P, A, E, R>(
   declare((params: P) =>
     Effect.gen(function* () {
       const caller = yield* writingCaller;
-      for (const threadId of threads(params, caller.scope)) {
+      for (const threadId of McpRouting.isRemote(params, caller.scope)
+        ? []
+        : threads(params, caller.scope)) {
         if (threadId === undefined || threadId === caller.scope.thread?.threadId) continue;
         const target = yield* caller.threads
           .getThreadShell(threadId)
@@ -208,7 +214,7 @@ export const writesThreads = <P, A, E, R>(
       // orchestrator checks again under the thread's lock and records its
       // refusal here, since handlers wrap dispatch errors their own way.
       const refused = yield* Ref.make<DispatchModeRefusal | undefined>(undefined);
-      return yield* handle(params).pipe(
+      return yield* McpRouting.invoke(params, handle).pipe(
         Effect.provideService(DispatchModeLimit, { ...caller.limits, refused }),
         Effect.catch((error) =>
           Effect.flatMap(Ref.get(refused), (refusal) =>
@@ -266,7 +272,7 @@ export const startsThreads = <P, A, E, R>(
         ),
         linkOrigin: callerLinkOrigin(caller),
       };
-      return yield* handle(params, started);
+      return yield* McpRouting.invoke(params, (local) => handle(local, started));
     }),
   );
 
@@ -288,7 +294,9 @@ export const writesEnvironment = <P, A, E, R>(
     Effect.tap((caller) => assertNotLinked(caller, "change projects or environment settings")),
     Effect.tap((caller) => assertFullAccess(caller, fullAccessRequired)),
   );
-  return declare((params: P) => check.pipe(Effect.flatMap(() => handle(params, check))));
+  return declare((params: P) =>
+    check.pipe(Effect.flatMap(() => McpRouting.invoke(params, (local) => handle(local, check)))),
+  );
 };
 
 /** What a declaration's own check needs. */
@@ -338,6 +346,27 @@ export class HandlersLayer<Tools extends Record<string, Tool.Any>, EX = never, R
 const checkedHandlers = <Handlers>(declarations: Declarations<Handlers>): Handlers =>
   Struct.map(declarations, checkedHandler);
 
+const routedHandlers = <Tools extends Record<string, Tool.Any>>(
+  toolkit: Toolkit.Toolkit<Tools>,
+  declarations: Handlers<Tools>,
+): Toolkit.HandlersFrom<Tools> => {
+  const handlers: {
+    -readonly [K in keyof Toolkit.HandlersFrom<Tools>]: Toolkit.HandlersFrom<Tools>[K];
+  } = {
+    ...checkedHandlers<Toolkit.HandlersFrom<Tools>>(declarations),
+  };
+  for (const name of Object.keys(handlers) as Array<keyof Toolkit.HandlersFrom<Tools>>) {
+    const handler = handlers[name];
+    handlers[name] = (params, context) =>
+      handler(params, context).pipe(
+        Effect.provideService(McpRouting.CurrentTool, toolkit.tools[name as keyof Tools]),
+      );
+  }
+  // The nominal declarations were checked against this toolkit before mapping.
+  // TypeScript cannot reduce the remapped conditional keys after removing readonly.
+  return handlers as unknown as Toolkit.HandlersFrom<Tools>;
+};
+
 /** `Toolkit.toLayer` for handlers that all declare their access. */
 export const toLayer = <Tools extends Record<string, Tool.Any>, EX = never, RX = never>(
   toolkit: Toolkit.Toolkit<Tools>,
@@ -346,7 +375,7 @@ export const toLayer = <Tools extends Record<string, Tool.Any>, EX = never, RX =
   handlersLayer(
     toolkit.toLayer(
       Effect.isEffect(build)
-        ? Effect.map(build, checkedHandlers<Toolkit.HandlersFrom<Tools>>)
-        : checkedHandlers(build),
+        ? Effect.map(build, (declarations) => routedHandlers(toolkit, declarations))
+        : routedHandlers(toolkit, build),
     ),
   );
