@@ -274,6 +274,14 @@ export class ServingState {
       ).some((c) => c.name === column);
       if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
     }
+    // Before user_version 1, moments.server_ms held seconds; convert those rows once.
+    this.tx(() => {
+      const { user_version } = this.get<{ user_version: number }>("PRAGMA user_version")!;
+      if (user_version < 1) {
+        db.exec("UPDATE moments SET server_ms = server_ms * 1000");
+        db.exec("PRAGMA user_version = 1");
+      }
+    });
   }
 
   private tx<A>(f: () => A): A {
@@ -325,7 +333,7 @@ export class ServingState {
         delivery: u.delivery,
         reason: u.reason ?? null,
         now: u.now,
-        serverMs: u.now - u.startedAt,
+        startedAt: u.startedAt,
         ...(u.kind === undefined ? {} : { kind: u.kind }),
         ...(u.session === undefined ? {} : { session: u.session }),
         toolUseId: u.toolUseId ?? null,
@@ -570,7 +578,7 @@ export class ServingState {
     delivery: string | null;
     reason?: string | null;
     now: number;
-    serverMs: number;
+    startedAt: number;
     kind?: string;
     session?: string;
     threadId?: string | null;
@@ -599,7 +607,7 @@ export class ServingState {
       m.reason ?? null,
       m.owners ? JSON.stringify(m.owners) : null,
       cue?.adapter ?? null,
-      m.serverMs,
+      (m.now - m.startedAt) * 1000,
       m.delivery,
       cue?.status ?? null,
       cue?.ms ?? null,
@@ -690,7 +698,7 @@ export class ServingState {
       status,
       delivery: input.delivery,
       now,
-      serverMs: now - input.startedAt,
+      startedAt: input.startedAt,
       kind: m.kind,
       session: m.session,
       threadId: joined?.threadId ?? null,
