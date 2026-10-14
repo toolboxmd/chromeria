@@ -199,6 +199,7 @@ vite.config.ts
 apps/mobile/src/features/threads/ThreadRouteScreen.tsx
 apps/mobile/src/state/use-thread-selection.ts
 packages/client-runtime/src/state/threadCommands.ts
+packages/client-runtime/src/t3ToolSummary.ts
 apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts
 apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.ts
 apps/server/src/orchestration-v2/testkit/fixtures/index.ts

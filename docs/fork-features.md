@@ -1445,6 +1445,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/project/ProjectService.ts",
     "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
     "apps/server/src/project/ProjectSetupScriptRunner.ts",
+    "packages/client-runtime/src/t3ToolSummary.ts",
     "packages/shared/src/t3McpToolPresentation.ts"
   ],
   "sharedFiles": [
