@@ -1329,16 +1329,22 @@ Child creation paths are owned by child-threads and shared with thread-people.
 ```json
 {
   "id": "contextmd-serving",
-  "purpose": "Serve ContextMD's stored rules to agents in Chromeria threads through thin harness hooks, with serving state, settlement and the serving log in the environment.",
+  "purpose": "Serve ContextMD's stored rules and Great Library pointer to agents in Chromeria threads through thin harness hooks and native session boundaries, with serving state, settlement and the serving log in the environment.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/217",
-    "https://github.com/toolboxmd/chromeria/issues/268"
+    "https://github.com/toolboxmd/chromeria/issues/268",
+    "https://github.com/toolboxmd/chromeria/issues/311",
+    "https://github.com/toolboxmd/contextmd/issues/34"
   ],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/220"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/220",
+    "https://github.com/toolboxmd/chromeria/pull/312"
+  ],
   "newFiles": [
     "apps/server/src/contextmd/ContextmdRoute.test.ts",
     "apps/server/src/contextmd/ContextmdRoute.ts",
     "apps/server/src/contextmd/ContextmdServing.ts",
+    "apps/server/src/contextmd/GreatLibrary.test.ts",
     "apps/server/src/contextmd/Harnesses.ts",
     "apps/server/src/contextmd/Library.test.ts",
     "apps/server/src/contextmd/Matcher.ts",
@@ -1349,11 +1355,37 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/contextmd/ServingState.test.ts",
     "apps/server/src/contextmd/ServingState.ts",
     "apps/server/src/contextmd/Store.ts",
+    "apps/server/src/contextmd/great-library-path-corpus.json",
     "apps/server/src/contextmd/library-corpus.json"
   ],
-  "upstreamFiles": [],
-  "sharedFiles": ["apps/server/src/server.ts"],
-  "keywords": ["contextmd", "ContextMD", "/contextmd/v1", "contextmd.sqlite", "contextmd-hook"]
+  "upstreamFiles": [
+    "apps/server/src/orchestration-v2/CheckpointRestoreSafety.test.ts",
+    "apps/server/src/orchestration-v2/CheckpointRollbackService.test.ts",
+    "apps/server/src/orchestration-v2/CheckpointRollbackService.ts",
+    "apps/server/src/orchestration-v2/ProviderAdapter.ts",
+    "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+    "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+    "apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs",
+    "apps/server/src/provider/acp/AcpJsonRpcConnection.test.ts",
+    "apps/server/src/provider/acp/AcpSessionRuntime.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
+    "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.ts",
+    "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+    "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+    "apps/server/src/orchestration-v2/runtimeLayer.ts",
+    "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts",
+    "apps/server/src/server.ts"
+  ],
+  "keywords": [
+    "contextmd",
+    "ContextMD",
+    "/contextmd/v1",
+    "contextmd.sqlite",
+    "contextmd-hook",
+    "great_library"
+  ]
 }
 ```
 
