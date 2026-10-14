@@ -14,6 +14,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import { OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
+import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
+import * as Receipts from "../orchestration-v2/CommandReceiptStore.ts";
+import * as Settings from "../serverSettings.ts";
 import type { ProviderAdapterV2 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Registry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as Harness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
@@ -32,7 +35,108 @@ const layer = Harness.layerWithRegistry(
   { name: "cross-project" },
   Registry.layerFromAdapters([adapter]),
   { databaseLayer: database, runEffectWorker: false },
-).pipe(Layer.provideMerge(database));
+).pipe(Layer.provideMerge(Layer.merge(database, Receipts.layer.pipe(Layer.provide(database)))));
+
+it.effect(
+  "native cross-project admission refuses a disabled destination while preserving the enabled parent",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const parentId = ThreadId.make("disabled-destination:parent");
+      const parentProjectId = ProjectId.make("disabled-destination:parent-project");
+      const destinationId = ProjectId.make("disabled-destination:project");
+      const orchestrator = yield* OrchestratorV2;
+      yield* sql`INSERT INTO projection_projects (project_id,title,workspace_root,scripts_json,default_thread_env_mode,created_at,updated_at)
+      VALUES (${destinationId},'Destination','/tmp/destination','[]','worktree','2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')`;
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("disabled-destination:create"),
+        threadId: parentId,
+        projectId: parentProjectId,
+        title: "Parent",
+        modelSelection,
+        runtimeMode: "approval-required",
+        interactionMode: "plan",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("disabled-destination:parent-work"),
+        messageId: MessageId.make("disabled-destination:parent-work"),
+        threadId: parentId,
+        text: "Parent work with its own model and kit.",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const parentRun = (yield* orchestrator.getThreadProjection(parentId)).runs[0]!;
+      const request = {
+        type: "delegated_task.request" as const,
+        commandId: CommandId.make("disabled-destination:delegate"),
+        parentThreadId: parentId,
+        parentRunId: parentRun.id,
+        parentNodeId: parentRun.rootNodeId!,
+        projectId: destinationId,
+        task: "Destination work using the parent's selected kit.",
+        modelSelection,
+        runtimeMode: "approval-required" as const,
+        interactionMode: "plan" as const,
+        completionWake: "always" as const,
+        createdBy: "agent" as const,
+        creationSource: "mcp" as const,
+      };
+      const gate = Layer.fresh(Threads.layer).pipe(
+        Layer.provideMerge(
+          Settings.layerTest({
+            providerInstances: { codex: { driver: "codex", enabled: true } },
+            projectSettingsOverrides: {
+              [destinationId]: { providerInstances: { codex: { enabled: false } } },
+            },
+          }),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const threads = yield* Threads.ThreadManagementService;
+        assert.isTrue(
+          yield* threads.isProviderInstanceEnabledForProject({
+            projectId: parentProjectId,
+            instanceId,
+          }),
+        );
+        assert.isFalse(
+          yield* threads.isProviderInstanceEnabledForProject({
+            projectId: destinationId,
+            instanceId,
+          }),
+        );
+        const refused = yield* threads.dispatch(request).pipe(Effect.flip);
+        assert.instanceOf(refused, Threads.ThreadManagementProviderInstanceDisabledError);
+        if (refused._tag !== "ThreadManagementProviderInstanceDisabledError") return;
+        assert.strictEqual(refused.projectId, destinationId);
+        assert.deepStrictEqual((yield* orchestrator.getThreadProjection(parentId)).subagents, []);
+        assert.deepStrictEqual(
+          yield* sql`SELECT thread_id FROM orchestration_v2_projection_threads WHERE project_id=${destinationId}`,
+          [],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE command_id=${request.commandId}`,
+          [],
+        );
+      }).pipe(Effect.provide(gate));
+      // Re-enabling the destination admits the unchanged request, with the parent's model and permission ceiling.
+      yield* (yield* Threads.ThreadManagementService).dispatch(request);
+      const task = (yield* orchestrator.getThreadProjection(parentId)).subagents[0]!;
+      const child = yield* orchestrator.getThreadProjection(task.childThreadId!);
+      assert.strictEqual(child.thread.projectId, destinationId);
+      assert.deepStrictEqual(child.thread.modelSelection, modelSelection);
+      assert.strictEqual(child.thread.runtimeMode, "approval-required");
+      assert.strictEqual(child.thread.lineage.parentThreadId, parentId);
+    }).pipe(Effect.provide(layer)),
+);
 
 it.effect(
   "native cross-project delegation keeps ancestry and prepares the destination workspace, refusing missing projects",

@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 
 import type { SpectrumRound, SpectrumState } from "./state.ts";
+import { runOutcome } from "../orchestration-v2/RestartBackgroundNote.ts";
 
 /** Plans one round; dispatch and persistence belong to the serialized controller. */
 export function nextRound(state: SpectrumState): SpectrumRound | null {
@@ -132,10 +133,11 @@ export function acceptReply(
   );
   if (index === -1) return { type: "ignored" };
   if (input.recoveryPending) return { type: "waiting" };
-  if (["failed", "interrupted", "cancelled", "rolled_back"].includes(input.run.status)) {
+  const outcome = runOutcome(input.run);
+  if (["failed", "interrupted", "cancelled", "rolled_back"].includes(outcome)) {
     return { type: "failed", reason: "run-ended" };
   }
-  if (input.run.status !== "completed") return { type: "waiting" };
+  if (outcome !== "completed") return { type: "waiting" };
   const messages = input.messages.filter(
     (message) =>
       message.threadId === input.run.threadId &&

@@ -13,7 +13,7 @@ import { base, input, setup } from "./controllerTestkit.ts";
 const decodeSendResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadSendResult);
 const runtime = Layer.fresh(
   Layer.mergeAll(
-    Plans.layer,
+    Plans.layer.pipe(Layer.provide(base)),
     Mcp.layer.pipe(Layer.provide(base)),
     Launch.layer.pipe(Layer.provideMerge(base)),
   ),

@@ -9,7 +9,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { ForkDispatchPlans } from "../fork/ForkDispatchPlans.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
-import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { bindRun, nextRound } from "./barrier.ts";
 import { spectrumLaunchAdmission } from "./launchAdmission.ts";
@@ -38,7 +38,7 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const sink = yield* EventSink.EventSinkV2;
-  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const threads = yield* Threads.ThreadManagementService;
   const read = (threadId: ThreadId) =>
     readSpectrum(threadId).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
@@ -132,7 +132,7 @@ const make = Effect.gen(function* () {
         cause: "Round command is absent from durable state",
       });
     // Fiber-local admission is rebuilt on every replay. No captured scope survives a restart.
-    const result = yield* orchestrator
+    const result = yield* threads
       .dispatch(pending)
       .pipe(
         Effect.provideService(ForkDispatchPlans, [

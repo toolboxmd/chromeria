@@ -2,6 +2,7 @@ import {
   CommandId,
   EventId,
   OrchestrationV2RunJson,
+  type ThreadId,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
@@ -18,7 +19,10 @@ import {
 } from "../fork/ForkCommandInterceptor.ts";
 import { explicitMessage, humanMessage, readRetirementState } from "../childThreads/retirement.ts";
 import * as Projection from "../orchestration-v2/ProjectionStore.ts";
-import { followSend } from "../scheduledTaskChecks/handoff.ts";
+import {
+  ForkProviderlessMessages,
+  ForkProviderlessMessageReadError,
+} from "../fork/ForkProviderlessMessages.ts";
 import { ownedActiveRuns, ownedThreads, ownedRunsDrainedPlan } from "./cancellationPlan.ts";
 import { lifecycleEvents } from "./lifecycle.ts";
 import { readSpectrum } from "./store.ts";
@@ -27,6 +31,8 @@ import {
   dropUnsentReport,
   reportDrainProof,
   reportDrainedPlan,
+  attemptOutcome,
+  reportChainsUnchanged,
 } from "./reportPolicy.ts";
 import type { ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
 import { spectrumPlan } from "./spectrumPlan.ts";
@@ -106,12 +112,13 @@ const plan = Effect.fn("Spectrum.commandPlan")(function* (
           state.report !== null &&
           state.reportAbandonment?.commandId !== state.report.commandId
         ) {
-          const end = yield* followSend(state.report.threadId, state.report.messageId);
-          if (end.kind !== "completed")
+          const outcome = yield* attemptOutcome(state.report.threadId, state.report);
+          if (outcome.kind !== "delivered")
             return yield* new ForkCommandPlanError({
               threadId: state.threadId,
               cause: "Finish or explicitly abandon the current report before reopening.",
             });
+          guards.push(reportChainsUnchanged(state.threadId, [outcome.chain]));
         }
         if (
           state.report !== null &&
@@ -139,7 +146,7 @@ const plan = Effect.fn("Spectrum.commandPlan")(function* (
               ? []
               : yield* sql`SELECT 1 FROM orchestration_v2_effect_outbox
             WHERE thread_id IN ${sql.in(descendants)} AND status IN('pending','running')
-              AND json_extract(payload_json,'$.type') IN('provider-turn.start','provider-turn.restart','provider-turn.interrupt') LIMIT 1`;
+              AND json_extract(payload_json,'$.type') IN('provider-turn.start','provider-turn.restart','provider-turn.interrupt','provider-runtime.continue') LIMIT 1`;
           if (pending.length !== 0)
             return yield* new ForkCommandPlanError({
               threadId: state.threadId,
@@ -254,4 +261,21 @@ const plan = Effect.fn("Spectrum.commandPlan")(function* (
     ),
   );
 });
-export const layer = Layer.succeed(ForkCommandInterceptor, { plan });
+const providerlessMessages = Layer.effect(
+  ForkProviderlessMessages,
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    return {
+      contains: (threadId: ThreadId) =>
+        readSpectrum(threadId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.map(Option.isSome),
+          Effect.mapError((cause) => new ForkProviderlessMessageReadError({ threadId, cause })),
+        ),
+    };
+  }),
+);
+export const layer = Layer.merge(
+  Layer.succeed(ForkCommandInterceptor, { plan }),
+  providerlessMessages,
+);

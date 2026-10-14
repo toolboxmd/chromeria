@@ -12,7 +12,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
-import { ForkCommitGuardRejected } from "../childThreads/ForkCommitPlan.ts";
+import { ForkCommitGuardRejected, type ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
 import { runOutcome } from "../orchestration-v2/RestartBackgroundNote.ts";
 import * as Recovery from "../prism/RecoveryHistory.ts";
 import { holdsTask } from "./state.ts";
@@ -141,10 +141,6 @@ export const followRun = Effect.fn("ScheduledTaskChecks.followRun")(function* (r
       status: decodeRunStatus(run.status),
       ...decodeRestartWork(run.payload_json),
     });
-    if (outcome === "completed")
-      return restarting
-        ? ({ kind: "waiting" } satisfies RunEnd)
-        : ({ kind: "completed", runId: current } satisfies RunEnd);
     // #169's recovery state for this run (D38). An admitted continuation, linked
     // from the successor run itself, is followed first; the index admits at most
     // one, so more is never chosen between. Pending recovery, such as a
@@ -159,6 +155,7 @@ export const followRun = Effect.fn("ScheduledTaskChecks.followRun")(function* (r
     const decision = recovery.decision;
     if (restarting || recovery.pendingRecovery !== null || decision?.status === "pending")
       return { kind: "waiting" } satisfies RunEnd;
+    if (outcome === "completed") return { kind: "completed", runId: current } satisfies RunEnd;
     // A retry is admitted with its run, so a decided retry without one is not done yet.
     if (decision?.outcome === "retried") return { kind: "waiting" } satisfies RunEnd;
     if (
@@ -172,6 +169,32 @@ export const followRun = Effect.fn("ScheduledTaskChecks.followRun")(function* (r
   }
   return { kind: "waiting" } satisfies RunEnd;
 });
+
+/** Rechecks the exact effective end before a caller commits a reply or failure. */
+export function runEndUnchanged(
+  threadId: ThreadId,
+  sourceRunId: string,
+  expected: Exclude<RunEnd, { readonly kind: "waiting" }>,
+): ForkCommitPlan {
+  return {
+    guards: [
+      Effect.gen(function* () {
+        const current = yield* followRun(sourceRunId);
+        if (
+          current.kind === "waiting" ||
+          current.kind !== expected.kind ||
+          current.runId !== expected.runId
+        )
+          return yield* new ForkCommitGuardRejected({ threadId, kind: "state_conflict" });
+      }).pipe(
+        Effect.catchTags({
+          SqlError: () => new ForkCommitGuardRejected({ threadId, kind: "storage_failure" }),
+        }),
+      ),
+    ],
+    mutations: [],
+  };
+}
 
 /** Where the run started by one scheduler send stands; waiting until that send has a run. */
 export const followSend = Effect.fn("ScheduledTaskChecks.followSend")(function* (

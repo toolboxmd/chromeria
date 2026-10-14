@@ -16,12 +16,13 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import { readRetirementState } from "../childThreads/retirement.ts";
+import type { ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
 import { ForkDispatchPlans } from "../fork/ForkDispatchPlans.ts";
 import * as Sink from "../orchestration-v2/EventSink.ts";
 import * as Events from "../orchestration-v2/EventStore.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as Projections from "../orchestration-v2/ProjectionStore.ts";
-import { followRun } from "../scheduledTaskChecks/handoff.ts";
+import { followRun, runEndUnchanged } from "../scheduledTaskChecks/handoff.ts";
 import { acceptReply, barrierComplete, nextRound } from "./barrier.ts";
 import { ownedActiveRuns, spectrumCancellationPlan } from "./cancellationPlan.ts";
 import * as Reports from "./ReportService.ts";
@@ -63,6 +64,7 @@ const make = Effect.gen(function* () {
     old: SpectrumState,
     next: SpectrumState,
     key: string,
+    plans: ReadonlyArray<ForkCommitPlan> = [],
   ) {
     const now = yield* DateTime.now;
     const thread = yield* projections.getThread(old.threadId);
@@ -75,6 +77,7 @@ const make = Effect.gen(function* () {
       events: lifecycle,
       effects: [],
       forkPlans: [
+        ...plans,
         ...(lifecycle.length === 0 ? [] : [lifecyclePlan(thread)]),
         spectrumPlan({
           expectedRevision: old.revision,
@@ -114,6 +117,7 @@ const make = Effect.gen(function* () {
   const cancelOwned = Effect.fn("SpectrumController.cancelOwned")(function* (
     state: SpectrumState,
     key: string,
+    plans: ReadonlyArray<ForkCommitPlan> = [],
   ) {
     // Lineage-only Colors are not delegated task rows. Enumerate their full owned lineage explicitly.
     const owned = yield* ownedActiveRuns(state.threadId).pipe(
@@ -141,6 +145,7 @@ const make = Effect.gen(function* () {
         outbox: commands,
       },
       key,
+      plans,
     );
   });
   const ownedWorkDrained = Effect.fn("SpectrumController.ownedWorkDrained")(function* (
@@ -152,7 +157,7 @@ const make = Effect.gen(function* () {
       UNION SELECT t.thread_id FROM orchestration_v2_projection_threads t JOIN owned p ON json_extract(t.payload_json,'$.lineage.parentThreadId')=p.thread_id
         WHERE json_extract(t.payload_json,'$.lineage.relationshipToParent')='subagent'
     ) SELECT 1 FROM orchestration_v2_effect_outbox e JOIN owned o ON e.thread_id=o.thread_id
-      WHERE e.status IN('pending','running') AND json_extract(e.payload_json,'$.type') IN('provider-turn.start','provider-turn.restart','provider-turn.interrupt') LIMIT 1`;
+      WHERE e.status IN('pending','running') AND json_extract(e.payload_json,'$.type') IN('provider-turn.start','provider-turn.restart','provider-turn.interrupt','provider-runtime.continue') LIMIT 1`;
     return (
       pending.length === 0 &&
       (yield* ownedActiveRuns(id).pipe(Effect.provideService(SqlClient.SqlClient, sql))).length ===
@@ -287,6 +292,7 @@ const make = Effect.gen(function* () {
         const records = yield* projections.getThreadRecords(slot.threadId, ["runs", "messages"]);
         const run = records.runs.find((candidate) => candidate.id === end.runId);
         if (run === undefined) continue;
+        const completion = runEndUnchanged(id, slot.runId, end);
         // followRun validates every immutable restart/Prism source link before selecting this exact run.
         const linked = {
           ...state.round,
@@ -304,6 +310,7 @@ const make = Effect.gen(function* () {
           state = yield* cancelOwned(
             state,
             `spectrum:${id}:${state.generation}:failed:${slot.commandId}`,
+            [completion],
           );
           yield* reports.settle(id, `Spectrum could not finish: ${reply.reason}.`, true);
           return yield* drain(id);
@@ -326,6 +333,7 @@ const make = Effect.gen(function* () {
           state,
           { ...state, revision, round: reply.round, outbox: [command] },
           `${key}:enqueue`,
+          [completion],
         );
         state = yield* drain(id);
         accepted = true;
