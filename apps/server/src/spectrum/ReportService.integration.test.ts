@@ -272,9 +272,16 @@ it.effect("a disabled caller holds the durable report without a run, effect or f
     const gate = Layer.fresh(Threads.layer).pipe(
       Layer.provideMerge(
         Settings.layerTest({
-          providerInstances: { codex: { driver: "codex", enabled: true } },
+          providerInstances: {
+            [ProviderInstanceId.make("codex")]: {
+              driver: ProviderDriverKind.make("codex"),
+              enabled: true,
+            },
+          },
           projectSettingsOverrides: {
-            [projectId]: { providerInstances: { codex: { enabled: false } } },
+            [projectId]: {
+              providerInstances: { [ProviderInstanceId.make("codex")]: { enabled: false } },
+            },
           },
         }),
       ),
@@ -621,7 +628,12 @@ it.effect("never retries an explicit Stop, a non-retryable failure or a rejected
     const ghostGate = Layer.fresh(Threads.layer).pipe(
       Layer.provide(
         Settings.layerTest({
-          providerInstances: { ghost: { driver: "codex", enabled: true } },
+          providerInstances: {
+            [ProviderInstanceId.make("ghost")]: {
+              driver: ProviderDriverKind.make("codex"),
+              enabled: true,
+            },
+          },
         }),
       ),
     );
