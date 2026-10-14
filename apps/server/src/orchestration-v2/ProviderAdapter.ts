@@ -374,6 +374,8 @@ export const ProviderAdapterV2Error = Schema.Union([
 export type ProviderAdapterV2Error = typeof ProviderAdapterV2Error.Type;
 
 export interface ProviderAdapterV2OpenSessionInput {
+  /** Per-call creation text; cached and loaded sessions never replace their native head. */
+  readonly newSessionInstructions?: string;
   readonly threadId: ThreadId;
   readonly providerSessionId: ProviderSessionId;
   readonly modelSelection: ModelSelection;
@@ -464,6 +466,7 @@ export type ProviderAdapterV2RollbackTarget =
     };
 
 export interface ProviderAdapterV2RollbackThreadInput {
+  readonly newSessionInstructions?: string;
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly target: ProviderAdapterV2RollbackTarget;
   readonly providerThreadTurns: ReadonlyArray<OrchestrationV2ProviderTurn>;
@@ -523,6 +526,11 @@ export interface ProviderAdapterV2McpApps {
 }
 
 export interface ProviderAdapterV2SessionRuntime {
+  readonly createdSessions?: () => ReadonlyArray<{
+    readonly nativeSessionId: string;
+    readonly text: string;
+    readonly site: "open" | "fallback" | "rollback";
+  }>;
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
   readonly providerSessionId: ProviderSessionId;

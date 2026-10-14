@@ -50,7 +50,11 @@ export interface Profile {
   readonly settle_within_ms: number;
   readonly session_start_limit_bytes: number;
   readonly new_epoch_sources: ReadonlyArray<string>;
-  readonly templates: { readonly context: unknown; readonly deny: unknown };
+  readonly templates: {
+    readonly context: unknown;
+    readonly deny: unknown;
+    readonly pointer?: unknown;
+  };
   readonly heads: { readonly deny: string; readonly context: string };
   readonly deny_evidence?: "projection" | "none";
   /** A deny reason the harness shows only up to this many bytes; unset means `limit_bytes`. */
@@ -58,6 +62,10 @@ export interface Profile {
 }
 
 export interface Selection {
+  /** Verified only while owed; its complete line is never truncated or run-deduped. */
+  readonly greatLibrary?: Candidate | null;
+  /** Configured whole pointer bytes, kept back from ordinary serving even while not owed. */
+  readonly greatLibraryBytes?: number;
   readonly moment: {
     readonly kind: MomentKind;
     /** The event name the reply answers, in the hook-output vocabulary. */
