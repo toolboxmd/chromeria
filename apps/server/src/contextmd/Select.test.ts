@@ -336,7 +336,112 @@ describe("command keys", () => {
     }
   });
 
-  it("keeps the first bake's bare key on unquoted arguments (#232, contextmd#39)", () => {
+  it("keep quoted single tokens in every word position and drop quoted prose (#232)", () => {
+    // Single quoted tokens count as arguments; this does not claim they execute gh.
+    for (const command of [
+      "printf '%s ' 'gh' 'pr' 'create'",
+      'echo "gh" pr create',
+      "echo g'h' pr create",
+      'echo g"h" pr create',
+      "echo $'\\x67h' pr create",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "printf '%s ' 'gh pr create'",
+      'echo "live check: gh pr create"',
+      "echo $'gh pr create'",
+      "echo g'h pr create'",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("preserve shell commands across numbered redirections (Sol round 4)", () => {
+    for (const command of [
+      "2>/dev/null 'gh' pr create",
+      "2>/dev/null bash -c 'gh pr create'",
+      "2>&1 env 'gh' pr create",
+      ">/dev/null 'gh' pr create",
+      "2>>/dev/null g'h' pr create",
+      "2>&1 bash -ce 'gh pr create'",
+      "3<<'EOF' bash -c 'gh pr create'\nliteral gh pr create\nEOF",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "2>/dev/null printf '%s' 'gh pr create'",
+      "2>/dev/null bash -c 'echo \"gh pr create\"'",
+      "2>&1 env printf '%s' 'gh pr create'",
+      "3<<'EOF' cat\nliteral gh pr create\nEOF",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("keep quoted words after shell control syntax (Sol round 4)", () => {
+    for (const command of [
+      "if true; then 'gh' pr create; fi",
+      "! 'gh' pr create",
+      "{ 'gh' pr create; }",
+      "if false; then :; else g'h' pr create; fi",
+      'for n in 1; do "gh" pr create; done',
+      "time -p 'gh' pr create",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "if true; then printf '%s' 'gh pr create'; fi",
+      "! printf '%s' 'gh pr create'",
+      "{ printf '%s' 'gh pr create'; }",
+      "for n in 1; do printf '%s' 'gh pr create'; done",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("stop shell option parsing after consuming the one -c script (Sol round 4)", () => {
+    for (const command of [
+      "bash -c 'gh pr create' _ -c 'echo \"gh pr create\"'",
+      "bash -c 'echo done' _ -c \"$(gh pr create)\"",
+      "sh -c 'gh pr create' -c 'echo \"gh pr create\"'",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "bash -c 'echo \"$@\"' _ -c 'gh pr create'",
+      "bash -c 'echo done' -- -c 'gh pr create'",
+      "bash -c 'echo done' -c 'gh pr create'",
+      "bash -ce 'echo done' _ -ce 'gh pr create'",
+      "sh -c 'echo done' _ -c 'gh pr create'",
+      "zsh -lc 'echo done' _ -c 'gh pr create'",
+      "bash -c $'echo done' _ -c $'gh pr create'",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("match quoted single database tokens and paths, but drop prose (#232, contextmd#39)", () => {
+    // Single quoted tokens count as arguments; this does not claim they execute gh.
+    for (const command of [
+      "sqlite3 'chromeria-v2.sqlite' .tables",
+      'sqlite3 "/Users/u/.t3/userdata/chromeria-v2.sqlite" .tables',
+      "sqlite3 $'chromeria-v2.sqlite' .tables",
+      "sqlite3 chromeria-v2'.sqlite' .tables",
+    ]) {
+      assert.isTrue(hit(command, "chromeria-v2.sqlite"), command);
+    }
+    for (const command of [
+      "echo 'the file chromeria-v2.sqlite'",
+      'echo "open /Users/u/.t3/userdata/chromeria-v2.sqlite later"',
+      "echo $'the file chromeria-v2.sqlite'",
+      "echo prefix' the file chromeria-v2.sqlite'",
+    ]) {
+      assert.isFalse(hit(command, "chromeria-v2.sqlite"), command);
+    }
+  });
+
+  it("keeps the first bake's bare key on single-token arguments (#232, contextmd#39)", () => {
     const db = (command: string) => hit(command, "chromeria-v2.sqlite");
     for (const command of [
       "sqlite3 chromeria-v2.sqlite .tables",
@@ -347,8 +452,8 @@ describe("command keys", () => {
     ]) {
       assert.isTrue(db(command), command);
     }
-    // Quoted, the name is an argument the command key no longer sees; the path key (#234) does.
-    assert.isFalse(db('sqlite3 "/Users/u/.t3/userdata/chromeria-v2.sqlite" .tables'));
+    // A quoted path without whitespace is a real file argument and matches the bare key.
+    assert.isTrue(db('sqlite3 "/Users/u/.t3/userdata/chromeria-v2.sqlite" .tables'));
     // Neither URI hits the bare command key: the basename includes ?mode=ro.
     for (const command of [
       "sqlite3 'file:/Users/u/.t3/userdata/chromeria-v2.sqlite?mode=ro'",
