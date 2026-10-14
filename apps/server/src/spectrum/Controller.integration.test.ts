@@ -528,7 +528,7 @@ it.effect(
       const prepared = yield* read(state.threadId);
       const command = prepared.outbox[0]!;
       if (command.type !== "message.dispatch")
-        return yield* Effect.dieMessage("Expected a pending native message dispatch");
+        return yield* Effect.die(new Error("Expected a pending native message dispatch"));
       yield* (yield* Round.SpectrumRoundService).dispatch(state.threadId, command.commandId);
       assert.strictEqual(
         (yield* projections.getThreadRecords(command.threadId, ["runs"])).runs.length,
