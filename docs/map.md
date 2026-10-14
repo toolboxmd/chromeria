@@ -45,7 +45,7 @@ flowchart TD
     TF["Test Server 6 flake"]
     %% TF: #259 PR #278
     XM["Cross-machine control"]
-    %% XM: #164 PR #290
+    %% XM: #164 PR #290 PR #303
     NR["Network routes"]
     %% NR: #292
 

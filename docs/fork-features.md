@@ -1529,3 +1529,24 @@ Child creation paths are owned by child-threads and shared with thread-people.
   ]
 }
 ```
+
+## nested-cli-startup
+
+```json
+{
+  "id": "nested-cli-startup",
+  "purpose": "Carry upstream's connected-IPC gate so t3 in agent shells ignores an ancestor's launcher context. Drop this port when upstream PR #14263 is absorbed.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/295"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/303",
+    "https://github.com/pingdotgg/t3code/pull/14263"
+  ],
+  "newFiles": [],
+  "upstreamFiles": [
+    "apps/server/src/cloud/serviceLauncherClient.test.ts",
+    "apps/server/src/cloud/serviceLauncherClient.ts"
+  ],
+  "sharedFiles": [],
+  "keywords": ["T3_SERVICE_LAUNCHER_CONTEXT", "resolveStartup", "ipc-unavailable"]
+}
+```
