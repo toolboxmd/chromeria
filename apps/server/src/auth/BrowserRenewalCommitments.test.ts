@@ -4,6 +4,7 @@ import * as NodeVM from "node:vm";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
+import * as NodeURL from "node:url";
 import * as NodePath from "node:path";
 import { build } from "vite-plus/pack";
 import { findEsmImportsOfExternalPackages } from "../../../../scripts/lib/cli-executable-imports.ts";
@@ -143,7 +144,7 @@ it("keeps the executable reader importable without Playwright and loads it only 
     await NodeFSP.writeFile(
       entry,
       `
-      import * as Reader from ${JSON.stringify(new URL("./BrowserRenewalCommitments.ts", import.meta.url).pathname)};
+      import * as Reader from ${JSON.stringify(NodeURL.fileURLToPath(new URL("./BrowserRenewalCommitments.ts", import.meta.url)))};
       import * as Effect from ${JSON.stringify(import.meta.resolve("effect/Effect"))};
       export const read = () => Effect.runPromise(Effect.gen(function* () {
         const engine = yield* Reader.BrowserRenewalEngine;
@@ -180,7 +181,7 @@ it("keeps the executable reader importable without Playwright and loads it only 
         if (specifier === "playwright-core") { loads++; throw new Error("playwright requested by reader"); }
         return next(specifier, context);
       }});
-      const reader = await import(${JSON.stringify(new URL("file://" + probe).href)});
+      const reader = await import(${JSON.stringify(NodeURL.pathToFileURL(probe).href)});
       assert.equal(loads, 0);
       await assert.rejects(reader.read(), error => error.cause?.message === "playwright requested by reader");
       assert.equal(loads, 1);
