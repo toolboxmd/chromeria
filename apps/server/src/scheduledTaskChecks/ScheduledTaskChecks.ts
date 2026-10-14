@@ -661,7 +661,7 @@ const checksLayer = Layer.effect(
             // A retried call with the same request key reaches the same task.
             const key =
               fields.clientRequestId === undefined
-                ? yield* crypto.randomUUIDv4.pipe(Effect.orDie)
+                ? yield* crypto.randomUUIDv4().pipe(Effect.orDie)
                 : `${scope.requestNamespace}:${fields.clientRequestId}`;
             const id = ScheduledTaskId.make(`scheduled-task:${key}`);
             return yield* runs.withTaskLock(

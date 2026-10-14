@@ -8,7 +8,10 @@ import type {
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
-import { aliasedGraphQlDocument, type GraphQlDocument } from "../sourceControl/githubGraphQl.ts";
+import {
+  aliasedGraphQlDocument,
+  type GraphQlDocument,
+} from "@t3tools/source-control-github/server/githubGraphQl";
 import { issueStateOf, repositoryParts } from "./gitHubIssues.ts";
 
 /** Where a project keeps its feature map, on its default branch. */
