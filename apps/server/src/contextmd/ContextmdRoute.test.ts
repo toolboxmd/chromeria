@@ -716,6 +716,128 @@ describe("contextmd routes", () => {
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.live(
+    "Claude fork correlation survives delayed compaction ingestion and fences a missing re-serve",
+    () =>
+      Effect.gen(function* () {
+        const s = yield* serve(
+          insertAttempt({ attempt: "a", run: "run-1", status: "running", native: "source" }),
+          { greatLibrary: true },
+        );
+        const hook = (delivery: string, source?: string) =>
+          s.moment(
+            {
+              hook_event_name: source === undefined ? "UserPromptSubmit" : "SessionStart",
+              session_id: "source",
+              cwd: "/tmp",
+              ...(source === undefined ? {} : { source }),
+            },
+            { harness: "claude", delivery },
+          );
+        assert.strictEqual((yield* hook("initial-pointer")).status, 200);
+        assert.strictEqual(yield* s.settle("initial-pointer"), 204);
+        assert.strictEqual((yield* hook("compact-pointer", "compact")).status, 200);
+        assert.strictEqual(yield* s.settle("compact-pointer"), 204);
+        const db = new NodeSqlite.DatabaseSync(s.sqlitePath, { readOnly: true });
+        try {
+          const received = Number(
+            db.prepare("SELECT received_at FROM moments WHERE delivery = 'compact-pointer'").get()!
+              .received_at,
+          );
+          const at = (seconds: number) => DateTime.makeUnsafe(seconds * 1000);
+          const source = yield* decodeProviderThread({
+            id: "provider-source",
+            driver: "claudeAgent",
+            providerInstanceId: "claudeAgent",
+            providerSessionId: "session",
+            appThreadId: "thread-of-run-1",
+            ownerNodeId: null,
+            nativeThreadRef: { driver: "claudeAgent", nativeId: "source", strength: "strong" },
+            nativeConversationHeadRef: null,
+            status: "idle",
+            firstRunOrdinal: null,
+            lastRunOrdinal: null,
+            handoffIds: [],
+            forkedFrom: null,
+            createdAt: at(received),
+            updatedAt: at(received),
+          });
+          const sql = Context.get(s.database, SqlClient.SqlClient);
+          const compact = (
+            id: string,
+            seconds: number,
+          ) => sql`INSERT INTO orchestration_v2_projection_turn_items
+          (turn_item_id, thread_id, run_id, provider_thread_id, ordinal, type, status, updated_at, payload_json)
+          VALUES (${id}, 'thread-of-run-1', 'run-1', ${source.id}, 1, 'compaction', 'completed', '', ${JSON.stringify({ startedAt: DateTime.formatIso(at(seconds)) })})`;
+          const fork = (nativeId: string) =>
+            s.serving.recordNativeFork({
+              driver: "claudeAgent",
+              sourceThreadId: "thread-of-run-1",
+              threadId: "target-thread",
+              runId: "target-run",
+              source,
+              target: {
+                ...source,
+                nativeThreadRef: { driver: source.driver, nativeId, strength: "strong" },
+              },
+              boundaryAt: at(received + 10),
+            });
+          const outcome = (session: string) =>
+            db
+              .prepare(
+                "SELECT c.outcome, c.reason FROM candidates c JOIN moments m ON m.id = c.moment_id WHERE m.session = ?",
+              )
+              .all(session)
+              .map((row) => ({ ...row }));
+          yield* compact("first-boundary", received + 1);
+          yield* fork("after-one");
+          assert.deepStrictEqual(outcome("after-one"), [{ outcome: "inherited", reason: null }]);
+          yield* compact("second-boundary", received + 2);
+          yield* fork("missing-second");
+          assert.deepStrictEqual(outcome("missing-second"), [
+            { outcome: "not_inherited", reason: "compacted" },
+          ]);
+          assert.strictEqual((yield* hook("second-compact-pointer", "compact")).status, 200);
+          assert.strictEqual(yield* s.settle("second-compact-pointer"), 204);
+          yield* fork("after-two");
+          assert.deepStrictEqual(outcome("after-two"), [{ outcome: "inherited", reason: null }]);
+          const record = db
+            .prepare(
+              "SELECT c.extra_json FROM candidates c JOIN moments m ON m.id = c.moment_id WHERE m.session = 'after-two'",
+            )
+            .get()!;
+          assert.strictEqual(
+            JSON.parse(String(record.extra_json)).source_delivery,
+            "second-compact-pointer",
+          );
+          assert.deepStrictEqual(
+            db
+              .prepare(
+                "SELECT source, epoch FROM moments WHERE delivery = 'second-compact-pointer'",
+              )
+              .all()
+              .map((row) => ({ ...row })),
+            [{ source: "compact", epoch: 2 }],
+          );
+          yield* insertAttempt({
+            attempt: "b",
+            run: "run-2",
+            status: "running",
+            native: "after-two",
+          }).pipe(Effect.provide(s.database));
+          assert.strictEqual(
+            (yield* s.moment(
+              { hook_event_name: "UserPromptSubmit", session_id: "after-two", cwd: "/tmp" },
+              { harness: "claude" },
+            )).status,
+            204,
+          );
+        } finally {
+          db.close();
+        }
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.live("the serving owner honors off while accounting for an immutable Grok head", () =>
     Effect.gen(function* () {
       const s = yield* serve(Effect.void, { greatLibrary: true });

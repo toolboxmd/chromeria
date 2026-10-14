@@ -535,6 +535,206 @@ describe("Grok immutable installation accounting", () => {
 });
 
 describe("Native fork evidence", () => {
+  const claudeCompactions: ReadonlyArray<{
+    name: string;
+    hooks: ReadonlyArray<{ at: number; settle?: boolean; pointer?: false; source?: string }>;
+    projections: ReadonlyArray<number>;
+    boundaryAt?: number;
+    reverted?: ReadonlyArray<string>;
+    version?: string;
+    expected: string;
+  }> = [
+    {
+      name: "compact hook settles before stream ingestion",
+      hooks: [{ at: 200, settle: true }],
+      projections: [210],
+      expected: "inherited",
+    },
+    { name: "missing compact hook", hooks: [], projections: [210], expected: "compacted" },
+    {
+      name: "unsettled compact hook",
+      hooks: [{ at: 200 }],
+      projections: [210],
+      expected: "compacted",
+    },
+    {
+      name: "compact hook without a pointer",
+      hooks: [{ at: 200, pointer: false }],
+      projections: [210],
+      expected: "compacted",
+    },
+    {
+      name: "two compact hooks precede both ingested boundaries",
+      hooks: [
+        { at: 200, settle: true },
+        { at: 300, settle: true },
+      ],
+      projections: [310, 320],
+      expected: "inherited",
+    },
+    {
+      name: "missing second compact hook",
+      hooks: [{ at: 200, settle: true }],
+      projections: [210, 310],
+      expected: "compacted",
+    },
+    {
+      name: "unsettled second compact hook",
+      hooks: [{ at: 200, settle: true }, { at: 300 }],
+      projections: [210, 310],
+      expected: "compacted",
+    },
+    {
+      name: "second compact hook without a pointer",
+      hooks: [
+        { at: 200, settle: true },
+        { at: 300, pointer: false },
+      ],
+      projections: [210, 310],
+      expected: "compacted",
+    },
+    {
+      name: "a clear source is not compact correlation",
+      hooks: [{ at: 200, settle: true, source: "clear" }],
+      projections: [210],
+      expected: "compacted",
+    },
+    {
+      name: "failed clear cannot borrow an earlier compact epoch",
+      hooks: [
+        { at: 200, settle: true },
+        { at: 300, pointer: false, source: "clear" },
+      ],
+      projections: [210],
+      expected: "compacted",
+    },
+    {
+      name: "selected boundary before the later compact",
+      hooks: [{ at: 200, settle: true }],
+      projections: [210],
+      boundaryAt: 130,
+      expected: "inherited",
+    },
+    {
+      name: "selected boundary includes only the first of two compacts",
+      hooks: [
+        { at: 200, settle: true },
+        { at: 300, settle: true },
+      ],
+      projections: [210, 310],
+      boundaryAt: 250,
+      expected: "inherited",
+    },
+    {
+      name: "removed actual compact emission",
+      hooks: [{ at: 200, settle: true }],
+      projections: [210],
+      reverted: ["A0", "A1"],
+      expected: "no_delivery",
+    },
+    {
+      name: "rolled back compaction restores the earlier evidence",
+      hooks: [{ at: 200, settle: true }],
+      projections: [210],
+      reverted: ["A1"],
+      expected: "inherited",
+    },
+    {
+      name: "compact re-delivery has a stale version",
+      hooks: [{ at: 200, settle: true }],
+      projections: [210],
+      version: "new",
+      expected: "stale_version",
+    },
+  ];
+  it.each(claudeCompactions)("Claude fork: $name", (fixture) => {
+    const h = make();
+    try {
+      const first = h.fire("claude", "user_message", { session: "A", run: "A0", now: 100 });
+      h.state.settle(first.delivery, 100);
+      for (const hook of fixture.hooks) {
+        const compact = h.fire("claude", "session_start", {
+          session: "A",
+          run: "A1",
+          source: hook.source ?? "compact",
+          now: hook.at,
+          ...(hook.pointer === false ? { pointer: null } : {}),
+        });
+        if (hook.settle) h.state.settle(compact.delivery, hook.at);
+      }
+      const boundaryAt = fixture.boundaryAt ?? 400;
+      const reverted = new Set(fixture.reverted ?? []);
+      const compactions = fixture.projections.map((startedAt) => ({ runId: "A1", startedAt }));
+      const line =
+        fixture.version === undefined ? pointer : { ...pointer, version: fixture.version };
+      assert.strictEqual(
+        h.state.recordNativeFork({
+          harness: "claude",
+          source: "A",
+          target: "B",
+          threadId: "B",
+          runId: "B1",
+          line,
+          boundaryAt,
+          compactions,
+          reverted,
+          now: 410,
+          delivery: "fork-B",
+        }),
+        fixture.expected,
+      );
+      assert.strictEqual(
+        h.fire("claude", "user_message", {
+          session: "B",
+          run: "B1",
+          now: 420,
+          pointer: line,
+        }).status,
+        fixture.expected === "inherited" ? 204 : 200,
+      );
+    } finally {
+      h.db.close();
+    }
+  });
+
+  it("opens old serving data without inventing compact-source provenance", () => {
+    const h = make();
+    try {
+      const reply = h.fire("claude", "session_start", {
+        source: "compact",
+        session: "A",
+        run: "A1",
+        now: 200,
+      });
+      assert.strictEqual(reply.status, 200);
+      h.state.settle(reply.delivery, 200);
+      h.db.exec("ALTER TABLE moments DROP COLUMN source");
+      const reopened = new ServingState(h.db);
+      assert.strictEqual(h.text(reopened.replayed(reply.delivery)!), TEXT);
+      assert.strictEqual(
+        reopened.recordNativeFork({
+          harness: "claude",
+          source: "A",
+          target: "B",
+          threadId: "B",
+          runId: "B1",
+          line: pointer,
+          boundaryAt: 230,
+          compactions: [{ runId: "A1", startedAt: 210 }],
+          reverted: new Set(),
+          now: 240,
+          delivery: "fork-B",
+        }),
+        "compacted",
+      );
+      assert.deepStrictEqual(h.rows("SELECT source FROM moments WHERE session = 'A'"), [
+        { source: null },
+      ]);
+    } finally {
+      h.db.close();
+    }
+  });
+
   it.each(["codex", "claude"] as const)(
     "%s keeps inherited prefix evidence after receiver rollback, while filtering removed deliveries",
     (harness) => {
@@ -562,7 +762,10 @@ describe("Native fork evidence", () => {
             threadId: target,
             line: extra.line ?? pointer,
             boundaryAt: extra.boundaryAt ?? now - 1,
-            compactedAt: extra.compactedAt ?? null,
+            compactions:
+              extra.compactedAt === undefined
+                ? []
+                : [{ runId: null, startedAt: extra.compactedAt }],
             reverted: extra.reverted ?? new Set(),
             now,
             delivery: `fork-${target}`,
@@ -636,7 +839,7 @@ describe("Native fork evidence", () => {
             runId: "B1",
             line: pointer,
             boundaryAt: 130,
-            compactedAt: null,
+            compactions: [],
             reverted: new Set(),
             now: 140,
             delivery: "fork-B",
@@ -672,7 +875,7 @@ describe("Native fork evidence", () => {
             runId: "B1",
             line: pointer,
             boundaryAt: 130,
-            compactedAt: null,
+            compactions: [],
             reverted: new Set(),
             now: 140,
             delivery: "fork-B",
@@ -713,7 +916,7 @@ describe("Native fork evidence", () => {
             runId: "B1",
             line: pointer,
             boundaryAt: 230,
-            compactedAt: 180,
+            compactions: [{ runId: "A2", startedAt: 180 }],
             reverted: new Set(),
             now: 240,
             delivery: "fork-B",
