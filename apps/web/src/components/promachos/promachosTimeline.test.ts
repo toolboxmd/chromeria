@@ -101,7 +101,7 @@ describe("Promachos V2 timeline", () => {
       attemptOrdinal: 1,
       rootNodeId: NodeId.make("old-root"),
       status: "superseded" as const,
-      completedAt: at(2),
+      completedAt: DateTime.makeUnsafe(at(2)),
     };
     const current = {
       ...old,
