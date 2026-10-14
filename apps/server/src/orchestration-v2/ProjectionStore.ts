@@ -1,4 +1,5 @@
 import { keepContinuationSource } from "../prism/continuationProjection.ts";
+import { mergeRestartCut } from "../restartContinuation/RestartCut.ts";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
 import { makeThreadFind, findProjectedThreadItems } from "./ThreadFind.ts";
@@ -10,6 +11,7 @@ import type {
 import {
   latestRootProviderFailure,
   latestUnheldRun,
+  runRanAfter,
   threadErrorSummary,
   usageLimitRunPresentedAsLatest,
 } from "@t3tools/shared/orchestrationV2ThreadError";
@@ -502,6 +504,14 @@ export interface ProjectionStoreV2Shape {
   readonly getRecoveryThreadIds: (
     kind: ProjectionRecoveryKind,
   ) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionStoreV2Error>;
+  /** Cancelled cuts with terminal or missing exact intent, excluding linked replacements. */
+  readonly getUnresolvedRestartCuts: (
+    afterRunId?: RunId,
+    limit?: number,
+  ) => Effect.Effect<
+    ReadonlyArray<{ readonly threadId: ThreadId; readonly runId: RunId }>,
+    ProjectionStoreV2Error
+  >;
   readonly getUnreadableThreadIds: () => Effect.Effect<
     ReadonlyArray<ThreadId>,
     ProjectionStoreV2Error
@@ -544,6 +554,7 @@ export const ORCHESTRATION_V2_PROJECTION_SCHEMA_VERSION = 2;
 function needsRecovery(
   projection: OrchestrationV2ThreadProjection,
   kind: ProjectionRecoveryKind,
+  resultTransfers = projection.contextTransfers,
 ): boolean {
   if (projection.thread.deletedAt !== null) return false;
   switch (kind) {
@@ -559,10 +570,57 @@ function needsRecovery(
       return projection.runs.some((run) => run.delegatedCompletion?.delivery != null);
     case "subagent-results": {
       const parentThreadId = projection.thread.lineage.parentThreadId;
+      if (
+        projection.thread.lineage.relationshipToParent !== "subagent" ||
+        parentThreadId === null ||
+        projection.thread.forkedFrom?.type !== "node"
+      )
+        return false;
+      const monitorRuns = new Set(
+        projection.messages
+          .filter((message) => message.notification?.source.kind === "monitor")
+          .map((message) => message.runId),
+      );
+      const workRuns = projection.runs.filter(
+        (run) => run.status !== "rolled_back" && !monitorRuns.has(run.id),
+      );
+      const restartResult = workRuns
+        .filter(
+          (run) =>
+            ["completed", "interrupted", "failed", "cancelled"].includes(run.status) &&
+            (run.startedAt !== null ||
+              run.ordinal === 1 ||
+              run.restartContinuationOfRunId !== undefined ||
+              (run.status === "cancelled" && run.restartCut !== undefined)),
+        )
+        .toSorted((left, right) =>
+          runRanAfter(left, right) ? -1 : runRanAfter(right, left) ? 1 : 0,
+        )[0];
+      if (
+        restartResult !== undefined &&
+        ((restartResult.status === "cancelled" && restartResult.restartCut !== undefined) ||
+          restartResult.restartContinuationOfRunId !== undefined)
+      ) {
+        if (
+          workRuns.some(
+            (run) =>
+              ["preparing", "starting", "running", "waiting"].includes(run.status) ||
+              (run.status === "queued" && run.queueHeld !== true),
+          )
+        )
+          return false;
+        // A legacy result is no receipt for the new restart explanation.
+        return !resultTransfers.some((transfer) => {
+          if (
+            transfer.type !== "subagent_result" ||
+            transfer.sourceThreadId !== projection.thread.id ||
+            transfer.targetThreadId !== parentThreadId
+          )
+            return false;
+          return transfer.sourcePoint.runId === restartResult.id;
+        });
+      }
       return (
-        projection.thread.lineage.relationshipToParent === "subagent" &&
-        parentThreadId !== null &&
-        projection.thread.forkedFrom?.type === "node" &&
         ["completed", "interrupted", "failed", "cancelled", "rolled_back"].includes(
           latestUnheldRun(projection.runs)?.status ?? "idle",
         ) &&
@@ -629,8 +687,10 @@ function preserveRunRecordedFields(
   next: OrchestrationV2Run,
 ): OrchestrationV2Run {
   if (current === undefined) return next;
+  const restartCut = mergeRestartCut(current.restartCut, next.restartCut);
   return {
     ...next,
+    ...(restartCut === undefined ? {} : { restartCut }),
     ...(next.delegatedCompletion === undefined && current.delegatedCompletion !== undefined
       ? { delegatedCompletion: current.delegatedCompletion }
       : {}),
@@ -639,6 +699,12 @@ function preserveRunRecordedFields(
       ? { restartCancelledBackgroundWork: current.restartCancelledBackgroundWork }
       : {}),
   };
+}
+
+function restartCutPageSize(limit: number | undefined): number {
+  return limit === undefined || !Number.isFinite(limit)
+    ? 100
+    : Math.min(500, Math.max(1, Math.trunc(limit)));
 }
 
 function preserveCompletionDelivery(
@@ -1826,6 +1892,26 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       END
     `;
 
+    const keepRestartCut = (payload: Statement.Fragment) => sql`
+      CASE
+        WHEN json_type(orchestration_v2_projection_runs.payload_json, '$.restartCut') IS NULL
+        THEN ${payload}
+        WHEN json_extract(orchestration_v2_projection_runs.payload_json, '$.restartCut.continuation') = 'scheduled'
+          AND json_extract(excluded.payload_json, '$.restartCut.continuation') = 'declined'
+        THEN json_set(
+          ${payload}, '$.restartCut',
+          json_set(
+            json_extract(excluded.payload_json, '$.restartCut'), '$.cutAt',
+            json_extract(orchestration_v2_projection_runs.payload_json, '$.restartCut.cutAt')
+          )
+        )
+        ELSE json_set(
+          ${payload}, '$.restartCut',
+          json_extract(orchestration_v2_projection_runs.payload_json, '$.restartCut')
+        )
+      END
+    `;
+
     const apply: ProjectionStoreV2Shape["apply"] = (event) =>
       Effect.gen(function* () {
         switch (event.type) {
@@ -1939,12 +2025,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 status = excluded.status,
                 requested_at = excluded.requested_at,
                 completed_at = excluded.completed_at,
-                payload_json = ${keepRecordedRunField(
+                payload_json = ${keepRestartCut(
                   keepRecordedRunField(
-                    keepContinuationSource(sql, sql`excluded.payload_json`),
-                    "$.delegatedCompletion",
+                    keepRecordedRunField(
+                      keepContinuationSource(sql, sql`excluded.payload_json`),
+                      "$.delegatedCompletion",
+                    ),
+                    "$.restartCancelledBackgroundWork",
                   ),
-                  "$.restartCancelledBackgroundWork",
                 )}
             `;
             break;
@@ -3583,9 +3671,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   json_extract(child.payload_json, '$.lineage.relationshipToParent') = 'subagent'
                   AND json_extract(child.payload_json, '$.lineage.parentThreadId') IS NOT NULL
                   AND json_extract(child.payload_json, '$.forkedFrom.type') = 'node'
+                  AND (
                   -- A held queue waits for the user, so the newest unheld run
                   -- decides, matching latestUnheldRun.
-                  AND (
+                  (
                     SELECT status FROM orchestration_v2_projection_runs
                     WHERE thread_id = child.thread_id
                       AND NOT (
@@ -3599,6 +3688,55 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     WHERE source_thread_id = child.thread_id
                       AND target_thread_id = json_extract(child.payload_json, '$.lineage.parentThreadId')
                       AND type = 'subagent_result'
+                  )
+                  OR EXISTS (
+                    SELECT 1 FROM orchestration_v2_projection_runs AS result
+                    WHERE result.thread_id = child.thread_id
+                      AND (
+                        (result.status = 'cancelled' AND json_type(result.payload_json, '$.restartCut') = 'object')
+                        OR (
+                          result.status IN ('completed', 'interrupted', 'failed', 'cancelled')
+                          AND json_extract(result.payload_json, '$.restartContinuationOfRunId') IS NOT NULL
+                        )
+                      )
+                      AND result.run_id = (
+                        SELECT eligible.run_id FROM orchestration_v2_projection_runs AS eligible
+                        WHERE eligible.thread_id = child.thread_id
+                          AND eligible.status IN ('completed', 'interrupted', 'failed', 'cancelled')
+                          AND (
+                            json_extract(eligible.payload_json, '$.startedAt') IS NOT NULL
+                            OR eligible.ordinal = 1
+                            OR json_extract(eligible.payload_json, '$.restartContinuationOfRunId') IS NOT NULL
+                            OR (eligible.status = 'cancelled' AND json_type(eligible.payload_json, '$.restartCut') = 'object')
+                          )
+                          AND NOT EXISTS (
+                            SELECT 1 FROM orchestration_v2_projection_messages AS monitor
+                            WHERE monitor.thread_id = child.thread_id AND monitor.run_id = eligible.run_id
+                              AND json_extract(monitor.payload_json, '$.notification.source.kind') = 'monitor'
+                          )
+                        -- Same result chronology as runRanAfter, including resumed lower-ordinal queues.
+                        ORDER BY (eligible.completed_at IS NULL) DESC, eligible.completed_at DESC, eligible.ordinal DESC
+                        LIMIT 1
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM orchestration_v2_projection_runs AS active
+                        WHERE active.thread_id = child.thread_id
+                          AND (active.status IN ('preparing', 'starting', 'running', 'waiting')
+                            OR (active.status = 'queued' AND json_extract(active.payload_json, '$.queueHeld') IS NOT 1))
+                          AND NOT EXISTS (
+                            SELECT 1 FROM orchestration_v2_projection_messages AS monitor
+                            WHERE monitor.thread_id = child.thread_id AND monitor.run_id = active.run_id
+                              AND json_extract(monitor.payload_json, '$.notification.source.kind') = 'monitor'
+                          )
+                      )
+                      AND NOT EXISTS (
+                        SELECT 1 FROM orchestration_v2_projection_context_transfers AS transfer
+                        WHERE transfer.source_thread_id = child.thread_id
+                          AND transfer.target_thread_id = json_extract(child.payload_json, '$.lineage.parentThreadId')
+                          AND transfer.type = 'subagent_result'
+                          AND json_extract(transfer.payload_json, '$.sourcePoint.runId') = result.run_id
+                      )
+                  )
                   )
                   ELSE 0 END
               `;
@@ -3673,6 +3811,40 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           ORDER BY updated_at ASC, thread_id ASC
         `;
         return rows.map((row) => ThreadId.make(row.thread_id));
+      },
+      Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+    );
+
+    const getUnresolvedRestartCuts = Effect.fn("ProjectionStore.getUnresolvedRestartCuts")(
+      function* (afterRunId?: RunId, limit?: number) {
+        const rows = yield* sql<{ readonly thread_id: string; readonly run_id: string }>`
+          SELECT source.thread_id, source.run_id
+          FROM orchestration_v2_projection_runs AS source
+          LEFT JOIN orchestration_v2_effect_outbox AS intent
+            ON intent.effect_id = 'effect:restart-continuation:' || source.run_id
+            AND intent.thread_id = source.thread_id
+            AND intent.effect_type = 'provider-runtime.continue'
+            AND json_extract(intent.payload_json, '$.type') = 'provider-runtime.continue'
+            AND json_extract(intent.payload_json, '$.sourceRunId') = source.run_id
+          WHERE source.run_id > ${afterRunId ?? ""}
+            AND source.status = 'cancelled'
+            AND (
+              json_extract(source.payload_json, '$.restartCut.continuation') = 'scheduled'
+              OR (json_type(source.payload_json, '$.restartCut') IS NULL AND intent.effect_id IS NOT NULL)
+            )
+            AND (intent.effect_id IS NULL OR intent.status IN ('succeeded', 'failed', 'cancelled'))
+            AND NOT EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_runs AS replacement
+              WHERE replacement.thread_id = source.thread_id
+                AND json_extract(replacement.payload_json, '$.restartContinuationOfRunId') = source.run_id
+            )
+          ORDER BY source.run_id ASC
+          LIMIT ${restartCutPageSize(limit)}
+        `;
+        return rows.map((row) => ({
+          threadId: ThreadId.make(row.thread_id),
+          runId: RunId.make(row.run_id),
+        }));
       },
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
@@ -5961,6 +6133,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getProviderControlContext,
       getLimitRecoveryCandidates,
       getRecoveryThreadIds,
+      getUnresolvedRestartCuts,
       getUnreadableThreadIds,
       getThreadSnapshot,
       getThreadSnapshotWindow,
@@ -6153,8 +6326,12 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
       getRecoveryThreadIds: (kind) =>
         Effect.gen(function* () {
           const projections = (yield* Ref.get(replayState)).projections;
+          const resultTransfers =
+            kind === "subagent-results"
+              ? [...projections.values()].flatMap((projection) => projection.contextTransfers)
+              : [];
           return [...projections.values()]
-            .filter((projection) => needsRecovery(projection, kind))
+            .filter((projection) => needsRecovery(projection, kind, resultTransfers))
             .toSorted(
               (left, right) =>
                 DateTime.toEpochMillis(left.thread.updatedAt) -
@@ -6162,6 +6339,24 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
                 left.thread.id.localeCompare(right.thread.id),
             )
             .map((projection) => projection.thread.id);
+        }),
+      getUnresolvedRestartCuts: (afterRunId, limit) =>
+        Effect.gen(function* () {
+          const projections = (yield* Ref.get(replayState)).projections;
+          // The memory projection has no durable outbox; scheduled intents are missing here.
+          return [...projections.values()]
+            .flatMap((projection) =>
+              projection.runs.filter(
+                (run) =>
+                  run.id > (afterRunId ?? "") &&
+                  run.status === "cancelled" &&
+                  run.restartCut?.continuation === "scheduled" &&
+                  !projection.runs.some((next) => next.restartContinuationOfRunId === run.id),
+              ),
+            )
+            .toSorted((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
+            .slice(0, restartCutPageSize(limit))
+            .map((run) => ({ threadId: run.threadId, runId: run.id }));
         }),
       getUnreadableThreadIds: () => Effect.succeed([]),
       getPendingNativeUserInputs: (threadId, providerTurnId) =>

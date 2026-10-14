@@ -43,6 +43,7 @@ import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 import { idleThreadProjection, liveThreadShell } from "./McpToolAccess.testkit.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
+import { restartCutView } from "../restartContinuation/RestartCut.ts";
 
 describe("OrchestratorMcpService", () => {
   it.effect("retries terminal acknowledgement with a fresh command id", () =>
@@ -90,6 +91,7 @@ describe("OrchestratorMcpService", () => {
         ],
         contextTransfers: [],
         messages: [],
+        turnItems: [],
         subagents: [],
         providerThreads: [],
       } as unknown as OrchestrationV2ThreadProjection;
@@ -99,6 +101,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) =>
             Effect.succeed(
               threadId === parentThreadId
@@ -225,6 +228,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
           delegatedTaskResultPending: () =>
@@ -317,6 +321,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
           // The child still runs within the parent's modes.
@@ -402,6 +407,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
           // The child still runs within the parent's modes.
@@ -490,6 +496,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
           // The child still runs within the parent's modes.
@@ -585,6 +592,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
           // Its user has since raised the child to full access.
@@ -709,6 +717,7 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) => Effect.succeed(projections.get(threadId)!),
           // The child still runs Supervised; its user has since raised the task under it
           // to full access.
@@ -983,6 +992,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
           Layer.mock(GitVcsDriver.GitVcsDriver)({}),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
+            readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
             getThreadRecords: () => Effect.succeed(parentProjection([])),
           }),
           Layer.mock(ProviderRegistry.ProviderRegistry)({
@@ -1110,6 +1120,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
           Layer.mock(GitVcsDriver.GitVcsDriver)({}),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
+            readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
             getThreadRecords: (threadId) =>
               Effect.succeed(
                 threadId === parentThreadId
@@ -1214,6 +1225,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) =>
             Effect.succeed(
               threadId === parentThreadId
@@ -1300,6 +1312,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: () => Effect.succeed(parentProjection([])),
         }),
         providerRegistryLayer([
@@ -1405,6 +1418,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
           Layer.mock(GitVcsDriver.GitVcsDriver)({}),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
+            readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
             getThreadRecords: (threadId) =>
               Effect.succeed(
                 threadId === parentThreadId ? parentProjection([task]) : childProjection,
@@ -1572,6 +1586,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
             Layer.mock(GitVcsDriver.GitVcsDriver)({}),
             Layer.mock(ThreadManagementService.ThreadManagementService)({
+              readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
               getThreadRecords: (threadId) =>
                 Effect.succeed(
                   threadId === parentThreadId
@@ -1753,6 +1768,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
             Layer.mock(GitVcsDriver.GitVcsDriver)({}),
             Layer.mock(ThreadManagementService.ThreadManagementService)({
+              readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
               getThreadShell: (threadId) =>
                 Effect.succeed(threadId === boundThreadId ? boundThread : null),
             }),
@@ -1825,6 +1841,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                   Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
                   Layer.mock(GitVcsDriver.GitVcsDriver)({}),
                   Layer.mock(ThreadManagementService.ThreadManagementService)({
+                    readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
                     getThreadShell: () => Effect.succeed(null),
                     // Its turn ended: no run is active.
                     getThreadRecords: () => Effect.succeed(idleThreadProjection(shell)),
@@ -1912,6 +1929,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                   Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
                   Layer.mock(GitVcsDriver.GitVcsDriver)({}),
                   Layer.mock(ThreadManagementService.ThreadManagementService)({
+                    readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
                     getThreadShell: (threadId) =>
                       Ref.getAndUpdate(lookups, (count) => count + 1).pipe(
                         Effect.flatMap((count) =>
