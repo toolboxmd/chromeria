@@ -1062,7 +1062,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/prism/staleTurnMonitor.ts",
     "apps/server/src/prism/staleTurnMonitor.integration.test.ts"
   ],
-  "upstreamFiles": [],
+  "upstreamFiles": ["packages/client-runtime/src/state/threadWorkflows.test.ts"],
   "sharedFiles": ["apps/server/src/orchestration-v2/runtimeLayer.ts"],
   "keywords": ["StaleTurnMonitor", "makeStaleTurnDetectorState", "queue_after_active", "silence"]
 }

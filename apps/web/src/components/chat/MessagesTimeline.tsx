@@ -5415,7 +5415,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: WorkEntryRowP
   const item = props.workEntry.projectedItem?.item;
   const childThreadId =
     item?.type === "notification" ? notificationChildThreadId(item.source) : undefined;
-  if (item?.type !== "notification" || childThreadId === undefined) {
+  if (
+    item?.type !== "notification" ||
+    childThreadId === undefined ||
+    (item.outcome === "updated" && Boolean(item.detail?.trim()))
+  ) {
     return <WorkEntryLogRow {...props} />;
   }
   return (
