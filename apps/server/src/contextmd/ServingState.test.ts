@@ -94,6 +94,7 @@ interface Fire {
   readonly readChecks?: ReadonlyArray<{ readonly toolUseId: string; readonly ok: boolean | null }>;
   readonly toolUseId?: string | null;
   readonly cue?: CueMoment;
+  readonly elapsedMs?: number;
 }
 
 const makeHarness = (file = ":memory:") => {
@@ -135,7 +136,7 @@ const makeHarness = (file = ":memory:") => {
       ...(f.readChecks === undefined ? {} : { readChecks: f.readChecks }),
       ...(f.cue === undefined ? {} : { cue: f.cue }),
       now,
-      startedAt: now,
+      startedAt: now - (f.elapsedMs ?? 0) / 1000,
     });
     if (reply.status === 200 && f.settle !== false) state.settle(delivery, now);
     return { ...reply, delivery };
@@ -1037,6 +1038,51 @@ describe("ServingState Cue", () => {
       ["connect_failed", "not_called", "started"],
     );
     assert.deepStrictEqual(scores(h.db), []);
+  });
+
+  it("logs server time in milliseconds", () => {
+    const h = makeHarness();
+    h.fire({ kind: "user_message", elapsedMs: 250 });
+    h.state.logUnserved({
+      harness: null,
+      delivery: null,
+      status: "bad_request",
+      now: 1_000.5,
+      startedAt: 1_000,
+    });
+    assert.deepStrictEqual(
+      (
+        h.db.prepare("SELECT server_ms FROM moments ORDER BY id").all() as Array<{
+          server_ms: number;
+        }>
+      ).map((m) => m.server_ms),
+      [250, 500],
+    );
+  });
+
+  it("converts server time logged in seconds by an earlier build, once", () => {
+    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "contextmd-state-"));
+    const file = NodePath.join(dir, "contextmd.sqlite");
+    const old = new NodeSqlite.DatabaseSync(file);
+    old.exec(`CREATE TABLE moments (id INTEGER PRIMARY KEY, received_at REAL NOT NULL, harness TEXT,
+      kind TEXT, session TEXT, thread_id TEXT, run_id TEXT, tool_use_id TEXT, epoch INTEGER,
+      holdout INTEGER, status TEXT NOT NULL, reason TEXT, owners_json TEXT,
+      cue_adapter TEXT, server_ms REAL, delivery TEXT);
+      INSERT INTO moments (received_at, status, server_ms) VALUES (1, 'ok', 0.25);`);
+    old.close();
+    const serverMs = () => {
+      const db = new NodeSqlite.DatabaseSync(file);
+      const state = new ServingState(db);
+      assert.ok(state);
+      const { server_ms } = db.prepare("SELECT server_ms FROM moments").get() as {
+        server_ms: number;
+      };
+      db.close();
+      return server_ms;
+    };
+    assert.strictEqual(serverMs(), 250);
+    assert.strictEqual(serverMs(), 250);
+    NodeFS.rmSync(dir, { recursive: true, force: true });
   });
 
   it("adds the Cue columns to a state file from an earlier build", () => {
