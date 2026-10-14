@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import { TrimmedNonEmptyString, NonNegativeInt } from "./baseSchemas.ts";
+import { TrimmedNonEmptyString, NonNegativeInt, ThreadId } from "./baseSchemas.ts";
 import { ProviderDriverKind } from "./providerInstance.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
 
@@ -38,7 +38,12 @@ export const ResolvedBareAddition = Schema.Union([
   Schema.Struct({ type: Schema.Literal("mcp"), server: Schema.Literal("t3-code") }),
 ]);
 export type ResolvedBareAddition = typeof ResolvedBareAddition.Type;
-export const ThreadBare = Schema.Struct({ additions: Schema.Array(ResolvedBareAddition) });
+export const ThreadBare = Schema.Struct({
+  additions: Schema.Array(ResolvedBareAddition),
+  // Stamped at fresh thread creation, inherited only by native forks. It is
+  // absent while additions are resolved, and never accepted in BareLaunchRequest.
+  nativeHomeOwnerThreadId: Schema.optional(ThreadId),
+});
 export type ThreadBare = typeof ThreadBare.Type;
 export const BareSupport = Schema.Union([
   Schema.Struct({ supported: Schema.Literal(true) }),

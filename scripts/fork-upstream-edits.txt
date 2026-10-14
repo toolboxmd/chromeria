@@ -41,6 +41,9 @@ apps/server/src/orchestration-v2/EffectWorker.ts
 apps/server/src/orchestration-v2/EventSink.ts
 apps/server/src/orchestration-v2/FoundationPersistence.test.ts
 apps/server/src/orchestration-v2/Orchestrator.ts
+apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts
+apps/server/src/orchestration-v2/RuntimePolicy.test.ts
+apps/server/src/orchestration-v2/ThreadFork.execution.test.ts
 apps/server/src/orchestration-v2/ProviderSessionManager.test.ts
 apps/server/src/orchestration-v2/ProviderSessionManager.ts
 apps/server/src/orchestration-v2/ThreadLaunchService.test.ts

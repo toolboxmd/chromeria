@@ -86,6 +86,7 @@ import * as CodexSchema from "effect-codex-app-server/schema";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
+import * as Hex from "effect/encoding/Hex";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -1766,8 +1767,32 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               );
         let launchSettings = resolvedRuntime?.config ?? adapterOptions.settings;
         let launchEnvironment = resolvedRuntime?.environment ?? adapterOptions.environment;
-        const home = bareHome(serverConfig.stateDir, adapterOptions.instanceId, "codex");
+        const bare = input.runtimePolicy.bare;
+        const owner = bare?.nativeHomeOwnerThreadId;
+        // Fresh threads isolate native bootstrap state. Native forks retain the
+        // source's initialized store, with a separate app-server and native id.
+        const homeRoot = bareHome(serverConfig.stateDir, adapterOptions.instanceId, "codex");
+        // Derived MCP thread ids can exceed a filesystem component's length.
+        const home =
+          bare === undefined
+            ? homeRoot
+            : `${homeRoot}/thread-${Hex.encode(yield* crypto.digest("SHA-256", new TextEncoder().encode(owner ?? input.threadId)))}`;
         if (input.runtimePolicy.bare !== undefined) {
+          if (owner === undefined)
+            return yield* new ProviderAdapter.ProviderAdapterOpenSessionError({
+              driver: CODEX_PROVIDER,
+              providerSessionId: input.providerSessionId,
+              cause: "Bare Codex launch is missing its server-owned native home identity.",
+            });
+          if (
+            (owner !== input.threadId || input.initialNativeThreadId !== undefined) &&
+            !(yield* fileSystem.exists(home))
+          )
+            return yield* new ProviderAdapter.ProviderAdapterOpenSessionError({
+              driver: CODEX_PROVIDER,
+              providerSessionId: input.providerSessionId,
+              cause: "Bare Codex native home is missing; native history cannot be reconstructed.",
+            });
           yield* prepareCodexBareHome({
             home,
             managed: launchSettings.setupMode === "managed",
@@ -6526,6 +6551,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       effective: `Codex ${input.runtimePolicy.runtimeMode}`,
                       controls: [
                         "own CODEX_HOME and app-server",
+                        "native forks retain the initialized native home owner",
                         "strict-config",
                         "empty base/developer instructions",
                         "skills.include_instructions=false",

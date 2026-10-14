@@ -3611,6 +3611,7 @@ it.effect(
           bare: { additions: [{ type: "file" as const, path: `${root}/input.txt` }] },
         };
         const result = yield* launches.launch(input);
+        expect(result.projection.thread.bare?.nativeHomeOwnerThreadId).toBe(result.threadId);
         expect(result.projection.thread.bare?.additions[0]).toMatchObject({
           type: "file",
           path: `${root}/input.txt`,
@@ -3721,6 +3722,7 @@ it.effect.each(["full-access", "approval-required"] as const)(
         yield* threads.dispatch({
           ...launchInput({ command: "mcp:create-parent", thread: parentId }),
           type: "thread.create",
+          bare: { additions: [] },
           runtimeMode: mode,
           branch: null,
           worktreePath: root,
@@ -3759,6 +3761,8 @@ it.effect.each(["full-access", "approval-required"] as const)(
         const delegated = yield* service.delegateTask(scope, intent);
         assert.isNotNull(delegated.childThreadId);
         const child = yield* threads.getThreadProjection(delegated.childThreadId!);
+        expect(child.thread.bare?.nativeHomeOwnerThreadId).toBe(child.thread.id);
+        expect(child.thread.bare?.nativeHomeOwnerThreadId).not.toBe(parentId);
         expect(child.thread.runtimeMode).toBe(mode);
         expect(child.thread.bare?.additions[0]).toMatchObject({ type: "file", byteCount: 10 });
         expect(child.messages[0]?.text).toBe(intent.task);
@@ -3769,7 +3773,11 @@ it.effect.each(["full-access", "approval-required"] as const)(
         const batch = yield* service.createThreads(scope, batchInput);
         const bareBatch = yield* threads.getThreadProjection(batch.threads[0]!.threadId);
         const normalBatch = yield* threads.getThreadProjection(batch.threads[1]!.threadId);
-        expect(bareBatch.thread.bare).toEqual(child.thread.bare);
+        expect(bareBatch.thread.bare?.additions).toEqual(child.thread.bare?.additions);
+        expect(bareBatch.thread.bare?.nativeHomeOwnerThreadId).toBe(bareBatch.thread.id);
+        expect(bareBatch.thread.bare?.nativeHomeOwnerThreadId).not.toBe(
+          child.thread.bare?.nativeHomeOwnerThreadId,
+        );
         expect(bareBatch.thread.runtimeMode).toBe(mode);
         expect(bareBatch.messages[0]?.text).toBe("Batch task");
         expect(normalBatch.thread).not.toHaveProperty("bare");

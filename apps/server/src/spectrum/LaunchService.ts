@@ -281,7 +281,9 @@ const make = Effect.gen(function* () {
           selection: color.selection,
           now,
         }),
-        ...(color.bare === undefined ? {} : { bare: color.bare }),
+        ...(color.bare === undefined
+          ? {}
+          : { bare: { ...color.bare, nativeHomeOwnerThreadId: color.threadId } }),
       })),
     ];
     const commit = (boundState: SpectrumState) =>

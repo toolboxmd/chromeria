@@ -172,6 +172,11 @@ import {
 
 export const CLAUDE_PROVIDER = ProviderDriverKind.make("claudeAgent");
 export const CLAUDE_AGENT_SDK_QUERY_PROTOCOL = "claude-agent-sdk.query" as const;
+const CLAUDE_BARE_BUILTIN_PLUGINS = [
+  "cc-plugin-agents-md",
+  "cc-plugin-telemetry",
+  "cc-plugin-plugin-authoring",
+] as const;
 
 function claudeContextWindow(modelSelection: ModelSelection): number | null {
   return (
@@ -8522,7 +8527,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       bareInventoryEvidence(
                         "plugins",
                         message.plugins.map((plugin) => plugin.name),
-                        ["agents-md", "telemetry", "plugin-authoring"],
+                        CLAUDE_BARE_BUILTIN_PLUGINS,
                         source,
                         true,
                       ),
@@ -9034,7 +9039,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       ],
                       retained: [
                         "system text '.'",
-                        "builtin plugins: agents-md, telemetry, plugin-authoring",
+                        `builtin plugins: ${CLAUDE_BARE_BUILTIN_PLUGINS.join(", ")}`,
                         "managed policy settings and hooks",
                         "environment/date/session metadata",
                         "native tool schemas",

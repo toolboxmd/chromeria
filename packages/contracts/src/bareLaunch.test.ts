@@ -10,6 +10,9 @@ import { OrchestrationV2Command } from "./orchestrationV2.ts";
 const decode = Schema.decodeUnknownSync(BareLaunchRequest);
 describe("bare launch contracts", () => {
   it("keeps omitted intent ordinary and accepts only bounded, named additions", () => {
+    expect(decode({ additions: [], nativeHomeOwnerThreadId: "caller-chosen-owner" })).toEqual({
+      additions: [],
+    });
     expect(
       Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput)({ task: "test" }),
     ).not.toHaveProperty("bare");
@@ -64,9 +67,12 @@ describe("bare launch contracts", () => {
       worktreePath: null,
       createdBy: "agent",
       creationSource: "mcp",
-      bare: { additions: [] },
+      bare: { additions: [], nativeHomeOwnerThreadId: "thread-bare" },
     });
-    expect(command).toHaveProperty("bare", { additions: [] });
+    expect(command).toHaveProperty("bare", {
+      additions: [],
+      nativeHomeOwnerThreadId: "thread-bare",
+    });
     const receipt = Schema.decodeUnknownSync(BareReceipt)({
       driver: "codex",
       permissions: {

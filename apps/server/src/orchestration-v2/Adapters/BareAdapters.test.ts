@@ -48,6 +48,7 @@ import {
 const threadId = ThreadId.make("thread:bare-options");
 const selection = { instanceId: ProviderInstanceId.make("codex"), model: "test" };
 const bare = { additions: [] };
+const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
 const policy = (runtimeMode: RuntimeMode) => ({
   runtimeMode,
   interactionMode: "default" as const,
@@ -145,26 +146,42 @@ it("Cursor uses a positive tool list on the common create/resume options and lea
   expect(normal).not.toHaveProperty("tools");
 });
 
-it.effect(
-  "managed Codex keeps its runtime token and launch arguments in its own bare home without auth.json",
-  () =>
+it.effect.each(["existing", "managed"] as const)(
+  "Codex isolates concurrent bare thread homes and preserves authentication and normal launches: %s",
+  (setupMode) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const serverConfig = yield* ServerConfig.ServerConfig;
-      const settings = yield* Schema.decodeEffect(CodexSettings)({ setupMode: "managed" });
+      const sourceHome = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-auth-owner-" });
+      yield* fs.writeFileString(`${sourceHome}/auth.json`, "FAKE_TEST_CREDENTIAL");
+      const settings = yield* decodeCodexSettings({
+        setupMode,
+        homePath: sourceHome,
+      });
       const launchArgs = "-c 'model_provider=managed-test'";
-      let spawned: Parameters<CodexAppServerClientFactoryShape["open"]>[0] | undefined;
+      const environment = {
+        ...(setupMode === "managed" ? { ACCESS_TOKEN: "FAKE_MANAGED_TOKEN" } : {}),
+        T3CODE_CODEX_LAUNCH_ARGS: "unwanted override",
+      };
+      const config = { ...settings, launchArgs };
+      const spawned = new Map<
+        ProviderSessionId,
+        Parameters<CodexAppServerClientFactoryShape["open"]>[0]
+      >();
+      const launchFor = (sessionId: string) => {
+        const launch = spawned.get(ProviderSessionId.make(sessionId));
+        if (launch === undefined)
+          throw new Error(`Session ${sessionId} never reached the process boundary.`);
+        return launch;
+      };
       const adapter = yield* makeCodexAdapterV2({
         instanceId: selection.instanceId,
         settings,
         environment: {},
         resolveRuntime: Effect.succeed({
           revision: "test",
-          config: { ...settings, launchArgs },
-          environment: {
-            ACCESS_TOKEN: "FAKE_MANAGED_TOKEN",
-            T3CODE_CODEX_LAUNCH_ARGS: "unwanted override",
-          },
+          config,
+          environment,
         }),
         crypto: yield* Crypto.Crypto,
         fileSystem: fs,
@@ -172,7 +189,7 @@ it.effect(
         serverConfig,
         clientFactory: {
           open: (input) => {
-            spawned = input;
+            spawned.set(input.providerSessionId, input);
             return Effect.fail(
               new ProviderAdapter.ProviderAdapterOpenSessionError({
                 driver: ProviderDriverKind.make("codex"),
@@ -183,20 +200,58 @@ it.effect(
           },
         },
       });
-      yield* adapter
-        .openSession({
-          threadId,
-          providerSessionId: ProviderSessionId.make("bare-managed"),
-          modelSelection: selection,
-          runtimePolicy: policy("approval-required"),
-        })
-        .pipe(Effect.flip);
-      expect(spawned?.environment.ACCESS_TOKEN).toBe("FAKE_MANAGED_TOKEN");
-      expect(spawned?.settings.launchArgs).toBe(`${launchArgs} --strict-config`);
-      const home = `${serverConfig.stateDir}/bare/codex/codex`;
-      expect(spawned?.environment.CODEX_HOME).toBe(home);
-      expect(spawned?.environment).not.toHaveProperty("T3CODE_CODEX_LAUNCH_ARGS");
-      expect(yield* fs.exists(`${home}/auth.json`)).toBe(false);
+      const open = (threadId: ThreadId, sessionId: string, isBare: boolean) =>
+        adapter
+          .openSession({
+            threadId,
+            providerSessionId: ProviderSessionId.make(sessionId),
+            modelSelection: selection,
+            runtimePolicy: {
+              runtimeMode: "approval-required",
+              interactionMode: "default",
+              cwd: "/workspace",
+              ...(isBare ? { bare: { ...bare, nativeHomeOwnerThreadId: threadId } } : {}),
+            },
+          })
+          .pipe(Effect.flip);
+      const otherThreadId = ThreadId.make(`thread:bare-other:${"nested-delegate:".repeat(25)}`);
+      yield* Effect.all(
+        [open(threadId, "bare-first", true), open(otherThreadId, "bare-second", true)],
+        { concurrency: "unbounded" },
+      );
+      const first = launchFor("bare-first");
+      const second = launchFor("bare-second");
+      expect(first.settings.homePath).not.toBe(second.settings.homePath);
+      for (const [launch, suffix] of [
+        [first, "d7de77e952284741465194c614e01e70df21c9aa8097958cceb67c2629d8ddea"],
+        [second, "d1347d04b2508200fbf31366dc505863ffb70acfa7969e982a5e9a808ee51dba"],
+      ] as const) {
+        const home = `${serverConfig.stateDir}/bare/codex/codex/thread-${suffix}`;
+        expect(launch.settings.homePath).toBe(home);
+        expect(launch.environment.CODEX_HOME).toBe(home);
+        expect(launch.environment).not.toHaveProperty("T3CODE_CODEX_LAUNCH_ARGS");
+        expect(launch.settings.launchArgs.trim()).toBe(
+          setupMode === "managed" ? `${launchArgs} --strict-config` : "--strict-config",
+        );
+        expect((yield* fs.stat(home)).mode & 0o777).toBe(0o700);
+        const strictConfig = yield* fs.readFileString(`${home}/config.toml`);
+        expect(strictConfig).toContain("[skills]\ninclude_instructions = false");
+        expect(strictConfig).toContain("skip_host_skill_discovery = true");
+        if (setupMode === "managed") {
+          expect(launch.environment.ACCESS_TOKEN).toBe("FAKE_MANAGED_TOKEN");
+          expect(yield* fs.exists(`${home}/auth.json`)).toBe(false);
+        } else {
+          expect(strictConfig).toContain('cli_auth_credentials_store = "file"');
+          expect(yield* fs.readLink(`${home}/auth.json`)).toBe(`${sourceHome}/auth.json`);
+        }
+      }
+      yield* open(threadId, "bare-reopened", true);
+      expect(launchFor("bare-reopened").settings.homePath).toBe(first.settings.homePath);
+      yield* open(otherThreadId, "normal", false);
+      const normal = launchFor("normal");
+      expect(normal.settings).toEqual(config);
+      expect(normal.environment).toEqual(environment);
+      expect(yield* fs.readFileString(`${sourceHome}/auth.json`)).toBe("FAKE_TEST_CREDENTIAL");
     }).pipe(
       Effect.scoped,
       Effect.provide(
@@ -204,7 +259,7 @@ it.effect(
           NodeServices.layer,
           IdAllocator.layer,
           McpProviderSessions.layer,
-          ServerConfig.layerTest(process.cwd(), { prefix: "t3-bare-managed-" }).pipe(
+          ServerConfig.layerTest(process.cwd(), { prefix: "t3-bare-codex-threads-" }).pipe(
             Layer.provide(NodeServices.layer),
           ),
         ),

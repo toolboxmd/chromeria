@@ -168,7 +168,8 @@ it.effect("bare Colors persist their additions and ceiling without a Prism kit",
     });
     const projections = yield* Projection.ProjectionStoreV2;
     const bare = yield* projections.getThread(state.participants[0]!.threadId);
-    assert.deepStrictEqual(bare.bare, { additions: [] });
+    assert.deepStrictEqual(bare.bare?.additions, []);
+    assert.strictEqual(bare.bare?.nativeHomeOwnerThreadId, bare.id);
     assert.strictEqual(bare.runtimeMode, "approval-required");
     assert.strictEqual(state.participants[0]!.instructions, "Only this task input.");
     assert.strictEqual(state.participants[1]!.instructions, "Use the reviewer kit.");

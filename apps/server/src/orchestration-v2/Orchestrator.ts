@@ -2358,7 +2358,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
     const thread: OrchestrationV2AppThread = {
-      ...(command.bare === undefined ? {} : { bare: command.bare }),
+      ...(command.bare === undefined
+        ? {}
+        : { bare: { ...command.bare, nativeHomeOwnerThreadId: command.threadId } }),
       ...(command.owner === undefined ? {} : { owner: command.owner }),
       createdBy: command.createdBy,
       creationSource: command.creationSource,
@@ -6969,7 +6971,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
       const childThread: OrchestrationV2AppThread = {
         ...childTemplate,
-        ...(command.bare === undefined ? {} : { bare: command.bare }),
+        ...(command.bare === undefined
+          ? {}
+          : { bare: { ...command.bare, nativeHomeOwnerThreadId: childThreadId } }),
         projectId: destinationProjectId,
         ...(workspaceStrategy === undefined
           ? {}
