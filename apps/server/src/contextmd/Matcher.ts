@@ -7,7 +7,12 @@
  * (`echo bash -c '...'`); ContextMD's `keys.py` follows this rule and paths see raw words (#234).
  */
 
-const WORD_BREAK = /[\s;&|()<>`$"'\\{}]+/u;
+// ContextMD's keys.py uses the same ASCII whitespace set.
+const WHITESPACE = " \t\n\r\v\f";
+const HAS_WHITESPACE = new RegExp(`[${WHITESPACE}]`, "u");
+const WHITESPACE_RUN = new RegExp(`[${WHITESPACE}]+`, "gu");
+const WHITESPACE_EDGE = new RegExp(`^[${WHITESPACE}]+|[${WHITESPACE}]+$`, "gu");
+const WORD_BREAK = new RegExp("[" + WHITESPACE + ";&|()<>`$\"'\\\\{}]+", "u");
 const PATH_FIELDS = ["file_path", "notebook_path", "path", "filePath", "target_file"] as const;
 
 /**
@@ -29,8 +34,11 @@ const shellPaths = (ws: ReadonlyArray<string>) => {
 };
 
 // Literal markers use the same ASCII shell boundaries in both languages, including Unicode.
-const HEREDOC_START = /^<<(-?)[ \t]*(['"]?)([^ \t\r\n;&|()<>'"\\]+)\2(?=$|[ \t\r\n;&|()<>])/u;
-const SHELL_BREAK = /[ \t\r\n;&|()<>]/u;
+const HEREDOC_START = new RegExp(
+  String.raw`^<<(-?)[${WHITESPACE.slice(0, 2)}]*(['"]?)([^${WHITESPACE};&|()<>'"\\]+)\2(?=$|[${WHITESPACE};&|()<>])`,
+  "u",
+);
+const SHELL_BREAK = new RegExp(`[${WHITESPACE};&|()<>]`, "u");
 const REDIRECTION = /^(?:[0-9]+)?(<<<|[<>][&<>|]?)/u;
 
 /** A quote inside an expansion belongs to that expansion, not the enclosing string. */
@@ -260,7 +268,7 @@ const visibleCommand = (command: string): string => {
       i = j;
       continue;
     }
-    if (/[ \t\r\n;&|()]/u.test(ch)) {
+    if (HAS_WHITESPACE.test(ch) || /[;&|()]/u.test(ch)) {
       if (/[\n;&|()]/u.test(ch)) shell = "none";
       out += ch;
       i += 1;
@@ -273,12 +281,12 @@ const visibleCommand = (command: string): string => {
       continue;
     }
     const word = shellWord(text, i);
-    let kept = word.quoted ? (/\s/u.test(word.value) ? "" : word.value) : word.plain;
+    let kept = word.quoted ? (HAS_WHITESPACE.test(word.value) ? "" : word.value) : word.plain;
     if (shell === "script") {
       kept = visibleCommand(word.value);
       shell = "none";
     } else if (
-      (!word.quoted || !/\s/u.test(word.value)) &&
+      (!word.quoted || !HAS_WHITESPACE.test(word.value)) &&
       SHELLS.has(word.value.slice(word.value.lastIndexOf("/") + 1))
     )
       shell = "options";
@@ -313,7 +321,11 @@ export const hasCommand = (have: ReadonlyArray<string>, key: ReadonlyArray<strin
 
 /** Error signature: lowercase, digits collapsed, whitespace collapsed. */
 export const normalizeError = (text: string) =>
-  text.toLowerCase().replace(/\d+/gu, "#").replace(/\s+/gu, " ").trim();
+  text
+    .toLowerCase()
+    .replace(/\d+/gu, "#")
+    .replace(WHITESPACE_RUN, " ")
+    .replace(WHITESPACE_EDGE, "");
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);

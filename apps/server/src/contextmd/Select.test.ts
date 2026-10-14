@@ -7,7 +7,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
-import { extract, firstMatch, globRegex, hasCommand, words } from "./Matcher.ts";
+import { extract, firstMatch, globRegex, hasCommand, normalizeError, words } from "./Matcher.ts";
 import { reads } from "./Reads.ts";
 import { select, type ServingConfig } from "./Select.ts";
 import * as Store from "./Store.ts";
@@ -488,6 +488,43 @@ describe("command keys", () => {
     ]) {
       assert.isFalse(hit(command), command);
     }
+  });
+
+  it("uses identical ASCII whitespace for all six divergent code points (Sol round 6)", () => {
+    for (const [sep, encoded] of [
+      ["\u0085", "\\u0085"],
+      ["\u001c", "\\u001c"],
+      ["\u001d", "\\u001d"],
+      ["\u001e", "\\u001e"],
+      ["\u001f", "\\u001f"],
+      ["\ufeff", "\\ufeff"],
+    ]) {
+      const token = `gh${sep}pr${sep}create`;
+      for (const command of [`echo ${token}`, `echo '${token}'`]) {
+        assert.deepStrictEqual(extract("Bash", { command }, null, ["Bash"]).words, ["echo", token]);
+        assert.isFalse(hit(command), encoded);
+      }
+      assert.deepStrictEqual(
+        extract("Bash", { command: `printf '%s' '${token}'` }, null, ["Bash"]).words,
+        ["printf", "%s", token],
+      );
+      assert.deepStrictEqual(
+        extract("Bash", { command: `bash -c $'echo gh${encoded}pr${encoded}create'` }, null, [
+          "Bash",
+        ]).words,
+        ["bash", "-c", "echo", token],
+      );
+      const path = `${sep}/Users/u/.t3/userdata/chromeria-v2.sqlite`;
+      const command = `sqlite3 '${path}'`;
+      const keys = extract("Bash", { command }, null, ["Bash"]);
+      assert.deepStrictEqual(keys.words, ["sqlite3", path]);
+      assert.deepStrictEqual(keys.paths, [path]);
+      assert.isTrue(hit(command, "chromeria-v2.sqlite"), encoded);
+      assert.strictEqual(normalizeError(`${sep}GH${sep}12${sep}`), `${sep}gh${sep}#${sep}`);
+    }
+    assert.deepStrictEqual(words("gh \t\n\r\v\fpr create"), ["gh", "pr", "create"]);
+    assert.isFalse(hit("echo 'gh \t\n\r\v\fpr create'"));
+    assert.strictEqual(normalizeError(" \t\n\r\v\fGH 12 \t\n\r\v\f"), "gh #");
   });
 
   it("keeps the first bake's bare key on single-token arguments (#232, contextmd#39)", () => {
