@@ -16,7 +16,8 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Hex from "effect/encoding/Hex";
 
-import { expandHomePathWith } from "../pathExpansion.ts";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { HARNESSES, type Harness } from "./Harnesses.ts";
 import { extract, firstMatch, Unsupported } from "./Matcher.ts";
 import { reads } from "./Reads.ts";
@@ -85,7 +86,8 @@ export const configFile = Config.String("CONTEXTMD_SERVING_CONFIG").pipe(
 export const loadConfig = Effect.fn("contextmd.loadConfig")(function* (file: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const text = yield* fs.readFileString(expandHomePathWith(file, path)).pipe(Effect.option);
+  const home = yield* HostProcess.HomeDirectory;
+  const text = yield* fs.readFileString(expandHomePath(file, home)).pipe(Effect.option);
   if (Option.isNone(text)) {
     return {
       exactKeys: ["~/.local/share/contextmd/exact-keys"],
@@ -178,7 +180,8 @@ const repoRelative = Effect.fn("contextmd.repoRelative")(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const absolute = path.resolve(cwd ?? "/", expandHomePathWith(file, path));
+  const home = yield* HostProcess.HomeDirectory;
+  const absolute = path.resolve(cwd ?? "/", expandHomePath(file, home));
   let d = path.dirname(absolute);
   while (true) {
     if (yield* fs.exists(path.join(d, ".git")).pipe(Effect.orElseSucceed(() => false))) {
@@ -271,9 +274,10 @@ export const select = Effect.fn("contextmd.select")(function* (
   if (kind === "session_start") {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const home = yield* HostProcess.HomeDirectory;
     const crypto = yield* Crypto.Crypto;
     for (const file of config.sessionStart) {
-      const p = expandHomePathWith(file.path, path);
+      const p = expandHomePath(file.path, home);
       owners[path.dirname(p)] = yield* Store.headCommit(path.dirname(p));
       const content = yield* fs.readFileString(p).pipe(Effect.option);
       if (Option.isNone(content)) {

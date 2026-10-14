@@ -42,11 +42,10 @@ export const dispatchDelegatedRequest = Effect.fn("childThreads.dispatchDelegate
           stored.event.type === "run.created" && stored.event.threadId === child.event.threadId,
       );
       if (run?.event.type === "run.created")
-        yield* launches.prepareDelegatedRun({
+        yield* launches.prepareRun({
           commandId: command.commandId,
           threadId: child.event.threadId,
           runId: run.event.payload.id,
-          projectId: child.event.payload.projectId,
         });
     }
     return result;

@@ -21,7 +21,7 @@ import * as ServerSettingsModule from "../serverSettings.ts";
 import * as ProviderAutoUpdate from "./providerAutoUpdate.ts";
 import { makeProviderAutoUpdater } from "./providerAutoUpdate.ts";
 import * as ProviderMaintenanceRunner from "./providerMaintenanceRunner.ts";
-import type { ProviderMaintenanceCommandAction } from "./providerMaintenance.ts";
+import type { ProviderMaintenanceCommandAction } from "@t3tools/provider-core/server/maintenanceResolver";
 import { ProviderRegistry } from "./ProviderRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as SqlClient from "effect/sql/SqlClient";

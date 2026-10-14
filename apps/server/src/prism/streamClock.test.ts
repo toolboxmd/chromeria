@@ -13,7 +13,7 @@ import {
   TurnItemId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import type { ProviderAdapterV2Event } from "../orchestration-v2/ProviderAdapter.ts";
+import type { ProviderAdapterV2Event } from "@t3tools/provider-core/server/ProviderAdapter";
 import { makeStreamClockState } from "./streamClock.ts";
 
 const identity = {

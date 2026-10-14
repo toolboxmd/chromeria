@@ -42,8 +42,11 @@ import {
   featureMapRefsOf,
   parseFeatureMapFile,
 } from "./featureMap.ts";
-import * as GitHubApi from "../sourceControl/GitHubApi.ts";
-import { type GraphQlDocument, readGraphQlPages } from "../sourceControl/githubGraphQl.ts";
+import * as GitHubApi from "@t3tools/source-control-github/server/GitHubApi";
+import {
+  type GraphQlDocument,
+  readGraphQlPages,
+} from "@t3tools/source-control-github/server/githubGraphQl";
 import {
   decodeIssueDetailJson,
   decodeIssueStatesJson,

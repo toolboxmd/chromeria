@@ -23,9 +23,9 @@ import { EffectOutboxV2 } from "../orchestration-v2/EffectOutbox.ts";
 import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import type {
-  ProviderAdapterV2Shape,
+  ProviderAdapterV2,
   ProviderAdapterV2SessionRuntime,
-} from "../orchestration-v2/ProviderAdapter.ts";
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Registry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as Sessions from "../orchestration-v2/ProviderSessionManager.ts";
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
@@ -54,7 +54,7 @@ it.effect.each([
       const acceptedTurns = yield* Ref.make(0);
       const instanceId = ProviderInstanceId.make("codex");
       const driver = ProviderDriverKind.make("codex");
-      const adapter: ProviderAdapterV2Shape = {
+      const adapter: ProviderAdapterV2["Service"] = {
         instanceId,
         driver,
         getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
@@ -415,7 +415,7 @@ it.effect(
     Effect.gen(function* () {
       const providerLaunches = yield* Ref.make(0);
       const instanceId = ProviderInstanceId.make("codex");
-      const adapter: ProviderAdapterV2Shape = {
+      const adapter: ProviderAdapterV2["Service"] = {
         instanceId,
         driver: ProviderDriverKind.make("codex"),
         getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),

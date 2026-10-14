@@ -22,7 +22,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
-import { expandHomePathWith } from "../pathExpansion.ts";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import type { Read } from "./Selection.ts";
 
 const FULL_READERS = new Set(["cat", "less", "more", "bat", "batcat", "nl", "view"]);
@@ -123,9 +124,10 @@ const existing = Effect.fn("contextmd.existingFiles")(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const home = yield* HostProcess.HomeDirectory;
   const out: string[] = [];
   for (const candidate of candidates) {
-    const resolved = path.resolve(base, expandHomePathWith(candidate, path));
+    const resolved = path.resolve(base, expandHomePath(candidate, home));
     const info = yield* fs.stat(resolved).pipe(Effect.option);
     if (Option.isNone(info) || info.value.type !== "File") continue;
     const real = yield* fs.realPath(resolved).pipe(Effect.orElseSucceed(() => resolved));
@@ -140,13 +142,14 @@ const readerName = (word: string | undefined) =>
 /** The files of a command that is exactly `[cd <dir> && ...] <reader> [options] <files>`. */
 const fullRead = Effect.fn("contextmd.fullRead")(function* (command: string, cwd: string) {
   const path = yield* Path.Path;
+  const home = yield* HostProcess.HomeDirectory;
   const steps = command.replace(/\s+2>\/dev\/null\s*$/u, "").split("&&");
   if (steps.some((s) => SHELL_SYNTAX.test(s))) return null;
   let base = cwd;
   for (const step of steps.slice(0, -1)) {
     const ws = words(step);
     if (ws.length !== 2 || ws[0] !== "cd" || UNSAFE_PATH.test(ws[1]!)) return null;
-    base = path.resolve(base, expandHomePathWith(ws[1]!, path));
+    base = path.resolve(base, expandHomePath(ws[1]!, home));
   }
   const ws = words(steps.at(-1)!);
   const allowed = WHOLE_OPTIONS[readerName(ws[0])];
@@ -163,6 +166,7 @@ const fullRead = Effect.fn("contextmd.fullRead")(function* (command: string, cwd
 /** Reader operands anywhere in a command, for the log; these never lift. */
 const partialReads = Effect.fn("contextmd.partialReads")(function* (command: string, cwd: string) {
   const path = yield* Path.Path;
+  const home = yield* HostProcess.HomeDirectory;
   const parts = command.split(SEGMENT);
   let base = cwd;
   const out: string[] = [];
@@ -172,7 +176,7 @@ const partialReads = Effect.fn("contextmd.partialReads")(function* (command: str
       ws.shift();
     const name = readerName(ws[0]);
     if (name === "cd" && ws[1] !== undefined) {
-      base = path.resolve(base, expandHomePathWith(ws[1], path));
+      base = path.resolve(base, expandHomePath(ws[1], home));
       continue;
     }
     if (!FULL_READERS.has(name) && !PARTIAL_READERS.has(name)) continue;

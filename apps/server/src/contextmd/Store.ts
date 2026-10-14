@@ -39,7 +39,8 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Hex from "effect/encoding/Hex";
 
-import { expandHomePathWith } from "../pathExpansion.ts";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { normalizeError, type EntryKeys } from "./Matcher.ts";
 
 /** One entry fits the smallest harness preview (Claude Code shows 2 KB of larger context). */
@@ -127,7 +128,13 @@ const entryId = (last: (name: string) => string | undefined, file: string, path:
   return id;
 };
 
-const parseText = (file: string, text: string, version: string, path: Path.Path): Entry => {
+const parseText = (
+  file: string,
+  text: string,
+  version: string,
+  path: Path.Path,
+  home: string,
+): Entry => {
   const { fields, body, last } = frontMatter(text, new Set([...KEY_FIELDS, ...OTHER_FIELDS]));
   const flag = (last("must-know-before") ?? "false").toLowerCase();
   if (flag !== "true" && flag !== "false")
@@ -135,7 +142,7 @@ const parseText = (file: string, text: string, version: string, path: Path.Path)
   let target = last("target") ?? null;
   if (target !== null) {
     if (flag !== "true") throw new EntryError("target is only for must-know-before entries");
-    target = path.resolve(path.dirname(file), expandHomePathWith(target, path));
+    target = path.resolve(path.dirname(file), expandHomePath(target, home));
   }
   const entry: Entry = {
     id: entryId(last, file, path),
@@ -156,7 +163,13 @@ const parseText = (file: string, text: string, version: string, path: Path.Path)
   return entry;
 };
 
-const parseCueText = (file: string, text: string, version: string, path: Path.Path): CueEntry => {
+const parseCueText = (
+  file: string,
+  text: string,
+  version: string,
+  path: Path.Path,
+  home: string,
+): CueEntry => {
   const { body, last } = frontMatter(text, CUE_FIELDS);
   const name = last("name") ?? "";
   const applies = last("applies") ?? "";
@@ -170,7 +183,7 @@ const parseCueText = (file: string, text: string, version: string, path: Path.Pa
     applies,
     text: body,
     file,
-    target: target ? path.resolve(path.dirname(file), expandHomePathWith(target, path)) : null,
+    target: target ? path.resolve(path.dirname(file), expandHomePath(target, home)) : null,
   };
 };
 
@@ -221,19 +234,20 @@ export const headCommit = Effect.fn("contextmd.headCommit")(function* (directory
 const loadWith = <E extends Entry | CueEntry>(
   directories: ReadonlyArray<string>,
   cache: ParseCache,
-  parse: (file: string, text: string, version: string, path: Path.Path) => E,
+  parse: (file: string, text: string, version: string, path: Path.Path, home: string) => E,
   isEntry: (result: Entry | CueEntry | string) => result is E,
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const home = yield* HostProcess.HomeDirectory;
     const crypto = yield* Crypto.Crypto;
     const entries: E[] = [];
     const owners: Record<string, string | null> = {};
     const errors: string[] = [];
     const seen = new Map<string, string>();
     for (const directory of directories) {
-      const root = expandHomePathWith(directory, path);
+      const root = expandHomePath(directory, home);
       const info = yield* fs.stat(root).pipe(Effect.option);
       if (Option.isNone(info) || info.value.type !== "Directory") {
         errors.push(`${root}: not a directory`);
@@ -263,7 +277,13 @@ const loadWith = <E extends Entry | CueEntry>(
           const version = Hex.encode(yield* crypto.digest("SHA-256", raw)).slice(0, 12);
           let result = yield* Effect.try({
             try: (): E | string =>
-              parse(file, new TextDecoder("utf-8", { fatal: true }).decode(raw), version, path),
+              parse(
+                file,
+                new TextDecoder("utf-8", { fatal: true }).decode(raw),
+                version,
+                path,
+                home,
+              ),
             catch: (cause) => (cause instanceof EntryError ? cause.message : "not UTF-8"),
           }).pipe(
             Effect.match({

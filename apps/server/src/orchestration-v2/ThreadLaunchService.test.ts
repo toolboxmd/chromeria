@@ -62,7 +62,6 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
 import * as OrchestratorMcpService from "../mcp/OrchestratorMcpService.ts";
-import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as ThreadTitleRegeneration from "./ThreadTitleRegenerationService.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
@@ -3059,10 +3058,9 @@ it.effect(
           runId: run.id,
           projectId: otherProjectId,
         };
-        yield* Effect.all(
-          [launches.prepareRun(input), launches.prepareRun(input)],
-          { concurrency: "unbounded" },
-        );
+        yield* Effect.all([launches.prepareRun(input), launches.prepareRun(input)], {
+          concurrency: "unbounded",
+        });
         yield* Deferred.await(entered);
         assert.equal(harness.createWorktree.mock.calls.length, 1);
         assert.equal(harness.runSetup.mock.calls.length, 1);
