@@ -615,10 +615,7 @@ describe("contextmd routes", () => {
         assert.notStrictEqual(response.status, 401, pascal);
       }
       const rows = s.log();
-      assert.strictEqual(
-        rows.filter((row) => row.status === "bad_event").length,
-        0,
-      );
+      assert.strictEqual(rows.filter((row) => row.status === "bad_event").length, 0);
       assert.strictEqual(rows.filter((row) => row.kind === "pre_tool").length, 2);
       assert.ok(rows.every((row) => row.status === "ok"));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
