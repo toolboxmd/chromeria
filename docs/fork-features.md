@@ -1313,3 +1313,21 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "keywords": ["realPath", "/private/var", "npm-global"]
 }
 ```
+
+## secret-store-atomic-create
+
+```json
+{
+  "id": "secret-store-atomic-create",
+  "purpose": "ServerSecretStore.create writes the complete secret to a temporary file and hard-links it into place, so a creator that loses the race never reads a half-written secret. Drop when upstream makes create atomic.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/249"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/261"],
+  "newFiles": [],
+  "upstreamFiles": [
+    "apps/server/src/auth/ServerSecretStore.test.ts",
+    "apps/server/src/auth/ServerSecretStore.ts"
+  ],
+  "sharedFiles": [],
+  "keywords": ["getOrCreateRandom", "fileSystem.link", "half-written secret"]
+}
+```

@@ -3,6 +3,7 @@ import { assert, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -118,6 +119,57 @@ const layerConcurrentCreateSecretStore = () =>
   );
 
 it.layer(NodeServices.layer)("ServerSecretStore.layer", (it) => {
+  it.effect("never exposes a secret before its bytes are written", () =>
+    Effect.gen(function* () {
+      const writing = yield* Deferred.make<void>();
+      const readDone = yield* Deferred.make<void>();
+      const layerPausedWriteFileSystem = Layer.effect(
+        FileSystem.FileSystem,
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+
+          return {
+            ...fileSystem,
+            open: (path, options) =>
+              fileSystem.open(path, options).pipe(
+                Effect.map((file) =>
+                  Object.assign(Object.create(file) as FileSystem.File, {
+                    writeAll: (buffer: Uint8Array) =>
+                      Deferred.succeed(writing, void 0).pipe(
+                        Effect.andThen(Deferred.await(readDone)),
+                        Effect.andThen(file.writeAll(buffer)),
+                      ),
+                  }),
+                ),
+              ),
+          } satisfies FileSystem.FileSystem;
+        }),
+      ).pipe(Layer.provide(NodeServices.layer));
+
+      yield* Effect.gen(function* () {
+        const secretStore = yield* ServerSecretStore.ServerSecretStore;
+        const value = Uint8Array.from([1, 2, 3]);
+
+        const creating = yield* Effect.forkChild(secretStore.create("session-signing-key", value));
+        yield* Deferred.await(writing);
+        const midWrite = yield* secretStore.get("session-signing-key");
+        yield* Deferred.succeed(readDone, void 0);
+        yield* Fiber.join(creating);
+
+        assert.isTrue(Option.isNone(midWrite));
+        const persisted = Option.getOrThrow(yield* secretStore.get("session-signing-key"));
+        assert.deepEqual(Array.from(persisted), Array.from(value));
+      }).pipe(
+        Effect.provide(
+          ServerSecretStore.layer.pipe(
+            Layer.provide(layerServerConfig()),
+            Layer.provideMerge(layerPausedWriteFileSystem),
+          ),
+        ),
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("reuses an existing secret instead of regenerating it", () =>
     Effect.gen(function* () {
       const secretStore = yield* ServerSecretStore.ServerSecretStore;
