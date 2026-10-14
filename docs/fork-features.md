@@ -601,6 +601,8 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "apps/web/src/components/issues/useOpenIssueOrPullRequestLink.ts"
   ],
   "upstreamFiles": [
+    "apps/web/src/components/files/BrowserDocumentFrame.tsx",
+    "apps/web/src/components/chat/HtmlRenderDialog.test.tsx",
     "apps/web/src/components/ChatMarkdown.tsx",
     "apps/web/src/lib/openPullRequestLink.ts"
   ],

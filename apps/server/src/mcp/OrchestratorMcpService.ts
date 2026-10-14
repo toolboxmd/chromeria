@@ -1184,6 +1184,7 @@ const make = Effect.gen(function* () {
 
   const resolveTarget = (input: {
     readonly parent: Pick<OrchestrationV2ThreadProjection, "thread">;
+    readonly projectId?: ProjectId | undefined;
     readonly target: OrchestratorMcpTarget | undefined;
     readonly providers: ReadonlyArray<ServerProvider>;
     /**
@@ -1227,7 +1228,7 @@ const make = Effect.gen(function* () {
           const enabledForProject =
             input.skipProjectEnablementFilter === true ||
             (yield* threadManagement.isProviderInstanceEnabledForProject({
-              projectId: input.parent.thread.projectId,
+              projectId: input.projectId ?? input.parent.thread.projectId,
               instanceId: candidate.instanceId,
             }));
           if (enabledForProject) {
@@ -2000,6 +2001,7 @@ const make = Effect.gen(function* () {
             ? undefined
             : yield* resolveTargetRechecking({
                 parent,
+                projectId: input.projectId,
                 target: input.target,
                 providers,
                 skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
@@ -2016,6 +2018,7 @@ const make = Effect.gen(function* () {
               ? (selection) =>
                   resolveTargetRechecking({
                     parent,
+                    projectId: input.projectId,
                     providers,
                     target: {
                       providerInstanceId: selection.instanceId,
