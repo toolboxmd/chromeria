@@ -140,6 +140,7 @@ export interface SessionInstructions {
 }
 
 interface NativeForkInput {
+  readonly harness: "codex" | "claude";
   readonly source: string;
   readonly target: string;
   readonly threadId: string;
@@ -1026,10 +1027,16 @@ export class ServingState {
     }
   }
 
-  /** A Codex fork inherits only settled current evidence in its surviving native prefix. */
+  /** A native fork inherits only settled current evidence in its surviving prefix. */
   recordNativeFork(fork: NativeForkInput) {
     return this.tx(() => {
-      if (this.get("SELECT 1 FROM moments WHERE harness = 'codex' AND session = ?", fork.target))
+      if (
+        this.get(
+          "SELECT 1 FROM moments WHERE harness = ? AND session = ?",
+          fork.harness,
+          fork.target,
+        )
+      )
         return "skipped";
       const delivered = this.all<{
         delivery: string;
@@ -1042,7 +1049,8 @@ export class ServingState {
         `SELECT c.delivery, c.version, k.bytes, k.outcome, m.received_at, m.run_id FROM claims c
          JOIN candidates k ON k.id = c.candidate_id AND k.matcher = 'great_library'
          JOIN moments m ON m.id = k.moment_id
-         WHERE c.harness = 'codex' AND c.session = ? AND c.settled = 1 AND m.received_at <= ?`,
+         WHERE c.harness = ? AND c.session = ? AND c.settled = 1 AND m.received_at <= ?`,
+        fork.harness,
         fork.source,
         fork.boundaryAt,
       ).filter((row) => row.outcome === "inherited" || !fork.reverted.has(row.run_id));
@@ -1059,7 +1067,7 @@ export class ServingState {
               ? "compacted"
               : "no_delivery";
       const moment = this.insertMoment({
-        harness: "codex",
+        harness: fork.harness,
         session: fork.target,
         epoch: 0,
         kind: "native_fork",
@@ -1087,19 +1095,21 @@ export class ServingState {
       });
       this.run(
         `INSERT INTO deliveries (delivery, harness, moment_id, stage, status, run_id, created_at, expires_at)
-        VALUES (?, 'codex', ?, 'none', 204, ?, ?, ?)`,
+        VALUES (?, ?, ?, 'none', 204, ?, ?, ?)`,
         fork.delivery,
+        fork.harness,
         moment,
         fork.runId,
         fork.now,
         fork.now,
       );
       this.run(
-        "INSERT OR IGNORE INTO sessions (harness, session, epoch) VALUES ('codex', ?, 0)",
+        "INSERT OR IGNORE INTO sessions (harness, session, epoch) VALUES (?, ?, 0)",
+        fork.harness,
         fork.target,
       );
       if (from !== undefined) {
-        this.writeClaims(fork.delivery, "codex", fork.target, 0, fork.runId, [
+        this.writeClaims(fork.delivery, fork.harness, fork.target, 0, fork.runId, [
           {
             kind: "serve",
             entry: fork.line.entry,
