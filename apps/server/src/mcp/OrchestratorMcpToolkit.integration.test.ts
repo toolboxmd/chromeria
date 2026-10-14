@@ -592,6 +592,8 @@ describe("orchestrator MCP toolkit", () => {
           McpHttpServer.toolkitRegistration(AttachmentToolkit, AttachmentHandlers.layer),
         ).pipe(
           Layer.provide(PrismServerSettings.layerTest()),
+          Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+          Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
           Layer.provideMerge(McpServer.McpServer.layer),
           Layer.provideMerge(replay),
           Layer.provide(registry),
