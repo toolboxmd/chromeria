@@ -227,7 +227,7 @@ export const make = Effect.gen(function* () {
   // fails with AlreadyExists when another creator won, and a reader never sees partial bytes.
   const create: ServerSecretStore["Service"]["create"] = (name, value) => {
     const secretPath = resolveSecretPath(name);
-    return crypto.randomUUIDv4.pipe(
+    return crypto.randomUUIDv4().pipe(
       Effect.mapError(
         (cause) =>
           new SecretStoreTemporaryPathError({

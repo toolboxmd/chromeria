@@ -9,7 +9,7 @@ import * as IssueLinks from "../issueLinks/IssueLinks.ts";
 import { gitHubIdentity } from "../issueLinks/IssueLinks.testFixtures.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
-import * as GitHubApi from "../sourceControl/GitHubApi.ts";
+import * as GitHubApi from "@t3tools/source-control-github/server/GitHubApi";
 import * as IssueService from "./IssueService.ts";
 
 /** More repositories than one search names, so the host is read in two searches. */

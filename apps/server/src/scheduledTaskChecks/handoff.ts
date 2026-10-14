@@ -1,5 +1,6 @@
 import {
   RunId,
+  OrchestrationV2Run,
   type CommandId,
   type MessageId,
   type ScheduledTaskId,
@@ -7,10 +8,12 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
 import { ForkCommitGuardRejected } from "../childThreads/ForkCommitPlan.ts";
+import { runOutcome } from "../orchestration-v2/RestartBackgroundNote.ts";
 import * as Recovery from "../prism/RecoveryHistory.ts";
 import { holdsTask } from "./state.ts";
 import { listCheckStates } from "./store.ts";
@@ -59,11 +62,21 @@ export class ScheduledTaskSpectra extends Context.Reference<{
 }) {}
 
 const TERMINAL = new Set(["completed", "failed", "interrupted", "cancelled", "rolled_back"]);
+const SETTLED_RESTART_EFFECTS = new Set(["succeeded", "failed", "cancelled"]);
 const MAX_HOPS = 32;
+const decodeRunStatus = Schema.decodeUnknownSync(OrchestrationV2Run.fields.status);
+const decodeRestartWork = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      restartCancelledBackgroundWork: OrchestrationV2Run.fields.restartCancelledBackgroundWork,
+    }),
+  ),
+);
 
 interface RunRow {
   readonly run_id: string;
   readonly status: string;
+  readonly payload_json: string;
   readonly user_message_id: string | null;
   readonly restart_source: string | null;
   readonly prism_source: string | null;
@@ -71,7 +84,7 @@ interface RunRow {
 
 const readRun = (sql: SqlClient.SqlClient, where: { readonly runId: string }) =>
   sql<RunRow>`
-    SELECT run_id, status,
+    SELECT run_id, status, payload_json,
       json_extract(payload_json, '$.userMessageId') AS user_message_id,
       json_extract(payload_json, '$.restartContinuationOfRunId') AS restart_source,
       json_extract(payload_json, '$.forkPrismContinuationSourceRunId') AS prism_source
@@ -112,12 +125,26 @@ export const followRun = Effect.fn("ScheduledTaskChecks.followRun")(function* (r
     const run = yield* readRun(sql, { runId: current });
     if (run === undefined) return { kind: "waiting" } satisfies RunEnd;
     if (!TERMINAL.has(run.status)) return { kind: "waiting" } satisfies RunEnd;
-    if (run.status === "completed") return { kind: "completed", runId: current } satisfies RunEnd;
     const restarted = yield* restartSuccessor(sql, current);
     if (restarted !== undefined) {
       current = restarted;
       continue;
     }
+    // Native recovery commits this intent with the cancelled-work projection.
+    // Its settled effect may have declined without emitting a successor run.
+    const restart = (yield* sql<{ readonly status: string }>`
+      SELECT status FROM orchestration_v2_effect_outbox
+      WHERE effect_id = ${`effect:restart-continuation:${current}`}
+    `)[0];
+    const restarting = restart !== undefined && !SETTLED_RESTART_EFFECTS.has(restart.status);
+    const outcome = runOutcome({
+      status: decodeRunStatus(run.status),
+      ...decodeRestartWork(run.payload_json),
+    });
+    if (outcome === "completed")
+      return restarting
+        ? ({ kind: "waiting" } satisfies RunEnd)
+        : ({ kind: "completed", runId: current } satisfies RunEnd);
     // #169's recovery state for this run (D38). An admitted continuation, linked
     // from the successor run itself, is followed first; the index admits at most
     // one, so more is never chosen between. Pending recovery, such as a
@@ -130,10 +157,16 @@ export const followRun = Effect.fn("ScheduledTaskChecks.followRun")(function* (r
       continue;
     }
     const decision = recovery.decision;
-    if (recovery.pendingRecovery !== null || decision === null || decision.status === "pending")
+    if (restarting || recovery.pendingRecovery !== null || decision?.status === "pending")
       return { kind: "waiting" } satisfies RunEnd;
     // A retry is admitted with its run, so a decided retry without one is not done yet.
-    if (decision.outcome === "retried") return { kind: "waiting" } satisfies RunEnd;
+    if (decision?.outcome === "retried") return { kind: "waiting" } satisfies RunEnd;
+    if (
+      ((run.status === "completed" || run.status === "cancelled") && outcome === "interrupted") ||
+      (run.status === "cancelled" && restart !== undefined)
+    )
+      return { kind: "ended", runId: current } satisfies RunEnd;
+    if (decision === null) return { kind: "waiting" } satisfies RunEnd;
     // Not retryable, or recovery abandoned it on its own: the scheduler decides now.
     return { kind: "ended", runId: current } satisfies RunEnd;
   }

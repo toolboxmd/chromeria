@@ -67,6 +67,7 @@ const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
   Layer.provide(PrismServerSettings.layerTest()),
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+  Layer.provide(NodeServices.layer),
 );
 
 // Effect returns a declared tool failure as `isError` with its encoded payload
