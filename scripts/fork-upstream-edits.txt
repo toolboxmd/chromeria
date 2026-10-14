@@ -249,3 +249,14 @@ apps/server/src/cloud/serviceLauncherClient.ts
 # Vitest transport-copy cache repair (#308), owned by fork-maintenance.
 pnpm-lock.yaml
 pnpm-workspace.yaml
+
+# Great Library native session boundaries (#311), owned by contextmd-serving.
+apps/server/src/orchestration-v2/CheckpointRestoreSafety.test.ts
+apps/server/src/orchestration-v2/CheckpointRollbackService.test.ts
+apps/server/src/orchestration-v2/CheckpointRollbackService.ts
+apps/server/src/orchestration-v2/ProviderAdapter.ts
+apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts
+apps/server/src/orchestration-v2/ProviderTurnStartService.ts
+apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs
+apps/server/src/provider/acp/AcpJsonRpcConnection.test.ts
+apps/server/src/provider/acp/AcpSessionRuntime.ts
