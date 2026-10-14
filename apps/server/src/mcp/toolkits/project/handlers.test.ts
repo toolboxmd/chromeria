@@ -41,7 +41,11 @@ import { ProjectToolkit } from "./tools.ts";
 const prismDependencies = Layer.mergeAll(
   Layer.mock(AdapterRegistry.ProviderAdapterRegistryV2)({
     list: () =>
-      Effect.succeed([ProviderInstanceId.make("codex"), ProviderInstanceId.make("claudeAgent")]),
+      Effect.succeed([
+        ProviderInstanceId.make("codex"),
+        ProviderInstanceId.make("claudeAgent"),
+        ProviderInstanceId.make("claude"),
+      ]),
   }),
   ServerSettings.layerTest(),
   Layer.mock(ProviderRegistry.ProviderRegistry)({
