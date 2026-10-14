@@ -752,6 +752,17 @@ const layerBase: Layer.Layer<
     });
 
     const stream = (input: Parameters<EventSinkV2Shape["stream"]>[0]) => {
+      // `readAgentEvents` turns a missing cursor into `0` and sends any other
+      // number through as `sequence > cursor`. Reject those here, before
+      // subscribe or read, so both `stream` and `streamStoredEventsFrom` fail
+      // closed. `0` stays a deliberate full replay of the matched range.
+      if (!Number.isSafeInteger(input.afterSequence) || input.afterSequence < 0) {
+        return Stream.fail(
+          new Error(
+            `afterSequence must be a non-negative safe integer, received ${String(input.afterSequence)}`,
+          ),
+        );
+      }
       const afterSequence = input.afterSequence;
       const matches = (stored: OrchestrationV2StoredEvent) =>
         (input.threadId === undefined || stored.event.threadId === input.threadId) &&
@@ -889,7 +900,11 @@ const layerBase: Layer.Layer<
             (cause) =>
               new EventSinkStreamError({
                 ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
-                afterSequence: input.afterSequence,
+                // NaN and Infinity are not schema numbers. Omit them so the
+                // rejection itself is the stream error.
+                ...(Number.isFinite(input.afterSequence)
+                  ? { afterSequence: input.afterSequence }
+                  : {}),
                 cause,
               }),
           ),

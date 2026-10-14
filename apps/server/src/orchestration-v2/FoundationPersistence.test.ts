@@ -780,6 +780,120 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
     }),
   );
 
+  // `streamStoredEventsFrom` is this bounded call plus `Stream.mapError`.
+  // One owner check has to reject the cursor for both.
+  it.effect("rejects an unusable replay cursor before it reads", () =>
+    Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:foundation-cursor-contract");
+      const thread = makeThread(threadId, now);
+      const written = yield* eventSink.write({
+        events: [
+          threadCreatedEvent({ id: "event:cursor-contract:created", thread, now }),
+          {
+            id: EventId.make("event:cursor-contract:title"),
+            type: "thread.metadata-updated",
+            threadId,
+            occurredAt: now,
+            payload: { ...thread, title: "After the cursor" },
+          },
+        ],
+      });
+      const sequences = written.map((stored) => stored.sequence);
+      const badCursors: ReadonlyArray<{
+        readonly label: string;
+        readonly afterSequence?: number;
+      }> = [
+        { label: "missing" },
+        { label: "NaN", afterSequence: Number.NaN },
+        { label: "Infinity", afterSequence: Number.POSITIVE_INFINITY },
+        { label: "fraction", afterSequence: 1.5 },
+        { label: "negative", afterSequence: -1 },
+        { label: "unsafe", afterSequence: Number.MAX_SAFE_INTEGER + 1 },
+      ];
+      const open = (input: { readonly afterSequence?: number; readonly bounded: boolean }) =>
+        eventSink.stream({
+          threadId,
+          ...(input.bounded ? { bounded: true as const } : {}),
+          ...(input.afterSequence === undefined ? {} : { afterSequence: input.afterSequence }),
+        } as Parameters<EventSink.EventSinkV2Shape["stream"]>[0]);
+      // The vitest clock does not advance `Effect.timeout`. A bad cursor that
+      // falls through into the live tail stays suspended, which is still a miss.
+      const observeCursor = (input: {
+        readonly afterSequence?: number;
+        readonly bounded: boolean;
+      }) =>
+        Effect.gen(function* () {
+          const fiber = yield* open(input).pipe(
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.forkChild({ startImmediately: true }),
+          );
+          yield* Effect.yieldNow;
+          let done = fiber.pollUnsafe();
+          if (done === undefined) {
+            yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 200)));
+            done = fiber.pollUnsafe();
+          }
+          if (done === undefined) {
+            yield* Fiber.interrupt(fiber);
+            return "waited for a live event";
+          }
+          const exit = done;
+          if (Exit.isSuccess(exit)) {
+            return `emitted ${Array.from(exit.value, (stored) => stored.sequence).join(",")}`;
+          }
+          const squashed = Cause.squash(exit.cause);
+          if (
+            typeof squashed !== "object" ||
+            squashed === null ||
+            !("_tag" in squashed) ||
+            squashed._tag !== "EventSinkStreamError"
+          ) {
+            return `failed as ${typeof squashed === "object" && squashed !== null && "_tag" in squashed ? String(squashed._tag) : typeof squashed}`;
+          }
+          const detail =
+            "cause" in squashed && squashed.cause instanceof Error
+              ? squashed.cause.message
+              : String("cause" in squashed ? squashed.cause : squashed);
+          return detail.includes("afterSequence") ? "rejected" : detail;
+        });
+
+      const rejected: Array<string> = [];
+      for (const bounded of [false, true] as const) {
+        const path = bounded ? "bounded" : "unbounded";
+        for (const cursor of badCursors) {
+          const observed = yield* observeCursor({
+            ...(cursor.afterSequence === undefined ? {} : { afterSequence: cursor.afterSequence }),
+            bounded,
+          });
+          if (observed !== "rejected") rejected.push(`${path} ${cursor.label} ${observed}`);
+        }
+
+        const fromZero = yield* open({ afterSequence: 0, bounded }).pipe(
+          Stream.take(sequences.length),
+          Stream.runCollect,
+        );
+        assert.deepEqual(
+          Array.from(fromZero, (stored) => stored.sequence),
+          sequences,
+          `${path} cursor 0`,
+        );
+        const fromFirst = yield* open({ afterSequence: sequences[0]!, bounded }).pipe(
+          Stream.take(1),
+          Stream.runCollect,
+        );
+        assert.deepEqual(
+          Array.from(fromFirst, (stored) => stored.sequence),
+          [sequences[1]!],
+          `${path} positive cursor`,
+        );
+      }
+      assert.deepEqual(rejected, []);
+    }),
+  );
+
   it.effect("replays interleaved threads across more than three pages", () =>
     Effect.gen(function* () {
       const eventSink = yield* EventSink.EventSinkV2;
