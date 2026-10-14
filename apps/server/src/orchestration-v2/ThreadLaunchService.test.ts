@@ -934,7 +934,7 @@ const worktreeStrategy = { type: "worktree", baseRef: "main", startFromOrigin: t
 const preparationSettled = (threadId: ThreadId) =>
   Effect.gen(function* () {
     const threads = yield* ThreadManagement.ThreadManagementService;
-    yield* threads.streamStoredEventsFrom({ threadId }).pipe(
+    yield* threads.streamStoredEventsFrom({ threadId, afterSequence: 0 }).pipe(
       Stream.filter(
         (stored) =>
           stored.event.type === "run.updated" &&
@@ -1366,7 +1366,7 @@ it.effect.each(["fails", "is interrupted"] as const)(
           });
         }
 
-        yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+        yield* threads.streamStoredEventsFrom({ threadId: launched.threadId, afterSequence: 0 }).pipe(
           Stream.filter(
             (stored) =>
               stored.event.type === "run.updated" && stored.event.payload.queueHeld === true,
@@ -1429,7 +1429,7 @@ it.effect.each(["failed", "interrupted"] as const)(
           runId: launched.projection.runs[0]!.id,
         });
       }
-      yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+      yield* threads.streamStoredEventsFrom({ threadId: launched.threadId, afterSequence: 0 }).pipe(
         Stream.filter(
           (stored) => stored.event.type === "run.updated" && stored.event.payload.status === ending,
         ),
