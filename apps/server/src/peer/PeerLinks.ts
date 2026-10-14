@@ -35,6 +35,7 @@ import { isLocalLoopbackHost, isTailnetHost } from "@t3tools/shared/hostClassifi
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { peerLinkExpiry } from "./peerLinkExpiry.ts";
 
 const PeerHttpApi = HttpApi.make(EnvironmentHttpApi.identifier)
   .add(EnvironmentHttpApi.groups.metadata)
@@ -444,7 +445,7 @@ const make = Effect.gen(function* () {
       urls: origins,
       access: input.access,
       linkedAt: now,
-      expiresAt: DateTime.add(now, { seconds: issued.expires_in }),
+      expiresAt: peerLinkExpiry(now, issued.expires_in),
       lastReachedAt: now,
       lastError: null,
     };

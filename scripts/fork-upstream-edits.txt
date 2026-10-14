@@ -252,3 +252,7 @@ apps/server/src/project/ProjectSetupScriptRunner.ts
 apps/server/src/relay/AgentAwarenessRelay.test.ts
 packages/shared/src/t3McpToolPresentation.ts
 apps/server/src/cli/environment.ts
+
+# Nested CLI startup: upstream fix carried until absorption (#295).
+apps/server/src/cloud/serviceLauncherClient.test.ts
+apps/server/src/cloud/serviceLauncherClient.ts
