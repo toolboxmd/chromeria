@@ -303,7 +303,6 @@ describe("command keys", () => {
       "bash -ce 'echo \"gh pr create\"'",
       "bash -o pipefail -c 'echo \"gh pr create\"'",
       "bash -o pipefail -ce 'echo \"gh pr create\"'",
-      "echo sh -c 'gh pr create'",
     ]) {
       assert.isFalse(hit(command), command);
     }
@@ -438,6 +437,56 @@ describe("command keys", () => {
       "echo prefix' the file chromeria-v2.sqlite'",
     ]) {
       assert.isFalse(hit(command, "chromeria-v2.sqlite"), command);
+    }
+  });
+
+  it("recognize shell scripts after control syntax and command-running tools (Sol round 5)", () => {
+    for (const command of [
+      "if true; then bash -c 'gh pr create'; fi",
+      "! bash -c 'gh pr create'",
+      "{ bash -c 'gh pr create'; }",
+      "for i in 1; do bash -c 'gh pr create'; done",
+      "xargs bash -c 'gh pr create'",
+      "find . -exec bash -c 'gh pr create' \\;",
+      "timeout 5 bash -c 'gh pr create'",
+      "ssh host bash -c 'gh pr create'",
+      "xargs bash -o pipefail -ce 'gh pr create'",
+      "env ksh -c 'gh pr create'",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "if true; then bash -c 'echo \"gh pr create\"'; fi",
+      "! bash -c 'echo \"gh pr create\"'",
+      "{ bash -c 'echo \"gh pr create\"'; }",
+      "for i in 1; do bash -c 'echo \"gh pr create\"'; done",
+      "xargs bash -c 'echo \"gh pr create\"'",
+      "find . -exec bash -c 'echo \"gh pr create\"' \\;",
+      "timeout 5 bash -c 'echo \"gh pr create\"'",
+      "ssh host bash -c 'echo \"gh pr create\"'",
+      "env ksh -c 'echo \"gh pr create\"'",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("count printed shell invocations in the accepted safe direction (#232)", () => {
+    // Printed shell invocations match by policy; these cases do not execute gh.
+    for (const command of [
+      "echo bash -c 'gh pr create'",
+      "echo sh -c 'gh pr create'",
+      "echo \"bash\" -ce 'gh pr create'",
+      "echo b'a'sh -o pipefail -c 'gh pr create'",
+      "echo ksh -c 'gh pr create'",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "echo bash -c 'echo \"gh pr create\"'",
+      "echo 'bash -c gh pr create'",
+      "echo bash -c 'echo done' _ -c 'gh pr create'",
+    ]) {
+      assert.isFalse(hit(command), command);
     }
   });
 

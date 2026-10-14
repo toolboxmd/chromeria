@@ -3,7 +3,8 @@
  * Command keys keep unquoted words and quoted words whose dequoted value has no
  * whitespace, drop quoted prose and literal heredoc bodies, and scan executed
  * substitutions and dequoted shell `-c` scripts (#232).
- * ContextMD's `keys.py` follows the same rule; path keys see every raw word (#234).
+ * Shell names followed by `-c` options count anywhere, including a printed invocation
+ * (`echo bash -c '...'`); ContextMD's `keys.py` follows this rule and paths see raw words (#234).
  */
 
 const WORD_BREAK = /[\s;&|()<>`$"'\\{}]+/u;
@@ -31,14 +32,6 @@ const shellPaths = (ws: ReadonlyArray<string>) => {
 const HEREDOC_START = /^<<(-?)[ \t]*(['"]?)([^ \t\r\n;&|()<>'"\\]+)\2(?=$|[ \t\r\n;&|()<>])/u;
 const SHELL_BREAK = /[ \t\r\n;&|()<>]/u;
 const REDIRECTION = /^(?:[0-9]+)?(<<<|[<>][&<>|]?)/u;
-// Same wrappers as Reads.ts; options with a separate value must not consume the command slot.
-const WRAPPERS = new Set(["command", "exec", "nohup", "time", "env", "sudo"]);
-const WRAPPER_ARGUMENTS: Record<string, ReadonlyArray<string>> = {
-  env: ["-u", "--unset", "-C", "--chdir"],
-  sudo: ["-u", "--user", "-g", "--group"],
-  time: ["-f", "--format", "-o", "--output"],
-  exec: ["-a"],
-};
 
 /** A quote inside an expansion belongs to that expansion, not the enclosing string. */
 const quotedEnd = (text: string, start: number): number => {
@@ -129,7 +122,7 @@ const substitutions = (text: string): string => {
   }
   return out.join(" ; ");
 };
-const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
 const ANSI_ESCAPES: Record<string, string> = {
   a: "\x07",
   b: "\b",
@@ -223,16 +216,13 @@ const shellWord = (text: string, start: number) => {
 
 /**
  * Keep single quoted tokens anywhere; only quoted text with whitespace is a mention.
- * Command position is used solely to identify a shell's one dequoted `-c` script.
+ * Shell names count anywhere; only the first script word after their `-c` options is scanned.
  */
 const visibleCommand = (command: string): string => {
   const text = command;
   let out = "";
   let i = 0;
-  let position: "command" | "shell-options" | "script" | "argument" = "command";
-  let wrapper = "";
-  let optionArgument = false;
-  let redirect = false;
+  let shell: "none" | "options" | "script" = "none";
   const heredocs: Array<{ word: string; expands: boolean; stripTabs: boolean }> = [];
   while (i < text.length) {
     const ch = text[i]!;
@@ -248,7 +238,6 @@ const visibleCommand = (command: string): string => {
       });
       out += " ";
       i = operator + opening[0].length;
-      redirect = false;
       continue;
     }
     if (ch === "\n" && heredocs.length > 0) {
@@ -272,11 +261,7 @@ const visibleCommand = (command: string): string => {
       continue;
     }
     if (/[ \t\r\n;&|()]/u.test(ch)) {
-      if (/[\n;&|()]/u.test(ch)) {
-        position = "command";
-        wrapper = "";
-        optionArgument = redirect = false;
-      }
+      if (/[\n;&|()]/u.test(ch)) shell = "none";
       out += ch;
       i += 1;
       continue;
@@ -285,29 +270,19 @@ const visibleCommand = (command: string): string => {
       // A here-string consumes one word, without opening a body on following lines.
       out += redirection[0];
       i += redirection[0].length;
-      redirect = true;
       continue;
     }
     const word = shellWord(text, i);
     let kept = word.quoted ? (/\s/u.test(word.value) ? "" : word.value) : word.plain;
-    if (redirect) redirect = false;
-    else if (position === "script") {
+    if (shell === "script") {
       kept = visibleCommand(word.value);
-      position = "argument";
-    } else if (position === "command") {
-      if (optionArgument) optionArgument = false;
-      else if (wrapper !== "" && word.value.startsWith("-") && word.value !== "-") {
-        optionArgument = WRAPPER_ARGUMENTS[wrapper]?.includes(word.value) ?? false;
-        if (word.value === "--") wrapper = "";
-      } else if (!/^[A-Za-z_][A-Za-z0-9_]*=/u.test(text.slice(i, word.end))) {
-        const program = word.value.slice(word.value.lastIndexOf("/") + 1);
-        if (WRAPPERS.has(program)) wrapper = program;
-        else {
-          position = SHELLS.has(program) ? "shell-options" : "argument";
-        }
-      }
-    } else if (position === "shell-options" && /^-[A-Za-z]*c[A-Za-z]*$/u.test(word.value))
-      position = "script";
+      shell = "none";
+    } else if (
+      (!word.quoted || !/\s/u.test(word.value)) &&
+      SHELLS.has(word.value.slice(word.value.lastIndexOf("/") + 1))
+    )
+      shell = "options";
+    else if (shell === "options" && /^-[A-Za-z]*c[A-Za-z]*$/u.test(word.value)) shell = "script";
     out += ` ${kept} ${word.runs} `;
     i = word.end;
   }
