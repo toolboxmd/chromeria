@@ -22,6 +22,7 @@ import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexA
 import * as CommandReceipts from "../orchestration-v2/CommandReceiptStore.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import type { ProviderAdapterV2 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Adapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as Projection from "../orchestration-v2/ProjectionStore.ts";
@@ -257,6 +258,208 @@ const fail = (
 const needsYou = (name: string) =>
   SchedulerAdapter.boundTo(scheduled(name)).pipe(Effect.map((rows) => rows[0]!.reportNeedsYou));
 
+it.effect("a disabled caller holds the durable report without a run, effect or false receipt", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    const threadId = yield* start("disabled-caller");
+    const reports = yield* Report.SpectrumReportService;
+    const before = yield* reports.settle(
+      threadId,
+      "Report retained until the instance is enabled.",
+    );
+    const projections = yield* Projection.ProjectionStoreV2;
+    const projectId = (yield* projections.getThread(CALLER)).projectId;
+    const gate = Layer.fresh(Threads.layer).pipe(
+      Layer.provideMerge(
+        Settings.layerTest({
+          providerInstances: { codex: { driver: "codex", enabled: true } },
+          projectSettingsOverrides: {
+            [projectId]: { providerInstances: { codex: { enabled: false } } },
+          },
+        }),
+      ),
+    );
+    const refused = yield* Effect.gen(function* () {
+      return yield* (yield* Report.SpectrumReportService).deliver(threadId);
+    }).pipe(Effect.provide(Report.layer.pipe(Layer.provide(gate))), Effect.flip);
+    assert.instanceOf(refused.cause, Threads.ThreadManagementProviderInstanceDisabledError);
+    assert.deepStrictEqual(yield* read(threadId), before);
+    assert.deepStrictEqual(yield* runsFor(before.report!.messageId), []);
+    const sql = yield* SqlClient.SqlClient;
+    assert.deepStrictEqual(
+      yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id=${CALLER}`,
+      [],
+    );
+    assert.isTrue(
+      Option.isNone(
+        yield* (yield* CommandReceipts.CommandReceiptStoreV2).getByCommandId(
+          before.report!.commandId,
+        ),
+      ),
+    );
+    assert.deepStrictEqual(yield* reportsFence(scheduled("disabled-caller")), { kind: "waiting" });
+    assert.strictEqual(yield* needsYou("disabled-caller"), null);
+    const delivered = yield* reports.deliver(threadId);
+    assert.deepStrictEqual(delivered.report, before.report);
+    assert.deepStrictEqual(delivered.outbox, []);
+    assert.strictEqual(
+      (yield* runFor(before.report!.messageId)).userMessageId,
+      before.report!.messageId,
+    );
+  }).pipe(Effect.provide(runtime)),
+);
+
+it.effect(
+  "an earlier report cannot be replaced if its effective completion changes before commit",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const threadId = yield* start("replace-race");
+      const reports = yield* Report.SpectrumReportService;
+      yield* reports.settle(threadId, "Earlier report.");
+      const sent = yield* reports.deliver(threadId);
+      const source = yield* runFor(sent.report!.messageId);
+      yield* commit([ended(source, "completed")]);
+      const sink = yield* EventSink.EventSinkV2;
+      yield* sink.commitCommand({
+        commandId: CommandId.make("replace-race:cycle"),
+        threadId,
+        commandType: "fixture",
+        acceptedAt: NOW,
+        events: [],
+        effects: [],
+        forkPlans: [
+          spectrumPlan({
+            expectedRevision: sent.revision,
+            expectedGeneration: sent.generation,
+            state: { ...sent, revision: sent.revision + 1, cycle: sent.cycle + 1 },
+          }),
+        ],
+      });
+      const before = yield* read(threadId);
+      const refused = yield* Effect.gen(function* () {
+        return yield* (yield* Report.SpectrumReportService).settle(threadId, "New cycle's report.");
+      }).pipe(
+        Effect.provide(Report.layer),
+        Effect.provideService(EventSink.EventSinkV2, {
+          ...sink,
+          commitCommand: (command) =>
+            command.commandType === "spectrum.report.settle"
+              ? commit([
+                  runEvent("run.updated", {
+                    ...source,
+                    status: "completed",
+                    completedAt: NOW,
+                    restartCancelledBackgroundWork: [
+                      { kind: "task", id: "lost", label: "Awaited task" },
+                    ],
+                  }),
+                ]).pipe(Effect.andThen(sink.commitCommand(command)))
+              : sink.commitCommand(command),
+        }),
+        Effect.flip,
+      );
+      assert.strictEqual(
+        (refused.cause as { readonly _tag?: string })._tag,
+        "ForkCommitGuardRejected",
+      );
+      assert.deepStrictEqual(yield* read(threadId), before);
+      assert.isTrue(
+        Option.isNone(
+          yield* (yield* CommandReceipts.CommandReceiptStoreV2).getByCommandId(
+            CommandId.make(
+              `spectrum:${threadId}:${before.generation}:${before.cycle}:report:1:settle`,
+            ),
+          ),
+        ),
+      );
+      assert.strictEqual((yield* attemptOutcome(CALLER, sent.report!)).kind, "needs-you");
+    }).pipe(Effect.provide(runtime)),
+);
+
+it.effect(
+  "an abandoned report's native source effect prevents clearing its otherwise settled successor",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const threadId = yield* start("native-source-drain");
+      const reports = yield* Report.SpectrumReportService;
+      yield* reports.settle(threadId, "Report waiting on native restart.");
+      const sent = yield* reports.deliver(threadId);
+      const source = yield* runFor(sent.report!.messageId);
+      const sink = yield* EventSink.EventSinkV2;
+      const commandId = CommandId.make("command:runtime-reconcile:native-source-drain");
+      const effectId = `effect:restart-continuation:${source.id}`;
+      yield* sink.commitCommand({
+        commandId,
+        threadId: CALLER,
+        commandType: "fixture",
+        acceptedAt: NOW,
+        events: [
+          runEvent("run.updated", {
+            ...source,
+            status: "completed",
+            completedAt: NOW,
+            restartCancelledBackgroundWork: [
+              { kind: "subagent", id: "lost", label: "Awaited child" },
+            ],
+          }),
+        ],
+        effects: [
+          {
+            id: effectId,
+            commandId,
+            threadId: CALLER,
+            request: { type: "provider-runtime.continue", sourceRunId: source.id },
+          },
+        ],
+      });
+      const abandoned = yield* reports.abandon(threadId, sent.report!.commandId, "alice");
+      const successor = {
+        ...source,
+        id: RunId.make("run:native-source-drain:successor"),
+        ordinal: source.ordinal + 1,
+        userMessageId: MessageId.make("message:native-source-drain:successor"),
+        restartContinuationOfRunId: source.id,
+        status: "completed" as const,
+        completedAt: NOW,
+      };
+      yield* commit([runEvent("run.created", successor)]);
+      const records = yield* (yield* Projection.ProjectionStoreV2).getThreadRecords(CALLER, [
+        "attempts",
+      ]);
+      yield* commit(
+        records.attempts
+          .filter((attempt) => attempt.runId === source.id)
+          .map((attempt) => ({
+            id: EventId.make(`${attempt.id}:completed`),
+            type: "run-attempt.updated" as const,
+            threadId: CALLER,
+            occurredAt: NOW,
+            payload: { ...attempt, status: "completed" as const, completedAt: NOW },
+          })),
+      );
+      const sql = yield* SqlClient.SqlClient;
+      // The original start is finished; only the exact source continuation effect is still owed.
+      yield* sql`UPDATE orchestration_v2_effect_outbox SET status='succeeded'
+      WHERE command_id=${sent.report!.commandId}`;
+      assert.isNull(yield* reportDrainProof(abandoned));
+      yield* sql`UPDATE orchestration_v2_effect_outbox SET status='succeeded' WHERE effect_id=${effectId}`;
+      const proof = yield* reportDrainProof(abandoned);
+      assert.isNotNull(proof);
+      if (proof === null) return;
+      yield* sink.commitCommand({
+        commandId: CommandId.make("native-source-drain:reopen-guard"),
+        threadId,
+        commandType: "fixture",
+        acceptedAt: NOW,
+        events: [],
+        effects: [],
+        forkPlans: [reportDrainedPlan(proof)],
+      });
+    }).pipe(Effect.provide(runtime)),
+);
+
 it.effect(
   "sends the exact persisted report after a restart and releases the scheduler only on its completed turn",
   () =>
@@ -414,7 +617,17 @@ it.effect("never retries an explicit Stop, a non-retryable failure or a rejected
     yield* createCaller(ghost, "ghost");
     const refused = yield* start("refused", ghost);
     const refusedReport = (yield* reports.settle(refused, "Refused report")).report!;
-    const afterRejection = yield* reports.deliver(refused);
+    // An enabled instance with no adapter reaches the refusal seam, rather than the earlier off gate.
+    const ghostGate = Layer.fresh(Threads.layer).pipe(
+      Layer.provide(
+        Settings.layerTest({
+          providerInstances: { ghost: { driver: "codex", enabled: true } },
+        }),
+      ),
+    );
+    const afterRejection = yield* Effect.gen(function* () {
+      return yield* (yield* Report.SpectrumReportService).deliver(refused);
+    }).pipe(Effect.provide(Report.layer.pipe(Layer.provide(ghostGate))));
     const receipts = yield* CommandReceipts.CommandReceiptStoreV2;
     assert.strictEqual(
       Option.getOrThrow(yield* receipts.getByCommandId(refusedReport.commandId)).status,
