@@ -12051,7 +12051,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           };
       // The parent sent the follow-up after the delegating turn, so no blocking
       // wait owns it and a stop of that turn does not cancel it.
-      const completionPlan = yield* planDelegatedCompletionDelivery({
+      const planned = yield* planDelegatedCompletionDelivery({
         parentProjection,
         parentRun:
           followUp && parentRun?.delegatedCompletion !== undefined
@@ -12064,6 +12064,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         updatedTask,
         now,
       });
+      // A follow-up Stop writes run_interrupt_request, then the run becomes
+      // interrupted. task_cancel disposes delivery only after that stop, so a
+      // new wake claimed here would offer a continuation Stop already ended.
+      // The task's first result still plans normally, and a delivery already
+      // in flight stays pending because that plan does not offer. A plain
+      // interrupt has no request and still wakes.
+      const explicitlyStopped =
+        followUp &&
+        planned.offer &&
+        childRun.status === "interrupted" &&
+        (yield* projectionStore.getThreadRecords(childThreadId, ["turnItems"], {
+          turnItemTypes: ["run_interrupt_request"],
+          turnItemRunIds: [childRun.id],
+        })).turnItems.length > 0;
+      const completionPlan = explicitlyStopped
+        ? {
+            task: updatedTask,
+            parentRun: undefined,
+            message: undefined,
+            offer: false,
+          }
+        : planned;
       const resultTransferId = yield* idAllocator.allocate.contextTransfer({
         sourceThreadId: childThreadId,
         targetThreadId: parentThreadId,
