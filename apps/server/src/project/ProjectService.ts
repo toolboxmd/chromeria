@@ -131,6 +131,17 @@ export class ProjectService extends Context.Service<
     ) => Effect.Effect<Option.Option<Project>, ProjectOperationError>;
     readonly snapshot: Effect.Effect<ProjectSnapshot, ProjectOperationError>;
     /**
+     * A page of active projects in creation order, each with its repository
+     * identity resolved, so a caller can match projects by repository.
+     */
+    readonly listPage: (input: {
+      readonly cursor: number;
+      readonly limit: number;
+    }) => Effect.Effect<
+      { readonly projects: ReadonlyArray<Project>; readonly nextCursor: number | null },
+      ProjectOperationError
+    >;
+    /**
      * An active project's shell with its immediately available repository
      * identity; missing identity resolves in the background.
      */
@@ -554,6 +565,23 @@ export const make = Effect.gen(function* () {
     } satisfies ProjectSnapshot;
   });
 
+  const listPage: ProjectService["Service"]["listPage"] = Effect.fn("ProjectService.listPage")(
+    function* ({ cursor, limit }) {
+      const rows = (yield* snapshot).projects.filter((project) => project.deletedAt === null);
+      const projects = yield* Effect.forEach(
+        rows.slice(cursor, cursor + limit),
+        (project) =>
+          project.repositoryIdentity !== null
+            ? Effect.succeed(project)
+            : projectEnrichment
+                .readRepositoryIdentity(project.workspaceRoot)
+                .pipe(Effect.map((repositoryIdentity) => ({ ...project, repositoryIdentity }))),
+        { concurrency: 8 },
+      );
+      return { projects, nextCursor: cursor + limit < rows.length ? cursor + limit : null };
+    },
+  );
+
   return ProjectService.of({
     create,
     bootstrap,
@@ -562,6 +590,7 @@ export const make = Effect.gen(function* () {
     getById,
     getByWorkspaceRoot,
     snapshot,
+    listPage,
     getShell,
     listShells,
   });

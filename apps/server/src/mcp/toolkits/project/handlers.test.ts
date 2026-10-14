@@ -25,6 +25,7 @@ import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementSer
 import * as ServerConfig from "../../../config.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
+import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../../../vcs/VcsProcess.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -108,6 +109,7 @@ it.effect("attributes a launched thread's first message to the calling thread", 
         getThreadShell: () => Effect.succeed(caller),
       }),
       Layer.mock(ThreadLaunch.ThreadLaunchService)({
+        replayOrLaunch: (_input, launch) => launch,
         launch: (input) => {
           launchedSender = input.initialMessage?.senderThreadId;
           launchedOwner = input.owner;
@@ -122,6 +124,7 @@ it.effect("attributes a launched thread's first message to the calling thread", 
         },
       }),
       Layer.mock(Project.ProjectService)({}),
+      Layer.mock(PeerForwarding.PeerForwarding)({}),
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
       Layer.mock(GitVcsDriver.GitVcsDriver)({}),
       NodeServices.layer,
@@ -186,6 +189,7 @@ it.effect("launches a scratch thread into the Scratch project", () =>
         getThreadShell: () => Effect.succeed(caller),
       }),
       Layer.mock(ThreadLaunch.ThreadLaunchService)({
+        replayOrLaunch: (_input, launch) => launch,
         launch: (input) => {
           launched.push(input);
           return Effect.succeed({
@@ -199,6 +203,7 @@ it.effect("launches a scratch thread into the Scratch project", () =>
         },
       }),
       Layer.mock(Project.ProjectService)({}),
+      Layer.mock(PeerForwarding.PeerForwarding)({}),
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/projects",
         ensureScratchProject: Effect.succeed({ projectId: scratchProjectId }),
@@ -298,6 +303,7 @@ it.effect("starts a project from just a title when workspaceRoot is omitted", ()
             projectId === createdProjectId ? Option.some(createdProject) : Option.none(),
           ),
       }),
+      Layer.mock(PeerForwarding.PeerForwarding)({}),
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/projects",
         createNamedProject: (input) =>
@@ -379,6 +385,7 @@ const clientLaunchHarness = (input: {
     }),
     Layer.mock(ThreadManagement.ThreadManagementService)({}),
     Layer.mock(ThreadLaunch.ThreadLaunchService)({
+      replayOrLaunch: (_input, launch) => launch,
       launch: (launch) => {
         input.launched.push(launch);
         return Effect.succeed({
@@ -407,6 +414,7 @@ const clientLaunchHarness = (input: {
             : Option.none(),
         ),
     }),
+    Layer.mock(PeerForwarding.PeerForwarding)({}),
     Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
     NodeServices.layer,
   ).pipe(
@@ -456,6 +464,50 @@ it.effect("a client launches at its ceiling with the project's default model", (
     const untargeted = yield* handle({ title: "Fix" });
     expect(untargeted.at(-1)?.result).toMatchObject({ code: "target_required" });
     expect(launched).toHaveLength(1);
+  }),
+);
+
+it.effect("a launch retried with the same clientRequestId replays the first one", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { projectId, dependencies } = clientLaunchHarness({
+      runtimeModeCeiling: "auto",
+      launched,
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+          Layer.provide(Layer.mergeAll(dependencies, prismDependencies)),
+        ),
+      ),
+    );
+    const launch = (clientRequestId: string | undefined) =>
+      toolkit
+        .handle("t3_thread_launch", {
+          title: "Fix",
+          projectId,
+          message: "Fix the bug",
+          ...(clientRequestId === undefined ? {} : { clientRequestId }),
+        })
+        .pipe(
+          Stream.unwrap,
+          Stream.runCollect,
+          Effect.provide(Layer.mergeAll(dependencies, prismDependencies)),
+        );
+
+    yield* launch("fix-1");
+    yield* launch("fix-1");
+    yield* launch("fix-2");
+    yield* launch(undefined);
+    yield* launch(undefined);
+    const ids = launched.map((input) => [input.commandId, input.threadId]);
+    // The same key sends the same command and thread ids, which the launch
+    // service replays instead of starting a second thread.
+    expect(ids[0]).toEqual(ids[1]);
+    expect(ids[0]?.[0]).toContain("client%3Asession-1");
+    expect(ids[2]).not.toEqual(ids[0]);
+    // Without a key every launch is new.
+    expect(ids[3]).not.toEqual(ids[4]);
   }),
 );
 

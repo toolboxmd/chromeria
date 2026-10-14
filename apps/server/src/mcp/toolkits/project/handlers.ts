@@ -2,6 +2,8 @@ import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as Prism from "../../../prism/PrismService.ts";
 import { ProviderAdapterRegistryV2 } from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
+  CommandId,
+  type EnvironmentId,
   MessageId,
   ThreadId,
   OrchestratorMcpFailure,
@@ -11,12 +13,15 @@ import {
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
+import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { newCommandId, readCaller, resolveProjectId, unavailable } from "../../threadAccess.ts";
 import { ProjectToolkit } from "./tools.ts";
@@ -60,14 +65,43 @@ const access = Effect.gen(function* () {
   yield* readCaller();
   return yield* Project.ProjectService;
 });
+
+/** The linked environment a call names, or nothing for this one. */
+const remoteTarget = (input: { readonly environmentId?: EnvironmentId | undefined }) =>
+  McpInvocationContext.McpInvocationContext.pipe(
+    Effect.map((scope) => ({
+      scope,
+      target: PeerForwarding.remoteTarget(scope, input.environmentId),
+    })),
+  );
 export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   t3_thread_launch: McpToolAccess.startsThreads(
     (input) => input,
-    (input, { runtimeMode, interactionMode }) =>
+    (input, { runtimeMode, interactionMode, linkOrigin }) =>
       Effect.gen(function* () {
+        const { scope, target } = yield* remoteTarget(input);
+        if (target !== undefined) {
+          // The call carries the caller's modes, so omitted modes inherit
+          // them there too, capped by the link's access.
+          const forwarding = yield* PeerForwarding.PeerForwarding;
+          return yield* forwarding.call(
+            scope,
+            ProjectToolkit.tools.t3_thread_launch,
+            target,
+            input,
+          );
+        }
         const context = yield* readCaller();
         const { caller } = context;
-        const commandId = yield* newCommandId();
+        // A retry with the same key replays the first launch: the ids derive
+        // from the caller and the key, and the launch service replays a
+        // command it already accepted.
+        const commandId =
+          input.clientRequestId === undefined
+            ? yield* newCommandId()
+            : CommandId.make(
+                `mcp:launch:${encodeURIComponent(scope.requestNamespace)}:${encodeURIComponent(input.clientRequestId)}`,
+              );
         const threadId = ThreadId.make(commandId);
         const messageId = MessageId.make(commandId);
         const attachments = input.attachments ?? [];
@@ -98,95 +132,132 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 ),
               )).projectId
             : yield* resolveProjectId(context, input.projectId);
-        const readProject = Project.ProjectService.pipe(
-          Effect.flatMap((projects) => projects.getById(projectId)),
-          Effect.mapError(unavailable),
-          Effect.map(Option.getOrUndefined),
-        );
-        if (input.workspaceStrategy?.type === "existing_worktree") {
-          const project = yield* readProject;
-          if (project === undefined)
-            return yield* new OrchestratorMcpFailure({
-              code: "invalid_request",
-              message: "The project was not found.",
-            });
-          yield* assertProjectWorktree(project.workspaceRoot, input.workspaceStrategy.worktreePath);
-        }
-        const inherited =
-          input.modelSelection ??
-          caller?.modelSelection ??
-          (yield* readProject)?.defaultModelSelection ??
-          undefined;
-        const prism = yield* Prism.PrismService;
-        const adapters = yield* ProviderAdapterRegistryV2;
-        const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
-        const { modelSelection, kitText } = yield* prism.resolve({
-          projectId,
-          role: input.prismRole ?? "planner",
-          lane: input.lane,
-          explicit: input.modelSelection,
-          inherited,
-          validate: (selection) =>
-            Prism.validateLaunchSelection(selection).pipe(
-              Effect.provideService(ProviderAdapterRegistryV2, adapters),
-              Effect.provideService(ProviderRegistry.ProviderRegistry, providerRegistry),
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const result = yield* launches
+          .replayOrLaunch(
+            {
+              commandId,
+              threadId,
+              projectId,
+              runtimeMode,
+              interactionMode,
+              createdBy: "agent",
+              ...(linkOrigin === undefined ? {} : { linkOrigin }),
+              ...(input.message === undefined && attachments.length === 0 ? {} : { messageId }),
+            },
+            Effect.gen(function* () {
+              const readProject = Project.ProjectService.pipe(
+                Effect.flatMap((projects) => projects.getById(projectId)),
+                Effect.mapError(unavailable),
+                Effect.map(Option.getOrUndefined),
+              );
+              if (input.workspaceStrategy?.type === "existing_worktree") {
+                const project = yield* readProject;
+                if (project === undefined)
+                  return yield* new OrchestratorMcpFailure({
+                    code: "invalid_request",
+                    message: "The project was not found.",
+                  });
+                yield* assertProjectWorktree(
+                  project.workspaceRoot,
+                  input.workspaceStrategy.worktreePath,
+                );
+              }
+              const inherited =
+                input.modelSelection ??
+                caller?.modelSelection ??
+                (yield* readProject)?.defaultModelSelection ??
+                undefined;
+              const prism = yield* Prism.PrismService;
+              const adapters = yield* ProviderAdapterRegistryV2;
+              const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+              const { modelSelection, kitText } = yield* prism.resolve({
+                projectId,
+                role: input.prismRole ?? "planner",
+                lane: input.lane,
+                explicit: input.modelSelection,
+                inherited,
+                validate: (selection) =>
+                  Prism.validateLaunchSelection(selection).pipe(
+                    Effect.provideService(ProviderAdapterRegistryV2, adapters),
+                    Effect.provideService(ProviderRegistry.ProviderRegistry, providerRegistry),
+                  ),
+              });
+              if (modelSelection === undefined)
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message:
+                    "Pass modelSelection: the project has no default model. orchestrator_capabilities lists providers and models.",
+                });
+              return yield* ThreadMessageIntake.launchThread({
+                commandId,
+                threadId,
+                projectId,
+                title: input.title,
+                modelSelection,
+                runtimeMode,
+                interactionMode,
+                workspaceStrategy: input.workspaceStrategy ?? { type: "root" },
+                ...(input.message === undefined && attachments.length === 0
+                  ? {}
+                  : {
+                      initialMessage: {
+                        messageId,
+                        ...(caller === undefined ? {} : { senderThreadId: caller.id }),
+                        text: [kitText, input.message ?? ""].filter(Boolean).join("\n\n"),
+                        attachments,
+                      },
+                    }),
+                createdBy: "agent",
+                creationSource: "mcp",
+                // Fork: an agent's thread belongs to its caller's owner (toolboxmd/chromeria#170).
+                ...(caller === undefined ? {} : { owner: threadOwner(caller) }),
+                ...(linkOrigin === undefined ? {} : { linkOrigin }),
+                // Kept only alongside linkOrigin: thread.create drops it otherwise.
+                ...(input.delegatedFrom === undefined
+                  ? {}
+                  : { delegatedFrom: input.delegatedFrom }),
+              }).pipe(
+                Effect.mapError((error) =>
+                  error._tag === "AttachmentClaimError"
+                    ? new OrchestratorMcpFailure({
+                        code: "orchestration_error",
+                        message: error.message,
+                      })
+                    : unavailable(),
+                ),
+              );
+            }),
+          )
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "ThreadLaunchError" ? unavailable() : error,
             ),
-        });
-        if (modelSelection === undefined)
-          return yield* new OrchestratorMcpFailure({
-            code: "invalid_request",
-            message:
-              "Pass modelSelection: the project has no default model. orchestrator_capabilities lists providers and models.",
-          });
-        const result = yield* ThreadMessageIntake.launchThread({
-          commandId,
-          threadId,
-          projectId,
-          title: input.title,
-          modelSelection,
-          runtimeMode,
-          interactionMode,
-          workspaceStrategy: input.workspaceStrategy ?? { type: "root" },
-          ...(input.message === undefined && attachments.length === 0
-            ? {}
-            : {
-                initialMessage: {
-                  messageId,
-                  ...(caller === undefined ? {} : { senderThreadId: caller.id }),
-                  text: [kitText, input.message ?? ""].filter(Boolean).join("\n\n"),
-                  attachments,
-                },
-              }),
-          createdBy: "agent",
-          creationSource: "mcp",
-          // Fork: an agent's thread belongs to its caller's owner (toolboxmd/chromeria#170).
-          ...(caller === undefined ? {} : { owner: threadOwner(caller) }),
-        }).pipe(
-          Effect.mapError((error) =>
-            error._tag === "AttachmentClaimError"
-              ? new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message })
-              : unavailable(),
-          ),
-        );
+          );
         const thread = result.projection.thread;
         const run = result.projection.runs.find((run) => run.userMessageId === messageId);
         return {
           threadId: thread.id,
           projectId: thread.projectId,
-          modelSelection: thread.modelSelection,
+          modelSelection: run?.modelSelection ?? thread.modelSelection,
           runId: run?.id ?? null,
           status: run?.status ?? null,
         };
       }).pipe(Effect.provide(Prism.layer)),
+    "stamped",
   ),
   t3_project_list: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
+      const { scope, target } = yield* remoteTarget(input);
+      if (target !== undefined) {
+        const forwarding = yield* PeerForwarding.PeerForwarding;
+        return yield* forwarding.call(scope, ProjectToolkit.tools.t3_project_list, target, input);
+      }
       const projects = yield* access;
-      const snapshot = yield* projects.snapshot.pipe(Effect.mapError(unavailable));
-      const rows = snapshot.projects.filter((project) => project.deletedAt === null);
-      const start = input.cursor ?? 0,
-        end = start + (input.limit ?? 20);
-      return { projects: rows.slice(start, end), nextCursor: end < rows.length ? end : null };
+      // Identities are resolved: linked environments find this side's project by repository.
+      return yield* projects
+        .listPage({ cursor: input.cursor ?? 0, limit: input.limit ?? 20 })
+        .pipe(Effect.mapError(unavailable));
     }),
   ),
   t3_project_read: McpToolAccess.reads((input) =>

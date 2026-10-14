@@ -1,3 +1,4 @@
+import { waitForRecovery, RecoveryWaitState } from "../peer/recoveryWait.ts";
 import type {
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -32,7 +33,6 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -56,7 +56,11 @@ export function withCreationProvenance(
   provenance: ThreadManagementProvenance,
 ): OrchestrationV2Command {
   switch (command.type) {
-    case "thread.create":
+    case "thread.create": {
+      // Only the server stamps a link's origin, so a client cannot set one.
+      const { linkOrigin: _linkOrigin, delegatedFrom: _delegatedFrom, ...rest } = command;
+      return { ...rest, ...provenance };
+    }
     case "message.dispatch":
     case "thread.fork":
     case "thread.merge_back":
@@ -90,6 +94,10 @@ export function existingThreadIdsForCommand(
     case "delegated_task.wake-policy":
     case "delegated_task.completion-delivery.acknowledge":
     case "delegated_task.completion-delivery.dispose":
+    case "delegated_task.remote.request":
+    case "delegated_task.remote.launch":
+    case "delegated_task.remote.attach":
+    case "delegated_task.remote.complete":
       return [command.parentThreadId];
     case "thread.created.record":
       return command.parentThreadId === command.targetThreadId
@@ -445,6 +453,7 @@ const SETTLE_AFTER_RUN_WAIT_MS = 24 * 60 * 60 * 1_000;
 const isProjectionThreadNotFound = Schema.is(ProjectionStoreThreadNotFoundError);
 
 const make = Effect.gen(function* () {
+  const recoveryWait = yield* RecoveryWaitState;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const layerScope = yield* Effect.scope;
   const legacyImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
@@ -692,79 +701,41 @@ const make = Effect.gen(function* () {
       const afterSequence = yield* orchestrator
         .getThreadEventSequence(input.threadId)
         .pipe(Effect.mapError(loadError));
-      const target = yield* getProjectThreadRecords(input, ["runs"]);
-      const selectedRun =
-        input.runId === undefined
-          ? latestRun(target)
-          : target.runs.find((candidate) => candidate.id === input.runId);
-      if (input.runId !== undefined && selectedRun === undefined) {
-        return yield* new ThreadManagementRunNotFoundError({
-          threadId: input.threadId,
-          runId: input.runId,
-        });
-      }
-      if (selectedRun === undefined) {
-        return { threadId: input.threadId, run: null, timedOut: false };
-      }
-      if (isTerminalRunStatus(selectedRun.status)) {
-        return { threadId: input.threadId, run: selectedRun, timedOut: false };
-      }
-
-      // Re-read the run only when the thread records a run update or its
-      // deletion, instead of polling the projection for up to an hour. Each
-      // stream keeps one event type, so transcript events never fill its buffer.
-      const wait = Stream.merge(
-        orchestrator.streamStoredEventsFrom({
-          threadId: input.threadId,
-          afterSequence,
-          eventType: "run.updated",
-        }),
-        orchestrator.streamStoredEventsFrom({
-          threadId: input.threadId,
-          afterSequence,
-          eventType: "thread.deleted",
-        }),
-      ).pipe(
-        Stream.mapError(loadError),
-        Stream.filter(
-          (stored) =>
-            stored.event.type !== "run.updated" || stored.event.payload.id === selectedRun.id,
-        ),
-        Stream.mapEffect(() =>
-          getProjectThreadRecords(input, ["runs"], { runIds: [selectedRun.id] }).pipe(
-            Effect.flatMap((current) => {
-              const run = current.runs.find((candidate) => candidate.id === selectedRun.id);
-              return run === undefined
-                ? Effect.fail(
-                    new ThreadManagementRunNotFoundError({
-                      threadId: input.threadId,
-                      runId: selectedRun.id,
-                    }),
-                  )
-                : Effect.succeed(run);
-            }),
+      return yield* waitForRecovery<ThreadManagementError>(
+        {
+          ...input,
+          readRuns: getProjectThreadRecords(input, ["runs"]).pipe(
+            Effect.map((records) => records.runs),
           ),
-        ),
-        Stream.filter((run) => isTerminalRunStatus(run.status)),
-        Stream.runHead,
-        Effect.timeoutOption(Duration.millis(Math.max(1, input.timeoutMs))),
+          latest: (runs) => latestRun({ runs }),
+          events: Stream.mergeAll(
+            (
+              [
+                "run.updated",
+                "run.created",
+                "thread.metadata-updated",
+                "thread.deleted",
+                "thread.settled",
+                "thread.archived",
+                "thread.runtime-mode-updated",
+                "thread.model-selection-updated",
+                "thread.provider-switched",
+              ] as const
+            ).map((eventType) =>
+              orchestrator.streamStoredEventsFrom({
+                threadId: input.threadId,
+                afterSequence,
+                eventType,
+              }),
+            ),
+            { concurrency: "unbounded" },
+          ).pipe(Stream.mapError(loadError)),
+          missing: (runId) =>
+            new ThreadManagementRunNotFoundError({ threadId: input.threadId, runId }),
+          loadError,
+        },
+        recoveryWait,
       );
-      const waited = Option.flatten(yield* wait);
-      if (Option.isSome(waited)) {
-        return { threadId: input.threadId, run: waited.value, timedOut: false };
-      }
-      const current = yield* getProjectThreadRecords(input, ["runs"], { runIds: [selectedRun.id] });
-      const run = current.runs.find((candidate) => candidate.id === selectedRun.id);
-      if (run === undefined) {
-        return yield* new ThreadManagementRunNotFoundError({
-          threadId: input.threadId,
-          runId: selectedRun.id,
-        });
-      }
-      // The run may have reached a terminal status while the timeout was
-      // winning the race; the final projection read decides what actually
-      // happened, so only a still-active run counts as timed out.
-      return { threadId: input.threadId, run, timedOut: !isTerminalRunStatus(run.status) };
     });
 
   const settleAfterRun: ThreadManagementServiceShape["settleAfterRun"] = Effect.fn(
@@ -864,6 +835,33 @@ const make = Effect.gen(function* () {
           ),
       );
       const failures: Array<Orchestrator.OrchestratorV2Error> = [];
+      for (const task of subagents) {
+        if (task.origin !== "app_owned") continue;
+        if (task.childThreadId === null) {
+          // A task in a linked environment ends here; its follower then stops it there.
+          if (task.remoteChild === undefined || task.result !== null) continue;
+          yield* dispatch({
+            type: "delegated_task.remote.complete",
+            commandId: CommandId.make(`${input.commandId}:stop:${task.id}`),
+            parentThreadId: input.threadId,
+            taskId: task.id,
+            status: "interrupted",
+            result:
+              input.reason === undefined
+                ? "Stopped with its parent."
+                : `Stopped with its parent: ${input.reason}`,
+          }).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("Unable to stop a delegated task", {
+                parentThreadId: input.threadId,
+                taskId: task.id,
+                error,
+              }).pipe(Effect.andThen(Effect.sync(() => failures.push(error)))),
+            ),
+          );
+          continue;
+        }
+      }
       for (const threadId of new Set([
         ...descendants,
         ...subagents.flatMap((task) =>

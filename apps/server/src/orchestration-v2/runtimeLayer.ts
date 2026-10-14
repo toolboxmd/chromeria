@@ -1,3 +1,5 @@
+import * as RecoveryWaitSignals from "../peer/recoveryWaitSignals.ts";
+import * as RecoveryWait from "../peer/recoveryWait.ts";
 import * as Spectrum from "../spectrum/runtimeLayer.ts";
 import * as PrismRecovery from "../prism/RecoveryCoordinator.ts";
 import * as PrismStreamClock from "../prism/streamClock.ts";
@@ -221,7 +223,9 @@ const layerRunFinalizationServiceProvided = RunFinalizationService.layer.pipe(
   Layer.provide(Layer.merge(layerCheckpointCaptureServiceProvided, ProjectionStore.layer)),
 );
 
-const layerPrismRecoveryProvided = PrismRecovery.layer;
+const layerPrismRecoveryProvided = PrismRecovery.layer.pipe(
+  Layer.provideMerge(RecoveryWaitSignals.layerSignals),
+);
 const layerPrismRecoveryHooksProvided = PrismRecoveryHooks.layer.pipe(
   Layer.provide(Layer.mergeAll(layerPrismRecoveryProvided, ProjectionStore.layer)),
 );
@@ -266,10 +270,22 @@ const layerAgentSessionImporterProvided = AgentSessionImporter.layer.pipe(
 );
 
 const layerThreadManagementProvided = ThreadManagementService.layerWithLegacyImporter.pipe(
-  Layer.provide(Layer.merge(layerOrchestratorProvided, layerLegacyV1ThreadImporterProvided)),
+  Layer.provide(
+    Layer.mergeAll(
+      layerOrchestratorProvided,
+      layerLegacyV1ThreadImporterProvided,
+      RecoveryWait.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(layerPrismRecoveryHooksProvided, RecoveryWaitSignals.layerSignals),
+        ),
+      ),
+    ),
+  ),
 );
 export const layerProjectSetupScriptRunner = ProjectSetupScriptRunner.layer.pipe(
   Layer.provide(layerProjectService),
+  // Whether a thread came from a linked environment, which skips setup.
+  Layer.provide(ProjectionStore.layer),
 );
 const layerManagedProjectFoldersProvided = ManagedProjectFolders.layer.pipe(
   Layer.provide(layerProjectService),

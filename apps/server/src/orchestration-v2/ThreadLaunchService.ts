@@ -9,6 +9,8 @@ import {
   type ModelSelection,
   type OrchestrationV2Actor,
   type OrchestrationV2CreationSource,
+  type OrchestrationV2DelegatedFrom,
+  type OrchestrationV2LinkOrigin,
   type OrchestrationV2ProviderThreadNativeMetadata,
   type OrchestrationV2ThreadProjection,
   type ProviderDriverKind,
@@ -48,6 +50,7 @@ import * as IdAllocator from "./IdAllocator.ts";
 import type * as Orchestrator from "./Orchestrator.ts";
 import { makeProviderFailure } from "./ProviderFailure.ts";
 import { randomUuidV4 } from "./RandomUuid.ts";
+import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimit.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
 export type ThreadLaunchWorkspaceStrategy =
@@ -97,6 +100,10 @@ export interface ThreadLaunchInput {
   readonly creationSource: OrchestrationV2CreationSource;
   /** Fork: the person who owns the new thread (toolboxmd/chromeria#170). */
   readonly owner?: string;
+  /** The linked environment this launch is for, if one asked for it. */
+  readonly linkOrigin?: OrchestrationV2LinkOrigin;
+  /** The parent there, when that environment's agent delegated this as a task. */
+  readonly delegatedFrom?: OrchestrationV2DelegatedFrom;
 }
 
 /** What workspace preparation reads from a launch; a retry rebuilds it from the run. */
@@ -123,6 +130,17 @@ export interface ThreadLaunchResult {
   readonly projection: OrchestrationV2ThreadProjection;
   readonly resumed: boolean;
 }
+
+type ThreadLaunchReplayInput = Pick<
+  ThreadLaunchInput,
+  | "commandId"
+  | "threadId"
+  | "projectId"
+  | "runtimeMode"
+  | "interactionMode"
+  | "createdBy"
+  | "linkOrigin"
+> & { readonly messageId?: MessageId };
 
 export class ThreadLaunchError extends Schema.TaggedError<ThreadLaunchError>()(
   "ThreadLaunchError",
@@ -156,6 +174,11 @@ export class ThreadLaunchService extends Context.Service<
     readonly launch: (
       input: ThreadLaunchInput,
     ) => Effect.Effect<ThreadLaunchResult, ThreadLaunchError>;
+    /** Replay accepted work before evaluating admission, model selection or attachment claims. */
+    readonly replayOrLaunch: <E, R>(
+      input: ThreadLaunchReplayInput,
+      launch: Effect.Effect<ThreadLaunchResult, E, R>,
+    ) => Effect.Effect<ThreadLaunchResult, ThreadLaunchError | E, R>;
     /** Prepare the durable first run of a delegated child through normal launch setup. */
     readonly prepareDelegatedRun: (
       input: ThreadLaunchRetryInput & { readonly projectId: ProjectId },
@@ -197,7 +220,11 @@ const make = Effect.gen(function* () {
   yield* Effect.addFinalizer(() => Scope.close(preparationScope, Exit.void));
 
   const mapError =
-    (input: PreparationInput, operation: ThreadLaunchError["operation"], threadId?: ThreadId) =>
+    (
+      input: Pick<ThreadLaunchInput, "commandId" | "projectId">,
+      operation: ThreadLaunchError["operation"],
+      threadId?: ThreadId,
+    ) =>
     (cause: unknown) =>
       new ThreadLaunchError({
         operation,
@@ -207,10 +234,70 @@ const make = Effect.gen(function* () {
         cause,
       });
 
-  const readReceipt = (input: ThreadLaunchInput, commandId: CommandId) =>
+  const readReceipt = (
+    input: Pick<ThreadLaunchInput, "commandId" | "projectId" | "threadId">,
+    commandId: CommandId,
+  ) =>
     receipts
       .getByCommandId(commandId)
       .pipe(Effect.mapError(mapError(input, "read-receipt", input.threadId)));
+
+  const replayOrLaunch: ThreadLaunchService["Service"]["replayOrLaunch"] = Effect.fn(
+    "ThreadLaunchService.replayOrLaunch",
+  )(function* <E, R>(
+    input: ThreadLaunchReplayInput,
+    launch: Effect.Effect<ThreadLaunchResult, E, R>,
+  ): Effect.fn.Return<ThreadLaunchResult, ThreadLaunchError | E, R> {
+    const receipt = yield* readReceipt(input, input.commandId);
+    if (Option.isNone(receipt)) return yield* launch;
+    const accepted = receipt.value;
+    if (
+      accepted.status !== "accepted" ||
+      accepted.commandType !== "thread.create" ||
+      (input.threadId !== undefined && input.threadId !== accepted.threadId)
+    )
+      return yield* mapError(input, "read-receipt")("Launch receipt does not match this request.");
+    const threadId = accepted.threadId;
+    const projection = yield* threads
+      .getThreadProjection(threadId)
+      .pipe(Effect.mapError(mapError(input, "create-thread", threadId)));
+    if (projection.thread.projectId !== input.projectId)
+      return yield* mapError(input, "resolve-project", threadId)("Project identity changed.");
+    if (projection.thread.linkOrigin?.sessionId !== input.linkOrigin?.sessionId)
+      return yield* mapError(input, "create-thread", threadId)("Launch link origin changed.");
+    if (
+      input.createdBy === "agent" &&
+      exceededDispatchModeLimit(input, projection.thread) !== undefined
+    )
+      return yield* mapError(
+        input,
+        "dispatch-message",
+        threadId,
+      )("Thread runs above the launch's mode limits.");
+    if (input.messageId !== undefined) {
+      const messageReceipt = yield* readReceipt(
+        input,
+        CommandId.make(`${input.commandId}:initial-message`),
+      );
+      // A create alone is not an accepted initial message. Resume its normal intake.
+      if (Option.isNone(messageReceipt)) return yield* launch;
+      const run = projection.runs.find((candidate) => candidate.userMessageId === input.messageId);
+      if (
+        messageReceipt.value.status !== "accepted" ||
+        messageReceipt.value.commandType !== "message.dispatch" ||
+        messageReceipt.value.threadId !== threadId ||
+        run === undefined
+      )
+        return yield* mapError(
+          input,
+          "dispatch-message",
+          threadId,
+        )("Initial message receipt does not match this request.");
+      if (run.status === "preparing")
+        yield* prepareDelegatedRun({ ...input, threadId, runId: run.id });
+    }
+    return { threadId, projection, resumed: true };
+  });
 
   const validateReusableThread = Effect.fn("ThreadLaunchService.validateReusableThread")(function* (
     input: ThreadLaunchInput,
@@ -797,6 +884,10 @@ const make = Effect.gen(function* () {
                   ? {}
                   : { importedNativeThread: input.importedNativeThread }),
                 ...(input.owner === undefined ? {} : { owner: input.owner }),
+                ...(input.linkOrigin === undefined ? {} : { linkOrigin: input.linkOrigin }),
+                ...(input.delegatedFrom === undefined
+                  ? {}
+                  : { delegatedFrom: input.delegatedFrom }),
                 createdBy: input.createdBy,
                 creationSource: input.creationSource,
               });
@@ -815,7 +906,6 @@ const make = Effect.gen(function* () {
         if (project.id !== input.projectId) {
           return yield* mapError(input, "resolve-project", threadId)("Project identity changed.");
         }
-
         let runId: RunId | null = null;
         let messageWasAlreadyAccepted = false;
         if (input.initialMessage !== undefined) {
@@ -848,7 +938,20 @@ const make = Effect.gen(function* () {
               createdBy: input.createdBy,
               creationSource: input.creationSource,
             })
-            .pipe(Effect.mapError(mapError(input, "dispatch-message", threadId)));
+            .pipe(
+              // An agent's launch may land on a thread a replay, or a
+              // concurrent launch with the same key, created with broader modes
+              // than it asks for. The orchestrator refuses the message under
+              // the thread's lock. The user's own clients launch into their
+              // own drafts, whatever modes those hold.
+              input.createdBy === "agent"
+                ? Effect.provideService(DispatchModeLimit, {
+                    runtimeMode: input.runtimeMode,
+                    interactionMode: input.interactionMode,
+                  })
+                : (effect) => effect,
+              Effect.mapError(mapError(input, "dispatch-message", threadId)),
+            );
           const runCreated = dispatched.storedEvents.find(
             (stored) => stored.event.type === "run.created",
           );
@@ -1003,7 +1106,7 @@ const make = Effect.gen(function* () {
     if (Exit.isFailure(scheduled))
       yield* failPreparedRun(input, input.threadId, input.runId, Cause.squash(scheduled.cause));
   });
-  return ThreadLaunchService.of({ launch, retryPreparation, prepareDelegatedRun });
+  return ThreadLaunchService.of({ launch, replayOrLaunch, retryPreparation, prepareDelegatedRun });
 });
 
 export const layer = Layer.effect(ThreadLaunchService, make);
