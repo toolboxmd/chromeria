@@ -28,7 +28,7 @@ const layerRelayTracing = RelayTracing.layer(resolveRelayTracingConfig(), {
 }).pipe(Layer.provide(layerHttpClient));
 
 type RuntimeLayerSource =
-  | typeof layerSharedPrimary
+  | typeof layerRenewal
   | typeof layerHttpClient
   | typeof Dpop.layer
   | typeof Socket.layerWebSocketConstructorGlobal
@@ -41,21 +41,17 @@ const layerRenewal = SessionRenewal.layer.pipe(
   Layer.provide(Layer.mergeAll(layerHttpClient, Dpop.layer)),
 );
 const primaryHttpRuntime = ManagedRuntime.make(
-  Layer.mergeAll(
-    PrimaryEnvironmentHttpClient.layer.pipe(Layer.provide(PrimaryEnvironmentHttpLayer.layer)),
-    layerRenewal,
-  ),
+  PrimaryEnvironmentHttpClient.layer.pipe(Layer.provide(PrimaryEnvironmentHttpLayer.layer)),
 );
 export type RenewalEffectRunner = <A, E>(
   effect: Effect.Effect<A, E, SessionRenewal.SessionRenewal>,
 ) => Promise<A>;
-const liveRenewalRunner: RenewalEffectRunner = (effect) => primaryHttpRuntime.runPromise(effect);
+const liveRenewalRunner: RenewalEffectRunner = (effect) => runtime.runPromise(effect);
 let renewalRunner = liveRenewalRunner;
 export const runRenewal: RenewalEffectRunner = (effect) => renewalRunner(effect);
 export function __setRenewalRunnerForTests(runner?: RenewalEffectRunner): void {
   renewalRunner = runner ?? liveRenewalRunner;
 }
-const layerSharedPrimary = Layer.effectContext(primaryHttpRuntime.contextEffect);
 
 export type PrimaryHttpEffectRunner = <A, E>(
   effect: Effect.Effect<A, E, PrimaryEnvironmentHttpClient.PrimaryEnvironmentHttpClient>,
@@ -75,7 +71,7 @@ export function __setPrimaryHttpRunnerForTests(runner?: PrimaryHttpEffectRunner)
 }
 
 const layerRuntime = Layer.mergeAll(
-  layerSharedPrimary,
+  layerRenewal,
   layerHttpClient,
   Dpop.layer,
   Socket.layerWebSocketConstructorGlobal,
