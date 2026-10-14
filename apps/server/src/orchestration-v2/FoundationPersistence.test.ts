@@ -820,12 +820,9 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         } as Parameters<EventSink.EventSinkV2Shape["stream"]>[0]);
       // The test clock does not advance this wait. A bad cursor that falls
       // through into the live tail stays suspended, which is still a miss.
-      const observeCursor = (input: {
-        readonly afterSequence?: number;
-        readonly bounded: boolean;
-      }) =>
+      const classifyOpened = (opened: ReturnType<EventSink.EventSinkV2Shape["stream"]>) =>
         Effect.gen(function* () {
-          const fiber = yield* open(input).pipe(
+          const fiber = yield* opened.pipe(
             Stream.take(1),
             Stream.runCollect,
             Effect.forkChild({ startImmediately: true }),
@@ -859,6 +856,32 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
               : String("cause" in squashed ? squashed.cause : squashed);
           return detail.includes("afterSequence") ? "rejected" : detail;
         });
+      const observeCursor = (input: {
+        readonly afterSequence?: number;
+        readonly bounded: boolean;
+      }) => classifyOpened(open(input));
+      // Call the real method with no argument and with undefined. An object
+      // that merely omits afterSequence does not reach this path.
+      const observeOmittedArgument = (label: "omitted call" | "omitted undefined") =>
+        Effect.gen(function* () {
+          const called = yield* Effect.exit(
+            Effect.sync(() => {
+              if (label === "omitted call") {
+                // @ts-expect-error an omitted argument is not a cursor
+                return eventSink.stream();
+              }
+              // @ts-expect-error undefined is not a cursor
+              return eventSink.stream(undefined);
+            }),
+          );
+          if (Exit.isFailure(called)) {
+            const squashed = Cause.squash(called.cause);
+            const thrown =
+              squashed instanceof Error ? `${squashed.name}: ${squashed.message}` : typeof squashed;
+            return `threw ${thrown}`;
+          }
+          return yield* classifyOpened(called.value);
+        });
 
       const rejected: Array<string> = [];
       for (const bounded of [false, true] as const) {
@@ -889,6 +912,10 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
           [sequences[1]!],
           `${path} positive cursor`,
         );
+      }
+      for (const label of ["omitted call", "omitted undefined"] as const) {
+        const observed = yield* observeOmittedArgument(label);
+        if (observed !== "rejected") rejected.push(`${label} ${observed}`);
       }
       assert.deepEqual(rejected, []);
     }),
