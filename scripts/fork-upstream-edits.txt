@@ -208,3 +208,7 @@ apps/server/src/auth/ServerSecretStore.ts
 # Exports used by carried fork instructions and ACP regressions.
 packages/shared/package.json
 packages/provider-grok/src/testing.ts
+
+# Issue links in inline and expanded HTML documents.
+apps/web/src/components/files/BrowserDocumentFrame.tsx
+apps/web/src/components/chat/HtmlRenderDialog.test.tsx
