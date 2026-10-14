@@ -21,6 +21,8 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Option from "effect/Option";
 
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SessionRenewal from "./SessionRenewal.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
@@ -47,6 +49,7 @@ export interface IssuedSession {
   readonly expiresAt: DateTime.DateTime;
   readonly scopes: ReadonlyArray<AuthEnvironmentScope>;
   readonly proofKeyThumbprint?: string;
+  readonly renewAfter?: number;
 }
 
 export interface VerifiedSession {
@@ -371,6 +374,7 @@ export class SessionStore extends Context.Service<
     readonly cookieName: string;
     readonly legacyCookieName: string | undefined;
     readonly issue: (input?: {
+      readonly renewalCommitment?: string;
       readonly ttl?: Duration.Duration;
       readonly subject?: string;
       readonly method?: ServerAuthSessionMethod;
@@ -387,6 +391,22 @@ export class SessionStore extends Context.Service<
       readonly replaceSessionId?: AuthSessionId;
     }) => Effect.Effect<IssuedSession, SessionCredentialInternalError>;
     readonly verify: (token: string) => Effect.Effect<VerifiedSession, SessionCredentialError>;
+    readonly renewSession: (input: { secret: string; next: string }) => Effect.Effect<
+      {
+        token: string;
+        method: ServerAuthSessionMethod;
+        expiresAt: DateTime.DateTime;
+        generation: number;
+        outcome: "current" | "rotated";
+        renewAfter: number;
+      },
+      | SessionRenewal.RenewalRejected
+      | SessionRenewal.RenewalStale
+      | SessionRenewal.RenewalPending
+      | SessionRenewal.RenewalStorageError
+      | SessionCredentialInternalError
+    >;
+
     readonly issueWebSocketToken: (
       sessionId: AuthSessionId,
       input?: {
@@ -504,6 +524,8 @@ export const make = Effect.gen(function* () {
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironmentIdentity;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
   const authSessions = yield* AuthSessions.AuthSessionRepository;
+  const sql = yield* SqlClient.SqlClient;
+  const renewal = yield* SessionRenewal.SessionRenewal;
   const signingSecret = yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32);
   const connectedSessionsRef = yield* Ref.make(new Map<AuthSessionId, number>());
   const changesPubSub = yield* PubSub.unbounded<SessionCredentialChange>();
@@ -723,17 +745,31 @@ export const make = Effect.gen(function* () {
         issuedAt,
         expiresAt,
       } satisfies AuthSessions.CreateAuthSessionInput;
-      const replacedSessionIds = yield* (
-        input?.replaceSessionId !== undefined || input?.replaceActiveForSubjectAndMethod
-          ? authSessions.createReplacingActive({
-              session: sessionRecord,
-              revokedAt: issuedAt,
-              ...(input.replaceSessionId !== undefined
-                ? { replaceSessionId: input.replaceSessionId }
-                : {}),
-            })
-          : authSessions.create(sessionRecord).pipe(Effect.as([] as ReadonlyArray<AuthSessionId>))
-      ).pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ sessionId, cause })));
+      const replacedSessionIds = yield* sql
+        .withTransaction(
+          (input?.replaceSessionId !== undefined || input?.replaceActiveForSubjectAndMethod
+            ? authSessions.createReplacingActive({
+                session: sessionRecord,
+                revokedAt: issuedAt,
+                ...(input.replaceSessionId !== undefined
+                  ? { replaceSessionId: input.replaceSessionId }
+                  : {}),
+              })
+            : authSessions.create(sessionRecord).pipe(Effect.as([] as ReadonlyArray<AuthSessionId>))
+          ).pipe(
+            Effect.tap(() =>
+              input?.renewalCommitment === undefined
+                ? Effect.void
+                : renewal.enroll({
+                    sessionId,
+                    commitment: input.renewalCommitment,
+                    approved: true,
+                  }),
+            ),
+          ),
+        )
+        .pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ sessionId, cause })));
+
       if (replacedSessionIds.length > 0) {
         yield* Ref.update(connectedSessionsRef, (current) => {
           const next = new Map(current);
@@ -768,6 +804,9 @@ export const make = Effect.gen(function* () {
         client,
         expiresAt: expiresAt,
         scopes: claims.scopes,
+        ...(input?.renewalCommitment === undefined
+          ? {}
+          : { renewAfter: (issuedAt.epochMilliseconds + expiresAt.epochMilliseconds) / 2 }),
         ...(claims.jkt ? { proofKeyThumbprint: claims.jkt } : {}),
       } satisfies IssuedSession;
     },
@@ -1065,30 +1104,75 @@ export const make = Effect.gen(function* () {
   const awaitInvalidation = Effect.fn(function* (sessionId: AuthSessionId) {
     return yield* Effect.scoped(
       Effect.gen(function* () {
-        // Subscribe before reading: revocation can race with the WebSocket upgrade.
         const subscription = yield* PubSub.subscribe(changesPubSub);
-        const row = yield* authSessions
-          .getById({ sessionId })
-          .pipe(
-            Effect.mapError(
-              (cause) => new SessionCredentialVerificationError({ sessionId, cause }),
+        while (true) {
+          const row = yield* authSessions
+            .getById({ sessionId })
+            .pipe(
+              Effect.mapError(
+                (cause) => new SessionCredentialVerificationError({ sessionId, cause }),
+              ),
+            );
+          if (Option.isNone(row) || row.value.revokedAt !== null) return;
+          const now = yield* DateTime.now;
+          const remaining = row.value.expiresAt.epochMilliseconds - now.epochMilliseconds;
+          if (remaining <= 0) return;
+          // Both a change and the old deadline require a fresh authoritative read.
+          yield* Effect.raceFirst(
+            Stream.fromSubscription(subscription).pipe(
+              Stream.filter((change) =>
+                change.type === "clientRemoved"
+                  ? change.sessionId === sessionId
+                  : change.clientSession.sessionId === sessionId,
+              ),
+              Stream.runHead,
             ),
+            Effect.sleep(Duration.millis(remaining)),
           );
-        if (Option.isNone(row) || row.value.revokedAt !== null) return;
-        const now = yield* DateTime.now;
-        const remaining = row.value.expiresAt.epochMilliseconds - now.epochMilliseconds;
-        if (remaining <= 0) return;
-        yield* Effect.raceFirst(
-          Stream.fromSubscription(subscription).pipe(
-            Stream.filter(
-              (change) => change.type === "clientRemoved" && change.sessionId === sessionId,
-            ),
-            Stream.runHead,
-          ),
-          Effect.sleep(Duration.millis(remaining)),
-        );
+        }
       }),
     );
+  });
+  const renewSession: SessionStore["Service"]["renewSession"] = Effect.fn(
+    "SessionStore.renewSession",
+  )(function* (input) {
+    const renewed = yield* renewal
+      .renew(input)
+      .pipe(
+        Effect.tapError((error) =>
+          error._tag === "RenewalRejected" && error.revokedSessionId !== undefined
+            ? emitRemoved(error.revokedSessionId)
+            : Effect.void,
+        ),
+      );
+    const row = renewed.session;
+    const payload = yield* encodeClaims({
+      v: 1,
+      kind: "session",
+      sid: row.sessionId,
+      sub: row.subject,
+      scopes: row.scopes,
+      method: row.method,
+      iat: row.issuedAt.epochMilliseconds,
+      exp: row.expiresAt.epochMilliseconds,
+    }).pipe(
+      Effect.map(base64UrlEncode),
+      Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
+    );
+    const current = yield* loadActiveSession(row.sessionId).pipe(
+      Effect.mapError(
+        (cause) => new SessionCredentialVerificationError({ sessionId: row.sessionId, cause }),
+      ),
+    );
+    if (Option.isSome(current)) yield* emitUpsert(current.value);
+    return {
+      token: `${payload}.${signPayload(payload, signingSecret)}`,
+      method: row.method,
+      expiresAt: row.expiresAt,
+      generation: renewed.generation,
+      outcome: renewed.outcome,
+      renewAfter: renewed.renewAfter,
+    };
   });
   const getPerson: SessionStore["Service"]["getPerson"] = (sessionId) =>
     authSessions.getById({ sessionId }).pipe(
@@ -1113,6 +1197,7 @@ export const make = Effect.gen(function* () {
     cookieName,
     legacyCookieName,
     issue,
+    renewSession,
     verify,
     issueWebSocketToken,
     verifyWebSocketToken,
@@ -1129,4 +1214,7 @@ export const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(SessionStore, make).pipe(Layer.provideMerge(AuthSessions.layer));
+export const layer = Layer.effect(SessionStore, make).pipe(
+  Layer.provideMerge(AuthSessions.layer),
+  Layer.provideMerge(SessionRenewal.layer),
+);

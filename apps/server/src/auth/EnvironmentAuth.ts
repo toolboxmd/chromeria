@@ -42,6 +42,7 @@ import * as ServerConfig from "../config.ts";
 import * as EnvironmentAuthPolicy from "./EnvironmentAuthPolicy.ts";
 import * as PairingGrantStore from "./PairingGrantStore.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
+import * as SessionRenewal from "./SessionRenewal.ts";
 import * as SessionStore from "./SessionStore.ts";
 import { REUSABLE_DEV_SESSION_EXPIRES_AT, resolveReusableDevAuth } from "./ReusableDevAuth.ts";
 import { verifyRequestDpopProof } from "./dpop.ts";
@@ -469,6 +470,9 @@ export class ServerAuthForbiddenOperationError extends Schema.TaggedError<Server
 export class EnvironmentAuth extends Context.Service<
   EnvironmentAuth,
   {
+    readonly listRenewalEnrollments: SessionRenewal.SessionRenewal["Service"]["listEnrollments"];
+    readonly approveRenewalEnrollment: SessionRenewal.SessionRenewal["Service"]["approveEnrollment"];
+    readonly rejectRenewalEnrollment: SessionRenewal.SessionRenewal["Service"]["rejectEnrollment"];
     readonly getDescriptor: () => Effect.Effect<ServerAuthDescriptor>;
     readonly getSessionState: (
       request: HttpServerRequest.HttpServerRequest,
@@ -477,6 +481,7 @@ export class EnvironmentAuth extends Context.Service<
       credential: string,
       requestMetadata: AuthClientMetadata,
       previousSessionToken?: string,
+      renewalCommitment?: string,
     ) => Effect.Effect<
       {
         readonly response: AuthBrowserSessionResult;
@@ -492,6 +497,7 @@ export class EnvironmentAuth extends Context.Service<
       requestMetadata: AuthClientMetadata,
       input?: {
         readonly proofKeyThumbprint?: string;
+        readonly renewalCommitment?: string;
       },
     ) => Effect.Effect<
       AuthAccessTokenResult,
@@ -734,6 +740,7 @@ export const make = Effect.gen(function* () {
   const policy = yield* EnvironmentAuthPolicy.EnvironmentAuthPolicy;
   const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
   const sessions = yield* SessionStore.SessionStore;
+  const renewals = yield* SessionRenewal.SessionRenewal;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
   const crypto = yield* Crypto.Crypto;
   const descriptor = yield* policy.getDescriptor();
@@ -874,7 +881,7 @@ export const make = Effect.gen(function* () {
 
   const createBrowserSession: EnvironmentAuth["Service"]["createBrowserSession"] = Effect.fn(
     "EnvironmentAuth.createBrowserSession",
-  )(function* (credential, requestMetadata, previousSessionToken) {
+  )(function* (credential, requestMetadata, previousSessionToken, renewalCommitment) {
     if (devAuth?.matches(credential)) {
       return yield* sessions.verify(credential).pipe(
         mapSessionVerificationErrors,
@@ -912,6 +919,9 @@ export const make = Effect.gen(function* () {
     const session = yield* sessions
       .issue({
         method: "browser-session-cookie",
+        ...(renewalCommitment === undefined || grant.method !== "one-time-token"
+          ? {}
+          : { renewalCommitment }),
         subject: grant.subject,
         scopes: grant.scopes,
         ...(previousSession?.method === "browser-session-cookie"
@@ -929,6 +939,7 @@ export const make = Effect.gen(function* () {
         ...authScopeResponse(session.scopes),
         sessionMethod: session.method,
         expiresAt: DateTime.toUtc(session.expiresAt),
+        ...(session.renewAfter === undefined ? {} : { renewAfter: session.renewAfter }),
       } satisfies AuthBrowserSessionResult,
       sessionToken: session.token,
     } satisfies BootstrapExchangeResult;
@@ -993,6 +1004,11 @@ export const make = Effect.gen(function* () {
               .issue({
                 method: input?.proofKeyThumbprint ? "dpop-access-token" : "bearer-access-token",
                 subject: grant.subject,
+                ...(input?.renewalCommitment === undefined ||
+                input.proofKeyThumbprint ||
+                grant.method !== "one-time-token"
+                  ? {}
+                  : { renewalCommitment: input.renewalCommitment }),
                 scopes: grantedScopes,
                 ...(input?.proofKeyThumbprint
                   ? {
@@ -1028,6 +1044,7 @@ export const make = Effect.gen(function* () {
                     ),
                   ),
                   scope: encodeOAuthScope(session.scopes),
+                  ...(session.renewAfter === undefined ? {} : { renewAfter: session.renewAfter }),
                 }) satisfies AuthAccessTokenResult,
             ),
           ),
@@ -1371,6 +1388,9 @@ export const make = Effect.gen(function* () {
     );
 
   return EnvironmentAuth.of({
+    listRenewalEnrollments: renewals.listEnrollments,
+    approveRenewalEnrollment: renewals.approveEnrollment,
+    rejectRenewalEnrollment: renewals.rejectEnrollment,
     getDescriptor: () =>
       Effect.succeed(descriptor).pipe(Effect.withSpan("EnvironmentAuth.getDescriptor")),
     getSessionState,

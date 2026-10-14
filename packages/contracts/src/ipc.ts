@@ -1,3 +1,4 @@
+import type { AuthRenewalLocalRecord } from "./auth.ts";
 import * as Schema from "effect/Schema";
 
 import { SnapShotSource } from "./chatAttachment.ts";
@@ -1045,6 +1046,12 @@ export interface DesktopBridge {
   getLocalEnvironmentBearerToken: () => Promise<string>;
   getClientSettings: () => Promise<ClientSettings | null>;
   setClientSettings: (settings: ClientSettings) => Promise<void>;
+  getRenewalRecord?: (key: string) => Promise<AuthRenewalLocalRecord | null>;
+  compareRenewalRecord?: (input: {
+    key: string;
+    revision: number | null;
+    value: AuthRenewalLocalRecord;
+  }) => Promise<boolean>;
   getConnectionCatalog?: () => Promise<string | null>;
   setConnectionCatalog?: (catalog: string) => Promise<boolean>;
   clearConnectionCatalog?: () => Promise<void>;
