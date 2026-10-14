@@ -301,12 +301,26 @@ export function layerWithRegistry<Error>(
   const layerProvidedRegistry = registryLayer.pipe(
     Layer.provide(Layer.merge(layerContinuationRequests, McpProviderSessions.layer)),
   );
-  const layerServerSettings = ServerSettings.layerTest({
-    responseStreamingMode: "turn",
-    ...(options.continueThreadsAfterServerUpdate === undefined
-      ? {}
-      : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
-  }).pipe(Layer.orDie);
+  const layerServerSettings = Layer.unwrap(
+    Effect.gen(function* () {
+      const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
+      // Replay adapters are the fixture's configured instances. Continuations
+      // use real ThreadManagement admission, just like the live runtime.
+      const instances = yield* Effect.forEach(yield* registry.list(), (instanceId) =>
+        Effect.gen(function* () {
+          const adapter = yield* registry.get(instanceId);
+          return [instanceId, { driver: adapter.driver, enabled: true, config: {} }] as const;
+        }),
+      );
+      return ServerSettings.layerTest({
+        providerInstances: Object.fromEntries(instances),
+        responseStreamingMode: "turn",
+        ...(options.continueThreadsAfterServerUpdate === undefined
+          ? {}
+          : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
+      });
+    }),
+  ).pipe(Layer.provide(layerProvidedRegistry), Layer.orDie);
   const layerStores = Layer.mergeAll(
     EventStore.layer,
     ProjectionStore.layer,
