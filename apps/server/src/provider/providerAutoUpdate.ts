@@ -219,7 +219,11 @@ export const layer = Layer.effectDiscard(
     const settingsChanges = yield* serverSettings.subscribeChanges;
     yield* Stream.runForEach(settingsChanges, () => signal).pipe(Effect.forkScoped);
     yield* Stream.runForEach(providerRegistry.streamChanges, () => signal).pipe(Effect.forkScoped);
-    yield* eventSink.stream().pipe(
+    yield* Stream.unwrap(
+      eventSink
+        .latestSequence()
+        .pipe(Effect.map((latest) => eventSink.stream({ afterSequence: latest }))),
+    ).pipe(
       Stream.filter((event) => WAKE_EVENT_TYPES.has(event.event.type)),
       Stream.runForEach(() => signal),
       Effect.forkScoped,
