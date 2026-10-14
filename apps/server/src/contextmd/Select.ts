@@ -62,6 +62,7 @@ const ServingConfigFile = Schema.fromJsonString(
     ),
     cue: Schema.optional(Schema.Array(Schema.String)),
     cue_url: Schema.optional(Schema.String),
+    great_library: Schema.optional(Schema.String),
   }),
 );
 const decodeServingConfig = Schema.decodeUnknownEffect(ServingConfigFile, {
@@ -74,7 +75,56 @@ export interface ServingConfig {
   /** Registered Libraries, alongside exactKeys; fields choose each entry's matchers. */
   readonly cue: ReadonlyArray<string>;
   readonly cueUrl: string | null;
+  readonly greatLibrary?: string;
 }
+
+const GREAT_LIBRARY_PREFIX =
+  "The Great Library holds knowledge shared across projects and personal knowledge outside any project. Read ";
+const GREAT_LIBRARY_SUFFIX = " in full.";
+
+export const greatLibraryLine = (path: string) =>
+  `${GREAT_LIBRARY_PREFIX}${path}${GREAT_LIBRARY_SUFFIX}`;
+
+/** Recover the path from the exact creation receipt, without trimming its Unicode or spaces. */
+export const greatLibraryEntry = (text: string) => {
+  const line = text.startsWith(`${CONTEXT_HEAD}\n\n`) ? text.slice(CONTEXT_HEAD.length + 2) : text;
+  return line.startsWith(GREAT_LIBRARY_PREFIX) && line.endsWith(GREAT_LIBRARY_SUFFIX)
+    ? line.slice(GREAT_LIBRARY_PREFIX.length, -GREAT_LIBRARY_SUFFIX.length)
+    : null;
+};
+
+export const greatLibraryText = (line: string) => `${CONTEXT_HEAD}\n\n${line}`;
+
+/** The configured line, without opening the target. Epoch retention uses this identity. */
+export const configuredGreatLibrary = Effect.fn("contextmd.configuredGreatLibrary")(function* (
+  config: ServingConfig,
+) {
+  if (config.greatLibrary === undefined) return null;
+  const crypto = yield* Crypto.Crypto;
+  const line = greatLibraryLine(config.greatLibrary);
+  const digest = yield* crypto.digest("SHA-256", new TextEncoder().encode(line)).pipe(Effect.orDie);
+  return {
+    matcher: "great_library",
+    entry: config.greatLibrary,
+    version: Hex.encode(digest).slice(0, 12),
+    key: null,
+    text: line,
+    must_know: false,
+    rule: null,
+    target: null,
+  } satisfies Candidate;
+});
+
+/** Only an owed delivery opens the index. A directory or an unreadable target is a miss. */
+export const prepareGreatLibrary = Effect.fn("contextmd.prepareGreatLibrary")(function* (
+  config: ServingConfig,
+) {
+  const candidate = yield* configuredGreatLibrary(config);
+  if (candidate === null) return null;
+  const fs = yield* FileSystem.FileSystem;
+  const stat = yield* fs.stat(candidate.entry).pipe(Effect.option);
+  return Option.isSome(stat) && stat.value.type === "File" ? candidate : null;
+});
 
 /** Where ContextMD's serving config lives: `CONTEXTMD_SERVING_CONFIG`, else the default. */
 export const configFile = Config.String("CONTEXTMD_SERVING_CONFIG").pipe(
@@ -85,7 +135,6 @@ export const configFile = Config.String("CONTEXTMD_SERVING_CONFIG").pipe(
 /** ContextMD's serving config, read on every moment; a missing file means the defaults. */
 export const loadConfig = Effect.fn("contextmd.loadConfig")(function* (file: string) {
   const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
   const home = yield* HostProcess.HomeDirectory;
   const text = yield* fs.readFileString(expandHomePath(file, home)).pipe(Effect.option);
   if (Option.isNone(text)) {
@@ -99,6 +148,28 @@ export const loadConfig = Effect.fn("contextmd.loadConfig")(function* (file: str
   const raw = yield* decodeServingConfig(text.value).pipe(
     Effect.mapError(() => new BadConfig({ reason: `${file} is not a valid serving config` })),
   );
+  let greatLibrary: string | undefined;
+  if (raw.great_library !== undefined) {
+    const value = raw.great_library;
+    if (!/^(?:\/|~\/)/u.test(value)) {
+      return yield* new BadConfig({
+        reason: "great_library must be an absolute path or start with ~/",
+      });
+    }
+    // Like Python expanduser, substitute the home without normalizing the user's path.
+    greatLibrary = value.startsWith("~/") ? `${home.replace(/\/+$/u, "")}${value.slice(1)}` : value;
+    if (/[\p{Cc}\p{Surrogate}\u2028\u2029]/u.test(greatLibrary)) {
+      return yield* new BadConfig({
+        reason:
+          "great_library must be an absolute path without control characters or lone surrogates",
+      });
+    }
+    if (Buffer.byteLength(greatLibrary, "utf8") > 1024) {
+      return yield* new BadConfig({
+        reason: "great_library expanded path exceeds 1024 UTF-8 bytes",
+      });
+    }
+  }
   return {
     exactKeys: raw.exact_keys ?? ["~/.local/share/contextmd/exact-keys"],
     sessionStart: (raw.session_start ?? []).map((f) => ({
@@ -107,6 +178,7 @@ export const loadConfig = Effect.fn("contextmd.loadConfig")(function* (file: str
     })),
     cue: raw.cue ?? [],
     cueUrl: raw.cue_url ?? null,
+    ...(greatLibrary === undefined ? {} : { greatLibrary }),
   } satisfies ServingConfig;
 });
 

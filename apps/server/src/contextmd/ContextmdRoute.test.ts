@@ -9,6 +9,9 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it, vi } from "@effect/vitest";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
+import * as Schema from "effect/Schema";
+import { OrchestrationV2ProviderThread } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -22,8 +25,10 @@ import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ContextmdRoute from "./ContextmdRoute.ts";
 import { MOMENT_BUDGET_MS } from "./ContextmdServing.ts";
+import * as ContextmdServing from "./ContextmdServing.ts";
 import * as Store from "./Store.ts";
 import { isHoldout } from "./ServingState.ts";
+const decodeProviderThread = Schema.decodeUnknownEffect(OrchestrationV2ProviderThread);
 
 // The store and config are ContextMD's data files; the matcher runs in this module.
 const writeStore = (dir: string) => {
@@ -250,6 +255,7 @@ const serve = <R>(
     readonly cueUrl?: string;
     /** A serving database already marked, so this server starts as the next process would. */
     readonly seedState?: string;
+    readonly greatLibrary?: boolean;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -268,6 +274,17 @@ const serve = <R>(
         JSON.stringify({ exact_keys: [store.keys], cue: [cue], cue_url: options.cueUrl }),
       );
     }
+    if (options.greatLibrary) {
+      const index = NodePath.join(config.baseDir, "library-index.md");
+      NodeFS.writeFileSync(index, "# Isolated Great Library\n");
+      NodeFS.writeFileSync(
+        store.config,
+        JSON.stringify({
+          ...JSON.parse(NodeFS.readFileSync(store.config, "utf8")),
+          great_library: index,
+        }),
+      );
+    }
     // A directory where the state file belongs: SQLite cannot open it.
     if (options.breakStateFile) {
       NodeFS.mkdirSync(NodePath.join(config.stateDir, "contextmd.sqlite"), { recursive: true });
@@ -276,6 +293,7 @@ const serve = <R>(
     yield* setup.pipe(Effect.provide(database));
     const services = yield* Layer.build(
       HttpRouter.serve(ContextmdRoute.layer, { disableListenLog: true }).pipe(
+        Layer.provideMerge(ContextmdServing.layer),
         Layer.provideMerge(Layer.succeedContext(database)),
         Layer.provideMerge(Layer.succeedContext(configContext)),
         Layer.provideMerge(layerAuth),
@@ -292,7 +310,12 @@ const serve = <R>(
     let n = 0;
     const moment = (
       raw: unknown,
-      options: { token?: string; delivery?: string; harness?: string } = {},
+      options: {
+        token?: string;
+        delivery?: string;
+        harness?: string;
+        pointerDelivery?: string;
+      } = {},
     ) =>
       Effect.gen(function* () {
         n += 1;
@@ -302,13 +325,19 @@ const serve = <R>(
               authorization: `Bearer ${options.token ?? token}`,
               "x-contextmd-harness": options.harness ?? "claude",
               "x-contextmd-delivery": options.delivery ?? `delivery-${n}`,
+              ...(options.pointerDelivery === undefined
+                ? {}
+                : { "x-contextmd-pointer-delivery": options.pointerDelivery }),
             }),
             HttpClientRequest.bodyText(JSON.stringify(raw), "application/json"),
           ),
         );
         return { status: response.status, body: yield* response.text };
       }).pipe(Effect.orDie);
-    const postDelivery = (action: "settle" | "release", delivery: string) =>
+    const postDelivery = (
+      action: "settle" | "release" | "pointer/applying" | "pointer/settle" | "pointer/release",
+      delivery: string,
+    ) =>
       client
         .execute(
           HttpClientRequest.post(`/contextmd/v1/${action}/${delivery}`).pipe(
@@ -432,6 +461,9 @@ const serve = <R>(
     };
     const sqlitePath = NodePath.join(config.stateDir, "contextmd.sqlite");
     return {
+      serving: Context.get(services, ContextmdServing.ContextmdServing),
+      postDelivery,
+      config,
       moment,
       settle,
       release,
@@ -477,6 +509,417 @@ const projectUserMessage = (text: string, ordinal = 1) =>
   }).pipe(Effect.orDie);
 
 describe("contextmd routes", () => {
+  it.live("separates mixed Cue/pointer receipts from shown observation and generic closures", () =>
+    Effect.gen(function* () {
+      let session = "mixed-0";
+      for (let n = 1; isHoldout("opencode", session); n++) session = `mixed-${n}`;
+      const cue = yield* fakeCue({ "agentsmd-research": 2.5 });
+      const s = yield* serve(
+        Effect.all([
+          insertAttempt({ attempt: "a", run: "run-1", status: "running", native: session }),
+          projectUserMessage("Read the projector's design."),
+        ]).pipe(Effect.asVoid),
+        { cueUrl: cue.url, greatLibrary: true },
+      );
+      const raw = { hook: "chat.message", directory: "/tmp", input: { sessionID: session } };
+      const first = yield* s.moment(raw, {
+        harness: "opencode",
+        delivery: "D",
+        pointerDelivery: "P",
+      });
+      assert.strictEqual(first.status, 200);
+      const reply = JSON.parse(first.body);
+      assert.include(reply.context, "Research applies when:");
+      assert.include(
+        reply.pointer,
+        "knowledge shared across projects and personal knowledge outside any project",
+      );
+      assert.deepStrictEqual(
+        yield* s.moment(raw, { harness: "opencode", delivery: "D", pointerDelivery: "P" }),
+        first,
+      );
+      assert.strictEqual(yield* s.settle("P"), 404);
+      assert.strictEqual(yield* s.release("P"), 404);
+      assert.strictEqual(yield* s.settle("D"), 204);
+      const db = new NodeSqlite.DatabaseSync(s.sqlitePath, { readOnly: true });
+      try {
+        const query = (sql: string) =>
+          db
+            .prepare(sql)
+            .all()
+            .map((row) => ({ ...row }));
+        assert.deepStrictEqual(
+          query("SELECT delivery, stage, outcome FROM candidates WHERE matcher = 'great_library'"),
+          [{ delivery: "P", stage: "reserved", outcome: "reserved" }],
+        );
+        const bytes = Number(
+          query("SELECT serve_bytes FROM deliveries WHERE delivery = 'D'")[0]!.serve_bytes,
+        );
+        assert.strictEqual(yield* s.postDelivery("pointer/applying", "P"), 204);
+        assert.strictEqual(yield* s.postDelivery("pointer/applying", "P"), 204);
+        const accounting = () => ({
+          budgets: query("SELECT * FROM budgets ORDER BY run_id"),
+          claims: query("SELECT * FROM claims ORDER BY rowid"),
+          candidates: query(
+            "SELECT matcher, delivery, stage, outcome, bytes, served_at FROM candidates ORDER BY id",
+          ),
+          sessions: query("SELECT * FROM sessions ORDER BY harness, session"),
+        });
+        const beforeCheck = accounting();
+        yield* s.serving.checkShown;
+        assert.deepStrictEqual(accounting(), beforeCheck);
+        assert.deepStrictEqual(
+          query("SELECT delivery, stage, shown, shown_next FROM deliveries ORDER BY delivery"),
+          [
+            { delivery: "D", stage: "settled", shown: "unknown", shown_next: null },
+            { delivery: "P", stage: "applying", shown: null, shown_next: null },
+          ],
+        );
+        const evidence = query("SELECT shown_json FROM deliveries WHERE delivery = 'D'");
+        assert.strictEqual(
+          JSON.parse(String(evidence[0]!.shown_json)).reason,
+          "no_evidence_source",
+        );
+        assert.strictEqual(yield* s.settle("P"), 404);
+        assert.strictEqual(yield* s.release("P"), 404);
+        assert.deepStrictEqual(accounting(), beforeCheck);
+        assert.strictEqual(yield* s.postDelivery("pointer/release", "P"), 204);
+        assert.deepStrictEqual(
+          query("SELECT shown_json FROM deliveries WHERE delivery = 'D'"),
+          evidence,
+        );
+        assert.deepStrictEqual(query("SELECT serve_used FROM budgets WHERE run_id = 'run-1'"), [
+          { serve_used: bytes },
+        ]);
+        assert.deepStrictEqual(query("SELECT outcome FROM candidates WHERE matcher = 'intent'"), [
+          { outcome: "injected" },
+        ]);
+        const retry = yield* s.moment(raw, { harness: "opencode", pointerDelivery: "P2" });
+        assert.strictEqual(retry.status, 200);
+        assert.strictEqual(yield* s.postDelivery("pointer/settle", "P2"), 204);
+        assert.strictEqual(yield* s.postDelivery("pointer/release", "P2"), 409);
+        yield* s.serving.checkShown;
+        assert.deepStrictEqual(query("SELECT stage, shown FROM deliveries WHERE delivery = 'P2'"), [
+          { stage: "settled", shown: null },
+        ]);
+        assert.strictEqual(cue.requests.length, 2);
+      } finally {
+        db.close();
+      }
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live.each([
+    { harness: "codex", driver: "codex" },
+    { harness: "claude", driver: "claudeAgent" },
+  ] as const)(
+    "$harness fork ownership filters projected compactions by source, boundary and rollback",
+    ({ harness, driver }) =>
+      Effect.gen(function* () {
+        const s = yield* serve(
+          insertAttempt({ attempt: "a", run: "run-1", status: "running", native: "source" }),
+          { greatLibrary: true },
+        );
+        const reply = yield* s.moment(
+          { hook_event_name: "UserPromptSubmit", session_id: "source", cwd: "/tmp" },
+          { harness, delivery: "source-pointer" },
+        );
+        assert.equal(reply.status, 200);
+        assert.equal(yield* s.settle("source-pointer"), 204);
+        const db = new NodeSqlite.DatabaseSync(s.sqlitePath, { readOnly: true });
+        try {
+          const row = db
+            .prepare("SELECT received_at FROM moments WHERE delivery = 'source-pointer'")
+            .get()!;
+          const received = Number(row.received_at);
+          const at = (seconds: number) => DateTime.formatIso(DateTime.makeUnsafe(seconds * 1000));
+          const source = yield* decodeProviderThread({
+            id: "provider-source",
+            driver,
+            providerInstanceId: driver,
+            providerSessionId: "session",
+            appThreadId: "thread-of-run-1",
+            ownerNodeId: null,
+            nativeThreadRef: { driver, nativeId: "source", strength: "strong" },
+            nativeConversationHeadRef: null,
+            status: "idle",
+            firstRunOrdinal: null,
+            lastRunOrdinal: null,
+            handoffIds: [],
+            forkedFrom: null,
+            createdAt: DateTime.makeUnsafe(at(received)),
+            updatedAt: DateTime.makeUnsafe(at(received)),
+          });
+          const sql = Context.get(s.database, SqlClient.SqlClient);
+          yield* sql`INSERT INTO orchestration_v2_projection_runs (run_id, thread_id, ordinal, provider, status, requested_at, payload_json) VALUES ('rolled', 'thread-of-run-1', 1, ${driver}, 'rolled_back', '', '{}')`;
+          const compact = (
+            id: string,
+            provider: string,
+            started: string | null,
+            run: string | null,
+          ) => sql`
+        INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, run_id, provider_thread_id, ordinal, type, status, updated_at, payload_json)
+        VALUES (${id}, 'thread-of-run-1', ${run}, ${provider}, 1, 'compaction', 'completed', '', ${JSON.stringify({ startedAt: started })})`;
+          yield* compact("foreign", "another-provider-thread", at(received + 1), null);
+          yield* compact("reverted", source.id, at(received + 2), "rolled");
+          yield* compact("later", source.id, at(received + 20), null);
+          yield* compact("older", source.id, at(received - 1), null);
+          const fork = (nativeId: string, forkDriver: string = driver) =>
+            s.serving.recordNativeFork({
+              driver: forkDriver,
+              threadId: "target-thread",
+              runId: "target-run",
+              sourceThreadId: "thread-of-run-1",
+              source,
+              target: {
+                ...source,
+                nativeThreadRef: { driver: source.driver, nativeId, strength: "strong" },
+              },
+              boundaryAt: DateTime.makeUnsafe(at(received + 10)),
+            });
+          yield* fork("target-inherited");
+          const outcome = (session: string) =>
+            db
+              .prepare(
+                "SELECT m.harness,c.outcome,c.reason,c.bytes FROM candidates c JOIN moments m ON m.id = c.moment_id WHERE m.session = ?",
+              )
+              .all(session)
+              .map((row) => ({ ...row }));
+          assert.deepEqual(outcome("target-inherited"), [
+            { harness, outcome: "inherited", reason: null, bytes: 0 },
+          ]);
+          yield* insertAttempt({
+            attempt: "b",
+            run: "run-2",
+            status: "running",
+            native: "target-inherited",
+          }).pipe(Effect.provide(s.database));
+          assert.strictEqual(
+            (yield* s.moment(
+              {
+                hook_event_name: "SessionStart",
+                source: "resume",
+                session_id: "target-inherited",
+                cwd: "/tmp",
+              },
+              { harness },
+            )).status,
+            204,
+          );
+          assert.strictEqual(
+            (yield* s.moment(
+              { hook_event_name: "UserPromptSubmit", session_id: "target-inherited", cwd: "/tmp" },
+              { harness },
+            )).status,
+            204,
+          );
+          assert.deepStrictEqual(
+            db
+              .prepare(
+                "SELECT harness, session, epoch, settled FROM claims WHERE session = 'target-inherited'",
+              )
+              .all()
+              .map((row) => ({ ...row })),
+            [{ harness, session: "target-inherited", epoch: 0, settled: 1 }],
+          );
+          yield* fork("unsupported", "grok");
+          assert.deepStrictEqual(outcome("unsupported"), []);
+          yield* compact("unknown-start", source.id, null, null);
+          yield* fork("target-compacted");
+          assert.deepEqual(outcome("target-compacted"), [
+            { harness, outcome: "not_inherited", reason: "compacted", bytes: 0 },
+          ]);
+          yield* insertAttempt({
+            attempt: "c",
+            run: "run-3",
+            status: "running",
+            native: "target-compacted",
+          }).pipe(Effect.provide(s.database));
+          const fresh = yield* s.moment(
+            { hook_event_name: "UserPromptSubmit", session_id: "target-compacted", cwd: "/tmp" },
+            { harness, delivery: "fresh-pointer" },
+          );
+          assert.strictEqual(fresh.status, 200);
+          assert.include(fresh.body, "The Great Library holds knowledge shared across projects");
+          NodeFS.writeFileSync(NodePath.join(s.config.stateDir, "contextmd", "off"), "");
+          yield* fork("off");
+          assert.deepStrictEqual(outcome("off"), []);
+        } finally {
+          db.close();
+        }
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live(
+    "Claude fork correlation survives delayed compaction ingestion and fences a missing re-serve",
+    () =>
+      Effect.gen(function* () {
+        const s = yield* serve(
+          insertAttempt({ attempt: "a", run: "run-1", status: "running", native: "source" }),
+          { greatLibrary: true },
+        );
+        const hook = (delivery: string, source?: string) =>
+          s.moment(
+            {
+              hook_event_name: source === undefined ? "UserPromptSubmit" : "SessionStart",
+              session_id: "source",
+              cwd: "/tmp",
+              ...(source === undefined ? {} : { source }),
+            },
+            { harness: "claude", delivery },
+          );
+        assert.strictEqual((yield* hook("initial-pointer")).status, 200);
+        assert.strictEqual(yield* s.settle("initial-pointer"), 204);
+        assert.strictEqual((yield* hook("compact-pointer", "compact")).status, 200);
+        assert.strictEqual(yield* s.settle("compact-pointer"), 204);
+        const db = new NodeSqlite.DatabaseSync(s.sqlitePath, { readOnly: true });
+        try {
+          const received = Number(
+            db.prepare("SELECT received_at FROM moments WHERE delivery = 'compact-pointer'").get()!
+              .received_at,
+          );
+          const at = (seconds: number) => DateTime.makeUnsafe(seconds * 1000);
+          const source = yield* decodeProviderThread({
+            id: "provider-source",
+            driver: "claudeAgent",
+            providerInstanceId: "claudeAgent",
+            providerSessionId: "session",
+            appThreadId: "thread-of-run-1",
+            ownerNodeId: null,
+            nativeThreadRef: { driver: "claudeAgent", nativeId: "source", strength: "strong" },
+            nativeConversationHeadRef: null,
+            status: "idle",
+            firstRunOrdinal: null,
+            lastRunOrdinal: null,
+            handoffIds: [],
+            forkedFrom: null,
+            createdAt: at(received),
+            updatedAt: at(received),
+          });
+          const sql = Context.get(s.database, SqlClient.SqlClient);
+          const compact = (
+            id: string,
+            seconds: number,
+          ) => sql`INSERT INTO orchestration_v2_projection_turn_items
+          (turn_item_id, thread_id, run_id, provider_thread_id, ordinal, type, status, updated_at, payload_json)
+          VALUES (${id}, 'thread-of-run-1', 'run-1', ${source.id}, 1, 'compaction', 'completed', '', ${JSON.stringify({ startedAt: DateTime.formatIso(at(seconds)) })})`;
+          const fork = (nativeId: string) =>
+            s.serving.recordNativeFork({
+              driver: "claudeAgent",
+              sourceThreadId: "thread-of-run-1",
+              threadId: "target-thread",
+              runId: "target-run",
+              source,
+              target: {
+                ...source,
+                nativeThreadRef: { driver: source.driver, nativeId, strength: "strong" },
+              },
+              boundaryAt: at(received + 10),
+            });
+          const outcome = (session: string) =>
+            db
+              .prepare(
+                "SELECT c.outcome, c.reason FROM candidates c JOIN moments m ON m.id = c.moment_id WHERE m.session = ?",
+              )
+              .all(session)
+              .map((row) => ({ ...row }));
+          yield* compact("first-boundary", received + 1);
+          yield* fork("after-one");
+          assert.deepStrictEqual(outcome("after-one"), [{ outcome: "inherited", reason: null }]);
+          yield* compact("second-boundary", received + 2);
+          yield* fork("missing-second");
+          assert.deepStrictEqual(outcome("missing-second"), [
+            { outcome: "not_inherited", reason: "compacted" },
+          ]);
+          assert.strictEqual((yield* hook("second-compact-pointer", "compact")).status, 200);
+          assert.strictEqual(yield* s.settle("second-compact-pointer"), 204);
+          yield* fork("after-two");
+          assert.deepStrictEqual(outcome("after-two"), [{ outcome: "inherited", reason: null }]);
+          const record = db
+            .prepare(
+              "SELECT c.extra_json FROM candidates c JOIN moments m ON m.id = c.moment_id WHERE m.session = 'after-two'",
+            )
+            .get()!;
+          assert.strictEqual(
+            JSON.parse(String(record.extra_json)).source_delivery,
+            "second-compact-pointer",
+          );
+          assert.deepStrictEqual(
+            db
+              .prepare(
+                "SELECT source, epoch FROM moments WHERE delivery = 'second-compact-pointer'",
+              )
+              .all()
+              .map((row) => ({ ...row })),
+            [{ source: "compact", epoch: 2 }],
+          );
+          yield* insertAttempt({
+            attempt: "b",
+            run: "run-2",
+            status: "running",
+            native: "after-two",
+          }).pipe(Effect.provide(s.database));
+          assert.strictEqual(
+            (yield* s.moment(
+              { hook_event_name: "UserPromptSubmit", session_id: "after-two", cwd: "/tmp" },
+              { harness: "claude" },
+            )).status,
+            204,
+          );
+        } finally {
+          db.close();
+        }
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("the serving owner honors off while accounting for an immutable Grok head", () =>
+    Effect.gen(function* () {
+      const s = yield* serve(Effect.void, { greatLibrary: true });
+      const stage = yield* s.serving.stageSessionInstructions({
+        driver: "grok",
+        threadId: "T",
+        runId: "R",
+      });
+      assert.isString(stage.text);
+      assert.isString(stage.reservation);
+      yield* s.serving.recordInstallations(
+        [{ nativeSessionId: "G", text: stage.text!, site: "rollback" }],
+        { threadId: "T" },
+      );
+      NodeFS.writeFileSync(NodePath.join(s.config.stateDir, "contextmd", "off"), "");
+      assert.isUndefined(yield* s.serving.currentInstructions("grok"));
+      assert.deepStrictEqual(
+        yield* s.serving.stageSessionInstructions({ driver: "grok", threadId: "T", runId: "R2" }),
+        { reservation: null, text: undefined },
+      );
+      yield* s.serving.attachSessionInstructions({
+        driver: "grok",
+        threadId: "T",
+        runId: "R",
+        nativeSessionId: "G",
+        reservation: stage.reservation,
+      });
+      const db = new NodeSqlite.DatabaseSync(s.sqlitePath, { readOnly: true });
+      try {
+        assert.deepStrictEqual(
+          db
+            .prepare("SELECT outcome, bytes FROM candidates WHERE outcome = 'installed_stale'")
+            .all()
+            .map((row) => ({ ...row })),
+          [{ outcome: "installed_stale", bytes: Buffer.byteLength(stage.text!) }],
+        );
+        assert.deepStrictEqual(
+          db
+            .prepare("SELECT consumed_run FROM installations")
+            .all()
+            .map((row) => ({ ...row })),
+          [{ consumed_run: "R" }],
+        );
+      } finally {
+        db.close();
+      }
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
   it.live(
     "discovers the joined project and worktree while ignoring another project's hook cwd",
     () =>

@@ -45,6 +45,40 @@ const setProcessEnv = (name: string, value: string) => {
 };
 
 describe("AcpSessionRuntime", () => {
+  it.effect.each([false, true])("sends creation rules only on session/new, resume=%s", (resume) => {
+    const events: Array<AcpSessionRuntime.AcpSessionRequestLogEvent> = [];
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime.AcpSessionRuntime;
+      const started = yield* runtime.start();
+      const requests = events.filter((event) => event.status === "started");
+      expect(requests[0]?.method).toBe("initialize");
+      expect(requests[0]?.payload).not.toHaveProperty("_meta.rules");
+      const setup = requests.find(
+        (event) => event.method === (resume ? "session/load" : "session/new"),
+      );
+      if (resume) {
+        expect(setup?.payload).not.toHaveProperty("_meta.rules");
+        expect(started.newSessionRules).toBeUndefined();
+      } else {
+        expect(setup?.payload).toHaveProperty("_meta.rules", "immutable application rules");
+        expect(started.newSessionRules).toBe("immutable application rules");
+      }
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          ...mockRuntimeOptions,
+          newSessionRules: "immutable application rules",
+          ...(resume ? { resumeSessionId: "mock-session-1" } : {}),
+          requestLogger: (event) =>
+            Effect.sync(() => {
+              events.push(event);
+            }),
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    );
+  });
   it.effect.each(["session/new", "session/resume"] as const)(
     "buffers root metadata while %s startup is still pending",
     (setupMethod) =>

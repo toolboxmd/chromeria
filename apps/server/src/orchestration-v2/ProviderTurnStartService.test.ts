@@ -54,6 +54,7 @@ import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as ContextmdServing from "../contextmd/ContextmdServing.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -132,6 +133,12 @@ function startWithMissingWorktree(
   const createWorktree = vi.fn(() => Effect.succeed({} as never));
   const listLocalBranchNames = vi.fn(() => Effect.succeed(["feature/restore"]));
   const layer = ProviderTurnStart.layer.pipe(
+    Layer.provide(
+      Layer.mock(ContextmdServing.ContextmdServing)({
+        releaseSessionInstructions: () => Effect.void,
+        recordNativeFork: () => Effect.void,
+      }),
+    ),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
@@ -268,6 +275,7 @@ it.each([
 });
 
 function makeLocalCommandHarness(input: {
+  readonly grokInstructions?: { readonly calls: string[]; readonly fail?: "bind" | "attach" };
   readonly text: string;
   readonly worktreePath?: string;
   readonly worktreesDir?: string;
@@ -336,7 +344,7 @@ function makeLocalCommandHarness(input: {
   };
   const providerThread: OrchestrationV2ThreadProjection["providerThreads"][number] = {
     id: providerThreadId,
-    driver: ProviderDriverKind.make("codex"),
+    driver: ProviderDriverKind.make(input.grokInstructions === undefined ? "codex" : "grok"),
     providerInstanceId: newInstanceId,
     providerSessionId,
     appThreadId: threadId,
@@ -803,7 +811,45 @@ function makeLocalCommandHarness(input: {
     startTurn,
   };
   const open = vi.fn(() =>
-    input.sideChat !== undefined
+    input.grokInstructions !== undefined
+      ? Effect.sync(() => {
+          input.grokInstructions!.calls.push("open");
+          return {
+            driver: providerThread.driver,
+            providerSession: {
+              id: providerSessionId,
+              driver: providerThread.driver,
+              providerInstanceId: newInstanceId,
+              status: "ready",
+              cwd: "/tmp/native-account-command",
+              model: null,
+              capabilities: CodexProviderCapabilitiesV2,
+              createdAt: now,
+              updatedAt: now,
+              lastError: null,
+            },
+            createdSessions: () => [
+              {
+                nativeSessionId: "native-grok",
+                text: "installed instructions",
+                site: "open" as const,
+              },
+            ],
+            ensureThread: () =>
+              Effect.sync(() => {
+                input.grokInstructions!.calls.push("adopt");
+                return {
+                  ...providerThread,
+                  nativeThreadRef: {
+                    driver: providerThread.driver,
+                    nativeId: "native-grok",
+                    strength: "strong" as const,
+                  },
+                };
+              }),
+          } as never;
+        })
+      : input.sideChat !== undefined
       ? Effect.succeed(sideChatSession as never)
       : input.interruptOpen === true
         ? Effect.interrupt
@@ -839,6 +885,7 @@ function makeLocalCommandHarness(input: {
   >((runInput) =>
     input.sideChat !== undefined
       ? runInput.session.startTurn(runInput as never).pipe(Effect.orDie)
+      : input.grokInstructions !== undefined ? Effect.sync(() => { input.grokInstructions!.calls.push("dispatch"); })
       : input.failReadsAfterRunning === true || input.previousTurn !== undefined
         ? Effect.suspend(() =>
             providerBusy ? Effect.die("The previous provider turn is still running.") : Effect.void,
@@ -854,15 +901,17 @@ function makeLocalCommandHarness(input: {
       : Effect.void,
   );
   const tryHandlePromptCommand = vi.fn(() =>
-    input.logoutFailure === undefined
-      ? Effect.succeed(true)
-      : Effect.fail(
-          new ProviderSetupError({
-            instanceId: oldInstanceId,
-            operation: "logout",
-            detail: input.logoutFailure,
-          }),
-        ),
+    input.grokInstructions !== undefined
+      ? Effect.succeed(false)
+      : input.logoutFailure === undefined
+        ? Effect.succeed(true)
+        : Effect.fail(
+            new ProviderSetupError({
+              instanceId: oldInstanceId,
+              operation: "logout",
+              detail: input.logoutFailure,
+            }),
+          ),
   );
   const writeIfRunCurrent = vi.fn(({ events: incoming, activeAttemptId, expectedStatus }) =>
     "writeFailure" in input
@@ -873,6 +922,14 @@ function makeLocalCommandHarness(input: {
           }),
         )
       : Effect.sync(() => {
+          if (
+            input.grokInstructions !== undefined &&
+            incoming.some(
+              (event: OrchestrationV2DomainEvent) =>
+                event.type === "run.updated" && event.payload.status === "running",
+            )
+          )
+            input.grokInstructions.calls.push("running");
           const current = projection.runs.find((candidate) => candidate.id === runId);
           const committed =
             current !== undefined &&
@@ -912,6 +969,42 @@ function makeLocalCommandHarness(input: {
     }),
   );
   const layer = ProviderTurnStart.layer.pipe(
+    Layer.provide(
+      Layer.mock(ContextmdServing.ContextmdServing)({
+        stageSessionInstructions: () =>
+          Effect.sync(() => {
+            input.grokInstructions!.calls.push("stage");
+            return { reservation: "stage", text: "installed instructions" };
+          }),
+        recordInstallations: () => {
+          input.grokInstructions!.calls.push("bind");
+          return input.grokInstructions?.fail === "bind"
+            ? Effect.fail(
+                new ContextmdServing.SessionInstructionsError({
+                  operation: "record",
+                  cause: "unwritable",
+                }),
+              )
+            : Effect.void;
+        },
+        attachSessionInstructions: () => {
+          input.grokInstructions!.calls.push("attach");
+          return input.grokInstructions?.fail === "attach"
+            ? Effect.fail(
+                new ContextmdServing.SessionInstructionsError({
+                  operation: "attach",
+                  cause: "unwritable",
+                }),
+              )
+            : Effect.void;
+        },
+        releaseSessionInstructions: () =>
+          Effect.sync(() => {
+            input.grokInstructions?.calls.push("release");
+          }),
+        recordNativeFork: () => Effect.void,
+      }),
+    ),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
@@ -1615,6 +1708,44 @@ effectIt.effect("starts another provider in the same checkout while a turn is pe
     yield* Deferred.succeed(releaseTurn, undefined);
     yield* Fiber.join(pending);
   }),
+
+);
+
+effectIt.effect.each([undefined, "bind", "attach"] as const)(
+  "Grok accounts before adoption/dispatch and fences %s failures",
+  (fail) =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const harness = makeLocalCommandHarness({
+        text: "Hello",
+        grokInstructions: { calls, ...(fail === undefined ? {} : { fail }) },
+      });
+      yield* harness.start;
+      if (fail === undefined) {
+        expect(calls).toEqual([
+          "stage",
+          "open",
+          "bind",
+          "adopt",
+          "attach",
+          "running",
+          "dispatch",
+          "release",
+        ]);
+        expect(harness.projection().runs.at(-1)?.status).toBe("running");
+      } else {
+        expect(calls).toEqual(
+          fail === "bind"
+            ? ["stage", "open", "bind", "release"]
+            : ["stage", "open", "bind", "adopt", "attach", "release"],
+        );
+        expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+        expect(harness.startRootRun).not.toHaveBeenCalled();
+      }
+      expect(harness.open).toHaveBeenCalledWith(
+        expect.objectContaining({ newSessionInstructions: "installed instructions" }),
+      );
+    }),
 );
 
 effectIt.effect("terminalizes a starting run when its provider session cannot open", () =>
