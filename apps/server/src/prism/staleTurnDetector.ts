@@ -78,12 +78,17 @@ export function makeStaleTurnDetectorState() {
       const firstToken = live.firstTokenAt === null;
       const max = firstToken ? sample?.maxTimeToFirstTokenMs : sample?.maxGapMs;
       const measured = sample !== undefined && sample.count >= 20;
-      const thresholdMs = measured
-        ? (max ?? 0) * 1.5
-        : Math.max(firstToken ? 120_000 : 90_000, max ?? 0);
+      const floorMs = firstToken ? 120_000 : 90_000;
+      // Fast turns and mixed effort samples must not shorten the thinking allowance.
+      const thresholdMs = Math.max(floorMs, measured ? (max ?? 0) * 1.5 : (max ?? 0));
       const silenceMs = Math.max(0, now - state.silenceFrom);
       return silenceMs > thresholdMs * 1.25
-        ? { live, silenceMs, thresholdMs, thresholdSource: measured ? "measured" : "default" }
+        ? {
+            live,
+            silenceMs,
+            thresholdMs,
+            thresholdSource: measured && thresholdMs > floorMs ? "measured" : "default",
+          }
         : null;
     },
   };

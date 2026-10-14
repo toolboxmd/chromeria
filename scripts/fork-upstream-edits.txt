@@ -167,6 +167,10 @@ apps/server/src/orchestration-v2/testkit/ReplayRuntimeInstructions.ts
 # Attempt-owned stream observation before presentation buffering (#172)
 apps/server/src/orchestration-v2/RunExecutionService.ts
 
+# Child observations and ancestor delivery (#269)
+packages/client-runtime/src/state/threadWorkflows.test.ts
+apps/server/src/mcp/toolkits/attachment/tools.ts
+
 # Wight mode (#173)
 apps/web/src/components/settings/ProviderInstanceCard.tsx
 docs/user/thread-sidebar.md

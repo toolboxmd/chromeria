@@ -53,21 +53,68 @@ describe("silence detector", () => {
       provider: live.provider,
       model: live.model,
       count: 20,
-      maxTimeToFirstTokenMs: 4_000,
-      maxGapMs: 2_000,
+      maxTimeToFirstTokenMs: 100_000,
+      maxGapMs: 80_000,
     };
-    expect(detector.check(live, 7_500, [sample])).toBeNull();
-    expect(detector.check(live, 7_501, [sample])).toMatchObject({
-      thresholdMs: 6_000,
+    expect(detector.check(live, 187_500, [sample])).toBeNull();
+    expect(detector.check(live, 187_501, [sample])).toMatchObject({
+      thresholdMs: 150_000,
       thresholdSource: "measured",
     });
-    expect(makeStaleTurnDetectorState().check(live, 7_501, [{ ...sample, count: 19 }])).toBeNull();
     expect(
-      makeStaleTurnDetectorState().check(live, 7_501, [{ ...sample, model: "other" }]),
-    ).toBeNull();
+      makeStaleTurnDetectorState().check(live, 170_000, [{ ...sample, count: 19 }]),
+    ).not.toBeNull();
     expect(
-      makeStaleTurnDetectorState().check({ ...live, firstTokenAt: 1_000 }, 3_751, [sample]),
-    ).toMatchObject({ thresholdMs: 3_000 });
+      makeStaleTurnDetectorState().check(live, 170_000, [{ ...sample, model: "other" }]),
+    ).toMatchObject({ thresholdMs: 120_000, thresholdSource: "default" });
+    expect(
+      makeStaleTurnDetectorState().check({ ...live, firstTokenAt: 1_000 }, 150_001, [sample]),
+    ).toMatchObject({ thresholdMs: 120_000, thresholdSource: "measured" });
+  });
+  it.each([
+    { provider: "codex", model: "gpt-6.1-sol", firstTokenMs: 19_706, silenceMs: 37_689 },
+    { provider: "grok", model: "grok-4.7", firstTokenMs: 19_329, silenceMs: 36_926 },
+  ])("fast $model samples cannot shorten the first-token allowance", (input) => {
+    const detector = makeStaleTurnDetectorState();
+    const thinking = {
+      ...live,
+      provider: ProviderDriverKind.make(input.provider),
+      model: input.model,
+    };
+    const samples = [
+      {
+        provider: thinking.provider,
+        model: thinking.model,
+        count: 20,
+        maxTimeToFirstTokenMs: input.firstTokenMs,
+        maxGapMs: 2_000,
+      },
+    ];
+    expect(detector.check(thinking, input.silenceMs, samples)).toBeNull();
+    expect(detector.check(thinking, 150_000, samples)).toBeNull();
+    expect(detector.check(thinking, 150_001, samples)).toMatchObject({
+      thresholdMs: 120_000,
+      thresholdSource: "default",
+    });
+  });
+  it("fast streaming gaps retain the default allowance", () => {
+    const detector = makeStaleTurnDetectorState();
+    const streaming = { ...live, firstTokenAt: 1_000 };
+    const samples = [
+      {
+        provider: live.provider,
+        model: live.model,
+        count: 20,
+        maxTimeToFirstTokenMs: 4_000,
+        maxGapMs: 40_158,
+      },
+    ];
+    expect(detector.check(streaming, 75_360, samples)).toBeNull();
+    expect(detector.check(streaming, 112_500, samples)).toBeNull();
+    expect(detector.check(streaming, 112_501, samples)).toMatchObject({
+      thresholdMs: 90_000,
+      thresholdSource: "default",
+    });
   });
   it("does not treat host suspension or a busy event loop as provider silence", () => {
     const detector = makeStaleTurnDetectorState();

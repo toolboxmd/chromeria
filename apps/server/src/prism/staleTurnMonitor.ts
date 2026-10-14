@@ -21,12 +21,16 @@ export class StaleTurnMonotonicClock extends Context.Reference<Effect.Effect<num
   },
 ) {}
 
-const notice = (stale: StaleTurn) =>
-  `[Stale child thread ${stale.live.threadId}]\n` +
+const notice = (stale: StaleTurn, observedAt: number) =>
+  `[Stale child observation]\n` +
+  `Silence observed at ${DateTime.formatIso(DateTime.makeUnsafe(observedAt))} on child thread ${stale.live.threadId}.\n` +
   `Model: ${stale.live.model ?? "unknown"} (${stale.live.provider}).\n` +
   `Run: ${stale.live.runId}; attempt: ${stale.live.attemptId}.\n` +
   `Last event: ${DateTime.formatIso(DateTime.makeUnsafe(stale.live.lastStreamAt))} (${stale.live.lastEventKind}).\n` +
-  `Silence: ${stale.silenceMs} ms; threshold: ${stale.thresholdMs} ms (${stale.thresholdSource}).\nReason: silence.`;
+  `Silence: ${stale.silenceMs} ms; threshold: ${stale.thresholdMs} ms (${stale.thresholdSource}).\n` +
+  `This is a snapshot from detection time. The child may have resumed or finished since, and its result can arrive before this notice.\n` +
+  `Before acting, check current state: t3_thread_read on thread ${stale.live.threadId} (run ${stale.live.runId}), or task_status if you hold this child's delegated taskId.\n` +
+  `This notice does not stop, cancel or complete the child.`;
 
 export class StaleTurnMonitor extends Context.Service<
   StaleTurnMonitor,
@@ -83,16 +87,24 @@ const make = Effect.gen(function* () {
           return;
         }
         const key = `server:prism-stale:${live.runId}:${live.attemptId}:${live.providerTurnId ?? "pending"}`;
+        const text = notice(stale, now);
+        const title = child.thread.title.split("\n")[0]?.trim().slice(0, 80) || "Child";
         yield* threads.dispatch({
           type: "message.dispatch",
           commandId: CommandId.make(key),
           messageId: MessageId.make(key),
           threadId: parent.id,
           senderThreadId: child.thread.id,
-          text: notice(stale),
+          text,
+          notification: {
+            source: { kind: "subagent", childThreadId: child.thread.id },
+            outcome: "updated",
+            summary: `Silence observed: "${title}" had no output for ${Math.round(stale.silenceMs / 1_000)} s`,
+            detail: text,
+          },
           attachments: [],
           dispatchMode: { type: "queue_after_active" },
-          createdBy: "system",
+          createdBy: "agent",
           creationSource: "server",
         });
         detector.notified(live);
