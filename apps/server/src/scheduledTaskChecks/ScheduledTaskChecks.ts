@@ -333,21 +333,33 @@ const makeEngine = Effect.gen(function* () {
           return yield* new ScheduledTaskCheckError({
             message: "A linked scheduled send may target only its own link's thread.",
           });
-        if (launch !== null && (yield* shellOf(threadId)) === null) {
+        if (launch !== null) {
           yield* threadLaunch
-            .launch({
-              commandId: send.commandId,
-              threadId,
-              ...launch,
-              ...(payload.linkOrigin === undefined ? {} : { linkOrigin: payload.linkOrigin }),
-              initialMessage: {
+            .replayOrLaunch(
+              {
+                commandId: send.commandId,
+                threadId,
+                projectId: launch.projectId,
+                runtimeMode: launch.runtimeMode,
+                interactionMode: launch.interactionMode,
+                createdBy: "agent",
+                ...(payload.linkOrigin === undefined ? {} : { linkOrigin: payload.linkOrigin }),
                 messageId: send.messageId,
-                scheduledTaskId: taskId,
-                text: payload.text,
-                attachments: [],
               },
-              ...provenance,
-            })
+              threadLaunch.launch({
+                commandId: send.commandId,
+                threadId,
+                ...launch,
+                ...(payload.linkOrigin === undefined ? {} : { linkOrigin: payload.linkOrigin }),
+                initialMessage: {
+                  messageId: send.messageId,
+                  scheduledTaskId: taskId,
+                  text: payload.text,
+                  attachments: [],
+                },
+                ...provenance,
+              }),
+            )
             .pipe(Effect.mapError(checkError("Could not start the scheduled thread")));
           return;
         }
@@ -409,6 +421,7 @@ const makeEngine = Effect.gen(function* () {
         ? Effect.succeed(null)
         : prism
             .resolve({
+              bare: task.bare !== undefined,
               projectId: task.projectId,
               role: state.role,
               lane: state.lane ?? undefined,
@@ -418,7 +431,7 @@ const makeEngine = Effect.gen(function* () {
               ...(launching
                 ? {
                     validate: (selection: ModelSelection) =>
-                      Prism.validateLaunchSelection(selection).pipe(
+                      Prism.validateLaunchSelection(selection, task.bare !== undefined).pipe(
                         Effect.provideService(ProviderAdapterRegistryV2, adapters),
                         Effect.provideService(ProviderRegistry.ProviderRegistry, providers),
                       ),

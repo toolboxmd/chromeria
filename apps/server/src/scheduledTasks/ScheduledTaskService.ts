@@ -1,3 +1,5 @@
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
+import { BareLaunchRequest } from "@t3tools/contracts";
 import {
   CommandId,
   MessageId,
@@ -194,6 +196,7 @@ interface ScheduledTaskRow {
   readonly interaction_mode: string;
   readonly created_by: string;
   readonly creation_source: string;
+  readonly bare_json: string | null;
   readonly link_origin_json: string | null;
   readonly created_at: string;
   readonly updated_at: string;
@@ -322,6 +325,13 @@ const decodeRow = (row: ScheduledTaskRow, origin: WebhookOrigin | null = null) =
     const workspaceStrategy = yield* decodeWorkspaceStrategyJson(row.workspace_strategy_json);
     const modelSelection = yield* decodeModelSelectionJson(row.model_selection_json);
     return yield* decodeTask({
+      ...(row.bare_json == null
+        ? {}
+        : {
+            bare: yield* Schema.decodeUnknownEffect(Schema.fromJsonString(BareLaunchRequest))(
+              row.bare_json,
+            ),
+          }),
       // The stored id decodes through the task schema so a corrupt value fails
       // as a typed parse error, not a `ScheduledTaskId.make` defect.
       id: row.task_id,
@@ -402,6 +412,7 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const crypto = yield* Crypto.Crypto;
+    const bareLaunch = yield* BareLaunch.BareLaunch;
     const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
     const threadManagement = yield* ThreadManagementService.ThreadManagementService;
     const secretRequests = yield* SecretRequests.SecretRequests;
@@ -440,6 +451,7 @@ export const layer = Layer.effect(
         interaction_mode,
         created_by,
         creation_source,
+        bare_json,
         link_origin_json,
         created_at,
         updated_at,
@@ -476,6 +488,7 @@ export const layer = Layer.effect(
         interaction_mode,
         created_by,
         creation_source,
+        bare_json,
         link_origin_json,
         created_at,
         updated_at,
@@ -557,7 +570,8 @@ export const layer = Layer.effect(
           interaction_mode,
           created_by,
           creation_source,
-          link_origin_json,
+          bare_json,
+        link_origin_json,
           created_at,
           updated_at,
           next_run_at,
@@ -582,6 +596,7 @@ export const layer = Layer.effect(
           ${task.interactionMode},
           ${task.createdBy},
           ${task.creationSource},
+          ${task.bare === undefined ? null : JSON.stringify(task.bare)},
           ${task.linkOrigin === undefined ? null : JSON.stringify(task.linkOrigin)},
           ${task.createdAt},
           ${task.updatedAt},
@@ -596,6 +611,7 @@ export const layer = Layer.effect(
            OR EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${task.id})
         ON CONFLICT (task_id)
         DO UPDATE SET
+          bare_json = excluded.bare_json,
           title = excluded.title,
           prompt = excluded.prompt,
           enabled = excluded.enabled,
@@ -723,8 +739,25 @@ export const layer = Layer.effect(
         ),
       );
 
-    const validateBinding = (task: Pick<ScheduledTask, "id" | "threadId" | "linkOrigin">) =>
+    const validateBinding = (
+      task: Pick<ScheduledTask, "id" | "threadId" | "linkOrigin" | "bare">,
+    ) =>
       Effect.gen(function* () {
+        if (task.bare !== undefined && task.threadId !== null) {
+          const target = yield* threadManagement
+            .getThreadRecords(task.threadId, [])
+            .pipe(
+              Effect.mapError((cause) =>
+                taskError("Could not read the scheduled thread.", { taskId: task.id, cause }),
+              ),
+            );
+          if (target.thread.bare === undefined || (task.bare.additions?.length ?? 0) > 0)
+            return yield* taskError(
+              "A bound bare schedule needs a bare thread and no new additions.",
+              { taskId: task.id },
+            );
+        }
+
         if (task.linkOrigin !== undefined && task.threadId !== null) {
           const target = yield* threadManagement
             .getThreadShell(task.threadId)
@@ -841,6 +874,7 @@ export const layer = Layer.effect(
                   threadLaunch.launch,
                 )({
                   commandId,
+                  ...(active.bare === undefined ? {} : { bare: active.bare }),
                   projectId: active.projectId,
                   title: active.title,
                   modelSelection: active.modelSelection,
@@ -1068,8 +1102,14 @@ export const layer = Layer.effect(
         // keep their run history, and so real load failures propagate instead
         // of silently resetting an existing row.
         const existingTask = yield* findTask(id);
+        const bare = input.bare ?? existingTask?.bare;
+        if (bare !== undefined)
+          yield* bareLaunch
+            .validate({ request: bare, instanceId: input.modelSelection.instanceId })
+            .pipe(Effect.mapError((cause) => taskError(cause.message, { cause })));
         const linkOrigin = existingTask === null ? input.linkOrigin : existingTask.linkOrigin;
         yield* validateBinding({
+          ...(bare === undefined ? {} : { bare }),
           id,
           threadId: input.threadId ?? null,
           ...(linkOrigin === undefined ? {} : { linkOrigin }),
@@ -1135,6 +1175,7 @@ export const layer = Layer.effect(
           existingTask.enabled === input.enabled &&
           isSameSchedule(existingTask.schedule, schedule);
         const task: ScheduledTask = {
+          ...(bare === undefined ? {} : { bare }),
           id,
           title: input.title,
           prompt: input.prompt,

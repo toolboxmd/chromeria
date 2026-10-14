@@ -33,6 +33,7 @@ interface GrokAcpRuntimeInput extends Omit<
 > {
   readonly grokSettings: GrokAcpRuntimeGrokSettings | null | undefined;
   readonly environment?: NodeJS.ProcessEnv;
+  readonly bare?: boolean;
   readonly runtimeMode?: RuntimeMode;
 }
 
@@ -70,10 +71,13 @@ export function buildGrokAcpSpawnInput(
   cwd: string,
   environment?: NodeJS.ProcessEnv,
   runtimeMode?: RuntimeMode,
+  bare?: boolean,
 ): AcpSessionRuntime.AcpSpawnInput {
   return {
     command: grokSettings?.binaryPath || "grok",
-    args: [...grokAcpSpawnArgs(runtimeMode)],
+    args: bare
+      ? [...grokAcpSpawnArgs(runtimeMode).slice(0, -1), "--no-leader", "stdio"]
+      : [...grokAcpSpawnArgs(runtimeMode)],
     cwd,
     env: {
       ...environment,
@@ -170,6 +174,7 @@ export const makeGrokAcpRuntime = (
           input.cwd,
           input.environment,
           input.runtimeMode,
+          input.bare,
         ),
         authMethodId: resolveGrokAuthMethodId(input.environment),
         cancelMeta: { ...input.cancelMeta, ...GROK_ACP_CANCEL_META },

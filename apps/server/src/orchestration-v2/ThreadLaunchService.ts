@@ -1,3 +1,5 @@
+import * as BareLaunch from "./BareLaunch.ts";
+import { type BareLaunchRequest } from "@t3tools/contracts";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
@@ -78,6 +80,8 @@ export interface ThreadLaunchInitialMessage {
 }
 
 export interface ThreadLaunchInput {
+  readonly bare?: BareLaunchRequest | undefined;
+  readonly bareReadGrant?: BareLaunch.BareReadGrant;
   readonly commandId: CommandId;
   readonly threadId?: ThreadId;
   readonly reuseExistingThread?: boolean;
@@ -230,6 +234,7 @@ function failureDetail(error: unknown): string {
 }
 
 const make = Effect.gen(function* () {
+  const bareLaunch = yield* BareLaunch.BareLaunch;
   const projects = yield* ProjectService.ProjectService;
   const setupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
   const cloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
@@ -949,7 +954,7 @@ const make = Effect.gen(function* () {
 
         // A Scratch thread launched at the project root runs in a folder of its
         // own. Only the first attempt claims one; a retry replays its create.
-        const workspaceStrategy: ThreadLaunchWorkspaceStrategy =
+        let workspaceStrategy: ThreadLaunchWorkspaceStrategy =
           input.workspaceStrategy.type === "root" && Option.isNone(launchReceipt)
             ? Option.match(
                 yield* managedFolders
@@ -965,6 +970,52 @@ const make = Effect.gen(function* () {
                 },
               )
             : input.workspaceStrategy;
+        let resolvedBare: import("@t3tools/contracts").ThreadBare | undefined;
+        if (input.bare !== undefined && Option.isNone(launchReceipt)) {
+          if (input.importedNativeThread !== undefined)
+            return yield* mapError(input, "create-thread")("Bare native import is unsupported.");
+          if (input.reuseExistingThread) {
+            const existing = yield* threads
+              .getThreadRecords(candidateThreadId, [])
+              .pipe(Effect.mapError(mapError(input, "read-receipt")));
+            if (existing.thread.bare === undefined)
+              return yield* mapError(
+                input,
+                "create-thread",
+              )("Cannot reuse a normal thread for bare launch.");
+            resolvedBare = existing.thread.bare;
+            if ((input.bare.additions?.length ?? 0) > 0)
+              return yield* mapError(
+                input,
+                "create-thread",
+              )("A reused bare thread keeps its original additions.");
+          } else {
+            const prepared = yield* bareLaunch
+              .prepare({
+                request: input.bare,
+                instanceId: input.modelSelection.instanceId,
+                projectRoot: project.workspaceRoot,
+                workspaceStrategy,
+                readGrant:
+                  input.bareReadGrant ??
+                  (input.runtimeMode === "full-access"
+                    ? { type: "all" }
+                    : { type: "roots", roots: [project.workspaceRoot] }),
+              })
+              .pipe(Effect.mapError(mapError(input, "create-thread")));
+            workspaceStrategy = prepared.workspaceStrategy;
+            resolvedBare = prepared.bare;
+          }
+        } else if (input.reuseExistingThread && Option.isNone(launchReceipt)) {
+          const existing = yield* threads
+            .getThreadRecords(candidateThreadId, [])
+            .pipe(Effect.mapError(mapError(input, "read-receipt")));
+          if (existing.thread.bare !== undefined)
+            return yield* mapError(
+              input,
+              "create-thread",
+            )("Cannot reuse a bare thread for a normal launch.");
+        }
         const initialBranch = workspaceStrategy.branch ?? null;
         const initialWorktreePath =
           workspaceStrategy.type === "existing_worktree" ? workspaceStrategy.worktreePath : null;
@@ -978,6 +1029,7 @@ const make = Effect.gen(function* () {
               })
             : threads.dispatch({
                 type: "thread.create",
+                ...(resolvedBare === undefined ? {} : { bare: resolvedBare }),
                 commandId: input.commandId,
                 threadId: candidateThreadId,
                 projectId: input.projectId,

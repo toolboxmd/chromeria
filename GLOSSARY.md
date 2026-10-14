@@ -150,6 +150,11 @@ _Avoid_: chat
 A thread with no parent, opened by the user or launched on request.
 _Avoid_: new chat, separate host task
 
+**Bare launch**:
+A launch that strips the context a harness can disable and adds only named content,
+with a receipt identifying planned controls, observed evidence and retained native content.
+_Avoid_: reduced mode, minimal mode, clean launch
+
 **Session**:
 One conversation inside one harness, keyed by the harness's own id, such as
 `claude:<id>`. A thread points at its session through `nativeThreadRef`.

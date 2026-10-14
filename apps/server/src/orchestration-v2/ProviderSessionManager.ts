@@ -1,4 +1,5 @@
 import { AgentScope } from "@t3tools/shared/AgentScope";
+import { namesT3Mcp, unsupportedBare } from "@t3tools/provider-core/server/bareLaunch";
 import { applyProviderStartAdmission } from "../provider/forkProviderStartAdmission.ts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -476,8 +477,9 @@ export const layerWithOptions = (
       const prepareMcpSession = (
         threadId: ThreadId,
         providerInstanceId: ProviderInstanceId,
+        bare?: import("@t3tools/contracts").ThreadBare,
       ): Effect.Effect<PreparedMcpCredential> =>
-        options.configureMcp === false
+        options.configureMcp === false || (bare !== undefined && !namesT3Mcp(bare))
           ? mcpSessions
               .clear(threadId)
               .pipe(Effect.as<PreparedMcpCredential>({ mcpCredentialId: undefined, issued: false }))
@@ -1320,7 +1322,11 @@ export const layerWithOptions = (
               Effect.uninterruptible,
             );
             if (attached !== undefined) {
-              const prepared = yield* prepareMcpSession(input.threadId, input.providerInstanceId);
+              const prepared = yield* prepareMcpSession(
+                input.threadId,
+                input.providerInstanceId,
+                (yield* projectionStore.getThread(input.threadId).pipe(Effect.orDie)).bare,
+              );
               preparedForCleanup = prepared;
               if (prepared.mcpCredentialId !== undefined) {
                 const mcpCredentialId = prepared.mcpCredentialId;
@@ -2080,9 +2086,22 @@ export const layerWithOptions = (
                     }),
                 ),
               );
+              if (input.runtimePolicy.bare !== undefined) {
+                const support =
+                  adapter.bareSupport === undefined
+                    ? unsupportedBare(adapter.driver)
+                    : yield* adapter.bareSupport;
+                if (!support.supported)
+                  return yield* new ProviderSessionOpenError({
+                    instanceId: input.modelSelection.instanceId,
+                    providerSessionId: input.providerSessionId,
+                    cause: support.reason,
+                  });
+              }
               const prepared = yield* prepareMcpSession(
                 input.threadId,
                 input.modelSelection.instanceId,
+                input.runtimePolicy.bare,
               );
               const mcpCredentialId = prepared.mcpCredentialId;
               // The reservation from prepare protects the credential (which

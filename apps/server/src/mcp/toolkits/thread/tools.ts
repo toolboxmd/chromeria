@@ -1,3 +1,4 @@
+import { ThreadBare } from "@t3tools/contracts";
 import * as McpRouting from "../../McpRouting.ts";
 import {
   ScheduledTaskId,
@@ -221,6 +222,7 @@ const ThreadConfigurationTool = Tool.make("t3_thread_configuration", {
     "Read a thread's provider/model selection and modes. Omit threadId for this thread. orchestrator_capabilities lists available providers and models.",
   parameters: McpRouting.parameters(Schema.Struct({ threadId: Schema.optional(ThreadId) })),
   success: Schema.Struct({
+    bare: Schema.optional(ThreadBare),
     threadId: ThreadId,
     modelSelection: ModelSelection,
     runtimeMode: RuntimeMode,

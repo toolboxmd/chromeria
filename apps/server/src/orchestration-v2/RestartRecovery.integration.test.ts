@@ -1,3 +1,4 @@
+import * as BareLaunch from "./BareLaunch.ts";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -193,23 +194,27 @@ it.live(
           { runEffectWorker: false, runContinuationWorker: true },
         );
         const services = Layer.mergeAll(
-          OrchestratorMcpService.layer.pipe(
-            Layer.provideMerge(runtime),
-            Layer.provide(registry),
-            Layer.provide(ServerSettings.layerTest()),
-            Layer.provide(NodeCrypto.layer),
-            Layer.provide(
-              Layer.mergeAll(
-                Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
-                Layer.mock(RemoteDelegation.RemoteDelegation)({}),
-                Layer.mock(ProjectService.ProjectService)({}),
-                Layer.mock(SecretRequests.SecretRequests)({}),
-                Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-                Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
-                Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+          OrchestratorMcpService.layer
+            .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
+            .pipe(
+              Layer.provideMerge(runtime),
+              Layer.provide(registry),
+              Layer.provide(ServerSettings.layerTest()),
+              Layer.provide(NodeCrypto.layer),
+              Layer.provide(
+                Layer.mergeAll(
+                  Layer.mock(ProviderRegistry.ProviderRegistry)({
+                    getProviders: Effect.succeed([]),
+                  }),
+                  Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+                  Layer.mock(ProjectService.ProjectService)({}),
+                  Layer.mock(SecretRequests.SecretRequests)({}),
+                  Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+                  Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
+                  Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+                ),
               ),
             ),
-          ),
           runtime,
         );
         yield* Effect.gen(function* () {

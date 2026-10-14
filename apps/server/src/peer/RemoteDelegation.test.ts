@@ -1,3 +1,4 @@
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
@@ -401,7 +402,9 @@ const boxToolkitLayer = (
       ),
   });
   return Layer.merge(
-    McpHttpServer.layerOrchestratorToolkit,
+    McpHttpServer.layerOrchestratorToolkit.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+    ),
     McpHttpServer.layerProjectRegistration,
   ).pipe(
     Layer.provide(NodeCrypto.layer),
@@ -550,7 +553,9 @@ const makeRealBox = Effect.gen(function* () {
     }),
     catalogLayer,
   );
-  const services = yield* ThreadLaunch.layer.pipe(Layer.provideMerge(dependencies), Layer.build);
+  const services = yield* ThreadLaunch.layer
+    .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
+    .pipe(Layer.provideMerge(dependencies), Layer.build);
   return {
     launches: Context.get(services, ThreadLaunch.ThreadLaunchService),
     threads: Context.get(services, ThreadManagement.ThreadManagementService),
@@ -595,46 +600,51 @@ const makeLaptop = (
       ),
     );
     const layerThreads = ThreadManagement.layer.pipe(Layer.provideMerge(layerOrchestrator));
-    const layerHere = McpHttpServer.layerOrchestratorToolkit.pipe(
-      Layer.provideMerge(McpServer.McpServer.layer),
-      Layer.provideMerge(
-        RemoteDelegation.layer.pipe(
-          Layer.provideMerge(PeerForwarding.layer),
-          Layer.provide(
-            Layer.mock(ProjectService.ProjectService)({
-              // A cold enrichment cache: the project itself reports no identity yet.
-              getById: () =>
-                Effect.succeed(
-                  Option.some({ workspaceRoot: "/home/me/app", repositoryIdentity: null } as never),
-                ),
-            }),
-          ),
-          Layer.provide(
-            Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
-              resolve: (cwd) =>
-                Effect.succeed(
-                  cwd === "/home/me/app"
-                    ? ({ canonicalKey: "github.com/acme/app" } as RepositoryIdentity)
-                    : null,
-                ),
-            }),
+    const layerHere = McpHttpServer.layerOrchestratorToolkit
+      .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
+      .pipe(
+        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provideMerge(
+          RemoteDelegation.layer.pipe(
+            Layer.provideMerge(PeerForwarding.layer),
+            Layer.provide(
+              Layer.mock(ProjectService.ProjectService)({
+                // A cold enrichment cache: the project itself reports no identity yet.
+                getById: () =>
+                  Effect.succeed(
+                    Option.some({
+                      workspaceRoot: "/home/me/app",
+                      repositoryIdentity: null,
+                    } as never),
+                  ),
+              }),
+            ),
+            Layer.provide(
+              Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
+                resolve: (cwd) =>
+                  Effect.succeed(
+                    cwd === "/home/me/app"
+                      ? ({ canonicalKey: "github.com/acme/app" } as RepositoryIdentity)
+                      : null,
+                  ),
+              }),
+            ),
           ),
         ),
-      ),
-      Layer.provide(Layer.succeedContext(linking)),
-      Layer.provide(NodeCrypto.layer),
-      Layer.provide(Settings.layerTest()),
-      Layer.provideMerge(layerThreads),
-      Layer.provide(layerLaunchCatalog),
+        Layer.provide(Layer.succeedContext(linking)),
+        Layer.provide(NodeCrypto.layer),
+        Layer.provide(Settings.layerTest()),
+        Layer.provideMerge(layerThreads),
+        Layer.provide(layerLaunchCatalog),
 
-      Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
-      Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
-      Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
-      Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),
-      Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
-      Layer.provide(Settings.layerTest()),
-      Layer.fresh,
-    );
+        Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
+        Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
+        Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+        Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),
+        Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+        Layer.provide(Settings.layerTest()),
+        Layer.fresh,
+      );
     const here = yield* Layer.build(layerHere);
     const server = Context.get(here, McpServer.McpServer);
     return {

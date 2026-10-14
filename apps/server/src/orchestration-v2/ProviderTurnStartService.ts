@@ -1,3 +1,4 @@
+import * as BareLaunch from "./BareLaunch.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
@@ -87,6 +88,7 @@ export class ProviderTurnStartServiceV2 extends Context.Service<
 export const layer: Layer.Layer<
   ProviderTurnStartServiceV2,
   never,
+  | BareLaunch.BareLaunch
   | EventSink.EventSinkV2
   | ContextHandoffService.ContextHandoffServiceV2
   | IdAllocator.IdAllocatorV2
@@ -102,6 +104,7 @@ export const layer: Layer.Layer<
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
+    const bareLaunch = yield* BareLaunch.BareLaunch;
     const eventSink = yield* EventSink.EventSinkV2;
     const contextHandoffService = yield* ContextHandoffService.ContextHandoffServiceV2;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -637,6 +640,38 @@ export const layer: Layer.Layer<
           });
           return undefined;
         });
+      let inheritedBareCarrier = false;
+      if (projection.thread.bare !== undefined) {
+        const fork = projection.contextTransfers.find(
+          (transfer) =>
+            transfer.type === "fork" && transfer.targetThreadId === projection.thread.id,
+        );
+        if (fork !== undefined) {
+          const source = yield* projectionStore.getThreadRecords(fork.sourceThreadId, [
+            "runs",
+            "attempts",
+            "providerTurns",
+          ]);
+          const point = source.runs.find((sourceRun) => sourceRun.id === fork.sourcePoint.runId);
+          inheritedBareCarrier =
+            point !== undefined &&
+            source.providerTurns.some((turn) =>
+              source.attempts.some(
+                (attempt) =>
+                  attempt.id === turn.runAttemptId &&
+                  source.runs.some(
+                    (sourceRun) =>
+                      sourceRun.id === attempt.runId &&
+                      sourceRun.ordinal <= point.ordinal &&
+                      (sourceRun.status !== "rolled_back" ||
+                        (sourceRun.completedAt !== null &&
+                          DateTime.toEpochMillis(sourceRun.completedAt) >
+                            DateTime.toEpochMillis(fork.createdAt))),
+                  ),
+              ),
+            );
+        }
+      }
       let effectiveHandoffs = handoffs;
       const loadedProviderThread = yield* Effect.gen(function* () {
         if (nativeForkTransfer !== undefined) {
@@ -733,6 +768,29 @@ export const layer: Layer.Layer<
           return resumed.success;
         }
 
+        if (
+          projection.thread.bare !== undefined &&
+          (inheritedBareCarrier ||
+            projection.providerTurns.some(
+              (turn) =>
+                turn.providerThreadId === providerThread.id &&
+                projection.attempts.some(
+                  (attempt) =>
+                    attempt.id === turn.runAttemptId &&
+                    projection.runs.some(
+                      (run) => run.id === attempt.runId && run.status !== "rolled_back",
+                    ),
+                ),
+            ))
+        )
+          return yield* new ProviderAdapter.ProviderAdapterTurnStartError({
+            driver: session.driver,
+            threadId: projection.thread.id,
+            providerThreadId: providerThread.id,
+            runId,
+            cause:
+              "The bare thread's native session could not be resumed; Chromeria will not substitute a summary.",
+          });
         yield* Effect.logWarning("Provider resume failed; attempting a fresh native session", {
           driver: session.driver,
           providerThreadId: providerThread.id,
@@ -754,6 +812,7 @@ export const layer: Layer.Layer<
           }),
         );
         if (replacement === undefined) return undefined;
+        if (projection.thread.bare !== undefined) return replacement;
         const transferId = yield* idAllocator.allocate.contextTransfer({
           sourceThreadId: projection.thread.id,
           targetThreadId: projection.thread.id,
@@ -1047,7 +1106,7 @@ export const layer: Layer.Layer<
         attempts: projection.attempts,
       });
       const restartNote =
-        restartCancelledWork.length === 0
+        projection.thread.bare !== undefined || restartCancelledWork.length === 0
           ? ""
           : restartCancelledBackgroundWorkNote(restartCancelledWork);
       const tokenCap = yield* handoffTokenCapConfig.pipe(
@@ -1071,7 +1130,9 @@ export const layer: Layer.Layer<
       );
       const acceptedAttempts = projection.attempts.filter(
         (source) =>
-          source.providerThreadId === providerThread.id && deliveredAttemptIds.has(source.id),
+          source.providerThreadId === providerThread.id &&
+          projection.runs.some((run) => run.id === source.runId && run.status !== "rolled_back") &&
+          deliveredAttemptIds.has(source.id),
       );
       const nativeInputRunIds = new Set(
         acceptedAttempts
@@ -1289,13 +1350,72 @@ export const layer: Layer.Layer<
                 }),
           ),
         );
-      const deliverySession =
+      let deliverySession =
         effectiveHandoffs.length === 0 &&
         missedItems.length === 0 &&
         restartNote === "" &&
         !noteContinuation
           ? session
           : makeDeliverySession(session, startWithHandoffs);
+      if (projection.thread.bare !== undefined) {
+        const bare = projection.thread.bare;
+        const survivingAccepted =
+          inheritedBareCarrier ||
+          projection.providerTurns.some(
+            (turn) =>
+              turn.providerThreadId === providerThread.id &&
+              projection.attempts.some(
+                (attempt) =>
+                  attempt.id === turn.runAttemptId &&
+                  projection.runs.some(
+                    (run) => run.id === attempt.runId && run.status !== "rolled_back",
+                  ),
+              ) &&
+              projection.attempts.some(
+                (source) =>
+                  source.id === turn.runAttemptId &&
+                  projection.runs.some(
+                    (run) => run.id === source.runId && run.status !== "rolled_back",
+                  ) &&
+                  source.nativeThreadId === runningProviderThread.nativeThreadRef?.nativeId,
+              ),
+          );
+        if (missedItems.some((item) => item.type !== "user_message"))
+          return yield* new ProviderAdapter.ProviderAdapterTurnStartError({
+            driver: session.driver,
+            threadId: projection.thread.id,
+            providerThreadId: providerThread.id,
+            runId,
+            cause: "bare history transfer unsupported: missed history is not user text",
+          });
+        const missedText = missedItems
+          .filter((item) => item.type === "user_message")
+          .map((item) => item.text)
+          .join("\n\n");
+        // This is the final adapter-facing boundary, after recovery selected the native thread.
+        deliverySession = makeDeliverySession(session, (turnInput, compact) =>
+          Effect.gen(function* () {
+            const additions = survivingAccepted ? "" : yield* bareLaunch.deliveryText(bare);
+            const text = [additions, missedText, userText]
+              .filter((part) => part !== "")
+              .join("\n\n");
+            const start = compact ? session.compactThread! : session.startTurn;
+            yield* start({ ...turnInput, message: { ...turnInput.message, text } });
+          }).pipe(
+            Effect.mapError((cause) =>
+              Schema.is(ProviderAdapter.ProviderAdapterTurnStartError)(cause)
+                ? cause
+                : new ProviderAdapter.ProviderAdapterTurnStartError({
+                    driver: session.driver,
+                    threadId: projection.thread.id,
+                    providerThreadId: providerThread.id,
+                    runId,
+                    cause,
+                  }),
+            ),
+          ),
+        );
+      }
       yield* runExecution.startRootRun({
         commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),
         appThread: projection.thread,

@@ -1,3 +1,5 @@
+import * as BareRuntime from "@t3tools/provider-core/server/bareLaunch";
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import { callerLinkOrigin, assertSameLink } from "./linkOrigin.ts";
 import { SpectrumMcpInterrupt } from "../spectrum/mcpInterrupt.ts";
 import { SpectrumMcpSend } from "../spectrum/mcpSend.ts";
@@ -274,6 +276,7 @@ function scheduledTaskWorkspaceStrategy(
  */
 function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): OrchestratorMcpScheduledTask {
   return {
+    ...(task.bare === undefined ? {} : { bare: task.bare }),
     scheduledTaskId: task.id,
     title: task.title,
     prompt: task.prompt,
@@ -870,6 +873,7 @@ function timelineItem(input: {
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
+  const bareLaunch = yield* BareLaunch.BareLaunch;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
@@ -1762,7 +1766,9 @@ const make = Effect.gen(function* () {
         // Binding means "wake this thread", which only a thread caller in that project has.
         const bindToCurrentThread =
           input.bindToCurrentThread ??
-          (parent !== undefined && parent.thread.projectId === projectId);
+          (input.bare === undefined &&
+            parent !== undefined &&
+            parent.thread.projectId === projectId);
         if (
           bindToCurrentThread &&
           (parent === undefined || parent.thread.projectId !== projectId)
@@ -1774,6 +1780,15 @@ const make = Effect.gen(function* () {
               : "bindToCurrentThread binds to this thread, which belongs to a different project.",
           );
         }
+        if (
+          input.bare !== undefined &&
+          bindToCurrentThread &&
+          (parent?.thread.bare === undefined || (input.bare.additions?.length ?? 0) > 0)
+        )
+          return yield* failure(
+            "invalid_request",
+            "A bound bare schedule needs a bare thread and no new additions.",
+          );
         const modelSelection =
           parent?.thread.modelSelection ?? (yield* projectDefaultModelSelection(project));
         const derivedTitle = input.prompt.split("\n")[0]?.trim() ?? "";
@@ -1781,6 +1796,7 @@ const make = Effect.gen(function* () {
           input.title ?? (derivedTitle.length > 0 ? derivedTitle.slice(0, 80) : "Scheduled task");
         const linkOrigin = callerLinkOrigin({ scope, caller: parent?.thread });
         const upsertInput: ScheduledTaskUpsertInput = {
+          ...(input.bare === undefined ? {} : { bare: input.bare }),
           ...(linkOrigin === undefined ? {} : { linkOrigin }),
           title,
           prompt: input.prompt,
@@ -1868,6 +1884,9 @@ const make = Effect.gen(function* () {
             : scheduledTaskWorkspaceStrategy(input.bindToCurrentThread);
         const upsertInput: ScheduledTaskUpsertInput = {
           id: existing.id,
+          ...((input.bare ?? existing.bare) === undefined
+            ? {}
+            : { bare: input.bare ?? existing.bare }),
           title: input.title ?? existing.title,
           prompt: input.prompt ?? existing.prompt,
           enabled: input.enabled ?? existing.enabled,
@@ -2055,7 +2074,21 @@ const make = Effect.gen(function* () {
           Effect.map((settings) => settings.providerModelPreferences ?? {}),
           Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
         );
+        const bareSupports = new Map(
+          yield* Effect.forEach(providers, (provider) =>
+            Effect.gen(function* () {
+              const adapter = yield* providerAdapters.get(provider.instanceId).pipe(Effect.option);
+              return [
+                provider.instanceId,
+                Option.isSome(adapter) && adapter.value.bareSupport !== undefined
+                  ? yield* adapter.value.bareSupport
+                  : BareRuntime.unsupportedBare(provider.driver),
+              ] as const;
+            }),
+          ),
+        );
         return {
+          bareLaunch: true,
           parentThreadId: parent?.thread.id ?? null,
           inheritedProviderInstanceId: parent?.thread.modelSelection.instanceId ?? null,
           inheritedModel: parent?.thread.modelSelection.model ?? null,
@@ -2069,6 +2102,7 @@ const make = Effect.gen(function* () {
             return {
               providerInstanceId: provider.instanceId,
               driverKind: provider.driver,
+              bare: bareSupports.get(provider.instanceId),
               displayName: provider?.displayName ?? null,
               models:
                 provider?.models
@@ -2182,6 +2216,7 @@ const make = Effect.gen(function* () {
               });
         let runtimeTarget = explicitTarget;
         const target = yield* prism.resolve({
+          bare: input.bare !== undefined,
           projectId: parent.thread.projectId,
           role: input.prismRole ?? Prism.delegatedPrismRole(input.role),
           lane: input.lane,
@@ -2232,6 +2267,39 @@ const make = Effect.gen(function* () {
             );
           workspaceStrategy = { type: "worktree", baseRef: base.commitSha, startFromOrigin: false };
         }
+        const preparedBare =
+          input.bare === undefined || isRetryOfAcceptedDelegation
+            ? undefined
+            : yield* bareLaunch
+                .prepare({
+                  request: input.bare,
+                  instanceId: target.modelSelection.instanceId,
+                  projectRoot: (yield* requireProject(input.projectId ?? parent.thread.projectId))
+                    .workspaceRoot,
+                  workspaceStrategy:
+                    workspaceStrategy ??
+                    input.workspaceStrategy ??
+                    (input.projectId !== undefined && input.projectId !== parent.thread.projectId
+                      ? { type: "root" }
+                      : parent.thread.worktreePath === null
+                        ? { type: "root", branch: parent.thread.branch ?? undefined }
+                        : {
+                            type: "existing_worktree",
+                            worktreePath: parent.thread.worktreePath,
+                            branch: parent.thread.branch ?? undefined,
+                          }),
+                  readGrant:
+                    parent.thread.runtimeMode === "full-access"
+                      ? { type: "all" }
+                      : {
+                          type: "roots",
+                          roots: [
+                            parent.thread.worktreePath ??
+                              (yield* requireProject(parent.thread.projectId)).workspaceRoot,
+                          ],
+                        },
+                })
+                .pipe(Effect.mapError((error) => failure("invalid_request", error.message)));
         // ThreadManagementService.dispatch is the chokepoint for this command
         // type's own enablement check, using the same command id and its
         // receipt-replay exemption, so no separate assert runs here.
@@ -2248,12 +2316,17 @@ const make = Effect.gen(function* () {
             ...(input.workspaceStrategy === undefined
               ? {}
               : { workspaceStrategy: input.workspaceStrategy }),
+            ...(preparedBare === undefined
+              ? {}
+              : { bare: preparedBare.bare, workspaceStrategy: preparedBare.workspaceStrategy }),
             task: [target.kitText, taskPrompt(input)].filter(Boolean).join("\n\n"),
             ...(input.title === undefined ? {} : { title: input.title }),
             modelSelection: target.modelSelection,
             runtimeMode,
             interactionMode,
-            ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
+            ...(preparedBare === undefined && workspaceStrategy !== undefined
+              ? { workspaceStrategy }
+              : {}),
             // Async delegations wake the parent on every child terminal; wait
             // delegations deliver through the blocking tool call, so a wake is
             // only needed if the parent settled first (timeout, disconnect).
@@ -2572,9 +2645,32 @@ const make = Effect.gen(function* () {
                 title: request.title,
                 index,
               });
+              const bare =
+                request.bare === undefined
+                  ? undefined
+                  : yield* bareLaunch
+                      .resolve({
+                        request: request.bare,
+                        instanceId: target.modelSelection.instanceId,
+                        cwd:
+                          parent.thread.worktreePath ??
+                          (yield* requireProject(parent.thread.projectId)).workspaceRoot,
+                        readGrant:
+                          runtimeMode === "full-access"
+                            ? { type: "all" }
+                            : {
+                                type: "roots",
+                                roots: [
+                                  parent.thread.worktreePath ??
+                                    (yield* requireProject(parent.thread.projectId)).workspaceRoot,
+                                ],
+                              },
+                      })
+                      .pipe(Effect.mapError((error) => failure("invalid_request", error.message)));
               yield* threadManagement
                 .dispatch({
                   type: "thread.create",
+                  ...(bare === undefined ? {} : { bare }),
                   createdBy: "agent",
                   creationSource: "mcp",
                   // Fork: an agent's thread belongs to its caller's owner (toolboxmd/chromeria#170).
@@ -3009,6 +3105,7 @@ const make = Effect.gen(function* () {
 export const layer: Layer.Layer<
   OrchestratorMcpService,
   never,
+  | BareLaunch.BareLaunch
   | Crypto.Crypto
   | FileSystem.FileSystem
   | ThreadManagementService.ThreadManagementService

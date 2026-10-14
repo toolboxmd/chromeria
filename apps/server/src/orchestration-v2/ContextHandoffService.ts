@@ -1,3 +1,4 @@
+import * as ProjectionStore from "./ProjectionStore.ts";
 import {
   OrchestrationV2ContextHandoff,
   type OrchestrationV2TurnItem,
@@ -38,7 +39,18 @@ export class ContextHandoffPrepareError extends Schema.TaggedError<ContextHandof
   }
 }
 
-export const ContextHandoffServiceV2Error = Schema.Union([ContextHandoffPrepareError]);
+export class BareHistoryTransferUnsupported extends Schema.TaggedError<BareHistoryTransferUnsupported>()(
+  "BareHistoryTransferUnsupported",
+  { threadId: ThreadId },
+) {
+  override get message() {
+    return "bare history transfer unsupported";
+  }
+}
+export const ContextHandoffServiceV2Error = Schema.Union([
+  ContextHandoffPrepareError,
+  BareHistoryTransferUnsupported,
+]);
 export type ContextHandoffServiceV2Error = typeof ContextHandoffServiceV2Error.Type;
 
 export interface ContextHandoffServiceV2Shape {
@@ -228,6 +240,7 @@ function providerMessageWithContextHandoffs(input: {
 
 const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffService.layer")(
   function* () {
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const tokenCap = yield* handoffTokenCapConfig.pipe(
       Effect.orElseSucceed(() => DEFAULT_HANDOFF_TOKEN_CAP),
@@ -426,6 +439,20 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
       readonly items: ReadonlyArray<OrchestrationV2TurnItem>;
       readonly createdAt: DateTime.Utc;
     }) {
+      const thread = yield* projections.getThread(input.threadId).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ContextHandoffPrepareError({
+              threadId: input.threadId,
+              targetRunId: input.targetRunId,
+              fromProviderThreadIds: input.fromProviderThreadIds,
+              toProviderThreadId: input.toProviderThreadId,
+              cause,
+            }),
+        ),
+      );
+      if (thread.bare !== undefined)
+        return yield* new BareHistoryTransferUnsupported({ threadId: thread.id });
       const handoffId = yield* idAllocator.allocate
         .contextHandoff({
           threadId: input.threadId,
@@ -494,5 +521,8 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
   },
 );
 
-export const layer: Layer.Layer<ContextHandoffServiceV2, never, IdAllocator.IdAllocatorV2> =
-  Layer.effect(ContextHandoffServiceV2, makeContextHandoffService());
+export const layer: Layer.Layer<
+  ContextHandoffServiceV2,
+  never,
+  IdAllocator.IdAllocatorV2 | ProjectionStore.ProjectionStoreV2
+> = Layer.effect(ContextHandoffServiceV2, makeContextHandoffService());

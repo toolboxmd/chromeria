@@ -1,3 +1,4 @@
+import * as BareLaunch from "../../../orchestration-v2/BareLaunch.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
@@ -92,7 +93,9 @@ const decodeToolsListPayload = Schema.decodeUnknownEffect(ToolsListPayload);
 it.effect("production mcp layer lists worktree tools over http", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const layerRoutes = McpHttpServer.layer.pipe(Layer.provide(McpSessionRegistry.layer));
+      const layerRoutes = McpHttpServer.layer
+        .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
+        .pipe(Layer.provide(McpSessionRegistry.layer));
       yield* HttpRouter.serve(layerRoutes, {
         disableListenLog: true,
         disableLogger: true,

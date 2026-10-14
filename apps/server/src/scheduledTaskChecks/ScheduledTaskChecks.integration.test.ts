@@ -1,3 +1,4 @@
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -133,9 +134,9 @@ const withDispatchBarrier = (barrier: DispatchBarrier) =>
             ),
           ),
       };
-      return ScheduledTaskService.layer.pipe(
-        Layer.provide(Layer.succeed(ScheduledTaskDispatchPolicy, held)),
-      );
+      return ScheduledTaskService.layer
+        .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
+        .pipe(Layer.provide(Layer.succeed(ScheduledTaskDispatchPolicy, held)));
     }),
   );
 
@@ -196,7 +197,7 @@ const runtime = (
     dependencies,
     ScheduledTaskChecks.withOutcomeChecks(
       options.dispatchBarrier === undefined
-        ? ScheduledTaskService.layer
+        ? ScheduledTaskService.layer.pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
         : withDispatchBarrier(options.dispatchBarrier),
     ).pipe(Layer.provide(dependencies)),
   );

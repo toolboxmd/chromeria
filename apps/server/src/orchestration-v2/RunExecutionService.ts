@@ -1,3 +1,4 @@
+import { bareNoticeMessage } from "@t3tools/provider-core/server/bareLaunch";
 import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
 import * as StreamClock from "../prism/streamClock.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -23,7 +24,7 @@ import {
   type ProviderTurnId,
   type RunAttemptId,
   type ThreadId,
-  type TurnItemId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
@@ -1225,6 +1226,79 @@ export const layer: Layer.Layer<
             }
             return true;
           });
+          const writeBareReceipt = (beforeInference: boolean) =>
+            Effect.gen(function* () {
+              if (
+                input.appThread.bare === undefined ||
+                input.nativeThreadHasTurns === true ||
+                input.session.getBareReceipt === undefined
+              )
+                return;
+              const thread = yield* Ref.get(latestProviderThread);
+              const receipt = yield* input.session.getBareReceipt(thread);
+              if (
+                beforeInference &&
+                receipt.evidence.some(
+                  (entry) =>
+                    entry.status === "observed_unexpected" &&
+                    ["tools", "mcp", "skills", "plugins", "slash_commands"].includes(
+                      entry.category,
+                    ),
+                )
+              )
+                return yield* new RunExecutionStartError({
+                  commandId: input.commandId,
+                  runId: input.run.id,
+                  cause: "Bare runtime reported an unexpected removable identity before inference.",
+                });
+              const now = yield* DateTime.now;
+              yield* eventSink
+                .write({
+                  events: [
+                    {
+                      id: yield* idAllocator.allocate
+                        .event({ threadId: input.run.threadId })
+                        .pipe(
+                          Effect.mapError(
+                            (cause) => new RunExecutionIngestError({ runId: input.run.id, cause }),
+                          ),
+                        ),
+                      type: "turn-item.updated",
+                      threadId: input.run.threadId,
+                      runId: input.run.id,
+                      nodeId: input.rootNode.id,
+                      providerInstanceId: input.run.providerInstanceId,
+                      occurredAt: now,
+                      payload: {
+                        type: "system_notice",
+                        id: TurnItemId.make(
+                          `bare-receipt:${thread.id}:${thread.nativeThreadRef?.nativeId ?? "pending"}`,
+                        ),
+                        threadId: input.run.threadId,
+                        runId: input.run.id,
+                        nodeId: input.rootNode.id,
+                        providerThreadId: thread.id,
+                        providerTurnId: null,
+                        nativeItemRef: null,
+                        parentItemId: null,
+                        ordinal: 0,
+                        status: "completed",
+                        title: "Bare launch receipt",
+                        startedAt: now,
+                        completedAt: now,
+                        updatedAt: now,
+                        message: bareNoticeMessage(receipt),
+                        bareReceipt: receipt,
+                      },
+                    },
+                  ],
+                })
+                .pipe(
+                  Effect.mapError(
+                    (cause) => new RunExecutionIngestError({ runId: input.run.id, cause }),
+                  ),
+                );
+            });
           yield* StreamClock.beginExecutionAttempt(streamClock, input);
           const filterAssistantEvent = makeAssistantStreamingFilter(responseStreamingMode);
           const providerEventFiber = yield* eventSubscription.events.pipe(
@@ -1308,6 +1382,7 @@ export const layer: Layer.Layer<
                   );
                 }
                 if (event.type === "turn.terminal") {
+                  yield* writeBareReceipt(false);
                   yield* Ref.set(terminalEvent, event);
                   yield* Ref.set(rootTerminalSeen, true);
                   yield* finalizeRootRun(event);
@@ -1409,21 +1484,25 @@ export const layer: Layer.Layer<
           yield* McpSessionRegistry.touchActiveMcpThread(input.run.threadId);
           // A context read that fails costs the agent the apps' notes for
           // this turn, not the turn itself.
-          const appContext = (yield* mcpAppModelContext
-            .forThread(input.run.threadId)
-            .pipe(
-              Effect.catch((cause) =>
-                Effect.logWarning("Failed to read MCP app model context.", { cause }).pipe(
-                  Effect.as([]),
-                ),
-              ),
-            )).map((entry) => ({
-            // The item id alone is unique and needs no escaping; server and
-            // tool names are free text that would break the tag Codex wraps
-            // the context in.
-            key: `mcp_app_${entry.itemId.replace(/[^\w.-]/g, "_")}`,
-            text: entry.text,
-          }));
+          const appContext =
+            input.appThread.bare !== undefined
+              ? []
+              : (yield* mcpAppModelContext
+                  .forThread(input.run.threadId)
+                  .pipe(
+                    Effect.catch((cause) =>
+                      Effect.logWarning("Failed to read MCP app model context.", { cause }).pipe(
+                        Effect.as([]),
+                      ),
+                    ),
+                  )).map((entry) => ({
+                  // The item id alone is unique and needs no escaping; server and
+                  // tool names are free text that would break the tag Codex wraps
+                  // the context in.
+                  key: `mcp_app_${entry.itemId.replace(/[^\w.-]/g, "_")}`,
+                  text: entry.text,
+                }));
+          yield* writeBareReceipt(true);
           const turnInput = {
             appThread: input.appThread,
             threadId: input.run.threadId,

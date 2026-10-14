@@ -1,3 +1,4 @@
+import * as BareLaunch from "./BareLaunch.ts";
 import { registerPromachosLaunchTests } from "../promachos/PromachosLaunch.tests.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -10,7 +11,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as ServerConfig from "../config.ts";
 import { createPendingAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ThreadMessageIntake from "./ThreadMessageIntake.ts";
-import { assert, it, vi } from "@effect/vitest";
+import { assert, expect, it, vi } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
@@ -108,6 +109,7 @@ const otherProject = {
 const adapter = {
   instanceId: modelSelection.instanceId,
   driver: ProviderDriverKind.make("codex"),
+  bareSupport: Effect.succeed({ supported: true }),
   getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
   openSession: () => Effect.die("provider execution is disabled in launch tests"),
@@ -116,6 +118,7 @@ const adapter = {
 interface HarnessOptions {
   readonly closeTerminal?: TerminalManager.TerminalManager["Service"]["close"];
   readonly adapters?: ReadonlyArray<ProviderAdapter.ProviderAdapterV2["Service"]>;
+  readonly bare?: boolean;
   readonly otherWorkspaceRoot?: string;
   readonly databaseLayer?: typeof SqlitePersistence.layerMemory;
   readonly managedFolders?: Layer.Layer<ManagedProjectFolders.ManagedProjectFolders>;
@@ -225,16 +228,24 @@ function makeHarness(options: HarnessOptions = {}) {
         folderForThread: () => Effect.succeed(Option.none()),
       }),
   );
-  const layerLaunch = ThreadLaunch.layer.pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        layerExternalServices,
-        layerThreadManagement,
-        layerReceipts,
-        IdAllocator.layer,
+  const bareLayer = options.bare
+    ? BareLaunch.layer.pipe(
+        Layer.provide(Layer.mergeAll(layerRegistry, layerExternalServices)),
+        Layer.provide(NodeServices.layer),
+      )
+    : Layer.mock(BareLaunch.BareLaunch)({});
+  const layerLaunch = ThreadLaunch.layer
+    .pipe(Layer.provide(bareLayer))
+    .pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          layerExternalServices,
+          layerThreadManagement,
+          layerReceipts,
+          IdAllocator.layer,
+        ),
       ),
-    ),
-  );
+    );
   const layerProjectedProjects = Layer.mock(ProjectStore.ProjectStoreV2)({
     get: (requestedProjectId) =>
       Effect.succeed(
@@ -337,16 +348,18 @@ it.effect.each(
   "attributes $createdBy-configured automations in $target threads without changing their prompt",
   ({ target, createdBy }) => {
     const harness = makeHarness();
-    const layerScheduledTasks = ScheduledTasks.layer.pipe(
-      Layer.provide(
-        Layer.mergeAll(
-          harness.layer,
-          NodeCrypto.layer,
-          Scheduler.layer,
-          Layer.mock(SecretRequests.SecretRequests)({}),
+    const layerScheduledTasks = ScheduledTasks.layer
+      .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
+      .pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            harness.layer,
+            NodeCrypto.layer,
+            Scheduler.layer,
+            Layer.mock(SecretRequests.SecretRequests)({}),
+          ),
         ),
-      ),
-    );
+      );
     return Effect.gen(function* () {
       const tasks = yield* ScheduledTasks.ScheduledTaskService;
       const launches = yield* ThreadLaunch.ThreadLaunchService;
@@ -3016,6 +3029,7 @@ it.effect.each(
               ),
       });
       const layerService = OrchestratorMcpService.layer.pipe(
+        Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(harness.layer),
         Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
@@ -3424,17 +3438,21 @@ it.effect(
       Scheduler.layer,
       Layer.mock(SecretRequests.SecretRequests)({}),
     );
-    const tasksLayer = ScheduledTasks.layer.pipe(Layer.provideMerge(schedulerDeps));
-    const mcp = OrchestratorMcp.layer.pipe(
-      Layer.provideMerge(
-        Layer.mergeAll(
-          tasksLayer,
-          NodeServices.layer,
-          Layer.mock(GitVcsDriver.GitVcsDriver)({}),
-          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+    const tasksLayer = ScheduledTasks.layer
+      .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
+      .pipe(Layer.provideMerge(schedulerDeps));
+    const mcp = OrchestratorMcp.layer
+      .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
+      .pipe(
+        Layer.provideMerge(
+          Layer.mergeAll(
+            tasksLayer,
+            NodeServices.layer,
+            Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+            Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          ),
         ),
-      ),
-    );
+      );
     return Effect.gen(function* () {
       const origin = { sessionId: "peer-schedule", label: "Peer" };
       const scope: Invocation.McpInvocationScope = {
@@ -3488,7 +3506,9 @@ it.effect(
         assert.strictEqual(run.task.lastRunStatus, "succeeded");
       }).pipe(
         Effect.provide(
-          ScheduledTasks.layer.pipe(Layer.provide(Layer.succeedContext(persistedServices))),
+          ScheduledTasks.layer
+            .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
+            .pipe(Layer.provide(Layer.succeedContext(persistedServices))),
         ),
       );
       const threads = yield* ThreadManagement.ThreadManagementService;
@@ -3560,5 +3580,87 @@ it.effect(
       const untouched = yield* threads.getThreadProjection(userThread.threadId);
       assert.deepStrictEqual(untouched.messages, []);
     }).pipe(Effect.provide(mcp));
+  },
+);
+
+it.effect(
+  "bare launch resolves in the provisioned worktree before creating a thread and persists only hashes",
+  () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      yield* fs.writeFileString(`${root}/input.txt`, "only named input");
+      const h = makeHarness({
+        bare: true,
+        createWorktree: (input) =>
+          Effect.succeed({
+            worktree: { path: root, refName: input.newRefName, headSha: "abc" },
+          } as never),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const input = {
+          ...launchInput({
+            command: "bare-final-cwd",
+            thread: "thread:bare-final-cwd",
+            workspace: { type: "worktree", baseRef: "main", branch: "bare-final" },
+          }),
+          runtimeMode: "approval-required" as const,
+          bare: { additions: [{ type: "file" as const, path: `${root}/input.txt` }] },
+        };
+        const result = yield* launches.launch(input);
+        expect(result.projection.thread.bare?.additions[0]).toMatchObject({
+          type: "file",
+          path: `${root}/input.txt`,
+          byteCount: 16,
+        });
+        expect(result.projection.thread.worktreePath).toBe(root);
+        expect(result.projection.thread.runtimeMode).toBe("approval-required");
+        expect(result.projection.thread.bare?.additions[0]).not.toHaveProperty("body");
+        expect(h.createWorktree).toHaveBeenCalledTimes(1);
+        yield* launches.launch(input);
+        expect(h.createWorktree).toHaveBeenCalledTimes(1);
+      }).pipe(Effect.provide(h.layer));
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "invalid bare additions and native imports create no thread and normal launches stay normal",
+  () => {
+    const h = makeHarness({ bare: true });
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const rejected = yield* launches
+        .launch({
+          ...launchInput({ command: "bare-unsupported", thread: "thread:bare-unsupported" }),
+          bare: { additions: [{ type: "plugin", name: "not-attached" }] },
+        })
+        .pipe(Effect.flip);
+      expect(rejected.cause).toMatchObject({ reason: expect.stringContaining("not supported") });
+      expect(
+        yield* (yield* ThreadManagement.ThreadManagementService).listProjectThreads({
+          projectId,
+          includeSubagents: true,
+        }),
+      ).toHaveLength(0);
+      const imported = yield* launches
+        .launch({
+          ...launchInput({ command: "bare-import", thread: "thread:bare-import" }),
+          bare: {},
+          importedNativeThread: {
+            ref: {
+              driver: ProviderDriverKind.make("codex"),
+              nativeId: "existing",
+              strength: "strong",
+            },
+          },
+        })
+        .pipe(Effect.flip);
+      expect(String(imported.cause)).toContain("import");
+      const normal = yield* launches.launch(
+        launchInput({ command: "normal-after-bare", thread: "thread:normal-after-bare" }),
+      );
+      expect(normal.projection.thread).not.toHaveProperty("bare");
+    }).pipe(Effect.provide(h.layer));
   },
 );

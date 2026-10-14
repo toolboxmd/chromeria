@@ -1,3 +1,5 @@
+import * as BareLaunch from "./BareLaunch.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 import { assert, it } from "@effect/vitest";
 import {
   MessageId,
@@ -15,7 +17,15 @@ import * as Layer from "effect/Layer";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 
-const layerTest = ContextHandoffService.layer.pipe(Layer.provide(IdAllocator.layer));
+const layerTest = ContextHandoffService.layer
+  .pipe(
+    Layer.provide(
+      Layer.mock(ProjectionStore.ProjectionStoreV2)({
+        getThread: () => Effect.succeed({} as never),
+      }),
+    ),
+  )
+  .pipe(Layer.provide(IdAllocator.layer));
 
 function importedItem(
   input:

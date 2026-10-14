@@ -1,3 +1,4 @@
+import { ensureScheduledTaskBareSchema } from "./forkScheduledTaskBareSchema.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as FileSystem from "effect/FileSystem";
@@ -41,6 +42,7 @@ const layerSetup = Layer.effectDiscard(
     yield* sql`PRAGMA optimize = 0x10012;`;
     yield* ensureThreadPeopleSchema;
     yield* ensureScheduledTaskOriginsSchema;
+    yield* ensureScheduledTaskBareSchema;
   }),
 );
 

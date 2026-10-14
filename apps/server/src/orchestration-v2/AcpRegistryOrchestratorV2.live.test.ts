@@ -1,3 +1,4 @@
+import * as BareProviders from "../provider/ProviderRegistry.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -106,10 +107,9 @@ const layerProviderInstanceRegistry = ProviderInstanceRegistryHydration.layer.pi
       ),
       NodeServices.layer,
       FetchHttpClient.layer,
-      OpenCodeRuntime.layer.pipe(
-        Layer.provide(OpenCodeServerLedger.layerTest),
-        Layer.provide(layerPlatformTest),
-      ),
+      OpenCodeRuntime.layer
+        .pipe(Layer.provide(Layer.mock(BareProviders.ProviderRegistry)({})))
+        .pipe(Layer.provide(OpenCodeServerLedger.layerTest), Layer.provide(layerPlatformTest)),
       Layer.succeed(
         ProviderEventLoggers.ProviderEventLoggers,
         ProviderEventLoggers.NoOpProviderEventLoggers,
@@ -135,6 +135,7 @@ const layerProviderInstanceRegistry = ProviderInstanceRegistryHydration.layer.pi
 );
 
 const layerLive = RuntimeLayer.layer.pipe(
+  Layer.provide(Layer.mock(BareProviders.ProviderRegistry)({})),
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(layerCheckpointStore),

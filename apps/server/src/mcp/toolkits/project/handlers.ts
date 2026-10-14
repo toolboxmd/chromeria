@@ -191,14 +191,20 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               const prism = yield* Prism.PrismService;
               const adapters = yield* ProviderAdapterRegistryV2;
               const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+              if (input.bare !== undefined && input.prismRole === "promachos")
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: "Promachos persona cannot be combined with bare launch.",
+                });
               const { modelSelection, kitText } = yield* prism.resolve({
+                bare: input.bare !== undefined,
                 projectId,
                 role: input.prismRole ?? "planner",
                 lane: input.lane,
                 explicit: input.modelSelection,
                 inherited,
                 validate: (selection) =>
-                  Prism.validateLaunchSelection(selection).pipe(
+                  Prism.validateLaunchSelection(selection, input.bare !== undefined).pipe(
                     Effect.provideService(ProviderAdapterRegistryV2, adapters),
                     Effect.provideService(ProviderRegistry.ProviderRegistry, providerRegistry),
                   ),
@@ -212,6 +218,20 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               return yield* ThreadMessageIntake.launchThread({
                 commandId,
                 threadId,
+                ...(input.bare === undefined
+                  ? {}
+                  : {
+                      bare: input.bare,
+                      bareReadGrant:
+                        runtimeMode === "full-access"
+                          ? { type: "all" as const }
+                          : {
+                              type: "roots" as const,
+                              roots: [
+                                caller?.worktreePath ?? (yield* readProject)?.workspaceRoot ?? "",
+                              ],
+                            },
+                    }),
                 projectId,
                 title: input.title,
                 modelSelection,

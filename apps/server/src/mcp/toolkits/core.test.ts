@@ -1,3 +1,4 @@
+import * as BareLaunch from "../../orchestration-v2/BareLaunch.ts";
 import * as PrismServerSettings from "../../serverSettings.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -65,14 +66,16 @@ import { ThreadToolkit } from "./thread/tools.ts";
 import { WorktreeToolkit } from "./worktree/tools.ts";
 import { DeviceToolkit } from "./device/tools.ts";
 
-const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
-  Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
-  Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
-  Layer.provide(PrismServerSettings.layerTest()),
-  Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
-  Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
-  Layer.provide(NodeServices.layer),
-);
+const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit
+  .pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
+  .pipe(
+    Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+    Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+    Layer.provide(PrismServerSettings.layerTest()),
+    Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
+    Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+    Layer.provide(NodeServices.layer),
+  );
 
 // Effect returns a declared tool failure as `isError` with its encoded payload
 // as JSON text, never as `structuredContent`.

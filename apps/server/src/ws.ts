@@ -2034,6 +2034,14 @@ const layerWsRpc = (
                     ...(input.generateTitle === undefined
                       ? {}
                       : { generateTitle: input.generateTitle }),
+                    ...(input.bare === undefined
+                      ? {}
+                      : {
+                          bare: input.bare,
+                          bareReadGrant: currentSession.scopes.includes("filesystem:read")
+                            ? { type: "all" as const }
+                            : { type: "none" as const },
+                        }),
                     modelSelection: input.modelSelection,
                     runtimeMode: input.runtimeMode,
                     interactionMode: input.interactionMode,

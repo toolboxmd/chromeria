@@ -1,3 +1,4 @@
+import * as BareProviders from "../provider/ProviderRegistry.ts";
 /**
  * Runs OpenCode 2 through the whole orchestrator with the real driver: the
  * driver probes the binary, spawns `opencode serve`, and routes to the 2.x
@@ -180,10 +181,9 @@ const layerProviderInstanceRegistry = ProviderInstanceRegistryHydration.layer.pi
       ),
       NodeServices.layer,
       FetchHttpClient.layer,
-      OpenCodeRuntime.layer.pipe(
-        Layer.provide(layerSpawnedServers),
-        Layer.provide(layerPlatformTest),
-      ),
+      OpenCodeRuntime.layer
+        .pipe(Layer.provide(Layer.mock(BareProviders.ProviderRegistry)({})))
+        .pipe(Layer.provide(layerSpawnedServers), Layer.provide(layerPlatformTest)),
       Layer.succeed(
         ProviderEventLoggers.ProviderEventLoggers,
         ProviderEventLoggers.NoOpProviderEventLoggers,
@@ -208,6 +208,7 @@ const layerProviderInstanceRegistry = ProviderInstanceRegistryHydration.layer.pi
   ),
 );
 const layerOrchestration = RuntimeLayer.layer.pipe(
+  Layer.provide(Layer.mock(BareProviders.ProviderRegistry)({})),
   Layer.provide(ProviderTurnStartServiceTestkit.layer),
   Layer.provide(layerMcpRegistry),
   Layer.provide(SqlitePersistence.layerMemory),

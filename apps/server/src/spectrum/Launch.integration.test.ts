@@ -1,3 +1,5 @@
+import * as BareProjects from "../orchestration-v2/ProjectStore.ts";
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import { assert, it } from "@effect/vitest";
 import {
   type OrchestrationV2LinkOrigin,
@@ -77,6 +79,7 @@ const prism = Prism.layer.pipe(
   ),
 );
 const base = Layer.mergeAll(
+  Layer.mock(BareProjects.ProjectStoreV2)({}),
   database,
   adapters,
   registry,
@@ -88,7 +91,10 @@ const base = Layer.mergeAll(
   }),
 );
 const runtime = Layer.fresh(
-  Layer.mergeAll(Launch.layer, Round.layer).pipe(Layer.provideMerge(base)),
+  Layer.mergeAll(
+    Launch.layer.pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({}))),
+    Round.layer,
+  ).pipe(Layer.provideMerge(base)),
 );
 const input: Launch.SpectrumStart = {
   commandId: CommandId.make("register:spectrum"),
