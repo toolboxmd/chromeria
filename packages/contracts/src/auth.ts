@@ -181,8 +181,30 @@ export const ServerAuthDescriptor = Schema.Struct({
 });
 export type ServerAuthDescriptor = typeof ServerAuthDescriptor.Type;
 
+export const AuthRenewalCommitment = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
+export const AuthRenewalSecret = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{43}$/));
+export const AuthSessionRenewRequest = Schema.Struct({
+  secret: AuthRenewalSecret,
+  next: AuthRenewalCommitment,
+});
+export const AuthSessionRenewResult = Schema.Struct({
+  outcome: Schema.Literals(["current", "rotated"]),
+  generation: Schema.Int,
+  expiresAt: Schema.Number,
+  renewAfter: Schema.Number,
+  accessToken: Schema.optionalKey(TrimmedNonEmptyString),
+});
+export type AuthSessionRenewResult = typeof AuthSessionRenewResult.Type;
+export const AuthRenewalEnrollmentRequest = Schema.Struct({ next: AuthRenewalCommitment });
+export const AuthRenewalEnrollmentResult = Schema.Struct({
+  enrollmentId: TrimmedNonEmptyString,
+  fingerprint: TrimmedNonEmptyString,
+  state: Schema.Literals(["pending_approval", "approved"]),
+});
+
 export const AuthBrowserSessionRequest = Schema.Struct({
   credential: TrimmedNonEmptyString,
+  renewal_commitment: Schema.optionalKey(AuthRenewalCommitment),
 });
 export type AuthBrowserSessionRequest = typeof AuthBrowserSessionRequest.Type;
 
@@ -191,6 +213,7 @@ export const AuthBrowserSessionResult = Schema.Struct({
   ...authScopeResponseFields,
   sessionMethod: ServerAuthSessionMethod,
   expiresAt: Schema.DateTimeUtc,
+  renewAfter: Schema.optionalKey(Schema.Number),
 });
 export type AuthBrowserSessionResult = typeof AuthBrowserSessionResult.Type;
 
@@ -225,6 +248,7 @@ export const AuthTokenExchangeRequest = Schema.Struct({
   client_label: Schema.optionalKey(TrimmedNonEmptyString),
   client_device_type: Schema.optionalKey(AuthClientMetadataDeviceType),
   client_os: Schema.optionalKey(TrimmedNonEmptyString),
+  renewal_commitment: Schema.optionalKey(AuthRenewalCommitment),
 }).pipe(HttpApiSchema.asFormUrlEncoded());
 export type AuthTokenExchangeRequest = typeof AuthTokenExchangeRequest.Type;
 
@@ -234,6 +258,7 @@ export const AuthAccessTokenResult = Schema.Struct({
   token_type: Schema.Literals(["Bearer", "DPoP"]),
   expires_in: Schema.Number,
   scope: TrimmedNonEmptyString,
+  renewAfter: Schema.optionalKey(Schema.Number),
 });
 export type AuthAccessTokenResult = typeof AuthAccessTokenResult.Type;
 
@@ -580,3 +605,26 @@ export class AuthMcpTokenError extends Schema.Error<AuthMcpTokenError>("AuthMcpT
     return this.error_description;
   }
 }
+
+/** Durable device renewal authority is kept outside the connection catalog. */
+export const AuthRenewalLocalSlot = Schema.Struct({
+  epoch: Schema.String,
+  environmentId: Schema.String,
+  origin: Schema.String,
+  kind: Schema.Literals(["bearer", "cookie"]),
+  current: AuthRenewalSecret,
+  generation: Schema.Int,
+  pending: Schema.NullOr(
+    Schema.Struct({ secret: AuthRenewalSecret, nextHash: AuthRenewalCommitment }),
+  ),
+  accessToken: Schema.NullOr(Schema.String),
+  expiresAt: Schema.NullOr(Schema.Number),
+  renewAfter: Schema.NullOr(Schema.Number),
+});
+export type AuthRenewalLocalSlot = typeof AuthRenewalLocalSlot.Type;
+export const AuthRenewalLocalRecord = Schema.Struct({
+  revision: Schema.Int,
+  active: Schema.NullOr(AuthRenewalLocalSlot),
+  provisional: Schema.Array(AuthRenewalLocalSlot),
+});
+export type AuthRenewalLocalRecord = typeof AuthRenewalLocalRecord.Type;

@@ -1,3 +1,6 @@
+import { SessionRenewal } from "@t3tools/client-runtime/authorization";
+import { renewalCommitment } from "@t3tools/shared/sessionRenewal";
+import { resolvePrimaryEnvironmentHttpUrl } from "./target";
 import type {
   AuthBrowserSessionResult,
   AuthClientMetadata,
@@ -20,7 +23,7 @@ import {
 } from "@t3tools/shared/remote";
 
 import { PrimaryEnvironmentHttpClient } from "./httpClient";
-import { runPrimaryHttp } from "../../lib/runtime";
+import { runPrimaryHttp, runRenewal } from "../../lib/runtime";
 
 const PrimaryEnvironmentRequestOperation = Schema.Literals([
   "fetch-session-state",
@@ -218,13 +221,51 @@ function readEnvironmentHttpErrorStatus(error: EnvironmentHttpCommonErrorType): 
 }
 
 async function exchangeBootstrapCredential(credential: string): Promise<AuthBrowserSessionResult> {
+  const origin = new URL(resolvePrimaryEnvironmentHttpUrl("/")).origin;
+  const key = `cookie:${origin}`;
+  const descriptor =
+    credential !== getDesktopBootstrapCredential()
+      ? await runPrimaryHttp(
+          PrimaryEnvironmentHttpClient.pipe(
+            Effect.flatMap((client) => client.metadata.descriptor()),
+          ),
+        )
+      : null;
+  const slot = descriptor
+    ? await runRenewal(
+        SessionRenewal.SessionRenewal.pipe(
+          Effect.flatMap((renewal) =>
+            renewal.stage({ key, environmentId: descriptor.environmentId, origin, kind: "cookie" }),
+          ),
+        ),
+      )
+    : null;
   return retryTransientBootstrap(async () => {
     try {
-      return await runPrimaryHttp(
+      const response = await runPrimaryHttp(
         PrimaryEnvironmentHttpClient.pipe(
-          Effect.flatMap((client) => client.auth.browserSession({ payload: { credential } })),
+          Effect.flatMap((client) =>
+            client.auth.browserSession({
+              payload: {
+                credential,
+                ...(slot ? { renewal_commitment: renewalCommitment(slot.current) } : {}),
+              },
+            }),
+          ),
         ),
       );
+      if (slot && response.renewAfter !== undefined)
+        await runRenewal(
+          SessionRenewal.SessionRenewal.pipe(
+            Effect.flatMap((renewal) =>
+              renewal.complete(key, slot.epoch, {
+                expiresAt: response.expiresAt.epochMilliseconds,
+                ...(response.renewAfter === undefined ? {} : { renewAfter: response.renewAfter }),
+              }),
+            ),
+          ),
+        ).catch(() => undefined);
+      return response;
     } catch (error) {
       if (
         isEnvironmentHttpCommonError(error) &&
@@ -314,6 +355,14 @@ async function bootstrapServerAuth(urlCredential: string | null): Promise<Server
 
   const bootstrapCredential = urlCredential ?? getDesktopBootstrapCredential();
   if (!bootstrapCredential) {
+    const origin = new URL(resolvePrimaryEnvironmentHttpUrl("/")).origin;
+    const recovered = await runRenewal(
+      SessionRenewal.SessionRenewal.pipe(
+        Effect.flatMap((renewal) => renewal.ensure(`cookie:${origin}`, origin)),
+      ),
+    ).catch(() => null);
+    if (recovered?._tag === "Renewed" && (await fetchSessionState()).authenticated)
+      return { status: "authenticated" };
     return {
       status: "requires-auth",
       auth: currentSession.auth,

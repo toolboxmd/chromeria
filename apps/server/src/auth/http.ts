@@ -6,6 +6,7 @@ import {
   EnvironmentAuthInvalidError,
   type EnvironmentAuthInvalidReason,
   EnvironmentHttpApi,
+  EnvironmentHttpConflictError,
   EnvironmentInternalError,
   type EnvironmentInternalErrorReason,
   EnvironmentOperationForbiddenError,
@@ -31,6 +32,7 @@ import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 
 import * as EnvironmentAuth from "./EnvironmentAuth.ts";
+import * as SessionRenewal from "./SessionRenewal.ts";
 import * as SessionStore from "./SessionStore.ts";
 import { traceAuthenticatedRelayRequest, traceRelayRequest } from "../cloud/traceRelayRequest.ts";
 import { deriveAuthClientMetadata } from "./utils.ts";
@@ -265,8 +267,73 @@ export const layer = HttpApiBuilder.group(
   Effect.fnUntraced(function* (handlers) {
     const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
     const sessions = yield* SessionStore.SessionStore;
+    const renewal = yield* SessionRenewal.SessionRenewal;
 
     return handlers
+      .handle("enrollRenewal", (args) =>
+        Effect.gen(function* () {
+          const principal = yield* EnvironmentAuthenticatedPrincipal;
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const metadata = deriveAuthClientMetadata({ request });
+          const host = request.headers.host;
+          return yield* renewal.requestEnrollment({
+            sessionId: principal.sessionId,
+            commitment: args.payload.next,
+            route: host && /^[a-zA-Z0-9.\-:[\]]{1,259}$/.test(host) ? host : null,
+            ipAddress: metadata.ipAddress ?? null,
+          });
+        }).pipe(
+          Effect.tap(() => appendCredentialResponseHeaders),
+          Effect.catchTags({
+            RenewalRejected: () => failEnvironmentAuthInvalid("invalid_credential"),
+            RenewalConflict: () =>
+              Effect.fail(
+                new EnvironmentHttpConflictError({ message: "renewal_already_enrolled" }),
+              ),
+            RenewalStorageError: (error) => failEnvironmentInternal("internal_error", error),
+          }),
+        ),
+      )
+      .handle("renewSession", (args) =>
+        sessions.renewSession(args.payload).pipe(
+          Effect.tap(() => appendCredentialResponseHeaders),
+          Effect.flatMap((result) =>
+            Effect.gen(function* () {
+              if (result.method === "browser-session-cookie") {
+                yield* appendSessionCookie(
+                  sessions.cookieName,
+                  result.token,
+                  DateTime.toUtc(result.expiresAt),
+                );
+              }
+              return {
+                outcome: result.outcome,
+                generation: result.generation,
+                expiresAt: result.expiresAt.epochMilliseconds,
+                renewAfter: result.renewAfter,
+                ...(result.method === "bearer-access-token" ? { accessToken: result.token } : {}),
+              };
+            }),
+          ),
+          Effect.catchTags({
+            RenewalRejected: () => failEnvironmentAuthInvalid("invalid_credential"),
+            RenewalPending: () =>
+              Effect.gen(function* () {
+                return yield* new EnvironmentOperationForbiddenError({
+                  code: "operation_forbidden",
+                  reason: "renewal_pending_approval",
+                  traceId: yield* currentEnvironmentTraceId,
+                });
+              }),
+            RenewalStale: () =>
+              Effect.fail(new EnvironmentHttpConflictError({ message: "renewal_stale" })),
+            RenewalStorageError: (error) => failEnvironmentInternal("internal_error", error),
+          }),
+          Effect.catchIf(Schema.is(SessionStore.SessionCredentialInternalError), (error) =>
+            failEnvironmentInternal("internal_error", error),
+          ),
+        ),
+      )
       .handle(
         "session",
         Effect.fn("environment.auth.session")(
@@ -313,6 +380,7 @@ export const layer = HttpApiBuilder.group(
                 EnvironmentAuth.isBrowserCookieCredential(previousCredential.source)
                 ? previousCredential.token
                 : undefined,
+              args.payload.renewal_commitment,
             );
             const cookieName = result.cookieName ?? sessions.cookieName;
             const selectedCookie = yield* Effect.fromResult(
@@ -394,7 +462,12 @@ export const layer = HttpApiBuilder.group(
                   ...(args.payload.client_os ? { os: args.payload.client_os } : {}),
                 },
               }),
-              proofKeyThumbprint ? { proofKeyThumbprint } : undefined,
+              {
+                ...(proofKeyThumbprint ? { proofKeyThumbprint } : {}),
+                ...(args.payload.renewal_commitment === undefined
+                  ? {}
+                  : { renewalCommitment: args.payload.renewal_commitment }),
+              },
             );
           },
           traceRelayRequest,

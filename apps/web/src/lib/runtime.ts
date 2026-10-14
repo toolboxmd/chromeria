@@ -1,3 +1,5 @@
+import { SessionRenewal } from "@t3tools/client-runtime/authorization";
+import * as RenewalStorage from "../connection/renewalStorage";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import type * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -27,6 +29,7 @@ const layerRelayTracing = RelayTracing.layer(resolveRelayTracingConfig(), {
 }).pipe(Layer.provide(layerHttpClient));
 
 type RuntimeLayerSource =
+  | typeof layerRenewal
   | typeof layerHttpClient
   | typeof Dpop.layer
   | typeof Socket.layerWebSocketConstructorGlobal
@@ -34,9 +37,22 @@ type RuntimeLayerSource =
   | typeof ClientTracer.layer
   | ReturnType<typeof ManagedRelayLayer.layer>;
 
+const layerRenewal = SessionRenewal.layer.pipe(
+  Layer.provide(RenewalStorage.layer),
+  Layer.provide(Layer.mergeAll(layerHttpClient, Dpop.layer)),
+);
 const primaryHttpRuntime = ManagedRuntime.make(
   PrimaryEnvironmentHttpClient.layer.pipe(Layer.provide(PrimaryEnvironmentHttpLayer.layer)),
 );
+export type RenewalEffectRunner = <A, E>(
+  effect: Effect.Effect<A, E, SessionRenewal.SessionRenewal>,
+) => Promise<A>;
+const liveRenewalRunner: RenewalEffectRunner = (effect) => runtime.runPromise(effect);
+let renewalRunner = liveRenewalRunner;
+export const runRenewal: RenewalEffectRunner = (effect) => renewalRunner(effect);
+export function __setRenewalRunnerForTests(runner?: RenewalEffectRunner): void {
+  renewalRunner = runner ?? liveRenewalRunner;
+}
 
 export type PrimaryHttpEffectRunner = <A, E>(
   effect: Effect.Effect<A, E, PrimaryEnvironmentHttpClient.PrimaryEnvironmentHttpClient>,
@@ -56,6 +72,7 @@ export function __setPrimaryHttpRunnerForTests(runner?: PrimaryHttpEffectRunner)
 }
 
 const layerRuntime = Layer.mergeAll(
+  layerRenewal,
   layerHttpClient,
   Dpop.layer,
   Socket.layerWebSocketConstructorGlobal,

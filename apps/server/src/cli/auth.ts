@@ -1,4 +1,12 @@
-import { AuthSessionId, AuthStandardClientScopes } from "@t3tools/contracts";
+import {
+  AuthAdministrativeScopes,
+  AuthSessionId,
+  AuthRenewalCommitment,
+  AuthStandardClientScopes,
+} from "@t3tools/contracts";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -238,7 +246,124 @@ const sessionCommand = Command.make("session").pipe(
   Command.withSubcommands([sessionIssueCommand, sessionListCommand, sessionRevokeCommand]),
 );
 
+class RenewalDiagnosticError extends Schema.TaggedError<RenewalDiagnosticError>()(
+  "RenewalDiagnosticError",
+  {},
+) {
+  override get message() {
+    return "Desktop renewal diagnostic directory mismatch.";
+  }
+}
+const renewalListCommand = Command.make("list", { ...authLocationFlags, json: jsonFlag }).pipe(
+  Command.withDescription("List device renewal enrollments and their public commitments."),
+  Command.withHandler((flags) =>
+    runWithEnvironmentAuth(
+      flags,
+      (auth) =>
+        Effect.gen(function* () {
+          const entries = (yield* auth.listRenewalEnrollments()).map((entry) => ({
+            ...entry,
+            fingerprint: entry.fingerprint.slice(0, 16),
+          }));
+          if (flags.json)
+            return yield* Console.log(
+              yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(entries),
+            );
+          for (const entry of entries) {
+            const clean = (value: string | null) =>
+              value?.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 256) ?? "unknown";
+            yield* Console.log(
+              `${entry.enrollmentId}  ${entry.state}\n  commitment: ${entry.fingerprint}\n  session: ${entry.sessionId}  expires: ${entry.expiresAt}\n  client: ${clean(entry.client)} | ${entry.deviceType} | ${clean(entry.os)}\n  route: ${clean(entry.route)}  ip: ${clean(entry.ipAddress)}\n  requested: ${entry.requestedAt}  last seen: ${entry.lastSeenAt}  last connected: ${entry.lastConnectedAt ?? "unknown"}`,
+            );
+          }
+        }),
+      { quietLogs: flags.json },
+    ),
+  ),
+);
+const renewalApproveCommand = Command.make("approve", {
+  ...authLocationFlags,
+  id: Argument.String("enrollment-id"),
+  commitment: Flag.String("commitment").pipe(
+    Flag.withSchema(AuthRenewalCommitment),
+    Flag.withDescription("Full commitment read independently from the intended client."),
+  ),
+}).pipe(
+  Command.withDescription("Approve the exact verified device commitment without pairing again."),
+  Command.withHandler((flags) =>
+    runWithEnvironmentAuth(flags, (auth) =>
+      auth
+        .approveRenewalEnrollment(flags.id, flags.commitment)
+        .pipe(Effect.andThen(Console.log(`Approved renewal enrollment ${flags.id}.`))),
+    ),
+  ),
+);
+const renewalRejectCommand = Command.make("reject", {
+  ...authLocationFlags,
+  id: Argument.String("enrollment-id"),
+}).pipe(
+  Command.withDescription("Reject a pending renewal commitment."),
+  Command.withHandler((flags) =>
+    runWithEnvironmentAuth(flags, (auth) =>
+      auth
+        .rejectRenewalEnrollment(flags.id)
+        .pipe(Effect.andThen(Console.log(`Rejected renewal enrollment ${flags.id}.`))),
+    ),
+  ),
+);
+const renewalClientCommitments = Command.make("client-commitments", {
+  stateDir: Flag.String("desktop-state-dir").pipe(
+    Flag.withDescription(
+      "The desktop app's actual state directory; no server-home default is assumed.",
+    ),
+  ),
+  json: jsonFlag,
+}).pipe(
+  Command.withDescription("Read only public commitments from this desktop's diagnostic file."),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.realPath(path.resolve(flags.stateDir));
+      const document = yield* Schema.decodeUnknownEffect(
+        Schema.fromJsonString(
+          Schema.Struct({
+            stateDir: Schema.String,
+            entries: Schema.Array(
+              Schema.Struct({
+                key: Schema.String,
+                environmentId: Schema.String,
+                origin: Schema.String,
+                epoch: Schema.String,
+                commitment: AuthRenewalCommitment,
+              }),
+            ),
+          }),
+        ),
+      )(yield* fs.readFileString(path.join(directory, "renewal-commitments.json")));
+      if ((yield* fs.realPath(path.resolve(document.stateDir))) !== directory)
+        return yield* new RenewalDiagnosticError({});
+      yield* Console.log(
+        flags.json
+          ? yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(document.entries)
+          : document.entries
+              .map((entry) => `${entry.environmentId} ${entry.origin}\n  ${entry.commitment}`)
+              .join("\n"),
+      );
+    }),
+  ),
+);
+const renewalCommand = Command.make("renewal").pipe(
+  Command.withDescription("Approve or reject device renewal authority headlessly."),
+  Command.withSubcommands([
+    renewalListCommand,
+    renewalApproveCommand,
+    renewalRejectCommand,
+    renewalClientCommitments,
+  ]),
+);
+
 export const authCommand = Command.make("auth").pipe(
   Command.withDescription("Manage the local auth control plane for headless deployments."),
-  Command.withSubcommands([pairingCommand, sessionCommand]),
+  Command.withSubcommands([pairingCommand, sessionCommand, renewalCommand]),
 );

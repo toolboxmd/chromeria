@@ -5,7 +5,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import { Command } from "effect/cli";
+import { Command, Flag } from "effect/cli";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
@@ -13,6 +13,7 @@ import * as PreviewBrowserHost from "../preview/PreviewBrowserHost.ts";
 import { resolveBaseDir } from "../os-jank.ts";
 import { baseDirFlag } from "./config.ts";
 import { resolveRootCliCommand } from "./invocation.ts";
+import * as BrowserRenewalCommitments from "../auth/BrowserRenewalCommitments.ts";
 
 export class BrowserSetupStepError extends Schema.TaggedError<BrowserSetupStepError>()(
   "BrowserSetupStepError",
@@ -230,7 +231,38 @@ const browserSetupCommand = Command.make("setup", { baseDir: baseDirFlag }).pipe
   ),
 );
 
+const browserCommitmentsCommand = Command.make("renewal-commitments", {
+  executable: Flag.String("browser-executable"),
+  profileDirectory: Flag.String("profile-dir"),
+  origin: Flag.String("origin"),
+  environmentId: Flag.String("environment-id").pipe(Flag.optional),
+  json: Flag.Boolean("json").pipe(Flag.withDefault(false)),
+}).pipe(
+  Command.withDescription(
+    "Read public renewal commitments from a private copy of the paired Chromium profile.",
+  ),
+  Command.withHandler((flags) =>
+    Effect.gen(function* () {
+      const rows = yield* BrowserRenewalCommitments.read(flags);
+      const environmentId = Option.getOrUndefined(flags.environmentId);
+      const filtered =
+        environmentId === undefined
+          ? rows
+          : rows.filter((row) => row.environmentId === environmentId);
+      yield* Console.log(
+        flags.json
+          ? yield* Schema.encodeEffect(
+              Schema.fromJsonString(BrowserRenewalCommitments.PublicCommitments),
+            )(filtered)
+          : filtered
+              .map((row) => `${row.environmentId} ${row.origin}\n  ${row.commitment}`)
+              .join("\n"),
+      );
+    }).pipe(Effect.provide(BrowserRenewalCommitments.layer), Effect.scoped),
+  ),
+);
+
 export const browserCommand = Command.make("browser").pipe(
   Command.withDescription("Manage T3's headless browser on this host."),
-  Command.withSubcommands([browserSetupCommand]),
+  Command.withSubcommands([browserSetupCommand, browserCommitmentsCommand]),
 );

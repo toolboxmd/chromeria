@@ -318,8 +318,51 @@ pairing links and revoke client sessions. Revoking an unused link prevents new
 pairings; revoke a device's session to remove its existing access. Command-line
 management is available through `t3 auth --help`.
 
-A session with an open connection stays listed after its access credential
-expires.
+New direct pairings renew while the client is connected. Renewal preserves the
+device's permissions and identity. A revoked or expired session cannot renew;
+devices left offline past expiry need a fresh pairing.
+
+Pairings created before renewal was available need one administrator approval
+per device. This can be done over SSH without opening Settings or creating a
+new pairing code. On the server, list requests with:
+
+```sh
+t3 auth renewal list
+```
+
+Match the client name, route, and last-seen time. Independently read the full
+commitment on the intended desktop, using its actual state directory:
+
+```sh
+t3 auth renewal client-commitments --desktop-state-dir /path/to/desktop/userdata
+```
+
+For an existing Chromium, Chrome, Brave, or Edge browser pairing, run this on
+the client machine with that browser's executable and profile directory:
+
+```sh
+t3 browser renewal-commitments --browser-executable /path/to/browser \
+  --profile-dir /path/to/profile/Default --origin https://server.example
+```
+
+This headless command reads a private temporary copy of the origin's storage,
+then removes it. Use the same browser engine version or newer. It does not
+contact the server or restart the open browser. Legacy Firefox, Safari, and
+mobile-browser pairings have no supported headless commitment read and retain
+their original expiry; new pairings in these browsers enroll automatically.
+
+Approve on the server with that device value:
+
+```sh
+t3 auth renewal approve <enrollment-id> --commitment <full-device-commitment>
+```
+
+Names and routes help select a request but do not prove which device submitted
+it. Do not copy the commitment from the server's pending list for approval.
+Use `t3 auth renewal reject <enrollment-id>` to reject a pending request, and
+`t3 auth session revoke <session-id>` to revoke approved access. These commands
+also accept `--base-dir` when the server uses a custom T3 home. Existing direct
+mobile pairings retain their original lifetime; new mobile pairings renew.
 
 To choose a token's permissions, pass `--scope` once for each scope you want:
 

@@ -1,4 +1,6 @@
 import * as Effect from "effect/Effect";
+import { SessionRenewal } from "@t3tools/client-runtime/authorization";
+import * as RenewalStorage from "../connection/renewalStorage";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Socket from "effect/socket/Socket";
@@ -21,7 +23,13 @@ function configuredRelayUrl(): string {
 
 const layerHttpClient = layerRemoteHttpClient(fetch);
 
+const layerRenewal = SessionRenewal.layerMobile.pipe(
+  Layer.provideMerge(RenewalStorage.layer),
+  Layer.provide(Layer.mergeAll(Dpop.layer, layerHttpClient)),
+);
+
 type RuntimeLayerSource =
+  | typeof layerRenewal
   | ReturnType<typeof ManagedRelayLayer.layer>
   | typeof Socket.layerWebSocketConstructorGlobal
   | typeof Dpop.layer
@@ -33,6 +41,7 @@ const layerRuntime = Layer.merge(
   ManagedRelayLayer.layer(configuredRelayUrl()),
   Socket.layerWebSocketConstructorGlobal,
 ).pipe(
+  Layer.provideMerge(layerRenewal),
   Layer.provideMerge(Dpop.layer),
   Layer.provideMerge(layerHttpClient),
   Layer.provideMerge(Tracing.layer.pipe(Layer.provide(layerHttpClient))),

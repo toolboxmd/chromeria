@@ -1,3 +1,6 @@
+import * as SessionRenewal from "../authorization/renewal.ts";
+import { ConnectionBlockedError } from "./model.ts";
+import { credentialConnectionId } from "./routes.ts";
 import { withRelayClientTracing } from "@t3tools/shared/relayTracing";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -254,6 +257,9 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
   | ConnectionWakeups.ConnectionWakeups
 > {
   const target = entry.target;
+  const renewal = yield* Effect.serviceOption(SessionRenewal.SessionRenewal);
+  // Relay-specific handling applies when any route is T3 Connect, since the
+  // attempt or the live session may be using it.
   const usesRelay = connectionRoutes(entry).some(
     (route) => route.target._tag === "RelayConnectionTarget",
   );
@@ -281,6 +287,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
         : connectingState(initialIntent, 0, 1, null),
   );
   const session = yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(Option.none());
+  let renewalRecoveryTried = false;
   const prepared = yield* SubscriptionRef.make<Option.Option<PreparedConnection>>(Option.none());
   // Learned routes arrive while a session is live, so the route list is read
   // fresh by each attempt and check instead of being fixed at creation.
@@ -896,6 +903,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       } satisfies AttemptOutcome;
     }
 
+    renewalRecoveryTried = false;
     const connectedAt = yield* Clock.currentTimeMillis;
     yield* SubscriptionRef.set(prepared, Option.some(active.lease.prepared));
     yield* SubscriptionRef.set(session, Option.some(active.lease.session));
@@ -913,8 +921,78 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       retryAt: null,
     });
 
+    const maintainRenewal = Effect.gen(function* () {
+      if (Option.isNone(renewal)) return yield* Effect.never;
+      const lease = active.lease.prepared;
+      const key =
+        lease.target._tag === "BearerConnectionTarget" && lease.httpAuthorization?._tag === "Bearer"
+          ? credentialConnectionId(lease.target.connectionId)
+          : lease.target._tag === "PrimaryConnectionTarget" && lease.httpAuthorization === null
+            ? `cookie:${new URL(lease.httpBaseUrl).origin}`
+            : null;
+      if (key === null) return yield* Effect.never;
+      yield* renewal.value
+        .enrollExisting({
+          key,
+          environmentId: lease.environmentId,
+          origin: lease.httpBaseUrl,
+          kind: lease.httpAuthorization === null ? "cookie" : "bearer",
+          ...(lease.httpAuthorization?._tag === "Bearer"
+            ? { bearerToken: lease.httpAuthorization.token }
+            : {}),
+        })
+        .pipe(Effect.ignore);
+      while (true) {
+        const record = yield* renewal.value.read(key);
+        const slot = record?.active ?? record?.provisional[0];
+        if (!slot) return yield* Effect.never;
+        const now = yield* Clock.currentTimeMillis;
+        if (slot.renewAfter !== null && slot.renewAfter > now)
+          yield* Effect.sleep(slot.renewAfter - now);
+        const renewed = yield* renewal.value.ensure(key, lease.httpBaseUrl).pipe(
+          Effect.catchTags({
+            ConnectionTransientError: () => Effect.succeed({ _tag: "Retry" as const }),
+            RenewalRejected: () =>
+              Effect.fail(
+                new ConnectionBlockedError({
+                  reason: "authentication",
+                  detail: "Pair this environment again.",
+                }),
+              ),
+          }),
+        );
+        if (renewed._tag === "Unsupported") return yield* Effect.never;
+        if (renewed._tag === "NotEnrolled") {
+          yield* renewal.value
+            .enrollExisting({
+              key,
+              environmentId: lease.environmentId,
+              origin: lease.httpBaseUrl,
+              kind: lease.httpAuthorization === null ? "cookie" : "bearer",
+              ...(lease.httpAuthorization?._tag === "Bearer"
+                ? { bearerToken: lease.httpAuthorization.token }
+                : {}),
+            })
+            .pipe(Effect.ignore);
+          yield* Effect.sleep("1 minute");
+          continue;
+        }
+        if (renewed._tag === "Renewed" && renewed.result.accessToken) {
+          const token = renewed.result.accessToken;
+          yield* SubscriptionRef.update(
+            prepared,
+            Option.map((current) => ({
+              ...current,
+              httpAuthorization: { _tag: "Bearer" as const, token },
+            })),
+          );
+        }
+        if (renewed._tag === "Pending") yield* Effect.sleep("1 hour");
+        else if (renewed._tag === "Retry") yield* Effect.sleep("1 minute");
+      }
+    });
     const connectedExit = yield* Effect.raceFirst(
-      active.lease.session.closed.pipe(
+      Effect.raceFirst(active.lease.session.closed, maintainRenewal).pipe(
         Effect.mapError((error): TracedAttemptFailure => ({
           error,
           attemptSpan: active.attemptSpan,
@@ -1056,6 +1134,21 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
       const error: ConnectionAttemptError = outcome.failure.error;
       if (!outcome.established) {
         latestFailure = error;
+      }
+      if (
+        !renewalRecoveryTried &&
+        Option.isSome(renewal) &&
+        target._tag === "PrimaryConnectionTarget" &&
+        ((error._tag === "ConnectionBlockedError" && error.reason === "authentication") ||
+          (!outcome.established &&
+            error._tag === "ConnectionTransientError" &&
+            error.reason === "transport"))
+      ) {
+        renewalRecoveryTried = true;
+        const recovered = yield* renewal.value
+          .ensure(`cookie:${new URL(target.httpBaseUrl).origin}`, target.httpBaseUrl)
+          .pipe(Effect.option);
+        if (Option.isSome(recovered) && recovered.value._tag === "Renewed") continue;
       }
       if (error._tag === "ConnectionBlockedError") {
         const blockedIntent = yield* Ref.get(intent);

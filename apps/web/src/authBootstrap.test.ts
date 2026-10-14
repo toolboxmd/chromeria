@@ -1,17 +1,24 @@
 import {
   EnvironmentAuthInvalidError,
+  EnvironmentInternalError,
+  EnvironmentId,
+  type ExecutionEnvironmentDescriptor,
   type AuthBrowserSessionResult,
   type AuthCreatePairingCredentialInput,
   type AuthSessionState,
   type DesktopBridge,
 } from "@t3tools/contracts";
+import { SessionRenewal } from "@t3tools/client-runtime/authorization";
 import { createBrowserHistory } from "@tanstack/react-router";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { installEnvironmentHttpTest } from "../test/environmentHttpTest";
-import { __setPrimaryHttpRunnerForTests } from "./lib/runtime";
+import {
+  __setPrimaryHttpRunnerForTests,
+  __setRenewalRunnerForTests,
+} from "./lib/runtime";
 
 type TestWindow = {
   location: URL;
@@ -37,6 +44,13 @@ const DESKTOP_AUTH = {
 } as const;
 
 const SESSION_EXPIRES_AT = DateTime.makeUnsafe("2026-04-05T00:00:00.000Z");
+const TEST_ENVIRONMENT: ExecutionEnvironmentDescriptor = {
+  environmentId: EnvironmentId.make("environment-test"),
+  label: "Test environment",
+  platform: { os: "linux", arch: "x64" },
+  serverVersion: "0.0.0-test",
+  capabilities: { repositoryIdentity: true },
+};
 const unauthenticatedSession = (auth: AuthSessionState["auth"]): AuthSessionState => ({
   authenticated: false,
   auth,
@@ -92,6 +106,8 @@ function createSignal() {
 let disposeHttpTest: (() => Promise<void>) | undefined;
 
 async function installAuthApi(input: {
+  readonly descriptor?: () => Effect.Effect<ExecutionEnvironmentDescriptor>;
+  readonly renewal?: SessionRenewal.SessionRenewal["Service"]["ensure"];
   readonly session?: () => AuthSessionState;
   readonly browserSession?: (
     credential: string,
@@ -104,6 +120,8 @@ async function installAuthApi(input: {
   }>;
 }) {
   const testApi = await installEnvironmentHttpTest({
+    descriptor: input.descriptor ?? (() => Effect.succeed(TEST_ENVIRONMENT)),
+    ...(input.renewal ? { renewal: input.renewal } : {}),
     ...(input.session ? { session: () => Effect.succeed(input.session!()) } : {}),
     ...(input.browserSession
       ? { browserSession: (payload) => input.browserSession!(payload.credential) }
@@ -117,6 +135,57 @@ async function installAuthApi(input: {
 }
 
 describe("resolveInitialServerAuthGateState", () => {
+  it("does not consume a new browser pairing code when its descriptor is unavailable", async () => {
+    let unavailable = true;
+    const testApi = await installAuthApi({
+      descriptor: () =>
+        unavailable
+          ? Effect.die(
+              new EnvironmentInternalError({
+                code: "internal_error",
+                reason: "internal_error",
+                traceId: "descriptor-failure",
+              }),
+            )
+          : Effect.succeed(TEST_ENVIRONMENT),
+      browserSession: () => Effect.succeed(browserSession(["orchestration:read"])),
+      session: () => authenticatedSession(LOOPBACK_AUTH),
+    });
+    const { submitServerAuthCredential } = await import("./environments/primary/auth");
+    await expect(submitServerAuthCredential("valid-new-code")).rejects.toBeDefined();
+    expect(testApi.calls.browserSession).toEqual([]);
+    unavailable = false;
+    await expect(submitServerAuthCredential("valid-new-code")).resolves.toBeUndefined();
+    expect(testApi.calls.browserSession).toMatchObject([
+      {
+        credential: "valid-new-code",
+        renewal_commitment: "66d34fba71f8f450f7e45598853e53bfc23bbd129027cbb131a2f4ffd7878cd0",
+      },
+    ]);
+  });
+  it("recovers the primary cookie before presenting a pairing gate", async () => {
+    installTestBrowser("http://localhost/");
+    const keys: string[] = [];
+    const testApi = await installAuthApi({
+      session: sequence(unauthenticatedSession(LOOPBACK_AUTH), authenticatedSession(LOOPBACK_AUTH)),
+      renewal: (key) => {
+        keys.push(key);
+        return Effect.succeed({
+          _tag: "Renewed",
+          result: {
+            outcome: "current",
+            generation: 0,
+            expiresAt: 1000,
+            renewAfter: 500,
+          },
+        });
+      },
+    });
+    const { resolveInitialServerAuthGateState } = await import("./environments/primary/auth");
+    expect(await resolveInitialServerAuthGateState()).toEqual({ status: "authenticated" });
+    expect(keys).toEqual(["cookie:http://localhost"]);
+    expect(testApi.calls.session).toBe(2);
+  });
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
@@ -124,6 +193,7 @@ describe("resolveInitialServerAuthGateState", () => {
   });
 
   afterEach(async () => {
+    __setRenewalRunnerForTests();
     await disposeHttpTest?.();
     disposeHttpTest = undefined;
     const { __resetServerAuthBootstrapForTests } = await import("./environments/primary");
@@ -162,7 +232,7 @@ describe("resolveInitialServerAuthGateState", () => {
     await Promise.all([resolveInitialServerAuthGateState(), resolveInitialServerAuthGateState()]);
 
     expect(testApi.calls.session).toBe(2);
-    expect(testApi.calls.browserSession).toEqual([{ credential: "desktop-bootstrap-token" }]);
+    expect(testApi.calls.browserSession).toMatchObject([{ credential: "desktop-bootstrap-token" }]);
   });
 
   it("takes a pairing token from the location hash and strips it immediately", async () => {
@@ -216,7 +286,7 @@ describe("resolveInitialServerAuthGateState", () => {
       expect(token).toBe("replacement-token");
       await submitServerAuthCredential(token!);
 
-      expect(testApi.calls.browserSession).toEqual([{ credential: "replacement-token" }]);
+      expect(testApi.calls.browserSession).toMatchObject([{ credential: "replacement-token" }]);
       await expect(fetchSessionState()).resolves.toMatchObject({
         authenticated: true,
         scopes: ["orchestration:read", "orchestration:operate"],
@@ -291,7 +361,7 @@ describe("resolveInitialServerAuthGateState", () => {
         finishExchange.resolve();
         await rejected;
         await expect(resolveInitialServerAuthGateState()).resolves.toEqual(requiresAuth);
-        expect(testApi.calls.browserSession).toEqual([{ credential: "invalid-replacement" }]);
+        expect(testApi.calls.browserSession).toMatchObject([{ credential: "invalid-replacement" }]);
         await expect(fetchSessionState()).resolves.toEqual(existingSession);
 
         testWindow.history.replaceState({}, "", "/");
@@ -363,7 +433,7 @@ describe("resolveInitialServerAuthGateState", () => {
     } as const;
     await expect(explicitPairing).resolves.toEqual(rejectedState);
     await expect(laterCaller).resolves.toEqual(rejectedState);
-    expect(testApi.calls.browserSession).toEqual([{ credential: "reusable-token" }]);
+    expect(testApi.calls.browserSession).toMatchObject([{ credential: "reusable-token" }]);
     expect(testApi.calls.session).toBe(2);
   });
 
@@ -393,6 +463,6 @@ describe("resolveInitialServerAuthGateState", () => {
       status: "requires-auth",
       auth: LOOPBACK_AUTH,
     });
-    expect(testApi.calls.browserSession).toEqual([{ credential: "rejected-token" }]);
+    expect(testApi.calls.browserSession).toMatchObject([{ credential: "rejected-token" }]);
   });
 });

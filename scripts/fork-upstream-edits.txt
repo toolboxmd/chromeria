@@ -291,3 +291,25 @@ apps/server/src/orchestration-v2/ProviderTurnStartService.ts
 apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs
 apps/server/src/provider/acp/AcpJsonRpcConnection.test.ts
 packages/provider-acp/src/server/AcpSessionRuntime.ts
+
+# Paired session renewal (#323)
+apps/desktop/src/ipc/DesktopIpcHandlers.ts
+apps/desktop/src/ipc/channels.ts
+apps/desktop/src/ipc/methods/connectionCatalog.ts
+apps/desktop/src/main.ts
+apps/desktop/src/preload.ts
+apps/mobile/src/lib/runtime.ts
+apps/server/src/auth/http.test.ts
+apps/server/src/cli/auth.ts
+apps/server/src/cli/browser.ts
+apps/web/src/authBootstrap.test.ts
+apps/web/src/lib/runtime.ts
+packages/client-runtime/src/authorization/index.ts
+packages/client-runtime/src/authorization/remote.ts
+packages/client-runtime/src/connection/index.ts
+packages/client-runtime/src/connection/onboarding.ts
+packages/client-runtime/src/connection/resolver.ts
+packages/client-runtime/src/connection/supervisor.ts
+packages/contracts/src/ipc.ts
+docs/user/remote-access.md
+apps/web/src/lib/runtime.test.ts

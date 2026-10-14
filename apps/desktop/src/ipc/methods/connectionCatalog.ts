@@ -1,3 +1,5 @@
+import { AuthRenewalLocalRecord } from "@t3tools/contracts";
+import * as DesktopRenewalStore from "../../app/DesktopRenewalStore.ts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -23,5 +25,36 @@ export const setConnectionCatalog = DesktopIpc.makeIpcMethod({
   handler: Effect.fn("desktop.ipc.connectionCatalog.set")(function* (catalog) {
     const store = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore;
     return yield* store.set(catalog);
+  }),
+});
+
+export const clearConnectionCatalog = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.CLEAR_CONNECTION_CATALOG_CHANNEL,
+  payload: Schema.Void,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.connectionCatalog.clear")(function* () {
+    const store = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore;
+    yield* store.clear;
+  }),
+});
+
+export const getRenewalRecord = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.GET_RENEWAL_RECORD_CHANNEL,
+  payload: Schema.String,
+  result: Schema.NullOr(AuthRenewalLocalRecord),
+  handler: Effect.fn("desktop.ipc.renewal.get")(function* (key) {
+    return yield* (yield* DesktopRenewalStore.DesktopRenewalStore).read(key);
+  }),
+});
+export const compareRenewalRecord = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.COMPARE_RENEWAL_RECORD_CHANNEL,
+  payload: Schema.Struct({
+    key: Schema.String,
+    revision: Schema.NullOr(Schema.Int),
+    value: AuthRenewalLocalRecord,
+  }),
+  result: Schema.Boolean,
+  handler: Effect.fn("desktop.ipc.renewal.compare")(function* (input) {
+    return yield* (yield* DesktopRenewalStore.DesktopRenewalStore).compareAndSet(input);
   }),
 });
