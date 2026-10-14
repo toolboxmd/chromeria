@@ -23,8 +23,10 @@ apps/server/src/mcp/OrchestratorMcpService.activity.test.ts
 apps/server/src/mcp/OrchestratorMcpService.test.ts
 apps/server/src/mcp/OrchestratorMcpService.ts
 apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts
+apps/server/src/mcp/TaskCancelNativeSubagent.integration.test.ts
 apps/server/src/mcp/threadAccess.ts
 apps/server/src/mcp/toolkits/core.test.ts
+apps/server/src/mcp/toolkits/orchestrator/tools.test.ts
 apps/server/src/mcp/toolkits/thread/handlers.ts
 apps/server/src/mcp/toolkits/thread/tools.ts
 apps/server/src/mcp/toolkits/worktree/registration.test.ts
