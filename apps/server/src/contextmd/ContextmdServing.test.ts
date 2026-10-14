@@ -309,6 +309,63 @@ describe("ContextMD shown service and harness seams", () => {
     ),
   );
 
+  it.effect("a Codex send confirmation waits for actual consuming model output", () =>
+    withNode(
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        const session = "codex-retained-send";
+        const path = NodePath.join(h.config.baseDir, `rollout-date-${session}.jsonl`);
+        const d = yield* h.moment("codex", session, {
+          transcript_path: path,
+          turn_id: "native-turn",
+        });
+        if (d.reply.status !== 200) return assert.fail("expected context reply");
+        const text = decodeBody(d.reply.body).hookSpecificOutput.additionalContext;
+        NodeFS.writeFileSync(
+          path,
+          jsonl([
+            ...codexRows(session, text, d.now, false),
+            {
+              type: "response_item",
+              timestamp: at(d.now + 0.02),
+              payload: {
+                type: "message",
+                role: "assistant",
+                id: "send-confirmation",
+                internal_chat_message_metadata_passthrough: { turn_id: "native-turn" },
+                content: [{ type: "output_text", text: "The synthetic job is done." }],
+              },
+              metadata: {
+                delivered_assistant_message: "codex:code-mode-delivery:v1:complete",
+                user_input_order: 7,
+              },
+            },
+          ]),
+        );
+        yield* h.service.settle(d.delivery);
+        yield* TestClock.adjust("1 second");
+        yield* h.service.checkShown;
+        assert.equal(h.fact(d.delivery)!.shown, "unknown");
+        assert.equal(h.evidence(d.delivery).reason, "no_model_response");
+        NodeFS.appendFileSync(
+          path,
+          jsonl([
+            {
+              type: "response_item",
+              timestamp: at(d.now + 1.01),
+              payload: { type: "reasoning", id: "actual-model-output" },
+            },
+          ]),
+        );
+        yield* TestClock.adjust("31 seconds");
+        yield* h.service.checkShown;
+        assert.equal(h.fact(d.delivery)!.shown, "shown");
+        const ev = h.evidence(d.delivery);
+        assert.deepEqual(ev.consumed, { id: "actual-model-output", call: null, at: d.now + 1.01 });
+      }),
+    ),
+  );
+
   it.effect("rendered-only Claude context remains unproven without request records", () =>
     withNode(
       Effect.gen(function* () {

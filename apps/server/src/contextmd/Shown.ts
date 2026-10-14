@@ -561,6 +561,7 @@ export const claudeEvidence = (
 
 type CodexLine =
   | { readonly kind: "malformed" }
+  | { readonly kind: "retained"; readonly at: number; readonly turn: string | null }
   | {
       readonly kind: "meta";
       readonly at: number;
@@ -630,13 +631,30 @@ export const decodeCodexLine = (line: string): CodexLine => {
         Schema.Struct({
           payload: CodexItemSchema,
           metadata: Schema.optional(
-            Schema.Struct({ compaction_output: Schema.optional(Schema.Boolean) }),
+            Schema.Struct({
+              compaction_output: Schema.optional(Schema.Boolean),
+              delivered_assistant_message: Schema.optional(Schema.String),
+            }),
           ),
         }),
         raw,
       );
       const p = item.payload;
       const passthrough = p.internal_chat_message_metadata_passthrough;
+      const delivered = item.metadata?.delivered_assistant_message;
+      if (delivered !== undefined) {
+        // Codex serializes Code Mode send confirmations as assistant messages.
+        // They are retained context, never output from sampling the model.
+        if (
+          p.type !== "message" ||
+          p.role !== "assistant" ||
+          item.metadata?.compaction_output === true ||
+          (delivered !== "codex:code-mode-delivery:v1:complete" &&
+            !delivered.startsWith("codex:code-mode-delivery:v1:incomplete:"))
+        )
+          return { kind: "malformed" };
+        return { kind: "retained", at, turn: passthrough?.turn_id ?? null };
+      }
       const kinds = passthrough?.content_item_kinds;
       const slots: Array<{ slot: number; text: string }> = [];
       if (kinds !== undefined && kinds !== null) {
@@ -735,7 +753,7 @@ const CONTROLS = new Set([
 type ItemClass = "output" | "possible" | "input" | "compacted" | "rolled_back" | "unknown";
 const itemClass = (l: CodexLine): ItemClass => {
   if (l.kind === "malformed") return "unknown";
-  if (l.kind === "meta") return "input";
+  if (l.kind === "meta" || l.kind === "retained") return "input";
   if (l.kind === "event")
     return l.event === "thread_rolled_back"
       ? "rolled_back"
@@ -762,7 +780,10 @@ const itemClass = (l: CodexLine): ItemClass => {
 const nativeTurn = (lines: ReadonlyArray<CodexLine>, index: number): string | null => {
   for (let i = index; i >= 0; i--) {
     const l = lines[i]!;
-    if ((l.kind === "item" || l.kind === "event" || l.kind === "control") && l.turn !== null)
+    if (
+      (l.kind === "item" || l.kind === "event" || l.kind === "control" || l.kind === "retained") &&
+      l.turn !== null
+    )
       return l.turn;
   }
   return null;

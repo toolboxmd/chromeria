@@ -540,6 +540,52 @@ describe("Codex typed hook receipt", () => {
     if (called.fact === "shown") assert.equal(called.consumed.call, "call-next");
   });
 
+  it.each([
+    "codex:code-mode-delivery:v1:complete",
+    "codex:code-mode-delivery:v1:incomplete:public partial send",
+  ])("retained send %s cannot prove consumption or a sampling response in flight", (marker) => {
+    // Native RetainedContextEvent::DeliveredAssistantMessage wire form, after the
+    // prior sampling's usage boundary while its Code Mode cell still runs tools.
+    const retained = (time = 1001) =>
+      item(
+        {
+          type: "message",
+          role: "assistant",
+          id: "retained-send-call",
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-one" },
+          content: [{ type: "output_text", text: "The synthetic job is done." }],
+        },
+        time,
+        { metadata: { delivered_assistant_message: marker, user_input_order: 7 } },
+      );
+    const prefix = [...codexPrefix(), hook()];
+    assert.equal(reason(decideCodex([...prefix, retained()])), "no_model_response");
+    const consuming = item({ type: "reasoning", id: "actual-model-output" }, 1002);
+    for (const rows of [
+      [...prefix, retained(), consuming],
+      [...codexPrefix(), retained(999), hook(), consuming],
+    ]) {
+      const shown = decideCodex(rows);
+      assert.equal(shown.fact, "shown");
+      if (shown.fact === "shown") assert.equal(shown.consumed.id, "actual-model-output");
+    }
+  });
+
+  it.each([null, true, 1, "", "codex:code-mode-delivery:v2:complete"])(
+    "malformed or unknown retained marker %s fails closed",
+    (marker) => {
+      const retained = item(
+        { type: "message", role: "assistant", id: "not-model-output", content: [] },
+        1001,
+        { metadata: { delivered_assistant_message: marker } },
+      );
+      assert.equal(
+        reason(decideCodex([...codexPrefix(), hook(), retained, output()])),
+        "unrecognized_format",
+      );
+    },
+  );
+
   it("open tool calls bind before their output and cannot use old in-flight output", () => {
     const prefix = codexPrefix().slice(0, -1);
     const call = item({ type: "function_call", id: "call-item", call_id: "exec-one" }, 995);
