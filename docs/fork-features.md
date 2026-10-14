@@ -805,6 +805,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "packages/contracts/src/orchestratorMcp.ts",
     "apps/server/src/orchestration-v2/SubagentProjection.ts",
     "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryPerformance.test.ts",
+    "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
     "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
     "apps/server/src/orchestration-v2/RestartContinuation.ts",
     "apps/server/src/orchestration-v2/SubagentProjection.test.ts",
