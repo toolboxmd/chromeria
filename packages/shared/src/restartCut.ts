@@ -16,6 +16,8 @@ export const RESTART_CUT_REASONS = {
   SESSION_FAILED: "Its provider session failed before the restart.",
   NO_LIVE_TURN: "No provider turn was running for it at the restart.",
   SUPERSEDED: "A later run took precedence.",
+  TASK_SETTLED:
+    "The delegated task already returned a result before this old restart cut was recovered.",
   STOP_REQUESTED: "Stop was requested before the restart.",
   MAINTENANCE: "It was a provider maintenance command.",
   EFFECT_FAILED: "The continuation could not be started.",

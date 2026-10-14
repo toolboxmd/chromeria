@@ -1,3 +1,4 @@
+import { RESTART_CUT_REASONS } from "@t3tools/shared/restartCut";
 import {
   CommandId,
   EventId,
@@ -665,13 +666,30 @@ const layerBase: Layer.Layer<
             json_extract(payload_json, '$.restartCut.continuation') = 'scheduled'
             OR (
               json_type(payload_json, '$.restartCut') IS NULL
-              AND EXISTS (
-                SELECT 1 FROM orchestration_v2_effect_outbox AS intent
-                WHERE intent.effect_id = 'effect:restart-continuation:' || source.run_id
+              AND (
+                EXISTS (
+                  SELECT 1 FROM orchestration_v2_effect_outbox AS intent
+                  WHERE intent.effect_id = 'effect:restart-continuation:' || source.run_id
                   AND intent.thread_id = source.thread_id
                   AND intent.effect_type = 'provider-runtime.continue'
                   AND json_extract(intent.payload_json, '$.type') = 'provider-runtime.continue'
                   AND json_extract(intent.payload_json, '$.sourceRunId') = source.run_id
+                )
+                OR (
+                  ${decline.reason === RESTART_CUT_REASONS.TASK_SETTLED}
+                  AND EXISTS (
+                    SELECT 1 FROM orchestration_v2_projection_provider_turns AS turn
+                    WHERE turn.run_attempt_id = json_extract(source.payload_json, '$.activeAttemptId')
+                      AND turn.status = 'cancelled'
+                      AND json_extract(turn.payload_json, '$.completedAt') = source.completed_at
+                  )
+                  AND EXISTS (
+                    SELECT 1 FROM orchestration_v2_projection_subagents AS task
+                    WHERE task.child_thread_id = source.thread_id
+                      AND json_extract(task.payload_json, '$.origin') = 'app_owned'
+                      AND json_extract(task.payload_json, '$.result') IS NOT NULL
+                  )
+                )
               )
             )
           )

@@ -2,7 +2,7 @@ import type { ProjectThreadAwarenessV2Input } from "@t3tools/shared/agentAwarene
 import { pendingGuestMessageCount } from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
 import { keepContinuationSource } from "../prism/continuationProjection.ts";
-import { mergeRestartCut } from "@t3tools/shared/restartCut";
+import { mergeRestartCut, RESTART_CUT_REASONS } from "@t3tools/shared/restartCut";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";

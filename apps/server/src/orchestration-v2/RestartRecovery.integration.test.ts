@@ -39,6 +39,7 @@ import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
 import { GrokProviderCapabilitiesV2 } from "@t3tools/provider-grok/testing";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as Orchestrator from "./Orchestrator.ts";
 import {
@@ -627,6 +628,244 @@ it.live.each(
               assert.equal(view?.state, "continued");
             }
           }).pipe(Effect.provide(Layer.mergeAll(layer(restartPath, failOpen), NodeServices.layer))),
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "two restarts do not replay an old cut after the delegated task already returned a result",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const name = "restart-old-result";
+        const cwd = yield* checkpointWorkspace(name);
+        const stateDir = yield* FileSystem.FileSystem.use((fs) =>
+          fs.makeTempDirectoryScoped({ prefix: name }),
+        );
+        const originalPath = `${stateDir}/original.sqlite`;
+        const restartPath = `${stateDir}/restart.sqlite`;
+        const secondRestartPath = `${stateDir}/second-restart.sqlite`;
+        const parentId = ThreadId.make("thread:old-result-parent");
+        const modelSelection = {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "restart-proof",
+        };
+        const layer = (path: string) =>
+          ProviderReplayHarness.layerWithRegistry(
+            { name, runtimePolicyOverride: { cwd } },
+            ProviderAdapterRegistry.layerSingle(
+              unfinishedAdapter(ProviderDriverKind.make("codex"), CodexProviderCapabilitiesV2),
+            ),
+            {
+              databaseLayer: SqlitePersistence.layerFromPath(path).pipe(
+                Layer.provide(NodeServices.layer),
+              ),
+              runEffectWorker: false,
+              continueThreadsAfterServerUpdate: true,
+            },
+          );
+        const runningRun = Effect.fnUntraced(function* (threadId: ThreadId, ordinal: number) {
+          const sink = yield* EventSink.EventSinkV2;
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const run = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+            (run) => run.ordinal === ordinal,
+          );
+          if (run === undefined) throw new Error("The requested run was not created.");
+          yield* sink.stream({ threadId, afterSequence: 0 }).pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "provider-turn.updated" &&
+                stored.event.runId === run.id &&
+                stored.event.payload.status === "running",
+            ),
+            Stream.take(1),
+            Stream.runDrain,
+          );
+          const projection = yield* orchestrator.getThreadProjection(threadId);
+          const fresh = projection.runs.find((candidate) => candidate.id === run.id);
+          const turn = projection.providerTurns.find(
+            (turn) => turn.runAttemptId === fresh?.activeAttemptId,
+          );
+          if (fresh === undefined || turn === undefined)
+            throw new Error("The provider did not start the requested run.");
+          return { run: fresh, turn };
+        });
+        const childId = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            yield* orchestrator.dispatch({
+              type: "thread.create",
+              commandId: CommandId.make(`${name}:create`),
+              threadId: parentId,
+              projectId: ProjectId.make(`project:${name}`),
+              title: name,
+              modelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: cwd,
+              createdBy: "user",
+              creationSource: "web",
+            });
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make(`${name}:start`),
+              threadId: parentId,
+              messageId: MessageId.make(`${name}:prompt`),
+              text: "Delegate work.",
+              attachments: [],
+              modelSelection,
+              dispatchMode: { type: "start_immediately" },
+              createdBy: "user",
+              creationSource: "web",
+            });
+            yield* EffectWorker.OrchestrationEffectWorkerV2.use((worker) => worker.drain());
+            const parentRun = (yield* orchestrator.getThreadProjection(parentId)).runs[0]!;
+            yield* orchestrator.dispatch({
+              type: "delegated_task.request",
+              commandId: CommandId.make(`${name}:delegate`),
+              parentThreadId: parentId,
+              parentRunId: parentRun.id,
+              parentNodeId: parentRun.rootNodeId!,
+              task: "Finish the work.",
+              modelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              completionWake: "always",
+              createdBy: "agent",
+              creationSource: "mcp",
+            });
+            yield* EffectWorker.OrchestrationEffectWorkerV2.use((worker) => worker.drain());
+            const task = (yield* orchestrator.getThreadProjection(parentId)).subagents[0]!;
+            assert.isNotNull(task.childThreadId);
+            const { run: initial } = yield* runningRun(task.childThreadId!, 1);
+            const { delegatedTaskId: _taskId, ...legacyRun } = initial;
+            const sink = yield* EventSink.EventSinkV2;
+            yield* sink.write({
+              events: [
+                {
+                  id: EventId.make(`${name}:legacy-binding`),
+                  type: "run.updated",
+                  threadId: task.childThreadId!,
+                  runId: initial.id,
+                  occurredAt: yield* DateTime.now,
+                  payload: legacyRun,
+                },
+              ],
+            });
+            yield* snapshot(originalPath, restartPath);
+            return task.childThreadId!;
+          }).pipe(Effect.provide(Layer.mergeAll(layer(originalPath), NodeServices.layer))),
+        );
+
+        const oldCutId = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            const sink = yield* EventSink.EventSinkV2;
+            const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+            yield* (yield* recovery).recover; // First restart.
+            yield* worker.drain();
+            const { run: current, turn: completedTurn } = yield* runningRun(childId, 2);
+            const now = yield* DateTime.now;
+            yield* sink.write({
+              events: [
+                {
+                  id: EventId.make(`${name}:turn-done`),
+                  type: "provider-turn.updated",
+                  threadId: childId,
+                  runId: current.id,
+                  occurredAt: now,
+                  payload: { ...completedTurn, status: "completed", completedAt: now },
+                },
+                {
+                  id: EventId.make(`${name}:done`),
+                  type: "run.updated",
+                  threadId: childId,
+                  runId: current.id,
+                  occurredAt: now,
+                  payload: { ...current, status: "completed", completedAt: now },
+                },
+              ],
+            });
+            yield* orchestrator.recoverDelegatedTask(childId, current.id);
+            assert.isNotNull(
+              (yield* orchestrator.getThreadProjection(parentId)).subagents[0]?.result,
+            );
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make(`${name}:followup`),
+              threadId: childId,
+              messageId: MessageId.make(`${name}:followup-prompt`),
+              text: "Follow up.",
+              attachments: [],
+              modelSelection,
+              dispatchMode: { type: "start_immediately" },
+              createdBy: "agent",
+              creationSource: "mcp",
+            });
+            yield* worker.drain();
+            const { run: followup, turn } = yield* runningRun(childId, 3);
+            // Replay the persisted event shape of the pre-#301 restart: it cut the
+            // follow-up without metadata or an intent, after the first task result.
+            const cutAt = yield* DateTime.now;
+            yield* sink.commitCommand({
+              commandId: CommandId.make(`command:runtime-reconcile:${name}:legacy-cut`),
+              threadId: childId,
+              commandType: "provider-runtime.reconcile",
+              acceptedAt: cutAt,
+              effects: [],
+              events: [
+                {
+                  id: EventId.make(`${name}:legacy-turn-cut`),
+                  type: "provider-turn.updated",
+                  threadId: childId,
+                  runId: followup.id,
+                  occurredAt: cutAt,
+                  payload: { ...turn, status: "cancelled", completedAt: cutAt },
+                },
+                {
+                  id: EventId.make(`${name}:legacy-cut`),
+                  type: "run.updated",
+                  threadId: childId,
+                  runId: followup.id,
+                  occurredAt: cutAt,
+                  payload: { ...followup, status: "cancelled", completedAt: cutAt },
+                },
+              ],
+            });
+            yield* snapshot(restartPath, secondRestartPath);
+            return followup.id;
+          }).pipe(Effect.provide(Layer.mergeAll(layer(restartPath), NodeServices.layer))),
+        );
+
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const orchestrator = yield* Orchestrator.OrchestratorV2;
+            yield* (yield* recovery).recover; // Second restart, fresh SQLite/runtime.
+            yield* orchestrator.recoverDelegatedTasks;
+            const parent = yield* orchestrator.getThreadProjection(parentId);
+            assert.isFalse(
+              parent.contextTransfers.some(
+                (transfer) =>
+                  transfer.type === "subagent_result" && transfer.sourcePoint.runId === oldCutId,
+              ),
+            );
+            const cut = (yield* orchestrator.getThreadProjection(childId)).runs.find(
+              (run) => run.id === oldCutId,
+            );
+            assert.equal(cut?.restartCut?.continuation, "declined");
+            if (cut?.restartCut?.continuation === "declined")
+              assert.equal(cut.restartCut.reason, RESTART_CUT_REASONS.TASK_SETTLED);
+            const projections = yield* ProjectionStore.ProjectionStoreV2;
+            assert.notInclude(yield* projections.getRecoveryThreadIds("subagent-results"), childId);
+            yield* orchestrator.recoverDelegatedTasks;
+            assert.isFalse(
+              (yield* orchestrator.getThreadProjection(parentId)).contextTransfers.some(
+                (transfer) => transfer.sourcePoint.runId === oldCutId,
+              ),
+            );
+          }).pipe(Effect.provide(Layer.mergeAll(layer(secondRestartPath), NodeServices.layer))),
         );
       }),
     ).pipe(Effect.provide(NodeServices.layer)),

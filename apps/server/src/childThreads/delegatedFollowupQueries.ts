@@ -1,3 +1,4 @@
+import { RESTART_CUT_REASONS } from "@t3tools/shared/restartCut";
 import type { ThreadId } from "@t3tools/contracts";
 import type * as SqlClient from "effect/sql/SqlClient";
 
@@ -14,6 +15,7 @@ export const delegatedFollowupRecoveryQuery = (sql: SqlClient.SqlClient) => sql`
   ), requested_work AS MATERIALIZED (
     SELECT requested.* FROM orchestration_v2_projection_runs AS requested
     WHERE requested.thread_id IN (SELECT thread_id FROM subagent_children)
+      AND json_extract(requested.payload_json, '$.restartCut.reason') IS NOT ${RESTART_CUT_REASONS.TASK_SETTLED}
       AND requested.status IN ('completed', 'interrupted', 'failed', 'cancelled')
   )
   SELECT DISTINCT child.thread_id
@@ -81,6 +83,7 @@ export const delegatedFollowupRecoveryQuery = (sql: SqlClient.SqlClient) => sql`
   WHERE EXISTS (
     SELECT 1 FROM orchestration_v2_projection_runs AS result
     WHERE result.thread_id = child.thread_id
+      AND json_extract(result.payload_json, '$.restartCut.reason') IS NOT ${RESTART_CUT_REASONS.TASK_SETTLED}
       AND (
         (result.status = 'cancelled' AND json_type(result.payload_json, '$.restartCut') = 'object')
         OR (
