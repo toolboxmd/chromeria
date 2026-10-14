@@ -333,6 +333,9 @@ export function summarizeT3ToolCalls(
     case "environment-read":
       label = phrase("Checked", "check", `environment preferences ${times}`);
       break;
+    case "environment-links":
+      label = phrase("Listed", "list", `linked environments ${times}`);
+      break;
     case "environment-update":
       label = phrase("Updated", "update", `environment preferences ${times}`);
       break;

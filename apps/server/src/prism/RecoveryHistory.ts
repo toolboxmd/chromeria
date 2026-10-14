@@ -1,3 +1,4 @@
+import { RecoveryWaitSignals } from "../peer/recoveryWaitSignals.ts";
 import {
   OrchestrationV2AppThreadJson,
   OrchestrationV2RunJson,
@@ -87,10 +88,16 @@ export const writeRecoveryOutcome = Effect.fn("Prism.writeRecoveryOutcome")(func
   outcome: RecoveryOutcome,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  yield* sql`INSERT INTO fork_prism_recovery_outcomes(source_run_id,thread_id,status,payload_json)
+  // A wait observes recovery too; unchanged pending observations must not wake themselves.
+  const changed = yield* sql<{
+    thread_id: string;
+  }>`INSERT INTO fork_prism_recovery_outcomes(source_run_id,thread_id,status,payload_json)
     VALUES (${outcome.sourceRunId},${outcome.threadId},${outcome.status},${encode(outcome)})
     ON CONFLICT(source_run_id) DO UPDATE SET status=excluded.status,payload_json=excluded.payload_json
-    WHERE fork_prism_recovery_outcomes.status='pending'`;
+    WHERE fork_prism_recovery_outcomes.status='pending'
+      AND fork_prism_recovery_outcomes.payload_json<>excluded.payload_json
+    RETURNING thread_id`;
+  if (changed.length > 0) yield* (yield* RecoveryWaitSignals).publish(outcome.threadId);
 });
 
 export type RecoveryState = {

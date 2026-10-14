@@ -1,3 +1,4 @@
+import { PrismRole, PrismLane } from "./prism.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -15,6 +16,7 @@ import {
   EventId,
   IsoDateTime,
   MessageId,
+  EnvironmentId,
   NodeId,
   ForwardCompatibleUnion,
   ForwardCompatibleUnionArray,
@@ -92,6 +94,29 @@ const OrchestrationV2CreationFields = {
   createdBy: OrchestrationV2Actor,
   creationSource: OrchestrationV2CreationSource,
 } as const;
+
+/**
+ * The linked environment whose agent started this work here: the MCP client
+ * session it signed in with, and that session's label. Set when the thread is
+ * created and never changed; work derived from it carries the same origin.
+ * Stamped work may change only work from the same link.
+ */
+export const OrchestrationV2LinkOrigin = Schema.Struct({
+  sessionId: TrimmedNonEmptyString,
+  label: Schema.String,
+});
+export type OrchestrationV2LinkOrigin = typeof OrchestrationV2LinkOrigin.Type;
+
+/**
+ * The thread in a linked environment that delegated this one, when it did:
+ * this thread is that parent's subagent, run here instead of there.
+ */
+export const OrchestrationV2DelegatedFrom = Schema.Struct({
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  title: Schema.String,
+});
+export type OrchestrationV2DelegatedFrom = typeof OrchestrationV2DelegatedFrom.Type;
 
 export const OrchestrationV2NativeRefStrength = Schema.Literals(["strong", "weak", "none"]);
 export type OrchestrationV2NativeRefStrength = typeof OrchestrationV2NativeRefStrength.Type;
@@ -383,6 +408,8 @@ export const OrchestrationV2AppThread = Schema.Struct({
   branchPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
+  linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
+  delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
   lineage: OrchestrationV2AppThreadLineage,
   forkRetirement: Schema.optional(Schema.Struct({ token: CommandId })),
   forkResumedRetirements: Schema.optional(Schema.Array(CommandId)),
@@ -753,6 +780,52 @@ export const OrchestrationV2SubagentWorkflow = Schema.Struct({
 });
 export type OrchestrationV2SubagentWorkflow = typeof OrchestrationV2SubagentWorkflow.Type;
 
+/** Durable launch inputs and the original retry identity. No credentials. */
+export const OrchestrationV2RemoteTaskLaunch = Schema.Struct({
+  requestNamespace: Schema.String,
+  clientRequestId: Schema.String,
+  /** Nonsecret grant-generation identity; relinking must not create a replacement child. */
+  linkIdentity: Schema.String,
+  projectId: ProjectId,
+  title: Schema.String,
+  modelSelection: Schema.optional(ModelSelection),
+  prismRole: Schema.optional(PrismRole),
+  lane: Schema.optional(PrismLane),
+  workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
+  runtimeMode: Schema.optional(RuntimeMode),
+  interactionMode: Schema.optional(ProviderInteractionMode),
+  delegatedFrom: OrchestrationV2DelegatedFrom,
+});
+export type OrchestrationV2RemoteTaskLaunch = typeof OrchestrationV2RemoteTaskLaunch.Type;
+
+/**
+ * Where an app-owned task runs when it runs in a linked environment instead
+ * of in a child thread here: that environment and the ordinary thread it runs
+ * as there. Such a task has no `childThreadId`.
+ */
+export const OrchestrationV2RemoteTaskChild = Schema.Struct({
+  environmentId: EnvironmentId,
+  /** Unset until the accepted launch is attached to the durable source task. */
+  threadId: Schema.optional(ThreadId),
+  label: Schema.String,
+  launch: Schema.optional(OrchestrationV2RemoteTaskLaunch),
+  /** Committed before network I/O: an absent receipt may now mean acceptance is unknown. */
+  launchStarted: Schema.optional(Schema.Boolean),
+  /** Recovery was refused; already-accepted work may still be running there. */
+  launchError: Schema.optional(Schema.String),
+  /** The run there that carries the task; absent on tasks recorded before it was kept. */
+  runId: Schema.optional(RunId),
+  /**
+   * Nothing is left to stop there: a stop from here reached the thread there,
+   * the other side refused it for good, or the thread or its link is gone. A
+   * task's run that ended there by itself also sets it, unless the task here
+   * was cancelled or stopped, which still owes a stop for whatever runs on the
+   * thread there now. Its follower keeps sending that stop, across restarts.
+   */
+  stoppedThere: Schema.optional(Schema.Boolean),
+});
+export type OrchestrationV2RemoteTaskChild = typeof OrchestrationV2RemoteTaskChild.Type;
+
 export const OrchestrationV2Subagent = Schema.Struct({
   id: NodeId,
   threadId: ThreadId,
@@ -764,6 +837,7 @@ export const OrchestrationV2Subagent = Schema.Struct({
   providerInstanceId: ProviderInstanceId,
   providerThreadId: Schema.NullOr(ProviderThreadId),
   childThreadId: Schema.NullOr(ThreadId),
+  remoteChild: Schema.optional(OrchestrationV2RemoteTaskChild),
   nativeTaskRef: Schema.NullOr(OrchestrationV2ProviderRef),
   prompt: Schema.String,
   title: Schema.NullOr(Schema.String),
@@ -1660,6 +1734,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
     driver: ProviderDriverKind,
     providerInstanceId: ProviderInstanceId,
     childThreadId: Schema.NullOr(ThreadId),
+    remoteChild: Schema.optional(OrchestrationV2RemoteTaskChild),
     prompt: Schema.String,
     progress: Schema.optional(Schema.String),
     result: Schema.NullOr(Schema.String),
@@ -1962,6 +2037,8 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   forkedFrom: Schema.NullOr(OrchestrationV2AppThread.fields.forkedFrom),
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
+  linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
+  delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
   latestRunId: Schema.NullOr(RunId),
   latestRunRequestedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   latestRunStartedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
@@ -2445,6 +2522,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
     driver: ProviderDriverKind,
     providerInstanceId: ProviderInstanceId,
     childThreadId: Schema.NullOr(ThreadId),
+    remoteChild: Schema.optional(OrchestrationV2RemoteTaskChild),
     prompt: Schema.String,
     progress: Schema.optional(Schema.String),
     result: Schema.NullOr(Schema.String),
@@ -2738,6 +2816,10 @@ export const OrchestrationV2Command = Schema.Union([
     interactionMode: ProviderInteractionMode,
     branch: Schema.NullOr(TrimmedNonEmptyString),
     worktreePath: Schema.NullOr(TrimmedNonEmptyString),
+    /** Only the server sets this; a client's thread.create never carries one. */
+    linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
+    /** Only the server sets this, with `linkOrigin`, for a linked environment's delegated task. */
+    delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
     importedNativeThread: Schema.optional(
       Schema.Struct({
         ref: Schema.Struct({
@@ -3232,6 +3314,66 @@ const OrchestrationV2InternalCommand = Schema.Union([
         notification: OrchestrationV2Notification,
       }),
     ),
+  }),
+  /**
+   * Records a delegated task that runs in a linked environment: the task, its
+   * node and its turn item on the parent, as `delegated_task.request` does,
+   * without a child thread here. Pending remote work retains its launch inputs
+   * before it is sent. The ids derive from `commandId`, so a retry records nothing new.
+   */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.remote.request"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    parentRunId: RunId,
+    parentNodeId: NodeId,
+    task: TrimmedNonEmptyString,
+    title: Schema.optional(TrimmedNonEmptyString),
+    driver: ProviderDriverKind,
+    modelSelection: Schema.optional(ModelSelection),
+    remoteChild: OrchestrationV2RemoteTaskChild,
+    completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
+  }),
+  /** Serializes starting a pending launch against cancellation before any network I/O. */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.remote.launch"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+  }),
+  /** Attaches an accepted launch, including after the original parent run has ended. */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.remote.attach"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    runId: Schema.NullOr(RunId),
+    modelSelection: ModelSelection,
+  }),
+  /**
+   * Completes a delegated task that ran in a linked environment, with what its
+   * thread there ended as. The parent wakes exactly as for a child here. A
+   * task that already has a result keeps it; `stoppedThere` is still recorded.
+   */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.remote.complete"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    status: Schema.Literals(["completed", "failed", "cancelled", "interrupted"]),
+    result: Schema.String,
+    /**
+     * What this report says about stopping there: `ran-out` when the task's
+     * run ended there by itself, `stopped` when a stop from here reached it.
+     * Either sets `remoteChild.stoppedThere` on a task this report completes;
+     * on a task already cancelled or stopped here, only `stopped` does, since
+     * a run that ended by itself leaves the stop owed for what may follow it.
+     */
+    stoppedThere: Schema.optional(Schema.Literals(["ran-out", "stopped"])),
+    /** Preserve launch uncertainty even when cancellation already supplied the task result. */
+    launchError: Schema.optional(Schema.String),
   }),
   /** Records that the provider rollback `requestId` failed for good. */
   Schema.Struct({
