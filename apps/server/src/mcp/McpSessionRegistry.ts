@@ -30,6 +30,15 @@ export interface McpSessionRegistryShape {
   readonly resolve: (
     rawToken: string,
   ) => Effect.Effect<McpInvocationContext.McpThreadInvocationScope | undefined>;
+  /** The newest unexpired provider scope, without exposing its credential. */
+  readonly scopeForThread: (
+    threadId: ThreadId,
+  ) => Effect.Effect<McpInvocationContext.McpThreadInvocationScope | undefined>;
+  /**
+   * Records a sign of life for every credential bound to `threadId`. Provider
+   * turns call this so that a session which is plainly alive keeps its
+   * credential even when it goes a long time without touching an MCP tool.
+   */
   readonly touch: (threadId: ThreadId) => Effect.Effect<void>;
   readonly revokeProviderSession: (providerSessionId: string) => Effect.Effect<void>;
   readonly revokeThread: (threadId: ThreadId) => Effect.Effect<void>;
@@ -177,6 +186,16 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   return McpSessionRegistry.of({
     issue,
     resolve,
+    scopeForThread: (threadId) =>
+      Effect.gen(function* () {
+        const timestamp = yield* currentTimeMillis;
+        const { records } = yield* SynchronizedRef.get(state);
+        return Array.from(records.values()).findLast(
+          (record) =>
+            record.scope.thread.threadId === threadId &&
+            timestamp - record.lastAliveAt <= livenessWindowMs,
+        )?.scope;
+      }),
     touch,
     revokeProviderSession: Effect.fn("McpSessionRegistry.revokeProviderSession")(
       function* (providerSessionId) {

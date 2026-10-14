@@ -220,3 +220,33 @@ it.effect.each(["provider-session", "thread", "all"] as const)(
       expect(yield* registry.resolve(token)).toBeUndefined();
     }),
 );
+
+it.effect("destination contexts use the latest unexpired credential and honor revocation", () =>
+  Effect.gen(function* () {
+    let timestamp = 1_000;
+    const registry = yield* makeRegistry(() => timestamp);
+    const threadId = ThreadId.make("thread-context");
+    yield* registry.issue({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      capabilities: new Set(["device"]),
+    });
+    const first = yield* registry.scopeForThread(threadId);
+    expect(first?.capabilities.has("device")).toBe(true);
+    timestamp += 1;
+    const second = yield* registry.issue({
+      threadId,
+      providerInstanceId: ProviderInstanceId.make("claude"),
+      capabilities: new Set(),
+    });
+    expect((yield* registry.scopeForThread(threadId))?.thread.providerSessionId).toBe(
+      second.config.providerSessionId,
+    );
+    expect((yield* registry.scopeForThread(threadId))?.capabilities.has("device")).toBe(false);
+    yield* registry.revokeThread(threadId);
+    expect(yield* registry.scopeForThread(threadId)).toBeUndefined();
+    yield* registry.issue({ threadId, providerInstanceId: ProviderInstanceId.make("codex") });
+    timestamp += 101;
+    expect(yield* registry.scopeForThread(threadId)).toBeUndefined();
+  }),
+);

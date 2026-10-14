@@ -806,12 +806,16 @@ const seedParent = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>) =>
     });
   });
 
-const delegateToBox = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>) =>
+const delegateToBox = (
+  laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
+  route: "target" | "environmentId" = "target",
+) =>
   laptopEnv
     .call("delegate_task", {
       task: "Run the full suite on the box.",
+      ...(route === "environmentId" ? { environmentId: box.environmentId } : {}),
       target: {
-        environmentId: box.environmentId,
+        ...(route === "target" ? { environmentId: box.environmentId } : {}),
         providerInstanceId: instanceId,
         model: "gpt-5.4",
       },
@@ -855,18 +859,20 @@ const taskResult = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>, ta
       ),
     );
 
-it.effect("a task delegated to the box wakes the laptop's parent when it ends there", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const thread = yield* makeBoxThread;
-      const b = yield* serveBox(thread);
-      const offers = yield* SubscriptionRef.make<
-        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
-      >([]);
-      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-      const a = yield* makeLaptop(database, offers);
-      yield* linkTo(a.links, b, "full-access");
-      yield* seedParent(a);
+it.effect.each(["target", "environmentId"] as const)(
+  "$0 delegation keeps the source parent's record and completion wake",
+  (route) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
 
       const delegated = yield* delegateToBox(a);
       expect(delegated).toMatchObject({
@@ -891,30 +897,33 @@ it.effect("a task delegated to the box wakes the laptop's parent when it ends th
       expect(retried.taskId).toBe(delegated.taskId);
       expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(1);
 
-      yield* Ref.set(thread.reply, "All 412 tests pass on the box.");
-      yield* Ref.set(thread.status, "completed");
-      yield* Deferred.succeed(thread.finished, undefined);
-      const task = yield* taskResult(a, delegated.taskId);
-      expect(task).toMatchObject({ status: "completed", result: "All 412 tests pass on the box." });
-      // The parent's live run claims the result, as for a child here.
-      const parentRun = (yield* a.orchestrator.getThreadProjection(parentThreadId)).runs.find(
-        (run) => run.id === parentRunId,
-      );
-      expect(parentRun?.delegatedCompletion?.delivery?.taskIds).toEqual([delegated.taskId]);
-      // The wake is offered after the result commits, so the result can be seen first.
-      const offered = yield* SubscriptionRef.changes(offers).pipe(
-        Stream.filter((seen) => seen.some((offer) => offer.threadId === parentThreadId)),
-        Stream.runHead,
-      );
-      expect(Option.isSome(offered)).toBe(true);
+        yield* Ref.set(thread.reply, "All 412 tests pass on the box.");
+        yield* Ref.set(thread.status, "completed");
+        yield* Deferred.succeed(thread.finished, undefined);
+        const task = yield* taskResult(a, delegated.taskId);
+        expect(task).toMatchObject({
+          status: "completed",
+          result: "All 412 tests pass on the box.",
+        });
+        // The parent's live run claims the result, as for a child here.
+        const parentRun = (yield* a.orchestrator.getThreadProjection(parentThreadId)).runs.find(
+          (run) => run.id === parentRunId,
+        );
+        expect(parentRun?.delegatedCompletion?.delivery?.taskIds).toEqual([delegated.taskId]);
+        // The wake is offered after the result commits, so the result can be seen first.
+        const offered = yield* SubscriptionRef.changes(offers).pipe(
+          Stream.filter((seen) => seen.some((offer) => offer.threadId === parentThreadId)),
+          Stream.runHead,
+        );
+        expect(Option.isSome(offered)).toBe(true);
 
-      const status = yield* a.call("task_status", { taskId: delegated.taskId });
-      expect(status.structuredContent).toMatchObject({
-        status: "completed",
-        summary: "All 412 tests pass on the box.",
-      });
-    }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+        const status = yield* a.call("task_status", { taskId: delegated.taskId });
+        expect(status.structuredContent).toMatchObject({
+          status: "completed",
+          summary: "All 412 tests pass on the box.",
+        });
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect(
@@ -989,16 +998,18 @@ it.effect("a task named only by environment inherits the parent's model, within 
         interactionMode: "default",
       });
 
-      // Asking for more than the link allows is still refused there.
-      const broader = yield* a.call("delegate_task", {
-        task: "Run the suite on the box.",
-        target: { environmentId: box.environmentId },
-        runtimeMode: "full-access",
-        clientRequestId: "broader",
-      });
-      expect(broader.isError).toBe(true);
-    }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+        // Asking for more than the link allows is still refused there.
+        const broader = yield* a.call("delegate_task", {
+          task: "Run the suite on the box.",
+          ...(route === "target"
+            ? { target: { environmentId: box.environmentId } }
+            : { environmentId: box.environmentId }),
+          runtimeMode: "full-access",
+          clientRequestId: "broader",
+        });
+        expect(broader.isError).toBe(true);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("refuses worktree isolation for a task there before launching anything", () =>

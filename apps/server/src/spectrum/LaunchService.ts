@@ -81,6 +81,7 @@ function shell(
     modelSelection: input.selection,
     owner: threadOwner(caller),
     coOwners: [],
+    ...(caller.linkOrigin === undefined ? {} : { linkOrigin: caller.linkOrigin }),
     createdBy: "agent",
     creationSource: "server",
     runtimeMode: caller.runtimeMode,

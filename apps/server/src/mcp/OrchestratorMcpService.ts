@@ -1,3 +1,4 @@
+import { callerLinkOrigin, assertSameLink } from "./linkOrigin.ts";
 import { SpectrumMcpInterrupt } from "../spectrum/mcpInterrupt.ts";
 import { SpectrumMcpSend } from "../spectrum/mcpSend.ts";
 import * as Prism from "../prism/PrismService.ts";
@@ -1117,6 +1118,11 @@ const make = Effect.gen(function* () {
       } as const;
     }
     const parent = yield* loadProjection(scope.thread.threadId);
+    if (scope.client !== undefined) {
+      const ceiling = clientModeCeiling(scope.client);
+      yield* resolveRuntimeMode(ceiling.runtimeMode, parent.thread.runtimeMode);
+      yield* resolveInteractionMode(ceiling.interactionMode, parent.thread.interactionMode);
+    }
     return {
       parent,
       limits: {
@@ -1133,6 +1139,11 @@ const make = Effect.gen(function* () {
     yield* requireCapability(scope);
     const threadScope = yield* requireThreadScope(scope, operation);
     const parent = yield* loadProjection(threadScope.thread.threadId);
+    if (scope.client !== undefined) {
+      const ceiling = clientModeCeiling(scope.client);
+      yield* resolveRuntimeMode(ceiling.runtimeMode, parent.thread.runtimeMode);
+      yield* resolveInteractionMode(ceiling.interactionMode, parent.thread.interactionMode);
+    }
     return { scope: threadScope, parent } as const;
   });
 
@@ -1846,10 +1857,15 @@ const make = Effect.gen(function* () {
         caller.parent === undefined
           ? scope.client?.access !== "read-only"
           : Exit.isSuccess(yield* Effect.exit(assertLiveCaller(scope, caller.parent)));
+      const origin = callerLinkOrigin({ scope, caller: caller.parent?.thread });
+      const owns = origin === undefined || task.linkOrigin?.sessionId === origin.sessionId;
+      // This runs after a save, so a failed lookup of the bound thread hides
+      // the webhook URL instead of reporting a saved task as an error.
       const modes = yield* scheduledTaskRunModes(task).pipe(Effect.option);
       return scheduledTaskSummary(
         task,
         live &&
+          owns &&
           Option.isSome(modes) &&
           modes.value.every((mode) => withinLimits(caller.limits, mode)),
       );
@@ -1908,7 +1924,9 @@ const make = Effect.gen(function* () {
       const derivedTitle = input.prompt.split("\n")[0]?.trim() ?? "";
       const title =
         input.title ?? (derivedTitle.length > 0 ? derivedTitle.slice(0, 80) : "Scheduled task");
+      const linkOrigin = callerLinkOrigin({ scope, caller: parent?.thread });
       const upsertInput: ScheduledTaskUpsertInput = {
+        ...(linkOrigin === undefined ? {} : { linkOrigin }),
         title,
         prompt: input.prompt,
         enabled: input.enabled ?? true,
@@ -1968,6 +1986,7 @@ const make = Effect.gen(function* () {
       function* (scope, input) {
         const { parent, limits } = yield* loadCaller(scope);
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
+        yield* assertSameLink({ scope, caller: parent?.thread }, existing);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
         if (
           input.bindToCurrentThread === true &&
@@ -2023,6 +2042,7 @@ const make = Effect.gen(function* () {
       function* (scope, input) {
         const { parent, limits } = yield* loadCaller(scope);
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
+        yield* assertSameLink({ scope, caller: parent?.thread }, existing);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
         yield* forkTasks
           .delete(

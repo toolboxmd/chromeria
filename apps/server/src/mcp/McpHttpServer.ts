@@ -545,6 +545,14 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
                   readonly height: number;
                 };
               };
+              // A peer needs the schema-complete result, not the client presentation's
+              // bounded text or optional image. Its own registration formats it once.
+              if (invocation.client?.linked === true)
+                return new McpSchema.CallToolResult({
+                  isError: false,
+                  structuredContent: encodedResult,
+                  content: [{ type: "text", text: "Peer snapshot." }],
+                });
               const { screenshot, ...page } = snapshot;
               const png = new Uint8Array(Buffer.from(screenshot.data, "base64"));
               const screenshotPath =
@@ -716,6 +724,14 @@ const registerImageTool = Effect.fn("McpHttpServer.registerImageTool")(function*
           Effect.matchCauseEffect({
             onFailure: imageToolFailure(tool.name, operation, failureText),
             onSuccess: ({ encodedResult }) => {
+              if (invocation.client?.linked === true)
+                return Effect.succeed(
+                  new McpSchema.CallToolResult({
+                    isError: false,
+                    structuredContent: encodedResult,
+                    content: [{ type: "text", text: "Peer image result." }],
+                  }),
+                );
               const { screenshot, ...rest } = encodedResult as ImageToolResult;
               const includeImage =
                 (payload as { readonly includeImage?: boolean } | undefined)?.includeImage !==

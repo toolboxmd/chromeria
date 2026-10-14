@@ -15,6 +15,7 @@ import {
   ChatAttachmentId,
   ComposerContextId,
   type ChatAttachment,
+  EnvironmentId,
   CommandId,
   DEFAULT_SERVER_SETTINGS,
   GitCommandError,
@@ -24,6 +25,7 @@ import {
   ProviderInstanceId,
   OrchestrationV2ThreadProjectionJson,
   OrchestratorMcpFailure,
+  ScheduledTaskError,
   ScheduledTaskId,
   type ServerProvider,
   ThreadId,
@@ -51,6 +53,14 @@ import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.t
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProviderRegistryMock from "../provider/testUtils/providerRegistryMock.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as OrchestratorMcp from "../mcp/OrchestratorMcpService.ts";
+import * as Invocation from "../mcp/McpInvocationContext.ts";
+import { assertSameLink, assertNotLinked } from "../mcp/linkOrigin.ts";
+import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
+import * as PeerForwarding from "../peer/PeerForwarding.ts";
+import * as PeerLinks from "../peer/PeerLinks.ts";
+import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
+import { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
 import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
@@ -72,6 +82,7 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
 
 const projectId = ProjectId.make("project:launch-test");
 const otherProjectId = ProjectId.make("project:launch-other");
+const isTaskError = Schema.is(ScheduledTaskError);
 const encodeThreadProjection = Schema.encodeEffect(OrchestrationV2ThreadProjectionJson);
 const modelSelection = {
   instanceId: ProviderInstanceId.make("codex"),
@@ -2717,3 +2728,152 @@ it.effect.each([false, true])(
 );
 
 registerPromachosLaunchTests({ makeHarness, launchInput, modelSelection });
+
+it.effect(
+  "peer schedules retain origin through persistence, edits and a restarted real launch",
+  () => {
+    const h = makeHarness();
+    const schedulerDeps = Layer.mergeAll(
+      h.layer,
+      NodeCrypto.layer,
+      Scheduler.layer,
+      Layer.mock(SecretRequests.SecretRequests)({}),
+    );
+    const tasksLayer = ScheduledTasks.layer.pipe(Layer.provideMerge(schedulerDeps));
+    const mcp = OrchestratorMcp.layer.pipe(
+      Layer.provideMerge(
+        Layer.mergeAll(
+          tasksLayer,
+          NodeServices.layer,
+          Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      const origin = { sessionId: "peer-schedule", label: "Peer" };
+      const scope: Invocation.McpInvocationScope = {
+        environmentId: EnvironmentId.make("destination"),
+        thread: undefined,
+        client: { ...origin, linked: true, access: "full-access" },
+        capabilities: new Set(["orchestration"]),
+        requestNamespace: "peer-schedule",
+        issuedAt: 1,
+      };
+      const tools = yield* OrchestratorMcp.OrchestratorMcpService;
+      const created = yield* tools.scheduleTask(scope, {
+        projectId,
+        prompt: "Do linked work",
+        enabled: false,
+        schedule: { type: "interval", everyMs: 60_000 },
+        bindToCurrentThread: false,
+        clientRequestId: "peer-timer",
+      });
+      const tasks = yield* ScheduledTasks.ScheduledTaskService;
+      const stored = (yield* tasks.list()).tasks.find(
+        (task) => task.id === created.scheduledTaskId,
+      )!;
+      assert.deepStrictEqual(stored.linkOrigin, origin);
+      const { linkOrigin: _origin, ...form } = stored;
+      const edited = yield* tasks.upsert({
+        ...form,
+        requireExisting: true,
+        title: "UI edit without ownership fields",
+      });
+      assert.deepStrictEqual(edited.task.linkOrigin, origin);
+      const foreign = { ...scope, client: { ...scope.client!, sessionId: "another-peer" } };
+      assert.strictEqual(
+        (yield* tools
+          .updateScheduledTask(foreign, { scheduledTaskId: stored.id, prompt: "Foreign" })
+          .pipe(Effect.flip)).code,
+        "capability_denied",
+      );
+      assert.strictEqual(
+        (yield* tools
+          .deleteScheduledTask(foreign, { scheduledTaskId: stored.id })
+          .pipe(Effect.flip)).code,
+        "capability_denied",
+      );
+      const persistedServices = yield* Effect.context<Layer.Success<typeof schedulerDeps>>();
+      // A fresh service reads durable origin, rather than relying on the creating request's context.
+      yield* Effect.gen(function* () {
+        const restarted = yield* ScheduledTasks.ScheduledTaskService;
+        assert.deepStrictEqual((yield* restarted.list()).tasks[0]!.linkOrigin, origin);
+        const run = yield* restarted.runNow({ id: stored.id });
+        assert.strictEqual(run.task.lastRunStatus, "succeeded");
+      }).pipe(
+        Effect.provide(
+          ScheduledTasks.layer.pipe(Layer.provide(Layer.succeedContext(persistedServices))),
+        ),
+      );
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const child = (yield* threads.listProjectThreads({ projectId, includeSubagents: false }))[0]!;
+      const shell = yield* threads.getThreadShell(child.id);
+      assert.isNotNull(shell);
+      if (shell === null) return;
+      assert.deepStrictEqual(shell.linkOrigin, origin);
+      const childScope: Invocation.McpInvocationScope = {
+        ...scope,
+        client: undefined,
+        thread: {
+          threadId: shell.id,
+          providerInstanceId: modelSelection.instanceId,
+          providerSessionId: "scheduled-agent",
+        },
+      };
+      const context = { scope: childScope, caller: shell };
+      assert.strictEqual(
+        (yield* assertSameLink(context, { linkOrigin: undefined }).pipe(Effect.flip)).code,
+        "capability_denied",
+      );
+      assert.strictEqual(
+        (yield* assertNotLinked(context, "change projects").pipe(Effect.flip)).code,
+        "capability_denied",
+      );
+      const denial = yield* Effect.gen(function* () {
+        const forwarding = yield* PeerForwarding.PeerForwarding;
+        return yield* forwarding.call(
+          childScope,
+          OrchestratorToolkit.tools.t3_thread_list,
+          EnvironmentId.make("third-machine"),
+          {},
+        );
+      }).pipe(
+        Effect.provide(
+          PeerForwarding.layer.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeedContext(persistedServices),
+                Layer.mock(PeerLinks.PeerLinks)({
+                  get: () => Effect.die("Must not use onward links"),
+                }),
+                Layer.mock(PeerMcpClient.PeerMcpClient)({
+                  call: () => Effect.die("Must not reach another peer"),
+                }),
+              ),
+            ),
+          ),
+        ),
+        Effect.provideService(Invocation.McpInvocationContext, childScope),
+        Effect.flip,
+      );
+      if (denial._tag !== "OrchestratorMcpFailure") return yield* Effect.die(denial);
+      assert.strictEqual(denial.code, "capability_denied");
+      const userThread = yield* (yield* ThreadLaunch.ThreadLaunchService).launch(
+        launchInput({ command: "user-thread", thread: "user-thread" }),
+      );
+      const rebound = yield* tasks
+        .upsert({ ...form, threadId: userThread.threadId, requireExisting: true })
+        .pipe(Effect.flip);
+      assert.include(rebound.message, "own link");
+      // A binding changed outside the service is checked again at execution.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE scheduled_tasks SET thread_id = ${userThread.threadId} WHERE task_id = ${stored.id}`;
+      const refused = yield* tasks.runNow({ id: stored.id }).pipe(Effect.flip);
+      if (!isTaskError(refused.cause)) return yield* Effect.die(refused);
+      assert.include(refused.cause.message, "own link");
+      const untouched = yield* threads.getThreadProjection(userThread.threadId);
+      assert.deepStrictEqual(untouched.messages, []);
+    }).pipe(Effect.provide(mcp));
+  },
+);

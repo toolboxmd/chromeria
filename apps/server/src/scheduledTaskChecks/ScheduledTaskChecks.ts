@@ -324,12 +324,22 @@ const makeEngine = Effect.gen(function* () {
         // Automatic sends are server messages: they never acknowledge a retirement.
         const provenance = { createdBy: "system", creationSource: "server" } as const;
         const launch = payload.launch;
+        const target = payload.linkOrigin === undefined ? null : yield* shellOf(threadId);
+        if (
+          payload.linkOrigin !== undefined &&
+          target !== null &&
+          target.linkOrigin?.sessionId !== payload.linkOrigin.sessionId
+        )
+          return yield* new ScheduledTaskCheckError({
+            message: "A linked scheduled send may target only its own link's thread.",
+          });
         if (launch !== null && (yield* shellOf(threadId)) === null) {
           yield* threadLaunch
             .launch({
               commandId: send.commandId,
               threadId,
               ...launch,
+              ...(payload.linkOrigin === undefined ? {} : { linkOrigin: payload.linkOrigin }),
               initialMessage: {
                 messageId: send.messageId,
                 scheduledTaskId: taskId,

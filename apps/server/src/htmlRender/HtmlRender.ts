@@ -39,6 +39,13 @@ import * as PreviewBrowserHost from "../preview/PreviewBrowserHost.ts";
 const MIB = 1024 * 1024;
 const MAX_IMAGE_BYTES = 10 * MIB;
 const MAX_PAGE_BYTES = 25 * MIB;
+/** A peer-prepared render, transferred before the source publishes its local reference. */
+export const PreparedDocument = Schema.Struct({
+  preparedHtml: Schema.String,
+  title: Schema.String,
+  height: Schema.Number,
+});
+
 const formatMib = (bytes: number) => `${(bytes / MIB).toFixed(1)} MiB`;
 
 export class HtmlRenderImagesNotFoundError extends Schema.TaggedError<HtmlRenderImagesNotFoundError>()(
@@ -127,6 +134,14 @@ export class HtmlRender extends Context.Service<
       readonly title: string;
       readonly height: number;
     }) => Effect.Effect<HtmlRenderReference, HtmlRenderPrepareError | HtmlRenderStoreError>;
+    /** Stores a page already prepared on a peer, without interpreting local paths again. */
+    readonly publishPrepared: (input: {
+      readonly threadId: ThreadId;
+      readonly html: string;
+      readonly title: string;
+      readonly height: number;
+    }) => Effect.Effect<HtmlRenderReference, HtmlRenderPageTooLargeError | HtmlRenderStoreError>;
+    /** Screenshots a page in headless Chrome, tolerating unreadable local images. */
     readonly preview: (input: {
       readonly html: string;
       readonly width?: number | undefined;
@@ -409,13 +424,15 @@ const make = Effect.gen(function* () {
     return inlined.html;
   });
 
-  const publish = Effect.fn("HtmlRender.publish")(function* (input: {
+  const publishPrepared = Effect.fn("HtmlRender.publishPrepared")(function* (input: {
     readonly threadId: ThreadId;
     readonly html: string;
     readonly title: string;
     readonly height: number;
   }) {
-    const html = yield* prepare(input.html);
+    const html = input.html;
+    const sizeBytes = new TextEncoder().encode(html).byteLength;
+    if (sizeBytes > MAX_PAGE_BYTES) return yield* new HtmlRenderPageTooLargeError({ sizeBytes });
     // The `-html` id suffix makes the asset route serve it as a sandboxed text/html document.
     const attachmentId = createAttachmentId(input.threadId, "html");
     const filePath =
@@ -459,6 +476,15 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const publish = Effect.fn("HtmlRender.publish")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly html: string;
+    readonly title: string;
+    readonly height: number;
+  }) {
+    return yield* publishPrepared({ ...input, html: yield* prepare(input.html) });
+  });
+
   const preview = Effect.fn("HtmlRender.preview")(function* (input: {
     readonly html: string;
     readonly width?: number | undefined;
@@ -494,7 +520,7 @@ const make = Effect.gen(function* () {
     } satisfies HtmlPreview;
   });
 
-  return HtmlRender.of({ prepare, publish, preview });
+  return HtmlRender.of({ prepare, publish, publishPrepared, preview });
 });
 
 export const layer = Layer.effect(HtmlRender, make);

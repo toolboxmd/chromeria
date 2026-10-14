@@ -114,6 +114,11 @@ export const AttachmentCreateUploadUrlInput = Schema.Union([
 export type AttachmentCreateUploadUrlInput = typeof AttachmentCreateUploadUrlInput.Type;
 
 export const AttachmentCreateUploadUrlResult = Schema.Struct({
+  uploadOrigin: Schema.optional(
+    TrimmedNonEmptyString.annotate({
+      description: "For a linked environment upload, POST relativeUrl on this destination origin.",
+    }),
+  ),
   attachmentId: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
   relativeUrl: TrimmedNonEmptyString.check(Schema.isMaxLength(4096)),
   expiresAt: Schema.Number,

@@ -1,4 +1,5 @@
 import {
+  OrchestrationV2LinkOrigin,
   CommandId,
   IsoDateTime,
   MessageId,
@@ -47,6 +48,8 @@ export const SendPayload = Schema.Struct({
   text: Schema.String,
   /** Prism's pick, for a new thread only; posts keep the thread's model and effort. */
   modelSelection: Schema.NullOr(ModelSelection),
+  /** Fixed at admission, so a crash replay retains the task's ownership. */
+  linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
   /** Set when this send launches the run's thread. */
   launch: Schema.NullOr(
     Schema.Struct({

@@ -64,7 +64,10 @@ export const descriptorOf = (
 export const servePeer = <E, R>(
   initial: ExecutionEnvironmentDescriptor,
   tools: Layer.Layer<never, E, R>,
-  options?: { readonly persisted?: boolean },
+  options?: {
+    readonly persisted?: boolean;
+    readonly scopeForThread?: McpSessionRegistry.McpSessionRegistryShape["scopeForThread"];
+  },
 ) =>
   Effect.gen(function* () {
     const descriptor = yield* Ref.make(initial);
@@ -111,6 +114,7 @@ export const servePeer = <E, R>(
           Layer.mock(McpSessionRegistry.McpSessionRegistry)({
             // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
             resolve: () => Effect.succeed(undefined),
+            scopeForThread: options?.scopeForThread ?? (() => Effect.succeed(undefined)),
           }),
         ),
         Layer.provide(McpOAuth.layerMcpClientAuthenticator),

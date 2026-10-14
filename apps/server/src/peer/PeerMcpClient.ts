@@ -51,7 +51,12 @@ const ToolCallResponse = Schema.Struct({
   result: Schema.optional(
     Schema.Struct({
       content: Schema.Array(
-        Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String) }),
+        Schema.Struct({
+          type: Schema.String,
+          text: Schema.optional(Schema.String),
+          data: Schema.optional(Schema.String),
+          mimeType: Schema.optional(Schema.String),
+        }),
       ),
       structuredContent: Schema.optional(Schema.Unknown),
       isError: Schema.optional(Schema.Boolean),
@@ -59,6 +64,7 @@ const ToolCallResponse = Schema.Struct({
   ),
   error: Schema.optional(Schema.Struct({ code: Schema.Number, message: Schema.String })),
 });
+const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeToolCallResponse = Schema.decodeUnknownEffect(Schema.fromJsonString(ToolCallResponse));
 const decodeFailure = Schema.decodeUnknownOption(
   Schema.fromJsonString(

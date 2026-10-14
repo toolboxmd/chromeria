@@ -41,6 +41,13 @@ const handlers = {
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const { thread } = yield* McpInvocationContext.requireThreadScope(scope, "html_render");
       const htmlRender = yield* HtmlRender.HtmlRender;
+      if (scope.client?.linked === true) {
+        return {
+          preparedHtml: yield* htmlRender.prepare(input.html).pipe(Effect.mapError(toFailure)),
+          title: input.title,
+          height: input.height,
+        };
+      }
       const reference = yield* htmlRender
         .publish({ threadId: thread.threadId, ...input })
         .pipe(Effect.mapError(toFailure));

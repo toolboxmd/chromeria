@@ -390,7 +390,7 @@ it.layer(Layer.provideMerge(layerTools, layerOrchestration))("work a link starts
 
       // Nor scheduled tasks, which belong to no thread.
       assert.equal(
-        failureCode(yield* call(laptop, "delete_scheduled_task", { scheduledTaskId: "any" })),
+        failureCode(yield* call(narrowed, "delete_scheduled_task", { scheduledTaskId: "any" })),
         "capability_denied",
       );
 

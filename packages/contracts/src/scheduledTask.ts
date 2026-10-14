@@ -12,6 +12,7 @@ import {
 } from "./baseSchemas.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import {
+  OrchestrationV2LinkOrigin,
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
@@ -211,6 +212,7 @@ export const ScheduledTask = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   createdBy: OrchestrationV2Actor,
   creationSource: OrchestrationV2CreationSource,
+  linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   nextRunAt: Schema.NullOr(IsoDateTime),
@@ -249,6 +251,7 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   createdBy: Schema.optional(OrchestrationV2Actor),
   creationSource: Schema.optional(OrchestrationV2CreationSource),
+  linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
 });
 export type ScheduledTaskUpsertInput = typeof ScheduledTaskUpsertInput.Type;
 

@@ -258,6 +258,24 @@ describe("HtmlRender", () => {
     }).pipe(Effect.provide(layerTest)),
   );
 
+  it.effect("refuses an oversized peer document before storing an attachment", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const config = yield* ServerConfig.ServerConfig;
+      const render = yield* HtmlRender.HtmlRender;
+      const error = yield* render
+        .publishPrepared({
+          threadId: ThreadId.make("peer-page"),
+          html: "x".repeat(25 * 1024 * 1024 + 1),
+          title: "Large",
+          height: 300,
+        })
+        .pipe(Effect.flip);
+      expect(error._tag).toBe("HtmlRenderPageTooLargeError");
+      expect(yield* fileSystem.readDirectory(config.attachmentsDir)).toEqual([]);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
   it.effect("removes the page when publishing is interrupted", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread-html-cancel");

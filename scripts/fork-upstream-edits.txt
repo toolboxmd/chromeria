@@ -260,3 +260,21 @@ apps/server/src/cloud/serviceLauncherClient.ts
 # Vitest transport-copy cache repair (#308), owned by fork-maintenance.
 pnpm-lock.yaml
 pnpm-workspace.yaml
+# Full MCP capability forwarding (#302)
+apps/server/src/mcp/McpSessionRegistry.test.ts
+apps/server/src/mcp/McpSessionRegistry.testkit.ts
+apps/server/src/mcp/McpSessionRegistry.ts
+apps/server/src/mcp/toolkits/device/tools.ts
+apps/server/src/mcp/toolkits/environment/tools.ts
+apps/server/src/mcp/toolkits/html/tools.ts
+apps/server/src/mcp/toolkits/preview/tools.ts
+apps/server/src/mcp/toolkits/previewControls/tools.ts
+apps/server/src/mcp/toolkits/pullRequests/tools.ts
+apps/server/src/mcp/toolkits/worktree/tools.ts
+apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts
+docs/internals/remote.md
+packages/contracts/src/assets.ts
+apps/server/src/mcp/toolkits/orchestrator/tools.test.ts
+apps/server/src/htmlRender/HtmlRender.ts
+apps/server/src/mcp/toolkits/html/handlers.ts
+apps/server/src/htmlRender/HtmlRender.test.ts
