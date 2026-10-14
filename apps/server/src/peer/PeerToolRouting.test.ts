@@ -10,6 +10,7 @@ import {
   RuntimeRequestId,
   ScheduledTaskId,
   ThreadId,
+  type OrchestrationProjectShell,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -33,6 +34,7 @@ import * as SecretStore from "../auth/ServerSecretStore.ts";
 import * as IssueHandlers from "../mcp/toolkits/issues/handlers.ts";
 import { IssuesToolkit } from "../mcp/toolkits/issues/tools.ts";
 import * as PullRequestHandlers from "../mcp/toolkits/pullRequests/handlers.ts";
+import * as ReviewGuides from "../pullRequest/PullRequestReviewGuideService.ts";
 import { PullRequestsToolkit } from "../mcp/toolkits/pullRequests/tools.ts";
 import * as AttachmentHandlers from "../mcp/toolkits/attachment/handlers.ts";
 import { AttachmentToolkit } from "../mcp/toolkits/attachment/tools.ts";
@@ -40,6 +42,13 @@ import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.t
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ThreadSearch from "../orchestration-v2/ThreadSearch.ts";
 import * as Projects from "../project/ProjectService.ts";
+import * as ManagedFolders from "../project/ManagedProjectFolders.ts";
+import * as Launches from "../orchestration-v2/ThreadLaunchService.ts";
+import * as Adapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as Providers from "../provider/ProviderRegistry.ts";
+import * as Repositories from "../sourceControl/SourceControlRepositoryService.ts";
+import * as Git from "../vcs/GitVcsDriver.ts";
+import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
 import * as Worktrees from "../mcp/WorktreeMcpService.ts";
 import * as Html from "../htmlRender/HtmlRender.ts";
@@ -116,6 +125,21 @@ const project = Project.make({
   updatedAt: "2026-10-14T00:00:00Z",
   deletedAt: null,
 });
+const projectShell: OrchestrationProjectShell = {
+  ...project,
+  repositoryIdentity: {
+    canonicalKey: "github.com/toolboxmd/chromeria",
+    locator: {
+      source: "git-remote",
+      remoteName: "origin",
+      remoteUrl: "git@github.com:toolboxmd/chromeria.git",
+    },
+    provider: "github",
+    displayName: "toolboxmd/chromeria",
+    owner: "toolboxmd",
+    name: "chromeria",
+  },
+};
 
 const registrations = Layer.mergeAll(
   McpHttpServer.toolkitRegistration(IssuesToolkit, IssueHandlers.layer),
@@ -174,6 +198,13 @@ const makeFixture = (realHtml = false) =>
       // Fakes stop at domain services. Tool schemas, declarations, routing, peer HTTP,
       // OAuth and mode narrowing are real on both sides.
       const dependencies = Layer.mergeAll(
+        Layer.mock(ManagedFolders.ManagedProjectFolders)({ namedProjectsRoot: "/box/folders" }),
+        Layer.mock(Launches.ThreadLaunchService)({}),
+        Layer.mock(Adapters.ProviderAdapterRegistryV2)({}),
+        Layer.mock(Providers.ProviderRegistry)({}),
+        Layer.mock(Repositories.SourceControlRepositoryService)({}),
+        Layer.mock(Git.GitVcsDriver)({}),
+        Layer.mock(GitWorkflow.GitWorkflowService)({}),
         Layer.mock(Engine.OrchestratorV2)({
           getThreadShell: () => shell,
           dispatch: (command) =>
@@ -220,6 +251,7 @@ const makeFixture = (realHtml = false) =>
                 ? Effect.succeed({ ...liveThreadShell(threadId), projectId })
                 : shell,
           getProjectThreadRecords: () => projection as never,
+          stopWorkflow: (input) => record("workflow-stop", undefined, input),
           dispatch: (command) =>
             record(command.type, { sequence: 7, storedEvents: [] } as never, command),
         }),
@@ -230,6 +262,30 @@ const makeFixture = (realHtml = false) =>
           getById: () => record("project-read", Option.some(project)),
           update: (input) => record("project-update", project, input),
           getShell: () => Effect.succeed(Option.none()),
+          listShells: () => Effect.succeed([projectShell]),
+        }),
+        Layer.mock(ReviewGuides.PullRequestReviewGuideService)({
+          get: (input) =>
+            record(
+              "guide-read",
+              {
+                guide: null,
+                run: null,
+                currentHeadSha: environmentId === box.environmentId ? "box-head" : "laptop-head",
+              },
+              input,
+            ),
+          generate: (input) =>
+            record(
+              "guide-write",
+              {
+                guide: null,
+                run: null,
+                currentHeadSha: environmentId === box.environmentId ? "box-head" : "laptop-head",
+                started: true,
+              },
+              input,
+            ),
         }),
         Layer.mock(Settings.ServerSettingsService)({
           getSettings: record("preferences-read", DEFAULT_SERVER_SETTINGS),
@@ -290,7 +346,20 @@ const makeFixture = (realHtml = false) =>
             sessions: [],
           } as never),
           close: (input) => record("device-close", undefined, input),
-          sessionsForThread: () => Effect.succeed([]),
+          sessionsForThread: (id) =>
+            Effect.succeed(
+              id === threadId
+                ? [
+                    {
+                      threadId,
+                      hostId: "local",
+                      deviceId: "device",
+                      platform: "ios" as const,
+                      openedAt: "2026-10-14T00:00:00Z",
+                    },
+                  ]
+                : [],
+            ),
           screenshot: (input) =>
             record(
               "device-screenshot",
@@ -358,7 +427,10 @@ const makeFixture = (realHtml = false) =>
     const dependencies = Layer.succeedContext(sourceDependencies);
     const b = yield* servePeer(
       box,
-      registrations.pipe(Layer.provide(Layer.succeedContext(destinationDependencies))),
+      registrations.pipe(
+        Layer.provide(Layer.succeedContext(destinationDependencies)),
+        Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+      ),
       {
         scopeForThread: (id) =>
           Ref.get(destinationCapabilities).pipe(
@@ -390,13 +462,14 @@ const makeFixture = (realHtml = false) =>
       args: Record<string, unknown>,
       context = false,
       granted = capabilities,
+      target: typeof box.environmentId | null = box.environmentId,
     ) =>
       server
         .callTool({
           name,
           arguments: {
             ...args,
-            environmentId: box.environmentId,
+            ...(target === null ? {} : { environmentId: target }),
             ...(context ? { contextThreadId: threadId } : {}),
           },
         })
@@ -482,6 +555,12 @@ const cases = [
     operation: "thread.fork",
   },
   {
+    group: "native workflows",
+    name: "t3_workflow_stop",
+    args: { threadId, subagentId: "workflow-coordinator" },
+    operation: "workflow-stop",
+  },
+  {
     group: "thread configuration",
     name: "t3_thread_configure",
     args: { threadId, modelSelection: { instanceId: "codex", model: "gpt-5" } },
@@ -561,6 +640,85 @@ const cases = [
   },
 ];
 
+it.effect("native guide tools reach the peer without broadening their capability policy", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const target = { url: "https://github.com/toolboxmd/chromeria/pull/304" };
+      yield* f.link("auto");
+      const write = yield* f.call("write_pull_request_guides", { pullRequests: [target] });
+      expect(write.isError, JSON.stringify(write)).toBe(false);
+      expect(write.structuredContent).toMatchObject({
+        guides: [{ repository: "toolboxmd/chromeria", number: 304, outcome: "started" }],
+      });
+      expect(yield* Ref.get(f.seen)).toEqual([
+        expect.objectContaining({
+          operation: "guide-write",
+          environmentId: box.environmentId,
+          input: { projectId, host: "github.com", repository: "toolboxmd/chromeria", number: 304 },
+        }),
+      ]);
+      yield* Ref.set(f.seen, []);
+      yield* f.link("read-only");
+      const refused = yield* f.call("write_pull_request_guides", { pullRequests: [target] });
+      expect(refused.isError, JSON.stringify(refused)).toBe(true);
+      expect(yield* Ref.get(f.seen)).toEqual([]);
+      const read = yield* f.call("read_pull_request_guide", target);
+      expect(read.isError, JSON.stringify(read)).toBe(false);
+      expect(read.structuredContent).toMatchObject({ currentHeadSha: "box-head", stale: false });
+      expect(yield* Ref.get(f.seen)).toEqual([
+        expect.objectContaining({ operation: "guide-read", environmentId: box.environmentId }),
+      ]);
+      yield* Ref.set(f.seen, []);
+      yield* f.link("auto");
+      const noCapability = new Set<Invocation.McpCapability>(["orchestration"]);
+      const sourceRefused = yield* f.call(
+        "write_pull_request_guides",
+        { pullRequests: [target] },
+        false,
+        noCapability,
+      );
+      expect(sourceRefused.isError).toBe(true);
+      expect(yield* Ref.get(f.seen)).toEqual([]);
+      yield* f.link("full-access");
+      yield* Ref.set(f.destinationCapabilities, noCapability);
+      const destinationRefused = yield* f.call("read_pull_request_guide", target, true);
+      expect(destinationRefused.isError).toBe(true);
+      expect(yield* Ref.get(f.seen)).toEqual([]);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("new native tools retain local execution when no environment is selected", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const target = { url: "https://github.com/toolboxmd/chromeria/pull/304" };
+      for (const [name, args] of [
+        ["t3_workflow_stop", { threadId, subagentId: "workflow-coordinator" }],
+        ["write_pull_request_guides", { pullRequests: [target] }],
+        ["read_pull_request_guide", target],
+      ] as const) {
+        const result = yield* f.call(name, args, false, capabilities, null);
+        expect(result.isError, `${name}: ${JSON.stringify(result)}`).toBe(false);
+        if (name === "read_pull_request_guide") {
+          expect(result.structuredContent).toMatchObject({ currentHeadSha: "laptop-head" });
+        }
+      }
+      expect(
+        (yield* Ref.get(f.seen)).map(({ operation, environmentId }) => ({
+          operation,
+          environmentId,
+        })),
+      ).toEqual([
+        { operation: "workflow-stop", environmentId: laptop.environmentId },
+        { operation: "guide-write", environmentId: laptop.environmentId },
+        { operation: "guide-read", environmentId: laptop.environmentId },
+      ]);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect.each(cases)("$group reaches the peer and refuses a narrower link", (test) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -600,6 +758,11 @@ it.effect("remote reads return the destination's state", () =>
         ["device_list", {}, true],
         ["list_thread_issues", {}, true],
         ["list_thread_pull_requests", { threadId }, false],
+        [
+          "read_pull_request_guide",
+          { url: "https://github.com/toolboxmd/chromeria/pull/304" },
+          false,
+        ],
         ["html_preview", { html: "<p>remote</p>" }, true],
       ] as const) {
         const result = yield* f.call(name, args, context);
