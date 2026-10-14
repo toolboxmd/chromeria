@@ -138,7 +138,9 @@ export const writes = <P, A, E, R>(
 
 /** Requires handler capability checks, not thread control. */
 export const writesWithCapability = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
-  declare((params: P) => writingCaller.pipe(Effect.flatMap(() => handle(params))));
+  declare((params: P) =>
+    writingCaller.pipe(Effect.flatMap(() => McpRouting.invoke(params, handle))),
+  );
 
 export const writesThreads = <P, A, E, R>(
   threads: (

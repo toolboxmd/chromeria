@@ -1,3 +1,4 @@
+import * as McpRouting from "../../McpRouting.ts";
 import {
   OrchestratorMcpCapabilitiesInput,
   OrchestratorMcpCapabilitiesResult,
@@ -125,10 +126,7 @@ const TaskCancelTool = Tool.make("task_cancel", {
 const WorkflowStopTool = Tool.make("t3_workflow_stop", {
   description:
     "Stop a running Claude workflow in a thread. `subagentId`: coordinator from `t3_thread_read` 'activity'. Stops only the workflow, not the thread.",
-  parameters: Schema.Struct({
-    environmentId: OrchestratorMcpEnvironmentTarget,
-    ...OrchestrationV2StopWorkflowInput.fields,
-  }),
+  parameters: McpRouting.parameters(OrchestrationV2StopWorkflowInput),
   success: Schema.Struct({}),
   failure: OrchestratorMcpFailure,
   failureMode: "return",

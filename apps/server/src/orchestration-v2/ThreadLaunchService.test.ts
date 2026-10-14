@@ -15,7 +15,6 @@ import {
   ChatAttachmentId,
   ComposerContextId,
   type ChatAttachment,
-  EnvironmentId,
   CommandId,
   DEFAULT_SERVER_SETTINGS,
   GitCommandError,
@@ -56,7 +55,6 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as OrchestratorMcp from "../mcp/OrchestratorMcpService.ts";
 import * as Invocation from "../mcp/McpInvocationContext.ts";
 import { assertSameLink, assertNotLinked } from "../mcp/linkOrigin.ts";
-import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
