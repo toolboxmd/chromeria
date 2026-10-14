@@ -92,7 +92,11 @@ import {
   SHARED_WORKSPACE_RESTORE_MESSAGE,
 } from "./CheckpointRestoreSafety.ts";
 import { CheckpointServiceV2 } from "./CheckpointService.ts";
-import { CommandPolicyV2, resolveMessageDispatchIntent } from "./CommandPolicy.ts";
+import {
+  CommandPolicyV2,
+  resolveMessageDispatchIntent,
+  steeringCancelsRunningTools,
+} from "./CommandPolicy.ts";
 import { CommandReceiptStoreV2 } from "./CommandReceiptStore.ts";
 import { ContextHandoffServiceV2 } from "./ContextHandoffService.ts";
 import { notificationTurnItem } from "./Notification.ts";
@@ -7524,6 +7528,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           commandId: command.commandId,
           commandType: command.type,
           cause: "Automatic completion deliveries cannot be promoted to Steer.",
+        });
+      }
+      if (steeringCancelsRunningTools(projection, command.targetRunId)) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause:
+            "Steering this provider cancels running tools and reports that as a user refusal. The message stays queued.",
         });
       }
 
