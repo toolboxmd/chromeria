@@ -9,6 +9,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -76,6 +77,7 @@ const setup = Effect.gen(function* () {
   yield* Recovery.initializeRecoveryHistory;
   yield* ensureCheckSchema;
 });
+const restartFixture = Outbox.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory));
 
 it.effect("a failed run holds until its recovery decision is conclusive", () =>
   Effect.gen(function* () {
@@ -192,7 +194,7 @@ it.effect.each(["monitor", "subagent", "task"] as const)(
       yield* sql`UPDATE orchestration_v2_projection_runs SET status = 'completed'
         WHERE run_id = 'run:continued'`;
       assert.deepEqual(yield* followRun(sourceId), { kind: "completed", runId: "run:continued" });
-    }).pipe(Effect.provide(Outbox.layer), Effect.provide(SqlitePersistence.layerMemory)),
+    }).pipe(Effect.provide(restartFixture)),
 );
 
 it.effect.each(["completed", "cancelled"] as const)(
@@ -221,7 +223,7 @@ it.effect.each(["completed", "cancelled"] as const)(
       assert.isTrue(Option.isSome(claimed));
       assert.isTrue(yield* outbox.succeed({ effectId, workerId: "restart" }));
       assert.deepEqual(yield* followRun(sourceId), { kind: "ended", runId: sourceId });
-    }).pipe(Effect.provide(Outbox.layer), Effect.provide(SqlitePersistence.layerMemory)),
+    }).pipe(Effect.provide(restartFixture)),
 );
 
 it.effect("a completed run with only a cancelled background shell still completes", () =>

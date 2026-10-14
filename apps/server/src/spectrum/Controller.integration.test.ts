@@ -5,6 +5,7 @@ import {
   MessageId,
   RunId,
   ScheduledTaskId,
+  ThreadId,
   type OrchestrationV2Run,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -14,6 +15,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Option from "effect/Option";
 import * as Events from "../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
+import * as Settings from "../serverSettings.ts";
 import * as Projection from "../orchestration-v2/ProjectionStore.ts";
 import { layer as serialization } from "../orchestration-v2/ThreadCommandExecutor.ts";
 import { initializeRecoveryHistory } from "../prism/RecoveryHistory.ts";
@@ -21,6 +24,7 @@ import { reportsFence } from "../scheduledTaskChecks/handoff.ts";
 import { ensureCheckSchema, writeCheckState } from "../scheduledTaskChecks/store.ts";
 import * as Controller from "./Controller.ts";
 import * as McpInterrupt from "./mcpInterrupt.ts";
+import * as McpSend from "./mcpSend.ts";
 import * as CommandPlans from "./commandPlan.ts";
 import * as Adapter from "./SchedulerAdapter.ts";
 import * as Launch from "./LaunchService.ts";
@@ -41,7 +45,7 @@ const services = Layer.mergeAll(Launch.layer, Round.layer, Transcript.layer, Rep
 );
 const runtime = Layer.fresh(
   Layer.mergeAll(
-    CommandPlans.layer,
+    CommandPlans.layer.pipe(Layer.provide(dependencies)),
     McpInterrupt.layer.pipe(Layer.provide(dependencies)),
     Adapter.layer,
     Controller.layer.pipe(Layer.provideMerge(services)),
@@ -82,6 +86,445 @@ const finish = Effect.fn("test.Spectrum.finish")(function* (run: OrchestrationV2
     ],
   });
 });
+
+const loseAwaitedWork = Effect.fn("test.Spectrum.loseAwaitedWork")(function* (
+  run: OrchestrationV2Run,
+  status: "completed" | "cancelled" = "completed",
+) {
+  const commandId = CommandId.make(`command:runtime-reconcile:fixture:${run.id}`);
+  yield* (yield* Events.EventSinkV2).commitCommand({
+    commandId,
+    threadId: run.threadId,
+    commandType: "fixture",
+    acceptedAt: NOW,
+    events: [
+      {
+        id: EventId.make(`${run.id}:lost-work`),
+        type: "run.updated",
+        threadId: run.threadId,
+        occurredAt: NOW,
+        payload: {
+          ...run,
+          status,
+          completedAt: NOW,
+          restartCancelledBackgroundWork: [{ kind: "monitor", id: "lost", label: "Awaited work" }],
+        },
+      },
+    ],
+    effects: [
+      {
+        id: `effect:restart-continuation:${run.id}`,
+        commandId,
+        threadId: run.threadId,
+        request: { type: "provider-runtime.continue", sourceRunId: run.id },
+      },
+    ],
+  });
+});
+
+it.effect(
+  "council waits for a lost-work restart and relays only its exact successor's answer",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      yield* initializeRecoveryHistory;
+      const state = yield* (yield* Launch.SpectrumLaunchService).register(input);
+      const controller = yield* Controller.SpectrumController;
+      const running = yield* controller.resume(state.threadId);
+      const slot = running.round!.slots[0]!;
+      const projections = yield* Projection.ProjectionStoreV2;
+      const source = (yield* projections.getThreadRecords(slot.threadId, ["runs"])).runs.find(
+        (run) => run.id === slot.runId,
+      )!;
+      yield* finish(source, "Partial answer awaiting a monitor.");
+      yield* loseAwaitedWork(source);
+      const held = yield* controller.resume(state.threadId);
+      assert.strictEqual(held.status, "active");
+      assert.strictEqual(held.round!.step, 0);
+      assert.isNull(held.round!.slots[0]!.replyIds);
+      assert.isNull(held.report);
+      const successor = {
+        ...source,
+        id: RunId.make("run:council:restart"),
+        ordinal: source.ordinal + 1,
+        userMessageId: MessageId.make("message:council:restart"),
+        restartContinuationOfRunId: source.id,
+        status: "running" as const,
+        completedAt: null,
+      };
+      yield* (yield* Events.EventSinkV2).write({
+        events: [
+          {
+            id: EventId.make("event:council:restart"),
+            type: "run.created",
+            threadId: successor.threadId,
+            occurredAt: NOW,
+            payload: successor,
+          },
+        ],
+      });
+      assert.isNull((yield* controller.resume(state.threadId)).round!.slots[0]!.replyIds);
+      yield* finish(successor, "Complete answer after restart.");
+      const accepted = yield* controller.resume(state.threadId);
+      assert.strictEqual(accepted.round!.step, 0);
+      assert.strictEqual(accepted.round!.slots[0]!.runId, successor.id);
+      assert.deepStrictEqual(accepted.round!.slots[0]!.replyIds, [
+        MessageId.make(`${successor.id}:reply`),
+      ]);
+      const transcript = yield* projections.getThreadRecords(state.threadId, ["messages"]);
+      assert.isTrue(
+        transcript.messages.some(
+          (message) => message.text === "[Blue]\nComplete answer after restart.",
+        ),
+      );
+      assert.isFalse(
+        transcript.messages.some((message) => message.text.includes("Partial answer")),
+      );
+    }).pipe(Effect.provide(runtime)),
+);
+
+it.effect.each(["completed", "cancelled"] as const)(
+  "council retires a %s lost-work reply when native restart declines without relaying partial text",
+  (status) =>
+    Effect.gen(function* () {
+      yield* setup;
+      yield* initializeRecoveryHistory;
+      const state = yield* (yield* Launch.SpectrumLaunchService).register(input);
+      const controller = yield* Controller.SpectrumController;
+      const running = yield* controller.resume(state.threadId);
+      const slot = running.round!.slots[0]!;
+      const projections = yield* Projection.ProjectionStoreV2;
+      const source = (yield* projections.getThreadRecords(slot.threadId, ["runs"])).runs.find(
+        (run) => run.id === slot.runId,
+      )!;
+      yield* finish(source, "Partial reply that did not finish its work.");
+      yield* loseAwaitedWork(source, status);
+      assert.isNull((yield* controller.resume(state.threadId)).round!.slots[0]!.replyIds);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE orchestration_v2_effect_outbox SET status='succeeded'
+        WHERE effect_id=${`effect:restart-continuation:${source.id}`}`;
+      const ended = yield* controller.resume(state.threadId);
+      assert.strictEqual(ended.status, "retired");
+      assert.isNull(ended.round);
+      assert.strictEqual(ended.report!.text, "Spectrum could not finish: run-ended.");
+      const transcript = yield* projections.getThreadRecords(state.threadId, ["messages"]);
+      assert.isFalse(transcript.messages.some((message) => message.text.includes("Partial reply")));
+    }).pipe(Effect.provide(runtime)),
+);
+
+it.effect(
+  "reply acceptance rolls back when the completed run loses awaited work before commit",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      yield* initializeRecoveryHistory;
+      const state = yield* (yield* Launch.SpectrumLaunchService).register(input);
+      const running = yield* (yield* Controller.SpectrumController).resume(state.threadId);
+      const slot = running.round!.slots[0]!;
+      const projections = yield* Projection.ProjectionStoreV2;
+      const source = (yield* projections.getThreadRecords(slot.threadId, ["runs"])).runs.find(
+        (run) => run.id === slot.runId,
+      )!;
+      yield* finish(source, "Answer whose awaited work is lost before acceptance.");
+      const sink = yield* Events.EventSinkV2;
+      const replyKey = CommandId.make(`${slot.commandId}:reply:enqueue`);
+      const refused = yield* Effect.gen(function* () {
+        return yield* (yield* Controller.SpectrumController).resume(state.threadId);
+      }).pipe(
+        Effect.provide(Controller.layer),
+        Effect.provideService(Events.EventSinkV2, {
+          ...sink,
+          commitCommand: (command) =>
+            command.commandId === replyKey
+              ? loseAwaitedWork(source).pipe(Effect.andThen(sink.commitCommand(command)))
+              : sink.commitCommand(command),
+        }),
+        Effect.exit,
+      );
+      assert.strictEqual(refused._tag, "Failure");
+      const current = yield* read(state.threadId);
+      assert.strictEqual(current.round!.step, 0);
+      assert.isNull(current.round!.slots[0]!.replyIds);
+      const sql = yield* SqlClient.SqlClient;
+      assert.deepStrictEqual(
+        yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_id=${replyKey}`,
+        [],
+      );
+      const transcript = yield* projections.getThreadRecords(state.threadId, ["messages"]);
+      assert.isFalse(transcript.messages.some((message) => message.text.includes("Answer whose")));
+    }).pipe(Effect.provide(runtime)),
+);
+
+it.effect(
+  "delivered-report reopen rejects completion lost after planning and follows the exact restart",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      yield* initializeRecoveryHistory;
+      const state = yield* (yield* Launch.SpectrumLaunchService).register(input);
+      const reports = yield* Reports.SpectrumReportService;
+      yield* reports.settle(state.threadId, "Completed report before restart.");
+      const before = yield* reports.deliver(state.threadId);
+      const projections = yield* Projection.ProjectionStoreV2;
+      const source = (yield* projections.getThreadRecords(input.callerThreadId, [
+        "runs",
+      ])).runs.find((run) => run.userMessageId === before.report!.messageId)!;
+      yield* finish(source, "The report was processed.");
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const interceptor = yield* ForkCommandInterceptor;
+      const reopen = {
+        type: "thread.unsettle" as const,
+        reason: "user" as const,
+        threadId: state.threadId,
+        commandId: CommandId.make("restart:reopen-race"),
+      };
+      const refused = yield* orchestrator.dispatch(reopen).pipe(
+        Effect.provideService(ForkCommandInterceptor, {
+          plan: (command) =>
+            Effect.gen(function* () {
+              const planned = yield* interceptor.plan(command);
+              if (command.commandId === reopen.commandId) yield* loseAwaitedWork(source);
+              return planned;
+            }),
+        }),
+        Effect.exit,
+      );
+      assert.strictEqual(refused._tag, "Failure");
+      assert.deepStrictEqual(yield* read(state.threadId), before);
+      const successor = {
+        ...source,
+        id: RunId.make("run:reopen:successor"),
+        ordinal: source.ordinal + 1,
+        userMessageId: MessageId.make("message:reopen:successor"),
+        restartContinuationOfRunId: source.id,
+        status: "completed" as const,
+        completedAt: NOW,
+      };
+      yield* (yield* Events.EventSinkV2).write({
+        events: [
+          {
+            id: EventId.make("event:reopen:successor"),
+            type: "run.created",
+            threadId: source.threadId,
+            occurredAt: NOW,
+            payload: successor,
+          },
+        ],
+      });
+      yield* orchestrator.dispatch({
+        ...reopen,
+        commandId: CommandId.make("restart:reopen-complete"),
+      });
+      const reopened = yield* read(state.threadId);
+      assert.strictEqual(reopened.status, "active");
+      assert.isNull(reopened.report);
+    }).pipe(Effect.provide(runtime)),
+);
+
+it.effect(
+  "a retired council cannot reopen while an owned native restart effect is still pending",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      yield* initializeRecoveryHistory;
+      const state = yield* (yield* Launch.SpectrumLaunchService).register(input);
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      yield* orchestrator.dispatch({
+        type: "thread.stop",
+        threadId: state.threadId,
+        commandId: CommandId.make("native-drain:stop"),
+      });
+      const retired = yield* read(state.threadId);
+      yield* (yield* Reports.SpectrumReportService).abandon(
+        state.threadId,
+        retired.report!.commandId,
+        "alice",
+      );
+      const childId = retired.participants[0]!.threadId;
+      const source = makeRun(
+        {
+          threadId: childId,
+          commandId: CommandId.make("native-drain:source"),
+          messageId: MessageId.make("native-drain:source"),
+          runId: null,
+          replyIds: null,
+        },
+        { status: "completed", completedAt: NOW },
+      );
+      yield* loseAwaitedWork(source);
+      const reopen = {
+        type: "thread.unsettle" as const,
+        reason: "user" as const,
+        threadId: state.threadId,
+        commandId: CommandId.make("native-drain:reopen"),
+      };
+      const refused = yield* orchestrator.dispatch(reopen).pipe(Effect.exit);
+      assert.strictEqual(refused._tag, "Failure");
+      assert.strictEqual((yield* read(state.threadId)).status, "retired");
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE orchestration_v2_effect_outbox SET status='succeeded'
+      WHERE effect_id=${`effect:restart-continuation:${source.id}`}`;
+      yield* orchestrator.dispatch({
+        ...reopen,
+        commandId: CommandId.make("native-drain:reopen-settled"),
+      });
+      assert.strictEqual((yield* read(state.threadId)).status, "active");
+    }).pipe(Effect.provide(runtime)),
+);
+
+it.effect(
+  "disabled instances still accept registered composer and MCP transcripts while refusing provider starts",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      const state = yield* (yield* Launch.SpectrumLaunchService).register(input);
+      const projections = yield* Projection.ProjectionStoreV2;
+      const projectId = (yield* projections.getThread(state.threadId)).projectId;
+      const gate = Layer.fresh(Threads.layer).pipe(
+        Layer.provideMerge(
+          Settings.layerTest({
+            providerInstances: { codex: { driver: "codex", enabled: true } },
+            projectSettingsOverrides: {
+              [projectId]: { providerInstances: { codex: { enabled: false } } },
+            },
+          }),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const threads = yield* Threads.ThreadManagementService;
+        const composer = {
+          type: "message.dispatch" as const,
+          commandId: CommandId.make("disabled:composer"),
+          messageId: MessageId.make("disabled:composer"),
+          threadId: state.threadId,
+          text: "A human joins the transcript.",
+          attachments: [],
+          createdBy: "user" as const,
+          creationSource: "web" as const,
+          dispatchMode: { type: "start_immediately" as const },
+        };
+        const first = yield* threads.dispatch(composer);
+        assert.deepStrictEqual(yield* threads.dispatch(composer), first);
+        const send = yield* McpSend.SpectrumMcpSend;
+        assert.deepStrictEqual(
+          yield* send.send(
+            threads,
+            {
+              threadId: state.threadId,
+              message: "An agent joins the transcript.",
+            },
+            CommandId.make("disabled:mcp"),
+            MessageId.make("disabled:mcp"),
+            input.callerThreadId,
+          ),
+          {
+            threadId: state.threadId,
+            messageId: MessageId.make("disabled:mcp"),
+            runId: null,
+            status: "idle",
+            delivery: "transcript",
+          },
+        );
+        const rows = yield* projections.getThreadRecords(state.threadId, ["runs", "messages"]);
+        assert.deepStrictEqual(rows.runs, []);
+        assert.strictEqual(
+          rows.messages.filter((message) => message.id === composer.messageId).length,
+          1,
+        );
+        assert.strictEqual(
+          rows.messages.find((message) => message.id === composer.messageId)!.text,
+          composer.text,
+        );
+        assert.strictEqual(
+          rows.messages.find((message) => message.id === "disabled:mcp")!.text,
+          "An agent joins the transcript.",
+        );
+        const sql = yield* SqlClient.SqlClient;
+        assert.deepStrictEqual(
+          yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id=${state.threadId}`,
+          [],
+        );
+        const ordinary = yield* threads
+          .dispatch({
+            ...composer,
+            commandId: CommandId.make("disabled:ordinary"),
+            messageId: MessageId.make("disabled:ordinary"),
+            threadId: input.callerThreadId,
+          })
+          .pipe(Effect.flip);
+        assert.strictEqual(ordinary._tag, "ThreadManagementProviderInstanceDisabledError");
+
+        const placeholder = ThreadId.make("spectrum:unregistered-placeholder");
+        const caller = yield* projections.getThread(input.callerThreadId);
+        yield* (yield* Events.EventSinkV2).write({
+          events: [
+            {
+              id: EventId.make("disabled:unregistered-placeholder"),
+              type: "thread.created",
+              threadId: placeholder,
+              occurredAt: NOW,
+              payload: {
+                ...caller,
+                id: placeholder,
+                forkSpectrumRunning: true,
+                lineage: {
+                  parentThreadId: null,
+                  relationshipToParent: null,
+                  rootThreadId: placeholder,
+                },
+              },
+            },
+          ],
+        });
+        const unregistered = yield* threads
+          .dispatch({
+            ...composer,
+            commandId: CommandId.make("disabled:unregistered-send"),
+            messageId: MessageId.make("disabled:unregistered-send"),
+            threadId: placeholder,
+          })
+          .pipe(Effect.flip);
+        assert.instanceOf(unregistered, Threads.ThreadManagementProviderInstanceDisabledError);
+        assert.deepStrictEqual(
+          (yield* projections.getThreadRecords(placeholder, ["runs"])).runs,
+          [],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id=${placeholder}`,
+          [],
+        );
+
+        const prepared = yield* (yield* Round.SpectrumRoundService).prepare(state.threadId);
+        const command = prepared.outbox[0]!;
+        const refused = yield* Effect.gen(function* () {
+          return yield* (yield* Round.SpectrumRoundService).dispatch(
+            state.threadId,
+            command.commandId,
+          );
+        }).pipe(Effect.provide(Round.layer), Effect.flip);
+        assert.instanceOf(refused.cause, Threads.ThreadManagementProviderInstanceDisabledError);
+        assert.deepStrictEqual(yield* read(state.threadId), prepared);
+        for (const color of prepared.participants) {
+          assert.deepStrictEqual(
+            (yield* projections.getThreadRecords(color.threadId, ["runs"])).runs,
+            [],
+          );
+          assert.deepStrictEqual(
+            yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id=${color.threadId}`,
+            [],
+          );
+        }
+      }).pipe(Effect.provide(Layer.merge(gate, McpSend.layer)));
+      // The same durable start remains eligible after the instance is enabled again.
+      const prepared = yield* read(state.threadId);
+      const command = prepared.outbox[0]!;
+      yield* (yield* Round.SpectrumRoundService).dispatch(state.threadId, command.commandId);
+      assert.strictEqual(
+        (yield* projections.getThreadRecords(command.threadId, ["runs"])).runs.length,
+        1,
+      );
+    }).pipe(Effect.provide(runtime)),
+);
 
 it.effect(
   "free mode preserves verbatim replies, exact barrier order and reports through the real scheduler adapter",
@@ -400,6 +843,7 @@ it.effect(
       const prepared = yield* (yield* Round.SpectrumRoundService).prepare(state.threadId);
       const command = prepared.outbox[0]!;
       const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threads = yield* Threads.ThreadManagementService;
       const stop = {
         type: "thread.stop" as const,
         threadId: state.threadId,
@@ -412,10 +856,10 @@ it.effect(
           .pipe(Effect.flip);
       }).pipe(
         Effect.provide(Round.layer),
-        Effect.provideService(Orchestrator.OrchestratorV2, {
-          ...orchestrator,
+        Effect.provideService(Threads.ThreadManagementService, {
+          ...threads,
           dispatch: (launch) =>
-            orchestrator.dispatch(stop).pipe(Effect.andThen(orchestrator.dispatch(launch))),
+            orchestrator.dispatch(stop).pipe(Effect.andThen(threads.dispatch(launch))),
         }),
       );
       const retired = yield* read(state.threadId);

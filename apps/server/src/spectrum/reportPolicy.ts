@@ -226,26 +226,10 @@ export function abandonedState(
   };
 }
 
-/** Every run an attempt's message started, followed through each recorded continuation link. */
-function reachableRuns(runs: ReadonlyArray<OrchestrationV2Run>, messageId: MessageId) {
-  const found = runs.filter((run) => run.userMessageId === messageId);
-  for (let index = 0; index < found.length; index += 1) {
-    const source = found[index]!.id;
-    for (const run of runs)
-      if (
-        (run.restartContinuationOfRunId === source ||
-          run.forkPrismContinuationSourceRunId === source) &&
-        !found.includes(run)
-      )
-        found.push(run);
-  }
-  return found;
-}
-
 /**
  * Abandonment's commit guard (D42): the attempt must still be undelivered when
- * the abandonment commits, not only when it was planned. A completed run
- * anywhere on its recorded chain delivered the report. Projection reads only.
+ * the abandonment commits, not only when it was planned. The same exact
+ * effective completion used for delivery decides whether abandonment is refused.
  */
 export function reportUndeliveredGuard(
   threadId: ThreadId,
@@ -254,9 +238,7 @@ export function reportUndeliveredGuard(
   return {
     guards: [
       Effect.gen(function* () {
-        const projections = yield* ProjectionStore.ProjectionStoreV2;
-        const { runs } = yield* projections.getThreadRecords(report.threadId, ["runs"]);
-        if (reachableRuns(runs, report.messageId).some((run) => runOutcome(run) === "completed"))
+        if ((yield* followSend(report.threadId, report.messageId)).kind === "completed")
           return yield* conflict(threadId);
       }).pipe(Effect.mapError((error) => guardError(threadId, error))),
     ],
@@ -583,6 +565,9 @@ const chainUnchanged = Effect.fnUntraced(function* (chain: ReportChain) {
     WHERE source_run_id = ${tailId} AND state IN ('retry_pending', 'retry_started', 'reset_wait')
     LIMIT 1`;
   if (controllers.length > 0) return yield* conflict(chain.threadId);
+  const restarts = yield* sql`SELECT 1 FROM orchestration_v2_effect_outbox
+    WHERE effect_id = ${`effect:restart-continuation:${tailId}`} AND status IN ('pending','running')`;
+  if (restarts.length > 0) return yield* conflict(chain.threadId);
 });
 
 /** Proof that an abandoned report can no longer run; the controller's reopen commits it as a guard. */
@@ -642,6 +627,7 @@ const stillDraining = Effect.fnUntraced(function* (chain: ReportChain, commandId
     SELECT 1 FROM orchestration_v2_effect_outbox
     WHERE thread_id = ${chain.threadId} AND status IN ${sql.in(UNSETTLED)}
       AND (json_extract(payload_json, '$.runId') IN ${sql.in(chain.runIds)}
+        OR json_extract(payload_json, '$.sourceRunId') IN ${sql.in(chain.runIds)}
         OR json_extract(payload_json, '$.providerTurnId') IN (${turns})
         OR substr(command_id, 1, ${commandId.length}) = ${commandId})
     LIMIT 1
@@ -661,24 +647,11 @@ export function reportDrainedPlan(proof: ReportDrainProof): ForkCommitPlan {
           state.outbox.some((command) => command.commandId === proof.commandId)
         )
           return yield* conflict(proof.threadId);
-        // Effects are planning-time evidence only (D14); a settled terminal run creates none later.
-        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        // Native restart intent can outlive a terminal source. Recheck its drain in this transaction.
+        const commands = reportAttempts(state);
         for (const chain of proof.chains) {
-          const records = yield* projections.getThreadRecords(chain.threadId, [
-            "attempts",
-            "providerTurns",
-          ]);
-          const attempts = records.attempts.filter((attempt) =>
-            chain.runIds.includes(attempt.runId),
-          );
-          if (
-            attempts.some((attempt) => UNSETTLED.includes(attempt.status)) ||
-            records.providerTurns.some(
-              (turn) =>
-                UNSETTLED.includes(turn.status) &&
-                attempts.some((attempt) => attempt.id === turn.runAttemptId),
-            )
-          )
+          const command = commands.find((command) => command.messageId === chain.messageId);
+          if (command === undefined || (yield* stillDraining(chain, command.commandId)))
             return yield* conflict(proof.threadId);
         }
       }).pipe(Effect.mapError((error) => guardError(proof.threadId, error))),
