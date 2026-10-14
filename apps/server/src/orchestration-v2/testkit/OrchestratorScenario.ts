@@ -23,6 +23,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 
+import * as EventSink from "../EventSink.ts";
 import * as Orchestrator from "../Orchestrator.ts";
 import type { RecordedCommandOutput } from "./CommandOutputRecorder.ts";
 import type { ProviderReplayGate } from "@t3tools/provider-testing/replayGate";
@@ -262,14 +263,15 @@ export function runOrchestratorV2Scenario(
 ): Effect.Effect<
   OrchestratorV2ScenarioResult,
   Orchestrator.OrchestratorV2Error | OrchestratorV2ScenarioStepError,
-  Orchestrator.OrchestratorV2
+  Orchestrator.OrchestratorV2 | EventSink.EventSinkV2
 > {
   return Effect.scoped(
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
       const storedEventGroups: Array<ReadonlyArray<OrchestrationV2StoredEvent>> = [];
       const observedStoredEvents = yield* Ref.make<Array<OrchestrationV2StoredEvent>>([]);
-      yield* orchestrator.streamStoredEvents.pipe(
+      yield* eventSink.stream({ afterSequence: 0 }).pipe(
         Stream.runForEach((event) =>
           Ref.update(observedStoredEvents, (existing) => [...existing, event]),
         ),

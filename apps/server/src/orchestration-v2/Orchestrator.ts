@@ -430,10 +430,11 @@ export interface OrchestratorV2Shape {
   readonly getThreadEventSequence: (
     threadId: ThreadId,
   ) => Effect.Effect<number, OrchestratorV2Error>;
-  readonly streamStoredEvents: Stream.Stream<OrchestrationV2StoredEvent, OrchestratorV2Error>;
-  readonly streamStoredEventsFrom: (input?: {
+  readonly streamStoredEventsFrom: (input: {
+    /** Required. `0` is a deliberate full replay of the matched range. */
+    readonly afterSequence: number;
     readonly threadId?: ThreadId;
-    readonly afterSequence?: number;
+    /** Keep only this type, before the bounded buffer retains anything. */
     readonly eventType?: OrchestrationV2DomainEvent["type"];
   }) => Stream.Stream<OrchestrationV2StoredEvent, OrchestratorV2Error>;
   readonly streamDomainEvents: Stream.Stream<OrchestrationV2DomainEvent, OrchestratorV2Error>;
@@ -13721,14 +13722,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         .latestSequence({ threadId })
         .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
     }),
-    streamStoredEvents: eventSink.stream().pipe(
-      Stream.mapError(
-        (cause) =>
-          new OrchestratorDomainEventStreamError({
-            cause,
-          }),
-      ),
-    ),
     streamStoredEventsFrom: (input) =>
       eventSink.stream({ ...input, bounded: true }).pipe(
         Stream.mapError(

@@ -32,10 +32,12 @@ import {
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -64,6 +66,7 @@ import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import type * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
@@ -396,6 +399,26 @@ it.effect("paces scheduled compaction while preserving retention state and fixed
     ]);
   }).pipe(Effect.scoped, Effect.provide(layerTest)),
 );
+// `@ts-expect-error` fails the build if a missing cursor, or the removed
+// cursorless stream, ever compiles. Never called.
+export function cursorRequiredAtCompileTime(
+  sink: EventSink.EventSinkV2Shape,
+  orchestrator: Orchestrator.OrchestratorV2Shape,
+  threadId: ThreadId,
+): void {
+  // @ts-expect-error stream requires afterSequence
+  const missingArguments: unknown = sink.stream();
+  // @ts-expect-error a thread filter is not a cursor
+  const missingCursor: unknown = sink.stream({ threadId });
+  // @ts-expect-error streamStoredEventsFrom requires afterSequence
+  const missingStoredCursor: unknown = orchestrator.streamStoredEventsFrom({ threadId });
+  // @ts-expect-error streamStoredEvents was removed
+  const removedStream: unknown = orchestrator.streamStoredEvents;
+  void missingArguments;
+  void missingCursor;
+  void missingStoredCursor;
+  void removedStream;
+}
 
 it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
   it.effect("projects oversized tool bodies before both replay and live RPC retention", () =>
@@ -664,7 +687,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
             `.pipe(Effect.orDie),
         );
         const pull = yield* Stream.toPull(
-          sink.stream({ threadId: thread.id, eventType: "run.updated" }),
+          sink.stream({ threadId: thread.id, eventType: "run.updated", afterSequence: 0 }),
         );
         assert.deepEqual(
           (yield* pull).map((stored) => stored.sequence),
@@ -728,6 +751,477 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         Array.from({ length: eventCount }, (_, index) => index + 1),
       );
     }),
+  );
+
+  it.effect("replays only the paged events after the cursor", () =>
+    Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:foundation-cursor-replay");
+      const otherThreadId = ThreadId.make("thread:foundation-cursor-replay-other");
+      const thread = makeThread(threadId, now);
+      const other = makeThread(otherThreadId, now);
+      const metadata = (
+        id: string,
+        target: ThreadId,
+        title: string,
+      ): OrchestrationV2DomainEvent => ({
+        id: EventId.make(id),
+        type: "thread.metadata-updated",
+        threadId: target,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...(target === threadId ? thread : other),
+          title,
+        },
+      });
+      const before = yield* eventSink.write({
+        events: [
+          threadCreatedEvent({ id: "event:cursor-replay:created", thread, now }),
+          threadCreatedEvent({ id: "event:cursor-replay:other-created", thread: other, now }),
+          metadata("event:cursor-replay:before", threadId, "before"),
+        ],
+      });
+      const cursor = before.at(-1)!.sequence;
+      const afterCount = 501;
+      const written = yield* eventSink.write({
+        events: [
+          ...Array.from({ length: 250 }, (_, index) =>
+            metadata(`event:cursor-replay:a:${index}`, threadId, `a ${index}`),
+          ),
+          metadata("event:cursor-replay:other-during", otherThreadId, "during"),
+          ...Array.from({ length: afterCount - 250 }, (_, index) =>
+            metadata(`event:cursor-replay:b:${index}`, threadId, `b ${index}`),
+          ),
+        ],
+      });
+      const expected = written
+        .filter((stored) => stored.event.threadId === threadId)
+        .map((stored) => stored.sequence);
+      assert.lengthOf(expected, afterCount);
+      assert.isAbove(Math.min(...expected), cursor);
+
+      const collect = (bounded: boolean) =>
+        eventSink
+          .stream({
+            threadId,
+            afterSequence: cursor,
+            ...(bounded ? { bounded: true } : {}),
+          })
+          .pipe(
+            Stream.take(afterCount),
+            Stream.runCollect,
+            Effect.map((events) => Array.from(events).map((stored) => stored.sequence)),
+          );
+
+      assert.deepEqual(yield* collect(false), expected);
+      assert.deepEqual(yield* collect(true), expected);
+    }),
+  );
+
+  // `streamStoredEventsFrom` is this bounded call plus `Stream.mapError`.
+  // One owner check has to reject the cursor for both.
+  it.effect("rejects an unusable replay cursor before it reads", () =>
+    Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:foundation-cursor-contract");
+      const thread = makeThread(threadId, now);
+      const written = yield* eventSink.write({
+        events: [
+          threadCreatedEvent({ id: "event:cursor-contract:created", thread, now }),
+          {
+            id: EventId.make("event:cursor-contract:title"),
+            type: "thread.metadata-updated",
+            threadId,
+            occurredAt: now,
+            payload: { ...thread, title: "After the cursor" },
+          },
+        ],
+      });
+      const sequences = written.map((stored) => stored.sequence);
+      const badCursors: ReadonlyArray<{
+        readonly label: string;
+        readonly afterSequence?: number;
+      }> = [
+        { label: "missing" },
+        { label: "NaN", afterSequence: Number.NaN },
+        { label: "Infinity", afterSequence: Number.POSITIVE_INFINITY },
+        { label: "fraction", afterSequence: 1.5 },
+        { label: "negative", afterSequence: -1 },
+        { label: "unsafe", afterSequence: Number.MAX_SAFE_INTEGER + 1 },
+      ];
+      const open = (input: { readonly afterSequence?: number; readonly bounded: boolean }) =>
+        eventSink.stream({
+          threadId,
+          ...(input.bounded ? { bounded: true as const } : {}),
+          ...(input.afterSequence === undefined ? {} : { afterSequence: input.afterSequence }),
+        } as Parameters<EventSink.EventSinkV2Shape["stream"]>[0]);
+      // The test clock does not advance this wait. A bad cursor that falls
+      // through into the live tail stays suspended, which is still a miss.
+      const classifyOpened = (opened: ReturnType<EventSink.EventSinkV2Shape["stream"]>) =>
+        Effect.gen(function* () {
+          const fiber = yield* opened.pipe(
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.forkChild({ startImmediately: true }),
+          );
+          yield* Effect.yieldNow;
+          let done = fiber.pollUnsafe();
+          if (done === undefined) {
+            yield* TestClock.withLive(Effect.sleep("200 millis"));
+            done = fiber.pollUnsafe();
+          }
+          if (done === undefined) {
+            yield* Fiber.interrupt(fiber);
+            return "waited for a live event";
+          }
+          const exit = done;
+          if (Exit.isSuccess(exit)) {
+            return `emitted ${Array.from(exit.value, (stored) => stored.sequence).join(",")}`;
+          }
+          const squashed = Cause.squash(exit.cause);
+          if (
+            typeof squashed !== "object" ||
+            squashed === null ||
+            !("_tag" in squashed) ||
+            squashed._tag !== "EventSinkStreamError"
+          ) {
+            return `failed as ${typeof squashed === "object" && squashed !== null && "_tag" in squashed ? String(squashed._tag) : typeof squashed}`;
+          }
+          const detail =
+            "cause" in squashed && squashed.cause instanceof Error
+              ? squashed.cause.message
+              : String("cause" in squashed ? squashed.cause : squashed);
+          return detail.includes("afterSequence") ? "rejected" : detail;
+        });
+      const observeCursor = (input: {
+        readonly afterSequence?: number;
+        readonly bounded: boolean;
+      }) => classifyOpened(open(input));
+      // Call the real method with no argument and with undefined. An object
+      // that merely omits afterSequence does not reach this path.
+      const observeOmittedArgument = (label: "omitted call" | "omitted undefined") =>
+        Effect.gen(function* () {
+          const called = yield* Effect.exit(
+            Effect.sync(() => {
+              if (label === "omitted call") {
+                // @ts-expect-error an omitted argument is not a cursor
+                return eventSink.stream();
+              }
+              // @ts-expect-error undefined is not a cursor
+              return eventSink.stream(undefined);
+            }),
+          );
+          if (Exit.isFailure(called)) {
+            const squashed = Cause.squash(called.cause);
+            const thrown =
+              squashed instanceof Error ? `${squashed.name}: ${squashed.message}` : typeof squashed;
+            return `threw ${thrown}`;
+          }
+          return yield* classifyOpened(called.value);
+        });
+
+      const rejected: Array<string> = [];
+      for (const bounded of [false, true] as const) {
+        const path = bounded ? "bounded" : "unbounded";
+        for (const cursor of badCursors) {
+          const observed = yield* observeCursor({
+            ...(cursor.afterSequence === undefined ? {} : { afterSequence: cursor.afterSequence }),
+            bounded,
+          });
+          if (observed !== "rejected") rejected.push(`${path} ${cursor.label} ${observed}`);
+        }
+
+        const fromZero = yield* open({ afterSequence: 0, bounded }).pipe(
+          Stream.take(sequences.length),
+          Stream.runCollect,
+        );
+        assert.deepEqual(
+          Array.from(fromZero, (stored) => stored.sequence),
+          sequences,
+          `${path} cursor 0`,
+        );
+        const fromFirst = yield* open({ afterSequence: sequences[0]!, bounded }).pipe(
+          Stream.take(1),
+          Stream.runCollect,
+        );
+        assert.deepEqual(
+          Array.from(fromFirst, (stored) => stored.sequence),
+          [sequences[1]!],
+          `${path} positive cursor`,
+        );
+      }
+      for (const label of ["omitted call", "omitted undefined"] as const) {
+        const observed = yield* observeOmittedArgument(label);
+        if (observed !== "rejected") rejected.push(`${label} ${observed}`);
+      }
+      assert.deepEqual(rejected, []);
+    }),
+  );
+
+  it.effect("replays interleaved threads across more than three pages", () =>
+    Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:foundation-interleaved-pages");
+      const otherThreadId = ThreadId.make("thread:foundation-interleaved-pages-other");
+      const thread = makeThread(threadId, now);
+      const other = makeThread(otherThreadId, now);
+      // Four 500-row pages. READ_PAGE_SIZE is 500.
+      const perThread = 2_000;
+      const metadata = (
+        id: string,
+        target: ThreadId,
+        title: string,
+      ): OrchestrationV2DomainEvent => ({
+        id: EventId.make(id),
+        type: "thread.metadata-updated",
+        threadId: target,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...(target === threadId ? thread : other),
+          title,
+        },
+      });
+      const events: Array<OrchestrationV2DomainEvent> = [
+        threadCreatedEvent({ id: "event:interleaved-pages:created", thread, now }),
+        threadCreatedEvent({ id: "event:interleaved-pages:other-created", thread: other, now }),
+      ];
+      const updates = perThread - 1;
+      const chunk = 100;
+      for (let start = 0; start < updates; start += chunk) {
+        const count = Math.min(chunk, updates - start);
+        for (let offset = 0; offset < count; offset += 1) {
+          const index = start + offset;
+          events.push(metadata(`event:interleaved-pages:a:${index}`, threadId, `a ${index}`));
+        }
+        for (let offset = 0; offset < count; offset += 1) {
+          const index = start + offset;
+          events.push(metadata(`event:interleaved-pages:b:${index}`, otherThreadId, `b ${index}`));
+        }
+      }
+      const written = yield* eventSink.write({ events });
+      const expected = written
+        .filter((stored) => stored.event.threadId === threadId)
+        .map((stored) => stored.sequence);
+      assert.lengthOf(expected, perThread);
+      assert.isAbove(expected.at(-1)! - expected[0]!, expected.length - 1);
+
+      const collect = (bounded: boolean) =>
+        Effect.gen(function* () {
+          const seen: Array<number> = [];
+          yield* eventSink
+            .stream({
+              threadId,
+              afterSequence: 0,
+              ...(bounded ? { bounded: true } : {}),
+            })
+            .pipe(
+              Stream.take(perThread),
+              Stream.runForEach((stored) =>
+                Effect.sync(() => {
+                  seen.push(stored.sequence);
+                }),
+              ),
+            );
+          return seen;
+        });
+
+      assert.deepEqual(yield* collect(false), expected);
+      assert.deepEqual(yield* collect(true), expected);
+    }),
+  );
+
+  it.effect.each(["bounded", "unbounded"] as const)(
+    "delivers one event committed after the high-water mark once on the %s path",
+    (path) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const eventSink = yield* EventSink.EventSinkV2;
+          const now = yield* DateTime.now;
+          const threadId = ThreadId.make(`thread:foundation-after-high-water:${path}`);
+          const thread = makeThread(threadId, now);
+          const metadata = (id: string, title: string): OrchestrationV2DomainEvent => ({
+            id: EventId.make(id),
+            type: "thread.metadata-updated",
+            threadId,
+            providerInstanceId,
+            occurredAt: now,
+            payload: { ...thread, title },
+          });
+          const written = yield* eventSink.write({
+            events: [
+              threadCreatedEvent({ id: `event:after-high-water:${path}:created`, thread, now }),
+              metadata(`event:after-high-water:${path}:1`, "one"),
+              metadata(`event:after-high-water:${path}:2`, "two"),
+            ],
+          });
+          const expected = written.map((stored) => stored.sequence);
+          const pull = yield* Stream.toPull(
+            eventSink.stream({
+              threadId,
+              afterSequence: 0,
+              ...(path === "bounded" ? { bounded: true } : {}),
+            }),
+          );
+          const seen: Array<number> = [];
+          while (seen.length < expected.length) {
+            for (const stored of yield* pull) seen.push(stored.sequence);
+          }
+          assert.deepEqual(seen, expected);
+
+          const pending = yield* Effect.forkChild(pull);
+          yield* Effect.yieldNow;
+          yield* Effect.yieldNow;
+          assert.equal(pending.pollUnsafe(), undefined);
+          const [live] = yield* eventSink.write({
+            events: [metadata(`event:after-high-water:${path}:live`, "live")],
+          });
+          assert.deepEqual(
+            (yield* Fiber.join(pending)).map((stored) => stored.sequence),
+            [live!.sequence],
+          );
+          const extra = yield* Effect.forkChild(pull);
+          yield* Effect.yieldNow;
+          yield* Effect.yieldNow;
+          assert.equal(extra.pollUnsafe(), undefined);
+          yield* Fiber.interrupt(extra);
+        }),
+      ),
+  );
+
+  it.effect.each(["bounded", "unbounded"] as const)(
+    "cancels a replay after the first page is emitted on the %s path",
+    (path) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const eventSink = yield* EventSink.EventSinkV2;
+          const now = yield* DateTime.now;
+          const threadId = ThreadId.make(`thread:foundation-cancel-replay:${path}`);
+          const thread = makeThread(threadId, now);
+          const eventCount = 1_000;
+          yield* eventSink.write({
+            events: [
+              threadCreatedEvent({ id: `event:cancel-replay:${path}:0`, thread, now }),
+              ...Array.from({ length: eventCount - 1 }, (_, index) => ({
+                id: EventId.make(`event:cancel-replay:${path}:${index + 1}`),
+                type: "thread.metadata-updated" as const,
+                threadId,
+                providerInstanceId,
+                occurredAt: now,
+                payload: { ...thread, title: `Cancel ${index + 1}` },
+              })),
+            ],
+          });
+          const secondPage = yield* Deferred.make<void>();
+          let payloadPages = 0;
+          // Paginate emits a 500-row page before it fetches the next one.
+          const blockSecondPage: Statement.Transformer = (statement) => {
+            const [query] = statement.compile();
+            if (
+              !query.includes("payload_json") ||
+              !query.includes("FROM orchestration_events") ||
+              query.includes("MAX(sequence)")
+            ) {
+              return Effect.succeed(statement);
+            }
+            payloadPages += 1;
+            if (payloadPages < 2) return Effect.succeed(statement);
+            return Deferred.succeed(secondPage, undefined).pipe(
+              Effect.ignore,
+              Effect.andThen(Effect.never),
+              Effect.as(statement),
+            );
+          };
+          const seen: Array<number> = [];
+          const fiber = yield* eventSink
+            .stream({
+              threadId,
+              afterSequence: 0,
+              ...(path === "bounded" ? { bounded: true } : {}),
+            })
+            .pipe(
+              Stream.provideService(Statement.CurrentTransformer, blockSecondPage),
+              Stream.runForEach((stored) =>
+                Effect.sync(() => {
+                  seen.push(stored.sequence);
+                }),
+              ),
+              Effect.forkScoped,
+            );
+          yield* Deferred.await(secondPage);
+          yield* Fiber.interrupt(fiber);
+          const exit = yield* Fiber.await(fiber);
+          assert.lengthOf(seen, 500);
+          assert.isTrue(Exit.isFailure(exit));
+          if (Exit.isFailure(exit)) assert.isTrue(Cause.hasInterruptsOnly(exit.cause));
+        }),
+      ),
+  );
+
+  it.effect.each(["bounded", "unbounded"] as const)(
+    "emits earlier rows when a matching row in the page cannot be decoded on the %s path",
+    (path) =>
+      Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const sql = yield* SqlClient.SqlClient;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make(`thread:foundation-bad-row:${path}`);
+        const thread = makeThread(threadId, now);
+        const written = yield* eventSink.write({
+          events: [
+            threadCreatedEvent({ id: `event:bad-row:${path}:0`, thread, now }),
+            ...Array.from({ length: 9 }, (_, index) => ({
+              id: EventId.make(`event:bad-row:${path}:${index + 1}`),
+              type: "thread.metadata-updated" as const,
+              threadId,
+              providerInstanceId,
+              occurredAt: now,
+              payload: { ...thread, title: `Row ${index + 1}` },
+            })),
+          ],
+        });
+        const bad = written[5]!;
+        const original = yield* sql<{ readonly payload_json: string }>`
+          SELECT payload_json FROM orchestration_events WHERE sequence = ${bad.sequence}
+        `;
+        yield* sql`
+          UPDATE orchestration_events SET payload_json = 'not-json'
+          WHERE sequence = ${bad.sequence}
+        `;
+        const seen: Array<number> = [];
+        const result = yield* eventSink
+          .stream({
+            threadId,
+            afterSequence: 0,
+            ...(path === "bounded" ? { bounded: true } : {}),
+          })
+          .pipe(
+            Stream.runForEach((stored) =>
+              Effect.sync(() => {
+                seen.push(stored.sequence);
+              }),
+            ),
+            Effect.result,
+            Effect.ensuring(
+              sql`
+                UPDATE orchestration_events SET payload_json = ${original[0]!.payload_json}
+                WHERE sequence = ${bad.sequence}
+              `.pipe(Effect.orDie),
+            ),
+          );
+        assert.deepEqual(
+          seen,
+          written.slice(0, 5).map((stored) => stored.sequence),
+        );
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure") {
+          assert.equal(result.failure._tag, "EventSinkStreamError");
+        }
+      }),
   );
 
   it.effect("does not lose or duplicate events while transitioning from catch-up to live", () =>

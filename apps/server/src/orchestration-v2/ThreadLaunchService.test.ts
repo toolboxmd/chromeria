@@ -1145,7 +1145,7 @@ it.effect("shows the fetch diagnosis when preparing a worktree from origin fails
         workspace: { type: "worktree", baseRef: "main", startFromOrigin: true },
       }),
     );
-    yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+    yield* threads.streamStoredEventsFrom({ threadId: launched.threadId, afterSequence: 0 }).pipe(
       Stream.filter(
         (stored) => stored.event.type === "run.updated" && stored.event.payload.status === "failed",
       ),
@@ -1398,7 +1398,7 @@ it.effect("replays a server-allocated launch", () =>
       assert.equal(retry.projection.messages[0]?.id, first.projection.messages[0]?.id);
       assert.equal(retry.projection.runs[0]?.id, first.projection.runs[0]?.id);
       yield* Deferred.succeed(allowSetup, undefined);
-      yield* threads.streamStoredEventsFrom({ threadId: first.threadId }).pipe(
+      yield* threads.streamStoredEventsFrom({ threadId: first.threadId, afterSequence: 0 }).pipe(
         Stream.filter(
           (stored) =>
             stored.commandId === CommandId.make(`${rest.commandId}:release`) &&
@@ -2181,12 +2181,14 @@ it.effect("drains a delayed branch rename before cancelled setup clears its work
       yield* Deferred.succeed(renameResume, undefined);
       // On the broken source, observe the delayed write after cleanup rather than relying on timing.
       if (!interrupted)
-        yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
-          Stream.filter(
-            (stored) => stored.commandId === CommandId.make(`${input.commandId}:branch-rename`),
-          ),
-          Stream.runHead,
-        );
+        yield* threads
+          .streamStoredEventsFrom({ threadId: launched.threadId, afterSequence: 0 })
+          .pipe(
+            Stream.filter(
+              (stored) => stored.commandId === CommandId.make(`${input.commandId}:branch-rename`),
+            ),
+            Stream.runHead,
+          );
       const projection = yield* threads.getThreadProjection(launched.threadId);
       assert.isNull(projection.thread.worktreePath);
       assert.isNull(projection.thread.branch);
@@ -2401,7 +2403,7 @@ it.effect(
         });
         const before = yield* threads.getThreadProjection(threadId);
         const run = before.runs[0]!;
-        const released = yield* threads.streamStoredEvents.pipe(
+        const released = yield* threads.streamStoredEventsFrom({ afterSequence: 0 }).pipe(
           Stream.filter(
             (stored) =>
               stored.event.threadId === threadId &&
@@ -2566,7 +2568,7 @@ it.effect.each([false, true])(
           assert.equal(harness.runSetup.mock.calls.length, 1);
           return;
         }
-        const started = yield* threads.streamStoredEvents.pipe(
+        const started = yield* threads.streamStoredEventsFrom({ afterSequence: 0 }).pipe(
           Stream.filter(
             (stored) =>
               stored.event.threadId === childId &&
