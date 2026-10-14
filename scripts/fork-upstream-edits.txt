@@ -280,3 +280,14 @@ apps/server/src/mcp/toolkits/orchestrator/tools.test.ts
 apps/server/src/htmlRender/HtmlRender.ts
 apps/server/src/mcp/toolkits/html/handlers.ts
 apps/server/src/htmlRender/HtmlRender.test.ts
+
+# Great Library native session boundaries (#311), owned by contextmd-serving.
+apps/server/src/orchestration-v2/CheckpointRestoreSafety.test.ts
+apps/server/src/orchestration-v2/CheckpointRollbackService.test.ts
+apps/server/src/orchestration-v2/CheckpointRollbackService.ts
+packages/provider-core/src/server/ProviderAdapter.ts
+apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts
+apps/server/src/orchestration-v2/ProviderTurnStartService.ts
+apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs
+apps/server/src/provider/acp/AcpJsonRpcConnection.test.ts
+packages/provider-acp/src/server/AcpSessionRuntime.ts

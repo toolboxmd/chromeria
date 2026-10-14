@@ -1347,15 +1347,18 @@ sources and reasons.
 ```json
 {
   "id": "contextmd-serving",
-  "purpose": "Serve ContextMD's stored rules to agents in Chromeria threads through thin harness hooks, with serving state, settlement and the serving log in the environment.",
+  "purpose": "Serve ContextMD's stored rules and Great Library pointer to agents in Chromeria threads through thin harness hooks and native session boundaries, with serving state, settlement and the serving log in the environment.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/217",
     "https://github.com/toolboxmd/chromeria/issues/245",
-    "https://github.com/toolboxmd/chromeria/issues/268"
+    "https://github.com/toolboxmd/chromeria/issues/268",
+    "https://github.com/toolboxmd/chromeria/issues/311",
+    "https://github.com/toolboxmd/contextmd/issues/34"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/220",
-    "https://github.com/toolboxmd/chromeria/pull/313"
+    "https://github.com/toolboxmd/chromeria/pull/313",
+    "https://github.com/toolboxmd/chromeria/pull/327"
   ],
   "newFiles": [
     "apps/server/src/contextmd/ContextmdRoute.test.ts",
@@ -1375,14 +1378,40 @@ sources and reasons.
     "apps/server/src/contextmd/Shown.test.ts",
     "apps/server/src/contextmd/Shown.ts",
     "apps/server/src/contextmd/Store.ts",
-    "apps/server/src/contextmd/library-corpus.json"
+    "apps/server/src/contextmd/library-corpus.json",
+    "apps/server/src/contextmd/GreatLibrary.test.ts",
+    "apps/server/src/contextmd/great-library-path-corpus.json"
   ],
-  "upstreamFiles": ["apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts"],
+  "upstreamFiles": [
+    "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
+    "apps/server/src/orchestration-v2/CheckpointRestoreSafety.test.ts",
+    "apps/server/src/orchestration-v2/CheckpointRollbackService.test.ts",
+    "apps/server/src/orchestration-v2/CheckpointRollbackService.ts",
+    "packages/provider-core/src/server/ProviderAdapter.ts",
+    "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+    "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+    "apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs",
+    "apps/server/src/provider/acp/AcpJsonRpcConnection.test.ts",
+    "packages/provider-acp/src/server/AcpSessionRuntime.ts"
+  ],
   "sharedFiles": [
     "apps/server/src/server.ts",
-    "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts"
+    "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
+    "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
+    "packages/provider-acp/src/server/adapter.ts",
+    "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+    "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+    "apps/server/src/orchestration-v2/runtimeLayer.ts",
+    "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts"
   ],
-  "keywords": ["contextmd", "ContextMD", "/contextmd/v1", "contextmd.sqlite", "contextmd-hook"]
+  "keywords": [
+    "contextmd",
+    "ContextMD",
+    "/contextmd/v1",
+    "contextmd.sqlite",
+    "contextmd-hook",
+    "great_library"
+  ]
 }
 ```
 
