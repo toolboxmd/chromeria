@@ -11,6 +11,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import { McpSchema, McpServer } from "effect/ai";
 
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -22,6 +23,37 @@ import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterReg
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
+import { ThreadToolkit } from "./toolkits/thread/tools.ts";
+
+const decodeQueueList = Schema.decodeUnknownEffect(ThreadToolkit.tools.t3_queue_list.successSchema);
+const decodeQueueRead = Schema.decodeUnknownEffect(ThreadToolkit.tools.t3_queue_read.successSchema);
+const legacyQueueEntry = {
+  queuedRunId: "queued-main-run",
+  text: "Existing queued instructions.",
+  truncated: false,
+};
+
+it.effect("queue reads accept older peer responses without inventing a hold state", () =>
+  Effect.gen(function* () {
+    const legacyList = { items: [legacyQueueEntry], nextCursor: null };
+    const listed = yield* decodeQueueList(legacyList);
+    const read = yield* decodeQueueRead(legacyQueueEntry);
+    expect(listed).toEqual(legacyList);
+    expect(read).toEqual(legacyQueueEntry);
+    expect(listed.items[0]?.held).toBeUndefined();
+    expect(read.held).toBeUndefined();
+  }),
+);
+
+it.effect.each([false, true])("queue reads preserve a known hold state of $0", (held) =>
+  Effect.gen(function* () {
+    const entry = { ...legacyQueueEntry, held };
+    const listed = yield* decodeQueueList({ items: [entry], nextCursor: null });
+    const read = yield* decodeQueueRead(entry);
+    expect(listed.items[0]?.held).toBe(held);
+    expect(read.held).toBe(held);
+  }),
+);
 
 const instanceId = ProviderInstanceId.make("codex");
 const callerId = ThreadId.make("queue-resume-caller");

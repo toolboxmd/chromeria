@@ -80,7 +80,12 @@ const commandTool = {
 };
 const queueEntry = Schema.Struct({
   queuedRunId: RunId,
-  held: Schema.Boolean,
+  // Older peers omit this field; absence means the hold state is unknown.
+  held: Schema.optional(
+    Schema.Boolean.annotate({
+      description: "Whether this message is held. Absence means an older peer did not report it.",
+    }),
+  ),
   text: Schema.String,
   truncated: Schema.Boolean,
 });
