@@ -8,11 +8,17 @@ import {
 import { createBrowserHistory } from "@tanstack/react-router";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import { SessionRenewal } from "@t3tools/client-runtime/authorization";
 import { HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { installEnvironmentHttpTest } from "../test/environmentHttpTest";
-import { __setPrimaryHttpRunnerForTests, type PrimaryHttpEffectRunner } from "./lib/runtime";
+import {
+  __setPrimaryHttpRunnerForTests,
+  __setRenewalRunnerForTests,
+  type PrimaryHttpEffectRunner,
+} from "./lib/runtime";
 
 type TestWindow = {
   location: URL;
@@ -133,6 +139,34 @@ async function installAuthApi(input: {
 }
 
 describe("resolveInitialServerAuthGateState", () => {
+  it("recovers the primary cookie before presenting a pairing gate", async () => {
+    installTestBrowser("http://localhost/");
+    const testApi = await installAuthApi({
+      session: sequence(unauthenticatedSession(LOOPBACK_AUTH), authenticatedSession(LOOPBACK_AUTH)),
+    });
+    const keys: string[] = [];
+    __setRenewalRunnerForTests((effect) =>
+      Effect.runPromise(
+        effect.pipe(
+          Effect.provide(
+            Layer.mock(SessionRenewal.SessionRenewal, {
+              ensure: (key) => {
+                keys.push(key);
+                return Effect.succeed({
+                  _tag: "Renewed",
+                  result: { outcome: "current", generation: 0, expiresAt: 1000, renewAfter: 500 },
+                });
+              },
+            }),
+          ),
+        ),
+      ),
+    );
+    const { resolveInitialServerAuthGateState } = await import("./environments/primary/auth");
+    expect(await resolveInitialServerAuthGateState()).toEqual({ status: "authenticated" });
+    expect(keys).toEqual(["cookie:http://localhost"]);
+    expect(testApi.calls.session).toBe(2);
+  });
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
@@ -140,6 +174,7 @@ describe("resolveInitialServerAuthGateState", () => {
   });
 
   afterEach(async () => {
+    __setRenewalRunnerForTests();
     await disposeHttpTest?.();
     disposeHttpTest = undefined;
     const { __resetServerAuthBootstrapForTests } = await import("./environments/primary");

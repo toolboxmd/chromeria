@@ -100,6 +100,8 @@ export async function installEnvironmentHttpTest(scenario: EnvironmentHttpTestSc
               }),
             )
             .handle("token", () => unexpectedEndpoint("auth.token"))
+            .handle("renewSession", () => unexpectedEndpoint("auth.renewSession"))
+            .handle("enrollRenewal", () => unexpectedEndpoint("auth.enrollRenewal"))
             .handle("webSocketTicket", () => unexpectedEndpoint("auth.webSocketTicket"))
             .handle(
               "pairingCredential",
