@@ -4,7 +4,7 @@ import {
   type OrchestratorFixtureInput,
 } from "../shared.ts";
 
-export const CLAUDE_STEER_HELD_RESULT = "claude-steer-held-result";
+const CLAUDE_STEER_HELD_RESULT = "claude-steer-held-result";
 
 /**
  * The steer is dispatched while Claude's first turn is still running. The
