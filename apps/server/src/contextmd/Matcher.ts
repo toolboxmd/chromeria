@@ -33,7 +33,17 @@ const shellPaths = (ws: ReadonlyArray<string>) => {
   return out;
 };
 
-const HEREDOC_START = /^<<(-?)[ \t]*(['"]?)(\w+)\2/u;
+// Literal markers use the same ASCII shell boundaries in both languages, including Unicode.
+const HEREDOC_START = /^<<(-?)[ \t]*(['"]?)([^ \t\r\n;&|()<>'"\\]+)\2(?=$|[ \t\r\n;&|()<>])/u;
+const SHELL_BREAK = /[ \t\r\n;&|()<>]/u;
+// Same wrappers as Reads.ts; options with a separate value must not consume the command slot.
+const WRAPPERS = new Set(["command", "exec", "nohup", "time", "env", "sudo"]);
+const WRAPPER_ARGUMENTS: Record<string, ReadonlyArray<string>> = {
+  env: ["-u", "--unset", "-C", "--chdir"],
+  sudo: ["-u", "--user", "-g", "--group"],
+  time: ["-f", "--format", "-o", "--output"],
+  exec: ["-a"],
+};
 
 /** A quote inside an expansion belongs to that expansion, not the enclosing string. */
 const quotedEnd = (text: string, start: number): number => {
@@ -123,30 +133,73 @@ const substitutions = (text: string): string => {
   }
   return out.join(" ; ");
 };
-/** Where a new command starts: the line so far ends at a separator, or holds only a word being built. */
-const SEPARATOR = /(?:^|[;&|(\n]|\$\()[ \t]*\S*$/u;
 const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
+
+/** One shell word: dequote its value, retaining unquoted fragments and executed substitutions. */
+const shellWord = (text: string, start: number) => {
+  let i = start;
+  let quote = "";
+  let value = "";
+  let plain = "";
+  const runs: string[] = [];
+  while (i < text.length) {
+    const ch = text[i]!;
+    if (quote === "" && SHELL_BREAK.test(ch)) break;
+    if (ch === quote) {
+      quote = "";
+      i += 1;
+      continue;
+    }
+    if (quote === "" && (ch === "'" || ch === '"')) {
+      quote = ch;
+      i += 1;
+      continue;
+    }
+    if (ch === "\\" && quote !== "'") {
+      const next = text[i + 1] ?? "";
+      if (quote === "" || '$`"\\\n'.includes(next)) {
+        if (next !== "\n") value += next;
+      } else value += ch + next;
+      if (quote === "") plain += text.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
+    const expansion = quote === "'" ? null : expansionAt(text, i);
+    if (expansion !== null) {
+      const raw = text.slice(i, expansion.end);
+      value += raw;
+      if (quote === "" && !expansion.command) plain += raw;
+      runs.push(expansion.command ? visibleCommand(expansion.body) : substitutions(expansion.body));
+      i = expansion.end;
+      continue;
+    }
+    value += ch;
+    if (quote === "") plain += ch;
+    i += 1;
+  }
+  return { value, plain, runs: runs.join(" ; "), end: i };
+};
 
 /**
  * The parts of a shell command that run, for command keys (#232): quoted strings and heredoc
  * bodies are dropped, because a key named there is only mentioned. What bash still runs is
  * kept: the string after `sh -c` (`bash`, `zsh -lc`); `$(...)` and backticks inside double
  * quotes or an unquoted-marker heredoc, unless escaped; and a quoted word in command position
- * (`'gh' pr create`). Unquoted arguments stay, so a bare key still matches a file argument.
+ * (`FLAG=1 env 'gh' pr create`). Shell script words lose their outer quote/escape layer
+ * before scanning. Unquoted arguments stay, so a bare key still matches a file argument.
  */
 const visibleCommand = (command: string): string => {
   const text = command;
   let out = "";
   let i = 0;
+  let position: "command" | "argument" | "script" = "command";
+  let wrapper = "";
+  let optionArgument = false;
+  let shell = false;
+  let redirect = false;
   const heredocs: Array<{ word: string; expands: boolean; stripTabs: boolean }> = [];
   while (i < text.length) {
     const ch = text[i]!;
-    if (text.startsWith("<<<", i)) {
-      // A here-string has an argument, not a body on following lines.
-      out += "<<<";
-      i += 3;
-      continue;
-    }
     // An unquoted `<<WORD` opens a heredoc: its body, from the next line to WORD, is data.
     const opening =
       ch === "<" && text[i + 1] === "<" && text[i + 2] !== "<"
@@ -160,6 +213,7 @@ const visibleCommand = (command: string): string => {
       });
       out += " ";
       i += opening[0].length;
+      redirect = false;
       continue;
     }
     if (ch === "\n" && heredocs.length > 0) {
@@ -167,9 +221,10 @@ const visibleCommand = (command: string): string => {
       let j = i + 1;
       let kept = "";
       for (const { word, expands, stripTabs } of heredocs) {
-        const end = new RegExp(`(^|\\n)${stripTabs ? "\\t*" : ""}${word}(?=\\n|$)`, "u").exec(
-          text.slice(j),
-        );
+        const end = new RegExp(
+          `(^|\\n)${stripTabs ? "\\t*" : ""}${escape(word)}(?=\\n|$)`,
+          "u",
+        ).exec(text.slice(j));
         const stop = end === null ? text.length : j + end.index + end[0].length;
         // An unquoted marker expands the body: its substitutions run.
         if (expands)
@@ -181,37 +236,47 @@ const visibleCommand = (command: string): string => {
       i = j;
       continue;
     }
-    if (ch === "\\") {
-      out += text.slice(i, i + 2);
-      i += 2;
-      continue;
-    }
-    if (ch === "`" || (text.startsWith("$(", i) && !text.startsWith("$((", i))) {
-      const expansion = expansionAt(text, i)!;
-      out += ` ${visibleCommand(expansion.body)} `;
-      i = expansion.end;
-      continue;
-    }
-    if (ch !== "'" && ch !== '"') {
+    if (/[ \t\r\n;&|()]/u.test(ch)) {
+      if (/[\n;&|()]/u.test(ch)) {
+        position = "command";
+        wrapper = "";
+        optionArgument = shell = redirect = false;
+      }
       out += ch;
       i += 1;
       continue;
     }
-    const j = quotedEnd(text, i);
-    const body = text.slice(i + 1, j);
-    const before = out.trimEnd().split(/\s+/u);
-    const shell = (before.at(-2) ?? "").slice((before.at(-2) ?? "").lastIndexOf("/") + 1);
-    if (SHELLS.has(shell) && /^-[a-z]*c$/u.test(before.at(-1) ?? "")) {
-      out += ` ${visibleCommand(body)} `;
-    } else if (SEPARATOR.test(out) && !/\s/u.test(body)) {
-      // A quoted word where a command starts is that command's name: bash runs it.
-      out += body;
-    } else if (ch === '"') {
-      out += ` ${substitutions(body)} `;
-    } else {
-      out += " ";
+    if (ch === "<" || ch === ">") {
+      // A here-string consumes one word, without opening a body on following lines.
+      const width = text.startsWith("<<<", i) ? 3 : 1;
+      out += text.slice(i, i + width);
+      i += width;
+      redirect = true;
+      continue;
     }
-    i = j + 1;
+    const word = shellWord(text, i);
+    let kept = word.plain;
+    if (redirect) redirect = false;
+    else if (position === "script") {
+      kept = visibleCommand(word.value);
+      position = "argument";
+    } else if (position === "command") {
+      if (optionArgument) optionArgument = false;
+      else if (wrapper !== "" && word.value.startsWith("-") && word.value !== "-") {
+        optionArgument = WRAPPER_ARGUMENTS[wrapper]?.includes(word.value) ?? false;
+        if (word.value === "--") wrapper = "";
+      } else if (!/^[A-Za-z_][A-Za-z0-9_]*=/u.test(text.slice(i, word.end))) {
+        if (!/\s/u.test(word.value)) kept = word.value;
+        const program = word.value.slice(word.value.lastIndexOf("/") + 1);
+        if (WRAPPERS.has(program)) wrapper = program;
+        else {
+          position = "argument";
+          shell = SHELLS.has(program);
+        }
+      }
+    } else if (shell && /^-[a-z]*c$/u.test(word.value)) position = "script";
+    out += ` ${kept} ${word.runs} `;
+    i = word.end;
   }
   return out;
 };

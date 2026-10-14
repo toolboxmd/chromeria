@@ -205,6 +205,89 @@ describe("command keys", () => {
     }
   });
 
+  it("keeps quoted commands after assignments and wrappers (Sol round 3)", () => {
+    for (const command of [
+      "FLAG=1 'gh' pr create",
+      "FLAG=1 g'h' pr create",
+      "FLAG='one two' OTHER=2 \"gh\" pr create",
+      "env 'gh' pr create",
+      "env g'h' pr create",
+      "env FLAG=1 'gh' pr create",
+      "env -u UNUSED 'gh' pr create",
+      "sudo -n 'gh' pr create",
+      "sudo -u nobody g'h' pr create",
+      "time 'gh' pr create",
+      "nohup 'gh' pr create",
+      "command -- 'gh' pr create",
+      "exec g'h' pr create",
+      "exec -a gh-alias 'gh' pr create",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "FLAG=1 printf '%s' 'gh pr create'",
+      "env printf '%s' 'gh pr create'",
+      "env -u UNUSED printf '%s' 'gh pr create'",
+      "sudo -n printf '%s' 'gh pr create'",
+      "command printf '%s' 'gh pr create'",
+      "exec printf '%s' 'gh pr create'",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("dequotes a whole shell -c argument before scanning its script (Sol round 3)", () => {
+    for (const command of [
+      'bash -c "\\"g\\"h pr create"',
+      'sh -c "\\"g\\"h pr create"',
+      'zsh -lc "\\"g\\"h pr create"',
+      "bash -c \"g\"'h pr create'",
+      'bash -c "\\"g\\"h"\' pr create\'',
+      'env FLAG=1 bash -c "\\"g\\"h pr create"',
+      "bash -c 'gh pr create'",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      'bash -c "echo \\"gh pr create\\""',
+      'sh -c "printf \'%s\' \\"gh pr create\\""',
+      'zsh -lc "echo \\"gh pr create\\""',
+      'bash -c \'echo \'"\\"gh pr create\\""',
+      'bash -c "echo \\"gh pr create\\""suffix',
+      "bash -c 'echo \"gh pr create\"'",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("uses ASCII marker boundaries: Unicode and punctuation literal heredocs never match", () => {
+    for (const command of [
+      "cat <<'ÉOF'\nÉOF\ngh pr create",
+      "cat <<'EÖF'\nEÖF\ngh pr create",
+      "cat <<'𝔈OF'\n𝔈OF\ngh pr create",
+      "cat <<ÉOF\n$(gh pr create)\nÉOF",
+      "cat <<EÖF\n$(gh pr create)\nEÖF",
+      "cat <<𝔈OF\n$(gh pr create)\n𝔈OF",
+      "cat <<'END-MARK'\nEND-MARK\ngh pr create",
+      "cat <<'EOF'\nEOF\ngh pr create",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "cat <<'ÉOF'\ngh pr create\nÉOF",
+      "cat <<'EÖF'\ngh pr create\nEÖF",
+      "cat <<'𝔈OF'\ngh pr create\n𝔈OF",
+      "cat <<ÉOF\ngh pr create\nÉOF",
+      "cat <<EÖF\ngh pr create\nEÖF",
+      "cat <<𝔈OF\ngh pr create\n𝔈OF",
+      'cat <<"EÖF"\n$(gh pr create)\nEÖF',
+      "cat <<'END-MARK'\ngh pr create\nEND-MARK",
+      "cat <<'END.MARK'\nENDXMARK\ngh pr create\nEND.MARK",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
   it("keeps the first bake's bare key on unquoted arguments (#232, contextmd#39)", () => {
     const db = (command: string) => hit(command, "chromeria-v2.sqlite");
     for (const command of [
