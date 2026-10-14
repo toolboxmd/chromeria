@@ -1353,7 +1353,10 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/issues/245",
     "https://github.com/toolboxmd/chromeria/issues/268"
   ],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/220"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/220",
+    "https://github.com/toolboxmd/chromeria/pull/313"
+  ],
   "newFiles": [
     "apps/server/src/contextmd/ContextmdRoute.test.ts",
     "apps/server/src/contextmd/ContextmdRoute.ts",
