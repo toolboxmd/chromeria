@@ -288,10 +288,10 @@ const serve = <R>(
         );
         return { status: response.status, body: yield* response.text };
       }).pipe(Effect.orDie);
-    const settle = (delivery: string) =>
+    const postDelivery = (action: "settle" | "release", delivery: string) =>
       client
         .execute(
-          HttpClientRequest.post(`/contextmd/v1/settle/${delivery}`).pipe(
+          HttpClientRequest.post(`/contextmd/v1/${action}/${delivery}`).pipe(
             HttpClientRequest.setHeaders({ authorization: `Bearer ${token}` }),
           ),
         )
@@ -299,6 +299,8 @@ const serve = <R>(
           Effect.map((r) => r.status),
           Effect.orDie,
         );
+    const settle = (delivery: string) => postDelivery("settle", delivery);
+    const release = (delivery: string) => postDelivery("release", delivery);
     const log = () => {
       const db = new NodeSqlite.DatabaseSync(NodePath.join(config.stateDir, "contextmd.sqlite"));
       try {
@@ -408,7 +410,19 @@ const serve = <R>(
           Effect.orElseSucceed(() => "reset" as const),
         );
     };
-    return { moment, settle, log, identity, store, chunked, stalled, outcomes, database, cueLog };
+    return {
+      moment,
+      settle,
+      release,
+      log,
+      identity,
+      store,
+      chunked,
+      stalled,
+      outcomes,
+      database,
+      cueLog,
+    };
   });
 
 /** Many tool calls in the thread, each a projected command item, at consecutive ordinals. */
@@ -487,7 +501,26 @@ describe("contextmd routes", () => {
       assert.strictEqual(s.log().length, 1);
       assert.strictEqual(yield* s.settle("fixed"), 204);
       assert.strictEqual(yield* s.settle("fixed"), 404);
+      // A shown reply is not a drop.
+      assert.strictEqual(yield* s.release("fixed"), 404);
       assert.strictEqual((yield* s.moment(raw, { harness: "codex" })).status, 204);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("releases a reserved reply once, and a later settle finds nothing", () =>
+    Effect.gen(function* () {
+      const s = yield* serve(
+        insertAttempt({ attempt: "a", run: "run-1", status: "running", native: "S" }),
+      );
+      const raw = claude("PostToolUse", "S", "echo a");
+      const first = yield* s.moment(raw, { delivery: "held" });
+      assert.strictEqual(first.status, 200);
+      assert.strictEqual(yield* s.release("held"), 204);
+      assert.strictEqual(yield* s.release("held"), 404);
+      assert.strictEqual(yield* s.settle("held"), 404);
+      assert.strictEqual(yield* s.release("missing"), 404);
+      // The bytes are back: the same rule is served again.
+      assert.strictEqual((yield* s.moment(raw)).status, 200);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
