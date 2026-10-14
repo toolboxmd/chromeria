@@ -52,6 +52,7 @@ import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import { restartCutView } from "@t3tools/shared/restartCut";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -249,6 +250,7 @@ const boxToolkitLayer = (thread: BoxThread) => {
       }
     });
   const layerBoxThreads = Layer.mock(ThreadManagement.ThreadManagementService)({
+    readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
     getThreadShell: shellOf,
     getProjectThreadRecords: (input) => projectionOf(input.threadId),
     getThreadRecords: (threadId) => projectionOf(threadId),

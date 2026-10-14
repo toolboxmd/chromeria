@@ -1,6 +1,7 @@
 import { pendingGuestMessageCount } from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
 import { keepContinuationSource } from "../prism/continuationProjection.ts";
+import { mergeRestartCut } from "@t3tools/shared/restartCut";
 import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -13,6 +14,7 @@ import type {
 import {
   latestRootProviderFailure,
   latestUnheldRun,
+  runRanAfter,
   threadErrorSummary,
   usageLimitRunPresentedAsLatest,
 } from "@t3tools/shared/orchestrationV2ThreadError";
@@ -609,6 +611,14 @@ export interface ProjectionStoreV2Shape {
   readonly getRecoveryThreadIds: (
     kind: ProjectionRecoveryKind,
   ) => Effect.Effect<ReadonlyArray<ThreadId>, ProjectionStoreV2Error>;
+  /** Cancelled cuts with terminal or missing exact intent, excluding linked replacements. */
+  readonly getUnresolvedRestartCuts: (
+    afterRunId?: RunId,
+    limit?: number,
+  ) => Effect.Effect<
+    ReadonlyArray<{ readonly threadId: ThreadId; readonly runId: RunId }>,
+    ProjectionStoreV2Error
+  >;
   readonly getUnreadableThreadIds: () => Effect.Effect<
     ReadonlyArray<ThreadId>,
     ProjectionStoreV2Error
@@ -684,8 +694,10 @@ function preserveRunRecordedFields(
   next: OrchestrationV2Run,
 ): OrchestrationV2Run {
   if (current === undefined) return next;
+  const restartCut = mergeRestartCut(current.restartCut, next.restartCut);
   return {
     ...next,
+    ...(restartCut === undefined ? {} : { restartCut }),
     ...(next.delegatedCompletion === undefined && current.delegatedCompletion !== undefined
       ? { delegatedCompletion: current.delegatedCompletion }
       : {}),
@@ -694,6 +706,12 @@ function preserveRunRecordedFields(
       ? { restartCancelledBackgroundWork: current.restartCancelledBackgroundWork }
       : {}),
   };
+}
+
+function restartCutPageSize(limit: number | undefined): number {
+  return limit === undefined || !Number.isFinite(limit)
+    ? 100
+    : Math.min(500, Math.max(1, Math.trunc(limit)));
 }
 
 function preserveCompletionDelivery(
@@ -1852,6 +1870,26 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       END
     `;
 
+    const keepRestartCut = (payload: Statement.Fragment) => sql`
+      CASE
+        WHEN json_type(orchestration_v2_projection_runs.payload_json, '$.restartCut') IS NULL
+        THEN ${payload}
+        WHEN json_extract(orchestration_v2_projection_runs.payload_json, '$.restartCut.continuation') = 'scheduled'
+          AND json_extract(excluded.payload_json, '$.restartCut.continuation') = 'declined'
+        THEN json_set(
+          ${payload}, '$.restartCut',
+          json_set(
+            json_extract(excluded.payload_json, '$.restartCut'), '$.cutAt',
+            json_extract(orchestration_v2_projection_runs.payload_json, '$.restartCut.cutAt')
+          )
+        )
+        ELSE json_set(
+          ${payload}, '$.restartCut',
+          json_extract(orchestration_v2_projection_runs.payload_json, '$.restartCut')
+        )
+      END
+    `;
+
     const apply: ProjectionStoreV2Shape["apply"] =
       /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
       Effect.fnUntraced(
@@ -1977,12 +2015,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 status = excluded.status,
                 requested_at = excluded.requested_at,
                 completed_at = excluded.completed_at,
-                payload_json = ${keepRecordedRunField(
+                payload_json = ${keepRestartCut(
                   keepRecordedRunField(
-                    keepContinuationSource(sql, sql`excluded.payload_json`),
-                    "$.delegatedCompletion",
+                    keepRecordedRunField(
+                      keepContinuationSource(sql, sql`excluded.payload_json`),
+                      "$.delegatedCompletion",
+                    ),
+                    "$.restartCancelledBackgroundWork",
                   ),
-                  "$.restartCancelledBackgroundWork",
                 )}
             `;
               break;
@@ -3984,6 +4024,42 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
 
+    const getUnresolvedRestartCuts = Effect.fn("ProjectionStore.getUnresolvedRestartCuts")(
+      function* (afterRunId?: RunId, limit?: number) {
+        const rows = yield* sql<{ readonly thread_id: string; readonly run_id: string }>`
+          SELECT source.thread_id, source.run_id
+          FROM orchestration_v2_projection_runs AS source
+          LEFT JOIN orchestration_v2_effect_outbox AS intent
+            ON intent.effect_id = 'effect:restart-continuation:' || source.run_id
+            AND intent.thread_id = source.thread_id
+            AND intent.effect_type = 'provider-runtime.continue'
+            AND json_extract(intent.payload_json, '$.type') = 'provider-runtime.continue'
+            AND json_extract(intent.payload_json, '$.sourceRunId') = source.run_id
+          WHERE source.run_id > ${afterRunId ?? ""}
+            AND source.status = 'cancelled'
+            AND (
+              json_extract(source.payload_json, '$.restartCut.continuation') = 'scheduled'
+              OR (json_type(source.payload_json, '$.restartCut') IS NULL AND intent.effect_id IS NOT NULL)
+            )
+            AND (intent.effect_id IS NULL OR intent.status IN ('succeeded', 'failed', 'cancelled'))
+            AND NOT EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_runs AS replacement
+              WHERE replacement.thread_id = source.thread_id
+                AND json_extract(replacement.payload_json, '$.restartContinuationOfRunId') = source.run_id
+            )
+          ORDER BY source.run_id ASC
+          LIMIT ${restartCutPageSize(limit)}
+        `;
+        return rows.map((row) => ({
+          threadId: ThreadId.make(row.thread_id),
+          runId: RunId.make(row.run_id),
+        }));
+      },
+      Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+    );
+
+    // Decode every canonical row once. Full thread reads repeat shared sessions,
+    // provider threads, transfers, and inherited fork histories for each owner.
     const getUnreadableThreadIds = Effect.fn("ProjectionStore.getUnreadableThreadIds")(
       function* () {
         const actualThreadIds = new Set<ThreadId>();
@@ -6845,6 +6921,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getProviderControlContext: readOnReader(getProviderControlContext),
       getLimitRecoveryCandidates: readOnReader(getLimitRecoveryCandidates),
       getRecoveryThreadIds: readOnReader(getRecoveryThreadIds),
+      getUnresolvedRestartCuts: readOnReader(getUnresolvedRestartCuts),
       getUnreadableThreadIds: readOnReader(getUnreadableThreadIds),
       getThreadSnapshot: readOnReader(getThreadSnapshot),
       getThreadSnapshotWindow: readOnReader(getThreadSnapshotWindow),
@@ -7182,6 +7259,24 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
               left.thread.id.localeCompare(right.thread.id),
           )
           .map((projection) => projection.thread.id);
+      }),
+    getUnresolvedRestartCuts: (afterRunId, limit) =>
+      Effect.gen(function* () {
+        const projections = (yield* Ref.get(replayState)).projections;
+        // The memory projection has no durable outbox; scheduled intents are missing here.
+        return [...projections.values()]
+          .flatMap((projection) =>
+            projection.runs.filter(
+              (run) =>
+                run.id > (afterRunId ?? "") &&
+                run.status === "cancelled" &&
+                run.restartCut?.continuation === "scheduled" &&
+                !projection.runs.some((next) => next.restartContinuationOfRunId === run.id),
+            ),
+          )
+          .toSorted((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
+          .slice(0, restartCutPageSize(limit))
+          .map((run) => ({ threadId: run.threadId, runId: run.id }));
       }),
       getUnreadableThreadIds: () => Effect.succeed([]),
       getPendingNativeUserInputs: Effect.fn("ProjectionStore.getPendingNativeUserInputs")(

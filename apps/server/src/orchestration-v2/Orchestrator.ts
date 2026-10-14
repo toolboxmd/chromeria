@@ -133,6 +133,11 @@ import {
   isUndeliveredMailboxSteer,
 } from "./NotificationMailbox.ts";
 import {
+  RESTART_CUT_REASONS,
+  restartCutView,
+  type RestartCutReason,
+} from "@t3tools/shared/restartCut";
+import {
   explicitMessage,
   humanMessage,
   propagatedStopAdmission,
@@ -183,6 +188,7 @@ import {
   endRunlessRootTurns,
   makeSubagentChildThread,
   subagentResultForRun,
+  restartResultRunIds,
   delegatedTaskProgress,
   subagentThreadTitle,
 } from "@t3tools/provider-core/server/subagentProjection";
@@ -345,6 +351,20 @@ export interface OrchestratorV2Shape {
   readonly resumeQueuedRuns: Effect.Effect<number, OrchestratorV2Error>;
   readonly recoverDelegatedTasks: Effect.Effect<void>;
   readonly recoverDelegatedTask: (threadId: ThreadId, sourceRunId: RunId) => Effect.Effect<void>;
+  readonly recordRestartCutDecline: (
+    threadId: ThreadId,
+    sourceRunId: RunId,
+    reason: RestartCutReason,
+  ) => Effect.Effect<void, OrchestratorV2Error>;
+  readonly readRestartCutView: (
+    run: OrchestrationV2Run,
+    runs: ReadonlyArray<OrchestrationV2Run>,
+  ) => Effect.Effect<ReturnType<typeof restartCutView>, OrchestratorV2Error>;
+  /**
+   * Whether a delegated child's apparent result is not final yet: a restart
+   * continuation is pending, or the child is working again.
+   * A taskId limits the check to that follow-up's runs.
+   */
   readonly delegatedTaskResultPending: (
     childThreadId: ThreadId,
     taskId?: NodeId,
@@ -702,9 +722,10 @@ const DELEGATED_RESULT_INLINE_BYTES = 16_000;
 function delegatedCompletionWakeDetail(
   taskIds: ReadonlyArray<string>,
   tasks: ReadonlyArray<OrchestrationV2Subagent>,
+  restartCuts: ReadonlyArray<string> = [],
 ): string {
   let remainingBytes = DELEGATED_RESULT_INLINE_BYTES;
-  return taskIds
+  const summary = taskIds
     .map((taskId) => {
       const task = tasks.find((candidate) => candidate.id === taskId);
       const label = `Delegated task ${taskId}${task?.title == null ? "" : ` (${task.title})`}${task === undefined ? " reached a terminal state" : ` [${task.status}]`}`;
@@ -719,6 +740,9 @@ function delegatedCompletionWakeDetail(
       return `${label}. Use task_status with taskId ${taskId} to read the result.`;
     })
     .join("\n\n");
+  return restartCuts.length === 0
+    ? summary
+    : `${summary}\nA server restart cut the work for ${restartCuts.join(", ")}. task_status reports the continuation outcome.`;
 }
 
 function isTerminalDelegatedTaskStatus(status: OrchestrationV2Subagent["status"]): boolean {
@@ -2430,7 +2454,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           occurredAt: now,
           payload: {
             ...message,
-            text: delegatedCompletionWakeDetail(remainingTaskIds, projection.subagents),
+            text: yield* completionWakeDetail(projection, remainingTaskIds),
             delegatedCompletion: {
               parentRunId: parentRun.id,
               generation: delivery.generation,
@@ -5063,10 +5087,44 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ]);
   });
 
+  const completionWakeDetail = Effect.fn("orchestrationV2.completionWakeDetail")(function* (
+    parent: Pick<OrchestrationV2ThreadProjection, "subagents">,
+    taskIds: ReadonlyArray<NodeId>,
+    tasks: ReadonlyArray<OrchestrationV2Subagent> = parent.subagents,
+  ) {
+    const restartCuts: Array<NodeId> = [];
+    for (const id of taskIds) {
+      const task = parent.subagents.find((task) => task.id === id);
+      if (task?.origin !== "app_owned" || task.childThreadId === null) continue;
+      const childThreadId = task.childThreadId;
+      const child = yield* projectionStore
+        .getThreadRecords(childThreadId, ["runs", "messages"], { messageRoles: ["user"] })
+        .pipe(
+          Effect.mapError(
+            (cause) => new OrchestratorProjectionError({ threadId: childThreadId, cause }),
+          ),
+        );
+      const result = delegatedTaskProgress({
+        ...child,
+        subagents: [],
+        providerThreads: [],
+      }).resultRun;
+      if (
+        (result?.status === "cancelled" && result.restartCut !== undefined) ||
+        result?.restartContinuationOfRunId !== undefined
+      )
+        restartCuts.push(id);
+    }
+    return delegatedCompletionWakeDetail(taskIds, tasks, restartCuts);
+  });
+
   const dispatchMessage = Effect.fn("Orchestrator.dispatchMessage")(function* (
     command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    restartCutDecline?: Ref.Ref<
+      Parameters<EventSinkV2["Service"]["commitCommand"]>[0]["restartCutDecline"]
+    >,
   ) {
     let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
     if (command.manualContinuationOfRunId !== undefined) {
@@ -5135,21 +5193,50 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
     if (command.restartContinuationOfRunId !== undefined) {
       const source = projection.runs.find((run) => run.id === command.restartContinuationOfRunId);
+      const reason =
+        source === undefined
+          ? undefined
+          : !isRestartContinuationSource(source, projection.providerTurns)
+            ? RESTART_CUT_REASONS.BACKGROUND_ONLY
+            : source.restartCut?.continuation === "declined"
+              ? RESTART_CUT_REASONS.NO_CONTINUATION
+              : projection.thread.archivedAt !== null || projection.thread.deletedAt !== null
+                ? RESTART_CUT_REASONS.THREAD_INACTIVE
+                : projection.thread.providerInstanceId !== source.providerInstanceId
+                  ? RESTART_CUT_REASONS.PROVIDER_CHANGED
+                  : projection.runs.some(
+                        (run) =>
+                          run.id !== source.id &&
+                          run.status !== "queued" &&
+                          !cancelledBeforeStart(run) &&
+                          runRanAfter(run, source),
+                      )
+                    ? RESTART_CUT_REASONS.SUPERSEDED
+                    : (yield* stopReachedRun(command, command.threadId, source.id))
+                      ? RESTART_CUT_REASONS.STOP_REQUESTED
+                      : undefined;
       if (
-        !source ||
+        source === undefined ||
         !isRestartContinuationSource(source, projection.providerTurns) ||
-        projection.thread.archivedAt !== null ||
-        projection.thread.deletedAt !== null ||
-        projection.thread.providerInstanceId !== source.providerInstanceId ||
-        projection.runs.some(
-          (run) =>
-            run.id !== source.id &&
-            run.status !== "queued" &&
-            !cancelledBeforeStart(run) &&
-            runRanAfter(run, source),
-        ) ||
-        (yield* stopReachedRun(command, command.threadId, source.id))
+        reason !== undefined
       ) {
+        if (
+          source?.status === "cancelled" &&
+          source.restartCut?.continuation !== "declined" &&
+          reason !== undefined &&
+          restartCutDecline !== undefined
+        ) {
+          yield* Ref.set(restartCutDecline, {
+            runId: source.id,
+            eventId: yield* idAllocator.allocate
+              .event({
+                threadId: command.threadId,
+                commandId: command.commandId,
+              })
+              .pipe(mapDispatchError(command)),
+            reason,
+          });
+        }
         // Preserve the current row so stale automatic deliveries receive an
         // accepted receipt without changing work or repeatedly retrying.
         yield* emit(
@@ -5444,7 +5531,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const dispatchText =
       delegatedCompletion === undefined
         ? command.text
-        : delegatedCompletionWakeDetail(delegatedCompletion.taskIds, projection.subagents);
+        : yield* completionWakeDetail(projection, delegatedCompletion.taskIds);
     const sourcePlanProjection =
       command.sourcePlanRef === undefined
         ? null
@@ -11852,7 +11939,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       };
     }
 
-    const delivery = cohort?.delivery ?? null;
+    // An acknowledged cohort has no work left. Its old steer/run must not
+    // hold a later result behind a delivery the parent already consumed.
+    const delivery = cohort?.delivery?.taskIds.length === 0 ? null : (cohort?.delivery ?? null);
     const deliveryRun = completionDeliveryRun(input.parentProjection, delivery);
     if (delivery !== null) {
       if (deliveryRun?.status === "queued" && deliveryRun.userMessageId === delivery.messageId) {
@@ -11882,7 +11971,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               ? undefined
               : {
                   ...message,
-                  text: delegatedCompletionWakeDetail(
+                  text: yield* completionWakeDetail(
+                    input.parentProjection,
                     taskIds,
                     input.parentProjection.subagents.map((task) =>
                       task.id === input.updatedTask.id ? input.updatedTask : task,
@@ -12059,13 +12149,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ]);
         return;
       }
+      const resultRunIds = restartResultRunIds(childControls.runs, [childRun.id]);
       const childResult = yield* projectionStore.getThreadRecords(
         childThreadId,
         ["messages", "turnItems"],
         {
           messageRoles: ["assistant"],
-          messageRunIds: [childRun.id],
-          turnItemRunId: childRun.id,
+          messageRunIds: resultRunIds,
+          turnItemRunIds: resultRunIds,
           turnItemTypes: ["assistant_message", "error"],
         },
       );
@@ -12105,12 +12196,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         parentThreadId,
       );
       // Fork (pingdotgg/t3code#13490): each finished turn transfers once, so a
-      // follow-up turn wakes the parent too. A legacy transfer without a run
-      // keeps the old once-per-child rule.
+      // follow-up turn wakes the parent too. Restart explanations need an
+      // exact-run receipt: legacy transfers cannot prove they were delivered.
       if (
         priorResultTransfers.some(
           (transfer) =>
-            transfer.sourcePoint.runId === undefined || transfer.sourcePoint.runId === childRun.id,
+            transfer.sourcePoint.runId === childRun.id ||
+            (transfer.sourcePoint.runId === undefined &&
+              !(childRun.status === "cancelled" && childRun.restartCut !== undefined) &&
+              childRun.restartContinuationOfRunId === undefined),
         )
       ) {
         return;
@@ -12134,7 +12228,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (yield* prismRecovery.holdsFinalization(childThreadId, childRun.id)) return;
 
       const now = yield* DateTime.now;
-      const result = subagentResultForRun(childProjection, { ...childRun, status: outcome });
+      const result = subagentResultForRun(
+        childProjection,
+        { ...childRun, status: outcome },
+        yield* readRestartCutView(childRun, childControls.runs),
+      );
       const parentRun =
         task.runId === null
           ? undefined
@@ -12684,6 +12782,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
       readonly effects: ReadonlyArray<PendingOrchestrationEffectV2>;
       readonly forkPlans?: ReadonlyArray<ForkCommitPlan>;
+      readonly restartCutDecline?: Parameters<
+        EventSinkV2["Service"]["commitCommand"]
+      >[0]["restartCutDecline"];
       readonly cancelUnsettledEffects?: {
         readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
         readonly reason: string;
@@ -12700,6 +12801,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
     const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
     const effects = yield* Ref.make<Array<PendingOrchestrationEffectV2>>([]);
+    const restartCutDecline =
+      yield* Ref.make<Parameters<EventSinkV2["Service"]["commitCommand"]>[0]["restartCutDecline"]>(
+        undefined,
+      );
     let cancelUnsettledEffects:
       | {
           readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
@@ -12840,7 +12945,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 text: guestSend.text,
                 context: { version: 1 as const, records: [], guest: guestSend.guest },
               };
-        cancelUnsettledEffects = yield* dispatchMessage(dispatched, events, effects);
+        cancelUnsettledEffects = yield* dispatchMessage(dispatched, events, effects, restartCutDecline);
         yield* recordSubagentFollowup(dispatched, events).pipe(mapDispatchError(command));
         break;
       }
@@ -13050,6 +13155,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     return {
       events: yield* Ref.get(events),
       effects: yield* Ref.get(effects),
+      restartCutDecline: yield* Ref.get(restartCutDecline),
       ...(cancelUnsettledEffects === undefined ? {} : { cancelUnsettledEffects }),
       ...(updateDelegatedCompletionOnlyRunId === undefined
         ? {}
@@ -13415,6 +13521,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         acceptedAt,
         events: plan.events,
         effects: plan.effects,
+        ...(plan.restartCutDecline === undefined
+          ? {}
+          : { restartCutDecline: plan.restartCutDecline }),
         forkPlans: commitPlans,
         ...(plan.cancelUnsettledEffects === undefined
           ? {}
@@ -13787,10 +13896,88 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const shellProjectionError = (cause: unknown) =>
     new OrchestratorProjectionError({ threadId: ThreadId.make("thread:shell"), cause });
 
+  const recordRestartCutDecline = Effect.fn("Orchestrator.recordRestartCutDecline")(
+    function* (threadId: ThreadId, sourceRunId: RunId, reason: RestartCutReason) {
+      const commandId = CommandId.make(`command:restart-cut-decline:${sourceRunId}`);
+      yield* eventSink.commitCommand({
+        commandId,
+        threadId,
+        commandType: "run.restart-cut.decline",
+        acceptedAt: yield* DateTime.now,
+        events: [],
+        effects: [],
+        restartCutDecline: {
+          runId: sourceRunId,
+          eventId: yield* idAllocator.allocate.event({ threadId, commandId }),
+          reason,
+        },
+      });
+    },
+    (effect, _threadId, sourceRunId) =>
+      effect.pipe(
+        Effect.mapError(
+          (cause) =>
+            new OrchestratorDispatchError({
+              commandId: CommandId.make(`command:restart-cut-decline:${sourceRunId}`),
+              commandType: "run.restart-cut.decline",
+              cause,
+            }),
+        ),
+      ),
+  );
+
+  const readRestartCutView = Effect.fn("Orchestrator.readRestartCutView")(
+    function* (run: OrchestrationV2Run, runs: ReadonlyArray<OrchestrationV2Run>) {
+      const initial = restartCutView(run, runs);
+      if (
+        run.status !== "cancelled" ||
+        (initial !== undefined && initial.state !== "continuation_pending")
+      )
+        return initial;
+      const statuses = new Map<
+        RunId,
+        "pending" | "running" | "succeeded" | "failed" | "cancelled" | null
+      >();
+      const seen = new Set<RunId>();
+      let source: OrchestrationV2Run | undefined = run;
+      while (source !== undefined && !seen.has(source.id)) {
+        seen.add(source.id);
+        const replacement = runs
+          .filter((candidate) => candidate.restartContinuationOfRunId === source?.id)
+          .toSorted((a, b) => b.ordinal - a.ordinal)[0];
+        if (replacement !== undefined) {
+          source = replacement;
+          continue;
+        }
+        if (source.status === "cancelled") {
+          const intent = yield* effectOutbox.get(`effect:restart-continuation:${source.id}`);
+          const owned = Option.filter(
+            intent,
+            (effect) =>
+              effect.threadId === run.threadId &&
+              effect.request.type === "provider-runtime.continue" &&
+              effect.request.sourceRunId === source?.id,
+          );
+          statuses.set(source.id, Option.getOrNull(owned)?.status ?? null);
+        }
+        break;
+      }
+      return restartCutView(run, runs, statuses);
+    },
+    (effect, run) =>
+      effect.pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: run.threadId, cause }),
+        ),
+      ),
+  );
+
   return OrchestratorV2.of({
     resumeQueuedRuns,
     recoverDelegatedTasks,
     recoverDelegatedTask,
+    recordRestartCutDecline,
+    readRestartCutView,
     delegatedTaskResultPending,
     restartContinuationPending: Effect.fn("OrchestratorV2.restartContinuationPending")(
       function (run) {

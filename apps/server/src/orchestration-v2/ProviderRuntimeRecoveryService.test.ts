@@ -16,6 +16,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -55,6 +56,7 @@ it.effect("expires orphaned runtime requests before command readiness", () => {
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getUnresolvedRestartCuts: () => Effect.succeed([]),
           getRecoveryThreadIds: () => Effect.succeed([threadId]),
           getRuntimeRecoveryProjection: () => Effect.succeed(projection),
         }),
@@ -64,6 +66,7 @@ it.effect("expires orphaned runtime requests before command readiness", () => {
           runRecoveryOnce: Effect.succeed(false),
         }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
+          get: () => Effect.succeed(Option.none()),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),
       ),
@@ -107,6 +110,7 @@ it.effect("preserves async questions across startup and shutdown", () => {
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getUnresolvedRestartCuts: () => Effect.succeed([]),
           getRecoveryThreadIds: () => Effect.succeed([threadId]),
           getRuntimeRecoveryProjection: () => Effect.succeed(projection),
         }),
@@ -116,6 +120,7 @@ it.effect("preserves async questions across startup and shutdown", () => {
           runRecoveryOnce: Effect.succeed(false),
         }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
+          get: () => Effect.succeed(Option.none()),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           cancelUnsettled: () => Effect.succeed([]),
           signalCancellations: () => Effect.void,
@@ -148,6 +153,7 @@ it.effect(
       providerThreads: [
         {
           id: providerThreadId,
+          appThreadId: threadId,
           driver: ProviderDriverKind.make("claude"),
           providerInstanceId,
           status: "idle",
@@ -177,6 +183,7 @@ it.effect(
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getUnresolvedRestartCuts: () => Effect.succeed([]),
             getRecoveryThreadIds: () => Effect.succeed([threadId]),
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
@@ -194,6 +201,7 @@ it.effect(
             runRecoveryOnce: Effect.succeed(false),
           }),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
+            get: () => Effect.succeed(Option.none()),
             listByCommandId: () =>
               Effect.succeed([
                 {
@@ -269,6 +277,7 @@ it.effect(
       providerThreads: [
         {
           id: claudeThreadId,
+          appThreadId: threadId,
           ownerNodeId: null,
           driver: ProviderDriverKind.make("claudeAgent"),
           providerInstanceId: claude,
@@ -277,6 +286,7 @@ it.effect(
         },
         {
           id: codexThreadId,
+          appThreadId: threadId,
           ownerNodeId: null,
           driver: ProviderDriverKind.make("codex"),
           providerInstanceId: codex,
@@ -322,6 +332,7 @@ it.effect(
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getUnresolvedRestartCuts: () => Effect.succeed([]),
             getRecoveryThreadIds: () => Effect.succeed([threadId]),
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
@@ -336,6 +347,7 @@ it.effect(
             runRecoveryOnce: Effect.succeed(false),
           }),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
+            get: () => Effect.succeed(Option.none()),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
         ),
@@ -388,6 +400,7 @@ it.effect("cancels a stale waiting run when no checkpoint capture can finish it"
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getUnresolvedRestartCuts: () => Effect.succeed([]),
           getRecoveryThreadIds: () => Effect.succeed([threadId]),
           getRuntimeRecoveryProjection: () => Effect.succeed(projection),
         }),
@@ -402,6 +415,7 @@ it.effect("cancels a stale waiting run when no checkpoint capture can finish it"
           runRecoveryOnce: Effect.succeed(false),
         }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
+          get: () => Effect.succeed(Option.none()),
           listByCommandId: () => Effect.succeed([]),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),
@@ -555,6 +569,7 @@ it.effect.each(["queued", "preparing"] as const)("recovers $0 work after restart
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getUnresolvedRestartCuts: () => Effect.succeed([]),
           getRecoveryThreadIds: () => Effect.succeed([threadId]),
           getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           getThreadRecords: () => Effect.succeed(projection),
@@ -570,6 +585,7 @@ it.effect.each(["queued", "preparing"] as const)("recovers $0 work after restart
           runRecoveryOnce: Effect.succeed(false),
         }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
+          get: () => Effect.succeed(Option.none()),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),
       ),
@@ -635,6 +651,7 @@ it.effect(
       providerThreads: [
         {
           id: providerThreadId,
+          appThreadId: threadId,
           driver: ProviderDriverKind.make("codex"),
           providerInstanceId: ProviderInstanceId.make("codex"),
           status: "active",
@@ -681,6 +698,7 @@ it.effect(
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getUnresolvedRestartCuts: () => Effect.succeed([]),
             getRecoveryThreadIds: () => Effect.succeed([threadId]),
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
@@ -695,6 +713,7 @@ it.effect(
             runRecoveryOnce: Effect.succeed(false),
           }),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
+            get: () => Effect.succeed(Option.none()),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
         ),
@@ -788,6 +807,7 @@ it.effect("cancels workflow members and child roots without run ids after restar
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getUnresolvedRestartCuts: () => Effect.succeed([]),
           getRecoveryThreadIds: () => Effect.succeed([parentThreadId, childThreadId]),
           getRuntimeRecoveryProjection: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
@@ -803,6 +823,7 @@ it.effect("cancels workflow members and child roots without run ids after restar
           runRecoveryOnce: Effect.succeed(false),
         }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
+          get: () => Effect.succeed(Option.none()),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),
       ),
@@ -867,6 +888,7 @@ it.effect(
       providerThreads: [
         {
           id: idleProviderThreadId,
+          appThreadId: threadId,
           driver: ProviderDriverKind.make("claude"),
 
           providerInstanceId: claudeInstanceId,
@@ -875,6 +897,7 @@ it.effect(
         },
         {
           id: activeProviderThreadId,
+          appThreadId: threadId,
           driver: ProviderDriverKind.make("claude"),
           providerInstanceId: claudeInstanceId,
           status: "active",
@@ -882,6 +905,7 @@ it.effect(
         },
         {
           id: secondaryProviderThreadId,
+          appThreadId: threadId,
           driver: ProviderDriverKind.make("claude"),
           providerInstanceId: secondaryInstanceId,
           status: "idle",
@@ -953,6 +977,7 @@ it.effect(
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getUnresolvedRestartCuts: () => Effect.succeed([]),
             getRecoveryThreadIds: () => Effect.succeed([threadId]),
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
@@ -967,6 +992,7 @@ it.effect(
             runRecoveryOnce: Effect.succeed(false),
           }),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
+            get: () => Effect.succeed(Option.none()),
             listByCommandId: () => Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
@@ -1058,6 +1084,7 @@ it.effect(
       providerThreads: [
         {
           id: providerThreadId,
+          appThreadId: threadId,
           driver: ProviderDriverKind.make("codex"),
           providerInstanceId: codexInstanceId,
           status: "idle",
@@ -1110,6 +1137,7 @@ it.effect(
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getUnresolvedRestartCuts: () => Effect.succeed([]),
             getRecoveryThreadIds: () => Effect.succeed([threadId]),
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
@@ -1124,6 +1152,7 @@ it.effect(
             runRecoveryOnce: Effect.succeed(false),
           }),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
+            get: () => Effect.succeed(Option.none()),
             listByCommandId: () => Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
@@ -1178,6 +1207,7 @@ it.effect(
       providerThreads: [
         {
           id: providerThreadId,
+          appThreadId: threadId,
           driver: ProviderDriverKind.make("claude"),
           providerInstanceId: claudeInstanceId,
           status: "idle",
@@ -1240,6 +1270,7 @@ it.effect(
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getUnresolvedRestartCuts: () => Effect.succeed([]),
             getRecoveryThreadIds: () => Effect.succeed([threadId]),
             getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           }),
@@ -1254,6 +1285,7 @@ it.effect(
             runRecoveryOnce: Effect.succeed(false),
           }),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
+            get: () => Effect.succeed(Option.none()),
             listByCommandId: () => Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
@@ -1346,6 +1378,7 @@ it.effect("leaves delegated tasks to their own child threads after process loss"
     providerThreads: [
       {
         id: providerThreadId,
+        appThreadId: threadId,
         driver,
         providerInstanceId: claudeInstanceId,
         ownerNodeId: null,
@@ -1397,6 +1430,7 @@ it.effect("leaves delegated tasks to their own child threads after process loss"
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getUnresolvedRestartCuts: () => Effect.succeed([]),
           getRecoveryThreadIds: () => Effect.succeed([threadId]),
           getRuntimeRecoveryProjection: () => Effect.succeed(projection),
         }),
@@ -1411,6 +1445,7 @@ it.effect("leaves delegated tasks to their own child threads after process loss"
           runRecoveryOnce: Effect.succeed(false),
         }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
+          get: () => Effect.succeed(Option.none()),
           listByCommandId: () => Effect.succeed([]),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),

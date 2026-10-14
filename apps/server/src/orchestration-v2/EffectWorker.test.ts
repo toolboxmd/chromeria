@@ -521,6 +521,7 @@ it.effect("settles a delegated child once its restart continuation fails for goo
       continueAfterRestart: true,
       threads: {
         getThreadRecords: () => Effect.fail(new Error("provider instance removed") as never),
+        recordRestartCutDecline: () => Effect.void,
         recoverDelegatedTask: (childThreadId) =>
           Ref.update(recovered, (ids) => [...ids, childThreadId]),
       },

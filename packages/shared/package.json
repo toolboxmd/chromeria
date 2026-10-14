@@ -511,6 +511,10 @@
       "types": "./src/cloneUrl.ts",
       "import": "./src/cloneUrl.ts"
     },
+    "./restartCut": {
+      "types": "./src/restartCut.ts",
+      "import": "./src/restartCut.ts"
+    },
     "./forkToolInstructions": {
       "types": "./src/forkToolInstructions.ts",
       "import": "./src/forkToolInstructions.ts"

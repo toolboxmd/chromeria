@@ -76,6 +76,56 @@ export const delegatedFollowupRecoveryQuery = (sql: SqlClient.SqlClient) => sql`
       AND result.target_thread_id = json_extract(child.payload_json, '$.lineage.parentThreadId')
       AND result.type = 'subagent_result'
   )
+  UNION
+  SELECT child.thread_id FROM subagent_children AS child
+  WHERE EXISTS (
+    SELECT 1 FROM orchestration_v2_projection_runs AS result
+    WHERE result.thread_id = child.thread_id
+      AND (
+        (result.status = 'cancelled' AND json_type(result.payload_json, '$.restartCut') = 'object')
+        OR (
+          result.status IN ('completed', 'interrupted', 'failed', 'cancelled')
+          AND json_extract(result.payload_json, '$.restartContinuationOfRunId') IS NOT NULL
+        )
+      )
+      AND result.run_id = (
+        SELECT eligible.run_id FROM orchestration_v2_projection_runs AS eligible
+        WHERE eligible.thread_id = child.thread_id
+          AND eligible.status IN ('completed', 'interrupted', 'failed', 'cancelled')
+          AND (
+            json_extract(eligible.payload_json, '$.startedAt') IS NOT NULL
+            OR eligible.ordinal = 1
+            OR json_extract(eligible.payload_json, '$.restartContinuationOfRunId') IS NOT NULL
+            OR (eligible.status = 'cancelled' AND json_type(eligible.payload_json, '$.restartCut') = 'object')
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM orchestration_v2_projection_messages AS monitor
+            WHERE monitor.thread_id = child.thread_id AND monitor.run_id = eligible.run_id
+              AND json_extract(monitor.payload_json, '$.notification.source.kind') = 'monitor'
+          )
+        -- Same result chronology as runRanAfter, including resumed lower-ordinal queues.
+        ORDER BY (eligible.completed_at IS NULL) DESC, eligible.completed_at DESC, eligible.ordinal DESC
+        LIMIT 1
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM orchestration_v2_projection_runs AS active
+        WHERE active.thread_id = child.thread_id
+          AND (active.status IN ('preparing', 'starting', 'running', 'waiting')
+            OR (active.status = 'queued' AND json_extract(active.payload_json, '$.queueHeld') IS NOT 1))
+          AND NOT EXISTS (
+            SELECT 1 FROM orchestration_v2_projection_messages AS monitor
+            WHERE monitor.thread_id = child.thread_id AND monitor.run_id = active.run_id
+              AND json_extract(monitor.payload_json, '$.notification.source.kind') = 'monitor'
+          )
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM orchestration_v2_projection_context_transfers AS transfer
+        WHERE transfer.source_thread_id = child.thread_id
+          AND transfer.target_thread_id = json_extract(child.payload_json, '$.lineage.parentThreadId')
+          AND transfer.type = 'subagent_result'
+          AND json_extract(transfer.payload_json, '$.sourcePoint.runId') = result.run_id
+      )
+  )
 `;
 
 /** Sparse shell input from bound runs and the native restart outbox, without extra state. */

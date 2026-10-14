@@ -78,6 +78,12 @@ const commandTool = {
 };
 const queueEntry = Schema.Struct({
   queuedRunId: RunId,
+  // Older peers omit this field; absence means the hold state is unknown.
+  held: Schema.optional(
+    Schema.Boolean.annotate({
+      description: "Whether this message is held. Absence means an older peer did not report it.",
+    }),
+  ),
   text: Schema.String,
   truncated: Schema.Boolean,
 });
@@ -255,6 +261,12 @@ const ScheduledTaskRunTool = Tool.make("run_scheduled_task_now", {
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);
 
+const QueueResumeTool = Tool.make("t3_queue_resume", {
+  ...commandTool,
+  description: "Explicitly resume a held queue in its existing order. Omit threadId for this thread.",
+  parameters: McpRouting.parameters(Schema.Struct({ threadId: Schema.optional(ThreadId) })),
+}).annotate(Tool.Destructive, true);
+
 export const ThreadToolkit = Toolkit.make(
   ScheduledTaskRunTool,
   ThreadSearchTool,
@@ -263,4 +275,5 @@ export const ThreadToolkit = Toolkit.make(
   ThreadOrganizeTool,
   PendingRequestTool,
   QueueTool,
+  QueueResumeTool,
 );

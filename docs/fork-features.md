@@ -747,14 +747,16 @@ Child creation paths are owned by child-threads and shared with thread-people.
 ```json
 {
   "id": "child-threads",
-  "purpose": "Create native children in any project, handle descendant requests and preserve durable subtree Stop.",
+  "purpose": "Create native children in any project, handle descendant requests, preserve durable subtree Stop and restart outcomes, and expose guarded agent queue resume.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/168",
-    "https://github.com/toolboxmd/chromeria/issues/269"
+    "https://github.com/toolboxmd/chromeria/issues/269",
+    "https://github.com/toolboxmd/chromeria/issues/264"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/181",
-    "https://github.com/toolboxmd/chromeria/pull/279"
+    "https://github.com/toolboxmd/chromeria/pull/279",
+    "https://github.com/toolboxmd/chromeria/pull/301"
   ],
   "newFiles": [
     "apps/server/src/childThreads/ForkCommitPlan.ts",
@@ -776,7 +778,14 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/orchestration-v2/ThreadManagementService.ancestorDelivery.test.ts",
     "apps/server/src/fork/ForkDispatchPlans.ts",
     "apps/server/src/fork/commitSequence.ts",
-    "apps/server/src/fork/commitSequence.test.ts"
+    "apps/server/src/fork/commitSequence.test.ts",
+    "apps/server/src/mcp/QueueResume.integration.test.ts",
+    "apps/server/src/orchestration-v2/RestartRecovery.integration.test.ts",
+    "packages/shared/src/restartCut.ts",
+    "apps/server/src/restartContinuation/RestartCut.test.ts",
+    "apps/server/src/restartContinuation/EventSinkRestartCut.test.ts",
+    "apps/server/src/restartContinuation/UnresolvedRestartCuts.test.ts",
+    "apps/server/src/restartContinuation/RestartPersistence.test.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/mcp/OrchestratorMcpService.activity.test.ts",
@@ -790,6 +799,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/mcp/toolkits/thread/handlers.ts",
     "apps/server/src/mcp/toolkits/thread/tools.ts",
     "apps/server/src/orchestration-v2/EffectOutbox.ts",
+    "apps/server/src/orchestration-v2/EffectWorker.test.ts",
     "apps/server/src/orchestration-v2/EffectWorker.ts",
     "apps/server/src/orchestration-v2/EventSink.ts",
     "apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
@@ -803,12 +813,25 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts",
     "packages/contracts/src/orchestrationV2.ts",
     "packages/contracts/src/orchestratorMcp.ts",
-    "packages/provider-core/src/server/subagentProjection.ts"
+    "packages/provider-core/src/server/subagentProjection.ts",
+    "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryPerformance.test.ts",
+    "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts",
+    "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+    "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+    "apps/server/src/orchestration-v2/RestartContinuation.ts",
+    "apps/server/src/orchestration-v2/SubagentProjection.test.ts",
+    "packages/client-runtime/src/work-log/presentation.ts"
   ],
   "sharedFiles": [
     "apps/server/src/persistence/forkV1Backfills.ts",
     "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
-    "apps/server/src/ws.ts"
+    "apps/server/src/ws.ts",
+    "apps/server/src/orchestration-v2/ProjectionStore.ts",
+    "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts",
+    "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
+    "apps/server/src/peer/RemoteDelegation.test.ts",
+    "packages/client-runtime/src/t3ToolSummary.ts",
+    "packages/shared/src/t3McpToolPresentation.ts"
   ],
   "keywords": [
     "delegate_task",
@@ -816,7 +839,11 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "forkRetirement",
     "forkResumedRetirements",
     "subagent_result",
-    "lineageBackfill"
+    "lineageBackfill",
+    "restartCut",
+    "restartContinuationOfRunId",
+    "continueRestartedRun",
+    "t3_queue_resume"
   ]
 }
 ```
