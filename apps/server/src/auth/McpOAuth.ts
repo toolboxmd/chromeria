@@ -176,6 +176,7 @@ export interface AuthorizationRequest {
 }
 
 interface PendingCode {
+  readonly permanent: boolean;
   readonly clientId: string;
   readonly clientName: string;
   readonly peerLink: boolean;
@@ -407,6 +408,7 @@ const make = Effect.gen(function* () {
   const mintCode = Effect.fn("McpOAuth.mintCode")(function* (
     authorization: AuthorizationRequest,
     access: AuthMcpClientAccess,
+    permanent: boolean,
   ) {
     const now = yield* Clock.currentTimeMillis;
     const code = Buffer.from(yield* crypto.randomBytes(32).pipe(Effect.orDie)).toString(
@@ -418,6 +420,7 @@ const make = Effect.gen(function* () {
         clientId: authorization.client.clientId,
         clientName: authorization.client.name,
         peerLink: authorization.client.peerLink,
+        permanent,
         redirectUri: authorization.redirectUri,
         codeChallenge: authorization.codeChallenge,
         resource: authorization.resource,
@@ -457,7 +460,11 @@ const make = Effect.gen(function* () {
         });
       }
     }
-    const code = yield* mintCode(input.authorization, decision.access);
+    const code = yield* mintCode(
+      input.authorization,
+      decision.access,
+      decision._tag === "pairing-code" && input.authorization.client.peerLink,
+    );
     yield* Effect.logInfo("Approved an MCP client sign-in.", {
       client: input.authorization.client.name,
       access: decision.access,
@@ -520,6 +527,7 @@ const make = Effect.gen(function* () {
           label: pending.clientName,
           access: pending.access,
           peerLink: pending.peerLink,
+          permanent: pending.permanent,
           client: deriveAuthClientMetadata({ request }),
         })
         .pipe(

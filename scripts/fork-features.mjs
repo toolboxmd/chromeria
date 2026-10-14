@@ -117,7 +117,14 @@ function report(features, baseRef, targetRef) {
         ...feature.upstreamFiles,
         ...feature.sharedFiles,
       ]);
-      for (const path of paths) if (files.has(path)) reasons.push(`file: ${path}`);
+      for (const path of paths) {
+        if (
+          [...files].some((pattern) =>
+            pattern.endsWith("/*") ? path.startsWith(pattern.slice(0, -1)) : path === pattern,
+          )
+        )
+          reasons.push(`file: ${path}`);
+      }
       for (const keyword of feature.keywords) {
         const sources = Object.entries(haystacks)
           .filter(([, value]) => value.includes(keyword.toLowerCase()))

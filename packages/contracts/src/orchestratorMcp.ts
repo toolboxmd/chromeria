@@ -217,6 +217,15 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
     Schema.Struct({ environmentId: EnvironmentId, threadId: ThreadId, label: Schema.String }),
   ),
   link: Schema.optional(Schema.String),
+  /** The destination environment; threadId is absent until its launch is attached. */
+  remoteChild: Schema.optional(
+    Schema.Struct({
+      environmentId: EnvironmentId,
+      threadId: Schema.optional(ThreadId),
+      label: Schema.String,
+      launchError: Schema.optional(Schema.String),
+    }),
+  ),
   childRunId: Schema.NullOr(RunId),
   childNodeId: NodeId,
   status: OrchestratorMcpDelegatedTaskStatus,
@@ -623,6 +632,11 @@ export const OrchestratorMcpProviderCapability = Schema.Struct({
   constraints: Schema.Array(Schema.String),
 });
 export type OrchestratorMcpProviderCapability = typeof OrchestratorMcpProviderCapability.Type;
+
+export const OrchestratorMcpCapabilitiesInput = Schema.Struct({
+  environmentId: OrchestratorMcpEnvironmentTarget,
+});
+export type OrchestratorMcpCapabilitiesInput = typeof OrchestratorMcpCapabilitiesInput.Type;
 
 export const OrchestratorMcpEnvironmentLink = Schema.Struct({
   environmentId: EnvironmentId,

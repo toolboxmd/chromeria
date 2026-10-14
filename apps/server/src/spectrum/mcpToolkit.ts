@@ -111,5 +111,6 @@ export const layer = McpToolAccess.toLayer(SpectrumToolkit, {
           })),
         };
       }),
+    { refused: "Spectrum cannot be started through a peer link." },
   ),
 });

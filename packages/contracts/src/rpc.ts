@@ -797,6 +797,24 @@ const WsPeerLinksUnlinkRpc = Rpc.make(WS_METHODS.peerLinksUnlink, {
   error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
 });
 
+const WsServerGetSettingsRpc = Rpc.make(WS_METHODS.serverGetSettings, {
+  payload: Schema.Struct({}),
+  success: Schema.Struct({ links: Schema.Array(PeerLinkSummary) }),
+  error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
+});
+
+const WsPeerLinksLinkRpc = Rpc.make(WS_METHODS.peerLinksLink, {
+  payload: PeerLinkCreateInput,
+  success: PeerLink,
+  error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
+});
+
+const WsPeerLinksUnlinkRpc = Rpc.make(WS_METHODS.peerLinksUnlink, {
+  payload: PeerLinkRemoveInput,
+  success: PeerLinkRemoveResult,
+  error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
+});
+
 const WsPeerLinksAnswerRequestRpc = Rpc.make(WS_METHODS.peerLinksAnswerRequest, {
   payload: PeerLinkRequestAnswerInput,
   error: Schema.Union([PeerLinkRequestError, EnvironmentAuthorizationError]),

@@ -143,6 +143,7 @@ const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
 /** B launches whatever it is asked to, and records it. */
 const boxLaunches = (seen: Ref.Ref<Seen>) =>
   Layer.mock(ThreadLaunch.ThreadLaunchService)({
+    replayOrLaunch: (_input, launch) => launch,
     launch: (input) =>
       Ref.update(seen, (current) => ({ ...current, launches: [...current.launches, input] })).pipe(
         Effect.as({

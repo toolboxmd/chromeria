@@ -164,7 +164,9 @@ const clientLaunchHarness = (input: {
       },
     }),
     Layer.mock(ThreadLaunch.ThreadLaunchService)({
+      replayOrLaunch: (_input, launch) => launch,
       checkWorktreeBase: input.checkWorktreeBase ?? (() => Effect.void),
+      replayOrLaunch: (_input, launch) => launch,
       launch: (launch) => {
         input.launched.push(launch);
         return Effect.succeed({
@@ -194,6 +196,7 @@ const clientLaunchHarness = (input: {
             : Option.none(),
         ),
     }),
+    Layer.mock(PeerForwarding.PeerForwarding)({}),
     Layer.mock(PeerForwarding.PeerForwarding)({}),
     Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
     DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer)),

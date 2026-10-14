@@ -3,6 +3,7 @@ import * as Prism from "../../../prism/PrismService.ts";
 import { ProviderAdapterRegistryV2 } from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
   CommandId,
+  type EnvironmentId,
   MessageId,
   ThreadId,
   OrchestratorMcpFailure,
@@ -20,6 +21,7 @@ import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
+import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
@@ -79,6 +81,15 @@ const access = Effect.gen(function* () {
   yield* readCaller();
   return yield* Project.ProjectService;
 });
+
+/** The linked environment a call names, or nothing for this one. */
+const remoteTarget = (input: { readonly environmentId?: EnvironmentId | undefined }) =>
+  McpInvocationContext.McpInvocationContext.pipe(
+    Effect.map((scope) => ({
+      scope,
+      target: PeerForwarding.remoteTarget(scope, input.environmentId),
+    })),
+  );
 export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   t3_thread_launch: McpToolAccess.startsThreads(
     (input) => input,
@@ -159,12 +170,65 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               (error) =>
                 new OrchestratorMcpFailure({
                   code: "invalid_request",
-                  message: `${error.message} No thread was created. Pass a branch, tag, or commit that exists there${
-                    strategy.startFromOrigin === true
-                      ? "; the project has no usable remote to fetch it from."
-                      : ", or set startFromOrigin:true if it exists only on a remote."
-                  }`,
+                  message:
+                    "Pass modelSelection: the project has no default model. orchestrator_capabilities lists providers and models.",
+                });
+              const startedRuntimeMode =
+                projectDefaults !== undefined && input.runtimeMode === undefined
+                  ? yield* resolveRuntimeMode(runtimeMode, projectDefaults.defaultRuntimeMode).pipe(
+                      Effect.orElseSucceed(() => runtimeMode),
+                    )
+                  : runtimeMode;
+              return yield* ThreadMessageIntake.launchThread({
+                commandId,
+                threadId,
+                projectId,
+                title: input.title,
+                modelSelection,
+                runtimeMode: startedRuntimeMode,
+                interactionMode,
+                workspaceStrategy: input.workspaceStrategy ?? { type: "root" },
+                ...(input.message === undefined && attachments.length === 0
+                  ? {}
+                  : {
+                      initialMessage: {
+                        messageId,
+                        ...(caller === undefined ? {} : { senderThreadId: caller.id }),
+                        text: [kitText, input.message ?? ""].filter(Boolean).join("\n\n"),
+                        attachments,
+                      },
+                    }),
+                createdBy: "agent",
+                creationSource: "mcp",
+                // Fork: an agent's thread belongs to its caller's owner (toolboxmd/chromeria#170).
+                ...(caller === undefined ? {} : { owner: threadOwner(caller) }),
+                ...(linkOrigin === undefined ? {} : { linkOrigin }),
+                // Kept only alongside linkOrigin: thread.create drops it otherwise.
+                ...(input.delegatedFrom === undefined
+                  ? {}
+                  : { delegatedFrom: input.delegatedFrom }),
+              }).pipe(
+                Effect.mapError((error) => {
+                  if (error._tag === "AttachmentClaimError") {
+                    return new OrchestratorMcpFailure({
+                      code: "orchestration_error",
+                      message: error.message,
+                    });
+                  }
+                  if (error._tag === "ThreadManagementProviderInstanceDisabledError") {
+                    return new OrchestratorMcpFailure({
+                      code: "invalid_request",
+                      message: error.message,
+                    });
+                  }
+                  return unavailable();
                 }),
+              );
+            }),
+          )
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "ThreadLaunchError" ? unavailable() : error,
             ),
           );
         // A caller outside a thread has nothing to inherit, so it starts with the
@@ -276,7 +340,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           threadId: thread.id,
           link: McpInvocationContext.threadLinkFor(scope, thread.id),
           projectId: thread.projectId,
-          modelSelection: thread.modelSelection,
+          modelSelection: run?.modelSelection ?? thread.modelSelection,
           runId: run?.id ?? null,
           status: run?.status ?? null,
         };
@@ -285,6 +349,11 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   ),
   t3_project_list: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
+      const { scope, target } = yield* remoteTarget(input);
+      if (target !== undefined) {
+        const forwarding = yield* PeerForwarding.PeerForwarding;
+        return yield* forwarding.call(scope, ProjectToolkit.tools.t3_project_list, target, input);
+      }
       const projects = yield* access;
       // Identities are resolved: linked environments find this side's project by repository.
       return yield* projects

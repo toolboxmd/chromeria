@@ -1001,6 +1001,7 @@ const make = Effect.gen(function* () {
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
   const fileSystem = yield* FileSystem.FileSystem;
+  const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
 
   const requireProject = (projectId: ProjectId) =>
     projects.getById(projectId).pipe(
@@ -2667,6 +2668,8 @@ const make = Effect.gen(function* () {
           status: cancelled ? "cancelled" : current.status,
         } satisfies OrchestratorMcpTaskCancelResult;
       }
+      // A task waiting on its own delegates has work to stop below it. One with neither
+      // a running turn nor delegates (such as one awaiting a restart) keeps its delivery.
       const child = yield* loadProjection(childThreadId);
       if (
         current.workState !== "waiting_for_children" &&
@@ -3159,6 +3162,8 @@ const make = Effect.gen(function* () {
             type: "thread.stop",
             commandId,
             threadId: input.threadId,
+            // The tree walk below stops the delegated tasks under this call's limits.
+            stopDelegatedTasks: false,
             ...(input.reason === undefined ? {} : { reason: input.reason }),
           })
           .pipe(Effect.catch(stopFailed));

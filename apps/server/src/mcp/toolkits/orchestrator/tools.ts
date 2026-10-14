@@ -71,12 +71,12 @@ const threadMetadataDependencies = [
 
 const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
   description:
-    "List providers, models, options, and runtime modes for `delegate_task`. Short list. `search` finds others. Any catalog model works.",
+    "List providers, models, options, and runtime modes for `delegate_task`, here or in a linked environment with `environmentId`. Short list. `search` finds others. Any catalog model works.",
   parameters: OrchestratorMcpCapabilitiesInput,
   success: OrchestratorMcpCapabilitiesResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
-  dependencies,
+  dependencies: forwardingDependencies,
 })
   .annotate(Tool.Title, "Get orchestration capabilities")
   .annotate(Tool.Readonly, true)
@@ -85,7 +85,7 @@ const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
 
 const DelegateTaskTool = Tool.make("delegate_task", {
   description:
-    "Start one child agent with only `task`. No parent history. Prism picks provider, model and effort from the role kit and usage headroom; omit `target` unless the user chose a provider/model (an explicit target wins). `prismRole` picks a kit, `lane` worker difficulty; unconfigured roles inherit the parent model. Use visible T3 delegation instead of native or shell agent runners. Separate checkout or PR per child: `isolation:'worktree'`. Keep `taskId` for `task_status` and `task_cancel`.",
+    "Start one child agent with only `task`. No parent history. Set `target.environmentId` to run it on a linked environment, with `target.projectId` for its project. The target's Prism picks provider, model and effort from the role kit and usage headroom; omit `target` unless the user chose a provider/model (an explicit target wins). `prismRole` picks a kit, `lane` worker difficulty; unconfigured roles inherit the parent model. Use visible T3 delegation instead of native or shell agent runners. Separate checkout or PR per child: `isolation:'worktree'`. Keep `taskId` for `task_status` and `task_cancel`.",
   parameters: OrchestratorMcpDelegateTaskInput,
   success: OrchestratorMcpDelegateTaskResult,
   failure: OrchestratorMcpFailure,
@@ -227,7 +227,7 @@ const ThreadListTool = Tool.make("t3_thread_list", {
   success: OrchestratorMcpThreadListResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
-  dependencies,
+  dependencies: forwardingDependencies,
 })
   .annotate(Tool.Title, "List T3 threads")
   .annotate(Tool.Readonly, true)
@@ -236,12 +236,12 @@ const ThreadListTool = Tool.make("t3_thread_list", {
 
 const ThreadReadTool = Tool.make("t3_thread_read", {
   description:
-    "Read any thread by id. `messages` (default): user and assistant messages and plans. `activity`: all timeline items. Keep reads small: low `limit` and `maxCharsPerItem`. Page with `afterPosition=nextPosition`. Cut-off text: `itemId` with `textOffset=nextTextOffset`. Reading a child's final result marks it delivered. In your reply, name it as its `link` verbatim.",
+    "Read any thread by id, here or in a linked environment with `environmentId`. `messages` (default): user and assistant messages and plans. `activity`: all timeline items. Keep reads small: low `limit` and `maxCharsPerItem`. Page with `afterPosition=nextPosition`. Cut-off text: `itemId` with `textOffset=nextTextOffset`. Reading a child's final result marks it delivered. In your reply, name it as its `link` verbatim.",
   parameters: OrchestratorMcpThreadReadInput,
   success: OrchestratorMcpThreadReadResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
-  dependencies,
+  dependencies: forwardingDependencies,
 })
   .annotate(Tool.Title, "Read a T3 thread")
   .annotate(Tool.Strict, true)
@@ -268,12 +268,12 @@ const ThreadUpdateTool = Tool.make("t3_thread_update", {
 
 const ThreadSendTool = Tool.make("t3_thread_send", {
   description:
-    "Send a message to any thread. The target cannot run with broader modes than yours. `mode:'auto'` starts an idle thread, steers a running turn, or queues. `queue`: new turn. `steer`: mid-turn update. `restart`: interrupt and restart. `auto` and `steer` queue instead when steering would cancel running tools and the provider would report that as a user refusal. A send to a finished child thread starts a fresh task and returns its `taskId`. To continue the same delegated job after it stopped, send here to its `childThreadId`; the finished turn wakes the parent like the first result and appears in `task_status` `latestTerminal*`. A Spectrum transcript thread returns `runId:null`, `status:'idle'` and `delivery:'transcript'`, and never starts a provider. In your reply, name it as its `link` verbatim.",
+    "Send a message to any thread, here or in a linked environment with `environmentId`. The target cannot run with broader modes than yours. `mode:'auto'` starts an idle thread, steers a running turn, or queues. `queue`: new turn. `steer`: mid-turn update. `restart`: interrupt and restart. `auto` and `steer` queue instead when steering would cancel running tools and the provider would report that as a user refusal. A send to a finished child thread starts a fresh task and returns its `taskId`. To continue the same delegated job after it stopped, send here to its `childThreadId`; the finished turn wakes the parent like the first result and appears in `task_status` `latestTerminal*`. A Spectrum transcript thread returns `runId:null`, `status:'idle'` and `delivery:'transcript'`, and never starts a provider. In your reply, name it as its `link` verbatim.",
   parameters: OrchestratorMcpThreadSendInput,
   success: OrchestratorMcpThreadSendResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
-  dependencies,
+  dependencies: forwardingDependencies,
 })
   .annotate(Tool.Title, "Send to a T3 thread")
   .annotate(Tool.Destructive, true)
@@ -281,12 +281,12 @@ const ThreadSendTool = Tool.make("t3_thread_send", {
 
 const ThreadWaitTool = Tool.make("t3_thread_wait", {
   description:
-    "Wait for a thread's run to finish. No `runId`: latest. Idle: at once. On timeout, with `next` end your turn; without, call again.",
+    "Wait for a thread's run to finish, here or in a linked environment with `environmentId`. No `runId`: latest. Idle: at once. On timeout, with `next` end your turn; without, call again.",
   parameters: OrchestratorMcpThreadWaitInput,
   success: OrchestratorMcpThreadWaitResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
-  dependencies,
+  dependencies: forwardingDependencies,
 })
   .annotate(Tool.Title, "Wait for a T3 thread")
   .annotate(Tool.Readonly, true)
@@ -295,12 +295,12 @@ const ThreadWaitTool = Tool.make("t3_thread_wait", {
 
 const ThreadInterruptTool = Tool.make("t3_thread_interrupt", {
   description:
-    "Interrupt a top-level thread's running turn. No `runId`: newest running turn. A Spectrum thread stops and drains its own Drafters without a `runId`. No effect when idle. For a delegate, use `task_cancel`.",
+    "Interrupt a top-level thread's running turn, here or in a linked environment with `environmentId`. No `runId`: newest running turn. A Spectrum thread stops and drains its own Drafters without a `runId`. `stop:true` stops the thread, holds queued messages, ends pull request watches and stops its delegated tasks. No effect when idle. For a delegate, use `task_cancel`.",
   parameters: OrchestratorMcpThreadInterruptInput,
   success: OrchestratorMcpThreadInterruptResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",
-  dependencies,
+  dependencies: forwardingDependencies,
 })
   .annotate(Tool.Title, "Interrupt a T3 thread")
   .annotate(Tool.Destructive, true);

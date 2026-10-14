@@ -9,6 +9,8 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import { TestClock } from "effect/testing";
 
+import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
@@ -36,6 +38,7 @@ const openSnapshot = (history: string): TerminalSessionSnapshot => ({
 const makeHarness = Effect.fn(function* (options: {
   readonly history?: string;
   readonly opening?: Deferred.Deferred<void>;
+  readonly getThreadShell?: ProjectionStore.ProjectionStoreV2["Service"]["getThreadShell"];
 }) {
   const listeners = new Set<(event: TerminalEvent) => Effect.Effect<void>>();
   const writes = yield* Queue.unbounded<string>();
@@ -60,7 +63,7 @@ const makeHarness = Effect.fn(function* (options: {
         terminals,
         Layer.mock(ProjectService.ProjectService)({}),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
-          getThreadShell: () => Effect.succeed(null),
+          getThreadShell: options.getThreadShell ?? (() => Effect.succeed(null)),
         }),
         ServerSettings.layerTest(),
         NodeCrypto.layer,
@@ -101,6 +104,24 @@ const setup = Effect.fn(function* (options: { readonly history?: string } = {}) 
 });
 
 describe("ProjectSetupScriptRunner", () => {
+  // Fork: the project's own script never runs for work a linked environment started.
+  it.effect("skips a linked environment's thread and refuses one whose origin cannot be read", () =>
+    Effect.gen(function* () {
+      const linked = yield* makeHarness({
+        getThreadShell: (id) =>
+          Effect.succeed({ ...liveThreadShell(id), linkOrigin: { sessionId: "s", label: "Laptop" } }),
+      });
+      expect(yield* linked.start).toEqual({ status: "skipped-for-link" });
+      expect(yield* Queue.size(linked.writes)).toBe(0);
+      const unread = yield* makeHarness({
+        getThreadShell: (id) => Effect.fail(new ProjectionStore.ProjectionStoreReadError({ threadId: id })),
+      });
+      const error = yield* unread.start.pipe(Effect.flip);
+      expect(error._tag).toBe("ProjectSetupScriptOperationError");
+      expect(yield* Queue.size(unread.writes)).toBe(0);
+    }),
+  );
+
   it.effect("shows a startup prompt and types only once the line editor starts", () =>
     Effect.gen(function* () {
       const { result, writes, outputLines, emit } = yield* setup();

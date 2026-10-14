@@ -23,6 +23,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   OrchestrationV2ThreadProjectionJson,
+  OrchestratorMcpFailure,
   ScheduledTaskId,
   type ServerProvider,
   ThreadId,
@@ -61,6 +62,8 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as OrchestratorMcpService from "../mcp/OrchestratorMcpService.ts";
+import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as ThreadTitleRegeneration from "./ThreadTitleRegenerationService.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
@@ -119,6 +122,7 @@ interface HarnessOptions {
   readonly closeTerminal?: TerminalManager.TerminalManager["Service"]["close"];
   readonly adapters?: ReadonlyArray<ProviderAdapter.ProviderAdapterV2["Service"]>;
   readonly otherWorkspaceRoot?: string;
+  readonly databaseLayer?: typeof SqlitePersistence.layerMemory;
   readonly managedFolders?: Layer.Layer<ManagedProjectFolders.ManagedProjectFolders>;
   readonly createWorktree?: GitWorkflow.GitWorkflowService["Service"]["createWorktree"];
   readonly fetchWorktreeBaseCommit?: GitWorkflow.GitWorkflowService["Service"]["fetchWorktreeBaseCommit"];
@@ -135,7 +139,7 @@ interface HarnessOptions {
 }
 
 function makeHarness(options: HarnessOptions = {}) {
-  const layerDatabase = SqlitePersistence.layerMemory;
+  const layerDatabase = options.databaseLayer ?? SqlitePersistence.layerMemory;
   const layerRegistry = ProviderAdapterRegistry.layerFromAdapters(options.adapters ?? [adapter]);
   const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
     { name: "thread-launch" },
@@ -1454,6 +1458,99 @@ it.effect("replays an accepted launch after the project disables the instance", 
   }).pipe(Effect.provide(harness.layer));
 });
 
+it.effect("replays an accepted launch receipt after rebuilding the destination runtime", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const databaseLayer = Layer.succeedContext(database);
+      const { threadId: _unusedThreadId, ...input } = launchInput({
+        command: "command:launch:restart-receipt",
+        thread: "unused",
+        message: "Only once across restart",
+      });
+      const first = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const launches = yield* ThreadLaunch.ThreadLaunchService;
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          const launched = yield* launches.launch(input);
+          yield* threads
+            .streamStoredEventsFrom({ threadId: launched.threadId, afterSequence: 0 })
+            .pipe(
+              Stream.filter(
+                (stored) =>
+                  stored.commandId === CommandId.make(`${input.commandId}:release`) &&
+                  stored.event.type === "run.updated",
+              ),
+              Stream.runHead,
+            );
+          return launched;
+        }).pipe(Effect.provide(makeHarness({ databaseLayer }).layer)),
+      );
+      const after = makeHarness({ databaseLayer });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const retry = yield* launches.launch(input);
+        assert.isTrue(retry.resumed);
+        assert.equal(retry.threadId, first.threadId);
+        assert.equal(retry.projection.messages.length, 1);
+        assert.equal(retry.projection.runs.length, 1);
+        assert.equal(retry.projection.messages[0]?.id, first.projection.messages[0]?.id);
+        assert.equal(retry.projection.runs[0]?.id, first.projection.runs[0]?.id);
+        assert.equal(after.runSetup.mock.calls.length, 0);
+      }).pipe(Effect.provide(after.layer));
+    }),
+  ),
+);
+
+it.effect(
+  "accepted launch replay skips unavailable admission and enforces identity and mode limits",
+  () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const input = {
+        ...launchInput({
+          command: "command:receipt-first",
+          thread: "thread:receipt-first",
+          message: "Once",
+        }),
+        createdBy: "agent" as const,
+        linkOrigin: { sessionId: "link:original", label: "Original" },
+      };
+      const first = yield* launches.launch(input);
+      const identity = { ...input, messageId: input.initialMessage!.messageId };
+      const unavailable = new OrchestratorMcpFailure({
+        code: "provider_unavailable",
+        message: "destination catalog has no eligible models",
+      });
+      const replay = yield* launches.replayOrLaunch(identity, Effect.fail(unavailable));
+      assert.equal(replay.threadId, first.threadId);
+      assert.isTrue(replay.resumed);
+      assert.equal(replay.projection.runs.length, 1);
+      assert.deepEqual(replay.projection.runs[0]?.modelSelection, modelSelection);
+      for (const changed of [
+        { ...identity, threadId: ThreadId.make("thread:wrong") },
+        { ...identity, projectId: otherProjectId },
+        { ...identity, linkOrigin: { sessionId: "link:other", label: "Other" } },
+        { ...identity, runtimeMode: "approval-required" as const },
+        { ...identity, interactionMode: "plan" as const },
+      ]) {
+        const error = yield* launches
+          .replayOrLaunch(changed, Effect.fail(unavailable))
+          .pipe(Effect.flip);
+        assert.equal(error._tag, "ThreadLaunchError");
+      }
+      const fresh = yield* launches
+        .replayOrLaunch(
+          { ...identity, commandId: CommandId.make("command:fresh-unavailable") },
+          Effect.fail(unavailable),
+        )
+        .pipe(Effect.flip);
+      assert.equal(fresh, unavailable);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
 it.effect("an agent's launch never starts work above the modes it asks for", () => {
   const harness = makeHarness();
   return Effect.gen(function* () {
@@ -1900,6 +1997,7 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
             ),
           ),
         checkWorktreeBase: launches.checkWorktreeBase,
+        replayOrLaunch: launches.replayOrLaunch,
         retryPreparation: launches.retryPreparation,
         prepareRun: launches.prepareRun,
       }),

@@ -16,6 +16,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import { McpSchema, McpServer } from "effect/ai";
 
 import * as ServerConfig from "../config.ts";
@@ -27,6 +28,7 @@ import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterReg
 import { makeSubagentChildThread } from "@t3tools/provider-core/server/subagentProjection";
 import * as ThreadForkService from "../orchestration-v2/ThreadForkService.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
+import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -300,6 +302,23 @@ it.layer(Layer.provideMerge(layerTools, layerOrchestration))("work a link starts
         creationSource: "mcp",
       });
       assert.deepEqual(child.linkOrigin, shell?.linkOrigin);
+      const sourceRun: OrchestrationV2Run = {
+        id: RunId.make("run:source"),
+        threadId: launched,
+        ordinal: 1,
+        providerInstanceId: thread.providerInstanceId,
+        modelSelection: thread.modelSelection,
+        providerThreadId: null,
+        userMessageId: MessageId.make("message:source"),
+        rootNodeId: null,
+        activeAttemptId: null,
+        status: "completed",
+        requestedAt: thread.createdAt,
+        startedAt: thread.createdAt,
+        completedAt: thread.createdAt,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
       const fork = yield* ThreadForkService.ThreadForkServiceV2.pipe(
         Effect.flatMap((forks) =>
           forks.plan({

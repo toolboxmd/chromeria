@@ -2546,6 +2546,8 @@ export const layerWsRpc = (
           Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
             Effect.andThen(peerLinkRequests.answer(input)),
           ),
+        [WS_METHODS.serverGetSettings]: (_input) =>
+          serverSettings.getSettings.pipe(Effect.map(ServerSettings.redactServerSettingsForClient)),
         [WS_METHODS.serverUpdateSettings]:
           /* Request instrumentation already owns the span; keep this helper in that context. */
           Effect.fnUntraced(function* ({ patch, providerInstanceMutation }) {
@@ -3307,6 +3309,7 @@ export const layer = Layer.unwrap(
     const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
     const issueService = yield* IssueService.IssueService;
     const issueLinks = yield* IssueLinks.IssueLinks;
+    const peerLinks = yield* PeerLinks.PeerLinks;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3389,6 +3392,7 @@ export const layer = Layer.unwrap(
               Layer.provide(Layer.succeed(PeerLinkRequests.PeerLinkRequests, peerLinkRequests)),
               Layer.provide(Layer.succeed(IssueService.IssueService, issueService)),
               Layer.provide(Layer.succeed(IssueLinks.IssueLinks, issueLinks)),
+              Layer.provide(Layer.succeed(PeerLinks.PeerLinks, peerLinks)),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(

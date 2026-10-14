@@ -41,6 +41,8 @@ export class PeerMcpClient extends Context.Service<
       readonly arguments: Record<string, unknown>;
       readonly limits: PeerCallLimits;
       readonly success: S;
+      /** Refuse a launch replay through a replacement OAuth grant. */
+      readonly expectedLinkIdentity?: string;
     }) => Effect.Effect<S["Type"], OrchestratorMcpFailure>;
   }
 >()("t3/peer/PeerMcpClient") {}

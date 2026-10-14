@@ -1,3 +1,6 @@
+import { ProviderInstanceId, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
+import * as Providers from "../provider/ProviderRegistry.ts";
+import * as Adapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentHttpApi,
@@ -61,6 +64,7 @@ export const descriptorOf = (
 export const servePeer = <E, R>(
   initial: ExecutionEnvironmentDescriptor,
   tools: Layer.Layer<never, E, R>,
+  options?: { readonly persisted?: boolean },
 ) =>
   Effect.gen(function* () {
     const descriptor = yield* Ref.make(initial);
@@ -186,3 +190,32 @@ export const linkTo = (
         links.link({ url: peer.url, pairingCode: pairing.credential, access }),
       ),
     );
+
+/** Destination launch catalog, distinct from any source catalog. */
+export const layerLaunchCatalog = Layer.mergeAll(
+  Layer.mock(Adapters.ProviderAdapterRegistryV2)({
+    list: () => Effect.succeed([ProviderInstanceId.make("codex")]),
+  }),
+  Layer.mock(Providers.ProviderRegistry)({
+    getProviders: Effect.succeed([
+      {
+        instanceId: ProviderInstanceId.make("codex"),
+        driver: ProviderDriverKind.make("codex"),
+        enabled: true,
+        installed: true,
+        version: "test",
+        status: "ready",
+        auth: { status: "authenticated" },
+        checkedAt: "2026-10-14T00:00:00Z",
+        skills: [],
+        slashCommands: [],
+        models: ["gpt-5", "gpt-5.4", "box-prism"].map((slug) => ({
+          slug,
+          name: slug,
+          isCustom: false,
+          capabilities: null,
+        })),
+      } satisfies ServerProvider,
+    ]),
+  }),
+);

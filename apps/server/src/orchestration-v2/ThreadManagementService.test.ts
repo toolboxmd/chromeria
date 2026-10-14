@@ -596,3 +596,42 @@ it.effect.each([
     expect(dispatched).toEqual(settles ? ["thread.settle"] : []);
   }),
 );
+
+// Fork: a client cannot forge a linked environment origin (toolboxmd/chromeria#304).
+it("strips forged link provenance while stamping authoritative provenance", () => {
+  const command: OrchestrationV2Command = {
+    type: "thread.create",
+    createdBy: "agent",
+    creationSource: "mcp",
+    commandId: CommandId.make("command:thread-management:create"),
+    threadId: ThreadId.make("thread:thread-management:create"),
+    projectId: ProjectId.make("project:thread-management"),
+    title: "Thread management",
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5-codex",
+    },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    // A client cannot claim a linked environment's origin, or a parent there.
+    linkOrigin: { sessionId: "forged", label: "Somewhere else" },
+    delegatedFrom: {
+      environmentId: EnvironmentId.make("environment:elsewhere"),
+      threadId: ThreadId.make("thread:elsewhere"),
+      title: "Somewhere else",
+    },
+  };
+
+  const stamped = ThreadManagementService.withCreationProvenance(command, {
+    createdBy: "user",
+    creationSource: "web",
+  });
+  expect(stamped).toMatchObject({
+    createdBy: "user",
+    creationSource: "web",
+  });
+  expect(stamped).not.toHaveProperty("linkOrigin");
+  expect(stamped).not.toHaveProperty("delegatedFrom");
+});

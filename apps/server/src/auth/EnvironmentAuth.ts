@@ -1,3 +1,4 @@
+import { permanentPeerSessionTtl } from "../peer/permanentSession.ts";
 import {
   AuthAccessTokenType,
   AuthAccessWriteScope,
@@ -544,6 +545,7 @@ export class EnvironmentAuth extends Context.Service<
       readonly label: string;
       readonly access: AuthMcpClientAccess;
       readonly peerLink: boolean;
+      readonly permanent?: boolean;
       readonly client: AuthClientMetadata;
     }) => Effect.Effect<
       {
@@ -1325,25 +1327,29 @@ export const make = Effect.gen(function* () {
   };
 
   const issueMcpClientSession: EnvironmentAuth["Service"]["issueMcpClientSession"] = (input) =>
-    sessions
-      .issue({
-        subject: MCP_CLIENT_SUBJECT,
-        method: "bearer-access-token",
-        scopes: mcpClientScopes(input.access),
-        ttl: MCP_CLIENT_SESSION_TTL,
-        ...(input.access === "read-only" ? {} : { runtimeModeCeiling: input.access }),
-        peerLink: input.peerLink,
-        client: { ...input.client, label: input.label, deviceType: "bot" },
-      })
-      .pipe(
-        Effect.map((issued) => ({
-          sessionId: issued.sessionId,
-          token: issued.token,
-          expiresAt: issued.expiresAt,
-        })),
-        Effect.mapError((cause) => new ServerAuthSessionTokenIssueError({ cause })),
-        Effect.withSpan("EnvironmentAuth.issueMcpClientSession"),
-      );
+    Effect.gen(function* () {
+      const ttl =
+        input.permanent === true ? yield* permanentPeerSessionTtl : MCP_CLIENT_SESSION_TTL;
+      return yield* sessions
+        .issue({
+          subject: MCP_CLIENT_SUBJECT,
+          method: "bearer-access-token",
+          scopes: mcpClientScopes(input.access),
+          ttl,
+          ...(input.access === "read-only" ? {} : { runtimeModeCeiling: input.access }),
+          peerLink: input.peerLink,
+          client: { ...input.client, label: input.label, deviceType: "bot" },
+        })
+        .pipe(
+          Effect.map((issued) => ({
+            sessionId: issued.sessionId,
+            token: issued.token,
+            expiresAt: issued.expiresAt,
+          })),
+          Effect.mapError((cause) => new ServerAuthSessionTokenIssueError({ cause })),
+          Effect.withSpan("EnvironmentAuth.issueMcpClientSession"),
+        );
+    });
 
   const authenticateBrowserSession: EnvironmentAuth["Service"]["authenticateBrowserSession"] = (
     request,

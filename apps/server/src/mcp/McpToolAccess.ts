@@ -126,6 +126,28 @@ export const reads = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>)
 
 export const readsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare((params: P) => requireThreadCaller.pipe(Effect.flatMap(() => handle(params))), undefined);
+/**
+ * Changes something that belongs to no thread, such as a pending upload or a
+ * scheduled task. Work a linked environment started may not: none of it
+ * carries the link's origin, so none of it is that link's.
+ */
+export const writes = <P, A, E, R>(
+  handle: (params: P) => Effect.Effect<A, E, R>,
+  options?: {
+    /** Whether a linked caller may make it, as for uploads its own sends need. */
+    readonly linkedCallers?: "allowed";
+  },
+) =>
+  declare((params: P) =>
+    orchestratingCaller.pipe(
+      Effect.tap((caller) =>
+        options?.linkedCallers === "allowed"
+          ? Effect.void
+          : assertNotLinked(caller, "change this environment's scheduled tasks"),
+      ),
+      Effect.flatMap(() => handle(params)),
+    ),
+  );
 
 export const actsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare(
@@ -174,7 +196,10 @@ export const writesWithCapability = <P, A, E, R>(handle: (params: P) => Effect.E
   );
 
 export const writesThreads = <P, A, E, R>(
-  threads: (params: P) => ReadonlyArray<ThreadId | undefined>,
+  threads: (
+    params: P,
+    scope: McpInvocationContext.McpInvocationScope,
+  ) => ReadonlyArray<ThreadId | undefined>,
   handle: (params: P) => Effect.Effect<A, E, R>,
 ) =>
   declare(

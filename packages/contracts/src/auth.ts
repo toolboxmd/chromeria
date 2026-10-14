@@ -459,6 +459,7 @@ export type AuthMcpAuthorizationServerMetadata = typeof AuthMcpAuthorizationServ
  */
 export const MCP_PEER_LINK_SOFTWARE_ID = "t3code-peer-link";
 
+/** RFC 7591 client metadata. Fields the server does not use are dropped. */
 export const AuthMcpClientRegistration = Schema.Struct({
   client_name: Schema.optionalKey(Schema.String),
   software_id: Schema.optionalKey(Schema.String),

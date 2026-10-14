@@ -200,6 +200,7 @@ vite.config.ts
 apps/mobile/src/features/threads/ThreadRouteScreen.tsx
 apps/mobile/src/state/use-thread-selection.ts
 packages/client-runtime/src/state/threadCommands.ts
+packages/client-runtime/src/t3ToolSummary.ts
 apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts
 packages/provider-acp/src/server/adapter.ts
 apps/server/src/orchestration-v2/testkit/fixtures/index.ts
@@ -222,3 +223,26 @@ packages/provider-grok/src/testing.ts
 # Issue links in inline and expanded HTML documents.
 apps/web/src/components/files/BrowserDocumentFrame.tsx
 apps/web/src/components/chat/HtmlRenderDialog.test.tsx
+
+# Peer links: upstream port and fork hooks (#164)
+apps/server/src/auth/McpOAuth.ts
+apps/server/src/binCli.ts
+apps/server/src/mcp/McpHttpServer.test.ts
+apps/server/src/mcp/McpInvocationContext.ts
+apps/server/src/mcp/McpToolAccess.test.ts
+apps/server/src/mcp/McpToolAccess.ts
+apps/server/src/mcp/WorktreeMcpService.ts
+apps/server/src/mcp/toolkits/attachment/handlers.ts
+apps/server/src/mcp/toolkits/orchestrator/handlers.ts
+apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts
+apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts
+apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts
+apps/server/src/orchestration-v2/ThreadManagementService.test.ts
+apps/server/src/orchestration-v2/runtimeLayer.test.ts
+apps/server/src/project/ProjectEnrichmentService.ts
+apps/server/src/project/ProjectService.ts
+apps/server/src/project/ProjectSetupScriptRunner.test.ts
+apps/server/src/project/ProjectSetupScriptRunner.ts
+apps/server/src/relay/AgentAwarenessRelay.test.ts
+packages/shared/src/t3McpToolPresentation.ts
+apps/server/src/cli/environment.ts

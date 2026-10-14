@@ -1,3 +1,4 @@
+import { PrismRole, PrismLane } from "./prism.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import { withRecordIdTable } from "./orchestrationV2IdTable.ts";
 import * as DateTime from "effect/DateTime";
@@ -828,6 +829,52 @@ export const OrchestrationV2SubagentWorkflow = Schema.Struct({
   durationMs: Schema.optional(NonNegativeInt),
 });
 export type OrchestrationV2SubagentWorkflow = typeof OrchestrationV2SubagentWorkflow.Type;
+
+/** Durable launch inputs and the original retry identity. No credentials. */
+export const OrchestrationV2RemoteTaskLaunch = Schema.Struct({
+  requestNamespace: Schema.String,
+  clientRequestId: Schema.String,
+  /** Nonsecret grant-generation identity; relinking must not create a replacement child. */
+  linkIdentity: Schema.String,
+  projectId: ProjectId,
+  title: Schema.String,
+  modelSelection: Schema.optional(ModelSelection),
+  prismRole: Schema.optional(PrismRole),
+  lane: Schema.optional(PrismLane),
+  workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
+  runtimeMode: Schema.optional(RuntimeMode),
+  interactionMode: Schema.optional(ProviderInteractionMode),
+  delegatedFrom: OrchestrationV2DelegatedFrom,
+});
+export type OrchestrationV2RemoteTaskLaunch = typeof OrchestrationV2RemoteTaskLaunch.Type;
+
+/**
+ * Where an app-owned task runs when it runs in a linked environment instead
+ * of in a child thread here: that environment and the ordinary thread it runs
+ * as there. Such a task has no `childThreadId`.
+ */
+export const OrchestrationV2RemoteTaskChild = Schema.Struct({
+  environmentId: EnvironmentId,
+  /** Unset until the accepted launch is attached to the durable source task. */
+  threadId: Schema.optional(ThreadId),
+  label: Schema.String,
+  launch: Schema.optional(OrchestrationV2RemoteTaskLaunch),
+  /** Committed before network I/O: an absent receipt may now mean acceptance is unknown. */
+  launchStarted: Schema.optional(Schema.Boolean),
+  /** Recovery was refused; already-accepted work may still be running there. */
+  launchError: Schema.optional(Schema.String),
+  /** The run there that carries the task; absent on tasks recorded before it was kept. */
+  runId: Schema.optional(RunId),
+  /**
+   * Nothing is left to stop there: a stop from here reached the thread there,
+   * the other side refused it for good, or the thread or its link is gone. A
+   * task's run that ended there by itself also sets it, unless the task here
+   * was cancelled or stopped, which still owes a stop for whatever runs on the
+   * thread there now. Its follower keeps sending that stop, across restarts.
+   */
+  stoppedThere: Schema.optional(Schema.Boolean),
+});
+export type OrchestrationV2RemoteTaskChild = typeof OrchestrationV2RemoteTaskChild.Type;
 
 /**
  * Wire-only, for clients that opted in with `acceptDedupedBodies` or `dedupeBodies=1`: the field
@@ -3416,15 +3463,32 @@ const OrchestrationV2InternalCommand = Schema.Union([
     task: TrimmedNonEmptyString,
     title: Schema.optional(TrimmedNonEmptyString),
     driver: ProviderDriverKind,
-    modelSelection: ModelSelection,
+    modelSelection: Schema.optional(ModelSelection),
     remoteChild: OrchestrationV2RemoteTaskChild,
     completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
+  }),
+  /** Serializes starting a pending launch against cancellation before any network I/O. */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.remote.launch"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+  }),
+  /** Attaches an accepted launch, including after the original parent run has ended. */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.remote.attach"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+    runId: Schema.NullOr(RunId),
+    modelSelection: ModelSelection,
   }),
   /**
    * Completes a delegated task that ran in a linked environment, with what its
    * thread there ended as. The parent wakes exactly as for a child here. A
-   * task that already has a result keeps it; `stoppedThere` is still recorded,
-   * and without it (a Stop or cancel here) the task owes a stop there instead.
+   * task that already has a result keeps it; `stoppedThere` is still recorded.
    */
   Schema.Struct({
     type: Schema.Literal("delegated_task.remote.complete"),

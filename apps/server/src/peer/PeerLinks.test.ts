@@ -365,6 +365,10 @@ it.effect("tells the agent to link again once the peer revokes the link or it ex
       yield* a.links.link({ url: b.url, pairingCode: pairing.credential, access: "auto" });
       yield* probe(a);
 
+      yield* TestClock.adjust(Duration.days(31));
+      expect(yield* probe(a)).toMatchObject({ caller: "T3 Code · Laptop" });
+      yield* TestClock.adjust(Duration.days(3653));
+      expect(yield* probe(a)).toMatchObject({ caller: "T3 Code · Laptop" });
       const [session] = yield* linkedSessions(b);
       yield* b.auth.revokeSession(session!.sessionId);
       const revoked = yield* probe(a).pipe(Effect.flip);

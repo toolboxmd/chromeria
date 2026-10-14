@@ -1,3 +1,4 @@
+import { waitForRecovery, RecoveryWaitState } from "../peer/recoveryWait.ts";
 import type {
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -41,7 +42,6 @@ import { delegatedTaskProgress } from "@t3tools/provider-core/server/subagentPro
 import { threadTranscriptHeader } from "@t3tools/shared/threadTranscript";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -551,6 +551,7 @@ const isProjectionThreadNotFound = Schema.is(ProjectionStoreThreadNotFoundError)
 
 const make = Effect.gen(function* () {
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+  const recoveryWait = yield* RecoveryWaitState;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
   const layerScope = yield* Effect.scope;
