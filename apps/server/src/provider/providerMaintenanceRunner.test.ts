@@ -3,7 +3,7 @@ import * as ForkProviderMaintenance from "./forkProviderMaintenance.ts";
 import * as ForkProviderStartAdmission from "./forkProviderStartAdmission.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
 import * as AdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
-import type { ProviderAdapterV2SessionRuntime } from "../orchestration-v2/ProviderAdapter.ts";
+import type { ProviderAdapterV2SessionRuntime } from "@t3tools/provider-core/server/ProviderAdapter";
 import { CodexProviderCapabilitiesV2 as CodexCapabilities } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import { ProviderSessionId, ThreadId } from "@t3tools/contracts";
 import * as Option from "effect/Option";

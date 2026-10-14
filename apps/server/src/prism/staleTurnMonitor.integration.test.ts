@@ -18,12 +18,14 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
 import * as Registry from "../orchestration-v2/ProviderAdapterRegistry.ts";
-import type { ProviderAdapterV2Shape } from "../orchestration-v2/ProviderAdapter.ts";
+import type { ProviderAdapterV2 } from "@t3tools/provider-core/server/ProviderAdapter";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Harness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
+import * as CommandReceipts from "../orchestration-v2/CommandReceiptStore.ts";
+import * as Settings from "../serverSettings.ts";
 import * as Persistence from "../persistence/Sqlite.ts";
 import { ServerActivation } from "../serverActivation.ts";
 import * as Monitor from "./staleTurnMonitor.ts";
@@ -44,17 +46,22 @@ const adapter = {
   getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
   openSession: () => Effect.die("No live provider in this durable dispatch proof"),
-} as ProviderAdapterV2Shape;
+} satisfies ProviderAdapterV2["Service"];
 const replay = Harness.layerWithRegistry(
   { name: "silence" },
   Registry.layerFromAdapters([adapter]),
   { databaseLayer: database, runEffectWorker: false },
 );
 const clock = StreamClock.layer.pipe(Layer.provide(Stats.layer), Layer.provide(database));
-const dependencies = Layer.mergeAll(
+const threadDependencies = Layer.mergeAll(
   replay,
+  Settings.layerTest(),
+  CommandReceipts.layer.pipe(Layer.provide(database)),
+);
+const dependencies = Layer.mergeAll(
+  threadDependencies,
   clock,
-  Threads.layer.pipe(Layer.provide(replay)),
+  Threads.layer.pipe(Layer.provide(threadDependencies)),
   Layer.succeed(ServerActivation, Effect.never),
   Layer.succeed(Monitor.StaleTurnMonotonicClock, Clock.currentTimeMillis),
 );

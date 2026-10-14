@@ -18,7 +18,7 @@ import * as ProviderMaintenanceRunner from "./providerMaintenanceRunner.ts";
 import type {
   ProviderMaintenanceCapabilities,
   ProviderMaintenanceCommandAction,
-} from "./providerMaintenance.ts";
+} from "@t3tools/provider-core/server/maintenanceResolver";
 
 const isProviderUpdateError = Schema.is(ServerProviderUpdateError);
 

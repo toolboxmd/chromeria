@@ -5,7 +5,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   decodeProviderReplayNdjson,
   materializeReplayTranscriptRuntimeInstructions,
-} from "../orchestration-v2/testkit/ReplayTranscriptNdjson.ts";
+} from "@t3tools/provider-testing/replayTranscript";
 
 const museDriver = Schema.decodeUnknownSync(ProviderDriverKind)("muse");
 

@@ -4,7 +4,7 @@ import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 
-import * as GitHubApi from "../sourceControl/GitHubApi.ts";
+import * as GitHubApi from "@t3tools/source-control-github/server/GitHubApi";
 import * as ClosingReferences from "./closingReferences.ts";
 
 const pullRequest = { host: "github.com", repository: "acme/web", number: 7 };

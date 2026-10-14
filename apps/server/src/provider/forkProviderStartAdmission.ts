@@ -4,7 +4,7 @@ import * as ProviderRegistryModule from "./ProviderRegistry.ts";
 import * as AdmissionGate from "./providerAdmissionGate.ts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import type { ProviderAdapterV2SessionRuntime } from "../orchestration-v2/ProviderAdapter.ts";
+import type { ProviderAdapterV2SessionRuntime } from "@t3tools/provider-core/server/ProviderAdapter";
 import type { ProviderAdapterRegistryV2Shape } from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
   ProviderSessionOpenError,
