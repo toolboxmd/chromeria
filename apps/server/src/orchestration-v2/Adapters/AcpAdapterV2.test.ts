@@ -622,12 +622,8 @@ describe("AcpAdapterV2", () => {
         });
         const instanceId = ProviderInstanceId.make("grok-pointer-test");
         const threadId = ThreadId.make("thread-grok-pointer-test");
-        const adapter = makeAcpAdapterV2({
-          crypto: yield* Crypto.Crypto,
+        const adapter = yield* makeAcpAdapterV2({
           instanceId,
-          fileSystem: yield* FileSystem.FileSystem,
-          idAllocator: yield* IdAllocator.IdAllocatorV2,
-          serverConfig: yield* ServerConfig.ServerConfig,
           selfInvocation: yield* resolveSelfInvocation(),
           flavor: {
             driver: ProviderDriverKind.make("grok"),
@@ -642,7 +638,7 @@ describe("AcpAdapterV2", () => {
               }),
           },
         });
-        const policy = ProviderAdapterV2RuntimePolicy.make({
+        const policy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
           runtimeMode: "full-access",
           interactionMode: "default",
           cwd: process.cwd(),

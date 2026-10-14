@@ -1387,18 +1387,18 @@ sources and reasons.
     "apps/server/src/orchestration-v2/CheckpointRestoreSafety.test.ts",
     "apps/server/src/orchestration-v2/CheckpointRollbackService.test.ts",
     "apps/server/src/orchestration-v2/CheckpointRollbackService.ts",
-    "apps/server/src/orchestration-v2/ProviderAdapter.ts",
+    "packages/provider-core/src/server/ProviderAdapter.ts",
     "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
     "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
     "apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs",
     "apps/server/src/provider/acp/AcpJsonRpcConnection.test.ts",
-    "apps/server/src/provider/acp/AcpSessionRuntime.ts"
+    "packages/provider-acp/src/server/AcpSessionRuntime.ts"
   ],
   "sharedFiles": [
     "apps/server/src/server.ts",
     "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
     "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
-    "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.ts",
+    "packages/provider-acp/src/server/adapter.ts",
     "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
     "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
     "apps/server/src/orchestration-v2/runtimeLayer.ts",

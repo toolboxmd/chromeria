@@ -314,7 +314,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly mcpConfigs?: Ref.Ref<
       ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
     >;
-    readonly createdSessions?: ProviderAdapterV2SessionRuntime["createdSessions"];
+    readonly createdSessions?: ProviderAdapter.ProviderAdapterV2SessionRuntime["createdSessions"];
     readonly beforeOpen?: (input: {
       readonly newSessionInstructions?: string;
       readonly providerSessionId: ProviderSessionId;
@@ -458,7 +458,7 @@ function layerTest(input: {
   readonly mcpConfigs?: Ref.Ref<
     ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
   >;
-  readonly createdSessions?: ProviderAdapterV2SessionRuntime["createdSessions"];
+  readonly createdSessions?: ProviderAdapter.ProviderAdapterV2SessionRuntime["createdSessions"];
   readonly beforeOpen?: (input: {
     readonly newSessionInstructions?: string;
     readonly providerSessionId: ProviderSessionId;

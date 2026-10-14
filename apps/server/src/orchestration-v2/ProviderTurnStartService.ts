@@ -1278,7 +1278,7 @@ export const layer: Layer.Layer<
           );
         }).pipe(
           Effect.mapError((cause) =>
-            cause._tag === "ProviderAdapter.ProviderAdapterTurnStartError"
+            cause._tag === "ProviderAdapterTurnStartError"
               ? cause
               : new ProviderAdapter.ProviderAdapterTurnStartError({
                   driver: session.driver,

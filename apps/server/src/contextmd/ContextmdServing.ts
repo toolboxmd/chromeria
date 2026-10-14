@@ -403,7 +403,7 @@ const make = Effect.gen(function* () {
       const current = candidate === null ? null : yield* instructions(candidate);
       const now = yield* nowSeconds;
       state.releaseStale(now);
-      const delivery = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+      const delivery = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
       const reservation = state.stageSessionInstructions({
         ...input,
         delivery,
@@ -467,7 +467,7 @@ const make = Effect.gen(function* () {
         ...input,
         session: input.nativeSessionId,
         current,
-        delivery: yield* crypto.randomUUIDv4.pipe(Effect.orDie),
+        delivery: yield* crypto.randomUUIDv4().pipe(Effect.orDie),
         now: yield* nowSeconds,
       });
     }).pipe(
@@ -525,7 +525,7 @@ const make = Effect.gen(function* () {
         })),
         reverted,
         now: yield* nowSeconds,
-        delivery: yield* crypto.randomUUIDv4.pipe(Effect.orDie),
+        delivery: yield* crypto.randomUUIDv4().pipe(Effect.orDie),
       });
     }).pipe(
       withFiles,

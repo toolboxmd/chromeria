@@ -135,7 +135,6 @@ export const configFile = Config.String("CONTEXTMD_SERVING_CONFIG").pipe(
 /** ContextMD's serving config, read on every moment; a missing file means the defaults. */
 export const loadConfig = Effect.fn("contextmd.loadConfig")(function* (file: string) {
   const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
   const home = yield* HostProcess.HomeDirectory;
   const text = yield* fs.readFileString(expandHomePath(file, home)).pipe(Effect.option);
   if (Option.isNone(text)) {
@@ -158,9 +157,7 @@ export const loadConfig = Effect.fn("contextmd.loadConfig")(function* (file: str
       });
     }
     // Like Python expanduser, substitute the home without normalizing the user's path.
-    greatLibrary = value.startsWith("~/")
-      ? `${expandHomePathWith("~", path).replace(/\/+$/u, "")}${value.slice(1)}`
-      : value;
+    greatLibrary = value.startsWith("~/") ? `${home.replace(/\/+$/u, "")}${value.slice(1)}` : value;
     if (/[\p{Cc}\p{Surrogate}\u2028\u2029]/u.test(greatLibrary)) {
       return yield* new BadConfig({
         reason:
