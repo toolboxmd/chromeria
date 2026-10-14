@@ -1377,11 +1377,11 @@ sources and reasons.
     "apps/server/src/contextmd/Store.ts",
     "apps/server/src/contextmd/library-corpus.json"
   ],
-  "upstreamFiles": [
-    "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
-    "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts"
+  "upstreamFiles": ["apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts"],
+  "sharedFiles": [
+    "apps/server/src/server.ts",
+    "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts"
   ],
-  "sharedFiles": ["apps/server/src/server.ts"],
   "keywords": ["contextmd", "ContextMD", "/contextmd/v1", "contextmd.sqlite", "contextmd-hook"]
 }
 ```
