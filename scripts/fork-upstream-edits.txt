@@ -256,3 +256,7 @@ apps/server/src/cli/environment.ts
 # Nested CLI startup: upstream fix carried until absorption (#295).
 apps/server/src/cloud/serviceLauncherClient.test.ts
 apps/server/src/cloud/serviceLauncherClient.ts
+
+# Vitest transport-copy cache repair (#308), owned by fork-maintenance.
+pnpm-lock.yaml
+pnpm-workspace.yaml
