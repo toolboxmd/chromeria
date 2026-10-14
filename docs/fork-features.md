@@ -1295,3 +1295,21 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "keywords": ["featureMap", "feature map", "docs/map.md", "primary ref", "context part"]
 }
 ```
+
+## macos-temp-realpath-tests
+
+```json
+{
+  "id": "macos-temp-realpath-tests",
+  "purpose": "Install ownership tests compare the resolved temp root, because the server reports the real npm prefix and macOS temp dirs sit behind the /var symlink. Drop when upstream resolves the same paths in these tests.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/246"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/262"],
+  "newFiles": [],
+  "upstreamFiles": [
+    "apps/server/src/cli/invocation.test.ts",
+    "apps/server/src/environment/ServerEnvironment.test.ts"
+  ],
+  "sharedFiles": [],
+  "keywords": ["realPath", "/private/var", "npm-global"]
+}
+```
