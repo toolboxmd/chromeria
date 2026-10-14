@@ -7,7 +7,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
-import { extract, firstMatch, globRegex, hasCommand, words } from "./Matcher.ts";
+import { extract, firstMatch, globRegex, hasCommand, normalizeError, words } from "./Matcher.ts";
 import { reads } from "./Reads.ts";
 import { select, type ServingConfig } from "./Select.ts";
 import * as Store from "./Store.ts";
@@ -64,6 +64,496 @@ describe("command keys", () => {
       "gh pr createx",
     ]) {
       assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("skip a key only mentioned in quotes or a heredoc, but not commands those run (#232)", () => {
+    for (const command of [
+      "zsh -lc 'gh pr create --fill'",
+      '/bin/bash -c "cd x && gh pr create"',
+      "gh issue view 5 --json body -q .body; gh pr create",
+      "cat > notes.md <<'EOF'\nhello\nEOF\ngh pr create",
+      "gh pr create --title \"x\" --body-file - <<'EOF'\nbody\nEOF",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    // Mentions logged on rocky (#232): strings, heredoc bodies, other programs' code.
+    for (const command of [
+      'echo "live check: gh pr create"',
+      "echo 'gh pr create'",
+      "cat <<'EOF'\nthen run gh pr create\nEOF",
+      "python3 - <<'PY'\nkeys = ['gh pr create']\nPY",
+      "python3 -c \"print('gh pr create')\"",
+      'gh issue create --title t --body "open it with gh pr create"',
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("follows what bash runs: expanding heredocs, quoted command words, escapes (Sol review)", () => {
+    // Checked with /bin/bash and a stub gh that prints EXECUTED.
+    for (const command of [
+      "cat <<EOF\n$(gh pr create)\nEOF",
+      "cat <<EOF\n`gh pr create`\nEOF",
+      "bash -c \"'gh' pr create\"",
+      "'gh' pr create",
+      '"gh" pr create --fill',
+      "g'h' pr create",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "cat <<'EOF'\n$(gh pr create)\nEOF",
+      'cat <<"EOF"\n$(gh pr create)\nEOF',
+      'echo "\\$(gh pr create)"',
+      'echo "\\`gh pr create\\`"',
+      "cat <<EOF\nrun gh pr create later\nEOF",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("keeps inner quotes and nested substitution bodies (Sol review)", () => {
+    for (const command of [
+      'echo "$(gh pr create --title "hello")"',
+      'echo "$(gh pr create $(printf x))"',
+      'echo "$(gh pr create "$(printf x)")"',
+      'echo $(gh pr create --title "hello")',
+      'echo "`gh pr create --title "hello"`"',
+      'echo "`printf "%s" \\`gh pr create\\``"',
+      'cat <<EOF\n$(gh pr create --title "hello" $(printf x))\nEOF',
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "echo '$(gh pr create)'",
+      'echo "$(printf "%s" "gh pr create")"',
+      'echo "`printf "%s" "gh pr create"`"',
+      'echo "$(printf "%s" "$(printf "%s" "gh pr create")")"',
+      "cat <<'EOF'\n$(gh pr create --title \"hello\" $(printf x))\nEOF",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("uses even and odd backslash parity for substitutions (Sol review)", () => {
+    // Two/four literal backslashes run; one/three leave the operator literal.
+    for (const command of [
+      'echo "\\\\$(gh pr create)"',
+      'echo "\\\\\\\\$(gh pr create)"',
+      "cat <<EOF\n\\\\$(gh pr create)\nEOF",
+      "cat <<EOF\n\\\\\\\\$(gh pr create)\nEOF",
+      'echo "\\\\`gh pr create`"',
+      "cat <<EOF\n\\\\`gh pr create`\nEOF",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      'echo "\\$(gh pr create)"',
+      'echo "\\\\\\$(gh pr create)"',
+      "cat <<EOF\n\\$(gh pr create)\nEOF",
+      "cat <<EOF\n\\\\\\$(gh pr create)\nEOF",
+      'echo "\\`gh pr create\\`"',
+      "cat <<EOF\n\\`gh pr create\\`\nEOF",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("ends a heredoc only on its exact delimiter, stripping tabs only for <<- (Sol review)", () => {
+    for (const command of [
+      "cat <<'EOF'\nEOF\ngh pr create",
+      "cat <<EOF\nEOF\ngh pr create",
+      "cat <<-'EOF'\n\tEOF\ngh pr create",
+      "cat <<-EOF\n\tEOF\ngh pr create",
+      "cat <<A <<'B'\nA\nB\ngh pr create",
+      "cat <<'A'\nA\ncat <<'B'\nB\ngh pr create",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "cat <<'EOF'\n EOF\ngh pr create\nEOF",
+      "cat <<'EOF'\n\tEOF\ngh pr create\nEOF",
+      "cat <<'EOF'\nEOF \ngh pr create\nEOF",
+      "cat <<'EOF'\nEOF\t\ngh pr create\nEOF",
+      "cat <<-'EOF'\n EOF\ngh pr create\nEOF",
+      "cat <<-'EOF'\n\tEOF \ngh pr create\nEOF",
+      "cat <<'EOF'\nEOFX\ngh pr create\nEOF",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("keeps here-strings and arithmetic or parameter expansion boundaries distinct", () => {
+    for (const command of [
+      "cat <<<EOF\ngh pr create",
+      'echo "$(gh pr create $((1 + (2))))"',
+      'echo "$(gh pr create ${v:-")"})"',
+      'echo "$((1 + $(gh pr create)0))"',
+      'echo "${v:-$(gh pr create --title "hello")}"',
+      "cat <<EOF\n$((1 + $(gh pr create)0))\nEOF",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      'cat <<<"gh pr create"',
+      'echo "$((1 + (2))) gh pr create"',
+      'echo "${v:-gh pr create}"',
+      'echo "$(printf "%s" "${v:-gh pr create}")"',
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("keeps quoted commands after assignments and wrappers (Sol round 3)", () => {
+    for (const command of [
+      "FLAG=1 'gh' pr create",
+      "FLAG=1 g'h' pr create",
+      "FLAG='one two' OTHER=2 \"gh\" pr create",
+      "env 'gh' pr create",
+      "env g'h' pr create",
+      "env FLAG=1 'gh' pr create",
+      "env -u UNUSED 'gh' pr create",
+      "sudo -n 'gh' pr create",
+      "sudo -u nobody g'h' pr create",
+      "time 'gh' pr create",
+      "nohup 'gh' pr create",
+      "command -- 'gh' pr create",
+      "exec g'h' pr create",
+      "exec -a gh-alias 'gh' pr create",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "FLAG=1 printf '%s' 'gh pr create'",
+      "env printf '%s' 'gh pr create'",
+      "env -u UNUSED printf '%s' 'gh pr create'",
+      "sudo -n printf '%s' 'gh pr create'",
+      "command printf '%s' 'gh pr create'",
+      "exec printf '%s' 'gh pr create'",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("dequotes a whole shell -c argument before scanning its script (Sol round 3)", () => {
+    for (const command of [
+      'bash -c "\\"g\\"h pr create"',
+      'sh -c "\\"g\\"h pr create"',
+      'zsh -lc "\\"g\\"h pr create"',
+      "bash -c \"g\"'h pr create'",
+      'bash -c "\\"g\\"h"\' pr create\'',
+      'env FLAG=1 bash -c "\\"g\\"h pr create"',
+      "bash -c 'gh pr create'",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      'bash -c "echo \\"gh pr create\\""',
+      'sh -c "printf \'%s\' \\"gh pr create\\""',
+      'zsh -lc "echo \\"gh pr create\\""',
+      'bash -c \'echo \'"\\"gh pr create\\""',
+      'bash -c "echo \\"gh pr create\\""suffix',
+      "bash -c 'echo \"gh pr create\"'",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("uses ASCII marker boundaries: Unicode and punctuation literal heredocs never match", () => {
+    for (const command of [
+      "cat <<'ÉOF'\nÉOF\ngh pr create",
+      "cat <<'EÖF'\nEÖF\ngh pr create",
+      "cat <<'𝔈OF'\n𝔈OF\ngh pr create",
+      "cat <<ÉOF\n$(gh pr create)\nÉOF",
+      "cat <<EÖF\n$(gh pr create)\nEÖF",
+      "cat <<𝔈OF\n$(gh pr create)\n𝔈OF",
+      "cat <<'END-MARK'\nEND-MARK\ngh pr create",
+      "cat <<'EOF'\nEOF\ngh pr create",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "cat <<'ÉOF'\ngh pr create\nÉOF",
+      "cat <<'EÖF'\ngh pr create\nEÖF",
+      "cat <<'𝔈OF'\ngh pr create\n𝔈OF",
+      "cat <<ÉOF\ngh pr create\nÉOF",
+      "cat <<EÖF\ngh pr create\nEÖF",
+      "cat <<𝔈OF\ngh pr create\n𝔈OF",
+      'cat <<"EÖF"\n$(gh pr create)\nEÖF',
+      "cat <<'END-MARK'\ngh pr create\nEND-MARK",
+      "cat <<'END.MARK'\nENDXMARK\ngh pr create\nEND.MARK",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("recognizes clustered shell c flags and options before the script (Grok round 3)", () => {
+    for (const command of [
+      "bash -ce 'gh pr create'",
+      "bash -cE 'gh pr create'",
+      "bash -ec 'gh pr create'",
+      "bash -o pipefail -c 'gh pr create'",
+      "bash --noprofile -o pipefail -ce '\"g\"h pr create'",
+      "env FLAG=1 bash -o pipefail -ce 'gh pr create'",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "bash -ce 'echo \"gh pr create\"'",
+      "bash -o pipefail -c 'echo \"gh pr create\"'",
+      "bash -o pipefail -ce 'echo \"gh pr create\"'",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("decodes ANSI-C quoted shell scripts while excluding quoted mentions (Grok round 3)", () => {
+    for (const command of [
+      "bash -c $'gh pr create'",
+      "bash -c $'gh pr create\\0; echo mention'",
+      "bash -c $'\\x67h pr create'",
+      "bash -c $'\\147h pr create'",
+      "bash -c $'\\u0067h pr create'",
+      "bash -c $'\\x27gh\\x27 pr create'",
+      "bash -c $'gh\\x20pr\\tcreate'",
+      "sh -c $'\\x67h pr create'",
+      "bash -c $'g'\"h pr create\"",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "bash -c $'echo \\\"gh pr create\\\"'",
+      "bash -c $'printf \\'%s\\' \\'gh pr create\\''",
+      "bash -c $'echo \\x22gh pr create\\x22'",
+      "bash -c $'echo \\047gh pr create\\047'",
+      "echo $'gh pr create'",
+      "bash -c $'echo \\0; gh pr create'",
+      "bash -c $'echo \"$(printf \\'%s\\' \\'gh pr create\\')\"'",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("keep quoted single tokens in every word position and drop quoted prose (#232)", () => {
+    // Single quoted tokens count as arguments; this does not claim they execute gh.
+    for (const command of [
+      "printf '%s ' 'gh' 'pr' 'create'",
+      'echo "gh" pr create',
+      "echo g'h' pr create",
+      'echo g"h" pr create',
+      "echo $'\\x67h' pr create",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "printf '%s ' 'gh pr create'",
+      'echo "live check: gh pr create"',
+      "echo $'gh pr create'",
+      "echo g'h pr create'",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("preserve shell commands across numbered redirections (Sol round 4)", () => {
+    for (const command of [
+      "2>/dev/null 'gh' pr create",
+      "2>/dev/null bash -c 'gh pr create'",
+      "2>&1 env 'gh' pr create",
+      ">/dev/null 'gh' pr create",
+      "2>>/dev/null g'h' pr create",
+      "2>&1 bash -ce 'gh pr create'",
+      "3<<'EOF' bash -c 'gh pr create'\nliteral gh pr create\nEOF",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "2>/dev/null printf '%s' 'gh pr create'",
+      "2>/dev/null bash -c 'echo \"gh pr create\"'",
+      "2>&1 env printf '%s' 'gh pr create'",
+      "3<<'EOF' cat\nliteral gh pr create\nEOF",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("keep quoted words after shell control syntax (Sol round 4)", () => {
+    for (const command of [
+      "if true; then 'gh' pr create; fi",
+      "! 'gh' pr create",
+      "{ 'gh' pr create; }",
+      "if false; then :; else g'h' pr create; fi",
+      'for n in 1; do "gh" pr create; done',
+      "time -p 'gh' pr create",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "if true; then printf '%s' 'gh pr create'; fi",
+      "! printf '%s' 'gh pr create'",
+      "{ printf '%s' 'gh pr create'; }",
+      "for n in 1; do printf '%s' 'gh pr create'; done",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("stop shell option parsing after consuming the one -c script (Sol round 4)", () => {
+    for (const command of [
+      "bash -c 'gh pr create' _ -c 'echo \"gh pr create\"'",
+      "bash -c 'echo done' _ -c \"$(gh pr create)\"",
+      "sh -c 'gh pr create' -c 'echo \"gh pr create\"'",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "bash -c 'echo \"$@\"' _ -c 'gh pr create'",
+      "bash -c 'echo done' -- -c 'gh pr create'",
+      "bash -c 'echo done' -c 'gh pr create'",
+      "bash -ce 'echo done' _ -ce 'gh pr create'",
+      "sh -c 'echo done' _ -c 'gh pr create'",
+      "zsh -lc 'echo done' _ -c 'gh pr create'",
+      "bash -c $'echo done' _ -c $'gh pr create'",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("match quoted single database tokens and paths, but drop prose (#232, contextmd#39)", () => {
+    // Single quoted tokens count as arguments; this does not claim they execute gh.
+    for (const command of [
+      "sqlite3 'chromeria-v2.sqlite' .tables",
+      'sqlite3 "/Users/u/.t3/userdata/chromeria-v2.sqlite" .tables',
+      "sqlite3 $'chromeria-v2.sqlite' .tables",
+      "sqlite3 chromeria-v2'.sqlite' .tables",
+    ]) {
+      assert.isTrue(hit(command, "chromeria-v2.sqlite"), command);
+    }
+    for (const command of [
+      "echo 'the file chromeria-v2.sqlite'",
+      'echo "open /Users/u/.t3/userdata/chromeria-v2.sqlite later"',
+      "echo $'the file chromeria-v2.sqlite'",
+      "echo prefix' the file chromeria-v2.sqlite'",
+    ]) {
+      assert.isFalse(hit(command, "chromeria-v2.sqlite"), command);
+    }
+  });
+
+  it("recognize shell scripts after control syntax and command-running tools (Sol round 5)", () => {
+    for (const command of [
+      "if true; then bash -c 'gh pr create'; fi",
+      "! bash -c 'gh pr create'",
+      "{ bash -c 'gh pr create'; }",
+      "for i in 1; do bash -c 'gh pr create'; done",
+      "xargs bash -c 'gh pr create'",
+      "find . -exec bash -c 'gh pr create' \\;",
+      "timeout 5 bash -c 'gh pr create'",
+      "ssh host bash -c 'gh pr create'",
+      "xargs bash -o pipefail -ce 'gh pr create'",
+      "env ksh -c 'gh pr create'",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "if true; then bash -c 'echo \"gh pr create\"'; fi",
+      "! bash -c 'echo \"gh pr create\"'",
+      "{ bash -c 'echo \"gh pr create\"'; }",
+      "for i in 1; do bash -c 'echo \"gh pr create\"'; done",
+      "xargs bash -c 'echo \"gh pr create\"'",
+      "find . -exec bash -c 'echo \"gh pr create\"' \\;",
+      "timeout 5 bash -c 'echo \"gh pr create\"'",
+      "ssh host bash -c 'echo \"gh pr create\"'",
+      "env ksh -c 'echo \"gh pr create\"'",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("count printed shell invocations in the accepted safe direction (#232)", () => {
+    // Printed shell invocations match by policy; these cases do not execute gh.
+    for (const command of [
+      "echo bash -c 'gh pr create'",
+      "echo sh -c 'gh pr create'",
+      "echo \"bash\" -ce 'gh pr create'",
+      "echo b'a'sh -o pipefail -c 'gh pr create'",
+      "echo ksh -c 'gh pr create'",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "echo bash -c 'echo \"gh pr create\"'",
+      "echo 'bash -c gh pr create'",
+      "echo bash -c 'echo done' _ -c 'gh pr create'",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("uses identical ASCII whitespace for all six divergent code points (Sol round 6)", () => {
+    for (const [sep, encoded] of [
+      ["\u0085", "\\u0085"],
+      ["\u001c", "\\u001c"],
+      ["\u001d", "\\u001d"],
+      ["\u001e", "\\u001e"],
+      ["\u001f", "\\u001f"],
+      ["\ufeff", "\\ufeff"],
+    ]) {
+      const token = `gh${sep}pr${sep}create`;
+      for (const command of [`echo ${token}`, `echo '${token}'`]) {
+        assert.deepStrictEqual(extract("Bash", { command }, null, ["Bash"]).words, ["echo", token]);
+        assert.isFalse(hit(command), encoded);
+      }
+      assert.deepStrictEqual(
+        extract("Bash", { command: `printf '%s' '${token}'` }, null, ["Bash"]).words,
+        ["printf", "%s", token],
+      );
+      assert.deepStrictEqual(
+        extract("Bash", { command: `bash -c $'echo gh${encoded}pr${encoded}create'` }, null, [
+          "Bash",
+        ]).words,
+        ["bash", "-c", "echo", token],
+      );
+      const path = `${sep}/Users/u/.t3/userdata/chromeria-v2.sqlite`;
+      const command = `sqlite3 '${path}'`;
+      const keys = extract("Bash", { command }, null, ["Bash"]);
+      assert.deepStrictEqual(keys.words, ["sqlite3", path]);
+      assert.deepStrictEqual(keys.paths, [path]);
+      assert.isTrue(hit(command, "chromeria-v2.sqlite"), encoded);
+      assert.strictEqual(normalizeError(`${sep}GH${sep}12${sep}`), `${sep}gh${sep}#${sep}`);
+    }
+    assert.deepStrictEqual(words("gh \t\n\r\v\fpr create"), ["gh", "pr", "create"]);
+    assert.isFalse(hit("echo 'gh \t\n\r\v\fpr create'"));
+    assert.strictEqual(normalizeError(" \t\n\r\v\fGH 12 \t\n\r\v\f"), "gh #");
+  });
+
+  it("keeps the first bake's bare key on single-token arguments (#232, contextmd#39)", () => {
+    const db = (command: string) => hit(command, "chromeria-v2.sqlite");
+    for (const command of [
+      "sqlite3 chromeria-v2.sqlite .tables",
+      "sqlite3 ~/.t3/userdata/chromeria-v2.sqlite",
+      "sqlite3 /Users/u/.t3/userdata/chromeria-v2.sqlite",
+      "sqlite3 -readonly ~/.t3/userdata/chromeria-v2.sqlite .tables",
+      "sqlite3 /Users/u/.t3/userdata/chromeria-v2.sqlite 'select 1'",
+    ]) {
+      assert.isTrue(db(command), command);
+    }
+    // A quoted path without whitespace is a real file argument and matches the bare key.
+    assert.isTrue(db('sqlite3 "/Users/u/.t3/userdata/chromeria-v2.sqlite" .tables'));
+    // Neither URI hits the bare command key: the basename includes ?mode=ro.
+    for (const command of [
+      "sqlite3 'file:/Users/u/.t3/userdata/chromeria-v2.sqlite?mode=ro'",
+      "sqlite3 file:/Users/u/.t3/userdata/chromeria-v2.sqlite?mode=ro",
+    ]) {
+      assert.isFalse(db(command), command);
+    }
+    // Live bake mentions: candidate 1672 edits a test; 26379 writes an Issue body.
+    for (const command of [
+      "python3 - <<'EOF'\nfrom pathlib import Path\np = Path('tests/test_serve.py')\np.write_text(p.read_text().replace('state.sqlite', 'chromeria-v2.sqlite'))\nEOF",
+      "gh issue create --title \"Record the bake\" --body-file - <<'EOF'\nThe entry names chromeria-v2.sqlite in a test fixture.\nEOF",
+      'gh issue create --title "Record the bake" --body "The entry names chromeria-v2.sqlite in a test fixture."',
+    ]) {
+      assert.isFalse(db(command), command);
     }
   });
 
