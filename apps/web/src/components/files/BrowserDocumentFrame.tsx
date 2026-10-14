@@ -24,6 +24,7 @@ import {
 import { useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { useOpenLink } from "~/browser/useOpenLink";
+import { useOpenIssueOrPullRequestLink } from "~/components/issues/useOpenIssueOrPullRequestLink";
 import { useHtmlRenderTheme } from "~/hooks/useHtmlRenderTheme";
 import { shortcutConflictKey } from "~/keybindings";
 import { useOpenChangeRequestLink } from "~/lib/openPullRequestLink";
@@ -194,15 +195,27 @@ export function HtmlRenderDocument(props: {
   );
   const openChangeRequestLink = useOpenChangeRequestLink(props.threadRef);
   const openLink = useOpenLink(props.threadRef);
-  // Same rules as a chat link: a pull request opens in the right panel, any
-  // other link follows "Open links in", and Cmd/Ctrl-click goes to the system
-  // browser. Without a thread there is no panel, so it goes to the browser.
+  // GitHub numbers Issues and pull requests together, so `/issues/N` is resolved
+  // on click the way a chat link is. Null means this link is not one, or this
+  // environment reads no Issues: those keep the paths below. A claimed link has
+  // its own single fallback, so this frame must not open it again.
+  const openIssueOrPullRequestLink = useOpenIssueOrPullRequestLink(
+    openChangeRequestLink,
+    openLink,
+    props.threadRef,
+  );
+  // Same rules as a chat link: Cmd/Ctrl-click goes to the system browser, a
+  // pull request opens in the right panel, and any other link follows "Open
+  // links in". Without a thread there is no panel, so it goes to the browser.
   const open = useEffectEvent((url: string, modifiers: { metaKey: boolean; ctrlKey: boolean }) => {
     // The modifier's destination needs no saved setting, so it never waits on one.
     if (modifiers.metaKey || modifiers.ctrlKey) {
       void readLocalApi()
         ?.shell.openExternal(url)
         .catch((cause: unknown) => console.error(cause));
+      return;
+    }
+    if (openIssueOrPullRequestLink(url, props.threadRef?.environmentId ?? null) !== null) {
       return;
     }
     if (

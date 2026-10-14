@@ -388,6 +388,7 @@ const layerSpectrumProvided = Spectrum.layer.pipe(
       layerStores,
       layerEventSinkProvided,
       layerOrchestratorProvided,
+      layerThreadManagementProvided,
       Prism.layer,
       layerProviderAdapterRegistryProvided,
       ThreadCommandExecutor.layer,
