@@ -1,3 +1,5 @@
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import {
   CommandId,
   EventId,
@@ -39,6 +41,7 @@ export interface SpectrumStart {
   readonly limit: number;
   readonly moderator: number;
   readonly colors: ReadonlyArray<{
+    readonly bare?: import("@t3tools/contracts").BareLaunchRequest | undefined;
     readonly label: string;
     readonly role?: PrismRole | undefined;
     readonly lane?: PrismLane | undefined;
@@ -106,6 +109,8 @@ function shell(
 }
 
 const make = Effect.gen(function* () {
+  const bareLaunch = yield* BareLaunch.BareLaunch;
+  const projects = yield* ProjectStore.ProjectStoreV2;
   const prism = yield* Prism.PrismService;
   const adapters = yield* ProviderAdapters.ProviderAdapterRegistryV2;
   const providers = yield* ProviderRegistry.ProviderRegistry;
@@ -178,23 +183,51 @@ const make = Effect.gen(function* () {
           };
         }
         const target = yield* prism.resolve({
+          bare: color.bare !== undefined,
           projectId: caller.projectId,
           role: color.role ?? "worker",
           lane: color.lane,
           explicit,
           inherited: caller.modelSelection,
           validate: (selection) =>
-            Prism.validateLaunchSelection(selection).pipe(
+            Prism.validateLaunchSelection(selection, color.bare !== undefined).pipe(
               Effect.provideService(ProviderAdapters.ProviderAdapterRegistryV2, adapters),
               Effect.provideService(ProviderRegistry.ProviderRegistry, providers),
             ),
         });
         const selection = target.modelSelection;
+        const project =
+          color.bare === undefined || caller.worktreePath !== null
+            ? Option.none()
+            : yield* projects.get(caller.projectId);
+        const cwd =
+          caller.worktreePath ?? (Option.isSome(project) ? project.value.workspaceRoot : undefined);
+        if (color.bare !== undefined && cwd === undefined)
+          return yield* new SpectrumLaunchError({
+            threadId: input.threadId,
+            cause: "Bare workspace is unavailable.",
+          });
+        const bare =
+          color.bare === undefined
+            ? undefined
+            : yield* bareLaunch.resolve({
+                request: color.bare,
+                instanceId: selection.instanceId,
+                cwd: cwd!,
+                readGrant:
+                  caller.runtimeMode === "full-access"
+                    ? { type: "all" }
+                    : { type: "roots", roots: [cwd!] },
+              });
         return {
+          ...(bare === undefined ? {} : { bare }),
           threadId: ThreadId.make(`sub.${input.threadId}.color.${index}`),
           label: color.label,
           selection,
-          instructions: [color.role === undefined ? "" : target.kitText, color.instructions ?? ""]
+          instructions: [
+            color.bare !== undefined || color.role === undefined ? "" : target.kitText,
+            color.instructions ?? "",
+          ]
             .filter(Boolean)
             .join("\n\n"),
         };
@@ -240,15 +273,18 @@ const make = Effect.gen(function* () {
         selection: caller.modelSelection,
         now,
       }),
-      ...resolved.map((color) =>
-        shell(caller, {
+      ...resolved.map((color) => ({
+        ...shell(caller, {
           id: color.threadId,
           parentId: state.threadId,
           title: color.label,
           selection: color.selection,
           now,
         }),
-      ),
+        ...(color.bare === undefined
+          ? {}
+          : { bare: { ...color.bare, nativeHomeOwnerThreadId: color.threadId } }),
+      })),
     ];
     const commit = (boundState: SpectrumState) =>
       sink.commitCommand({

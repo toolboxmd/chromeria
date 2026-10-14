@@ -1,3 +1,4 @@
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, expect, it } from "@effect/vitest";
 import {
@@ -116,7 +117,7 @@ it.effect.each(["on time", "after restart"])(
         Layer.mock(SecretRequests.SecretRequests)({}),
       );
       const layerWorkers = Layer.mergeAll(
-        ScheduledTasks.layer,
+        ScheduledTasks.layer.pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({}))),
         UsageLimitRecoveryWorker.layer,
       ).pipe(Layer.provide(layerDependencies), Layer.provide(Scheduler.layer));
       yield* Effect.gen(function* () {

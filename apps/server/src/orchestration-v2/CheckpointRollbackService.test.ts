@@ -350,6 +350,7 @@ const rewindCases: ReadonlyArray<{
   targetOrdinal?: number;
   grok?: boolean;
   failBind?: boolean;
+  bare?: boolean;
 }> = [
   { restoreFiles: true, shared: "none" },
   { restoreFiles: false, shared: "root" },
@@ -360,9 +361,17 @@ const rewindCases: ReadonlyArray<{
   { restoreFiles: false, shared: "none", targetOrdinal: 1 },
   { restoreFiles: false, shared: "none", grok: true },
   { restoreFiles: false, shared: "none", grok: true, failBind: true },
+  { restoreFiles: false, shared: "none", grok: true, bare: true },
 ];
 it.effect.each(rewindCases)("rewinds safely with %s", (input) => {
-  const { restoreFiles, shared, targetOrdinal = 0, grok = false, failBind = false } = input;
+  const {
+    restoreFiles,
+    shared,
+    targetOrdinal = 0,
+    grok = false,
+    failBind = false,
+    bare = false,
+  } = input;
   const threadId = ThreadId.make("rewind-files");
   const providerThreadId = ProviderThreadId.make("rewind-provider");
   const providerSessionId = ProviderSessionId.make("rewind-session");
@@ -386,6 +395,7 @@ it.effect.each(rewindCases)("rewinds safely with %s", (input) => {
   };
   const projection = {
     thread: {
+      ...(bare ? { bare: { additions: [] } } : {}),
       worktreePath: shared === "root" ? null : process.cwd(),
       activeProviderThreadId: providerThreadId,
       modelSelection: { instanceId, model: "test" },
@@ -510,7 +520,8 @@ it.effect.each(rewindCases)("rewinds safely with %s", (input) => {
                 Effect.gen(function* () {
                   const count = yield* resolveCodexRollbackTurnCount(input);
                   assert.equal(count, 2 - targetOrdinal);
-                  if (grok) assert.equal(input.newSessionInstructions, "rules A");
+                  if (bare) assert.notProperty(input, "newSessionInstructions");
+                  else if (grok) assert.equal(input.newSessionInstructions, "rules A");
                   calls.push("provider");
                   return { providerThread };
                 }),
@@ -541,7 +552,7 @@ it.effect.each(rewindCases)("rewinds safely with %s", (input) => {
     yield* service.execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles });
     assert.deepEqual(
       calls,
-      grok
+      grok && !bare
         ? ["instructions", "provider", "bind", "projection"]
         : restoreFiles
           ? ["provider", "files", "projection"]

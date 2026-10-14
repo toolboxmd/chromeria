@@ -1,3 +1,4 @@
+import * as FileSystem from "effect/FileSystem";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { OpencodeClient, ToolPart } from "@opencode-ai/sdk/v2";
@@ -37,6 +38,8 @@ import type * as ProviderEventLoggers from "@t3tools/provider-core/server/Provid
 import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import { OPEN_CODE_BARE_CONFIG } from "@t3tools/provider-core/server/BareProviderRuntime";
 
 import {
   advanceOpenCodePromptAdmission,
@@ -148,26 +151,36 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
   suffix: string,
   nativeSessionId: string,
   client: object,
+  bareRoot?: string,
+  initialAgent?: string,
 ) {
   const instanceId = ProviderInstanceId.make(`opencode-${suffix}`);
   const threadId = ThreadId.make(`thread-opencode-${suffix}`);
   const modelSelection = {
     instanceId,
     model: "anthropic/claude-sonnet",
-    options: [],
+    options: initialAgent === undefined ? [] : [{ id: "agent", value: initialAgent }],
   };
-  const policy = runtimePolicy("full-access", { cwd: "/workspace" });
+  const policy = runtimePolicy("full-access", {
+    cwd: "/workspace",
+    ...(bareRoot === undefined ? {} : { bare: { additions: [] } }),
+  });
   const adapter = yield* makeOpenCodeAdapterV2({
     instanceId,
-    settings: OPEN_CODE_TEST_SETTINGS,
-    environment: {},
+    settings: bareRoot === undefined ? OPEN_CODE_TEST_SETTINGS : OPENCODE_TEST_SETTINGS,
+    environment: bareRoot === undefined ? {} : { HOME: bareRoot },
   }).pipe(
     Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, {
-      connectToOpenCodeServer: () => Effect.succeed({ url: "http://test.invalid", external: true }),
+      connectToOpenCodeServer: () =>
+        Effect.succeed({
+          url: "http://test.invalid",
+          external: bareRoot === undefined,
+          exitCode: null,
+        }),
       createOpenCodeSdkClient: () => client,
     } as unknown as OpenCodeRuntime.OpenCodeRuntime["Service"]),
     Effect.provideService(ProviderHost.ProviderHost, {
-      paths: { cwd: "/workspace" },
+      paths: { cwd: "/workspace", stateDir: bareRoot },
       resolveAttachmentPath: () => null,
     } as unknown as ProviderHost.ProviderHost["Service"]),
   );
@@ -186,6 +199,7 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
   const startTurn = (
     text = "hello",
     startProviderThread: OrchestrationV2ProviderThread = providerThread,
+    override: Partial<ProviderAdapter.ProviderAdapterV2TurnInput> = {},
   ) =>
     runtime.startTurn({
       appThread: {
@@ -227,6 +241,7 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
       },
       modelSelection,
       runtimePolicy: policy,
+      ...override,
     });
   return {
     nativeSessionId,
@@ -241,6 +256,89 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
 });
 
 describe("OpenCodeAdapterV2", () => {
+  it.effect.each([
+    { name: "default build", interactionMode: "default", agent: undefined },
+    { name: "inherited plan after build resume", interactionMode: "plan", agent: undefined },
+    { name: "explicit plan", interactionMode: "default", agent: "plan" },
+    { name: "unsupported explicit agent", interactionMode: "default", agent: "explore" },
+  ] as const)("bare $name keeps the effective permissions before inference", (choice) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const nativeEvents = asyncEventStream();
+      yield* Effect.addFinalizer(() => Effect.sync(() => nativeEvents.close()));
+      const order: string[] = [];
+      const permissions: Array<ReturnType<typeof openCodePermissionRules>> = [];
+      let prompt: Record<string, unknown> | undefined;
+      const native = { id: "bare-plan", time: { created: 1, updated: 1 } };
+      const opened = yield* makeOpenCodeRuntimeHarness(
+        "bare-plan",
+        native.id,
+        {
+          event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
+          config: { get: async () => ({ data: OPEN_CODE_BARE_CONFIG }) },
+          mcp: { status: async () => ({ data: {} }) },
+          tool: { list: async () => ({ data: [] }) },
+          session: {
+            create: async () => ({ data: native }),
+            get: async () => ({ data: native }),
+            update: async (input: { permission: ReturnType<typeof openCodePermissionRules> }) => {
+              order.push("permissions");
+              permissions.push(input.permission);
+              return { data: native };
+            },
+            promptAsync: async (input: Record<string, unknown>) => {
+              order.push("prompt");
+              prompt = input;
+              return {};
+            },
+          },
+        },
+        root,
+        choice.agent,
+      ).pipe(Effect.result);
+      if (choice.agent === "explore") {
+        assert.strictEqual(opened._tag, "Failure");
+        if (opened._tag === "Failure")
+          assert.include(
+            makeProviderFailure({ cause: opened.failure }).message,
+            "agent explore is unsupported",
+          );
+        assert.deepStrictEqual(order, []);
+        return;
+      }
+      assert.strictEqual(opened._tag, "Success");
+      if (opened._tag === "Failure") return;
+      const h = opened.success;
+      const resumed = yield* h.runtime.resumeThread({
+        providerThread: h.providerThread,
+        runtimePolicy: h.policy,
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencode-bare-plan"),
+          model: "anthropic/claude-sonnet",
+        },
+      });
+      yield* h.startTurn("Only the task", resumed, {
+        runtimePolicy: { ...h.policy, interactionMode: choice.interactionMode },
+      });
+      assert.deepStrictEqual(order, ["permissions", "prompt"]);
+      assert.strictEqual(
+        permissions[0]!.findLast((r) => r.permission === "edit" && r.pattern === "*")?.action,
+        choice.agent === "plan" || choice.interactionMode === "plan" ? "deny" : "allow",
+      );
+      assert.strictEqual(
+        prompt?.agent,
+        choice.agent ?? (choice.interactionMode === "plan" ? "plan" : undefined),
+      );
+      assert.notProperty(prompt, "system");
+      assert.deepStrictEqual(prompt?.parts, [{ type: "text", text: "Only the task" }]);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
+      ),
+    ),
+  );
   it.effect.each(["completed", "failed", "unresolved", "unavailable", "reconnect"] as const)(
     "normalizes OpenCode step usage for %s turns",
     (ending) =>
@@ -380,7 +478,9 @@ describe("OpenCodeAdapterV2", () => {
               },
         );
       }).pipe(
-        Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+        ),
         Effect.scoped,
       ),
   );
@@ -461,7 +561,9 @@ describe("OpenCodeAdapterV2", () => {
         // Failed delivery leaves the request available for an explicit retry.
         yield* harness.runtime.respondToRuntimeRequest(response);
       }).pipe(
-        Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+        ),
         Effect.scoped,
       ),
   );
@@ -502,7 +604,9 @@ describe("OpenCodeAdapterV2", () => {
         "stream.close",
       ]);
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -559,7 +663,9 @@ describe("OpenCodeAdapterV2", () => {
         assert.equal(Exit.isSuccess(result), failure === "not-found");
         if (failure === "timeout") assert.isTrue(childSignal?.aborted);
       }).pipe(
-        Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+        ),
         Effect.scoped,
       ),
   );
@@ -726,7 +832,9 @@ describe("OpenCodeAdapterV2", () => {
         assert.equal(assistant.at(-1)?.text, "Tool results received");
         assert.equal(assistant.at(-1)?.status, "completed");
       }).pipe(
-        Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+        ),
         Effect.scoped,
       ),
   );
@@ -824,7 +932,9 @@ describe("OpenCodeAdapterV2", () => {
       yield* push({ type: "session.idle", properties: { sessionID: child } });
       assert.isFalse(yield* hasPendingBackgroundWork, "an idle child must not pin idle release");
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -922,7 +1032,9 @@ describe("OpenCodeAdapterV2", () => {
       assert.ok(emptyWebSearch?.type === "web_search");
       assert.equal(emptyWebSearch.results, undefined);
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -1081,7 +1193,9 @@ describe("OpenCodeAdapterV2", () => {
       assert.isUndefined(items[3]?.toolSource);
       assert.equal(statusReads, 1);
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -1172,7 +1286,9 @@ describe("OpenCodeAdapterV2", () => {
       });
       if (failure === "timeout") assert.isTrue(signal?.aborted);
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -1238,7 +1354,9 @@ describe("OpenCodeAdapterV2", () => {
       assert.equal(promptCalls, 0);
       release.resolve();
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -1268,7 +1386,9 @@ describe("OpenCodeAdapterV2", () => {
       yield* harness.startTurn("/unknown words");
       assert.deepEqual(prompts, [[{ type: "text", text: "/unknown words" }]]);
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -1326,7 +1446,9 @@ describe("OpenCodeAdapterV2", () => {
         events.some((event) => event.type === "turn.terminal" && event.status === "completed"),
       );
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -1368,7 +1490,9 @@ describe("OpenCodeAdapterV2", () => {
       );
       assert.equal(Option.getOrUndefined(terminal)?.providerThreadId, forkedRow.id);
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -1456,7 +1580,9 @@ describe("OpenCodeAdapterV2", () => {
       );
       assert.equal(snapshot.providerThread.nativeConversationHeadRef?.nativeId, "user-kept");
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -1776,7 +1902,9 @@ describe("OpenCodeAdapterV2", () => {
       const interrupted = yield* runtime.readThreadSnapshot({ providerThread });
       assert.equal(interrupted.providerTurns.at(-1)?.status, "interrupted");
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -1944,7 +2072,9 @@ describe("OpenCodeAdapterV2", () => {
         ),
       );
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -1990,7 +2120,9 @@ describe("OpenCodeAdapterV2", () => {
       assert.equal(terminal?.threadDisposition, "broken");
       assert.equal((yield* Effect.exit(harness.startTurn()))._tag, "Failure");
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -2054,7 +2186,9 @@ describe("OpenCodeAdapterV2", () => {
         ),
       );
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -2115,7 +2249,9 @@ describe("OpenCodeAdapterV2", () => {
       assert.isTrue(Exit.isFailure(yield* Fiber.join(start)));
       assert.equal(promptCalls, 0);
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -2296,7 +2432,9 @@ describe("OpenCodeAdapterV2", () => {
       assert.equal(terminals[0]?.status, "completed");
       assert.isNull(terminals[0]?.failure ?? null);
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -2402,7 +2540,9 @@ describe("OpenCodeAdapterV2", () => {
       assert.equal(statusCallCount, 1);
       assert.equal(afterRetry.providerTurns.at(-1)?.status, "running");
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
   );
@@ -2475,7 +2615,11 @@ describe("OpenCodeAdapterV2", () => {
       assert.include(serialized, '"protocol":"opencode-sdk.sse"');
       assert.include(serialized, '"method":"session.prompt"');
       assert.include(serialized, '"fieldCount":2');
-    }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer))),
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
+    ),
   );
 
   it.effect("adopts the handed-over provider thread identity on session create", () =>
@@ -2586,6 +2730,7 @@ describe("OpenCodeAdapterV2", () => {
           IdAllocator.layer,
           McpProviderSessions.layer,
           TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
+          FileSystem.layerNoop({}),
         ),
       ),
     ),
@@ -2784,7 +2929,9 @@ it.effect.each([false, true])(
         assert.deepEqual(calls, ["fork", "permissions"]);
       }
     }).pipe(
-      Effect.provide(Layer.merge(IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+      ),
       Effect.scoped,
     ),
 );

@@ -44,6 +44,10 @@ function causeMessage(cause: unknown): string | undefined {
       }
       if (typeof cause !== "object") break;
       switch ((cause as Record<string, unknown>)._tag) {
+        case "BareLaunchError":
+          return stringField(cause, "reason");
+        case "BareHistoryTransferUnsupported":
+          return "bare history transfer unsupported";
         case "ContextHandoffBudgetError":
           return new ContextHandoffBudgetError().message;
         case "ClaudeBackgroundWorkBlocksQueryReplacementError":
@@ -75,7 +79,7 @@ function causeMessage(cause: unknown): string | undefined {
   return message;
 }
 
-function stringField(value: unknown, key: "message" | "code"): string | undefined {
+function stringField(value: unknown, key: "message" | "code" | "reason"): string | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   try {
     const candidate = (value as Record<string, unknown>)[key];

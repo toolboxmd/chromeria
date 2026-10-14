@@ -1,3 +1,4 @@
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import { layerLaunchCatalog } from "../peer/PeerLinks.testkit.ts";
 import * as Settings from "../serverSettings.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -122,7 +123,7 @@ const layerLaunches = Layer.effect(
 );
 
 const layerTools = Layer.mergeAll(
-  McpHttpServer.layerOrchestratorToolkit,
+  McpHttpServer.layerOrchestratorToolkit.pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({}))),
   McpHttpServer.layerThreadToolkit,
   McpHttpServer.layerProjectRegistration,
 ).pipe(
