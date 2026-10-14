@@ -396,10 +396,10 @@ export interface OrchestratorV2Shape {
   readonly getThreadEventSequence: (
     threadId: ThreadId,
   ) => Effect.Effect<number, OrchestratorV2Error>;
-  readonly streamStoredEvents: Stream.Stream<OrchestrationV2StoredEvent, OrchestratorV2Error>;
-  readonly streamStoredEventsFrom: (input?: {
+  readonly streamStoredEventsFrom: (input: {
+    /** Required. `0` is a deliberate full replay of the matched range. */
+    readonly afterSequence: number;
     readonly threadId?: ThreadId;
-    readonly afterSequence?: number;
     /** Keep only this type, before the bounded buffer retains anything. */
     readonly eventType?: OrchestrationV2DomainEvent["type"];
   }) => Stream.Stream<OrchestrationV2StoredEvent, OrchestratorV2Error>;
@@ -11889,14 +11889,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       eventSink
         .latestSequence({ threadId })
         .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause }))),
-    streamStoredEvents: eventSink.stream().pipe(
-      Stream.mapError(
-        (cause) =>
-          new OrchestratorDomainEventStreamError({
-            cause,
-          }),
-      ),
-    ),
     streamStoredEventsFrom: (input) =>
       eventSink.stream({ ...input, bounded: true }).pipe(
         Stream.mapError(
@@ -11906,10 +11898,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             }),
         ),
       ),
-    // Live tail only. eventSink.stream() with no cursor replays the whole
-    // store from genesis first; domain-event subscribers (the awareness relay)
-    // react to new activity, and startup replay made them grind through the
-    // entire event history doing per-event work after every boot.
+    // Live tail only. Replaying from 0 would decode the whole store;
+    // domain-event subscribers react to new activity, and a startup replay
+    // made them grind through the event history after every boot.
     streamDomainEvents: Stream.unwrap(
       eventSink
         .latestSequence()
@@ -12039,11 +12030,6 @@ const layerUnavailable: Layer.Layer<OrchestratorV2> = Layer.succeed(
           cause: "Orchestration V2 live runtime is not configured.",
         }),
       ),
-    streamStoredEvents: Stream.fail(
-      new OrchestratorDomainEventStreamError({
-        cause: "Orchestration V2 live runtime is not configured.",
-      }),
-    ),
     streamStoredEventsFrom: () =>
       Stream.fail(
         new OrchestratorDomainEventStreamError({
