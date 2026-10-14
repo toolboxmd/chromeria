@@ -22,7 +22,15 @@ describe("orchestrator MCP tool guidance", () => {
     assert.include(DelegateTaskTool.description ?? "", "childThreadId is backing storage");
     assert.include(
       OrchestratorToolkit.tools.t3_thread_send.description ?? "",
-      "a requested follow-up creates a fresh task",
+      "To continue the same delegated job after it stopped",
+    );
+    assert.include(
+      OrchestratorToolkit.tools.t3_thread_send.description ?? "",
+      "the finished turn wakes the parent like the first result",
+    );
+    assert.include(
+      OrchestratorToolkit.tools.t3_thread_send.description ?? "",
+      "Thread messages do not create a new delegated task or reopen a completed task",
     );
     assert.include(
       OrchestratorToolkit.tools.task_cancel.description ?? "",
