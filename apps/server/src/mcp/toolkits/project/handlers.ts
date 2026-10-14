@@ -13,6 +13,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
@@ -131,85 +132,114 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 ),
               )).projectId
             : yield* resolveProjectId(context, input.projectId);
-        const readProject = Project.ProjectService.pipe(
-          Effect.flatMap((projects) => projects.getById(projectId)),
-          Effect.mapError(unavailable),
-          Effect.map(Option.getOrUndefined),
-        );
-        if (input.workspaceStrategy?.type === "existing_worktree") {
-          const project = yield* readProject;
-          if (project === undefined)
-            return yield* new OrchestratorMcpFailure({
-              code: "invalid_request",
-              message: "The project was not found.",
-            });
-          yield* assertProjectWorktree(project.workspaceRoot, input.workspaceStrategy.worktreePath);
-        }
-        const inherited =
-          input.modelSelection ??
-          caller?.modelSelection ??
-          (yield* readProject)?.defaultModelSelection ??
-          undefined;
-        const prism = yield* Prism.PrismService;
-        const adapters = yield* ProviderAdapterRegistryV2;
-        const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
-        const { modelSelection, kitText } = yield* prism.resolve({
-          projectId,
-          role: input.prismRole ?? "planner",
-          lane: input.lane,
-          explicit: input.modelSelection,
-          inherited,
-          validate: (selection) =>
-            Prism.validateLaunchSelection(selection).pipe(
-              Effect.provideService(ProviderAdapterRegistryV2, adapters),
-              Effect.provideService(ProviderRegistry.ProviderRegistry, providerRegistry),
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const result = yield* launches
+          .replayOrLaunch(
+            {
+              commandId,
+              threadId,
+              projectId,
+              runtimeMode,
+              interactionMode,
+              createdBy: "agent",
+              ...(linkOrigin === undefined ? {} : { linkOrigin }),
+              ...(input.message === undefined && attachments.length === 0 ? {} : { messageId }),
+            },
+            Effect.gen(function* () {
+              const readProject = Project.ProjectService.pipe(
+                Effect.flatMap((projects) => projects.getById(projectId)),
+                Effect.mapError(unavailable),
+                Effect.map(Option.getOrUndefined),
+              );
+              if (input.workspaceStrategy?.type === "existing_worktree") {
+                const project = yield* readProject;
+                if (project === undefined)
+                  return yield* new OrchestratorMcpFailure({
+                    code: "invalid_request",
+                    message: "The project was not found.",
+                  });
+                yield* assertProjectWorktree(
+                  project.workspaceRoot,
+                  input.workspaceStrategy.worktreePath,
+                );
+              }
+              const inherited =
+                input.modelSelection ??
+                caller?.modelSelection ??
+                (yield* readProject)?.defaultModelSelection ??
+                undefined;
+              const prism = yield* Prism.PrismService;
+              const adapters = yield* ProviderAdapterRegistryV2;
+              const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+              const { modelSelection, kitText } = yield* prism.resolve({
+                projectId,
+                role: input.prismRole ?? "planner",
+                lane: input.lane,
+                explicit: input.modelSelection,
+                inherited,
+                validate: (selection) =>
+                  Prism.validateLaunchSelection(selection).pipe(
+                    Effect.provideService(ProviderAdapterRegistryV2, adapters),
+                    Effect.provideService(ProviderRegistry.ProviderRegistry, providerRegistry),
+                  ),
+              });
+              if (modelSelection === undefined)
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message:
+                    "Pass modelSelection: the project has no default model. orchestrator_capabilities lists providers and models.",
+                });
+              return yield* ThreadMessageIntake.launchThread({
+                commandId,
+                threadId,
+                projectId,
+                title: input.title,
+                modelSelection,
+                runtimeMode,
+                interactionMode,
+                workspaceStrategy: input.workspaceStrategy ?? { type: "root" },
+                ...(input.message === undefined && attachments.length === 0
+                  ? {}
+                  : {
+                      initialMessage: {
+                        messageId,
+                        ...(caller === undefined ? {} : { senderThreadId: caller.id }),
+                        text: [kitText, input.message ?? ""].filter(Boolean).join("\n\n"),
+                        attachments,
+                      },
+                    }),
+                createdBy: "agent",
+                creationSource: "mcp",
+                // Fork: an agent's thread belongs to its caller's owner (toolboxmd/chromeria#170).
+                ...(caller === undefined ? {} : { owner: threadOwner(caller) }),
+                ...(linkOrigin === undefined ? {} : { linkOrigin }),
+                // Kept only alongside linkOrigin: thread.create drops it otherwise.
+                ...(input.delegatedFrom === undefined
+                  ? {}
+                  : { delegatedFrom: input.delegatedFrom }),
+              }).pipe(
+                Effect.mapError((error) =>
+                  error._tag === "AttachmentClaimError"
+                    ? new OrchestratorMcpFailure({
+                        code: "orchestration_error",
+                        message: error.message,
+                      })
+                    : unavailable(),
+                ),
+              );
+            }),
+          )
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "ThreadLaunchError" ? unavailable() : error,
             ),
-        });
-        if (modelSelection === undefined)
-          return yield* new OrchestratorMcpFailure({
-            code: "invalid_request",
-            message:
-              "Pass modelSelection: the project has no default model. orchestrator_capabilities lists providers and models.",
-          });
-        const result = yield* ThreadMessageIntake.launchThread({
-          commandId,
-          threadId,
-          projectId,
-          title: input.title,
-          modelSelection,
-          runtimeMode,
-          interactionMode,
-          workspaceStrategy: input.workspaceStrategy ?? { type: "root" },
-          ...(input.message === undefined && attachments.length === 0
-            ? {}
-            : {
-                initialMessage: {
-                  messageId,
-                  ...(caller === undefined ? {} : { senderThreadId: caller.id }),
-                  text: [kitText, input.message ?? ""].filter(Boolean).join("\n\n"),
-                  attachments,
-                },
-              }),
-          createdBy: "agent",
-          creationSource: "mcp",
-          // Fork: an agent's thread belongs to its caller's owner (toolboxmd/chromeria#170).
-          ...(caller === undefined ? {} : { owner: threadOwner(caller) }),
-          ...(linkOrigin === undefined ? {} : { linkOrigin }),
-          // Kept only alongside linkOrigin: thread.create drops it otherwise.
-          ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),
-        }).pipe(
-          Effect.mapError((error) =>
-            error._tag === "AttachmentClaimError"
-              ? new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message })
-              : unavailable(),
-          ),
-        );
+          );
         const thread = result.projection.thread;
         const run = result.projection.runs.find((run) => run.userMessageId === messageId);
         return {
           threadId: thread.id,
           projectId: thread.projectId,
-          modelSelection: thread.modelSelection,
+          modelSelection: run?.modelSelection ?? thread.modelSelection,
           runId: run?.id ?? null,
           status: run?.status ?? null,
         };

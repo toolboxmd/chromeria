@@ -25,6 +25,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   OrchestrationV2ThreadProjectionJson,
+  OrchestratorMcpFailure,
   ScheduledTaskId,
   type ServerProvider,
   ThreadId,
@@ -1663,6 +1664,55 @@ it.effect("replays an accepted launch receipt after rebuilding the destination r
   ),
 );
 
+it.effect(
+  "accepted launch replay skips unavailable admission and enforces identity and mode limits",
+  () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const input = {
+        ...launchInput({
+          command: "command:receipt-first",
+          thread: "thread:receipt-first",
+          message: "Once",
+        }),
+        createdBy: "agent" as const,
+        linkOrigin: { sessionId: "link:original", label: "Original" },
+      };
+      const first = yield* launches.launch(input);
+      const identity = { ...input, messageId: input.initialMessage!.messageId };
+      const unavailable = new OrchestratorMcpFailure({
+        code: "provider_unavailable",
+        message: "destination catalog has no eligible models",
+      });
+      const replay = yield* launches.replayOrLaunch(identity, Effect.fail(unavailable));
+      assert.equal(replay.threadId, first.threadId);
+      assert.isTrue(replay.resumed);
+      assert.equal(replay.projection.runs.length, 1);
+      assert.deepEqual(replay.projection.runs[0]?.modelSelection, modelSelection);
+      for (const changed of [
+        { ...identity, threadId: ThreadId.make("thread:wrong") },
+        { ...identity, projectId: otherProjectId },
+        { ...identity, linkOrigin: { sessionId: "link:other", label: "Other" } },
+        { ...identity, runtimeMode: "approval-required" as const },
+        { ...identity, interactionMode: "plan" as const },
+      ]) {
+        const error = yield* launches
+          .replayOrLaunch(changed, Effect.fail(unavailable))
+          .pipe(Effect.flip);
+        assert.equal(error._tag, "ThreadLaunchError");
+      }
+      const fresh = yield* launches
+        .replayOrLaunch(
+          { ...identity, commandId: CommandId.make("command:fresh-unavailable") },
+          Effect.fail(unavailable),
+        )
+        .pipe(Effect.flip);
+      assert.equal(fresh, unavailable);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
 it.effect("an agent's launch never starts work above the modes it asks for", () => {
   const harness = makeHarness();
   return Effect.gen(function* () {
@@ -2112,6 +2162,7 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
               }),
             ),
           ),
+        replayOrLaunch: launches.replayOrLaunch,
         retryPreparation: launches.retryPreparation,
         prepareDelegatedRun: launches.prepareDelegatedRun,
       }),

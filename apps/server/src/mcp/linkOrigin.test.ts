@@ -73,7 +73,12 @@ const layerLaunches = Layer.effect(
   ThreadLaunch.ThreadLaunchService,
   Effect.gen(function* () {
     const threads = yield* ThreadManagement.ThreadManagementService;
+    const replayOrLaunch: ThreadLaunch.ThreadLaunchService["Service"]["replayOrLaunch"] = (
+      _input,
+      launch,
+    ) => launch;
     return ThreadLaunch.ThreadLaunchService.of({
+      replayOrLaunch,
       launch: (input: ThreadLaunch.ThreadLaunchInput) =>
         threads
           .dispatch({
