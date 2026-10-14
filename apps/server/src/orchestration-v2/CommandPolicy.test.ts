@@ -12,6 +12,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
+import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { CursorProviderCapabilitiesV2 } from "@t3tools/provider-cursor/testing";
 import { GrokProviderCapabilitiesV2 } from "@t3tools/provider-grok/testing";
@@ -119,6 +120,32 @@ it.each(["preparing", "starting"] as const)(
     );
   },
 );
+
+it("queues auto and steer when native steering cancels running tools", () => {
+  const claude = dispatchProjection(ClaudeProviderCapabilitiesV2);
+  assert.deepEqual(
+    CommandPolicy.resolveMessageDispatchIntent(claude, { type: "start_immediately" }, "auto"),
+    { type: "queue_after_active" },
+  );
+  assert.deepEqual(
+    CommandPolicy.resolveMessageDispatchIntent(claude, { type: "start_immediately" }, "steer"),
+    { type: "queue_after_active" },
+  );
+  assert.deepEqual(
+    CommandPolicy.resolveMessageDispatchIntent(claude, {
+      type: "steer_active",
+      targetRunId: activeRunId,
+    }),
+    { type: "queue_after_active" },
+  );
+  assert.deepEqual(
+    CommandPolicy.resolveMessageDispatchIntent(dispatchProjection(baseCapabilities), {
+      type: "steer_active",
+      targetRunId: activeRunId,
+    }),
+    { type: "steer_active", targetRunId: activeRunId },
+  );
+});
 
 it("targets the latest active run for explicit steer and restart intent", () => {
   const projection = dispatchProjection(baseCapabilities);

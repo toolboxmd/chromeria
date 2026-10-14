@@ -736,14 +736,18 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
     : activeRun === undefined
       ? ({ type: "start_immediately" } as const)
       : requestedMode === "steer"
-        ? ({ type: "steer_active", targetRunId: activeRun.id } as const)
+        ? turnCapabilities?.activeSteeringInterruptsTools === true
+          ? ({ type: "queue_after_active" } as const)
+          : ({ type: "steer_active", targetRunId: activeRun.id } as const)
         : requestedMode === "restart"
           ? ({ type: "restart_active", targetRunId: activeRun.id } as const)
           : requestedMode === "queue"
             ? ({ type: "queue_after_active" } as const)
-            : turnCapabilities?.supportsActiveSteering === true
+            : turnCapabilities?.supportsActiveSteering === true &&
+                turnCapabilities.activeSteeringInterruptsTools !== true
               ? ({ type: "steer_active", targetRunId: activeRun.id } as const)
-              : turnCapabilities?.supportsQueuedMessages === true
+              : turnCapabilities?.supportsQueuedMessages === true ||
+                  turnCapabilities?.activeSteeringInterruptsTools === true
                 ? ({ type: "queue_after_active" } as const)
                 : turnCapabilities?.supportsSteeringByInterruptRestart === true
                   ? ({ type: "restart_active", targetRunId: activeRun.id } as const)
