@@ -2108,6 +2108,7 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
     readonly name: string;
     readonly completionWake: "always" | "settled_only";
     readonly stopDelegatingTurn: boolean;
+    readonly followUpOutcome?: "completed" | "interrupted" | "stopped";
   }) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -2165,11 +2166,43 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
       yield* eventSink.write({
         commandId: CommandId.make(`command:${input.name}:follow-up`),
         events: [
+          ...(input.followUpOutcome === "stopped"
+            ? [
+                {
+                  id: EventId.make(`event:${input.name}:stop`),
+                  type: "turn-item.updated" as const,
+                  threadId: child.childThreadId,
+                  runId: followUpRunId,
+                  occurredAt: now,
+                  payload: {
+                    id: TurnItemId.make(`turn-item:${input.name}:stop`),
+                    type: "run_interrupt_request" as const,
+                    threadId: child.childThreadId,
+                    runId: followUpRunId,
+                    nodeId: null,
+                    providerThreadId: null,
+                    providerTurnId: null,
+                    nativeItemRef: null,
+                    parentItemId: null,
+                    ordinal: 1,
+                    status: "completed" as const,
+                    title: "Interrupt requested",
+                    message: "Stop the child's later work too.",
+                    startedAt: now,
+                    completedAt: now,
+                    updatedAt: now,
+                  },
+                },
+              ]
+            : []),
           runEvent({
             threadId: child.childThreadId,
             runId: followUpRunId,
             ordinal: 2,
-            status: "completed",
+            status:
+              input.followUpOutcome === "stopped"
+                ? "interrupted"
+                : (input.followUpOutcome ?? "completed"),
             now,
           }),
         ],
@@ -2188,8 +2221,14 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
       );
       assert.equal(
         parent.subagents.find((row) => row.id === child.taskId)?.completionDelivery?.state,
-        "claimed",
+        input.followUpOutcome === "stopped" ? "acknowledged" : "claimed",
       );
+      if (input.followUpOutcome === "stopped") {
+        assert.equal(
+          parent.runs.find((row) => row.id === runId)?.delegatedCompletion?.delivery,
+          null,
+        );
+      }
     });
 
   it.effect("wakes the parent for a follow-up after the user stopped the delegating turn", () =>
@@ -2208,5 +2247,24 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
         completionWake: "settled_only",
         stopDelegatingTurn: false,
       }),
+  );
+  it.effect(
+    "does not reserve a wake for an explicitly stopped follow-up before task disposal",
+    () =>
+      firstResultThenFollowUp({
+        name: "stopped-follow-up-before-disposal",
+        completionWake: "settled_only",
+        stopDelegatingTurn: false,
+        followUpOutcome: "stopped",
+      }),
+  );
+
+  it.effect("wakes the parent for an interrupted follow-up without a Stop request", () =>
+    firstResultThenFollowUp({
+      name: "interrupted-follow-up",
+      completionWake: "settled_only",
+      stopDelegatingTurn: false,
+      followUpOutcome: "interrupted",
+    }),
   );
 });
