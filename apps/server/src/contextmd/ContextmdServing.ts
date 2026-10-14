@@ -16,7 +16,9 @@
  * With Cue configured (`cue` entry directories and `cue_url`), a joined moment also asks the Cue service
  * (`Cue.ts`): a user message and a failed call score at once, a pre-tool moment starts a score its tool
  * result collects. The window items come from the thread's projected turn items. Cue never holds the
- * exact-key lane up: an unreachable service is skipped machine-wide until a probe sees it again.
+ * exact-key lane up: an unreachable service is skipped machine-wide until a probe sees its health
+ * document again. The skip is stored in the serving database, so a restarted server does not call
+ * Cue on every new process while the service is down.
  *
  * @module ContextmdServing
  */
@@ -215,7 +217,11 @@ const make = Effect.gen(function* () {
   const cueClient = (url: string) => {
     let client = cueClients.get(url);
     if (client === undefined) {
-      client = new CueClient(httpTransport(url));
+      // A previous process may already have seen this URL fail. Start skipped until health returns.
+      client = new CueClient(httpTransport(url), Date.now, !state.cueDown(url), (available) => {
+        if (available) state.clearCueDown(url);
+        else state.markCueDown(url, Date.now() / 1000);
+      });
       cueClients.set(url, client);
     }
     return client;
