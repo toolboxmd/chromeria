@@ -60,6 +60,32 @@ const nativePackageToolUpdate = makePackageManagedProviderMaintenanceResolver({
     isCommandPath: isNativeTestCommandPath("/.local/bin/native-package-tool"),
   },
 });
+const claudeNativeUpdate = makePackageManagedProviderMaintenanceResolver({
+  provider: driver("claudeAgent"),
+  npmPackageName: "@anthropic-ai/claude-code",
+  nativeUpdate: {
+    args: ["update"],
+    isCommandPath: (commandPath) => {
+      const normalized = normalizeCommandPath(commandPath);
+      return (
+        normalized.endsWith("/.local/bin/claude") ||
+        normalized.endsWith("/.local/bin/claude.exe") ||
+        normalized.includes("/.local/share/claude/")
+      );
+    },
+  },
+});
+const bestiaClaudeLauncher = `#!/bin/bash
+export MISE_MINIMUM_RELEASE_AGE=0
+mise use -g --quiet "claude" || exit 1
+exec mise x "claude" -- "$(mise where claude)/claude" "$@"
+`;
+const miseWhereClaudeLauncher = `#!/bin/bash
+exec "$(mise where claude)/claude" "$@"
+`;
+const miseWhichLauncher = `#!/bin/bash
+exec "$(mise which codex)" "$@"
+`;
 const installedPackageToolProvider: ServerProvider = {
   instanceId: ProviderInstanceId.make("packageTool"),
   driver: driver("packageTool"),
@@ -477,6 +503,118 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         },
       });
     }),
+  );
+
+  it.effect.skipIf(windowsHost)("keeps mise wrappers in native install locations manual-only", () =>
+    Effect.gen(function* () {
+      const tempDir = yield* makeTempDir("t3-native-mise-wrapper");
+      const nativePath = NodePath.join(tempDir, ".local", "bin", "native-package-tool");
+      writeExecutable(nativePath);
+      NodeFS.writeFileSync(
+        nativePath,
+        '#!/bin/sh\nexec mise x native-package-tool -- native-package-tool "$@"\n',
+      );
+
+      const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
+        nativePackageToolUpdate,
+        { binaryPath: nativePath, env: { PATH: "" } },
+      ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn));
+
+      expect(capabilities.update).toBeNull();
+    }),
+  );
+
+  it.effect.skipIf(!symlinksSupported || windowsHost)(
+    "keeps native-location links into mise installs manual-only",
+    () =>
+      Effect.gen(function* () {
+        const tempDir = yield* makeTempDir("t3-native-mise-link");
+        const target = NodePath.join(
+          tempDir,
+          "mise",
+          "installs",
+          "native-package-tool",
+          "1.0.0",
+          "native-package-tool",
+        );
+        writeExecutable(target);
+        const link = NodePath.join(tempDir, ".local", "bin", "native-package-tool");
+        NodeFS.mkdirSync(NodePath.dirname(link), { recursive: true });
+        NodeFS.symlinkSync(target, link);
+
+        const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
+          nativePackageToolUpdate,
+          { binaryPath: link, env: { PATH: "" } },
+        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn));
+
+        expect(capabilities.update).toBeNull();
+      }),
+  );
+
+  for (const { name, script } of [
+    { name: "bestia mise x launcher", script: bestiaClaudeLauncher },
+    { name: "exec by mise where", script: miseWhereClaudeLauncher },
+    { name: "exec by mise which", script: miseWhichLauncher },
+  ]) {
+    it.effect.skipIf(windowsHost)(`keeps a ~/.local/bin/claude ${name} manual-only`, () =>
+      Effect.gen(function* () {
+        const tempDir = yield* makeTempDir("t3-claude-mise-launcher");
+        const nativePath = NodePath.join(tempDir, ".local", "bin", "claude");
+        writeExecutable(nativePath);
+        NodeFS.writeFileSync(nativePath, script);
+
+        const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
+          claudeNativeUpdate,
+          { binaryPath: nativePath, env: { PATH: "" } },
+        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn));
+
+        expect(capabilities.update).toBeNull();
+      }),
+    );
+  }
+
+  it.effect.skipIf(!symlinksSupported || windowsHost)(
+    "keeps a ~/.local/bin/claude symlink into a mise claude install manual-only",
+    () =>
+      Effect.gen(function* () {
+        const tempDir = yield* makeTempDir("t3-claude-mise-link");
+        const target = NodePath.join(tempDir, "mise", "installs", "claude", "2.1.289", "claude");
+        writeExecutable(target);
+        const link = NodePath.join(tempDir, ".local", "bin", "claude");
+        NodeFS.mkdirSync(NodePath.dirname(link), { recursive: true });
+        NodeFS.symlinkSync(target, link);
+
+        const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
+          claudeNativeUpdate,
+          { binaryPath: link, env: { PATH: "" } },
+        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn));
+
+        expect(capabilities.update).toBeNull();
+      }),
+  );
+
+  it.effect.skipIf(!symlinksSupported || windowsHost)(
+    "keeps a real native Claude install on claude update",
+    () =>
+      Effect.gen(function* () {
+        const tempDir = yield* makeTempDir("t3-claude-native");
+        const target = NodePath.join(tempDir, ".local", "share", "claude", "versions", "2.1.299");
+        writeExecutable(target);
+        const link = NodePath.join(tempDir, ".local", "bin", "claude");
+        NodeFS.mkdirSync(NodePath.dirname(link), { recursive: true });
+        NodeFS.symlinkSync(target, link);
+
+        const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
+          claudeNativeUpdate,
+          { binaryPath: link, env: { PATH: "" } },
+        ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn));
+
+        expect(capabilities.update).toMatchObject({
+          executable: link,
+          args: ["update"],
+          lockKey: "claudeAgent-native",
+        });
+      }),
   );
 
   // Regression for #9850: an explicit native path outside PATH, with spaces,
