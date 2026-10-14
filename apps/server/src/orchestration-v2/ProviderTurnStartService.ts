@@ -1,3 +1,5 @@
+import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
+import * as BareLaunch from "./BareLaunch.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
@@ -129,9 +131,12 @@ export class ProviderTurnStartServiceV2 extends Context.Service<
   ProviderTurnStartServiceV2Shape
 >()("t3/orchestration-v2/ProviderTurnStartService/ProviderTurnStartServiceV2") {}
 
+const isTurnStartError = Schema.is(ProviderAdapter.ProviderAdapterTurnStartError);
+
 export const layer: Layer.Layer<
   ProviderTurnStartServiceV2,
   never,
+  | BareLaunch.BareLaunch
   | EventSink.EventSinkV2
   | ContextHandoffService.ContextHandoffServiceV2
   | IdAllocator.IdAllocatorV2
@@ -150,6 +155,7 @@ export const layer: Layer.Layer<
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
+    const bareLaunch = yield* BareLaunch.BareLaunch;
     const eventSink = yield* EventSink.EventSinkV2;
     const turnAnalytics = yield* ProviderUsageAnalytics.ProviderTurnAnalytics;
     const contextHandoffService = yield* ContextHandoffService.ContextHandoffServiceV2;
@@ -164,7 +170,7 @@ export const layer: Layer.Layer<
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
-    const contextmd = yield* ContextmdServing.ContextmdServing;
+    const contextmdServing = yield* ContextmdServing.ContextmdServing;
 
     const resolveRecreateBase = Effect.fn("ProviderTurnStartService.resolveRecreateBase")(
       function* (cwd: string) {
@@ -348,6 +354,7 @@ export const layer: Layer.Layer<
     ) {
       const { runId } = input;
       const projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
+      const contextmd = projection.thread.bare === undefined ? contextmdServing : undefined;
       const run = projection.runs.find((candidate) => candidate.id === runId);
       if (run === undefined) {
         return yield* new ProviderTurnStartError({ runId, cause: `Run ${runId} was not found.` });
@@ -799,17 +806,17 @@ export const layer: Layer.Layer<
         if (!repaired.committed) return;
       }
       const instructionStage =
-        providerThread.driver === "grok"
+        contextmd !== undefined && providerThread.driver === "grok"
           ? yield* contextmd.stageSessionInstructions({
               driver: providerThread.driver,
               threadId: projection.thread.id,
               runId: run.id,
             })
-          : { reservation: null, text: undefined };
-      onInstructionsStaged(instructionStage.reservation);
+          : undefined;
+      if (instructionStage !== undefined) onInstructionsStaged(instructionStage.reservation);
       const sessionResult = yield* Effect.result(
         providerSessions.open({
-          ...(instructionStage.text === undefined
+          ...(instructionStage?.text === undefined
             ? {}
             : { newSessionInstructions: instructionStage.text }),
           threadId: projection.thread.id,
@@ -846,7 +853,7 @@ export const layer: Layer.Layer<
       }
       const session = sessionResult.success;
       if (!(yield* isCurrentAttemptInStatus("starting"))) return;
-      if (session.driver === "grok") {
+      if (contextmd !== undefined && session.driver === "grok") {
         const bound = yield* Effect.result(
           contextmd.recordInstallations(session.createdSessions?.() ?? [], {
             threadId: projection.thread.id,
@@ -877,6 +884,38 @@ export const layer: Layer.Layer<
         });
         return undefined;
       });
+      let inheritedBareCarrier = false;
+      if (projection.thread.bare !== undefined) {
+        const fork = projection.contextTransfers.find(
+          (transfer) =>
+            transfer.type === "fork" && transfer.targetThreadId === projection.thread.id,
+        );
+        if (fork !== undefined) {
+          const source = yield* projectionStore.getThreadRecords(fork.sourceThreadId, [
+            "runs",
+            "attempts",
+            "providerTurns",
+          ]);
+          const point = source.runs.find((sourceRun) => sourceRun.id === fork.sourcePoint.runId);
+          inheritedBareCarrier =
+            point !== undefined &&
+            source.providerTurns.some((turn) =>
+              source.attempts.some(
+                (attempt) =>
+                  attempt.id === turn.runAttemptId &&
+                  source.runs.some(
+                    (sourceRun) =>
+                      sourceRun.id === attempt.runId &&
+                      sourceRun.ordinal <= point.ordinal &&
+                      (sourceRun.status !== "rolled_back" ||
+                        (sourceRun.completedAt !== null &&
+                          DateTime.toEpochMillis(sourceRun.completedAt) >
+                            DateTime.toEpochMillis(fork.createdAt))),
+                  ),
+              ),
+            );
+        }
+      }
       let effectiveHandoffs = handoffs;
       let resumeFellBack = false;
       const userText = projectComposerContextForProvider({
@@ -1212,7 +1251,7 @@ export const layer: Layer.Layer<
                   : { providerTurnId: sourceProviderTurn.id }),
               }),
             );
-            if (forked !== undefined) yield* contextmd.recordNativeFork({ driver: session.driver, threadId: projection.thread.id, runId: run.id, sourceThreadId: nativeForkTransfer.sourceThreadId, source: sourceProviderThread, target: forked, boundaryAt: sourceProviderTurn?.completedAt ?? forkStartedAt });
+            if (forked !== undefined) yield* contextmdServing.recordNativeFork({ driver: session.driver, threadId: projection.thread.id, runId: run.id, sourceThreadId: nativeForkTransfer.sourceThreadId, source: sourceProviderThread, target: forked, boundaryAt: sourceProviderTurn?.completedAt ?? forkStartedAt });
             return forked;
           }
           const sourceItems = yield* ContextHandoffService.readForkHistoryItems(
@@ -1384,267 +1423,6 @@ export const layer: Layer.Layer<
         }
 
         yield* Effect.logWarning("Recovering provider context in a fresh native session", {
-          driver: session.driver,
-          providerThreadId: providerThread.id,
-          runId,
-          reason: uncertainDelivery
-            ? "uncertain_history_delivery"
-            : resumed._tag === "Success"
-              ? "handoff_budget_exhausted"
-              : "resume_failed",
-          errorTag: resumed._tag === "Failure" ? resumed.failure._tag : "ContextHandoffBudgetError",
-        });
-        const replacement = yield* loadFromProvider(
-          session.ensureThread({
-            threadId: projection.thread.id,
-            title: projection.thread.title,
-            modelSelection: run.modelSelection,
-            runtimePolicy: resolvedRuntimePolicy,
-            providerSessionId,
-            // Clear the native ref to force a fresh session while preserving row identity.
-            existingProviderThread: { ...providerThread, nativeThreadRef: null },
-            forceNewNativeThread: true,
-          }),
-        );
-        if (replacement === undefined) return undefined;
-        const { handoff, transferId, createdAt } = yield* recoveryHandoff;
-        effectiveHandoffs = withRecoveryHandoff(handoff);
-        resumeFellBack = true;
-        yield* eventSink.write({
-          events: [
-            {
-              id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
-              type: "context-handoff.updated",
-              threadId: projection.thread.id,
-              runId: run.id,
-              providerInstanceId: run.providerInstanceId,
-              occurredAt: createdAt,
-              payload: handoff,
-            },
-            {
-              id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
-              type: "context-transfer.updated",
-              threadId: projection.thread.id,
-              runId: run.id,
-              providerInstanceId: run.providerInstanceId,
-              occurredAt: createdAt,
-              payload: {
-                id: transferId,
-                type: "provider_handoff",
-                sourceThreadId: projection.thread.id,
-                targetThreadId: projection.thread.id,
-                sourcePoint: { threadId: projection.thread.id },
-                basePoint: null,
-                sourceProviderInstanceId: providerThread.providerInstanceId,
-                targetProviderInstanceId: run.providerInstanceId,
-                targetRunId: run.id,
-                status: "resolved_portable",
-                resolution: { strategy: "portable_context", contextHandoffId: handoff.id },
-                createdBy: "system",
-                error: null,
-                createdAt,
-                updatedAt: createdAt,
-                consumedAt: null,
-              },
-            },
-          ],
-        });
-        return replacement;
-      });
-      if (loadedProviderThread === undefined) return;
-      if (!(yield* isCurrentAttemptInStatus("starting"))) {
-        return;
-      }
-      if (session.driver === "grok") {
-        const nativeSessionId = loadedProviderThread.nativeThreadRef?.nativeId;
-        if (nativeSessionId == null)
-          return yield* new ContextmdServing.SessionInstructionsError({
-            operation: "attach",
-            cause: new Error("Native session id unavailable"),
-          });
-        const attached = yield* Effect.result(
-          contextmd.attachSessionInstructions({
-            driver: session.driver,
-            threadId: projection.thread.id,
-            runId: run.id,
-            nativeSessionId,
-            reservation: instructionStage.reservation,
-          }),
-        );
-        if (attached._tag === "Failure") {
-          if (input.willRetry === true) return yield* attached.failure;
-          yield* settleStartFailure({
-            signal: "native-instructions-attach-failure",
-            title: "Native session instructions could not be accounted",
-            error: attached.failure,
-          });
-          return;
-        }
-      }
-      const now = yield* DateTime.now;
-      const handoffContext = resumedHandoffContext ?? handoffContextForThread(loadedProviderThread);
-      const {
-        sameNativeThread,
-        handoffUsage,
-        deliveredItemIds,
-        acceptedAttempts,
-        nativeInputRunIds,
-        legacyInputRunIds,
-        budget,
-      } = handoffContext;
-      const retryHandoff = resumedRetryHandoff ?? (yield* prepareRetryHandoff(handoffContext));
-      const runningProviderThread: OrchestrationV2ProviderThread = {
-        ...loadedProviderThread,
-        contextUsage: handoffUsage,
-        id: providerThread.id,
-        driver: session.driver,
-        providerInstanceId: run.providerInstanceId,
-        providerSessionId,
-        appThreadId: projection.thread.id,
-        ownerNodeId: providerThread.ownerNodeId,
-        firstRunOrdinal: providerThread.firstRunOrdinal ?? run.ordinal,
-        lastRunOrdinal: run.ordinal,
-        handoffIds:
-          portableForkFallback === undefined
-            ? providerThread.handoffIds
-            : [...providerThread.handoffIds, portableForkFallback.id],
-        forkedFrom: portableForkFallback === undefined ? providerThread.forkedFrom : null,
-        status: "active",
-        createdAt: providerThread.createdAt,
-        updatedAt: now,
-      };
-      const runningRun: OrchestrationV2Run = {
-        ...run,
-        status: "running",
-        startedAt: now,
-      };
-      const runningAttempt: OrchestrationV2RunAttempt = {
-        ...attempt,
-        ...(runningProviderThread.nativeThreadRef?.nativeId == null
-          ? {}
-          : { nativeThreadId: runningProviderThread.nativeThreadRef.nativeId }),
-        status: "running",
-        startedAt: now,
-      };
-      const runningRootNode: OrchestrationV2ExecutionNode = {
-        ...rootNode,
-        status: "running",
-        startedAt: now,
-      };
-      const events: Array<OrchestrationV2DomainEvent> = [
-        {
-          id: yield* idAllocator.allocate.event({
-            threadId: projection.thread.id,
-            providerSessionId,
-          }),
-          type: "provider-session.updated",
-          threadId: projection.thread.id,
-          driver: session.driver,
-          providerInstanceId: run.providerInstanceId,
-          occurredAt: now,
-          payload: session.providerSession,
-        },
-        {
-          id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
-          type: "provider-thread.updated",
-          threadId: projection.thread.id,
-          driver: session.driver,
-          providerInstanceId: run.providerInstanceId,
-          occurredAt: now,
-          payload: runningProviderThread,
-        },
-        ...(nativeForkTransfer === undefined ||
-        portableForkFallback !== undefined ||
-        runningProviderThread.nativeThreadRef === null
-          ? []
-          : [
-              {
-                id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
-                type: "context-transfer.updated" as const,
-                threadId: projection.thread.id,
-                runId: run.id,
-                driver: session.driver,
-                providerInstanceId: run.providerInstanceId,
-                occurredAt: now,
-                payload: {
-                  ...nativeForkTransfer,
-                  targetProviderInstanceId: run.providerInstanceId,
-                  targetRunId: run.id,
-                  status: "consumed" as const,
-                  resolution: {
-                    strategy: "native_fork" as const,
-                    providerThreadRef: runningProviderThread.nativeThreadRef,
-                  },
-                  error: null,
-                  updatedAt: now,
-                  consumedAt: now,
-                },
-              },
-            ]),
-        {
-          id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
-          type: "run.updated",
-          threadId: projection.thread.id,
-          runId: run.id,
-          nodeId: rootNode.id,
-          providerInstanceId: run.providerInstanceId,
-          occurredAt: now,
-          payload: runningRun,
-        },
-        {
-          id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
-          type: "run-attempt.updated",
-          threadId: projection.thread.id,
-          runId: run.id,
-          nodeId: rootNode.id,
-          providerInstanceId: run.providerInstanceId,
-          occurredAt: now,
-          payload: runningAttempt,
-        },
-        {
-          id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
-          type: "node.updated",
-          threadId: projection.thread.id,
-          runId: run.id,
-          nodeId: rootNode.id,
-          providerInstanceId: run.providerInstanceId,
-          occurredAt: now,
-          payload: runningRootNode,
-        },
-      ];
-      const runningWrite = yield* eventSink.writeIfRunCurrent({
-        threadId: projection.thread.id,
-        runId: run.id,
-        activeAttemptId: attempt.id,
-        expectedStatus: "starting",
-        events,
-      });
-      if (!runningWrite.committed) {
-        return;
-      }
-      const routableSubagents = projection.subagents.filter((subagent) =>
-        RunExecutionService.canRouteRelatedSubagent(subagent.status),
-      );
-      const persistHandoff = Effect.fn("ProviderTurnStartService.persist")(function* (
-        handoff: OrchestrationV2ContextHandoff,
-      ) {
-        const updatedAt = yield* DateTime.now;
-        yield* eventSink.write({
-          events: [
-            {
-              id: yield* idAllocator.allocate.event({
-                threadId: projection.thread.id,
-              }),
-              type: "context-handoff.updated",
-              threadId: projection.thread.id,
-              runId: run.id,
-              providerInstanceId: run.providerInstanceId,
-              occurredAt: updatedAt,
-              payload: { ...handoff, updatedAt },
-            },
-          ],
-        });
-      });
       const startWithHandoffs = Effect.fn("ProviderTurnStartService.startWithHandoffs")(
         function* (turnInput: Parameters<typeof session.startTurn>[0], compact = false) {
           const delivery = yield* deliverContextHandoffs({
@@ -1734,7 +1512,7 @@ export const layer: Layer.Layer<
               }),
         ),
       );
-      const deliverySession =
+    let deliverySession =
         effectiveHandoffs.length === 0 &&
         retryHandoff.length === 0 &&
         sideChatHandoff === undefined &&
@@ -1742,6 +1520,61 @@ export const layer: Layer.Layer<
         !noteContinuation
           ? session
           : makeDeliverySession(session, startWithHandoffs);
+      if (projection.thread.bare !== undefined) {
+        const bare = projection.thread.bare;
+        const survivingAccepted =
+          inheritedBareCarrier ||
+          projection.providerTurns.some(
+            (turn) =>
+              turn.providerThreadId === providerThread.id &&
+              projection.attempts.some(
+                (attempt) =>
+                  attempt.id === turn.runAttemptId &&
+                  projection.runs.some(
+                    (run) => run.id === attempt.runId && run.status !== "rolled_back",
+                  ),
+              ) &&
+              projection.attempts.some(
+                (source) =>
+                  source.id === turn.runAttemptId &&
+                  projection.runs.some(
+                    (run) => run.id === source.runId && run.status !== "rolled_back",
+                  ) &&
+                  source.nativeThreadId === runningProviderThread.nativeThreadRef?.nativeId,
+              ),
+          );
+        const missedText = missedItems
+          .filter((item) => item.type === "user_message")
+          .map((item) => item.text)
+          .join("\n\n");
+        // This is the final adapter-facing boundary, after recovery selected the native thread.
+        deliverySession = makeDeliverySession(session, (turnInput, compact) =>
+          Effect.gen(function* () {
+            if (missedItems.some((item) => item.type !== "user_message"))
+              return yield* new BareLaunchError({
+                reason: "bare history transfer unsupported: missed history is not user text",
+              });
+            const additions = survivingAccepted ? "" : yield* bareLaunch.deliveryText(bare);
+            const text = [additions, missedText, userText]
+              .filter((part) => part !== "")
+              .join("\n\n");
+            const start = compact ? session.compactThread! : session.startTurn;
+            yield* start({ ...turnInput, message: { ...turnInput.message, text } });
+          }).pipe(
+            Effect.mapError((cause) =>
+              isTurnStartError(cause)
+                ? cause
+                : new ProviderAdapter.ProviderAdapterTurnStartError({
+                    driver: session.driver,
+                    threadId: projection.thread.id,
+                    providerThreadId: providerThread.id,
+                    runId,
+                    cause,
+                  }),
+            ),
+          ),
+        );
+      }
       return runExecution.startRootRun({
         commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),
         appThread: projection.thread,
@@ -1798,7 +1631,7 @@ export const layer: Layer.Layer<
       start: Effect.fn("ProviderTurnStartService.start")(
         function* (input) {
           // This reservation belongs to one start attempt, including every early return and failure.
-          let reservation: string | null = null;
+          let reservation: string | null | undefined;
           const onInstructionsStaged = (staged: string | null) => {
             reservation = staged;
           };
@@ -1811,7 +1644,13 @@ export const layer: Layer.Layer<
               : withWorkspaceLease(path.resolve(thread.worktreePath), startup);
             if (providerTurn !== undefined) yield* providerTurn;
           }).pipe(
-            Effect.ensuring(Effect.suspend(() => contextmd.releaseSessionInstructions(reservation))),
+            Effect.ensuring(
+              Effect.suspend(() =>
+                reservation === undefined
+                  ? Effect.void
+                  : contextmdServing.releaseSessionInstructions(reservation),
+              ),
+            ),
           );
         },
         (effect, input) =>

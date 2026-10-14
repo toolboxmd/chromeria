@@ -61,6 +61,7 @@ describe("AcpSessionRuntime", () => {
         expect(started.newSessionRules).toBeUndefined();
       } else {
         expect(setup?.payload).toHaveProperty("_meta.rules", "immutable application rules");
+        expect(setup?.payload).toHaveProperty("_meta.nativeIdentity", "preserved");
         expect(started.newSessionRules).toBe("immutable application rules");
       }
     }).pipe(
@@ -68,6 +69,7 @@ describe("AcpSessionRuntime", () => {
         AcpSessionRuntime.layer({
           ...mockRuntimeOptions,
           newSessionRules: "immutable application rules",
+          sessionMeta: { nativeIdentity: "preserved" },
           ...(resume ? { resumeSessionId: "mock-session-1" } : {}),
           requestLogger: (event) =>
             Effect.sync(() => {

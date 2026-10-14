@@ -1,3 +1,4 @@
+import { unsupportedBare } from "@t3tools/provider-core/server/bareLaunch";
 import {
   DEFAULT_PRISM_LANE,
   isProviderAvailable,
@@ -22,6 +23,7 @@ import { ProviderAdapterRegistryV2 } from "../orchestration-v2/ProviderAdapterRe
 /** Native launch callers validate adapter admission before creating a thread/run. */
 export const validateLaunchSelection = Effect.fn("Prism.validateLaunchSelection")(function* (
   selection: ModelSelection,
+  bare?: boolean,
 ) {
   const adapters = yield* ProviderAdapterRegistryV2;
   if (!(yield* adapters.list()).includes(selection.instanceId))
@@ -29,6 +31,26 @@ export const validateLaunchSelection = Effect.fn("Prism.validateLaunchSelection"
       code: "provider_unavailable",
       message: `No V2 provider adapter is registered for ${selection.instanceId}.`,
     });
+  if (bare) {
+    const adapter = yield* adapters.get(selection.instanceId).pipe(
+      Effect.mapError(
+        () =>
+          new OrchestratorMcpFailure({
+            code: "provider_unavailable",
+            message: "Bare adapter unavailable.",
+          }),
+      ),
+    );
+    const support =
+      adapter.bareSupport === undefined
+        ? unsupportedBare(adapter.driver)
+        : yield* adapter.bareSupport;
+    if (!support.supported)
+      return yield* new OrchestratorMcpFailure({
+        code: "provider_unavailable",
+        message: support.reason,
+      });
+  }
   const registry = yield* ProviderRegistry.ProviderRegistry;
   const eligible = (provider: ServerProvider | undefined) =>
     provider !== undefined &&
@@ -100,6 +122,7 @@ export class PrismService extends Context.Service<
   PrismService,
   {
     readonly resolve: (input: {
+      readonly bare?: boolean | undefined;
       readonly projectId: ProjectId;
       readonly role: PrismRole;
       readonly lane?: PrismLane | undefined;
@@ -133,12 +156,14 @@ const make = Effect.gen(function* () {
         input.projectId,
       ).settings.prismRoles;
       const kit = kits[input.role];
-      const kitText = [
-        kit.instructions,
-        kit.skills.length > 0 ? `Use these skills: ${kit.skills.join(", ")}.` : "",
-      ]
-        .filter(Boolean)
-        .join("\n\n");
+      const kitText = input.bare
+        ? ""
+        : [
+            kit.instructions,
+            kit.skills.length > 0 ? `Use these skills: ${kit.skills.join(", ")}.` : "",
+          ]
+            .filter(Boolean)
+            .join("\n\n");
       if (input.explicit !== undefined) {
         const modelSelection = input.validate
           ? yield* input.validate(input.explicit)

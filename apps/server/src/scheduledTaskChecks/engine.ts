@@ -1,3 +1,4 @@
+import { readScheduledBare } from "../scheduledTasks/bareState.ts";
 import {
   CommandId,
   MessageId,
@@ -176,7 +177,9 @@ function sendText(
   kit: string | null,
 ): string {
   if (send.kind === "start")
-    return `${runContext(task, run)}${kit === null ? "" : `${kit}\n\n`}${task.prompt}`;
+    return task.bare === undefined
+      ? `${runContext(task, run)}${kit === null ? "" : `${kit}\n\n`}${task.prompt}`
+      : task.prompt;
   return `${runContext(task, run)}Continue in this conversation. Check what is already done, then finish. Do not repeat completed side effects.\n${run.error ?? "Recovering after a server restart."}\n${run.check?.output ?? ""}`;
 }
 
@@ -281,6 +284,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
       const role = picked.success;
       const launch = launching
         ? {
+            ...(task.bare === undefined ? {} : { bare: task.bare }),
             projectId: task.projectId,
             title: task.title,
             modelSelection: role?.modelSelection ?? task.modelSelection,
@@ -289,14 +293,32 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
             workspaceStrategy: task.workspaceStrategy,
           }
         : null;
+      const bareAuthority =
+        task.bare === undefined || !launching
+          ? undefined
+          : yield* readScheduledBare(task.id).pipe(
+              Effect.mapError(
+                () =>
+                  new ScheduledTaskCheckError({
+                    message: "Could not read bare schedule authority.",
+                  }),
+              ),
+            );
       const send: RunSend = {
         index,
         ...sendIdentity(run, index),
         kind,
         createdAt: iso(now),
         payload: {
+          ...(bareAuthority === undefined ? {} : { bareReadGrant: bareAuthority.readGrant }),
+          ...(task.bare === undefined ? {} : { bare: task.bare }),
           ...(task.linkOrigin === undefined ? {} : { linkOrigin: task.linkOrigin }),
-          text: sendText(task, run, { kind }, kind === "start" ? (role?.kitText ?? null) : null),
+          text: sendText(
+            task,
+            run,
+            { kind },
+            kind === "start" && task.bare === undefined ? (role?.kitText ?? null) : null,
+          ),
           modelSelection: launch === null ? null : launch.modelSelection,
           launch,
           projectId: task.projectId,

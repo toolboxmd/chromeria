@@ -99,6 +99,7 @@ export interface AcpSessionRuntimeOptions {
   readonly newSessionRules?: string;
   readonly spawn: AcpSpawnInput;
   readonly cwd: string;
+  readonly sessionMeta?: EffectAcpSchema.NewSessionRequest["_meta"];
   readonly resumeSessionId?: string;
   readonly resumeMethod?: "load" | "resume";
   readonly sessionLoadTimeout?: Duration.Input;
@@ -2226,6 +2227,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           const loadPayload = {
             sessionId,
             cwd: options.cwd,
+            ...(options.sessionMeta === undefined ? {} : { _meta: options.sessionMeta }),
             ...additionalDirectories,
             mcpServers: sessionMcpServers(initializeResult),
           } satisfies EffectAcpSchema.LoadSessionRequest;
@@ -2234,6 +2236,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           const resumePayload = {
             sessionId,
             cwd: options.cwd,
+            ...(options.sessionMeta === undefined ? {} : { _meta: options.sessionMeta }),
             ...additionalDirectories,
             mcpServers: sessionMcpServers(initializeResult),
           } satisfies EffectAcpSchema.ResumeSessionRequest;
@@ -2250,9 +2253,16 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         }
       } else {
         const createPayload = {
-          ...(options.newSessionRules === undefined
+          ...(options.newSessionRules === undefined && options.sessionMeta === undefined
             ? {}
-            : { _meta: { rules: options.newSessionRules } }),
+            : {
+                _meta: {
+                  ...options.sessionMeta,
+                  ...(options.newSessionRules === undefined
+                    ? {}
+                    : { rules: options.newSessionRules }),
+                },
+              }),
           cwd: options.cwd,
           mcpServers: sessionMcpServers(initializeResult),
           ...additionalDirectories,
@@ -2459,6 +2469,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
             sessionId,
             cwd: options.cwd,
             ...sessionSetupFields(started.initializeResult),
+            ...(options.sessionMeta === undefined ? {} : { _meta: options.sessionMeta }),
             mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
           } satisfies EffectAcpSchema.LoadSessionRequest;
           return runLoadSessionWithReplayIdle(requestPayload, started.initializeResult);
@@ -2472,6 +2483,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
             sessionId,
             cwd: options.cwd,
             ...sessionSetupFields(started.initializeResult),
+            ...(options.sessionMeta === undefined ? {} : { _meta: options.sessionMeta }),
             mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
           } satisfies EffectAcpSchema.ResumeSessionRequest;
           return runLoggedRequest(
@@ -2489,6 +2501,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
             sessionId,
             cwd: options.cwd,
             ...sessionSetupFields(started.initializeResult),
+            ...(options.sessionMeta === undefined ? {} : { _meta: options.sessionMeta }),
             mcpServers: sessionMcpServers(started.initializeResult, activationOptions),
             ...(meta === undefined ? {} : { _meta: meta }),
           } satisfies EffectAcpSchema.ForkSessionRequest;

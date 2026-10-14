@@ -1,3 +1,4 @@
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import { assert, it } from "@effect/vitest";
 import { CommandId, MessageId, OrchestratorMcpThreadSendResult } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -15,7 +16,10 @@ const runtime = Layer.fresh(
   Layer.mergeAll(
     Plans.layer.pipe(Layer.provide(base)),
     Mcp.layer.pipe(Layer.provide(base)),
-    Launch.layer.pipe(Layer.provideMerge(base)),
+    Launch.layer.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+      Layer.provideMerge(base),
+    ),
   ),
 );
 it.effect(

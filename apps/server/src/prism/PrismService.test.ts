@@ -33,6 +33,32 @@ const provider = Effect.map(
 );
 
 describe("PrismService", () => {
+  it.effect("bare selection keeps routing and removes both role instructions and skill hints", () =>
+    Effect.gen(function* () {
+      const service = yield* Prism.PrismService;
+      const intent = { projectId, role: "worker" as const, explicit: selection };
+      const normal = yield* service.resolve(intent);
+      const bare = yield* service.resolve({ ...intent, bare: true });
+      assert.strictEqual(normal.kitText, "Follow the kit.\n\nUse these skills: unasked-skill.");
+      assert.strictEqual(bare.kitText, "");
+      assert.deepStrictEqual(bare.modelSelection, normal.modelSelection);
+    }).pipe(
+      Effect.provide(
+        Prism.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              registry([]),
+              Settings.layerTest({
+                prismRoles: {
+                  worker: { instructions: "Follow the kit.", skills: ["unasked-skill"] },
+                },
+              }),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
   it.effect("explicit model wins even when configured capacity is exhausted, and kit remains", () =>
     Effect.gen(function* () {
       const service = yield* Prism.PrismService;

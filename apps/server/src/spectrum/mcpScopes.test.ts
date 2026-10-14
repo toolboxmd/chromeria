@@ -1,3 +1,4 @@
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -174,7 +175,12 @@ it.effect(
         );
         assert.strictEqual(normalInterruptCalls, 1);
       }).pipe(
-        Effect.provide(Mcp.layer.pipe(Layer.provide(dependencies))),
+        Effect.provide(
+          Mcp.layer.pipe(
+            Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+            Layer.provide(dependencies),
+          ),
+        ),
         Effect.provideService(SpectrumMcpInterrupt, {
           interrupt: (_threads, request) =>
             Effect.sync(() => {

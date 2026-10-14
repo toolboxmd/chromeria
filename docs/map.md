@@ -20,6 +20,8 @@ flowchart TD
     %% PM: #116
     WG["Wight mode"]
     %% WG: #117
+    BL["Bare launch and receipts"]
+    %% BL: #289, PR #335
     DR["Drafters in any project"]
     %% DR: #114 PR #126
     SC["Spectrum council and free"]
@@ -55,6 +57,8 @@ flowchart TD
     PZ --> DR --> VT --> XM
     NR --> XM
     PRN --> XM
+    BL --> DR
+    BL --> SC
     DR --> SC --> JT
     DR --> SN
     VT --> RS

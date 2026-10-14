@@ -1,5 +1,6 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as BareLaunch from "./BareLaunch.ts";
 import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
 import {
@@ -133,6 +134,7 @@ function startWithMissingWorktree(
   const createWorktree = vi.fn(() => Effect.succeed({} as never));
   const listLocalBranchNames = vi.fn(() => Effect.succeed(["feature/restore"]));
   const layer = ProviderTurnStart.layer.pipe(
+    Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
     Layer.provide(
       Layer.mock(ContextmdServing.ContextmdServing)({
         releaseSessionInstructions: () => Effect.void,
@@ -969,6 +971,7 @@ function makeLocalCommandHarness(input: {
     }),
   );
   const layer = ProviderTurnStart.layer.pipe(
+    Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
     Layer.provide(
       Layer.mock(ContextmdServing.ContextmdServing)({
         stageSessionInstructions: () =>

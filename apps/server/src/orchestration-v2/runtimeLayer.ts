@@ -1,4 +1,5 @@
 import * as GuestShareService from "../guest/GuestShareService.ts";
+import * as BareLaunch from "./BareLaunch.ts";
 import * as RecoveryWaitSignals from "../peer/recoveryWaitSignals.ts";
 import * as RecoveryWait from "../peer/recoveryWait.ts";
 import * as Spectrum from "../spectrum/runtimeLayer.ts";
@@ -141,9 +142,14 @@ const layerCheckpointServiceProvided = CheckpointService.layer.pipe(
   Layer.provide(IdAllocator.layer),
 );
 const layerContextHandoffServiceProvided = ContextHandoffService.layer.pipe(
-  Layer.provide(IdAllocator.layer),
+  Layer.provide(Layer.merge(IdAllocator.layer, ProjectionStore.layer)),
 );
 
+const layerProviderAdapterRegistryProvided =
+  ProviderAdapterRegistry.layerFromProviderInstanceRegistry;
+export const layerBareLaunchProvided = BareLaunch.layer.pipe(
+  Layer.provide(layerProviderAdapterRegistryProvided),
+);
 const layerProviderSwitchServiceProvided = ProviderSwitchService.layer.pipe(
   Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
 );
@@ -187,6 +193,7 @@ const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
 const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
+      layerBareLaunchProvided,
       layerContextHandoffServiceProvided,
       layerEventSink,
       IdAllocator.layer,
@@ -245,6 +252,8 @@ const layerOrchestratorProvided = Orchestrator.layer.pipe(
     Layer.mergeAll(
       layerCheckpointServiceProvided,
       CommandPolicy.layer,
+      ProjectStore.layer,
+      layerBareLaunchProvided,
       layerStores,
       layerEventSink,
       layerCommandReceiptStoreProvided,
@@ -304,6 +313,7 @@ const layerManagedProjectFoldersProvided = ManagedProjectFolders.layer.pipe(
 const layerThreadLaunchProvided = ThreadLaunchService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
+      layerBareLaunchProvided,
       layerProjectService,
       layerProjectSetupScriptRunner,
       layerManagedProjectFoldersProvided,
@@ -322,6 +332,7 @@ const layerScheduledTaskProvided = ScheduledTaskChecks.withOutcomeChecks(
 ).pipe(
   Layer.provide(
     Layer.mergeAll(
+      layerBareLaunchProvided,
       layerThreadLaunchProvided,
       layerThreadManagementProvided,
       layerManagedProjectFoldersProvided,
@@ -414,6 +425,8 @@ export const layer = Layer.mergeAll(
 const layerSpectrumProvided = Spectrum.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
+      ProjectStore.layer,
+      layerBareLaunchProvided,
       layerStores,
       layerEventSinkProvided,
       layerOrchestratorProvided,
@@ -426,6 +439,7 @@ const layerSpectrumProvided = Spectrum.layer.pipe(
 );
 
 export const layerProduction = Layer.mergeAll(
+  layerBareLaunchProvided,
   layerSpectrumProvided,
   WightMode.layer.pipe(
     Layer.provide(Layer.mergeAll(ProjectionStore.layer, layerThreadManagementProvided)),

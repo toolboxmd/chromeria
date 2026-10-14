@@ -736,9 +736,13 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
   },
 );
 
-it.effect.each([{ failBind: false }, { failBind: true }])(
+it.effect.each([
+  { failBind: false, bare: false },
+  { failBind: true, bare: false },
+  { failBind: false, bare: true },
+])(
   "rolls back a Grok session with its instructions and records them, %s",
-  ({ failBind }) => {
+  ({ failBind, bare }) => {
     const threadId = ThreadId.make("rewind-grok");
     const providerThreadId = ProviderThreadId.make("rewind-grok-provider");
     const providerSessionId = ProviderSessionId.make("rewind-grok-session");
@@ -756,6 +760,7 @@ it.effect.each([{ failBind: false }, { failBind: true }])(
         worktreePath: process.cwd(),
         activeProviderThreadId: providerThreadId,
         modelSelection: { instanceId, model: "test" },
+        ...(bare ? { bare: { additions: [] } } : {}),
       },
       providerThreads: [providerThread],
       providerSessions: [],
@@ -843,7 +848,8 @@ it.effect.each([{ failBind: false }, { failBind: true }])(
                 ],
                 rollbackThread: (input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) =>
                   Effect.sync(() => {
-                    assert.equal(input.newSessionInstructions, "rules A");
+                    if (bare) assert.notProperty(input, "newSessionInstructions");
+                    else assert.equal(input.newSessionInstructions, "rules A");
                     calls.push("provider");
                     return { providerThread };
                   }),
@@ -863,7 +869,10 @@ it.effect.each([{ failBind: false }, { failBind: true }])(
         return;
       }
       yield* service.execute(input);
-      assert.deepEqual(calls, ["instructions", "provider", "bind", "projection"]);
+      assert.deepEqual(
+        calls,
+        bare ? ["provider", "projection"] : ["instructions", "provider", "bind", "projection"],
+      );
     }).pipe(Effect.provide(layerTest));
   },
 );

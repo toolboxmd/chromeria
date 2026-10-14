@@ -137,7 +137,7 @@ export const layer: Layer.Layer<
     const path = yield* Path.Path;
     const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
-    const contextmd = yield* ContextmdServing.ContextmdServing;
+    const contextmdServing = yield* ContextmdServing.ContextmdServing;
 
     const execute = Effect.fn("orchestrationV2.checkpointRollback.execute")(function* (input: {
       readonly threadId: ThreadId;
@@ -284,8 +284,9 @@ export const layer: Layer.Layer<
           (turn.runAttemptId === null || !rolledBackAttemptIds.has(turn.runAttemptId)),
       );
 
+      const contextmd = projection.thread.bare === undefined ? contextmdServing : undefined;
       const newSessionInstructions =
-        session.driver === "grok" && runsToRollback.length > 0
+        contextmd !== undefined && session.driver === "grok" && runsToRollback.length > 0
           ? yield* contextmd.currentInstructions(session.driver)
           : undefined;
       const snapshot =
@@ -297,7 +298,7 @@ export const layer: Layer.Layer<
               target: rollbackTarget,
               providerThreadTurns,
             });
-      if (session.driver === "grok")
+      if (contextmd !== undefined && session.driver === "grok")
         yield* contextmd.recordInstallations(session.createdSessions?.() ?? [], {
           threadId: input.threadId,
         });

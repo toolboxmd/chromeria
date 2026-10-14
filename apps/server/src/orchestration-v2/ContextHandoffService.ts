@@ -1,3 +1,4 @@
+import * as ProjectionStore from "./ProjectionStore.ts";
 import {
   type OrchestrationV2AppThread,
   OrchestrationV2ContextHandoff,
@@ -42,7 +43,18 @@ export class ContextHandoffPrepareError extends Schema.TaggedError<ContextHandof
   }
 }
 
-export const ContextHandoffServiceV2Error = Schema.Union([ContextHandoffPrepareError]);
+export class BareHistoryTransferUnsupported extends Schema.TaggedError<BareHistoryTransferUnsupported>()(
+  "BareHistoryTransferUnsupported",
+  { threadId: ThreadId },
+) {
+  override get message() {
+    return "bare history transfer unsupported";
+  }
+}
+export const ContextHandoffServiceV2Error = Schema.Union([
+  ContextHandoffPrepareError,
+  BareHistoryTransferUnsupported,
+]);
 export type ContextHandoffServiceV2Error = typeof ContextHandoffServiceV2Error.Type;
 
 export interface ContextHandoffServiceV2Shape {
@@ -347,9 +359,34 @@ function makeLegacyImportSummary(items: ReadonlyArray<OrchestrationV2TurnItem>):
 
 const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffService.layer")(
   function* () {
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const tokenCap = yield* handoffTokenCapConfig.pipe(
       Effect.orElseSucceed(() => DEFAULT_HANDOFF_TOKEN_CAP),
+    );
+
+    const assertHistoryAllowed = Effect.fn("ContextHandoff.assertHistoryAllowed")(
+      function* (input: {
+        readonly threadId: ThreadId;
+        readonly targetRunId: RunId;
+        readonly toProviderThreadId: ProviderThreadId;
+        readonly fromProviderThreadIds?: ReadonlyArray<ProviderThreadId>;
+      }) {
+        const thread = yield* projections.getThread(input.threadId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new ContextHandoffPrepareError({
+                threadId: input.threadId,
+                targetRunId: input.targetRunId,
+                fromProviderThreadIds: input.fromProviderThreadIds ?? [],
+                toProviderThreadId: input.toProviderThreadId,
+                cause,
+              }),
+          ),
+        );
+        if (thread.bare !== undefined)
+          return yield* new BareHistoryTransferUnsupported({ threadId: input.threadId });
+      },
     );
 
     const prepareLegacyImport = Effect.fn("orchestrationV2.contextHandoff.prepareLegacyImport")(
@@ -361,6 +398,7 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
         readonly items: ReadonlyArray<OrchestrationV2TurnItem>;
         readonly createdAt: DateTime.Utc;
       }) {
+        yield* assertHistoryAllowed(input);
         const handoffId = yield* idAllocator.allocate
           .contextHandoff({
             threadId: input.threadId,
@@ -413,6 +451,53 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
       },
     );
 
+<<<<<<< HEAD
+=======
+    const prepare = Effect.fn("orchestrationV2.contextHandoff.prepare")(function* (input: {
+      readonly threadId: ThreadId;
+      readonly targetRunId: RunId;
+      readonly fromProviderThreadIds: ReadonlyArray<ProviderThreadId>;
+      readonly toProviderThreadId: ProviderThreadId;
+    }) {
+      yield* assertHistoryAllowed(input);
+      const now = yield* DateTime.now;
+      const handoffId = yield* idAllocator.allocate
+        .contextHandoff({
+          threadId: input.threadId,
+          fromProviderInstanceId: ProviderInstanceId.make("manual"),
+          toProviderInstanceId: ProviderInstanceId.make("manual"),
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new ContextHandoffPrepareError({
+                threadId: input.threadId,
+                targetRunId: input.targetRunId,
+                fromProviderThreadIds: Array.from(input.fromProviderThreadIds),
+                toProviderThreadId: input.toProviderThreadId,
+                cause,
+              }),
+          ),
+        );
+      return {
+        id: handoffId,
+        transferId: null,
+        threadId: input.threadId,
+        targetRunId: input.targetRunId,
+        fromProviderThreadIds: Array.from(input.fromProviderThreadIds),
+        toProviderThreadId: input.toProviderThreadId,
+        coveredRunOrdinals: { from: 1, to: 1 },
+        strategy: "manual_context",
+        status: "ready",
+        summaryMessageId: null,
+        summaryText: "Manual context handoff.",
+        createdByProviderInstanceId: null,
+        createdAt: now,
+        updatedAt: now,
+      } satisfies OrchestrationV2ContextHandoff;
+    });
+
+>>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
     const prepareForkDelta = Effect.fn("orchestrationV2.contextHandoff.prepareForkDelta")(
       function* (input: {
         readonly sourceThreadId: ThreadId;
@@ -427,6 +512,8 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
         readonly deltaItems: ReadonlyArray<OrchestrationV2TurnItem>;
         readonly createdAt: DateTime.Utc;
       }) {
+        yield* assertHistoryAllowed({ ...input, threadId: input.targetThreadId });
+        yield* assertHistoryAllowed({ ...input, threadId: input.sourceThreadId });
         const handoffId = yield* idAllocator.allocate
           .contextHandoff({
             threadId: input.targetThreadId,
@@ -502,6 +589,7 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
       readonly items: ReadonlyArray<OrchestrationV2TurnItem>;
       readonly createdAt: DateTime.Utc;
     }) {
+      yield* assertHistoryAllowed(input);
       const handoffId = yield* idAllocator.allocate
         .contextHandoff({
           threadId: input.threadId,
@@ -612,5 +700,8 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
   },
 );
 
-export const layer: Layer.Layer<ContextHandoffServiceV2, never, IdAllocator.IdAllocatorV2> =
-  Layer.effect(ContextHandoffServiceV2, makeContextHandoffService());
+export const layer: Layer.Layer<
+  ContextHandoffServiceV2,
+  never,
+  IdAllocator.IdAllocatorV2 | ProjectionStore.ProjectionStoreV2
+> = Layer.effect(ContextHandoffServiceV2, makeContextHandoffService());

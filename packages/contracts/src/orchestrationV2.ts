@@ -1,3 +1,4 @@
+import { BareLaunchRequest, ThreadBare, BareReceipt } from "./bareLaunch.ts";
 import { PrismRole, PrismLane } from "./prism.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import { withRecordIdTable } from "./orchestrationV2IdTable.ts";
@@ -443,6 +444,7 @@ const LenientThreadOpens = Schema.NullOr(OrchestrationV2ThreadOpens).pipe(
 );
 
 export const OrchestrationV2AppThread = Schema.Struct({
+  bare: Schema.optional(ThreadBare),
   ...OrchestrationV2CreationFields,
   // Fork: thread people (toolboxmd/chromeria#170). Unset owner is the default person.
   owner: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
@@ -899,6 +901,7 @@ export type OrchestrationV2SubagentWorkflow = typeof OrchestrationV2SubagentWork
 
 /** Durable launch inputs and the original retry identity. No credentials. */
 export const OrchestrationV2RemoteTaskLaunch = Schema.Struct({
+  bare: Schema.optional(BareLaunchRequest),
   requestNamespace: Schema.String,
   clientRequestId: Schema.String,
   /** Nonsecret grant-generation identity; relinking must not create a replacement child. */
@@ -1819,6 +1822,7 @@ export const OrchestrationV2TurnItem = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
     type: Schema.Literal("system_notice"),
+    bareReceipt: Schema.optional(BareReceipt),
     message: Schema.String,
   }),
   Schema.Struct({
@@ -2664,6 +2668,7 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
     type: Schema.Literal("system_notice"),
+    bareReceipt: Schema.optional(BareReceipt),
     message: Schema.String,
   }),
   Schema.Struct({
@@ -3025,6 +3030,7 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("thread.create"),
+    bare: Schema.optional(ThreadBare),
     ...OrchestrationV2CreationFields,
     /** Fork: the person who owns the new thread, stamped by the server (toolboxmd/chromeria#170). */
     owner: Schema.optional(TrimmedNonEmptyString),
@@ -3464,6 +3470,7 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("delegated_task.request"),
+    bare: Schema.optional(ThreadBare),
     projectId: Schema.optional(ProjectId),
     ...OrchestrationV2CreationFields,
     commandId: CommandId,
@@ -3807,6 +3814,7 @@ export const OrchestrationV2ArchivedShellSnapshot = Schema.Struct({
 export type OrchestrationV2ArchivedShellSnapshot = typeof OrchestrationV2ArchivedShellSnapshot.Type;
 
 export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
+  bare: Schema.optional(BareLaunchRequest),
   prismRole: Schema.optional(Schema.Literal("promachos")),
   commandId: CommandId,
   creationSource: Schema.optional(OrchestrationV2CreationSource),

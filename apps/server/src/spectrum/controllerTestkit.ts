@@ -1,3 +1,5 @@
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import {
   CommandId,
   EventId,
@@ -61,6 +63,8 @@ const prism = Prism.layer.pipe(
   ),
 );
 export const base = Layer.mergeAll(
+  Layer.mock(BareLaunch.BareLaunch)({}),
+  ProjectStore.layer.pipe(Layer.provide(database)),
   database,
   EventStore.layer.pipe(Layer.provide(database)),
   RecoveryStore.layer.pipe(Layer.provide(database)),
