@@ -132,6 +132,8 @@ const text = (value: unknown): string | null =>
       ? value
       : JSON.stringify(value);
 
+const nativeField = (value: unknown) => (typeof value === "string" ? value : null);
+
 /** Every string in a tool output, joined: Claude's {stdout, stderr}, a plain string, a list. */
 const outputText = (value: unknown): string => {
   if (typeof value === "string") return value;
@@ -402,6 +404,8 @@ export const select = Effect.fn("contextmd.select")(function* (
       tool_use_id: toolUseId,
       tool,
       source: text(at(raw, f.source)),
+      transcript_path: nativeField(at(raw, f.transcript)),
+      native_turn: nativeField(at(raw, f.turn)),
       failed,
       reads: momentReads,
       call: toolKind ? `${tool ?? ""}: ${text(toolInput) ?? ""}`.slice(0, 2000) : null,
