@@ -131,6 +131,7 @@ interface HarnessOptions {
   readonly serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
   readonly providers?: ReadonlyArray<ServerProvider>;
   readonly git?: Partial<GitWorkflow.GitWorkflowService["Service"]>;
+  readonly gitVcs?: Partial<GitVcsDriver.GitVcsDriver["Service"]>;
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -143,7 +144,7 @@ function makeHarness(options: HarnessOptions = {}) {
   );
   const layerServerSettings = ServerSettings.layerTest(options.serverSettings);
   const layerReceipts = CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase));
-  const layerThreadManagement = ThreadManagement.layer.pipe(
+  const layerThreadManagement = Layer.fresh(ThreadManagement.layer).pipe(
     Layer.provide(layerOrchestrator),
     Layer.provide(layerServerSettings),
     Layer.provide(layerReceipts),
@@ -275,7 +276,7 @@ function makeHarness(options: HarnessOptions = {}) {
       layerDatabase,
       layerExternalServices,
       NodeServices.layer,
-      Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+      Layer.mock(GitVcsDriver.GitVcsDriver)(options.gitVcs ?? {}),
       ProjectStore.layer.pipe(Layer.provide(layerDatabase)),
     ),
     createWorktree,
@@ -2446,6 +2447,12 @@ it.effect.each([false, true])(
       const release = yield* Deferred.make<void>();
       const harness = makeHarness({
         otherWorkspaceRoot: "/destination",
+        gitVcs: {
+          listWorktreePaths: (cwd) => {
+            assert.equal(cwd, "/destination");
+            return Effect.succeed(["/destination", "/destination-worktree"]);
+          },
+        },
         runSetup: () =>
           Deferred.succeed(entered, undefined).pipe(
             Effect.andThen(Deferred.await(release)),
@@ -2597,12 +2604,6 @@ it.effect.each([false, true])(
             Layer.provideMerge(
               Layer.mergeAll(
                 ProjectStore.layer,
-                Layer.mock(GitVcsDriver.GitVcsDriver)({
-                  listWorktreePaths: (cwd) => {
-                    assert.equal(cwd, "/destination");
-                    return Effect.succeed(["/destination", "/destination-worktree"]);
-                  },
-                }),
                 ServerConfig.layerTest(process.cwd(), { prefix: "t3-delegated-intake-" }).pipe(
                   Layer.provideMerge(NodeServices.layer),
                 ),
