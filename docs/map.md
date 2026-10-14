@@ -48,10 +48,13 @@ flowchart TD
     %% XM: #164 PR #291 PR #290 PR #303 #302 PR #304
     NR["Network routes"]
     %% NR: #292
+    PRN["Paired session renewal"]
+    %% PRN: #323 PR #334
 
     PZ --> PM --> WG
     PZ --> DR --> VT --> XM
     NR --> XM
+    PRN --> XM
     DR --> SC --> JT
     DR --> SN
     VT --> RS

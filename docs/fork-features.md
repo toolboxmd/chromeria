@@ -1670,3 +1670,62 @@ sources and reasons.
   "keywords": ["T3_SERVICE_LAUNCHER_CONTEXT", "resolveStartup", "ipc-unavailable"]
 }
 ```
+
+## paired-session-renewal
+
+```json
+{
+  "id": "paired-session-renewal",
+  "purpose": "Keep paired desktop, web and mobile sessions active through rotating device-held renewal authority, with headless approval for existing devices.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/323"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/334"],
+  "newFiles": [
+    "apps/desktop/src/app/DesktopRenewalStore.test.ts",
+    "apps/desktop/src/app/DesktopRenewalStore.ts",
+    "apps/mobile/src/connection/renewalStorage.ts",
+    "apps/server/src/auth/BrowserRenewalCommitments.test.ts",
+    "apps/server/src/auth/BrowserRenewalCommitments.ts",
+    "apps/server/src/auth/SessionRenewal.test.ts",
+    "apps/server/src/auth/SessionRenewal.ts",
+    "apps/web/src/connection/renewalStorage.ts",
+    "packages/client-runtime/src/authorization/renewal.test.ts",
+    "packages/client-runtime/src/authorization/renewal.ts",
+    "packages/client-runtime/src/connection/renewalRecordStore.ts",
+    "packages/shared/src/sessionRenewal.ts"
+  ],
+  "upstreamFiles": [
+    "apps/desktop/src/ipc/DesktopIpcHandlers.ts",
+    "apps/desktop/src/ipc/channels.ts",
+    "apps/desktop/src/ipc/methods/connectionCatalog.ts",
+    "apps/desktop/src/main.ts",
+    "apps/desktop/src/preload.ts",
+    "apps/mobile/src/lib/runtime.ts",
+    "apps/server/src/auth/http.test.ts",
+    "apps/server/src/cli/auth.ts",
+    "apps/server/src/cli/browser.ts",
+    "apps/web/src/authBootstrap.test.ts",
+    "apps/web/src/lib/runtime.test.ts",
+    "apps/web/src/lib/runtime.ts",
+    "docs/user/remote-access.md",
+    "packages/client-runtime/src/authorization/index.ts",
+    "packages/client-runtime/src/authorization/remote.ts",
+    "packages/client-runtime/src/connection/index.ts",
+    "packages/client-runtime/src/connection/onboarding.ts",
+    "packages/client-runtime/src/connection/resolver.ts",
+    "packages/client-runtime/src/connection/supervisor.ts",
+    "packages/contracts/src/ipc.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/auth/EnvironmentAuth.ts",
+    "apps/server/src/auth/SessionStore.test.ts",
+    "apps/server/src/auth/SessionStore.ts",
+    "apps/server/src/auth/http.ts",
+    "apps/web/src/environments/primary/auth.ts",
+    "apps/web/test/environmentHttpTest.ts",
+    "packages/contracts/src/auth.ts",
+    "packages/contracts/src/environmentHttp.ts",
+    "packages/shared/package.json"
+  ],
+  "keywords": ["SessionRenewal", "renewal_commitment", "renewal-commitments", "awaitInvalidation"]
+}
+```
