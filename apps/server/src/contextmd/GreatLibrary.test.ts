@@ -534,70 +534,204 @@ describe("Grok immutable installation accounting", () => {
   });
 });
 
-describe("Codex native fork evidence", () => {
-  it("keeps inherited prefix evidence after rollback of its receiver, while filtering real removed deliveries", () => {
-    const h = make();
-    try {
-      const first = h.fire("codex", "user_message", { session: "A", run: "A1", now: 100 });
-      h.state.settle(first.delivery, 100);
-      const fork = (
-        source: string,
-        target: string,
-        runId: string,
-        now: number,
-        extra: {
-          compactedAt?: number;
-          reverted?: Set<string>;
-          boundaryAt?: number;
-          line?: Candidate;
-        } = {},
-      ) =>
-        h.state.recordNativeFork({
-          source,
-          target,
-          runId,
-          threadId: target,
-          line: extra.line ?? pointer,
-          boundaryAt: extra.boundaryAt ?? now - 1,
-          compactedAt: extra.compactedAt ?? null,
-          reverted: extra.reverted ?? new Set(),
-          now,
-          delivery: `fork-${target}`,
+describe("Native fork evidence", () => {
+  it.each(["codex", "claude"] as const)(
+    "%s keeps inherited prefix evidence after receiver rollback, while filtering removed deliveries",
+    (harness) => {
+      const h = make();
+      try {
+        const first = h.fire(harness, "user_message", { session: "A", run: "A1", now: 100 });
+        h.state.settle(first.delivery, 100);
+        const fork = (
+          source: string,
+          target: string,
+          runId: string,
+          now: number,
+          extra: {
+            compactedAt?: number;
+            reverted?: Set<string>;
+            boundaryAt?: number;
+            line?: Candidate;
+          } = {},
+        ) =>
+          h.state.recordNativeFork({
+            harness,
+            source,
+            target,
+            runId,
+            threadId: target,
+            line: extra.line ?? pointer,
+            boundaryAt: extra.boundaryAt ?? now - 1,
+            compactedAt: extra.compactedAt ?? null,
+            reverted: extra.reverted ?? new Set(),
+            now,
+            delivery: `fork-${target}`,
+          });
+        assert.strictEqual(fork("A", "B", "B1", 140), "inherited");
+        assert.strictEqual(
+          h.fire(harness, "session_start", { session: "B", source: "resume", now: 145 }).status,
+          204,
+        );
+        assert.strictEqual(
+          h.fire(harness, "user_message", { session: "B", run: "B1", now: 150 }).status,
+          204,
+        );
+        assert.strictEqual(fork("B", "C", "C1", 200, { reverted: new Set(["B1"]) }), "inherited");
+        assert.strictEqual(
+          h.fire(harness, "user_message", { session: "C", run: "C1", now: 210 }).status,
+          204,
+        );
+        assert.strictEqual(
+          fork("A", "removed", "D1", 240, { reverted: new Set(["A1"]) }),
+          "no_delivery",
+        );
+        assert.strictEqual(fork("A", "boundary", "E1", 240, { boundaryAt: 99 }), "no_delivery");
+        assert.strictEqual(
+          fork("B", "compacted", "F1", 240, { compactedAt: 180, reverted: new Set(["B1"]) }),
+          "compacted",
+        );
+        assert.strictEqual(
+          fork("B", "stale", "G1", 240, { line: { ...pointer, version: "new" } }),
+          "stale_version",
+        );
+        assert.strictEqual(fork("A", "B", "B2", 250), "skipped");
+        assert.strictEqual(
+          h.fire(harness, "session_start", { session: "C", source: "compact", now: 300 }).status,
+          200,
+        );
+        assert.lengthOf(
+          h.rows("SELECT * FROM candidates WHERE outcome = 'inherited' AND bytes = 0"),
+          2,
+        );
+        assert.deepStrictEqual(
+          h.rows("SELECT harness, session, epoch, settled FROM claims WHERE session = 'B'"),
+          [{ harness, session: "B", epoch: 0, settled: 1 }],
+        );
+        assert.deepStrictEqual(
+          h.rows("SELECT harness, stage, serve_bytes FROM deliveries WHERE delivery = 'fork-B'"),
+          [{ harness, stage: "none", serve_bytes: 0 }],
+        );
+      } finally {
+        h.db.close();
+      }
+    },
+  );
+
+  it.each(["codex", "claude"] as const)(
+    "%s does not adopt another harness's claims or target moments for the same native ids",
+    (harness) => {
+      const h = make();
+      try {
+        const other = harness === "codex" ? "claude" : "codex";
+        for (const session of ["A", "B"]) {
+          const reply = h.fire(other, "user_message", { session, run: `other-${session}` });
+          h.state.settle(reply.delivery, 100);
+        }
+        assert.strictEqual(
+          h.state.recordNativeFork({
+            harness,
+            source: "A",
+            target: "B",
+            threadId: "B",
+            runId: "B1",
+            line: pointer,
+            boundaryAt: 130,
+            compactedAt: null,
+            reverted: new Set(),
+            now: 140,
+            delivery: "fork-B",
+          }),
+          "no_delivery",
+        );
+        assert.deepStrictEqual(
+          h.rows("SELECT harness, session FROM moments WHERE kind = 'native_fork'"),
+          [{ harness, session: "B" }],
+        );
+        assert.strictEqual(
+          h.fire(harness, "user_message", { session: "B", run: "B1", now: 150 }).status,
+          200,
+        );
+      } finally {
+        h.db.close();
+      }
+    },
+  );
+
+  it.each(["codex", "claude"] as const)(
+    "%s does not inherit an unsettled source delivery",
+    (harness) => {
+      const h = make();
+      try {
+        assert.strictEqual(h.fire(harness, "user_message", { session: "A", now: 100 }).status, 200);
+        assert.strictEqual(
+          h.state.recordNativeFork({
+            harness,
+            source: "A",
+            target: "B",
+            threadId: "B",
+            runId: "B1",
+            line: pointer,
+            boundaryAt: 130,
+            compactedAt: null,
+            reverted: new Set(),
+            now: 140,
+            delivery: "fork-B",
+          }),
+          "no_delivery",
+        );
+        assert.strictEqual(
+          h.fire(harness, "user_message", { session: "B", run: "B1", now: 150 }).status,
+          200,
+        );
+      } finally {
+        h.db.close();
+      }
+    },
+  );
+
+  it.each(["codex", "claude"] as const)(
+    "%s inherits a settled re-delivery after the supplied compaction cut",
+    (harness) => {
+      const h = make();
+      try {
+        const first = h.fire(harness, "user_message", { session: "A", run: "A1", now: 100 });
+        h.state.settle(first.delivery, 100);
+        const afterCompact = h.fire(harness, "session_start", {
+          session: "A",
+          source: "compact",
+          run: "A2",
+          now: 200,
         });
-      assert.strictEqual(fork("A", "B", "B1", 140), "inherited");
-      assert.strictEqual(
-        h.fire("codex", "user_message", { session: "B", run: "B1", now: 150 }).status,
-        204,
-      );
-      assert.strictEqual(fork("B", "C", "C1", 200, { reverted: new Set(["B1"]) }), "inherited");
-      assert.strictEqual(
-        h.fire("codex", "user_message", { session: "C", run: "C1", now: 210 }).status,
-        204,
-      );
-      assert.strictEqual(
-        fork("A", "removed", "D1", 240, { reverted: new Set(["A1"]) }),
-        "no_delivery",
-      );
-      assert.strictEqual(fork("A", "boundary", "E1", 240, { boundaryAt: 99 }), "no_delivery");
-      assert.strictEqual(
-        fork("B", "compacted", "F1", 240, { compactedAt: 180, reverted: new Set(["B1"]) }),
-        "compacted",
-      );
-      assert.strictEqual(
-        fork("B", "stale", "G1", 240, { line: { ...pointer, version: "new" } }),
-        "stale_version",
-      );
-      assert.strictEqual(fork("A", "B", "B2", 250), "skipped");
-      assert.strictEqual(
-        h.fire("codex", "session_start", { session: "C", source: "compact", now: 300 }).status,
-        200,
-      );
-      assert.lengthOf(
-        h.rows("SELECT * FROM candidates WHERE outcome = 'inherited' AND bytes = 0"),
-        2,
-      );
-    } finally {
-      h.db.close();
-    }
-  });
+        assert.strictEqual(afterCompact.status, 200);
+        h.state.settle(afterCompact.delivery, 200);
+        assert.strictEqual(
+          h.state.recordNativeFork({
+            harness,
+            source: "A",
+            target: "B",
+            threadId: "B",
+            runId: "B1",
+            line: pointer,
+            boundaryAt: 230,
+            compactedAt: 180,
+            reverted: new Set(),
+            now: 240,
+            delivery: "fork-B",
+          }),
+          "inherited",
+        );
+        assert.strictEqual(
+          h.fire(harness, "user_message", { session: "B", run: "B1", now: 250 }).status,
+          204,
+        );
+        const [record] = h.rows("SELECT extra_json FROM candidates WHERE outcome = 'inherited'");
+        assert.strictEqual(
+          JSON.parse(String(record!.extra_json)).source_delivery,
+          afterCompact.delivery,
+        );
+      } finally {
+        h.db.close();
+      }
+    },
+  );
 });

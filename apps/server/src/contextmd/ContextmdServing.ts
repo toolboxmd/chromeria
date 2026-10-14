@@ -482,7 +482,9 @@ const make = Effect.gen(function* () {
 
   const recordNativeFork: ContextmdServing["Service"]["recordNativeFork"] = (fork) =>
     Effect.gen(function* () {
-      if (fork.driver !== "codex" || !(yield* canServe())) return;
+      if ((fork.driver !== "codex" && fork.driver !== "claudeAgent") || !(yield* canServe()))
+        return;
+      const harness = fork.driver === "claudeAgent" ? "claude" : fork.driver;
       const source = fork.source.nativeThreadRef?.nativeId;
       const target = fork.target.nativeThreadRef?.nativeId;
       if (source == null || target == null) return;
@@ -508,6 +510,7 @@ const make = Effect.gen(function* () {
         .map((row) => (row.started_at === null ? boundaryAt : Date.parse(row.started_at) / 1000))
         .filter((at) => at <= boundaryAt);
       state.recordNativeFork({
+        harness,
         source,
         target,
         threadId: fork.threadId,
