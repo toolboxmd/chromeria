@@ -1068,6 +1068,27 @@ describe("ServingState Cue", () => {
     );
   });
 
+  it("remembers that Cue is down in the database the next process opens", () => {
+    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "cue-down-"));
+    const file = NodePath.join(dir, "contextmd.sqlite");
+    try {
+      const first = new ServingState(new NodeSqlite.DatabaseSync(file));
+      assert.isFalse(first.cueDown("http://127.0.0.1:9"));
+      first.markCueDown("http://127.0.0.1:9", 10);
+      first.markCueDown("http://127.0.0.1:9", 11);
+      assert.isTrue(first.cueDown("http://127.0.0.1:9"));
+      assert.isFalse(first.cueDown("http://127.0.0.1:10"));
+      const again = new ServingState(new NodeSqlite.DatabaseSync(file));
+      assert.isTrue(again.cueDown("http://127.0.0.1:9"));
+      again.clearCueDown("http://127.0.0.1:9");
+      assert.isFalse(
+        new ServingState(new NodeSqlite.DatabaseSync(file)).cueDown("http://127.0.0.1:9"),
+      );
+    } finally {
+      NodeFS.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("records an unreachable or slow Cue per moment and still serves exact keys", () => {
     const h = makeHarness();
     const failed = (status: CueReply["status"]): CueMoment => ({
