@@ -153,7 +153,12 @@ export const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: WorkEn
   const item = props.workEntry.projectedItem?.item;
   const childThreadId =
     item?.type === "notification" ? notificationChildThreadId(item.source) : undefined;
-  if (item?.type !== "notification" || childThreadId === undefined) {
+  // Fork: a child notice with text renders its text, not just the link (toolboxmd/chromeria#304).
+  if (
+    item?.type !== "notification" ||
+    childThreadId === undefined ||
+    (item.outcome === "updated" && Boolean(item.detail?.trim()))
+  ) {
     return <WorkEntryLogRow {...props} />;
   }
   return (

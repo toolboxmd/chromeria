@@ -18,6 +18,7 @@ import {
   type OrchestrationV2StopWorkflowInput,
   type ModelSelection,
   type OrchestrationV2Actor,
+  type OrchestrationV2AppThread,
   type OrchestrationV2Command,
   type OrchestrationV2GetTurnItemResult,
   type OrchestrationV2ServerCommand,
@@ -153,6 +154,7 @@ export interface ThreadManagementSendResult {
   >;
   readonly message: OrchestrationV2ConversationMessage;
   readonly run: OrchestrationV2Run;
+  /** Null for notifications and queued sends; a queued user item materializes on turn start. */
   readonly turnItem: Extract<OrchestrationV2TurnItem, { readonly type: "user_message" }> | null;
   readonly delivery: "started" | "queued" | "steered" | "restarted";
 }
@@ -254,6 +256,29 @@ export class ThreadManagementNoSteerableRunError extends Schema.TaggedError<Thre
   }
 }
 
+export class ThreadManagementAncestorDeliveryModeError extends Schema.TaggedError<ThreadManagementAncestorDeliveryModeError>()(
+  "ThreadManagementAncestorDeliveryModeError",
+  { threadId: ThreadId, senderThreadId: ThreadId, mode: Schema.Literals(["steer", "restart"]) },
+) {
+  override get message(): string {
+    return "Ancestor threads receive descendant messages as queued notices; use mode auto or queue.";
+  }
+}
+
+export class ThreadManagementAncestryUnavailableError extends Schema.TaggedError<ThreadManagementAncestryUnavailableError>()(
+  "ThreadManagementAncestryUnavailableError",
+  {
+    threadId: ThreadId,
+    senderThreadId: ThreadId,
+    atThreadId: ThreadId,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Unable to determine whether thread ${this.threadId} is an ancestor of ${this.senderThreadId}.`;
+  }
+}
+
 export class ThreadManagementThreadNotInterruptibleError extends Schema.TaggedError<ThreadManagementThreadNotInterruptibleError>()(
   "ThreadManagementThreadNotInterruptibleError",
   {
@@ -342,6 +367,8 @@ export const ThreadManagementError = Schema.Union([
   ThreadManagementRunNotFoundError,
   ThreadManagementThreadArchivedError,
   ThreadManagementNoSteerableRunError,
+  ThreadManagementAncestorDeliveryModeError,
+  ThreadManagementAncestryUnavailableError,
   ThreadManagementThreadNotInterruptibleError,
   ThreadManagementProjectionLoadError,
   ThreadManagementProjectThreadsListError,
@@ -548,6 +575,36 @@ function latestSteerableRun(
 
 const SETTLE_AFTER_RUN_WAIT_MS = 24 * 60 * 60 * 1_000;
 const isProjectionThreadNotFound = Schema.is(ProjectionStoreThreadNotFoundError);
+
+function descendantNotice(
+  input: ThreadManagementSendInput,
+  sender: Pick<OrchestrationV2AppThread, "id" | "title">,
+) {
+  const label = sender.title.split(/\r?\n/, 1)[0]!.trim().slice(0, 80);
+  const names = input.attachments.map((attachment) => attachment.name);
+  const preview = input.text.trim().split(/\r?\n/, 1)[0]!.replace(/\s+/g, " ").slice(0, 100);
+  const attachmentSummary = `${names.length} attachment${names.length === 1 ? "" : "s"}: ${names
+    .slice(0, 3)
+    .map((name) => name.replace(/\s+/g, " ").slice(0, 60))
+    .join(", ")}${names.length > 3 ? ` and ${names.length - 3} more` : ""}`;
+  const content =
+    preview.length > 0
+      ? `${preview}${names.length > 0 ? ` (+${names.length} attachments)` : ""}`
+      : attachmentSummary;
+  const detail =
+    names.length === 0
+      ? input.text
+      : `${input.text}${input.text.trim().length === 0 ? "" : "\n\n"}Attachments: ${names.join(", ")}`;
+  return {
+    text: `[From thread ${sender.id} "${label}"]\n\n${input.text}`,
+    notification: {
+      source: { kind: "subagent", childThreadId: sender.id },
+      outcome: "updated",
+      summary: `${content} (from "${label.slice(0, 32)}")`,
+      detail,
+    } satisfies NonNullable<OrchestrationV2ConversationMessage["notification"]>,
+  };
+}
 
 const make = Effect.gen(function* () {
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
@@ -796,12 +853,63 @@ const make = Effect.gen(function* () {
         threadId: input.threadId,
       });
     }
+
+    const ancestorSender = yield* Effect.gen(function* () {
+      const senderThreadId = input.senderThreadId;
+      if (
+        input.createdBy !== "agent" ||
+        senderThreadId === undefined ||
+        senderThreadId === input.threadId
+      )
+        return null;
+      const readThread = (threadId: ThreadId) =>
+        orchestrator.getThreadRecords(threadId, []).pipe(
+          Effect.map((records) => records.thread),
+          Effect.mapError(
+            (cause) =>
+              new ThreadManagementAncestryUnavailableError({
+                threadId: input.threadId,
+                senderThreadId,
+                atThreadId: threadId,
+                cause,
+              }),
+          ),
+        );
+      const sender = yield* readThread(senderThreadId);
+      if (sender.lineage.rootThreadId !== target.thread.lineage.rootThreadId) return null;
+      if (sender.lineage.rootThreadId === input.threadId) return sender;
+      const seen = new Set<ThreadId>([senderThreadId]);
+      let current = sender;
+      while (current.lineage.parentThreadId !== null) {
+        const parentId = current.lineage.parentThreadId;
+        if (parentId === input.threadId) return sender;
+        if (seen.has(parentId))
+          return yield* new ThreadManagementAncestryUnavailableError({
+            threadId: input.threadId,
+            senderThreadId,
+            atThreadId: parentId,
+          });
+        seen.add(parentId);
+        // Records include soft-deleted intermediates; visible shells do not.
+        current = yield* readThread(parentId);
+      }
+      return null;
+    });
+    const notice = ancestorSender === null ? undefined : descendantNotice(input, ancestorSender);
     const steerableRun = latestSteerableRun(target);
     let dispatchMode: Extract<
       OrchestrationV2Command,
       { readonly type: "message.dispatch" }
     >["dispatchMode"];
-    if (input.mode === "steer" || input.mode === "restart") {
+    if (notice !== undefined) {
+      if (input.mode === "steer" || input.mode === "restart")
+        return yield* new ThreadManagementAncestorDeliveryModeError({
+          threadId: input.threadId,
+          senderThreadId: notice.notification.source.childThreadId,
+          mode: input.mode,
+        });
+      dispatchMode = { type: "queue_after_active" };
+    } else if (input.mode === "steer" || input.mode === "restart") {
       if (steerableRun === undefined) {
         return yield* new ThreadManagementNoSteerableRunError({
           threadId: input.threadId,
@@ -827,12 +935,13 @@ const make = Effect.gen(function* () {
       messageId: input.messageId,
       ...(input.scheduledTaskId === undefined ? {} : { scheduledTaskId: input.scheduledTaskId }),
       ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
-      text: input.text,
+      text: notice?.text ?? input.text,
       attachments: input.attachments,
       ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
       dispatchMode,
       createdBy: input.createdBy,
-      creationSource: input.creationSource,
+      creationSource: notice === undefined ? input.creationSource : "server",
+      ...(notice === undefined ? {} : { notification: notice.notification }),
     });
     const projection = yield* getProjectThreadRecords(input, ["runs", "messages", "turnItems"], {
       messageIds: [input.messageId],
@@ -850,6 +959,33 @@ const make = Effect.gen(function* () {
         ): candidate is Extract<OrchestrationV2TurnItem, { readonly type: "user_message" }> =>
           candidate.type === "user_message" && candidate.messageId === input.messageId,
       ) ?? null;
+    if (notice !== undefined) {
+      const createdRun = dispatched.storedEvents.flatMap(({ event }) =>
+        event.type === "run.created" && event.payload.userMessageId === input.messageId
+          ? [event.payload]
+          : [],
+      )[0];
+      if (
+        message?.notification === undefined ||
+        message.delegatedCompletion !== undefined ||
+        run === undefined ||
+        run.userMessageId !== input.messageId ||
+        createdRun === undefined ||
+        createdRun.id !== run.id
+      )
+        return yield* new ThreadManagementDurableRunProjectionError({
+          threadId: input.threadId,
+          messageId: input.messageId,
+        });
+      return {
+        dispatch: dispatched,
+        projection,
+        message,
+        run,
+        turnItem: null,
+        delivery: createdRun.status === "queued" ? ("queued" as const) : ("started" as const),
+      };
+    }
     if (
       message === undefined ||
       run === undefined ||

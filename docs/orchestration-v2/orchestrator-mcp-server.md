@@ -427,6 +427,15 @@ detail also exposes an in-flight title regeneration.
 
 Sends a message to any ordinary or delegated thread in the environment:
 
+An agent sending to an ordinary ancestor thread delivers a child notice with
+`auto` or `queue`. It starts when the ancestor is idle and queues behind active
+work, without steering the ancestor's turn. This applies across fork and
+delegated parent links. `steer` and `restart` are refused for ancestor sends.
+Stopped ancestors stay stopped. The notice's acceptance and current run status
+are separate; settling can cancel a queued notice before it runs.
+
+For other sends:
+
 - `auto` starts an idle thread. On a fully active turn it steers when that
   provider can take the message without cancelling running tools, and queues
   when a steer would cancel those tools and the provider would report the

@@ -497,6 +497,9 @@ it.effect("retains automation and sender attribution while a message waits in th
     );
     const scheduledTaskId = ScheduledTaskId.make("scheduled-task:queued");
     const senderThreadId = ThreadId.make("thread:agent-sender");
+    yield* launches.launch(
+      launchInput({ command: "command:agent-sender", thread: senderThreadId }),
+    );
     const queued = yield* threads.sendToThread({
       projectId,
       commandId: CommandId.make("command:automation:queued"),

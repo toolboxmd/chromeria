@@ -733,8 +733,14 @@ Child creation paths are owned by child-threads and shared with thread-people.
 {
   "id": "child-threads",
   "purpose": "Create native children in any project, handle descendant requests and preserve durable subtree Stop.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/168"],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/181"],
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/168",
+    "https://github.com/toolboxmd/chromeria/issues/269"
+  ],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/181",
+    "https://github.com/toolboxmd/chromeria/pull/279"
+  ],
   "newFiles": [
     "apps/server/src/childThreads/ForkCommitPlan.ts",
     "apps/server/src/childThreads/crossProject.test.ts",
@@ -752,6 +758,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/childThreads/retirement.ts",
     "apps/server/src/childThreads/stopDescendants.ts",
     "apps/server/src/childThreads/workspaceAccess.ts",
+    "apps/server/src/orchestration-v2/ThreadManagementService.ancestorDelivery.test.ts",
     "apps/server/src/fork/ForkDispatchPlans.ts",
     "apps/server/src/fork/commitSequence.ts",
     "apps/server/src/fork/commitSequence.test.ts"
@@ -762,6 +769,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/mcp/OrchestratorMcpService.ts",
     "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
     "apps/server/src/mcp/threadAccess.ts",
+    "apps/server/src/mcp/toolkits/attachment/tools.ts",
     "apps/server/src/mcp/toolkits/core.test.ts",
     "apps/server/src/mcp/toolkits/thread/handlers.ts",
     "apps/server/src/mcp/toolkits/thread/tools.ts",
@@ -1063,15 +1071,21 @@ Child creation paths are owned by child-threads and shared with thread-people.
 {
   "id": "prism-stale-turn-detector",
   "purpose": "Send one advisory parent notice for a silent active child; exclude host suspension, open tools and retired or waiting work. V2 and Prism recovery retain terminal failure delivery.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/172"],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/184"],
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/172",
+    "https://github.com/toolboxmd/chromeria/issues/269"
+  ],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/184",
+    "https://github.com/toolboxmd/chromeria/pull/279"
+  ],
   "newFiles": [
     "apps/server/src/prism/staleTurnDetector.ts",
     "apps/server/src/prism/staleTurnDetector.test.ts",
     "apps/server/src/prism/staleTurnMonitor.ts",
     "apps/server/src/prism/staleTurnMonitor.integration.test.ts"
   ],
-  "upstreamFiles": [],
+  "upstreamFiles": ["packages/client-runtime/src/state/threadWorkflows.test.ts"],
   "sharedFiles": ["apps/server/src/orchestration-v2/runtimeLayer.ts"],
   "keywords": ["StaleTurnMonitor", "makeStaleTurnDetectorState", "queue_after_active", "silence"]
 }

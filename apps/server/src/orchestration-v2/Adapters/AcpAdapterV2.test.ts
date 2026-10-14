@@ -6613,6 +6613,37 @@ describe("AcpAdapterV2", () => {
           "finalize must not offer while B is still running",
         );
 
+        // An ancestor update uses this same app-owned wake shape. It must
+        // preserve A's unreported completion until B can offer continuation.
+        yield* runtime
+          .startTurn(
+            makeTurnInput({
+              threadId,
+              providerThread,
+              instanceId,
+              runtimePolicy,
+              now,
+              ordinal: 2,
+              messageCreatedBy: "agent",
+              messageCreationSource: "server",
+              messageText: '[From thread child "Build child"]\n\nThe review is ready.',
+            }),
+          )
+          .pipe(Effect.forkScoped);
+        const noticeTurnId = idAllocator.derive.providerTurn({
+          driver: ACP_TEST_DRIVER,
+          nativeTurnId: acpScopedNativeId(instanceId, "mock-session-1:turn:2"),
+        });
+        let noticeTerminal = false;
+        while (!noticeTerminal) {
+          const event = yield* Queue.take(events);
+          noticeTerminal = event.type === "turn.terminal" && event.providerTurnId === noticeTurnId;
+        }
+        assert.lengthOf(continuationRequests, 0, "the notice must not claim B finished");
+
+        // B ends post-finalize via mutation-only end-notice (fails
+        // acpPostSettleWakeEvidence: extractBackgroundToolMutation matches).
+        // Without kept midTurn marks this path would neither buffer nor offer.
         const bEndNotice = {
           sessionId: "mock-session-1",
           update: {
