@@ -161,6 +161,7 @@ it("does not commit running state when inherited background routing cannot be re
 });
 
 function makeLocalCommandHarness(input: {
+  readonly grokInstructions?: { readonly calls: string[]; readonly fail?: "bind" | "attach" };
   readonly text: string;
   readonly previousNativeSession?: boolean;
   readonly previousMessages?: ReadonlyArray<string>;
@@ -210,7 +211,7 @@ function makeLocalCommandHarness(input: {
   };
   const providerThread: OrchestrationV2ThreadProjection["providerThreads"][number] = {
     id: providerThreadId,
-    driver: ProviderDriverKind.make("codex"),
+    driver: ProviderDriverKind.make(input.grokInstructions === undefined ? "codex" : "grok"),
     providerInstanceId: newInstanceId,
     providerSessionId,
     appThreadId: threadId,
@@ -401,51 +402,93 @@ function makeLocalCommandHarness(input: {
     ensureThread: () => Effect.succeed(providerThread),
   };
   const open = vi.fn(() =>
-    input.interruptOpen === true
-      ? Effect.interrupt
-      : "historyReadFailureAfterFallback" in input
-        ? Effect.succeed(resumeFallbackSession as never)
-        : "ensureThreadFailure" in input
-          ? Effect.succeed({ driver: providerThread.driver, ensureThread } as never)
-          : "openFailure" in input
-            ? Effect.sync(() => {
-                if (input.interruptRunBeforeOpenFailure === true) interruptRun();
-              }).pipe(
-                Effect.andThen(
-                  Effect.fail(
-                    new ProviderSessionManager.ProviderSessionOpenError({
-                      instanceId: newInstanceId,
-                      providerSessionId,
-                      cause: input.openFailure,
-                    }),
-                  ),
-                ),
-              )
-            : input.failReadsAfterRunning === true
-              ? Effect.succeed({
-                  driver: providerThread.driver,
-                  providerSession: {
-                    id: providerSessionId,
+    input.grokInstructions !== undefined
+      ? Effect.sync(() => {
+          input.grokInstructions!.calls.push("open");
+          return {
+            driver: providerThread.driver,
+            providerSession: {
+              id: providerSessionId,
+              driver: providerThread.driver,
+              providerInstanceId: newInstanceId,
+              status: "ready",
+              cwd: "/tmp/native-account-command",
+              model: null,
+              capabilities: CodexProviderCapabilitiesV2,
+              createdAt: now,
+              updatedAt: now,
+              lastError: null,
+            },
+            createdSessions: () => [
+              {
+                nativeSessionId: "native-grok",
+                text: "installed instructions",
+                site: "open" as const,
+              },
+            ],
+            ensureThread: () =>
+              Effect.sync(() => {
+                input.grokInstructions!.calls.push("adopt");
+                return {
+                  ...providerThread,
+                  nativeThreadRef: {
                     driver: providerThread.driver,
-                    providerInstanceId: newInstanceId,
-                    status: "ready",
-                    cwd: "/tmp/native-account-command",
-                    model: null,
-                    capabilities: CodexProviderCapabilitiesV2,
-                    createdAt: now,
-                    updatedAt: now,
-                    lastError: null,
+                    nativeId: "native-grok",
+                    strength: "strong" as const,
                   },
-                  ensureThread: () => Effect.succeed(providerThread),
-                } as never)
-              : Effect.die("A local command must not open a native session."),
+                };
+              }),
+          } as never;
+        })
+      : input.interruptOpen === true
+        ? Effect.interrupt
+        : "historyReadFailureAfterFallback" in input
+          ? Effect.succeed(resumeFallbackSession as never)
+          : "ensureThreadFailure" in input
+            ? Effect.succeed({ driver: providerThread.driver, ensureThread } as never)
+            : "openFailure" in input
+              ? Effect.sync(() => {
+                  if (input.interruptRunBeforeOpenFailure === true) interruptRun();
+                }).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new ProviderSessionManager.ProviderSessionOpenError({
+                        instanceId: newInstanceId,
+                        providerSessionId,
+                        cause: input.openFailure,
+                      }),
+                    ),
+                  ),
+                )
+              : input.failReadsAfterRunning === true
+                ? Effect.succeed({
+                    driver: providerThread.driver,
+                    providerSession: {
+                      id: providerSessionId,
+                      driver: providerThread.driver,
+                      providerInstanceId: newInstanceId,
+                      status: "ready",
+                      cwd: "/tmp/native-account-command",
+                      model: null,
+                      capabilities: CodexProviderCapabilitiesV2,
+                      createdAt: now,
+                      updatedAt: now,
+                      lastError: null,
+                    },
+                    ensureThread: () => Effect.succeed(providerThread),
+                  } as never)
+                : Effect.die("A local command must not open a native session."),
   );
   const startRootRun = vi.fn<
     (input: RunExecutionService.RunExecutionServiceV2StartRootRunInput) => Effect.Effect<void>
   >(() =>
-    input.failReadsAfterRunning === true
-      ? Effect.void
-      : Effect.die("A local command must not start a native turn."),
+    input.grokInstructions !== undefined
+      ? Effect.sync(() => {
+          input.grokInstructions!.calls.push("dispatch");
+        })
+      : input.failReadsAfterRunning === true
+        ? Effect.void
+        : Effect.die("A local command must not start a native turn."),
   );
   const failReadIfRunning = Effect.suspend(() =>
     input.failReadsAfterRunning === true &&
@@ -456,15 +499,17 @@ function makeLocalCommandHarness(input: {
       : Effect.void,
   );
   const tryHandlePromptCommand = vi.fn(() =>
-    input.logoutFailure === undefined
-      ? Effect.succeed(true)
-      : Effect.fail(
-          new ProviderSetupError({
-            instanceId: oldInstanceId,
-            operation: "logout",
-            detail: input.logoutFailure,
-          }),
-        ),
+    input.grokInstructions !== undefined
+      ? Effect.succeed(false)
+      : input.logoutFailure === undefined
+        ? Effect.succeed(true)
+        : Effect.fail(
+            new ProviderSetupError({
+              instanceId: oldInstanceId,
+              operation: "logout",
+              detail: input.logoutFailure,
+            }),
+          ),
   );
   const writeIfRunCurrent = vi.fn(({ events: incoming, activeAttemptId, expectedStatus }) =>
     "writeFailure" in input
@@ -475,6 +520,14 @@ function makeLocalCommandHarness(input: {
           }),
         )
       : Effect.sync(() => {
+          if (
+            input.grokInstructions !== undefined &&
+            incoming.some(
+              (event: OrchestrationV2DomainEvent) =>
+                event.type === "run.updated" && event.payload.status === "running",
+            )
+          )
+            input.grokInstructions.calls.push("running");
           const current = projection.runs.find((candidate) => candidate.id === runId);
           const committed =
             current !== undefined &&
@@ -493,7 +546,37 @@ function makeLocalCommandHarness(input: {
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mock(ContextmdServing.ContextmdServing)({
-        releaseSessionInstructions: () => Effect.void,
+        stageSessionInstructions: () =>
+          Effect.sync(() => {
+            input.grokInstructions!.calls.push("stage");
+            return { reservation: "stage", text: "installed instructions" };
+          }),
+        recordInstallations: () => {
+          input.grokInstructions!.calls.push("bind");
+          return input.grokInstructions?.fail === "bind"
+            ? Effect.fail(
+                new ContextmdServing.SessionInstructionsError({
+                  operation: "record",
+                  cause: "unwritable",
+                }),
+              )
+            : Effect.void;
+        },
+        attachSessionInstructions: () => {
+          input.grokInstructions!.calls.push("attach");
+          return input.grokInstructions?.fail === "attach"
+            ? Effect.fail(
+                new ContextmdServing.SessionInstructionsError({
+                  operation: "attach",
+                  cause: "unwritable",
+                }),
+              )
+            : Effect.void;
+        },
+        releaseSessionInstructions: () =>
+          Effect.sync(() => {
+            input.grokInstructions?.calls.push("release");
+          }),
         recordNativeFork: () => Effect.void,
       }),
     ),
@@ -565,6 +648,43 @@ function makeLocalCommandHarness(input: {
     }).pipe(Effect.provide(layer)),
   };
 }
+
+effectIt.effect.each([undefined, "bind", "attach"] as const)(
+  "Grok accounts before adoption/dispatch and fences %s failures",
+  (fail) =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const harness = makeLocalCommandHarness({
+        text: "Hello",
+        grokInstructions: { calls, ...(fail === undefined ? {} : { fail }) },
+      });
+      yield* harness.start;
+      if (fail === undefined) {
+        expect(calls).toEqual([
+          "stage",
+          "open",
+          "bind",
+          "adopt",
+          "attach",
+          "running",
+          "dispatch",
+          "release",
+        ]);
+        expect(harness.projection().runs.at(-1)?.status).toBe("running");
+      } else {
+        expect(calls).toEqual(
+          fail === "bind"
+            ? ["stage", "open", "bind", "release"]
+            : ["stage", "open", "bind", "adopt", "attach", "release"],
+        );
+        expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+        expect(harness.startRootRun).not.toHaveBeenCalled();
+      }
+      expect(harness.open).toHaveBeenCalledWith(
+        expect.objectContaining({ newSessionInstructions: "installed instructions" }),
+      );
+    }),
+);
 
 effectIt.effect("terminalizes a starting run when its provider session cannot open", () =>
   Effect.gen(function* () {

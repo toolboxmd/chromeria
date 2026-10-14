@@ -152,13 +152,21 @@ export const loadConfig = Effect.fn("contextmd.loadConfig")(function* (file: str
   let greatLibrary: string | undefined;
   if (raw.great_library !== undefined) {
     const value = raw.great_library;
-    if (!/^(?:\/|~\/)/u.test(value) || /[\p{Cc}\p{Surrogate}\u2028\u2029]/u.test(value)) {
+    if (!/^(?:\/|~\/)/u.test(value)) {
+      return yield* new BadConfig({
+        reason: "great_library must be an absolute path or start with ~/",
+      });
+    }
+    // Like Python expanduser, substitute the home without normalizing the user's path.
+    greatLibrary = value.startsWith("~/")
+      ? `${expandHomePathWith("~", path).replace(/\/+$/u, "")}${value.slice(1)}`
+      : value;
+    if (/[\p{Cc}\p{Surrogate}\u2028\u2029]/u.test(greatLibrary)) {
       return yield* new BadConfig({
         reason:
           "great_library must be an absolute path without control characters or lone surrogates",
       });
     }
-    greatLibrary = expandHomePathWith(value, path);
     if (Buffer.byteLength(greatLibrary, "utf8") > 1024) {
       return yield* new BadConfig({
         reason: "great_library expanded path exceeds 1024 UTF-8 bytes",

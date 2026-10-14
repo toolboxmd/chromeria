@@ -314,7 +314,9 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly mcpConfigs?: Ref.Ref<
       ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
     >;
+    readonly createdSessions?: ProviderAdapterV2SessionRuntime["createdSessions"];
     readonly beforeOpen?: (input: {
+      readonly newSessionInstructions?: string;
       readonly providerSessionId: ProviderSessionId;
       readonly initialProviderItemIdentityVersion?: 2;
     }) => Effect.Effect<void>;
@@ -393,6 +395,9 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
           driver: CODEX_DRIVER,
           providerSessionId: input.providerSessionId,
           providerSession: session,
+          ...(options.createdSessions === undefined
+            ? {}
+            : { createdSessions: options.createdSessions }),
           events: options.failEventStream
             ? Stream.fail(
                 new ProviderAdapter.ProviderAdapterEventStreamError({
@@ -453,7 +458,9 @@ function layerTest(input: {
   readonly mcpConfigs?: Ref.Ref<
     ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
   >;
+  readonly createdSessions?: ProviderAdapterV2SessionRuntime["createdSessions"];
   readonly beforeOpen?: (input: {
+    readonly newSessionInstructions?: string;
     readonly providerSessionId: ProviderSessionId;
     readonly initialProviderItemIdentityVersion?: 2;
   }) => Effect.Effect<void>;
@@ -489,6 +496,7 @@ function layerTest(input: {
       ...(input.capabilities === undefined ? {} : { capabilities: input.capabilities }),
       ...(input.mcpConfigs === undefined ? {} : { mcpConfigs: input.mcpConfigs }),
       ...(input.beforeOpen === undefined ? {} : { beforeOpen: input.beforeOpen }),
+      ...(input.createdSessions === undefined ? {} : { createdSessions: input.createdSessions }),
       ...(input.hasPendingBackgroundWork === undefined
         ? {}
         : { hasPendingBackgroundWork: input.hasPendingBackgroundWork }),
@@ -1101,6 +1109,60 @@ it.effect("ProviderSessionManagerV2 opens a duplicate session only once", () =>
       ),
     );
   }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 forwards creation instructions once and preserves receipts on cached opens",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const forwarded = yield* Ref.make<Array<string | undefined>>([]);
+      const receipts = [
+        { nativeSessionId: "grok-created", text: "rules A", site: "fallback" as const },
+      ];
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-creation-instructions");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const first = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+          newSessionInstructions: "rules A",
+        });
+        const cached = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+          newSessionInstructions: "rules B",
+        });
+        assert.strictEqual(cached, first);
+        assert.deepEqual(yield* Ref.get(forwarded), ["rules A"]);
+        assert.deepEqual(cached.createdSessions?.(), receipts);
+        assert.equal((yield* Ref.get(state)).openCount, 1);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            createdSessions: () => receipts,
+            beforeOpen: (input) =>
+              Ref.update(forwarded, (values) => [...values, input.newSessionInstructions]),
+          }),
+        ),
+      );
+    }),
 );
 
 it.effect(
