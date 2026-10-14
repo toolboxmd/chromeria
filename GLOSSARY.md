@@ -278,3 +278,8 @@ _Avoid_: rejection
 A problem group that a judge's yes answers place in two or more sessions; the
 problem and its group exist only on a yes answer.
 _Avoid_: repeated correction
+
+**Shown**:
+A serve that the harness's own records prove the model received, followed by a
+response to that input. Without that proof, the serve is unknown.
+_Avoid_: delivered, injected (for this proof)
