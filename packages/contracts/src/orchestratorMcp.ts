@@ -34,6 +34,7 @@ import {
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
   OrchestrationV2RunStatus,
+  OrchestrationV2RestartCutView,
   OrchestrationV2TurnItemStatus,
 } from "./orchestrationV2.ts";
 import {
@@ -436,6 +437,7 @@ export const OrchestratorMcpThreadRun = Schema.Struct({
   requestedAt: IsoDateTime,
   startedAt: Schema.NullOr(IsoDateTime),
   completedAt: Schema.NullOr(IsoDateTime),
+  restartCut: Schema.optional(OrchestrationV2RestartCutView),
 });
 export type OrchestratorMcpThreadRun = typeof OrchestratorMcpThreadRun.Type;
 
