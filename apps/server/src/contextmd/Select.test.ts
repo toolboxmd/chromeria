@@ -591,13 +591,12 @@ describe("store", () => {
       const st = yield* Store.load([d], new Map());
       assert.deepStrictEqual(
         st.entries.map((e) => e.id),
-        ["good"],
+        ["big", "good", "tgt"],
       );
-      assert.strictEqual(st.errors.length, 4);
+      assert.strictEqual(st.errors.length, 2);
+      assert.strictEqual(st.entries[0]!.long, true);
       assert.isTrue(st.errors.some((e) => e.includes("id is 121 characters, over 120")));
-      assert.isTrue(
-        st.errors.some((e) => e.includes("target is only for must-know-before entries")),
-      );
+      assert.strictEqual(st.entries[2]!.target, NodePath.join(d, "x.md"));
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -832,18 +831,23 @@ describe("keys from files a shell command names (#234)", () => {
     });
     const config: ServingConfig = { exactKeys: [keys], sessionStart: [], cue: [], cueUrl: null };
     const matched = (command: string, cwd = d) =>
-      select(
-        "claude",
-        {
-          hook_event_name: "PreToolUse",
-          session_id: "S",
-          cwd,
-          tool_name: "Bash",
-          tool_input: { command },
-        },
-        config,
-        new Map(),
-      ).pipe(Effect.map((s) => s.candidates.map((c) => c.key)));
+      Store.load(config.exactKeys, new Map()).pipe(
+        Effect.flatMap((library) =>
+          select(
+            "claude",
+            {
+              hook_event_name: "PreToolUse",
+              session_id: "S",
+              cwd,
+              tool_name: "Bash",
+              tool_input: { command },
+            },
+            config,
+            library,
+          ),
+        ),
+        Effect.map((s) => s.candidates.map((c) => c.key)),
+      );
     return { d, db, matched };
   };
 
@@ -911,7 +915,10 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
     entry(keys, "err", "Use the deploy key alias.", { error: "Permission denied (publickey)" });
     entry(keys, "skills", "SKILL.md edits need a pressure scenario.", { path: "**/SKILL.md" });
     const config: ServingConfig = { exactKeys: [keys], sessionStart: [], cue: [], cueUrl: null };
-    const sel = (harness: string, raw: unknown) => select(harness, raw, config, new Map());
+    const sel = (harness: string, raw: unknown) =>
+      Store.load(config.exactKeys, new Map()).pipe(
+        Effect.flatMap((library) => select(harness, raw, config, library)),
+      );
     return { ws, target, sel };
   };
 
@@ -1220,7 +1227,13 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
     Effect.gen(function* () {
       const config: ServingConfig = { exactKeys: [], sessionStart: [], cue: [], cueUrl: null };
       const refused = (harness: string, raw: unknown) =>
-        select(harness, raw, config, new Map()).pipe(
+        select(harness, raw, config, {
+          entries: [],
+          cue: [],
+          owners: {},
+          errors: [],
+          legacy: [],
+        }).pipe(
           Effect.flip,
           Effect.map((e) => e.reason),
         );
