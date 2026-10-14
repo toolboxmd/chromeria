@@ -166,6 +166,61 @@ function taskFixture() {
   return { projection: { ...projection, runs: [run] }, run };
 }
 
+it("reports a restart decline before partial assistant output", () => {
+  const { projection, run } = taskFixture();
+  const cut = {
+    ...run,
+    status: "cancelled" as const,
+    restartCut: {
+      continuation: "declined" as const,
+      cutAt: childCreatedAt,
+      reason: "Its provider thread cannot be resumed.",
+    },
+  };
+  const partial = makeSubagentConversationArtifacts({
+    messageId: MessageId.make("cut-partial-message"),
+    turnItemId: TurnItemId.make("cut-partial-item"),
+    threadId: parentThreadId,
+    rootNodeId: NodeId.make("root"),
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    role: "assistant",
+    text: "Inspected the first file.",
+    ordinal: 1,
+    now: childCreatedAt,
+  });
+  const result = subagentResultForRun(
+    {
+      ...projection,
+      runs: [cut],
+      messages: [{ ...partial.message, runId: cut.id }],
+      turnItems: [{ ...partial.turnItem, runId: cut.id }],
+    },
+    cut,
+  );
+  assert.include(result.text, "server restart");
+  assert.include(result.text, "cannot be resumed");
+  assert.include(result.text, "Inspected the first file.");
+});
+
+it("includes an unstarted failed restart replacement as the latest result", () => {
+  const { projection, run } = taskFixture();
+  const source = { ...run, status: "cancelled" as const };
+  const failed = {
+    ...run,
+    id: RunId.make("unstarted-continuation"),
+    ordinal: 2,
+    status: "failed" as const,
+    startedAt: null,
+    restartContinuationOfRunId: source.id,
+  };
+  const current = { ...projection, runs: [source, failed] };
+  assert.equal(delegatedTaskProgress(current).resultRun?.id, failed.id);
+  assert.include(subagentResultForRun(current, failed).text, "server restart");
+  assert.include(subagentResultForRun(current, failed).text, "before starting");
+});
+
 it("reports the run that ended last, not the highest ordinal", () => {
   const { projection, run } = taskFixture();
   // A restart continuation (ordinal 4) ran ahead of held queued runs 2 and 3.
