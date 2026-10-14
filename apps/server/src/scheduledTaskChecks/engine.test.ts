@@ -1,3 +1,4 @@
+import { encodeScheduledBare } from "../scheduledTasks/bareState.ts";
 import { assert, it } from "@effect/vitest";
 import {
   ProjectId,
@@ -83,6 +84,13 @@ const storeRow = (current: ScheduledTask) =>
       model_selection_json: toJson(current.modelSelection),
       runtime_mode: current.runtimeMode,
       interaction_mode: current.interactionMode,
+      bare_json:
+        current.bare === undefined
+          ? null
+          : encodeScheduledBare({
+              request: current.bare,
+              readGrant: { type: "roots", roots: ["/admitted/caller"] },
+            }),
       created_by: current.createdBy,
       creation_source: current.creationSource,
       created_at: current.createdAt,
@@ -93,7 +101,7 @@ const storeRow = (current: ScheduledTask) =>
       last_run_error: null,
       run_count: 0,
     })} ON CONFLICT (task_id) DO UPDATE SET
-      schedule_json = excluded.schedule_json, prompt = excluded.prompt,
+      schedule_json = excluded.schedule_json, prompt = excluded.prompt, bare_json = excluded.bare_json,
       thread_id = excluded.thread_id, created_at = excluded.created_at,
       updated_at = excluded.updated_at, next_run_at = excluded.next_run_at`;
   });
@@ -1274,4 +1282,27 @@ it.effect("checked launches and crash replays keep their persisted peer origin",
     assert.deepStrictEqual((yield* h.state()).runs[0]!.sends[0]!.payload, pinned);
     assert.equal(h.sent.length, 1);
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect(
+  "bare checked sends pin task-only text, request and admitted reads across crash replay and task edits",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      const h = yield* harness({ role: "picked-model" });
+      yield* h.save({ checkCommand: "check", checkReason: "outcome", role: "worker" });
+      const bare = { additions: [{ type: "file" as const, path: "/admitted/caller/input.txt" }] };
+      yield* h.decide("scheduled", NOW, task({ threadId: null, bare }));
+      const pinned = (yield* h.state()).runs[0]!.sends[0]!.payload!;
+      assert.equal(pinned.text, "Do the work");
+      assert.deepEqual(pinned.bare, bare);
+      assert.deepEqual(pinned.launch?.bare, bare);
+      assert.deepEqual(pinned.bareReadGrant, { type: "roots", roots: ["/admitted/caller"] });
+      h.set({ landed: false, busy: false });
+      yield* h.runs.drive(task({ threadId: null, prompt: "Edited", title: "Edited" }));
+      assert.equal(h.sent.length, 1);
+      assert.equal(h.sent[0]!.text, "Do the work");
+      assert.equal(h.sent[0]!.modelSelection?.model, "picked-model");
+      assert.deepEqual((yield* h.state()).runs[0]!.sends[0]!.payload, pinned);
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

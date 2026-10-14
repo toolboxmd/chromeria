@@ -1,3 +1,5 @@
+import * as BareProjects from "../orchestration-v2/ProjectStore.ts";
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
@@ -85,6 +87,7 @@ const registry = Layer.mock(Providers.ProviderRegistry)({
   ),
 });
 const base = Layer.mergeAll(
+  Layer.mock(BareProjects.ProjectStoreV2)({}),
   database,
   adapters,
   registry,
@@ -97,7 +100,11 @@ const base = Layer.mergeAll(
   }),
 );
 const runtime = Layer.fresh(
-  Layer.mergeAll(Launch.layer, Report.layer, SchedulerAdapter.layer).pipe(Layer.provideMerge(base)),
+  Layer.mergeAll(
+    Launch.layer.pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({}))),
+    Report.layer,
+    SchedulerAdapter.layer,
+  ).pipe(Layer.provideMerge(base)),
 );
 
 const CALLER = ThreadId.make("caller");

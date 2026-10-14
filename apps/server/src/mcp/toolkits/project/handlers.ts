@@ -14,6 +14,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
+import type { BareReadGrant } from "../../../orchestration-v2/bareReadGrant.ts";
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
@@ -142,6 +143,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               runtimeMode,
               interactionMode,
               createdBy: "agent",
+              ...(input.bare === undefined ? {} : { bare: input.bare }),
               ...(linkOrigin === undefined ? {} : { linkOrigin }),
               ...(input.message === undefined && attachments.length === 0 ? {} : { messageId }),
             },
@@ -191,14 +193,20 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               const prism = yield* Prism.PrismService;
               const adapters = yield* ProviderAdapterRegistryV2;
               const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+              if (input.bare !== undefined && input.prismRole === "promachos")
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: "Promachos persona cannot be combined with bare launch.",
+                });
               const { modelSelection, kitText } = yield* prism.resolve({
+                bare: input.bare !== undefined,
                 projectId,
                 role: input.prismRole ?? "planner",
                 lane: input.lane,
                 explicit: input.modelSelection,
                 inherited,
                 validate: (selection) =>
-                  Prism.validateLaunchSelection(selection).pipe(
+                  Prism.validateLaunchSelection(selection, input.bare !== undefined).pipe(
                     Effect.provideService(ProviderAdapterRegistryV2, adapters),
                     Effect.provideService(ProviderRegistry.ProviderRegistry, providerRegistry),
                   ),
@@ -209,9 +217,34 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                   message:
                     "Pass modelSelection: the project has no default model. orchestrator_capabilities lists providers and models.",
                 });
+              let bareReadGrant: BareReadGrant | undefined;
+              if (input.bare !== undefined) {
+                if (context.limits.runtimeMode === "full-access") bareReadGrant = { type: "all" };
+                else {
+                  const callerRoot =
+                    caller?.worktreePath ??
+                    (caller === undefined
+                      ? undefined
+                      : yield* Project.ProjectService.pipe(
+                          Effect.flatMap((projects) => projects.getById(caller.projectId)),
+                          Effect.mapError(unavailable),
+                          Effect.map((project) => Option.getOrUndefined(project)?.workspaceRoot),
+                        ));
+                  bareReadGrant = {
+                    type: "roots",
+                    roots: callerRoot === undefined ? [] : [callerRoot],
+                  };
+                }
+              }
               return yield* ThreadMessageIntake.launchThread({
                 commandId,
                 threadId,
+                ...(input.bare === undefined
+                  ? {}
+                  : {
+                      bare: input.bare,
+                      bareReadGrant,
+                    }),
                 projectId,
                 title: input.title,
                 modelSelection,

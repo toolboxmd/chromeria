@@ -1,3 +1,5 @@
+import { OrchestratorMcpCapabilitiesResult } from "@t3tools/contracts";
+import * as Predicate from "effect/Predicate";
 import {
   type EnvironmentId,
   OrchestratorMcpFailure,
@@ -148,6 +150,26 @@ const make = Effect.gen(function* () {
         params,
       ).pipe(Effect.mapError(unavailable))) as Record<string, unknown>;
       const { environmentId: _target, ...args } = encoded;
+      const carriesBare = (value: unknown): boolean =>
+        Predicate.isObject(value) &&
+        (("bare" in value && value.bare !== undefined) ||
+          ("threads" in value && Array.isArray(value.threads) && value.threads.some(carriesBare)) ||
+          ("colors" in value && Array.isArray(value.colors) && value.colors.some(carriesBare)));
+      if (carriesBare(args)) {
+        const capabilities = yield* peers.call({
+          environmentId,
+          tool: "orchestrator_capabilities",
+          arguments: {},
+          limits,
+          success: OrchestratorMcpCapabilitiesResult,
+          ...(options === undefined ? {} : options),
+        });
+        if (capabilities.bareLaunch !== true)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "The destination does not advertise bare launch; nothing was forwarded.",
+          });
+      }
       // A pending upload lives here, so it cannot go with the call.
       if (
         (toolName === "t3_thread_launch" || toolName === "delegate_task") &&

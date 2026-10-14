@@ -568,9 +568,10 @@ it.effect.each([
   { restoreFiles: false, shared: "none", targetOrdinal: 1, multipleTurns: true },
   { restoreFiles: false, shared: "none", grok: true },
   { restoreFiles: false, shared: "none", grok: true, failBind: true },
+  { restoreFiles: false, shared: "none", grok: true, bare: true },
 ])(
   "rewinds safely with %s",
-  ({ restoreFiles, shared, targetOrdinal = 0, multipleTurns = false, grok = false, failBind = false }) => {
+  ({ restoreFiles, shared, targetOrdinal = 0, multipleTurns = false, grok = false, failBind = false, bare = false }) => {
     const threadId = ThreadId.make("rewind-files");
     const providerThreadId = ProviderThreadId.make("rewind-provider");
     const providerSessionId = ProviderSessionId.make("rewind-session");
@@ -594,6 +595,7 @@ it.effect.each([
     };
     const projection = {
       thread: {
+        ...(bare ? { bare: { additions: [] } } : {}),
         worktreePath: shared === "root" ? null : process.cwd(),
         activeProviderThreadId: providerThreadId,
         modelSelection: { instanceId, model: "test" },
@@ -728,7 +730,8 @@ it.effect.each([
                   Effect.gen(function* () {
                     const count = yield* resolveCodexRollbackTurnCount(input);
                     assert.equal(count, 2 - targetOrdinal);
-                    if (grok) assert.equal(input.newSessionInstructions, "rules A");
+                    if (bare) assert.notProperty(input, "newSessionInstructions");
+                    else if (grok) assert.equal(input.newSessionInstructions, "rules A");
                     calls.push("provider");
                     return { providerThread };
                   }),
@@ -759,7 +762,7 @@ it.effect.each([
       yield* service.execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles });
       assert.deepEqual(
         calls,
-        grok
+        grok && !bare
           ? ["instructions", "provider", "bind", "projection"]
           : restoreFiles ? ["provider", "files", "projection"] : ["provider", "projection"],
       );

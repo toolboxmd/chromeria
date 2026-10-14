@@ -1,3 +1,4 @@
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
@@ -401,7 +402,9 @@ const boxToolkitLayer = (
       ),
   });
   return Layer.merge(
-    McpHttpServer.layerOrchestratorToolkit,
+    McpHttpServer.layerOrchestratorToolkit.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+    ),
     McpHttpServer.layerProjectRegistration,
   ).pipe(
     Layer.provide(NodeCrypto.layer),
@@ -550,7 +553,11 @@ const makeRealBox = Effect.gen(function* () {
     }),
     catalogLayer,
   );
-  const services = yield* ThreadLaunch.layer.pipe(Layer.provideMerge(dependencies), Layer.build);
+  const services = yield* ThreadLaunch.layer.pipe(
+    Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+    Layer.provideMerge(dependencies),
+    Layer.build,
+  );
   return {
     launches: Context.get(services, ThreadLaunch.ThreadLaunchService),
     threads: Context.get(services, ThreadManagement.ThreadManagementService),
@@ -596,6 +603,7 @@ const makeLaptop = (
     );
     const layerThreads = ThreadManagement.layer.pipe(Layer.provideMerge(layerOrchestrator));
     const layerHere = McpHttpServer.layerOrchestratorToolkit.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
       Layer.provideMerge(McpServer.McpServer.layer),
       Layer.provideMerge(
         RemoteDelegation.layer.pipe(
@@ -605,7 +613,10 @@ const makeLaptop = (
               // A cold enrichment cache: the project itself reports no identity yet.
               getById: () =>
                 Effect.succeed(
-                  Option.some({ workspaceRoot: "/home/me/app", repositoryIdentity: null } as never),
+                  Option.some({
+                    workspaceRoot: "/home/me/app",
+                    repositoryIdentity: null,
+                  } as never),
                 ),
             }),
           ),
@@ -1198,7 +1209,10 @@ it.effect.each(
 );
 
 /** A committed source intent, before any launch marker or network request. */
-const recordPending = (a: Effect.Success<ReturnType<typeof makeLaptop>>) =>
+const recordPending = (
+  a: Effect.Success<ReturnType<typeof makeLaptop>>,
+  bare?: ThreadLaunch.ThreadLaunchInput["bare"],
+) =>
   Effect.gen(function* () {
     const link = Option.getOrThrow(yield* a.links.get(box.environmentId));
     const recorded = yield* a.orchestrator.dispatch({
@@ -1213,6 +1227,7 @@ const recordPending = (a: Effect.Success<ReturnType<typeof makeLaptop>>) =>
         environmentId: box.environmentId,
         label: "Box",
         launch: {
+          ...(bare === undefined ? {} : { bare }),
           requestNamespace: parentScope.requestNamespace,
           clientRequestId: `delegate:${parentThreadId}:suite-on-box`,
           linkIdentity: link.launchIdentity,
@@ -1272,7 +1287,12 @@ it.effect.each([false, true])(
             const before = yield* makeLaptop(database, offers, linking);
             yield* linkTo(before.links, b, "full-access");
             yield* seedParent(before);
-            const id = yield* recordPending(before);
+            const id = yield* recordPending(
+              before,
+              cancelled
+                ? { additions: [{ type: "skill", name: "only-requested-body" }] }
+                : undefined,
+            );
             if (cancelled) {
               // Commit cancellation while the source is down, before a follower can send.
               yield* before.orchestrator.dispatch({
@@ -1298,6 +1318,9 @@ it.effect.each([false, true])(
           expect(yield* taskResult(after, taskId)).toMatchObject({
             status: "cancelled",
             result: "Cancelled before send.",
+            remoteChild: {
+              launch: { bare: { additions: [{ type: "skill", name: "only-requested-body" }] } },
+            },
           });
         } else {
           expect(yield* taskResult(after, taskId)).toMatchObject({
