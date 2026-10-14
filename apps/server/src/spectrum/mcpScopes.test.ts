@@ -1,3 +1,4 @@
+import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -58,6 +59,7 @@ it.effect(
       const dependencies = Layer.mergeAll(
         NodeServices.layer,
         Settings.layerTest(),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
         Layer.mock(Launch.ThreadLaunchService)({}),
         Layer.mock(Git.GitVcsDriver)({}),
         Layer.mock(Projects.ProjectService)({}),

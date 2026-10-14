@@ -143,6 +143,10 @@ export class ProjectService extends Context.Service<
       { readonly projects: ReadonlyArray<Project>; readonly nextCursor: number | null },
       ProjectOperationError
     >;
+    /**
+     * An active project's shell with its immediately available repository
+     * identity; missing identity resolves in the background.
+     */
     readonly getShell: (
       projectId: ProjectId,
     ) => Effect.Effect<Option.Option<OrchestrationProjectShell>, ProjectOperationError>;

@@ -56,6 +56,8 @@ import * as PeerLinks from "../peer/PeerLinks.ts";
 
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
   Layer.provide(PrismServerSettings.layerTest()),
+  Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+  Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
 );
@@ -385,6 +387,8 @@ describe("orchestrator MCP toolkit", () => {
             parentThreadId,
           )).subagents.find((task) => task.id === delegated.taskId)!;
 
+          // Delegated children are subagent threads too, but T3 owns them, so
+          // they keep taking follow-ups (provider-native children do not).
           const delegatedChild = yield* orchestrator.getThreadProjection(
             localChild(delegated.childThreadId),
           );
@@ -710,7 +714,7 @@ describe("orchestrator MCP toolkit", () => {
           ).toBe("claimed");
 
           const read = yield* invoke("t3_thread_read", {
-            threadId: delegated.childThreadId,
+            threadId: localChild(delegated.childThreadId),
             limit: 100,
             maxCharsPerItem: result === "😀" ? 1 : 20_000,
           }).pipe(Effect.withTracer(tracer));

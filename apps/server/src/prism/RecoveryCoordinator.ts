@@ -1,3 +1,4 @@
+import { RecoveryWaitSignals } from "../peer/recoveryWaitSignals.ts";
 import {
   type OrchestrationV2ThreadProjection,
   type ServerSettingsError,
@@ -39,6 +40,7 @@ const make = Effect.gen(function* () {
   const store = yield* Store.RecoveryStore;
   const settings = yield* Settings.ServerSettingsService;
   const sql = yield* SqlClient.SqlClient;
+  const signals = yield* RecoveryWaitSignals;
   const observe: RecoveryCoordinator["Service"]["observe"] = Effect.fn(
     "RecoveryCoordinator.observe",
   )(function* (projection, retiredOrIncomplete) {
@@ -89,7 +91,10 @@ const make = Effect.gen(function* () {
           }
         }),
       )
-      .pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      .pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.provideService(RecoveryWaitSignals, signals),
+      );
     return record;
   });
   const holdsResult = Effect.fn("RecoveryCoordinator.holdsResult")(function* (threadId: ThreadId) {

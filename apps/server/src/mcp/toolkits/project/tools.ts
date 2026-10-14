@@ -38,6 +38,7 @@ import * as ProjectService from "../../../project/ProjectService.ts";
 import * as ProjectCloneTracker from "../../../project/ProjectCloneTracker.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as SourceControlRepositoryService from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -55,7 +56,7 @@ const shared = {
 };
 const ProjectListTool = Tool.make("t3_project_list", {
   ...shared,
-  description: "List projects. Pages can shift.",
+  description: "List projects, here or in a linked environment with `environmentId`. Pages can shift.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     cursor: Schema.optional(NonNegativeInt),
@@ -65,6 +66,7 @@ const ProjectListTool = Tool.make("t3_project_list", {
     projects: Schema.Array(Project),
     nextCursor: Schema.NullOr(NonNegativeInt),
   }),
+  dependencies: [...shared.dependencies, PeerForwarding.PeerForwarding],
 })
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);

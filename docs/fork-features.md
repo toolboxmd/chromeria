@@ -1407,3 +1407,104 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "keywords": ["getOrCreateRandom", "fileSystem.link", "half-written secret"]
 }
 ```
+
+## peer-links
+
+```json
+{
+  "id": "peer-links",
+  "purpose": "Port upstream server peer links and record-first remote delegation until absorption replaces the port; retain permanent pairing-code sessions, target Prism launch intent and recovery-aware waits.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/164"],
+  "prs": [
+    "https://github.com/pingdotgg/t3code/pull/16653",
+    "https://github.com/pingdotgg/t3code/pull/16654",
+    "https://github.com/pingdotgg/t3code/pull/16655",
+    "https://github.com/pingdotgg/t3code/pull/16684",
+    "https://github.com/pingdotgg/t3code/pull/16695",
+    "https://github.com/pingdotgg/t3code/pull/16719",
+    "https://github.com/pingdotgg/t3code/pull/17051"
+  ],
+  "newFiles": [
+    "apps/server/src/mcp/delegatedTaskModes.ts",
+    "apps/server/src/mcp/linkOrigin.test.ts",
+    "apps/server/src/mcp/linkOrigin.ts",
+    "apps/server/src/orchestration-v2/RemoteDelegatedTask.test.ts",
+    "apps/server/src/peer/*",
+    "apps/server/src/persistence/forkPeerLinksSchema.test.ts",
+    "apps/server/src/persistence/forkPeerLinksSchema.ts",
+    "packages/contracts/src/peerLink.ts"
+  ],
+  "upstreamFiles": [
+    "apps/server/src/auth/McpOAuth.ts",
+    "apps/server/src/binCli.ts",
+    "apps/server/src/cli/environment.ts",
+    "apps/server/src/mcp/McpHttpServer.test.ts",
+    "apps/server/src/mcp/McpInvocationContext.ts",
+    "apps/server/src/mcp/McpToolAccess.test.ts",
+    "apps/server/src/mcp/McpToolAccess.ts",
+    "apps/server/src/mcp/WorktreeMcpService.ts",
+    "apps/server/src/mcp/toolkits/attachment/handlers.ts",
+    "apps/server/src/mcp/toolkits/orchestrator/handlers.ts",
+    "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
+    "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts",
+    "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
+    "apps/server/src/orchestration-v2/ThreadManagementService.test.ts",
+    "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+    "apps/server/src/project/ProjectEnrichmentService.ts",
+    "apps/server/src/project/ProjectService.ts",
+    "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+    "apps/server/src/project/ProjectSetupScriptRunner.ts",
+    "packages/client-runtime/src/t3ToolSummary.ts",
+    "packages/shared/src/t3McpToolPresentation.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/auth/EnvironmentAuth.ts",
+    "apps/server/src/auth/RpcAuthorization.ts",
+    "apps/server/src/auth/SessionStore.ts",
+    "apps/server/src/environment/ServerEnvironment.ts",
+    "apps/server/src/mcp/McpHttpServer.ts",
+    "apps/server/src/mcp/OrchestratorMcpService.activity.test.ts",
+    "apps/server/src/mcp/OrchestratorMcpService.test.ts",
+    "apps/server/src/mcp/OrchestratorMcpService.ts",
+    "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+    "apps/server/src/mcp/threadAccess.ts",
+    "apps/server/src/mcp/toolkits/core.test.ts",
+    "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+    "apps/server/src/mcp/toolkits/project/handlers.test.ts",
+    "apps/server/src/mcp/toolkits/project/handlers.ts",
+    "apps/server/src/mcp/toolkits/project/tools.ts",
+    "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
+    "apps/server/src/observability/RpcInstrumentation.ts",
+    "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts",
+    "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "apps/server/src/orchestration-v2/ProjectionStore.ts",
+    "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+    "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+    "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+    "apps/server/src/orchestration-v2/runtimeLayer.ts",
+    "apps/server/src/prism/RecoveryCoordinator.ts",
+    "apps/server/src/prism/RecoveryHistory.ts",
+    "apps/server/src/provider/T3OrchestrationInstructions.ts",
+    "apps/server/src/relay/AgentAwarenessRelay.test.ts",
+    "apps/server/src/server.ts",
+    "apps/server/src/spectrum/mcpScopes.test.ts",
+    "apps/server/src/spectrum/mcpToolkit.ts",
+    "apps/server/src/ws.ts",
+    "packages/contracts/src/auth.ts",
+    "packages/contracts/src/environment.ts",
+    "packages/contracts/src/index.ts",
+    "packages/contracts/src/orchestrationV2.ts",
+    "packages/contracts/src/orchestratorMcp.ts",
+    "packages/contracts/src/rpc.ts",
+    "scripts/fork-features.mjs"
+  ],
+  "keywords": [
+    "peer_environment_links",
+    "t3code-peer-link",
+    "remoteChild",
+    "RemoteDelegation",
+    "RecoveryWait",
+    "T3-Mode-Limit"
+  ]
+}
+```
