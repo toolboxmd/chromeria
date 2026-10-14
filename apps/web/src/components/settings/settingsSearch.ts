@@ -621,17 +621,19 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "provider-update-checks",
     title: "Provider update checks",
-    to: "/settings/maintenance",
+    to: "/settings/providers",
     searchTerms: [
       "installed cli versions newer available codex claude cursor grok fx kiro opencode",
     ],
     scope: "environment-defaults",
+    providerSettingsOnly: true,
   },
   {
     id: "auto-update-providers",
     title: "Update providers automatically",
-    to: "/settings/general",
+    to: "/settings/providers",
     scope: "environment-defaults",
+    providerSettingsOnly: true,
     searchTerms: ["automatic provider updates cli install codex claude cursor grok opencode"],
   },
   {

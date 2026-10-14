@@ -79,6 +79,7 @@ apps/web/src/components/onboarding/WelcomeWizard.tsx
 apps/web/src/components/pullRequest/PullRequestListFilters.tsx
 apps/web/src/components/pullRequest/ThreadPullRequestsPanel.tsx
 apps/web/src/components/settings/IntegrationsSettings.tsx
+apps/web/src/components/settings/ProviderSettingsPanel.tsx
 apps/web/src/components/settings/SettingsPanels.tsx
 apps/web/src/components/settings/ThemePreviewCircles.tsx
 apps/web/src/components/settings/settingsSearch.ts
