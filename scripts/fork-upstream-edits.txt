@@ -256,6 +256,9 @@ packages/client-runtime/src/work-log/presentation.ts
 apps/server/src/cloud/serviceLauncherClient.test.ts
 apps/server/src/cloud/serviceLauncherClient.ts
 
+# ContextMD native receipt proof (#245).
+apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts
+
 # Vitest transport-copy cache repair (#308), owned by fork-maintenance.
 pnpm-lock.yaml
 pnpm-workspace.yaml

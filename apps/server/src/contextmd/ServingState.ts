@@ -88,6 +88,11 @@ const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, type
   ["moments", "cue_json", "TEXT"],
   ["carries", "matcher", "TEXT"],
   ["carries", "score", "REAL"],
+  ["deliveries", "transcript_path", "TEXT"],
+  ["deliveries", "native_turn", "TEXT"],
+  ["deliveries", "shown", "TEXT"],
+  ["deliveries", "shown_json", "TEXT"],
+  ["deliveries", "shown_next", "REAL"],
 ];
 
 /** Cue's part of one moment: its reply, and the candidate each scored entry would be. */
@@ -140,6 +145,8 @@ export interface Unserved {
 }
 
 const utf8 = (text: string) => Buffer.byteLength(text, "utf8");
+const nativeField = (value: string | null | undefined) =>
+  value && utf8(value) <= 4096 ? value : null;
 
 /** A harness's cut mark: Grok ends a clipped hook reason with `… [+N chars]`. */
 const CUT_MARK = /…\s*\[\+\d+ chars\]/u;
@@ -249,6 +256,25 @@ export interface DenyCheck {
   readonly probe: string;
 }
 
+/** A delivery and its moment, independent of claims that release may remove. */
+export interface ShownCheck {
+  readonly delivery: string;
+  readonly harness: string;
+  readonly session: string;
+  readonly body: string;
+  readonly call: string | null;
+  readonly turn: string | null;
+  readonly path: string | null;
+  readonly createdAt: number;
+  readonly settledAt: number | null;
+  readonly shownJson: string | null;
+}
+
+const SHOWN_SELECT = `SELECT d.delivery, d.harness, m.session, d.body, m.tool_use_id AS call,
+  d.native_turn AS turn, d.transcript_path AS path, d.created_at AS createdAt,
+  d.settled_at AS settledAt, d.shown_json AS shownJson
+  FROM deliveries d JOIN moments m ON m.id = d.moment_id`;
+
 interface Claim {
   readonly kind: "serve" | "deny" | "start";
   readonly entry: string;
@@ -275,6 +301,8 @@ export class ServingState {
       ).some((c) => c.name === column);
       if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
     }
+    db.exec(`CREATE INDEX IF NOT EXISTS deliveries_shown_due
+      ON deliveries(shown_next) WHERE shown_next IS NOT NULL`);
     // Before user_version 1, moments.server_ms held seconds; convert those rows once.
     this.tx(() => {
       const { user_version } = this.get<{ user_version: number }>("PRAGMA user_version")!;
@@ -464,6 +492,15 @@ export class ServingState {
         now,
         d.moment_id,
       );
+      this.run(
+        `UPDATE deliveries SET shown = 'unknown', shown_json = ?, shown_next = ?
+         WHERE delivery = ? AND EXISTS (SELECT 1 FROM candidates c WHERE c.moment_id = ?
+           AND c.stage = 'settled' AND c.seam IN ('context', 'carry_print'))`,
+        '{"v":1,"source":null,"reason":"not_checked"}',
+        now,
+        delivery,
+        d.moment_id,
+      );
       // Without projection evidence the hook's settle is the proof the model was shown the
       // deny: it counts toward the cap, and an inline rule delivered whole was read. Where
       // the projection can show what the model saw, both wait for that evidence instead,
@@ -480,6 +517,47 @@ export class ServingState {
       );
       return true;
     });
+  }
+
+  dueShown(now: number, limit: number): ShownCheck[] {
+    return this.all<ShownCheck>(
+      `${SHOWN_SELECT} WHERE d.shown = 'unknown' AND d.shown_next IS NOT NULL
+        AND d.shown_next <= ? ORDER BY d.shown_next, d.created_at, d.rowid LIMIT ?`,
+      now,
+      limit,
+    );
+  }
+
+  /** Every 200 reply, including released and reserved rivals outside the current batch. */
+  shownRivals(harness: string, session: string): ShownCheck[] {
+    return this.all<ShownCheck>(
+      `${SHOWN_SELECT} WHERE d.status = 200 AND d.harness = ? AND m.session = ?`,
+      harness,
+      session,
+    );
+  }
+
+  recordShown(delivery: string, fact: "shown" | "unknown", json: string, next: number | null) {
+    return (
+      Number(
+        this.run(
+          `UPDATE deliveries SET shown = ?, shown_json = ?, shown_next = ?
+       WHERE delivery = ? AND shown = 'unknown'`,
+          fact,
+          json,
+          fact === "shown" ? null : next,
+          delivery,
+        ).changes,
+      ) === 1
+    );
+  }
+
+  deferShown(delivery: string, next: number) {
+    this.run(
+      "UPDATE deliveries SET shown_next = ? WHERE delivery = ? AND shown = 'unknown'",
+      next,
+      delivery,
+    );
   }
 
   /**
@@ -752,8 +830,8 @@ export class ServingState {
     const finish = (reply: Reply, reserved?: { runId: string; serve: number; deny: number }) => {
       this.run(
         `INSERT INTO deliveries (delivery, harness, moment_id, stage, status, body, run_id, serve_bytes, deny_bytes,
-           created_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           created_at, expires_at, transcript_path, native_turn)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         input.delivery,
         harness,
         momentId,
@@ -765,6 +843,8 @@ export class ServingState {
         reserved?.deny ?? 0,
         now,
         now + sel.profile.settle_within_ms / 1000,
+        reply.status === 200 ? nativeField(m.transcript_path) : null,
+        reply.status === 200 ? nativeField(m.native_turn) : null,
       );
       return reply;
     };

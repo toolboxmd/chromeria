@@ -1248,3 +1248,38 @@ describe("select, per harness (shapes captured inside Chromeria, 2026-10-12)", (
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
+
+describe("native shown identity selection", () => {
+  it.effect.each(["claude", "codex"])(
+    "preserves only native string path/turn fields for %s",
+    (harness) =>
+      Effect.gen(function* () {
+        const config: ServingConfig = { exactKeys: [], sessionStart: [], cue: [], cueUrl: null };
+        const library = yield* Store.load([], new Map());
+        const raw = {
+          hook_event_name: "PostToolUse",
+          session_id: "public-session",
+          tool_name: "Bash",
+          tool_use_id: "public-call",
+          tool_input: { command: "true" },
+          transcript_path: "/tmp/public-session.jsonl",
+          turn_id: "public-turn",
+        };
+        const selected = yield* select(harness, raw, config, library);
+        assert.equal(selected.moment.transcript_path, "/tmp/public-session.jsonl");
+        assert.equal(selected.moment.native_turn, harness === "codex" ? "public-turn" : null);
+        const malformed = yield* select(
+          harness,
+          {
+            ...raw,
+            transcript_path: { path: "/tmp/public-session.jsonl" },
+            turn_id: ["public-turn"],
+          },
+          config,
+          library,
+        );
+        assert.isNull(malformed.moment.transcript_path);
+        assert.isNull(malformed.moment.native_turn);
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+});

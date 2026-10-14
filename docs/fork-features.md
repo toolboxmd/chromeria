@@ -1337,20 +1337,33 @@ Child creation paths are owned by child-threads and shared with thread-people.
 
 ## contextmd-serving
 
+Chromeria agent sessions enable Claude's native request recording and default to
+whole requests. Explicit environment values win: `CLAUDE_CODE_ELEGANT_MEADOW=0`
+turns recording off, and `CLAUDE_CODE_TETHER_LIVE=1` enables Message Threads;
+either leaves context receipt unproven. Request variants remain in Claude's local
+transcript. Receipt evidence in the serving log contains identities, times,
+sources and reasons.
+
 ```json
 {
   "id": "contextmd-serving",
   "purpose": "Serve ContextMD's stored rules to agents in Chromeria threads through thin harness hooks, with serving state, settlement and the serving log in the environment.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/217",
+    "https://github.com/toolboxmd/chromeria/issues/245",
     "https://github.com/toolboxmd/chromeria/issues/268"
   ],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/220"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/220",
+    "https://github.com/toolboxmd/chromeria/pull/313"
+  ],
   "newFiles": [
     "apps/server/src/contextmd/ContextmdRoute.test.ts",
     "apps/server/src/contextmd/ContextmdRoute.ts",
     "apps/server/src/contextmd/ContextmdServing.ts",
+    "apps/server/src/contextmd/ContextmdServing.test.ts",
     "apps/server/src/contextmd/Harnesses.ts",
+    "apps/server/src/contextmd/Harnesses.test.ts",
     "apps/server/src/contextmd/Library.test.ts",
     "apps/server/src/contextmd/Matcher.ts",
     "apps/server/src/contextmd/Reads.ts",
@@ -1359,11 +1372,16 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/contextmd/Selection.ts",
     "apps/server/src/contextmd/ServingState.test.ts",
     "apps/server/src/contextmd/ServingState.ts",
+    "apps/server/src/contextmd/Shown.test.ts",
+    "apps/server/src/contextmd/Shown.ts",
     "apps/server/src/contextmd/Store.ts",
     "apps/server/src/contextmd/library-corpus.json"
   ],
-  "upstreamFiles": [],
-  "sharedFiles": ["apps/server/src/server.ts"],
+  "upstreamFiles": ["apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts"],
+  "sharedFiles": [
+    "apps/server/src/server.ts",
+    "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts"
+  ],
   "keywords": ["contextmd", "ContextMD", "/contextmd/v1", "contextmd.sqlite", "contextmd-hook"]
 }
 ```

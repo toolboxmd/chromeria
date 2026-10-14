@@ -35,6 +35,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
@@ -49,6 +50,8 @@ import {
   type TranscriptRow,
 } from "./Cue.ts";
 import * as Select from "./Select.ts";
+import { HARNESSES } from "./Harnesses.ts";
+import * as Shown from "./Shown.ts";
 import type { Selection } from "./Selection.ts";
 import * as Store from "./Store.ts";
 import type { ParseCache } from "./Store.ts";
@@ -59,6 +62,7 @@ import {
   type Reply,
   type RunJoin,
   type Unserved,
+  type ShownCheck,
 } from "./ServingState.ts";
 
 export const MAX_BODY_BYTES = 1_048_576;
@@ -111,6 +115,7 @@ export class ContextmdServing extends Context.Service<
     readonly settle: (delivery: string) => Effect.Effect<{ readonly status: 204 | 404 }>;
     /** The hook dropped a reserved reply before the model saw it. */
     readonly release: (delivery: string) => Effect.Effect<{ readonly status: 204 | 404 }>;
+    readonly checkShown: Effect.Effect<void>;
     /** Log a hook call the transport refused for its credential. */
     readonly rejected: (request: {
       readonly harness: string | undefined;
@@ -207,6 +212,7 @@ const make = Effect.gen(function* () {
       settle: () => Effect.succeed({ status: 404 } as const),
       release: () => Effect.succeed({ status: 404 } as const),
       rejected: () => Effect.void,
+      checkShown: Effect.void,
     });
   }
   const { db, state } = opened.value;
@@ -235,6 +241,167 @@ const make = Effect.gen(function* () {
   yield* Effect.addFinalizer(() => Effect.sync(() => db.close()));
 
   const nowSeconds = Clock.currentTimeMillis.pipe(Effect.map((ms) => ms / 1000));
+
+  const maxRead = 64 * 1024 * 1024;
+  const decodeSeen = Schema.decodeUnknownOption(
+    Schema.fromJsonString(Schema.Struct({ seen: Schema.String })),
+  );
+  const recordEvidence = (
+    check: ShownCheck,
+    evidence: Shown.Evidence,
+    checkedAt: number,
+    seen?: string,
+    retry = false,
+  ) => {
+    const { fact, ...detail } = evidence;
+    state.recordShown(
+      check.delivery,
+      fact,
+      JSON.stringify({
+        v: 1,
+        ...detail,
+        checked_at: checkedAt,
+        ...(seen === undefined ? {} : { seen }),
+      }),
+      retry
+        ? checkedAt + Shown.backoff(checkedAt - check.createdAt)
+        : Shown.nextCheck(evidence, checkedAt - check.createdAt, checkedAt),
+    );
+  };
+  const checkShown = Effect.gen(function* () {
+    const now = yield* nowSeconds;
+    const groups = new Map<string, ShownCheck[]>();
+    for (const check of state.dueShown(now, 50)) {
+      const key = `${check.harness}\0${check.path ?? ""}`;
+      const group = groups.get(key);
+      if (group === undefined) groups.set(key, [check]);
+      else group.push(check);
+    }
+    let remaining = maxRead;
+    for (const group of groups.values()) {
+      const source = HARNESSES[group[0]!.harness]?.shownEvidence ?? "none";
+      if (source === "none") {
+        for (const check of group)
+          recordEvidence(check, Shown.unknown(null, "no_evidence_source"), now);
+        continue;
+      }
+      const checks = group.filter((check) => {
+        if (Shown.validPath(source, check.path, check.session, path)) return true;
+        recordEvidence(check, Shown.unknown(source, "no_transcript"), now);
+        return false;
+      });
+      if (checks.length === 0) continue;
+      const file = checks[0]!.path!;
+      const stat = yield* fileSystem.stat(file).pipe(Effect.option);
+      if (Option.isNone(stat) || stat.value.type !== "File") {
+        for (const check of checks)
+          recordEvidence(check, Shown.unknown(source, "transcript_unreadable"), now);
+        continue;
+      }
+      const size = Number(stat.value.size);
+      if (size > maxRead) {
+        for (const check of checks)
+          recordEvidence(check, Shown.unknown(source, "transcript_too_large"), now);
+        continue;
+      }
+      const stamp = Option.isSome(stat.value.mtime)
+        ? `${Shown.RULE[source]}:${size}:${stat.value.mtime.value.getTime()}`
+        : undefined;
+      const changed = checks.filter((check) => {
+        const seen = check.shownJson === null ? Option.none() : decodeSeen(check.shownJson);
+        if (stamp === undefined || Option.isNone(seen) || seen.value.seen !== stamp) return true;
+        state.deferShown(check.delivery, now + Shown.backoff(now - check.createdAt));
+        return false;
+      });
+      if (changed.length === 0) continue;
+      if (size > remaining) break; // Unread groups stay oldest due for the next tick.
+      remaining -= size; // Reserve the complete stat size before I/O, including failed reads.
+      let reading = true;
+      yield* Effect.gen(function* () {
+        const decoder = new TextDecoder("utf-8", { fatal: true });
+        const lines: string[] = [];
+        let pending = "";
+        let bytes = 0;
+        yield* fileSystem.stream(file, { bytesToRead: size, chunkSize: 1024 * 1024 }).pipe(
+          Stream.runForEach((chunk) =>
+            Effect.gen(function* () {
+              bytes += chunk.byteLength;
+              pending += decoder.decode(chunk, { stream: true });
+              const parts = pending.split("\n");
+              pending = parts.pop()!;
+              lines.push(...parts);
+              yield* Effect.yieldNow;
+            }),
+          ),
+        );
+        if (bytes !== size) return yield* Effect.fail("incomplete transcript read");
+        // A trailing line without a newline is still being written, so it never decides.
+        decoder.decode();
+        reading = false;
+        const claude = source === "claude_request_replay" ? lines.map(Shown.decodeClaudeLine) : [];
+        const codex = source === "codex_rollout" ? lines.map(Shown.decodeCodexLine) : [];
+        const rivals = new Map<string, Shown.Served[]>();
+        for (const check of changed) {
+          let sessionRivals = rivals.get(check.session);
+          if (sessionRivals === undefined) {
+            sessionRivals = state.shownRivals(check.harness, check.session).flatMap((r) => {
+              const parsed = Shown.served(r);
+              return parsed === null ? [] : [parsed];
+            });
+            rivals.set(check.session, sessionRivals);
+          }
+          const delivery = Shown.served(check);
+          const result = yield* Effect.try(() =>
+            delivery === null
+              ? Shown.unknown(source, "unrecognized_format")
+              : source === "claude_request_replay"
+                ? Shown.claudeEvidence(claude, delivery, sessionRivals)
+                : Shown.codexEvidence(codex, delivery, sessionRivals),
+          ).pipe(Effect.option);
+          const checkedAt = yield* nowSeconds;
+          if (Option.isNone(result)) {
+            recordEvidence(
+              check,
+              Shown.unknown(source, "unrecognized_format"),
+              checkedAt,
+              undefined,
+              true,
+            );
+            yield* Effect.logWarning("ContextMD shown rule failed", { source });
+          } else {
+            const evidence = result.value;
+            recordEvidence(
+              check,
+              evidence.fact === "shown" && evidence.consumed.at > checkedAt
+                ? Shown.unknown(source, "unrecognized_format", evidence.record)
+                : evidence,
+              checkedAt,
+              stamp,
+            );
+          }
+        }
+      }).pipe(
+        Effect.catchCause(() =>
+          Effect.gen(function* () {
+            for (const check of changed)
+              recordEvidence(
+                check,
+                Shown.unknown(source, reading ? "transcript_unreadable" : "unrecognized_format"),
+                now,
+                undefined,
+                true,
+              );
+            yield* Effect.logWarning("ContextMD shown group failed", {
+              source,
+              checks: changed.length,
+            });
+          }),
+        ),
+      );
+    }
+  }).pipe(Effect.catchCause(() => Effect.logWarning("ContextMD shown sweep failed")));
+
+  yield* ServerActivation.forkParked(checkShown.pipe(Effect.repeat(Schedule.spaced("30 seconds"))));
 
   yield* ServerActivation.forkParked(
     Effect.gen(function* () {
@@ -623,7 +790,7 @@ const make = Effect.gen(function* () {
       Effect.ignoreCause,
     );
 
-  return ContextmdServing.of({ moment, settle, release, rejected });
+  return ContextmdServing.of({ moment, settle, release, rejected, checkShown });
 });
 
 export const layer = Layer.effect(ContextmdServing, make);
