@@ -70,7 +70,11 @@ const admit = persist("successor", [
   },
 ]);
 
-const makeThreads = (ready: Deferred.Deferred<void>, onRead: Effect.Effect<void> = Effect.void) =>
+const makeThreads = (
+  ready: Deferred.Deferred<void>,
+  onRead: Effect.Effect<void> = Effect.void,
+  beforeSubscribe: Effect.Effect<void> = Effect.void,
+) =>
   Effect.gen(function* () {
     const projections = yield* Projection.ProjectionStoreV2;
     const events = yield* EventSink.EventSinkV2;
@@ -79,17 +83,25 @@ const makeThreads = (ready: Deferred.Deferred<void>, onRead: Effect.Effect<void>
         Threads.layer.pipe(
           Layer.provide(
             Layer.mock(Orchestrator.OrchestratorV2)({
-              getThreadEventSequence: () => Effect.succeed(0),
-              getThreadRecords: (threadId, fields, filter) =>
-                projections
-                  .getThreadRecords(threadId, fields, filter)
+              getThreadEventSequence: (threadId) =>
+                events
+                  .latestSequence({ threadId })
                   .pipe(
                     Effect.mapError(
                       (cause) => new Orchestrator.OrchestratorProjectionError({ threadId, cause }),
                     ),
                   ),
+              getThreadRecords: (threadId, fields, filter) =>
+                projections.getThreadRecords(threadId, fields, filter).pipe(
+                  Effect.tap(() => onRead),
+                  Effect.mapError(
+                    (cause) => new Orchestrator.OrchestratorProjectionError({ threadId, cause }),
+                  ),
+                ),
               streamStoredEventsFrom: (input) =>
-                Stream.fromEffect(Deferred.succeed(ready, undefined)).pipe(
+                Stream.fromEffect(
+                  Deferred.succeed(ready, undefined).pipe(Effect.andThen(beforeSubscribe)),
+                ).pipe(
                   Stream.drain,
                   Stream.concat(
                     events.stream(input).pipe(
@@ -128,6 +140,27 @@ it.effect("wait observes recovery first and follows admission and successor comp
       yield* Deferred.await(ready);
       assert.equal((yield* History.readRecoveryState(source.id)).decision?.status, "pending");
       yield* admit;
+      const result = yield* Fiber.join(fiber);
+      assert.equal(result.run?.id, successor.id);
+      assert.equal(result.run?.status, "completed");
+      assert.isFalse(result.timedOut);
+    }),
+  ).pipe(Effect.provide(layerWait)),
+);
+
+it.effect("wait replays a successor committed after its cursor but before event subscription", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* persist("seed", recoveryEvents(source));
+      const events = yield* EventSink.EventSinkV2;
+      assert.isAbove(yield* events.latestSequence({ threadId: source.threadId }), 0);
+      const ready = yield* Deferred.make<void>();
+      const subscribe = yield* Deferred.make<void>();
+      const threads = yield* makeThreads(ready, Effect.void, Deferred.await(subscribe));
+      const fiber = yield* wait(threads).pipe(Effect.forkScoped);
+      yield* Deferred.await(ready);
+      yield* admit;
+      yield* Deferred.succeed(subscribe, undefined);
       const result = yield* Fiber.join(fiber);
       assert.equal(result.run?.id, successor.id);
       assert.equal(result.run?.status, "completed");
@@ -208,7 +241,8 @@ it.effect("one timeout budget expires while recovery is pending", () =>
       const result = yield* Fiber.join(fiber);
       assert.equal(result.run?.id, source.id);
       assert.isTrue(result.timedOut);
-      // Initial read, source replay, first decision, and timeout read. No polling or self-wake loop.
+      // Initial read, decision notification, and timeout read. No polling or self-wake loop.
+      assert.isAbove(yield* Ref.get(reads), 0);
       assert.isAtMost(yield* Ref.get(reads), 4);
     }),
   ).pipe(Effect.provide(layerWait)),

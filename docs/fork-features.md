@@ -1445,7 +1445,6 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/project/ProjectService.ts",
     "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
     "apps/server/src/project/ProjectSetupScriptRunner.ts",
-    "apps/server/src/relay/AgentAwarenessRelay.test.ts",
     "packages/shared/src/t3McpToolPresentation.ts"
   ],
   "sharedFiles": [
@@ -1476,6 +1475,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/prism/RecoveryCoordinator.ts",
     "apps/server/src/prism/RecoveryHistory.ts",
     "apps/server/src/provider/T3OrchestrationInstructions.ts",
+    "apps/server/src/relay/AgentAwarenessRelay.test.ts",
     "apps/server/src/server.ts",
     "apps/server/src/spectrum/mcpScopes.test.ts",
     "apps/server/src/spectrum/mcpToolkit.ts",

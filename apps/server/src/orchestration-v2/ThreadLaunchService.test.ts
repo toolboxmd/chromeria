@@ -1634,14 +1634,16 @@ it.effect("replays an accepted launch receipt after rebuilding the destination r
           const launches = yield* ThreadLaunch.ThreadLaunchService;
           const threads = yield* ThreadManagement.ThreadManagementService;
           const launched = yield* launches.launch(input);
-          yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
-            Stream.filter(
-              (stored) =>
-                stored.commandId === CommandId.make(`${input.commandId}:release`) &&
-                stored.event.type === "run.updated",
-            ),
-            Stream.runHead,
-          );
+          yield* threads
+            .streamStoredEventsFrom({ threadId: launched.threadId, afterSequence: 0 })
+            .pipe(
+              Stream.filter(
+                (stored) =>
+                  stored.commandId === CommandId.make(`${input.commandId}:release`) &&
+                  stored.event.type === "run.updated",
+              ),
+              Stream.runHead,
+            );
           return launched;
         }).pipe(Effect.provide(makeHarness({ databaseLayer }).layer)),
       );
