@@ -1643,7 +1643,7 @@ it.effect.each(["fails", "is interrupted"] as const)(
           });
         }
 
-        yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+        yield* threads.streamStoredEventsFrom({ threadId: launched.threadId, afterSequence: 0 }).pipe(
           Stream.filter(
             (stored) =>
               stored.event.type === "run.updated" && stored.event.payload.queueHeld === true,
@@ -1706,7 +1706,7 @@ it.effect.each(["failed", "interrupted"] as const)(
           runId: launched.projection.runs[0]!.id,
         });
       }
-      yield* threads.streamStoredEventsFrom({ threadId: launched.threadId }).pipe(
+      yield* threads.streamStoredEventsFrom({ threadId: launched.threadId, afterSequence: 0 }).pipe(
         Stream.filter(
           (stored) => stored.event.type === "run.updated" && stored.event.payload.status === ending,
         ),
@@ -3069,14 +3069,16 @@ it.effect.each(
           yield* service.cancelTask(scope, { taskId: delegated.taskId });
           yield* Deferred.await(terminalClosed);
           if (!cancelAsync) {
-            yield* threads.streamStoredEventsFrom({ threadId: delegated.childThreadId }).pipe(
-              Stream.filter(
-                (stored) =>
-                  stored.event.type === "thread.metadata-updated" &&
-                  stored.event.payload.worktreePath === null,
-              ),
-              Stream.runHead,
-            );
+            yield* threads
+              .streamStoredEventsFrom({ threadId: delegated.childThreadId, afterSequence: 0 })
+              .pipe(
+                Stream.filter(
+                  (stored) =>
+                    stored.event.type === "thread.metadata-updated" &&
+                    stored.event.payload.worktreePath === null,
+                ),
+                Stream.runHead,
+              );
           }
           assert.equal(harness.closeTerminal.mock.calls.length, 1);
           assert.equal(harness.removeWorktree.mock.calls.length, cancelAsync ? 0 : 1);
@@ -3093,7 +3095,11 @@ it.effect.each(
         }
         yield* Deferred.succeed(allowSetup, undefined);
         yield* threads
-          .streamStoredEventsFrom({ threadId: delegated.childThreadId, eventType: "run.updated" })
+          .streamStoredEventsFrom({
+            threadId: delegated.childThreadId,
+            afterSequence: 0,
+            eventType: "run.updated",
+          })
           .pipe(
             Stream.filter(
               (stored) =>
