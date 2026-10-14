@@ -113,10 +113,104 @@ describe("command keys", () => {
     }
   });
 
+  it("keeps inner quotes and nested substitution bodies (Sol review)", () => {
+    for (const command of [
+      'echo "$(gh pr create --title "hello")"',
+      'echo "$(gh pr create $(printf x))"',
+      'echo "$(gh pr create "$(printf x)")"',
+      'echo $(gh pr create --title "hello")',
+      'echo "`gh pr create --title "hello"`"',
+      'echo "`printf "%s" \\`gh pr create\\``"',
+      'cat <<EOF\n$(gh pr create --title "hello" $(printf x))\nEOF',
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "echo '$(gh pr create)'",
+      'echo "$(printf "%s" "gh pr create")"',
+      'echo "`printf "%s" "gh pr create"`"',
+      'echo "$(printf "%s" "$(printf "%s" "gh pr create")")"',
+      "cat <<'EOF'\n$(gh pr create --title \"hello\" $(printf x))\nEOF",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("uses even and odd backslash parity for substitutions (Sol review)", () => {
+    // Two/four literal backslashes run; one/three leave the operator literal.
+    for (const command of [
+      'echo "\\\\$(gh pr create)"',
+      'echo "\\\\\\\\$(gh pr create)"',
+      "cat <<EOF\n\\\\$(gh pr create)\nEOF",
+      "cat <<EOF\n\\\\\\\\$(gh pr create)\nEOF",
+      'echo "\\\\`gh pr create`"',
+      "cat <<EOF\n\\\\`gh pr create`\nEOF",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      'echo "\\$(gh pr create)"',
+      'echo "\\\\\\$(gh pr create)"',
+      "cat <<EOF\n\\$(gh pr create)\nEOF",
+      "cat <<EOF\n\\\\\\$(gh pr create)\nEOF",
+      'echo "\\`gh pr create\\`"',
+      "cat <<EOF\n\\`gh pr create\\`\nEOF",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("ends a heredoc only on its exact delimiter, stripping tabs only for <<- (Sol review)", () => {
+    for (const command of [
+      "cat <<'EOF'\nEOF\ngh pr create",
+      "cat <<EOF\nEOF\ngh pr create",
+      "cat <<-'EOF'\n\tEOF\ngh pr create",
+      "cat <<-EOF\n\tEOF\ngh pr create",
+      "cat <<A <<'B'\nA\nB\ngh pr create",
+      "cat <<'A'\nA\ncat <<'B'\nB\ngh pr create",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "cat <<'EOF'\n EOF\ngh pr create\nEOF",
+      "cat <<'EOF'\n\tEOF\ngh pr create\nEOF",
+      "cat <<'EOF'\nEOF \ngh pr create\nEOF",
+      "cat <<'EOF'\nEOF\t\ngh pr create\nEOF",
+      "cat <<-'EOF'\n EOF\ngh pr create\nEOF",
+      "cat <<-'EOF'\n\tEOF \ngh pr create\nEOF",
+      "cat <<'EOF'\nEOFX\ngh pr create\nEOF",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("keeps here-strings and arithmetic or parameter expansion boundaries distinct", () => {
+    for (const command of [
+      "cat <<<EOF\ngh pr create",
+      'echo "$(gh pr create $((1 + (2))))"',
+      'echo "$(gh pr create ${v:-")"})"',
+      'echo "$((1 + $(gh pr create)0))"',
+      'echo "${v:-$(gh pr create --title "hello")}"',
+      "cat <<EOF\n$((1 + $(gh pr create)0))\nEOF",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      'cat <<<"gh pr create"',
+      'echo "$((1 + (2))) gh pr create"',
+      'echo "${v:-gh pr create}"',
+      'echo "$(printf "%s" "${v:-gh pr create}")"',
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
   it("keeps the first bake's bare key on unquoted arguments (#232, contextmd#39)", () => {
     const db = (command: string) => hit(command, "chromeria-v2.sqlite");
     for (const command of [
       "sqlite3 chromeria-v2.sqlite .tables",
+      "sqlite3 ~/.t3/userdata/chromeria-v2.sqlite",
+      "sqlite3 /Users/u/.t3/userdata/chromeria-v2.sqlite",
       "sqlite3 -readonly ~/.t3/userdata/chromeria-v2.sqlite .tables",
       "sqlite3 /Users/u/.t3/userdata/chromeria-v2.sqlite 'select 1'",
     ]) {
@@ -124,6 +218,21 @@ describe("command keys", () => {
     }
     // Quoted, the name is an argument the command key no longer sees; the path key (#234) does.
     assert.isFalse(db('sqlite3 "/Users/u/.t3/userdata/chromeria-v2.sqlite" .tables'));
+    // Neither URI hits the bare command key: the basename includes ?mode=ro.
+    for (const command of [
+      "sqlite3 'file:/Users/u/.t3/userdata/chromeria-v2.sqlite?mode=ro'",
+      "sqlite3 file:/Users/u/.t3/userdata/chromeria-v2.sqlite?mode=ro",
+    ]) {
+      assert.isFalse(db(command), command);
+    }
+    // Live bake mentions: candidate 1672 edits a test; 26379 writes an Issue body.
+    for (const command of [
+      "python3 - <<'EOF'\nfrom pathlib import Path\np = Path('tests/test_serve.py')\np.write_text(p.read_text().replace('state.sqlite', 'chromeria-v2.sqlite'))\nEOF",
+      "gh issue create --title \"Record the bake\" --body-file - <<'EOF'\nThe entry names chromeria-v2.sqlite in a test fixture.\nEOF",
+      'gh issue create --title "Record the bake" --body "The entry names chromeria-v2.sqlite in a test fixture."',
+    ]) {
+      assert.isFalse(db(command), command);
+    }
   });
 
   it("let the first word be an executable path", () => {

@@ -33,11 +33,96 @@ const shellPaths = (ws: ReadonlyArray<string>) => {
   return out;
 };
 
-const HEREDOC_START = /^<<-?[ \t]*(['"]?)(\w+)\1/u;
-// An escaped `\$(` or `\`` is literal text, not a substitution.
-const SUBSTITUTION = /(?<!\\)\$\(([^()]*)\)|(?<!\\)`([^`]*)`/gu;
-const substitutions = (text: string) =>
-  [...text.matchAll(SUBSTITUTION)].map((m) => visibleCommand(m[1] ?? m[2] ?? "")).join(" ; ");
+const HEREDOC_START = /^<<(-?)[ \t]*(['"]?)(\w+)\2/u;
+
+/** A quote inside an expansion belongs to that expansion, not the enclosing string. */
+const quotedEnd = (text: string, start: number): number => {
+  const quote = text[start];
+  let i = start + 1;
+  while (i < text.length) {
+    if (text[i] === quote) return i;
+    if (quote === '"' && text[i] === "\\") {
+      i += 2;
+      continue;
+    }
+    const expansion = quote === '"' ? expansionAt(text, i) : null;
+    i = expansion === null ? i + 1 : expansion.end;
+  }
+  return i;
+};
+
+/** Find a balanced expansion boundary, ignoring delimiters in quotes or nested expansions. */
+const expansionEnd = (text: string, start: number, close: string): number => {
+  let i = start;
+  let depth = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === "\\") {
+      i += 2;
+      continue;
+    }
+    if (depth === 0 && text.startsWith(close, i)) return i;
+    // Legacy backtick boundaries are found before the body is parsed as shell code.
+    if (close === "`") {
+      i += 1;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      i = quotedEnd(text, i) + 1;
+      continue;
+    }
+    const expansion = expansionAt(text, i);
+    if (expansion !== null) {
+      i = expansion.end;
+      continue;
+    }
+    if (ch === (close === "}" ? "{" : "(")) depth += 1;
+    else if (depth > 0 && ch === close[0]) depth -= 1;
+    i += 1;
+  }
+  return text.length;
+};
+
+const expansionAt = (
+  text: string,
+  start: number,
+): { body: string; end: number; command: boolean } | null => {
+  const backtick = text[start] === "`";
+  const arithmetic = text.startsWith("$((", start);
+  const parameter = text.startsWith("${", start);
+  if (!backtick && !parameter && !text.startsWith("$(", start)) return null;
+  const width = backtick ? 1 : arithmetic ? 3 : 2;
+  const close = backtick ? "`" : parameter ? "}" : arithmetic ? "))" : ")";
+  const stop = expansionEnd(text, start + width, close);
+  let body = text.slice(start + width, stop);
+  // Backticks remove one escape layer before the shell reads their command body.
+  if (backtick) body = body.replace(/\\([$`\\])/gu, "$1");
+  return {
+    body,
+    end: Math.min(stop + close.length, text.length),
+    command: !arithmetic && !parameter,
+  };
+};
+
+/** Keep executable substitutions in expanded data; skip escape pairs so parity is preserved. */
+const substitutions = (text: string): string => {
+  const out: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === "\\") {
+      i += 2;
+      continue;
+    }
+    const expansion = expansionAt(text, i);
+    if (expansion === null) {
+      i += 1;
+      continue;
+    }
+    out.push(expansion.command ? visibleCommand(expansion.body) : substitutions(expansion.body));
+    i = expansion.end;
+  }
+  return out.join(" ; ");
+};
 /** Where a new command starts: the line so far ends at a separator, or holds only a word being built. */
 const SEPARATOR = /(?:^|[;&|(\n]|\$\()[ \t]*\S*$/u;
 const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
@@ -53,16 +138,26 @@ const visibleCommand = (command: string): string => {
   const text = command;
   let out = "";
   let i = 0;
-  const heredocs: Array<{ word: string; expands: boolean }> = [];
+  const heredocs: Array<{ word: string; expands: boolean; stripTabs: boolean }> = [];
   while (i < text.length) {
     const ch = text[i]!;
+    if (text.startsWith("<<<", i)) {
+      // A here-string has an argument, not a body on following lines.
+      out += "<<<";
+      i += 3;
+      continue;
+    }
     // An unquoted `<<WORD` opens a heredoc: its body, from the next line to WORD, is data.
     const opening =
       ch === "<" && text[i + 1] === "<" && text[i + 2] !== "<"
         ? HEREDOC_START.exec(text.slice(i))
         : null;
     if (opening !== null) {
-      heredocs.push({ word: opening[2]!, expands: opening[1] === "" });
+      heredocs.push({
+        word: opening[3]!,
+        expands: opening[2] === "",
+        stripTabs: opening[1] === "-",
+      });
       out += " ";
       i += opening[0].length;
       continue;
@@ -71,8 +166,10 @@ const visibleCommand = (command: string): string => {
       // Skip each pending heredoc body up to its terminator line.
       let j = i + 1;
       let kept = "";
-      for (const { word, expands } of heredocs) {
-        const end = new RegExp(`(^|\\n)[ \\t]*${word}[ \\t]*(?=\\n|$)`, "u").exec(text.slice(j));
+      for (const { word, expands, stripTabs } of heredocs) {
+        const end = new RegExp(`(^|\\n)${stripTabs ? "\\t*" : ""}${word}(?=\\n|$)`, "u").exec(
+          text.slice(j),
+        );
         const stop = end === null ? text.length : j + end.index + end[0].length;
         // An unquoted marker expands the body: its substitutions run.
         if (expands)
@@ -89,13 +186,18 @@ const visibleCommand = (command: string): string => {
       i += 2;
       continue;
     }
+    if (ch === "`" || (text.startsWith("$(", i) && !text.startsWith("$((", i))) {
+      const expansion = expansionAt(text, i)!;
+      out += ` ${visibleCommand(expansion.body)} `;
+      i = expansion.end;
+      continue;
+    }
     if (ch !== "'" && ch !== '"') {
       out += ch;
       i += 1;
       continue;
     }
-    let j = i + 1;
-    while (j < text.length && text[j] !== ch) j += ch === '"' && text[j] === "\\" ? 2 : 1;
+    const j = quotedEnd(text, i);
     const body = text.slice(i + 1, j);
     const before = out.trimEnd().split(/\s+/u);
     const shell = (before.at(-2) ?? "").slice((before.at(-2) ?? "").lastIndexOf("/") + 1);
