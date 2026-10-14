@@ -27,7 +27,7 @@ flowchart TD
     JT["Spectrum judged tests"]
     %% JT: #119
     OB["OpenBot: Bots, Channels, Computer"]
-    %% OB: toolboxmd/openbot PR #142
+    %% OB: context
     UA["Upstream absorption"]
     %% UA: #166
     BR["Bounded event reads"]
@@ -61,8 +61,8 @@ flowchart TD
 
 ## Work that is not a part
 
-| Work               | Why it is not a part                                                                                                                                               |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Network routes     | Reaching one environment over several routes already landed from upstream (`979ca66ced`, pingdotgg/t3code#15467). No open Chromeria issue owns a remaining change. |
-| OpenBot spike (#7) | Closed as not planned. The OpenBot part points at the direction pull request in toolboxmd/openbot.                                                                 |
-| v2 cutover (#177)  | The landing umbrella. Promachos, Wight, Drafters, Spectrum and Prism cite their own issues.                                                                        |
+| Work              | Why it is not a part                                                                                                                                                                                                                |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Network routes    | Reaching one environment over several routes already landed from upstream (`979ca66ced`, pingdotgg/t3code#15467). No open Chromeria issue owns a remaining change.                                                                  |
+| OpenBot mode      | Drawn as OB, a context part. toolboxmd/openbot#142 only records the direction, so it cannot be the primary ref: the tab would colour the mode done. Chromeria spike #7 closed as not planned, and no open issue owns the mode here. |
+| v2 cutover (#177) | The landing umbrella. Promachos, Wight, Drafters, Spectrum and Prism cite their own issues.                                                                                                                                         |
