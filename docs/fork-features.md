@@ -790,6 +790,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/mcp/toolkits/thread/handlers.ts",
     "apps/server/src/mcp/toolkits/thread/tools.ts",
     "apps/server/src/orchestration-v2/EffectOutbox.ts",
+    "apps/server/src/orchestration-v2/EffectWorker.test.ts",
     "apps/server/src/orchestration-v2/EffectWorker.ts",
     "apps/server/src/orchestration-v2/EventSink.ts",
     "apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
