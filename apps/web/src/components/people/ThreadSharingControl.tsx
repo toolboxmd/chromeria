@@ -88,7 +88,7 @@ export function ThreadSharingControl({
             void runtime
               .runPromise(
                 Crypto.Crypto.pipe(
-                  Effect.flatMap((crypto) => crypto.randomUUIDv4),
+                  Effect.flatMap((crypto) => crypto.randomUUIDv4()),
                   Effect.orDie,
                 ),
               )

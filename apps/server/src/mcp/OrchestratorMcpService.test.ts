@@ -1129,14 +1129,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           capabilities.providers[0]?.models.map((model) => model.id),
           ["gpt-5.4", "my-model"],
         );
-      }).pipe(
-        Effect.provide(
-          layerOrchestratorService.pipe(
-            Layer.provide(ServerSettings.layerTest()),
-            Layer.provide(layerDependencies),
-          ),
-        ),
-      );
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
     }),
   );
 
@@ -2380,6 +2373,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
           Layer.mock(GitVcsDriver.GitVcsDriver)({}),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
+            hasReceipt: () => Effect.succeed(false),
             getThreadRecords: (threadId) =>
               Effect.succeed(
                 threadId === parentThreadId ? parentProjection([task]) : childProjection,

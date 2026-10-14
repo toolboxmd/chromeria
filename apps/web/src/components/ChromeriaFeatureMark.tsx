@@ -19,7 +19,7 @@ export function ChromeriaFeatureMark({ focusable = true }: { readonly focusable?
             role="img"
             aria-label="Chromeria feature"
             tabIndex={focusable ? 0 : undefined}
-            className="inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="inline-flex size-3.5 shrink-0 items-center justify-center rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           />
         }
       >

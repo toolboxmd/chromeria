@@ -7,6 +7,9 @@ import { T3_CODE_DARK_THEME_COLORS } from "@t3tools/shared/themePalettes";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 
 import "~/index.css";
+import * as AsyncResult from "effect/reactivity/AsyncResult";
+import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
+
 import { readLocalApi } from "~/localApi";
 import { selectActiveRightPanelSurface, useRightPanelStore } from "~/rightPanelStore";
 
@@ -20,29 +23,39 @@ const {
   openLink,
   openChangeRequestLink,
   sourceControlRead,
+  issueRead,
   linkEnvironment,
   navigate,
-} = vi.hoisted(() => ({
-  cachedUrl: { lifeMs: 60 * 60_000 },
-  refresh: vi.fn(),
-  showError: vi.fn(),
-  openLink: vi.fn(),
-  openChangeRequestLink: vi.fn(),
-  // The forge read behind an Issue link. A result here is not a live GitHub response.
-  sourceControlRead: vi.fn(async () => ({ _tag: "Failure" as const })),
-  linkEnvironment: {
-    configs: new Map<
-      string,
-      {
-        environment: {
-          capabilities: { issues: boolean; pullRequests: boolean; threadPullRequests: boolean };
-        };
-      }
-    >(),
-    projects: [] as ReadonlyArray<unknown>,
-  },
-  navigate: vi.fn(),
-}));
+} = vi.hoisted(() => {
+  /** The settled forge read `useAtomQueryRunner` returns. Only the tag decides an Issue opens. */
+  function issueRead(found: boolean): AtomCommandResult<unknown, unknown> {
+    return found
+      ? AsyncResult.success<unknown, unknown>({})
+      : AsyncResult.fail<unknown, unknown>("Issue was not read");
+  }
+  return {
+    cachedUrl: { lifeMs: 60 * 60_000 },
+    refresh: vi.fn(),
+    showError: vi.fn(),
+    openLink: vi.fn(),
+    openChangeRequestLink: vi.fn(),
+    issueRead,
+    // The forge read behind an Issue link. A result here is not a live GitHub response.
+    sourceControlRead: vi.fn(async () => issueRead(false)),
+    linkEnvironment: {
+      configs: new Map<
+        string,
+        {
+          environment: {
+            capabilities: { issues: boolean; pullRequests: boolean; threadPullRequests: boolean };
+          };
+        }
+      >(),
+      projects: [] as ReadonlyArray<unknown>,
+    },
+    navigate: vi.fn(),
+  };
+});
 vi.mock("~/state/entities", async (importOriginal) => {
   const actual = await importOriginal<typeof import("~/state/entities")>();
   return {
@@ -118,7 +131,7 @@ beforeEach(async () => {
   cachedUrl.lifeMs = 60 * 60_000;
   openLink.mockReset().mockResolvedValue(undefined);
   openChangeRequestLink.mockReset().mockReturnValue(false);
-  sourceControlRead.mockReset().mockResolvedValue({ _tag: "Failure" });
+  sourceControlRead.mockReset().mockResolvedValue(issueRead(false));
   navigate.mockClear();
   showError.mockClear();
   onClose.mockClear();
@@ -303,7 +316,7 @@ function allowIssues() {
 
 it("opens an Issue once from the inline page and from the expanded page", async () => {
   allowIssues();
-  sourceControlRead.mockResolvedValue({ _tag: "Success", value: {} });
+  sourceControlRead.mockResolvedValue(issueRead(true));
   await renderInline();
   const inlineFrame = document.querySelector("iframe")!;
   inlineFrame.focus();
@@ -380,7 +393,7 @@ it.each([
   ["ctrlKey", { ctrlKey: true }],
 ] as const)("sends a %s Issue click to the system browser once", async (_name, modifiers) => {
   allowIssues();
-  sourceControlRead.mockResolvedValue({ _tag: "Success", value: {} });
+  sourceControlRead.mockResolvedValue(issueRead(true));
   await renderInline();
   const frame = document.querySelector("iframe")!;
   frame.focus();
@@ -395,7 +408,7 @@ it.each([
 
 it("does not open an Issue for an environment that does not list Issues", async () => {
   allowIssues();
-  sourceControlRead.mockResolvedValue({ _tag: "Success", value: {} });
+  sourceControlRead.mockResolvedValue(issueRead(true));
   await renderInline(otherEnvironmentId);
   const frame = document.querySelector("iframe")!;
   frame.focus();
@@ -412,7 +425,7 @@ it("does not open an Issue for an environment that does not list Issues", async 
 
 it("ignores a link from another window, an unfocused frame, or an inactive activation", async () => {
   allowIssues();
-  sourceControlRead.mockResolvedValue({ _tag: "Success", value: {} });
+  sourceControlRead.mockResolvedValue(issueRead(true));
   await renderInline();
   const frame = document.querySelector("iframe")!;
   const stranger = document.createElement("iframe");
