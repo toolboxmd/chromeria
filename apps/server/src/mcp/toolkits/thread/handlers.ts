@@ -161,6 +161,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         projection: { thread },
       } = yield* readThread(input.threadId);
       return {
+        ...(thread.bare === undefined ? {} : { bare: thread.bare }),
         threadId: thread.id,
         modelSelection: thread.modelSelection,
         runtimeMode: thread.runtimeMode,

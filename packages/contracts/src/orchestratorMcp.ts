@@ -1,3 +1,4 @@
+import { BareLaunchRequest, BareSupport } from "./bareLaunch.ts";
 import { PrismLane, PrismRole } from "./prism.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -186,6 +187,7 @@ export type OrchestratorMcpTerminalDelegatedTaskStatus =
   typeof OrchestratorMcpTerminalDelegatedTaskStatus.Type;
 
 export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
+  bare: Schema.optional(BareLaunchRequest),
   projectId: Schema.optional(ProjectId),
   workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
   lane: Schema.optional(PrismLane),
@@ -275,6 +277,7 @@ export const OrchestratorMcpTaskCancelResult = Schema.Struct({
 export type OrchestratorMcpTaskCancelResult = typeof OrchestratorMcpTaskCancelResult.Type;
 
 export const OrchestratorMcpCreateThreadRequest = Schema.Struct({
+  bare: Schema.optional(BareLaunchRequest),
   prompt: Schema.optional(OrchestratorMcpPrompt),
   title: Schema.optional(OrchestratorMcpTitle),
   target: Schema.optional(OrchestratorMcpTarget),
@@ -552,6 +555,7 @@ export const OrchestratorMcpThreadInterruptResult = Schema.Struct({
 export type OrchestratorMcpThreadInterruptResult = typeof OrchestratorMcpThreadInterruptResult.Type;
 
 export const OrchestratorMcpProviderCapability = Schema.Struct({
+  bare: Schema.optional(BareSupport),
   providerInstanceId: ProviderInstanceId,
   driverKind: ProviderDriverKind,
   displayName: Schema.NullOr(Schema.String),
@@ -597,6 +601,7 @@ export type OrchestratorMcpEnvironmentLinksResult =
   typeof OrchestratorMcpEnvironmentLinksResult.Type;
 
 export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
+  bareLaunch: Schema.optional(Schema.Boolean),
   /** The calling thread, or null when the caller is not a T3 thread. */
   parentThreadId: Schema.NullOr(ThreadId),
   /** The calling thread's selection, or null when the caller is not a T3 thread. */
@@ -619,6 +624,7 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
 export type OrchestratorMcpCapabilitiesResult = typeof OrchestratorMcpCapabilitiesResult.Type;
 
 export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
+  bare: Schema.optional(BareLaunchRequest),
   projectId: OrchestratorMcpProjectTarget,
   prompt: OrchestratorMcpPrompt.annotate({
     description: "Prompt executed on every scheduled run.",
@@ -646,6 +652,7 @@ export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTas
 
 /** Summary of a scheduled task returned by the schedule/list/update tools. */
 export const OrchestratorMcpScheduledTask = Schema.Struct({
+  bare: Schema.optional(BareLaunchRequest),
   scheduledTaskId: ScheduledTaskId,
   title: Schema.String,
   prompt: Schema.String,
@@ -688,6 +695,7 @@ export type OrchestratorMcpListScheduledTasksResult =
   typeof OrchestratorMcpListScheduledTasksResult.Type;
 
 export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
+  bare: Schema.optional(BareLaunchRequest),
   scheduledTaskId: ScheduledTaskId,
   prompt: Schema.optional(OrchestratorMcpPrompt),
   title: Schema.optional(OrchestratorMcpTitle),

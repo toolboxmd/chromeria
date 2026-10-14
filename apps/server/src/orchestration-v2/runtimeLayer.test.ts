@@ -1,4 +1,5 @@
 import { SourceControlProviderKind } from "@t3tools/contracts";
+import * as BareProviders from "../provider/ProviderRegistry.ts";
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -266,7 +267,7 @@ const moveProject = (projectId: ProjectId, workspaceRoot: string, updatedAt: str
   );
 
 const layerTest = Layer.mergeAll(
-  RuntimeLayer.layer,
+  RuntimeLayer.layer.pipe(Layer.provide(Layer.mock(BareProviders.ProviderRegistry)({}))),
   RuntimeLayer.layerEventSink,
   ProjectStore.layer,
   ProjectionStore.layer,
@@ -286,6 +287,7 @@ const layerTest = Layer.mergeAll(
 );
 
 const layerLegacyImportTest = RuntimeLayer.layer.pipe(
+  Layer.provide(Layer.mock(BareProviders.ProviderRegistry)({})),
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(McpProviderSessions.layer),
   Layer.provideMerge(SqlitePersistence.layerMemory),
@@ -299,7 +301,9 @@ const layerLegacyImportTest = RuntimeLayer.layer.pipe(
 );
 
 const layerProjectDeletionTest = Layer.mergeAll(
-  RuntimeLayer.layer.pipe(Layer.provide(RuntimeLayer.layerProjectService)),
+  RuntimeLayer.layer
+    .pipe(Layer.provide(Layer.mock(BareProviders.ProviderRegistry)({})))
+    .pipe(Layer.provide(RuntimeLayer.layerProjectService)),
   RuntimeLayer.layerProjectService,
   RuntimeLayer.layerEventSink,
   ThreadCommandExecutor.layer,
@@ -442,7 +446,9 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
 });
 
 const layerSharedApplicationDataPlaneTest = Layer.mergeAll(
-  RuntimeLayer.layer.pipe(Layer.provide(RuntimeLayer.layerProjectService)),
+  RuntimeLayer.layer
+    .pipe(Layer.provide(Layer.mock(BareProviders.ProviderRegistry)({})))
+    .pipe(Layer.provide(RuntimeLayer.layerProjectService)),
   RuntimeLayer.layerProjectService,
   RuntimeLayer.layerEventSink,
   RuntimeLayer.layerEventInfrastructure,
@@ -5703,7 +5709,7 @@ const queueResumeDisabledInstanceProjectId = ProjectId.make(
 );
 
 const layerQueueResumeDisabledInstanceTest = Layer.mergeAll(
-  RuntimeLayer.layer,
+  RuntimeLayer.layer.pipe(Layer.provide(Layer.mock(BareProviders.ProviderRegistry)({}))),
   RuntimeLayer.layerEventSink,
   ProjectStore.layer,
   ProjectionStore.layer,
