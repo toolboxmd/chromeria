@@ -125,16 +125,25 @@ export const HARNESSES: Readonly<Record<string, Harness>> = {
   },
   // Prompt-hook and post-tool output are discarded; PreToolUse context arrives with the
   // tool result; context is clipped at 10,000 characters; hooks fail open at 5 s.
+  // Stdin carries both names: `hookEventName` is snake_case and `hook_event_name` is
+  // Claude's PascalCase. The reply echoes `hook_event_name`, the name the canary proved.
   grok: {
     name: "grok",
     events: {
       session_start: "session_start",
+      SessionStart: "session_start",
       user_prompt_submit: "user_message",
+      UserPromptSubmit: "user_message",
       pre_tool_use: "pre_tool",
+      PreToolUse: "pre_tool",
       post_tool_use: "tool_result",
+      PostToolUse: "tool_result",
       post_tool_use_failure: "tool_failure",
+      PostToolUseFailure: "tool_failure",
       post_compact: "compaction",
+      PostCompact: "compaction",
       stop: "before_done",
+      Stop: "before_done",
     },
     fields: {
       ...COMMAND_HOOK_FIELDS,
