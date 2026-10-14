@@ -598,7 +598,7 @@ export const resolveHomebrewProviderMaintenance = Effect.fn("resolveHomebrewProv
   },
 );
 
-/** A launcher that runs the provider through mise (`mise x`, or `mise where` / `mise which`). */
+/** A launcher script that runs the provider through mise (`exec mise x codex -- codex`). */
 const isMiseWrapperScript = Effect.fn("isMiseWrapperScript")(function* (
   context: ProviderMaintenanceResolutionContext,
 ) {
@@ -613,13 +613,7 @@ const isMiseWrapperScript = Effect.fn("isMiseWrapperScript")(function* (
   const script = yield* fileSystem
     .readFileString(context.realCommandPath)
     .pipe(Effect.orElseSucceed(() => ""));
-  // Comment lines are not commands. The shebang stays on the original script
-  // so a commented `mise where` cannot hide a native updater.
-  const code = script
-    .split("\n")
-    .filter((line) => !line.trimStart().startsWith("#"))
-    .join("\n");
-  return script.startsWith("#!") && /\bmise\s+(?:x|exec|where|which)\b/.test(code);
+  return script.startsWith("#!") && /\bmise\s+(?:x|exec)\b/.test(script);
 });
 
 /**
