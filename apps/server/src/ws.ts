@@ -117,6 +117,8 @@ import {
   HttpServerResponse,
 } from "effect/http";
 import { RpcSerialization, RpcServer } from "effect/rpc";
+import * as Struct from "effect/Struct";
+import * as ForkWsRpc from "./forkWsRpc.ts";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as ServerConfig from "./config.ts";
@@ -561,6 +563,7 @@ const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 
 // Middleware added later wraps middleware added earlier, so instrumentation wraps authorization.
 const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
+const CoreServerWsRpcGroup = ServerWsRpcGroup.omit(...ForkWsRpc.methods);
 // When a resuming client's cursor is more than this many events behind the
 // current head, skip the per-event catch-up replay and send a fresh shell
 // snapshot instead. Replaying each intervening event costs a shell refetch;
@@ -1216,7 +1219,7 @@ const layerWsRpc = (
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
 ) =>
-  ServerWsRpcGroup.toLayer(
+  Layer.unwrap(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
       const sql = yield* SqlClient.SqlClient;
@@ -3205,7 +3208,10 @@ const layerWsRpc = (
             ),
           ),
       });
-      return handlers;
+      return Layer.merge(
+        CoreServerWsRpcGroup.toLayer(Struct.omit(handlers, ForkWsRpc.methods)),
+        ForkWsRpc.group.toLayer(Struct.pick(handlers, ForkWsRpc.methods)),
+      );
     }),
   );
 
