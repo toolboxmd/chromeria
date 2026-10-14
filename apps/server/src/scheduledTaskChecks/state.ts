@@ -1,3 +1,5 @@
+import { BareReadGrant } from "../orchestration-v2/bareReadGrant.ts";
+import { BareLaunchRequest } from "@t3tools/contracts";
 import {
   OrchestrationV2LinkOrigin,
   CommandId,
@@ -45,6 +47,8 @@ export type CheckResult = typeof CheckResult.Type;
  * after a crash repeats it exactly even if the task or Prism's pick changed.
  */
 export const SendPayload = Schema.Struct({
+  bareReadGrant: Schema.optional(BareReadGrant),
+  bare: Schema.optional(BareLaunchRequest),
   text: Schema.String,
   /** Prism's pick, for a new thread only; posts keep the thread's model and effort. */
   modelSelection: Schema.NullOr(ModelSelection),
@@ -53,6 +57,7 @@ export const SendPayload = Schema.Struct({
   /** Set when this send launches the run's thread. */
   launch: Schema.NullOr(
     Schema.Struct({
+      bare: Schema.optional(BareLaunchRequest),
       projectId: ProjectId,
       title: TrimmedNonEmptyString,
       modelSelection: ModelSelection,

@@ -1,3 +1,4 @@
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import { layerLaunchCatalog } from "./PeerLinks.testkit.ts";
 import * as Settings from "../serverSettings.ts";
 import { NodeHttpServer } from "@effect/platform-node";
@@ -149,7 +150,9 @@ const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
   servePeer(
     box,
     Layer.merge(
-      McpHttpServer.layerOrchestratorToolkit,
+      McpHttpServer.layerOrchestratorToolkit.pipe(
+        Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+      ),
       McpHttpServer.layerProjectRegistration,
     ).pipe(
       Layer.provide(NodeCrypto.layer),
@@ -197,7 +200,9 @@ const mcpClient = McpSchema.McpServerClient.of({
 const makeLaptop = Effect.gen(function* () {
   const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
   const layerHere = Layer.merge(
-    McpHttpServer.layerOrchestratorToolkit,
+    McpHttpServer.layerOrchestratorToolkit.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+    ),
     McpHttpServer.layerProjectRegistration,
   ).pipe(
     Layer.provideMerge(McpServer.McpServer.layer),

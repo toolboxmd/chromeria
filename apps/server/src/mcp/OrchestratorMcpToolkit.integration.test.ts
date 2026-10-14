@@ -1,3 +1,4 @@
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as PrismServerSettings from "../serverSettings.ts";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -99,6 +100,7 @@ import { delegatedTaskRun, hasPendingChildRuns } from "./OrchestratorMcpService.
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
+  Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
   Layer.provide(PrismServerSettings.layerTest()),
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
@@ -597,7 +599,9 @@ describe("orchestrator MCP toolkit", () => {
           registry,
         );
         const layers = Layer.merge(
-          McpHttpServer.layerOrchestratorToolkit,
+          McpHttpServer.layerOrchestratorToolkit.pipe(
+            Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+          ),
           McpHttpServer.toolkitRegistration(AttachmentToolkit, AttachmentHandlers.layer),
         ).pipe(
           Layer.provide(PrismServerSettings.layerTest()),

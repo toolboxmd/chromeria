@@ -1,3 +1,6 @@
+import type { BareReadGrant } from "../orchestration-v2/bareReadGrant.ts";
+import * as BareRuntime from "@t3tools/provider-core/server/bareLaunch";
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import { callerLinkOrigin, assertSameLink } from "./linkOrigin.ts";
 import { SpectrumMcpInterrupt } from "../spectrum/mcpInterrupt.ts";
 import { SpectrumMcpSend } from "../spectrum/mcpSend.ts";
@@ -285,6 +288,7 @@ function scheduledTaskWorkspaceStrategy(
 
 function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): OrchestratorMcpScheduledTask {
   return {
+    ...(task.bare === undefined ? {} : { bare: task.bare }),
     scheduledTaskId: task.id,
     title: task.title,
     prompt: task.prompt,
@@ -876,6 +880,7 @@ function timelineItem(input: {
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
+  const bareLaunch = yield* BareLaunch.BareLaunch;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
@@ -890,6 +895,19 @@ const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
 
+  const bareTarget = Effect.fnUntraced(function* (selection: ModelSelection) {
+    const adapter = yield* providerAdapters
+      .get(selection.instanceId)
+      .pipe(Effect.mapError(() => failure("provider_unavailable", "Bare adapter unavailable.")));
+    const support =
+      adapter.bareSupport === undefined
+        ? BareRuntime.unsupportedBare(adapter.driver)
+        : yield* adapter.bareSupport;
+    if (!support.supported) return yield* failure("provider_unavailable", support.reason);
+    return selection;
+  });
+
+  /** A caller-named project, which must exist before anything is recorded against it. */
   const requireProject = (projectId: ProjectId) =>
     projects.getById(projectId).pipe(
       Effect.mapError((error) =>
@@ -904,6 +922,22 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  const scheduledBareGrant = Effect.fn("OrchestratorMcp.scheduledBareGrant")(function* (
+    parent: Pick<OrchestrationV2ThreadProjection, "thread"> | undefined,
+    mode: RuntimeMode,
+  ): Effect.fn.Return<BareReadGrant, OrchestratorMcpFailure> {
+    if (mode === "full-access") return { type: "all" };
+    if (parent === undefined) return { type: "roots", roots: [] };
+    return {
+      type: "roots",
+      roots: [
+        parent.thread.worktreePath ??
+          (yield* requireProject(parent.thread.projectId)).workspaceRoot,
+      ],
+    };
+  });
+
+  /** A client has no thread to inherit a model from, so it falls back to the project default. */
   const projectDefaultModelSelection = (
     project: Effect.Success<ReturnType<typeof requireProject>>,
   ) =>
@@ -1767,7 +1801,9 @@ const make = Effect.gen(function* () {
         const project = yield* requireProject(projectId);
         const bindToCurrentThread =
           input.bindToCurrentThread ??
-          (parent !== undefined && parent.thread.projectId === projectId);
+          (input.bare === undefined &&
+            parent !== undefined &&
+            parent.thread.projectId === projectId);
         if (
           bindToCurrentThread &&
           (parent === undefined || parent.thread.projectId !== projectId)
@@ -1779,6 +1815,15 @@ const make = Effect.gen(function* () {
               : "bindToCurrentThread binds to this thread, which belongs to a different project.",
           );
         }
+        if (
+          input.bare !== undefined &&
+          bindToCurrentThread &&
+          (parent?.thread.bare === undefined || (input.bare.additions?.length ?? 0) > 0)
+        )
+          return yield* failure(
+            "invalid_request",
+            "A bound bare schedule needs a bare thread and no new additions.",
+          );
         const modelSelection =
           parent?.thread.modelSelection ?? (yield* projectDefaultModelSelection(project));
         const derivedTitle = input.prompt.split("\n")[0]?.trim() ?? "";
@@ -1786,6 +1831,7 @@ const make = Effect.gen(function* () {
           input.title ?? (derivedTitle.length > 0 ? derivedTitle.slice(0, 80) : "Scheduled task");
         const linkOrigin = callerLinkOrigin({ scope, caller: parent?.thread });
         const upsertInput: ScheduledTaskUpsertInput = {
+          ...(input.bare === undefined ? {} : { bare: input.bare }),
           ...(linkOrigin === undefined ? {} : { linkOrigin }),
           title,
           prompt: input.prompt,
@@ -1811,10 +1857,16 @@ const make = Effect.gen(function* () {
                 }),
               }),
         };
+        const bareReadGrant =
+          input.bare === undefined
+            ? undefined
+            : yield* scheduledBareGrant(parent, limits.runtimeMode);
         const { task } = yield* forkTasks
           .schedule(
             { input, projectId, parent, bindToCurrentThread, scope },
-            scheduledTasks.upsert,
+            bareReadGrant === undefined
+              ? scheduledTasks.upsert
+              : (request) => scheduledTasks.upsert(request, { bareReadGrant }),
           )(upsertInput)
           .pipe(
             Effect.mapError((error) =>
@@ -1873,6 +1925,9 @@ const make = Effect.gen(function* () {
             : scheduledTaskWorkspaceStrategy(input.bindToCurrentThread);
         const upsertInput: ScheduledTaskUpsertInput = {
           id: existing.id,
+          ...((input.bare ?? existing.bare) === undefined
+            ? {}
+            : { bare: input.bare ?? existing.bare }),
           title: input.title ?? existing.title,
           prompt: input.prompt ?? existing.prompt,
           enabled: input.enabled ?? existing.enabled,
@@ -1886,10 +1941,16 @@ const make = Effect.gen(function* () {
           createdBy: existing.createdBy,
           creationSource: existing.creationSource,
         };
+        const bareReadGrant =
+          input.bare === undefined
+            ? undefined
+            : yield* scheduledBareGrant(parent, limits.runtimeMode);
         const { task } = yield* forkTasks
           .update(
             { input, existing, threadId, parent },
-            scheduledTasks.upsert,
+            bareReadGrant === undefined
+              ? scheduledTasks.upsert
+              : (request) => scheduledTasks.upsert(request, { bareReadGrant }),
           )(upsertInput)
           .pipe(
             Effect.mapError((error) =>
@@ -2050,7 +2111,21 @@ const make = Effect.gen(function* () {
           Effect.map((settings) => settings.providerModelPreferences ?? {}),
           Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
         );
+        const bareSupports = new Map(
+          yield* Effect.forEach(providers, (provider) =>
+            Effect.gen(function* () {
+              const adapter = yield* providerAdapters.get(provider.instanceId).pipe(Effect.option);
+              return [
+                provider.instanceId,
+                Option.isSome(adapter) && adapter.value.bareSupport !== undefined
+                  ? yield* adapter.value.bareSupport
+                  : BareRuntime.unsupportedBare(provider.driver),
+              ] as const;
+            }),
+          ),
+        );
         return {
+          bareLaunch: true,
           parentThreadId: parent?.thread.id ?? null,
           inheritedProviderInstanceId: parent?.thread.modelSelection.instanceId ?? null,
           inheritedModel: parent?.thread.modelSelection.model ?? null,
@@ -2064,6 +2139,7 @@ const make = Effect.gen(function* () {
             return {
               providerInstanceId: provider.instanceId,
               driverKind: provider.driver,
+              bare: bareSupports.get(provider.instanceId),
               displayName: provider?.displayName ?? null,
               models:
                 provider?.models
@@ -2173,6 +2249,7 @@ const make = Effect.gen(function* () {
               });
         let runtimeTarget = explicitTarget;
         const target = yield* prism.resolve({
+          bare: input.bare !== undefined,
           projectId: parent.thread.projectId,
           role: input.prismRole ?? Prism.delegatedPrismRole(input.role),
           lane: input.lane,
@@ -2196,9 +2273,14 @@ const make = Effect.gen(function* () {
                       runtimeTarget = resolved;
                       return resolved.modelSelection;
                     }),
+                    Effect.flatMap((selection) =>
+                      input.bare === undefined ? Effect.succeed(selection) : bareTarget(selection),
+                    ),
                   )
               : undefined,
         });
+        if (input.bare !== undefined && !isRetryOfAcceptedDelegation)
+          yield* bareTarget(target.modelSelection);
         const runtimeMode = yield* resolveRuntimeMode(
           parent.thread.runtimeMode,
           input.runtimeMode,
@@ -2223,6 +2305,44 @@ const make = Effect.gen(function* () {
             );
           workspaceStrategy = { type: "worktree", baseRef: base.commitSha, startFromOrigin: false };
         }
+        const bareDestination =
+          input.bare === undefined || isRetryOfAcceptedDelegation
+            ? undefined
+            : yield* requireProject(input.projectId ?? parent.thread.projectId);
+        const preparedBare =
+          input.bare === undefined || bareDestination === undefined
+            ? undefined
+            : yield* bareLaunch
+                .prepare({
+                  request: input.bare,
+                  instanceId: target.modelSelection.instanceId,
+                  projectRoot: bareDestination.workspaceRoot,
+                  workspaceStrategy:
+                    workspaceStrategy ??
+                    input.workspaceStrategy ??
+                    (input.projectId !== undefined && input.projectId !== parent.thread.projectId
+                      ? bareDestination.defaultThreadEnvMode === "worktree"
+                        ? { type: "worktree", baseRef: "HEAD" }
+                        : { type: "root" }
+                      : parent.thread.worktreePath === null
+                        ? { type: "root", branch: parent.thread.branch ?? undefined }
+                        : {
+                            type: "existing_worktree",
+                            worktreePath: parent.thread.worktreePath,
+                            branch: parent.thread.branch ?? undefined,
+                          }),
+                  readGrant:
+                    parent.thread.runtimeMode === "full-access"
+                      ? { type: "all" }
+                      : {
+                          type: "roots",
+                          roots: [
+                            parent.thread.worktreePath ??
+                              (yield* requireProject(parent.thread.projectId)).workspaceRoot,
+                          ],
+                        },
+                })
+                .pipe(Effect.mapError((error) => failure("invalid_request", error.message)));
         // ThreadManagementService.dispatch is the chokepoint for this command
         // type's own enablement check, using the same command id and its
         // receipt-replay exemption, so no separate assert runs here.
@@ -2239,12 +2359,17 @@ const make = Effect.gen(function* () {
             ...(input.workspaceStrategy === undefined
               ? {}
               : { workspaceStrategy: input.workspaceStrategy }),
+            ...(preparedBare === undefined
+              ? {}
+              : { bare: preparedBare.bare, workspaceStrategy: preparedBare.workspaceStrategy }),
             task: [target.kitText, taskPrompt(input)].filter(Boolean).join("\n\n"),
             ...(input.title === undefined ? {} : { title: input.title }),
             modelSelection: target.modelSelection,
             runtimeMode,
             interactionMode,
-            ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
+            ...(preparedBare === undefined && workspaceStrategy !== undefined
+              ? { workspaceStrategy }
+              : {}),
             // Async delegations wake the parent on every child terminal; wait
             // delegations deliver through the blocking tool call, so a wake is
             // only needed if the parent settled first (timeout, disconnect).
@@ -2272,6 +2397,13 @@ const make = Effect.gen(function* () {
         }
         const taskId = taskEvent.event.payload.id;
         const childThreadId = taskEvent.event.payload.childThreadId;
+        if (input.bare !== undefined && isRetryOfAcceptedDelegation && childThreadId !== null) {
+          const child = yield* threadManagement
+            .getThreadRecords(childThreadId, [])
+            .pipe(Effect.mapError(threadManagementFailure));
+          if ((input.bare !== undefined) !== (child.thread.bare !== undefined))
+            return yield* failure("invalid_request", "Delegation bare intent changed.");
+        }
         const childRunEvent = result.storedEvents.find(
           (stored) =>
             stored.event.type === "run.created" && stored.event.threadId === childThreadId,
@@ -2552,9 +2684,45 @@ const make = Effect.gen(function* () {
                 title: request.title,
                 index,
               });
+              const wasAccepted =
+                request.bare !== undefined &&
+                (yield* threadManagement.hasReceipt(
+                  stableCommandId({ scope, requestKey: key, operation: "create-thread", index }),
+                ));
+              const storedBare = wasAccepted
+                ? (yield* threadManagement
+                    .getThreadRecords(threadId, [])
+                    .pipe(Effect.mapError(threadManagementFailure))).thread.bare
+                : undefined;
+              if (wasAccepted && (request.bare !== undefined) !== (storedBare !== undefined))
+                return yield* failure("invalid_request", "Thread bare intent changed.");
+              const bare = wasAccepted
+                ? storedBare
+                : request.bare === undefined
+                  ? undefined
+                  : yield* bareLaunch
+                      .resolve({
+                        request: request.bare,
+                        instanceId: target.modelSelection.instanceId,
+                        cwd:
+                          parent.thread.worktreePath ??
+                          (yield* requireProject(parent.thread.projectId)).workspaceRoot,
+                        readGrant:
+                          parent.thread.runtimeMode === "full-access"
+                            ? { type: "all" }
+                            : {
+                                type: "roots",
+                                roots: [
+                                  parent.thread.worktreePath ??
+                                    (yield* requireProject(parent.thread.projectId)).workspaceRoot,
+                                ],
+                              },
+                      })
+                      .pipe(Effect.mapError((error) => failure("invalid_request", error.message)));
               yield* threadManagement
                 .dispatch({
                   type: "thread.create",
+                  ...(bare === undefined ? {} : { bare }),
                   createdBy: "agent",
                   creationSource: "mcp",
                   // Fork: an agent's thread belongs to its caller's owner (toolboxmd/chromeria#170).
@@ -2988,6 +3156,7 @@ const make = Effect.gen(function* () {
 export const layer: Layer.Layer<
   OrchestratorMcpService,
   never,
+  | BareLaunch.BareLaunch
   | Crypto.Crypto
   | FileSystem.FileSystem
   | ThreadManagementService.ThreadManagementService

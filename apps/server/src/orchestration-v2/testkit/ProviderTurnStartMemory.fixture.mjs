@@ -31,6 +31,7 @@ const [
   Config,
   Settings,
   Contextmd,
+  Bare,
 ] = await Promise.all([
   app("orchestration-v2/ProviderTurnStartService"),
   app("orchestration-v2/ProjectionStore"),
@@ -46,6 +47,7 @@ const [
   app("config"),
   app("serverSettings"),
   app("contextmd/ContextmdServing"),
+  app("orchestration-v2/BareLaunch"),
 ]);
 let current;
 let fullReads = 0;
@@ -65,6 +67,7 @@ const session = {
 };
 const dependencies = Layer.mergeAll(
   Layer.mock(Contextmd.ContextmdServing)({ releaseSessionInstructions: () => Effect.void }),
+  Layer.mock(Bare.BareLaunch)({}),
   Layer.mock(Handoff.ContextHandoffServiceV2)({}),
   Id.layer,
   FileSystem.layerNoop({}),

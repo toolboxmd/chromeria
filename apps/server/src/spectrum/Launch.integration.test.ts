@@ -1,3 +1,7 @@
+import * as BareProjects from "../orchestration-v2/ProjectStore.ts";
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
+import * as GitWorkflow from "../git/GitWorkflowService.ts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   type OrchestrationV2LinkOrigin,
@@ -45,6 +49,7 @@ const selection = { instanceId, model: "test-model" };
 const adapter = {
   instanceId,
   driver: ProviderDriverKind.make("codex"),
+  bareSupport: Effect.succeed({ supported: true }),
   getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
   openSession: () => Effect.die("No provider process runs in this test"),
@@ -77,6 +82,7 @@ const prism = Prism.layer.pipe(
   ),
 );
 const base = Layer.mergeAll(
+  Layer.mock(BareProjects.ProjectStoreV2)({}),
   database,
   adapters,
   registry,
@@ -88,7 +94,10 @@ const base = Layer.mergeAll(
   }),
 );
 const runtime = Layer.fresh(
-  Layer.mergeAll(Launch.layer, Round.layer).pipe(Layer.provideMerge(base)),
+  Layer.mergeAll(
+    Launch.layer.pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({}))),
+    Round.layer,
+  ).pipe(Layer.provideMerge(base)),
 );
 const input: Launch.SpectrumStart = {
   commandId: CommandId.make("register:spectrum"),
@@ -134,6 +143,59 @@ const setupWithOrigin = (linkOrigin?: OrchestrationV2LinkOrigin) =>
   });
 
 const setup = setupWithOrigin();
+
+it.effect("bare Colors persist their additions and ceiling without a Prism kit", () =>
+  Effect.gen(function* () {
+    const caller = yield* setup;
+    yield* (yield* EventSink.EventSinkV2).write({
+      events: [
+        {
+          id: EventId.make("caller:restricted-workspace"),
+          type: "thread.metadata-updated",
+          threadId: caller.id,
+          occurredAt: NOW,
+          payload: { ...caller, runtimeMode: "approval-required", worktreePath: "/workspace" },
+        },
+      ],
+    });
+    const launch = yield* Launch.SpectrumLaunchService;
+    const state = yield* launch.register({
+      ...input,
+      colors: [
+        { label: "Bare", role: "reviewer", bare: {}, instructions: "Only this task input." },
+        { label: "Ordinary", role: "reviewer" },
+      ],
+    });
+    const projections = yield* Projection.ProjectionStoreV2;
+    const bare = yield* projections.getThread(state.participants[0]!.threadId);
+    assert.deepStrictEqual(bare.bare?.additions, []);
+    assert.strictEqual(bare.bare?.nativeHomeOwnerThreadId, bare.id);
+    assert.strictEqual(bare.runtimeMode, "approval-required");
+    assert.strictEqual(state.participants[0]!.instructions, "Only this task input.");
+    assert.strictEqual(state.participants[1]!.instructions, "Use the reviewer kit.");
+    assert.isUndefined((yield* projections.getThread(state.participants[1]!.threadId)).bare);
+  }).pipe(
+    Effect.provide(
+      Launch.layer.pipe(
+        Layer.provideMerge(
+          Layer.mergeAll(
+            base,
+            BareLaunch.layer.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  adapters,
+                  registry,
+                  Layer.mock(GitWorkflow.GitWorkflowService)({}),
+                  NodeServices.layer,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  ),
+);
 
 it.effect("resolves Colors through Prism, inherits ownership and launches exact lineage runs", () =>
   Effect.gen(function* () {
