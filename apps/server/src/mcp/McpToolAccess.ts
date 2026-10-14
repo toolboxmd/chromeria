@@ -188,7 +188,9 @@ export const writes = <P, A, E, R>(
  * handler checks its capability, as the capability toolkits do.
  */
 export const writesWithCapability = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
-  declare((params: P) => writingCaller.pipe(Effect.flatMap(() => handle(params))));
+  declare((params: P) =>
+    writingCaller.pipe(Effect.flatMap(() => McpRouting.invoke(params, handle))),
+  );
 
 /**
  * Changes the threads `threads` names. An omitted id is the caller's own
