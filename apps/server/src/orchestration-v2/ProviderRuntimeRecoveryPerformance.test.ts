@@ -67,6 +67,12 @@ type UnstampedEvent = OrchestrationV2DomainEvent extends infer Event
 interface Scenario {
   readonly settled: number;
   readonly active: number;
+  /**
+   * Bind every active thread, plus an older idle thread, to one session the
+   * way Codex shares a session per provider instance.
+   */
+  readonly sharedSessionStatus?: "ready" | "stopped";
+  readonly borrowedProviderThread?: boolean;
 }
 
 interface Seeded {
@@ -199,16 +205,8 @@ const seedScenario = Effect.fn(function* (scenario: Scenario) {
     return false;
   });
 
-  const activeThread = Effect.fn(function* (index: number) {
-    const threadId = ThreadId.make(`thread:bench:active:${index}`);
-    const providerSessionId = ProviderSessionId.make(`session:bench:${index}`);
-    const providerThreadId = ProviderThreadId.make(`provider-thread:bench:${index}`);
-    const runId = RunId.make(`run:${threadId}:1`);
-    const attemptId = RunAttemptId.make(`attempt:bench:${index}`);
-    const nodeId = NodeId.make(`node:bench:${index}`);
-    const providerTurnId = ProviderTurnId.make(`provider-turn:bench:${index}`);
-    yield* thread(threadId, { activeProviderThreadId: providerThreadId });
-    yield* apply({
+  const attachSession = (threadId: ThreadId, providerSessionId: ProviderSessionId) =>
+    apply({
       type: "provider-session.attached",
       threadId,
       driver,
@@ -217,7 +215,7 @@ const seedScenario = Effect.fn(function* (scenario: Scenario) {
         id: providerSessionId,
         driver,
         providerInstanceId,
-        status: "ready",
+        status: scenario.sharedSessionStatus ?? "ready",
         cwd: "/workspace",
         model: modelSelection.model,
         capabilities: CodexProviderCapabilitiesV2,
@@ -226,6 +224,23 @@ const seedScenario = Effect.fn(function* (scenario: Scenario) {
         lastError: null,
       },
     });
+  const sharedSessionId = ProviderSessionId.make("session:bench:shared");
+
+  const activeThread = Effect.fn(function* (index: number) {
+    const threadId = ThreadId.make(`thread:bench:active:${index}`);
+    const providerSessionId =
+      scenario.sharedSessionStatus === undefined
+        ? ProviderSessionId.make(`session:bench:${index}`)
+        : sharedSessionId;
+    const providerThreadId = ProviderThreadId.make(`provider-thread:bench:${index}`);
+    const ordinal = scenario.borrowedProviderThread && index === 0 ? 2 : 1;
+    const runId = RunId.make(`run:${threadId}:${ordinal}`);
+    const attemptId = RunAttemptId.make(`attempt:bench:${index}`);
+    const nodeId = NodeId.make(`node:bench:${index}`);
+    const providerTurnId = ProviderTurnId.make(`provider-turn:bench:${index}`);
+    yield* thread(threadId, { activeProviderThreadId: providerThreadId });
+    if (ordinal === 2) yield* run(threadId, 1, "completed", { providerThreadId });
+    yield* attachSession(threadId, providerSessionId);
     yield* apply({
       type: "provider-thread.updated",
       threadId,
@@ -242,7 +257,7 @@ const seedScenario = Effect.fn(function* (scenario: Scenario) {
         nativeConversationHeadRef: null,
         status: "active",
         firstRunOrdinal: 1,
-        lastRunOrdinal: 1,
+        lastRunOrdinal: ordinal,
         handoffIds: [],
         forkedFrom: null,
         createdAt: now,
@@ -250,7 +265,7 @@ const seedScenario = Effect.fn(function* (scenario: Scenario) {
         pendingBackgroundTasks: [],
       },
     });
-    yield* run(threadId, 1, "running", {
+    yield* run(threadId, ordinal, "running", {
       providerThreadId,
       rootNodeId: nodeId,
       activeAttemptId: attemptId,
@@ -360,7 +375,45 @@ const seedScenario = Effect.fn(function* (scenario: Scenario) {
   }
   yield* sql.withTransaction(
     Effect.gen(function* () {
+      if (scenario.sharedSessionStatus !== undefined) {
+        // Recovery visits threads oldest first, so this one reconciles first.
+        const idleThreadId = ThreadId.make("thread:bench:0-idle");
+        yield* thread(idleThreadId, { updatedAt: DateTime.subtract(now, { hours: 1 }) });
+        yield* run(idleThreadId, 1, "completed");
+        yield* attachSession(idleThreadId, sharedSessionId);
+      }
       for (let index = 0; index < scenario.active; index += 1) yield* activeThread(index);
+      if (scenario.borrowedProviderThread) {
+        const parentThreadId = ThreadId.make("thread:bench:0-parent");
+        const childThreadId = ThreadId.make("thread:bench:active:0");
+        yield* thread(parentThreadId, { updatedAt: DateTime.subtract(now, { hours: 1 }) });
+        const parentRunId = yield* run(parentThreadId, 1, "completed");
+        yield* apply({
+          type: "subagent.updated",
+          threadId: parentThreadId,
+          payload: {
+            id: NodeId.make("node:bench:parent-task"),
+            threadId: parentThreadId,
+            runId: parentRunId,
+            parentNodeId: NodeId.make("node:bench:parent-root"),
+            origin: "app_owned",
+            createdBy: "agent",
+            driver,
+            providerInstanceId,
+            providerThreadId: ProviderThreadId.make("provider-thread:bench:0"),
+            childThreadId,
+            nativeTaskRef: null,
+            prompt: "Complete the first delegated turn.",
+            title: "Completed delegation with a live child follow-up",
+            model: modelSelection.model,
+            status: "completed",
+            result: "First turn complete.",
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+          },
+        });
+      }
       for (let index = 0; index < WAITING_THREADS; index += 1) yield* waitingThread(index);
     }),
   );
@@ -486,6 +539,46 @@ it.live(
       yield* Console.log(`provider runtime recovery (ms)\n${formatTable([row])}`);
     }),
   60_000,
+);
+
+it.live("startup recovery continues every running thread on a shared provider session", () =>
+  Effect.gen(function* () {
+    const active = 3;
+    yield* seedScenario({ settled: 0, active, sharedSessionStatus: "ready" });
+    const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+    const summary = yield* recovery.recover;
+    assert.equal(summary.terminalizedRuns, active, "terminalized active runs");
+    assert.equal(summary.stoppedSessions, 1, "the shared session stops once");
+    assert.equal(yield* continuationEffectCount, active, "recorded continuations");
+  }).pipe(Effect.provide(Layer.fresh(layerTest))),
+);
+
+it.live(
+  "fresh recovery continues live turns after an earlier recovery stopped their shared session",
+  () =>
+    Effect.gen(function* () {
+      yield* seedScenario({ settled: 0, active: 3, sharedSessionStatus: "stopped" });
+      const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService;
+      const summary = yield* recovery.recover;
+      assert.equal(summary.terminalizedRuns, 3, "terminalized active runs");
+      assert.equal(summary.stoppedSessions, 0, "no live session to stop");
+      assert.equal(
+        yield* continuationEffectCount,
+        3,
+        "the remaining own turns still need continuation",
+      );
+    }).pipe(Effect.provide(Layer.fresh(layerTest))),
+);
+
+it.live("parent recovery preserves its child's live provider thread for continuation", () =>
+  Effect.gen(function* () {
+    yield* seedScenario({ settled: 0, active: 1, borrowedProviderThread: true });
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const ids = yield* projections.getRecoveryThreadIds("runtime");
+    assert.equal(ids[0], "thread:bench:0-parent", "the parent reconciles before the child");
+    yield* (yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService).recover;
+    assert.equal(yield* continuationEffectCount, 1, "the child's follow-up is continued");
+  }).pipe(Effect.provide(Layer.fresh(layerTest))),
 );
 
 it.live.skipIf(process.env.T3_BENCH_RECOVERY !== "1")(

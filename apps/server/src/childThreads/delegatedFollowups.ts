@@ -88,7 +88,7 @@ export function untransferredDelegatedRuns(
     transfers,
     child.thread.lineage.parentThreadId,
   );
-  if (results.some((transfer) => transfer.sourcePoint.runId === undefined)) return [];
+  const legacyResult = results.some((transfer) => transfer.sourcePoint.runId === undefined);
   const transferredIds = new Set(results.map((transfer) => transfer.sourcePoint.runId));
   const firstResultRun = runs
     .filter((run) => transferredIds.has(run.id))
@@ -98,7 +98,13 @@ export function untransferredDelegatedRuns(
     .filter(
       (run) =>
         ["completed", "failed", "cancelled", "interrupted"].includes(run.status) &&
-        (run.startedAt !== null || run.ordinal === 1) &&
+        (run.startedAt !== null ||
+          run.ordinal === 1 ||
+          run.restartContinuationOfRunId !== undefined ||
+          (run.status === "cancelled" && run.restartCut !== undefined)) &&
+        (!legacyResult ||
+          run.restartContinuationOfRunId !== undefined ||
+          (run.status === "cancelled" && run.restartCut !== undefined)) &&
         !transferredIds.has(run.id) &&
         (firstResultRun === undefined || runRanAfter(run, firstResultRun)) &&
         !continuedSources.has(run.id),
