@@ -95,6 +95,8 @@ interface Fire {
   readonly toolUseId?: string | null;
   readonly cue?: CueMoment;
   readonly elapsedMs?: number;
+  readonly transcriptPath?: string | null;
+  readonly nativeTurn?: string | null;
 }
 
 const makeHarness = (file = ":memory:") => {
@@ -117,6 +119,8 @@ const makeHarness = (file = ":memory:") => {
           tool_use_id: f.toolUseId !== undefined ? f.toolUseId : `t${n}`,
           tool: "Bash",
           source: f.source ?? null,
+          transcript_path: f.transcriptPath ?? null,
+          native_turn: f.nativeTurn ?? null,
           failed:
             f.failed !== undefined
               ? f.failed
@@ -1371,5 +1375,193 @@ describe("ServingState Cue", () => {
     assert.strictEqual(moments(h.db)[0]!["cue_status"], "ok");
     h.db.close();
     NodeFS.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("ServingState shown evidence", () => {
+  const facts = (db: NodeSqlite.DatabaseSync) =>
+    db
+      .prepare(
+        "SELECT delivery, shown, shown_json, shown_next, transcript_path, native_turn FROM deliveries ORDER BY rowid",
+      )
+      .all() as Array<{
+      delivery: string;
+      shown: string | null;
+      shown_json: string | null;
+      shown_next: number | null;
+      transcript_path: string | null;
+      native_turn: string | null;
+    }>;
+
+  it("marks only settled context or carry prints, storing native fields on 200 replies", () => {
+    const h = makeHarness();
+    const context = h.fire({
+      kind: "tool_result",
+      candidates: [entry("context", "public rule")],
+      transcriptPath: "/tmp/s1.jsonl",
+      nativeTurn: "native-turn",
+    });
+    const reserved = h.fire({
+      kind: "tool_result",
+      candidates: [entry("reserved", "another rule")],
+      settle: false,
+    });
+    const released = h.fire({
+      kind: "tool_result",
+      candidates: [entry("released", "released rule")],
+      settle: false,
+    });
+    assert.isTrue(h.state.releaseReservation(released.delivery));
+    const deny = h.fire({
+      kind: "pre_tool",
+      candidates: [inline("deny")],
+      transcriptPath: "/tmp/s1.jsonl",
+    });
+    const empty = h.fire({
+      kind: "user_message",
+      transcriptPath: "/tmp/s1.jsonl",
+      nativeTurn: "turn",
+    });
+    h.fire({ kind: "tool_result", profile: GROK, candidates: [entry("carry", "carried rule")] });
+    const printed = h.fire({ kind: "pre_tool", profile: GROK });
+    const rows = facts(h.db);
+    const c = rows.find((r) => r.delivery === context.delivery)!;
+    assert.equal(c.shown, "unknown");
+    assert.equal(c.shown_next, 1000);
+    assert.deepEqual(JSON.parse(c.shown_json!), { v: 1, source: null, reason: "not_checked" });
+    assert.equal(c.transcript_path, "/tmp/s1.jsonl");
+    assert.equal(c.native_turn, "native-turn");
+    assert.equal(rows.find((r) => r.delivery === printed.delivery)!.shown, "unknown");
+    for (const delivery of [reserved.delivery, released.delivery, deny.delivery, empty.delivery])
+      assert.isNull(rows.find((r) => r.delivery === delivery)!.shown);
+    assert.isNull(rows.find((r) => r.delivery === empty.delivery)!.transcript_path);
+    assert.isNull(rows.find((r) => r.delivery === empty.delivery)!.native_turn);
+    assert.deepEqual(
+      h.state.dueShown(1000, 50).map((r) => r.delivery),
+      [context.delivery, printed.delivery],
+    );
+    h.db.close();
+  });
+
+  it("bounds stored native fields, and no shown fact is backfilled for old rows", () => {
+    const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "contextmd-shown-migration-"));
+    const file = NodePath.join(dir, "contextmd.sqlite");
+    const old = new NodeSqlite.DatabaseSync(file);
+    old.exec(`CREATE TABLE deliveries (delivery TEXT PRIMARY KEY, harness TEXT NOT NULL, moment_id INTEGER,
+      stage TEXT NOT NULL, status INTEGER NOT NULL, body TEXT, run_id TEXT, serve_bytes INTEGER NOT NULL DEFAULT 0,
+      deny_bytes INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL, expires_at REAL NOT NULL, settled_at REAL);
+      INSERT INTO deliveries (delivery, harness, stage, status, created_at, expires_at)
+        VALUES ('old', 'claude', 'settled', 200, 10, 20);
+      PRAGMA user_version = 1;`);
+    old.close();
+    const h = makeHarness(file);
+    assert.deepEqual(facts(h.db)[0], {
+      delivery: "old",
+      shown: null,
+      shown_json: null,
+      shown_next: null,
+      transcript_path: null,
+      native_turn: null,
+    });
+    assert.equal(
+      (h.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version,
+      1,
+    );
+    assert.ok(
+      h.db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'deliveries_shown_due'",
+        )
+        .get(),
+    );
+    const d = h.fire({
+      kind: "tool_result",
+      candidates: [entry("large", "public rule")],
+      transcriptPath: "x".repeat(4097),
+      nativeTurn: "",
+    });
+    assert.isNull(facts(h.db).find((r) => r.delivery === d.delivery)!.transcript_path);
+    assert.isNull(facts(h.db).find((r) => r.delivery === d.delivery)!.native_turn);
+    assert.isFalse(h.state.recordShown("old", "shown", "{}", null));
+    h.state.deferShown("old", 1001);
+    assert.isNull(facts(h.db)[0]!.shown_next);
+    h.db.close();
+    // Reopening proves the additive migration and its index are idempotent.
+    const reopened = makeHarness(file);
+    assert.equal(reopened.state.dueShown(1000, 50).length, 1);
+    reopened.db.close();
+    NodeFS.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("rotates waiting rows, limits selection and never requeues shown after a group failure", () => {
+    const h = makeHarness();
+    const one = h.fire({ kind: "tool_result", candidates: [entry("one", "one")], run: "run-one" });
+    const two = h.fire({ kind: "tool_result", candidates: [entry("two", "two")], run: "run-two" });
+    assert.deepEqual(
+      h.state.dueShown(1000, 1).map((r) => r.delivery),
+      [one.delivery],
+    );
+    assert.isTrue(
+      h.state.recordShown(
+        one.delivery,
+        "unknown",
+        '{"v":1,"reason":"no_model_response","seen":"codex-1:20:10"}',
+        1030,
+      ),
+    );
+    assert.deepEqual(
+      h.state.dueShown(1000, 50).map((r) => r.delivery),
+      [two.delivery],
+    );
+    assert.isTrue(
+      h.state.recordShown(two.delivery, "shown", '{"v":1,"source":"codex_rollout"}', 5000),
+    );
+    h.state.deferShown(two.delivery, 1030);
+    assert.isFalse(
+      h.state.recordShown(two.delivery, "unknown", '{"reason":"unrecognized_format"}', 1030),
+    );
+    assert.isNull(facts(h.db).find((r) => r.delivery === two.delivery)!.shown_next);
+    assert.deepEqual(
+      h.state.dueShown(1030, 50).map((r) => r.delivery),
+      [one.delivery],
+    );
+    h.db.close();
+  });
+
+  it("rivals include reserved and released 200 replies after their claims are removed", () => {
+    const h = makeHarness();
+    const settled = h.fire({
+      kind: "tool_result",
+      candidates: [entry("settled", "same")],
+      run: "one",
+    });
+    const reserved = h.fire({
+      kind: "tool_result",
+      candidates: [entry("reserved", "same")],
+      run: "two",
+      settle: false,
+    });
+    const released = h.fire({
+      kind: "tool_result",
+      candidates: [entry("released", "same")],
+      run: "three",
+      settle: false,
+    });
+    h.state.releaseReservation(released.delivery);
+    h.fire({ kind: "user_message" });
+    h.fire({ kind: "tool_result", session: "other", candidates: [entry("other", "same")] });
+    assert.deepEqual(
+      h.state.shownRivals("claude", "s1").map((r) => r.delivery),
+      [settled.delivery, reserved.delivery, released.delivery],
+    );
+    assert.equal(
+      (
+        h.db
+          .prepare("SELECT count(*) AS n FROM claims WHERE delivery = ?")
+          .get(released.delivery) as { n: number }
+      ).n,
+      0,
+    );
+    h.db.close();
   });
 });
