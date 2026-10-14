@@ -762,6 +762,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/mcp/OrchestratorMcpService.ts",
     "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
     "apps/server/src/mcp/threadAccess.ts",
+    "apps/server/src/mcp/toolkits/attachment/tools.ts",
     "apps/server/src/mcp/toolkits/core.test.ts",
     "apps/server/src/mcp/toolkits/thread/handlers.ts",
     "apps/server/src/mcp/toolkits/thread/tools.ts",
