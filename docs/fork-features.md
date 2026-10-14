@@ -1437,8 +1437,11 @@ Child creation paths are owned by child-threads and shared with thread-people.
 ```json
 {
   "id": "peer-links",
-  "purpose": "Port upstream server peer links and record-first remote delegation until absorption replaces the port; retain permanent pairing-code sessions, target Prism launch intent and recovery-aware waits.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/164"],
+  "purpose": "Port upstream server peer links and record-first remote delegation until absorption replaces the port; retain permanent pairing-code sessions, target Prism launch intent and recovery-aware waits. Extend routing to all MCP toolkit groups while retaining caller capabilities and link-mode narrowing.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/164",
+    "https://github.com/toolboxmd/chromeria/issues/302"
+  ],
   "prs": [
     "https://github.com/pingdotgg/t3code/pull/16653",
     "https://github.com/pingdotgg/t3code/pull/16654",
@@ -1446,7 +1449,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "https://github.com/pingdotgg/t3code/pull/16684",
     "https://github.com/pingdotgg/t3code/pull/16695",
     "https://github.com/pingdotgg/t3code/pull/16719",
-    "https://github.com/pingdotgg/t3code/pull/17051"
+    "https://github.com/pingdotgg/t3code/pull/17051",
+    "https://github.com/toolboxmd/chromeria/pull/304"
   ],
   "newFiles": [
     "apps/server/src/mcp/delegatedTaskModes.ts",
@@ -1456,7 +1460,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/peer/*",
     "apps/server/src/persistence/forkPeerLinksSchema.test.ts",
     "apps/server/src/persistence/forkPeerLinksSchema.ts",
-    "packages/contracts/src/peerLink.ts"
+    "packages/contracts/src/peerLink.ts",
+    "apps/server/src/mcp/McpRouting.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/auth/McpOAuth.ts",
@@ -1469,6 +1474,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/mcp/WorktreeMcpService.ts",
     "apps/server/src/mcp/toolkits/attachment/handlers.ts",
     "apps/server/src/mcp/toolkits/orchestrator/handlers.ts",
+    "apps/server/src/mcp/toolkits/orchestrator/tools.test.ts",
     "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
     "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts",
     "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
@@ -1479,7 +1485,23 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
     "apps/server/src/project/ProjectSetupScriptRunner.ts",
     "packages/client-runtime/src/t3ToolSummary.ts",
-    "packages/shared/src/t3McpToolPresentation.ts"
+    "packages/shared/src/t3McpToolPresentation.ts",
+    "apps/server/src/htmlRender/HtmlRender.ts",
+    "apps/server/src/htmlRender/HtmlRender.test.ts",
+    "apps/server/src/mcp/toolkits/html/handlers.ts",
+    "apps/server/src/mcp/McpSessionRegistry.test.ts",
+    "apps/server/src/mcp/McpSessionRegistry.testkit.ts",
+    "apps/server/src/mcp/McpSessionRegistry.ts",
+    "apps/server/src/mcp/toolkits/device/tools.ts",
+    "apps/server/src/mcp/toolkits/environment/tools.ts",
+    "apps/server/src/mcp/toolkits/html/tools.ts",
+    "apps/server/src/mcp/toolkits/preview/tools.ts",
+    "apps/server/src/mcp/toolkits/previewControls/tools.ts",
+    "apps/server/src/mcp/toolkits/pullRequests/tools.ts",
+    "apps/server/src/mcp/toolkits/worktree/tools.ts",
+    "apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts",
+    "docs/internals/remote.md",
+    "packages/contracts/src/assets.ts"
   ],
   "sharedFiles": [
     "apps/server/src/auth/EnvironmentAuth.ts",

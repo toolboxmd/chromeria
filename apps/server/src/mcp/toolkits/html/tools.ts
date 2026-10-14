@@ -88,15 +88,20 @@ const HtmlRenderTool = Tool.make(HTML_RENDER_TOOL_NAME, {
       }),
     }),
   ),
-  success: Schema.Struct({
-    htmlRender: Schema.Struct({
-      attachmentId: Schema.String,
-      title: Schema.String,
-      height: Schema.Number,
-      heights: Schema.optional(Schema.Array(Schema.Tuple([Schema.Int, Schema.Int]))),
+  success: Schema.Union([
+    // Peer-only transfer. Routing stores this document in the source thread,
+    // where the returned tool reference is consumed by web, desktop and mobile.
+    HtmlRender.PreparedDocument,
+    Schema.Struct({
+      htmlRender: Schema.Struct({
+        attachmentId: Schema.String,
+        title: Schema.String,
+        height: Schema.Number,
+        heights: Schema.optional(Schema.Array(Schema.Tuple([Schema.Int, Schema.Int]))),
+      }),
+      message: Schema.String,
     }),
-    message: Schema.String,
-  }),
+  ]),
   failure: OrchestratorMcpFailure,
   failureMode: "return",
   dependencies: [

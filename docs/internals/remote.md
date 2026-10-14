@@ -120,3 +120,8 @@ Image results cross the peer boundary before client presentation bounds text or
 omits images. The originating registration then formats them for its reader.
 Upload references and filesystem paths name destination resources; a forwarded
 upload returns its destination origin, without transferring local files.
+
+A forwarded HTML render prepares the document on the destination, including its
+local images, then stores that self-contained output in the originating thread.
+This preserves the local attachment reference consumed by web, desktop and
+mobile, without requiring a connection to the peer in the reader's client.

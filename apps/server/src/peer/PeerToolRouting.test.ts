@@ -15,6 +15,10 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as FileSystem from "effect/FileSystem";
+import { readHtmlRenderReference } from "@t3tools/shared/htmlRender";
+import { resolveAttachmentPathById } from "../attachmentStore.ts";
+import * as PreviewBrowser from "../preview/PreviewBrowser.ts";
 import { McpSchema, McpServer } from "effect/ai";
 
 import * as ServerConfig from "../config.ts";
@@ -130,254 +134,284 @@ const registrations = Layer.mergeAll(
 );
 
 type Seen = { operation: string; environmentId: string; threadId?: string; input?: unknown };
-const fixture = Effect.gen(function* () {
-  const seen = yield* Ref.make<ReadonlyArray<Seen>>([]);
-  const session = yield* Ref.make("");
-  const destinationCapabilities = yield* Ref.make(capabilities);
-  const shell = Ref.get(session).pipe(
-    Effect.map((sessionId) => ({
-      ...liveThreadShell(threadId),
-      projectId,
-      linkOrigin: { sessionId, label: "Laptop" },
-    })),
-  );
-  const projection = shell.pipe(
-    Effect.map((value) => ({
-      ...idleThreadProjection(value),
-      runtimeRequests: [
-        { id: RuntimeRequestId.make("question"), status: "pending", kind: "user_input" },
-      ],
-      turnItems: [
-        { type: "user_input_request", requestId: RuntimeRequestId.make("question"), questions: [] },
-      ],
-    })),
-  );
-  const dependenciesAt = (environmentId: typeof laptop.environmentId) => {
-    const record = <A>(operation: string, output: A, input?: unknown) =>
-      Effect.gen(function* () {
-        yield* Ref.update(seen, (items) => [
-          ...items,
-          { operation, environmentId, threadId, ...(input === undefined ? {} : { input }) },
-        ]);
-        return output;
-      });
-    // Fakes stop at domain services. Tool schemas, declarations, routing, peer HTTP,
-    // OAuth and mode narrowing are real on both sides.
-    const dependencies = Layer.mergeAll(
-      Layer.mock(Engine.OrchestratorV2)({
-        getThreadShell: () => shell,
-        dispatch: (command) =>
-          record(command.type, { sequence: 7, storedEvents: [] } as never, command),
-      }),
-      Layer.mock(IssueLinks.IssueLinks)({
-        forThread: () => record("issue-list", []),
-        link: (input) =>
-          record(
-            "issue-link",
-            {
-              alreadyLinked: false,
-              link: {
-                host: "github.com",
-                repository: "toolboxmd/chromeria",
-                number: 302,
-                url: "https://github.com/toolboxmd/chromeria/issues/302",
-              },
-            } as never,
-            input,
-          ),
-      }),
-      Layer.mock(SpectrumLaunch.SpectrumLaunchService)({
-        register: (input) =>
-          record(
-            "spectrum-start",
-            {
-              threadId: input.threadId,
-              callerThreadId: input.callerThreadId,
-              mode: input.mode,
-              participants: [],
-            } as never,
-            input,
-          ),
-      }),
-      Layer.mock(SecretStore.ServerSecretStore)({
-        getOrCreateRandom: () => record("attachment-prepare", new Uint8Array(32).fill(7)),
-      }),
-      Layer.mock(ThreadManagement.ThreadManagementService)({
-        getThreadShell: (id) =>
-          id !== threadId
-            ? Effect.succeed(null)
-            : environmentId === laptop.environmentId
-              ? Effect.succeed({ ...liveThreadShell(threadId), projectId })
-              : shell,
-        getProjectThreadRecords: () => projection as never,
-        dispatch: (command) =>
-          record(command.type, { sequence: 7, storedEvents: [] } as never, command),
-      }),
-      Layer.mock(ThreadSearch.ThreadSearch)({
-        search: (input) => record("search", { matches: [] }, input),
-      }),
-      Layer.mock(Projects.ProjectService)({
-        getById: () => record("project-read", Option.some(project)),
-        update: (input) => record("project-update", project, input),
-        getShell: () => Effect.succeed(Option.none()),
-      }),
-      Layer.mock(Settings.ServerSettingsService)({
-        getSettings: record("preferences-read", DEFAULT_SERVER_SETTINGS),
-        updateSettings: (input) => record("preferences-update", DEFAULT_SERVER_SETTINGS, input),
-      }),
-      ThreadCommandExecutor.layer,
-      Layer.mock(Orchestrator.OrchestratorMcpService)({
-        listScheduledTasks: () => record("schedules-list", { tasks: [] }),
-        deleteScheduledTask: (_scope, input) =>
-          record("schedule-delete", { scheduledTaskId: input.scheduledTaskId, deleted: true }),
-        createThreads: () => record("threads-create", { threads: [] }),
-        requestSecret: () => record("secret-request", { status: "declined" as const }),
-      }),
-      Layer.mock(Metadata.ThreadMetadataMcpService)({}),
-      Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
-      Layer.mock(Worktrees.WorktreeMcpService)({
-        status: () =>
-          record("worktree-status", {
-            attached: false,
-            worktreePath: null,
-            branch: null,
-            projectWorkspaceRoot: "/box/project",
-            defaultStartFromOrigin: false,
-          }),
-        handoff: (_scope, input) =>
-          record(
-            "worktree-handoff",
-            {
-              worktreePath: "/box/project-wt",
-              branch: "work",
-              baseRef: "main",
-              startedFromOrigin: false,
-              setupScript: { status: "no-script" as const },
-              continuation: { status: "skipped" as const },
-              note: "",
-            },
-            input,
-          ),
-      }),
-      Layer.mock(Devices.DeviceService)({
-        list: record("device-list", {
-          hostStatus: "ready",
-          hostStatuses: {},
-          hosts: [],
-          devices: [],
-          sessions: [],
-        } as never),
-        close: (input) => record("device-close", undefined, input),
-        sessionsForThread: () => Effect.succeed([]),
-        screenshot: (input) =>
-          record(
-            "device-screenshot",
-            {
-              device: {
-                hostId: "local",
-                id: "device",
-                platform: "ios" as const,
-                name: "Test",
-                version: "27",
-                booted: true,
-                physical: false,
-              },
-              png: new Uint8Array([1, 2, 3]),
-            },
-            input,
-          ),
-      }),
-      Layer.mock(Preview.PreviewManager)({
-        list: (input) =>
-          record("preview-list", { sessions: [], hostStatus: "ready" } as never, input),
-        close: (input) => record("preview-close", undefined, input),
-      }),
-      Layer.mock(Broker.PreviewAutomationBroker)({
-        invoke: ({ operation, input }) => record(`browser-${operation}`, {} as never, input),
-      }),
-      Layer.mock(Html.HtmlRender)({
-        preview: (input) =>
-          record(
-            "html-preview",
-            {
-              png: "cG5n",
-              width: 400,
-              contentHeight: 300,
-              capturedHeight: 300,
-              consoleMessages: [],
-            },
-            input,
-          ),
-        publish: (input) =>
-          record("html-render", { attachmentId: "box-html", title: "Page", height: 300 }, input),
-      }),
-      NodeCrypto.layer,
-      NodeServices.layer,
-      ServerConfig.layerTest(process.cwd(), { prefix: "t3-routing-" }).pipe(
-        Layer.provide(NodeServices.layer),
-      ),
+const makeFixture = (realHtml = false) =>
+  Effect.gen(function* () {
+    const seen = yield* Ref.make<ReadonlyArray<Seen>>([]);
+    const session = yield* Ref.make("");
+    const destinationCapabilities = yield* Ref.make(capabilities);
+    const shell = Ref.get(session).pipe(
+      Effect.map((sessionId) => ({
+        ...liveThreadShell(threadId),
+        projectId,
+        linkOrigin: { sessionId, label: "Laptop" },
+      })),
     );
-    return dependencies;
-  };
-  const dependencies = dependenciesAt(laptop.environmentId);
-  const b = yield* servePeer(
-    box,
-    registrations.pipe(Layer.provide(dependenciesAt(box.environmentId))),
-    {
-      scopeForThread: (id) =>
-        Ref.get(destinationCapabilities).pipe(
-          Effect.map((granted) =>
-            id === threadId ? { ...scope(box.environmentId), capabilities: granted } : undefined,
-          ),
-        ),
-    },
-  );
-  const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
-  const here = yield* registrations.pipe(
-    Layer.provideMerge(McpServer.McpServer.layer),
-    Layer.provide(dependencies),
-    Layer.provide(
-      PeerForwarding.layer.pipe(
-        Layer.provideMerge(Layer.succeedContext(linking)),
-        Layer.provide(dependencies),
-      ),
-    ),
-    Layer.provide(
-      Layer.mock(Environment.ServerEnvironment)({ getDescriptor: Effect.succeed(laptop) }),
-    ),
-    Layer.build,
-  );
-  const links = Context.get(linking, PeerLinks.PeerLinks);
-  const server = Context.get(here, McpServer.McpServer);
-  const call = (
-    name: string,
-    args: Record<string, unknown>,
-    context = false,
-    granted = capabilities,
-  ) =>
-    server
-      .callTool({
-        name,
-        arguments: {
-          ...args,
-          environmentId: box.environmentId,
-          ...(context ? { contextThreadId: threadId } : {}),
-        },
-      })
-      .pipe(
-        Effect.provideService(Invocation.McpInvocationContext, {
-          ...scope(),
-          capabilities: granted,
+    const projection = shell.pipe(
+      Effect.map((value) => ({
+        ...idleThreadProjection(value),
+        runtimeRequests: [
+          { id: RuntimeRequestId.make("question"), status: "pending", kind: "user_input" },
+        ],
+        turnItems: [
+          {
+            type: "user_input_request",
+            requestId: RuntimeRequestId.make("question"),
+            questions: [],
+          },
+        ],
+      })),
+    );
+    const dependenciesAt = (environmentId: typeof laptop.environmentId) => {
+      const record = <A>(operation: string, output: A, input?: unknown) =>
+        Effect.gen(function* () {
+          yield* Ref.update(seen, (items) => [
+            ...items,
+            { operation, environmentId, threadId, ...(input === undefined ? {} : { input }) },
+          ]);
+          return output;
+        });
+      // Fakes stop at domain services. Tool schemas, declarations, routing, peer HTTP,
+      // OAuth and mode narrowing are real on both sides.
+      const dependencies = Layer.mergeAll(
+        Layer.mock(Engine.OrchestratorV2)({
+          getThreadShell: () => shell,
+          dispatch: (command) =>
+            record(command.type, { sequence: 7, storedEvents: [] } as never, command),
         }),
-        Effect.provideService(McpSchema.McpServerClient, client),
+        Layer.mock(IssueLinks.IssueLinks)({
+          forThread: () => record("issue-list", []),
+          link: (input) =>
+            record(
+              "issue-link",
+              {
+                alreadyLinked: false,
+                link: {
+                  host: "github.com",
+                  repository: "toolboxmd/chromeria",
+                  number: 302,
+                  url: "https://github.com/toolboxmd/chromeria/issues/302",
+                },
+              } as never,
+              input,
+            ),
+        }),
+        Layer.mock(SpectrumLaunch.SpectrumLaunchService)({
+          register: (input) =>
+            record(
+              "spectrum-start",
+              {
+                threadId: input.threadId,
+                callerThreadId: input.callerThreadId,
+                mode: input.mode,
+                participants: [],
+              } as never,
+              input,
+            ),
+        }),
+        Layer.mock(SecretStore.ServerSecretStore)({
+          getOrCreateRandom: () => record("attachment-prepare", new Uint8Array(32).fill(7)),
+        }),
+        Layer.mock(ThreadManagement.ThreadManagementService)({
+          getThreadShell: (id) =>
+            id !== threadId
+              ? Effect.succeed(null)
+              : environmentId === laptop.environmentId
+                ? Effect.succeed({ ...liveThreadShell(threadId), projectId })
+                : shell,
+          getProjectThreadRecords: () => projection as never,
+          dispatch: (command) =>
+            record(command.type, { sequence: 7, storedEvents: [] } as never, command),
+        }),
+        Layer.mock(ThreadSearch.ThreadSearch)({
+          search: (input) => record("search", { matches: [] }, input),
+        }),
+        Layer.mock(Projects.ProjectService)({
+          getById: () => record("project-read", Option.some(project)),
+          update: (input) => record("project-update", project, input),
+          getShell: () => Effect.succeed(Option.none()),
+        }),
+        Layer.mock(Settings.ServerSettingsService)({
+          getSettings: record("preferences-read", DEFAULT_SERVER_SETTINGS),
+          updateSettings: (input) => record("preferences-update", DEFAULT_SERVER_SETTINGS, input),
+        }),
+        ThreadCommandExecutor.layer,
+        Layer.mock(Orchestrator.OrchestratorMcpService)({
+          listScheduledTasks: () => record("schedules-list", { tasks: [] }),
+          deleteScheduledTask: (_scope, input) =>
+            record("schedule-delete", { scheduledTaskId: input.scheduledTaskId, deleted: true }),
+          createThreads: () => record("threads-create", { threads: [] }),
+          requestSecret: () => record("secret-request", { status: "declined" as const }),
+        }),
+        Layer.mock(Metadata.ThreadMetadataMcpService)({}),
+        Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
+        Layer.mock(Worktrees.WorktreeMcpService)({
+          status: () =>
+            record("worktree-status", {
+              attached: false,
+              worktreePath: null,
+              branch: null,
+              projectWorkspaceRoot: "/box/project",
+              defaultStartFromOrigin: false,
+            }),
+          handoff: (_scope, input) =>
+            record(
+              "worktree-handoff",
+              {
+                worktreePath: "/box/project-wt",
+                branch: "work",
+                baseRef: "main",
+                startedFromOrigin: false,
+                setupScript: { status: "no-script" as const },
+                continuation: { status: "skipped" as const },
+                note: "",
+              },
+              input,
+            ),
+        }),
+        Layer.mock(Devices.DeviceService)({
+          list: record("device-list", {
+            hostStatus: "ready",
+            hostStatuses: {},
+            hosts: [],
+            devices: [],
+            sessions: [],
+          } as never),
+          close: (input) => record("device-close", undefined, input),
+          sessionsForThread: () => Effect.succeed([]),
+          screenshot: (input) =>
+            record(
+              "device-screenshot",
+              {
+                device: {
+                  hostId: "local",
+                  id: "device",
+                  platform: "ios" as const,
+                  name: "Test",
+                  version: "27",
+                  booted: true,
+                  physical: false,
+                },
+                png: new Uint8Array([1, 2, 3]),
+              },
+              input,
+            ),
+        }),
+        Layer.mock(Preview.PreviewManager)({
+          list: (input) =>
+            record("preview-list", { sessions: [], hostStatus: "ready" } as never, input),
+          close: (input) => record("preview-close", undefined, input),
+        }),
+        Layer.mock(Broker.PreviewAutomationBroker)({
+          invoke: ({ operation, input }) => record(`browser-${operation}`, {} as never, input),
+        }),
+        Layer.mock(Html.HtmlRender)({
+          preview: (input) =>
+            record(
+              "html-preview",
+              {
+                png: "cG5n",
+                width: 400,
+                contentHeight: 300,
+                capturedHeight: 300,
+                consoleMessages: [],
+              },
+              input,
+            ),
+          prepare: (input) => record("html-render", input, input),
+          publishPrepared: (input) =>
+            record(
+              "html-store",
+              { attachmentId: "source-html", title: "Page", height: 300 },
+              input,
+            ),
+        }),
+        NodeCrypto.layer,
+        NodeServices.layer,
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-routing-" }).pipe(
+          Layer.provide(NodeServices.layer),
+        ),
       );
-  const link = (access: "full-access" | "auto" | "read-only") =>
-    linkTo(links, b, access).pipe(
-      Effect.andThen(b.linkedSessions),
-      Effect.flatMap((sessions) => Ref.set(session, sessions.at(-1)!.sessionId)),
+      return realHtml
+        ? Html.layer.pipe(
+            Layer.provideMerge(dependencies),
+            Layer.provide(
+              Layer.mock(PreviewBrowser.PreviewBrowser)({ installed: Effect.succeedNone }),
+            ),
+          )
+        : dependencies;
+    };
+    const sourceDependencies = yield* dependenciesAt(laptop.environmentId).pipe(Layer.build);
+    const destinationDependencies = yield* dependenciesAt(box.environmentId).pipe(Layer.build);
+    const dependencies = Layer.succeedContext(sourceDependencies);
+    const b = yield* servePeer(
+      box,
+      registrations.pipe(Layer.provide(Layer.succeedContext(destinationDependencies))),
+      {
+        scopeForThread: (id) =>
+          Ref.get(destinationCapabilities).pipe(
+            Effect.map((granted) =>
+              id === threadId ? { ...scope(box.environmentId), capabilities: granted } : undefined,
+            ),
+          ),
+      },
     );
-  return { call, link, seen, b, destinationCapabilities };
-});
+    const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
+    const here = yield* registrations.pipe(
+      Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provide(dependencies),
+      Layer.provide(
+        PeerForwarding.layer.pipe(
+          Layer.provideMerge(Layer.succeedContext(linking)),
+          Layer.provide(dependencies),
+        ),
+      ),
+      Layer.provide(
+        Layer.mock(Environment.ServerEnvironment)({ getDescriptor: Effect.succeed(laptop) }),
+      ),
+      Layer.build,
+    );
+    const links = Context.get(linking, PeerLinks.PeerLinks);
+    const server = Context.get(here, McpServer.McpServer);
+    const call = (
+      name: string,
+      args: Record<string, unknown>,
+      context = false,
+      granted = capabilities,
+    ) =>
+      server
+        .callTool({
+          name,
+          arguments: {
+            ...args,
+            environmentId: box.environmentId,
+            ...(context ? { contextThreadId: threadId } : {}),
+          },
+        })
+        .pipe(
+          Effect.provideService(Invocation.McpInvocationContext, {
+            ...scope(),
+            capabilities: granted,
+          }),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+    const link = (access: "full-access" | "auto" | "read-only") =>
+      linkTo(links, b, access).pipe(
+        Effect.andThen(b.linkedSessions),
+        Effect.flatMap((sessions) => Ref.set(session, sessions.at(-1)!.sessionId)),
+      );
+    return {
+      call,
+      link,
+      seen,
+      b,
+      destinationCapabilities,
+      sourceDependencies,
+      destinationDependencies,
+      session,
+    };
+  });
+
+const fixture = makeFixture();
 
 const cases = [
   {
@@ -618,6 +652,64 @@ it.effect("peer screenshots preserve PNG bytes through the production image regi
       );
       expect(textOnly.isError).toBe(false);
       expect(textOnly.content.some((part) => part.type === "image")).toBe(false);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("forwarded HTML is a consumable source-thread attachment with peer images", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const f = yield* makeFixture(true);
+      yield* f.link("full-access");
+      const fs = Context.get(f.destinationDependencies, FileSystem.FileSystem);
+      const remote = Context.get(f.destinationDependencies, ServerConfig.ServerConfig);
+      const image = `${remote.attachmentsDir}/peer.png`;
+      yield* fs.writeFile(image, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+      const result = yield* f.call(
+        "html_render",
+        { html: `<p>Remote page</p><img src="${image}">`, title: "Page", height: 300 },
+        true,
+      );
+      expect(result.isError, JSON.stringify(result)).toBe(false);
+      const reference = readHtmlRenderReference(
+        (result.structuredContent as { htmlRender: unknown }).htmlRender,
+      );
+      expect(reference).toBeDefined();
+      const source = Context.get(f.sourceDependencies, ServerConfig.ServerConfig);
+      const file = resolveAttachmentPathById({
+        attachmentsDir: source.attachmentsDir,
+        attachmentId: reference!.attachmentId,
+      });
+      expect(file).not.toBeNull();
+      const stored = yield* fs.readFileString(file!);
+      expect(stored).toContain("<p>Remote page</p>");
+      expect(stored).toContain("data:image/png;base64,iVBORw0KGgo=");
+      expect(stored).not.toContain(image);
+      expect(stored.match(/id="t3-theme"/g)).toHaveLength(1);
+      expect(yield* fs.readDirectory(remote.attachmentsDir)).toEqual(["peer.png"]);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("Spectrum refuses to use a caller belonging to another link", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.link("full-access");
+      yield* Ref.set(f.session, "another-link");
+      const result = yield* f.call("start_spectrum", {
+        callerThreadId: threadId,
+        question: "Q",
+        colors: [
+          { label: "Blue", selection: { instanceId: "codex", model: "test" } },
+          { label: "Red", selection: { instanceId: "codex", model: "test" } },
+        ],
+        mode: "council",
+      });
+      expect(result.isError, JSON.stringify(result)).toBe(true);
+      expect(yield* Ref.get(f.seen)).not.toContainEqual(
+        expect.objectContaining({ operation: "spectrum-start" }),
+      );
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

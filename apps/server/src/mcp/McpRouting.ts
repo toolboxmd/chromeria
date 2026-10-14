@@ -10,6 +10,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type * as Tool from "effect/ai/Tool";
 
+import * as HtmlRender from "../htmlRender/HtmlRender.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as Invocation from "./McpInvocationContext.ts";
@@ -19,18 +20,14 @@ import { assertTargetWithinLimits, unavailable } from "./threadAccess.ts";
 
 /** Destination-owned resources are addressed in that environment, never copied implicitly. */
 export const fields = {
-  environmentId: Schema.optional(
-    EnvironmentId.annotate({
-      description:
-        "Run this tool on a linked environment. IDs, paths and pending uploads name destination resources. Omit for this environment.",
-    }),
-  ),
-  contextThreadId: Schema.optional(
-    ThreadId.annotate({
-      description:
-        "For a tool acting as its caller, select a live thread on the linked environment. It must belong to this link and run within its access. Panels and artifacts belong to that destination thread.",
-    }),
-  ),
+  environmentId: Schema.optional(EnvironmentId).annotate({
+    description:
+      "Run this tool on a linked environment. IDs, paths and pending uploads name destination resources. Omit for this environment.",
+  }),
+  contextThreadId: Schema.optional(ThreadId).annotate({
+    description:
+      "For a tool acting as its caller, select a live thread on the linked environment. It must belong to this link and run within its access. Panels belong to that destination thread; rendered HTML is displayed in this thread.",
+  }),
   contextCapabilities: Schema.optional(
     Schema.Array(
       Schema.Literals(["preview", "orchestration", "worktree", "device", "pull-requests"]),
@@ -47,6 +44,7 @@ export class CurrentTool extends Context.Reference<Tool.Any | undefined>("t3/mcp
   defaultValue: () => undefined,
 }) {}
 
+const decodePreparedDocument = Schema.decodeUnknownEffect(HtmlRender.PreparedDocument);
 const decodeWait = Schema.decodeUnknownEffect(OrchestratorMcpThreadWaitInput);
 const target = Schema.decodeUnknownOption(Schema.Struct(fields));
 export const isRemote = (params: unknown, scope: Invocation.McpInvocationScope) => {
@@ -163,6 +161,25 @@ export const invoke = <P, A, E, R>(
       ...(params as object),
       contextCapabilities: [...scope.capabilities],
     });
+    if (tool.name === "html_render") {
+      const document = yield* decodePreparedDocument(result).pipe(Effect.mapError(unavailable));
+      const { thread } = yield* Invocation.requireThreadScope(scope, "html_render");
+      const render = yield* Effect.serviceOption(HtmlRender.HtmlRender);
+      if (Option.isNone(render)) return yield* unavailable();
+      const reference = yield* render.value
+        .publishPrepared({
+          threadId: thread.threadId,
+          html: document.preparedHtml,
+          title: document.title,
+          height: document.height,
+        })
+        .pipe(Effect.mapError(unavailable));
+      return {
+        htmlRender: reference,
+        message:
+          "Shown to the reader above your reply. Don't mention or describe the page; reply with only what it doesn't already say.",
+      } as A;
+    }
     // PeerForwarding decodes the paired toolkit's success schema before returning.
     return result as A;
   });
