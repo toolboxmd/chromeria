@@ -752,14 +752,24 @@ const layerBase: Layer.Layer<
     });
 
     const stream = (input: Parameters<EventSinkV2Shape["stream"]>[0]) => {
+      const streamError = (cause: unknown) =>
+        new EventSinkStreamError({
+          ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+          // NaN and Infinity are not schema numbers. Omit them so the
+          // rejection itself is the stream error.
+          ...(Number.isFinite(input.afterSequence) ? { afterSequence: input.afterSequence } : {}),
+          cause,
+        });
       // `readAgentEvents` turns a missing cursor into `0` and sends any other
       // number through as `sequence > cursor`. Reject those here, before
       // subscribe or read, so both `stream` and `streamStoredEventsFrom` fail
       // closed. `0` stays a deliberate full replay of the matched range.
       if (!Number.isSafeInteger(input.afterSequence) || input.afterSequence < 0) {
         return Stream.fail(
-          new Error(
-            `afterSequence must be a non-negative safe integer, received ${String(input.afterSequence)}`,
+          streamError(
+            new Error(
+              `afterSequence must be a non-negative safe integer, received ${String(input.afterSequence)}`,
+            ),
           ),
         );
       }
@@ -809,7 +819,7 @@ const layerBase: Layer.Layer<
           );
           return Stream.concat(replay(highWater), live);
         }),
-      );
+      ).pipe(Stream.mapError(streamError));
     };
 
     return EventSinkV2.of({
@@ -894,21 +904,7 @@ const layerBase: Layer.Layer<
               new EventSinkWriteError({ commandId: input.commandId, eventCount: 0, cause }),
           ),
         ),
-      stream: (input) =>
-        stream(input).pipe(
-          Stream.mapError(
-            (cause) =>
-              new EventSinkStreamError({
-                ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
-                // NaN and Infinity are not schema numbers. Omit them so the
-                // rejection itself is the stream error.
-                ...(Number.isFinite(input.afterSequence)
-                  ? { afterSequence: input.afterSequence }
-                  : {}),
-                cause,
-              }),
-          ),
-        ),
+      stream: (input) => stream(input),
       latestSequence: (input) =>
         eventStore.latestSequence(input).pipe(
           Effect.mapError(

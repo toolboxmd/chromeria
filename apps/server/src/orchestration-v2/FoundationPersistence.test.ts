@@ -818,8 +818,8 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
           ...(input.bounded ? { bounded: true as const } : {}),
           ...(input.afterSequence === undefined ? {} : { afterSequence: input.afterSequence }),
         } as Parameters<EventSink.EventSinkV2Shape["stream"]>[0]);
-      // The vitest clock does not advance `Effect.timeout`. A bad cursor that
-      // falls through into the live tail stays suspended, which is still a miss.
+      // The test clock does not advance this wait. A bad cursor that falls
+      // through into the live tail stays suspended, which is still a miss.
       const observeCursor = (input: {
         readonly afterSequence?: number;
         readonly bounded: boolean;
@@ -833,7 +833,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
           yield* Effect.yieldNow;
           let done = fiber.pollUnsafe();
           if (done === undefined) {
-            yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 200)));
+            yield* TestClock.withLive(Effect.sleep("200 millis"));
             done = fiber.pollUnsafe();
           }
           if (done === undefined) {
