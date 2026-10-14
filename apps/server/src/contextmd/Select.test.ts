@@ -288,6 +288,54 @@ describe("command keys", () => {
     }
   });
 
+  it("recognizes clustered shell c flags and options before the script (Grok round 3)", () => {
+    for (const command of [
+      "bash -ce 'gh pr create'",
+      "bash -cE 'gh pr create'",
+      "bash -ec 'gh pr create'",
+      "bash -o pipefail -c 'gh pr create'",
+      "bash --noprofile -o pipefail -ce '\"g\"h pr create'",
+      "env FLAG=1 bash -o pipefail -ce 'gh pr create'",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "bash -ce 'echo \"gh pr create\"'",
+      "bash -o pipefail -c 'echo \"gh pr create\"'",
+      "bash -o pipefail -ce 'echo \"gh pr create\"'",
+      "echo sh -c 'gh pr create'",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
+  it("decodes ANSI-C quoted shell scripts while excluding quoted mentions (Grok round 3)", () => {
+    for (const command of [
+      "bash -c $'gh pr create'",
+      "bash -c $'gh pr create\\0; echo mention'",
+      "bash -c $'\\x67h pr create'",
+      "bash -c $'\\147h pr create'",
+      "bash -c $'\\u0067h pr create'",
+      "bash -c $'\\x27gh\\x27 pr create'",
+      "bash -c $'gh\\x20pr\\tcreate'",
+      "sh -c $'\\x67h pr create'",
+      "bash -c $'g'\"h pr create\"",
+    ]) {
+      assert.isTrue(hit(command), command);
+    }
+    for (const command of [
+      "bash -c $'echo \\\"gh pr create\\\"'",
+      "bash -c $'printf \\'%s\\' \\'gh pr create\\''",
+      "bash -c $'echo \\x22gh pr create\\x22'",
+      "bash -c $'echo \\047gh pr create\\047'",
+      "echo $'gh pr create'",
+      "bash -c $'echo \\0; gh pr create'",
+      "bash -c $'echo \"$(printf \\'%s\\' \\'gh pr create\\')\"'",
+    ]) {
+      assert.isFalse(hit(command), command);
+    }
+  });
+
   it("keeps the first bake's bare key on unquoted arguments (#232, contextmd#39)", () => {
     const db = (command: string) => hit(command, "chromeria-v2.sqlite");
     for (const command of [

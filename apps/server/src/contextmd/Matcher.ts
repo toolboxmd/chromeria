@@ -48,10 +48,11 @@ const WRAPPER_ARGUMENTS: Record<string, ReadonlyArray<string>> = {
 /** A quote inside an expansion belongs to that expansion, not the enclosing string. */
 const quotedEnd = (text: string, start: number): number => {
   const quote = text[start];
+  const ansi = quote === "'" && text[start - 1] === "$";
   let i = start + 1;
   while (i < text.length) {
     if (text[i] === quote) return i;
-    if (quote === '"' && text[i] === "\\") {
+    if ((quote === '"' || ansi) && text[i] === "\\") {
       i += 2;
       continue;
     }
@@ -134,20 +135,49 @@ const substitutions = (text: string): string => {
   return out.join(" ; ");
 };
 const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
+const ANSI_ESCAPES: Record<string, string> = {
+  a: "\x07",
+  b: "\b",
+  e: "\x1b",
+  E: "\x1b",
+  f: "\f",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+  v: "\v",
+  "\\": "\\",
+  "'": "'",
+  '"': '"',
+  "?": "?",
+};
+const ANSI_NUMBER =
+  /^\\(?:([0-7]{1,3})|x([A-Fa-f0-9]{1,2})|u([A-Fa-f0-9]{1,4})|U([A-Fa-f0-9]{1,8}))/u;
 
 /** One shell word: dequote its value, retaining unquoted fragments and executed substitutions. */
 const shellWord = (text: string, start: number) => {
   let i = start;
   let quote = "";
+  let ansiStart = 0;
   let value = "";
   let plain = "";
   const runs: string[] = [];
   while (i < text.length) {
     const ch = text[i]!;
     if (quote === "" && SHELL_BREAK.test(ch)) break;
-    if (ch === quote) {
+    if (ch === quote || (quote === "$'" && ch === "'")) {
+      if (quote === "$'") {
+        // Bash cannot keep a NUL in a word; only this ANSI-C segment ends there.
+        const nul = value.indexOf("\0", ansiStart);
+        if (nul >= 0) value = value.slice(0, nul);
+      }
       quote = "";
       i += 1;
+      continue;
+    }
+    if (quote === "" && text.startsWith("$'", i)) {
+      quote = "$'";
+      ansiStart = value.length;
+      i += 2;
       continue;
     }
     if (quote === "" && (ch === "'" || ch === '"')) {
@@ -157,6 +187,19 @@ const shellWord = (text: string, start: number) => {
     }
     if (ch === "\\" && quote !== "'") {
       const next = text[i + 1] ?? "";
+      if (quote === "$'") {
+        const numeric = ANSI_NUMBER.exec(text.slice(i));
+        if (numeric !== null) {
+          const digits = numeric[1] ?? numeric[2] ?? numeric[3] ?? numeric[4]!;
+          const code = Number.parseInt(digits, numeric[1] === undefined ? 16 : 8);
+          value += code <= 0x10ffff ? String.fromCodePoint(code) : numeric[0];
+          i += numeric[0].length;
+        } else {
+          value += ANSI_ESCAPES[next] ?? ch + next;
+          i += 2;
+        }
+        continue;
+      }
       if (quote === "" || '$`"\\\n'.includes(next)) {
         if (next !== "\n") value += next;
       } else value += ch + next;
@@ -164,7 +207,7 @@ const shellWord = (text: string, start: number) => {
       i += 2;
       continue;
     }
-    const expansion = quote === "'" ? null : expansionAt(text, i);
+    const expansion = quote === "'" || quote === "$'" ? null : expansionAt(text, i);
     if (expansion !== null) {
       const raw = text.slice(i, expansion.end);
       value += raw;
@@ -274,7 +317,7 @@ const visibleCommand = (command: string): string => {
           shell = SHELLS.has(program);
         }
       }
-    } else if (shell && /^-[a-z]*c$/u.test(word.value)) position = "script";
+    } else if (shell && /^-[A-Za-z]*c[A-Za-z]*$/u.test(word.value)) position = "script";
     out += ` ${kept} ${word.runs} `;
     i = word.end;
   }
