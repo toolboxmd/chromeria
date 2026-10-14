@@ -8,7 +8,6 @@ import {
 import { createBrowserHistory } from "@tanstack/react-router";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import { SessionRenewal } from "@t3tools/client-runtime/authorization";
 import { HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -114,6 +113,7 @@ function createSignal() {
 let disposeHttpTest: (() => Promise<void>) | undefined;
 
 async function installAuthApi(input: {
+  readonly renewal?: SessionRenewal.SessionRenewal["Service"]["ensure"];
   readonly session?: () => AuthSessionState;
   readonly browserSession?: (
     credential: string,
@@ -126,6 +126,7 @@ async function installAuthApi(input: {
   }>;
 }) {
   const testApi = await installEnvironmentHttpTest({
+    ...(input.renewal ? { renewal: input.renewal } : {}),
     ...(input.session ? { session: () => Effect.succeed(input.session!()) } : {}),
     ...(input.browserSession
       ? { browserSession: (payload) => input.browserSession!(payload.credential) }
@@ -141,27 +142,22 @@ async function installAuthApi(input: {
 describe("resolveInitialServerAuthGateState", () => {
   it("recovers the primary cookie before presenting a pairing gate", async () => {
     installTestBrowser("http://localhost/");
+    const keys: string[] = [];
     const testApi = await installAuthApi({
       session: sequence(unauthenticatedSession(LOOPBACK_AUTH), authenticatedSession(LOOPBACK_AUTH)),
+      renewal: (key) => {
+        keys.push(key);
+        return Effect.succeed({
+          _tag: "Renewed",
+          result: {
+            outcome: "current",
+            generation: 0,
+            expiresAt: 1000,
+            renewAfter: 500,
+          },
+        });
+      },
     });
-    const keys: string[] = [];
-    __setRenewalRunnerForTests((effect) =>
-      Effect.runPromise(
-        effect.pipe(
-          Effect.provide(
-            Layer.mock(SessionRenewal.SessionRenewal, {
-              ensure: (key) => {
-                keys.push(key);
-                return Effect.succeed({
-                  _tag: "Renewed",
-                  result: { outcome: "current", generation: 0, expiresAt: 1000, renewAfter: 500 },
-                });
-              },
-            }),
-          ),
-        ),
-      ),
-    );
     const { resolveInitialServerAuthGateState } = await import("./environments/primary/auth");
     expect(await resolveInitialServerAuthGateState()).toEqual({ status: "authenticated" });
     expect(keys).toEqual(["cookie:http://localhost"]);

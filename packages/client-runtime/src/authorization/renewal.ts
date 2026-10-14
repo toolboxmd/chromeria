@@ -278,7 +278,7 @@ const make = (allowLegacyEnrollment: boolean) =>
         const record = yield* store.read(key);
         const candidates = [
           ...(record?.active ? [record.active] : []),
-          ...(record?.provisional.toReversed() ?? []),
+          ...[...(record?.provisional ?? [])].reverse(),
         ];
         let outcome: RenewalOutcome = { _tag: "NotEnrolled" };
         let failure: RenewalRejected | ConnectionTransientError | undefined;
