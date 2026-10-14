@@ -271,6 +271,7 @@ describe("providerAutoUpdate", () => {
       const firstPass = yield* Deferred.make<void>();
       const updated = yield* Deferred.make<string>();
       const events = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
+      let subscriptionCursor: number | undefined;
       const deps = Layer.mergeAll(
         ServerSettingsModule.layerTest({ autoUpdateProviders: true }),
         Layer.succeed(SqlClient.SqlClient, sql),
@@ -282,7 +283,13 @@ describe("providerAutoUpdate", () => {
             Effect.succeed(maintenanceCapabilities(driver)),
           streamChanges: Stream.never,
         }),
-        Layer.mock(EventSink.EventSinkV2)({ stream: () => Stream.fromQueue(events) }),
+        Layer.mock(EventSink.EventSinkV2)({
+          latestSequence: () => Effect.succeed(42),
+          stream: (input) => {
+            subscriptionCursor = input?.afterSequence;
+            return Stream.fromQueue(events);
+          },
+        }),
         Layer.mock(ProviderMaintenanceRunner.ProviderMaintenanceRunner)({
           updateProvider: (target) =>
             Deferred.succeed(
@@ -293,11 +300,12 @@ describe("providerAutoUpdate", () => {
       );
       yield* Layer.build(ProviderAutoUpdate.layer.pipe(Layer.provide(deps)));
       yield* Deferred.await(firstPass);
+      assert.strictEqual(subscriptionCursor, 42);
       assert.isFalse(yield* Deferred.isDone(updated));
       yield* sql`UPDATE orchestration_v2_projection_provider_sessions SET status = 'ready' WHERE provider_session_id = 'session'`;
       const now = yield* DateTime.now;
       yield* Queue.offer(events, {
-        sequence: 1,
+        sequence: 43,
         commandId: null,
         event: {
           id: EventId.make("terminal"),
