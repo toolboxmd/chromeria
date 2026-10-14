@@ -388,6 +388,7 @@ patchedDependencies:
   react-native-pdf-jsi@5.0.0: 6f52854210f61bef499850ebd498229a111bc34ec5b2a4925e644f2f48f42760
   react-native-reanimated@4.7.1: 95ee26e5fcab5f50bc4b4c47b3f7e6278a0b20850205efb9f6ee7e70a22d2b59
   react-native-webview@14.0.1: 81caa279ec3dc1f81209062133b66e8f824e13f106cca57f1fa732a72c2ab378
+  vitest@5.0.1: c60c4c2c5e71c9d7702e51703fee8a62fc500be4c27a65ac55f735b2ae0991c3
 
 importers:
 
