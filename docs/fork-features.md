@@ -1284,13 +1284,17 @@ Child creation paths are owned by child-threads and shared with thread-people.
 {
   "id": "contextmd-serving",
   "purpose": "Serve ContextMD's stored rules to agents in Chromeria threads through thin harness hooks, with serving state, settlement and the serving log in the environment.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/217"],
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/217",
+    "https://github.com/toolboxmd/chromeria/issues/268"
+  ],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/220"],
   "newFiles": [
     "apps/server/src/contextmd/ContextmdRoute.test.ts",
     "apps/server/src/contextmd/ContextmdRoute.ts",
     "apps/server/src/contextmd/ContextmdServing.ts",
     "apps/server/src/contextmd/Harnesses.ts",
+    "apps/server/src/contextmd/Library.test.ts",
     "apps/server/src/contextmd/Matcher.ts",
     "apps/server/src/contextmd/Reads.ts",
     "apps/server/src/contextmd/Select.test.ts",
@@ -1298,7 +1302,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/contextmd/Selection.ts",
     "apps/server/src/contextmd/ServingState.test.ts",
     "apps/server/src/contextmd/ServingState.ts",
-    "apps/server/src/contextmd/Store.ts"
+    "apps/server/src/contextmd/Store.ts",
+    "apps/server/src/contextmd/library-corpus.json"
   ],
   "upstreamFiles": [],
   "sharedFiles": ["apps/server/src/server.ts"],

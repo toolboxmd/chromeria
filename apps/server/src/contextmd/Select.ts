@@ -21,7 +21,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { HARNESSES, type Harness } from "./Harnesses.ts";
 import { extract, firstMatch, Unsupported } from "./Matcher.ts";
 import { reads } from "./Reads.ts";
-import type { Candidate, MomentKind, Note, Selection } from "./Selection.ts";
+import type { Candidate, MomentKind, Note, Profile, Selection } from "./Selection.ts";
 import * as Store from "./Store.ts";
 
 // Served text says where it comes from: models treat unexplained text as data
@@ -71,7 +71,7 @@ const decodeServingConfig = Schema.decodeUnknownEffect(ServingConfigFile, {
 export interface ServingConfig {
   readonly exactKeys: ReadonlyArray<string>;
   readonly sessionStart: ReadonlyArray<{ readonly path: string; readonly maxChars: number }>;
-  /** Cue entry directories; Cue runs only with these and `cueUrl`. */
+  /** Registered Libraries, alongside exactKeys; fields choose each entry's matchers. */
   readonly cue: ReadonlyArray<string>;
   readonly cueUrl: string | null;
 }
@@ -141,37 +141,92 @@ const outputText = (value: unknown): string => {
   return "";
 };
 
-/** A served Cue entry shows this much of its "applies when" text; the scored text stays whole. */
-const CUE_APPLIES_CHARS = 600;
-
-/**
- * What a Cue fire serves: its "applies when" line first, so a wrong fire is dismissed in one read, then
- * the entry and, with a target, the file to read.
- */
-const cueText = (e: Store.CueEntry) => {
-  const applies =
-    e.applies.length <= CUE_APPLIES_CHARS
-      ? e.applies
-      : `${e.applies.slice(0, CUE_APPLIES_CHARS - 5).replace(/\s+\S*$/u, "")} [...]`;
-  const read = e.target ? ` Read ${e.target} in full.` : "";
-  return `${e.name} applies when: ${applies}\nCue judged that this holds now; if it does not, ignore this. ${e.text}${read}`;
+/** A pointer always recovers the entry's own knowledge when its body is omitted. */
+const pointer = (e: Store.Entry | Store.CueEntry) =>
+  e.target ? `${e.self} and ${e.target}` : e.self;
+const contextText = (e: Store.Entry | Store.CueEntry, room: number) => {
+  const text = e.text + (e.target ? ` Read ${e.target} in full.` : "");
+  return !e.long && Buffer.byteLength(text, "utf8") <= room ? text : `Read ${pointer(e)} in full.`;
 };
 
-/** The candidate a Cue entry becomes; its score arrives from the Cue service. */
-export const cueCandidate = (e: Store.CueEntry): Candidate => ({
+const cutDisplay = (value: string, bytes: number) => {
+  if (Buffer.byteLength(value, "utf8") <= bytes) return value;
+  if (bytes < 6) return "";
+  let out = "";
+  for (const c of value) {
+    if (Buffer.byteLength(out + c, "utf8") > bytes - 6) break;
+    out += c;
+  }
+  return out.replace(/\s+\S*$/u, "") + " [...]";
+};
+const cueText = (e: Store.CueEntry, room: number) => {
+  const chars = [...e.applies];
+  let applies =
+    chars.length <= 600
+      ? e.applies
+      : chars
+          .slice(0, 595)
+          .join("")
+          .replace(/\s+\S*$/u, "") + " [...]";
+  let name = e.name;
+  let body = contextText(e, room);
+  const render = () =>
+    `${name} applies when: ${applies}\nCue judged that this holds now; if it does not, ignore this. ${body}`;
+  applies = cutDisplay(
+    applies,
+    Math.max(0, Buffer.byteLength(applies, "utf8") + room - Buffer.byteLength(render(), "utf8")),
+  );
+  name = cutDisplay(
+    name,
+    Math.max(0, Buffer.byteLength(name, "utf8") + room - Buffer.byteLength(render(), "utf8")),
+  );
+  if (Buffer.byteLength(render(), "utf8") > room) body = `Read ${pointer(e)} in full.`;
+  return render();
+};
+
+/** Display metadata may shrink; the document sent to Cue keeps its complete scored text. */
+export const cueCandidate = (e: Store.CueEntry, profile: Profile): Candidate => ({
   matcher: "intent",
   entry: e.id,
   version: e.version,
   key: null,
-  text: cueText(e),
+  text: cueText(e, profile.limit_bytes - Buffer.byteLength(profile.heads.context, "utf8") - 2),
   must_know: false,
   rule: null,
   target: e.target,
 });
 
-const denyText = (e: Store.Entry) =>
-  // The target first: where a harness cuts a long deny, it cuts the rule text, not the path.
-  e.target ? `Read ${e.target} in full, then run the same call again.\n${e.text}` : e.text;
+const denyCandidate = (e: Store.Entry, harness: Harness) => {
+  if (!e.mustKnowBefore) return { rule: null, target: e.target, deny_text: null };
+  const room =
+    Math.min(harness.limitBytes, harness.denyLimitBytes ?? harness.limitBytes) -
+    Buffer.byteLength(harness.denyHead ?? DENY_HEAD, "utf8") -
+    2;
+  const full = e.target
+    ? `Read ${e.target} in full, then run the same call again.\n${e.text}`
+    : e.text;
+  if (e.long || (!e.target && Buffer.byteLength(full, "utf8") > room)) {
+    return {
+      rule: "entry" as const,
+      target: e.self,
+      opening: `Read ${pointer(e)} in full`,
+      deny_text: `Read ${pointer(e)} in full, then run the same call again.`,
+    };
+  }
+  if (e.target) {
+    const opening = `Read ${Buffer.byteLength(full, "utf8") <= room ? e.target : `${e.target} and ${e.self}`} in full`;
+    return {
+      rule: "pointer" as const,
+      target: e.target,
+      opening,
+      deny_text:
+        Buffer.byteLength(full, "utf8") <= room
+          ? full
+          : `Read ${e.target} and ${e.self} in full, then run the same call again.`,
+    };
+  }
+  return { rule: "inline" as const, target: null, deny_text: full };
+};
 
 /** A path relative to the repository holding it, else the absolute path. */
 const repoRelative = Effect.fn("contextmd.repoRelative")(function* (
@@ -250,7 +305,7 @@ export const select = Effect.fn("contextmd.select")(function* (
   harnessName: string,
   raw: unknown,
   config: ServingConfig,
-  cache: Store.ParseCache,
+  library: Store.Library,
 ) {
   const { harness, declared, kind, failed, session, toolUseId, output, notes } = yield* identify(
     harnessName,
@@ -260,7 +315,7 @@ export const select = Effect.fn("contextmd.select")(function* (
   const tool = text(at(raw, f.tool));
   const cwd = text(at(raw, f.cwd));
   const candidates: Candidate[] = [];
-  const owners: Record<string, string | null> = {};
+  const owners: Record<string, string | null> = { ...library.owners };
   const toolKind = kind === "pre_tool" || kind === "tool_result" || kind === "tool_failure";
   const toolInput = at(raw, f.toolInput);
   // A read counts only after a successful call; without a failure signal (Codex) the serving
@@ -323,9 +378,7 @@ export const select = Effect.fn("contextmd.select")(function* (
     );
     if (keys !== null) {
       const relative = yield* Effect.forEach(keys.paths, (p) => repoRelative(p, cwd));
-      const store = yield* Store.load(config.exactKeys, cache);
-      Object.assign(owners, store.owners);
-      for (const e of store.entries) {
+      for (const e of library.entries) {
         const key = firstMatch(e, keys, relative);
         if (key === null) continue;
         candidates.push({
@@ -333,11 +386,9 @@ export const select = Effect.fn("contextmd.select")(function* (
           entry: e.id,
           version: e.version,
           key,
-          text: e.text,
+          text: contextText(e, harness.limitBytes - Buffer.byteLength(CONTEXT_HEAD, "utf8") - 2),
           must_know: e.mustKnowBefore,
-          rule: e.mustKnowBefore ? (e.target ? "pointer" : "inline") : null,
-          target: e.target,
-          deny_text: e.mustKnowBefore ? denyText(e) : null,
+          ...denyCandidate(e, harness),
         });
       }
     }

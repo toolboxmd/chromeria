@@ -1,37 +1,4 @@
-/**
- * ContextMD's exact-key stores: Markdown entries keyed by command, path or error.
- *
- * Ported from ContextMD's `store.py` (PR #23); the entries stay data files in
- * ContextMD's store directories, and `contextmd-serve check` validates them
- * with the same rules. Each entry is one `.md` file:
- *
- *     ---
- *     id: pr-template
- *     command: gh pr create
- *     must-know-before: true
- *     target: procedures/pull-requests.md
- *     ---
- *     Answer every prompt of the PR template before opening a PR.
- *
- * Cue entries (`loadCue`) live in their own directories, never inside an exact-key directory, because
- * each loader rejects the other's fields:
- *
- *     ---
- *     id: agentsmd-research
- *     name: Research
- *     applies: The request asks a question whose answer is facts beyond what is at hand. Not: ...
- *     target: ../skills/operations/procedures/research/index.md
- *     ---
- *     AgentsMD: follow the research procedure.
- *
- * Cue scores `<name>: <applies>`, the text it was trained on. `target` is optional.
- *
- * Keys may repeat; any one key matching serves the entry. A must-know-before
- * entry with `target` is a pointer rule: its deny names the file and lifts once
- * the agent is seen reading it. Without `target` it is an inline rule. The
- * version is a hash of the file bytes, so an edited entry is new. Stores load
- * on every moment; unchanged files are not parsed again.
- */
+/** Flat Libraries share one YAML header parser and exact-key/Cue projections. */
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -43,12 +10,39 @@ import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { normalizeError, type EntryKeys } from "./Matcher.ts";
 
-/** One entry fits the smallest harness preview (Claude Code shows 2 KB of larger context). */
 export const MAX_ENTRY_BYTES = 1800;
 const MAX_ID_CHARS = 120;
-const KEY_FIELDS = new Set(["command", "path", "error"]);
-const OTHER_FIELDS = new Set(["id", "must-know-before", "target"]);
-const CUE_FIELDS = new Set(["id", "name", "applies", "target"]);
+const KEY_FIELDS = ["command", "path", "error"];
+const FIELDS = ["id", ...KEY_FIELDS, "must-know-before", "name", "applies", "target"];
+// oxlint-disable-next-line no-control-regex -- the file boundary rejects these characters in YAML headers.
+const CONTROL = /[\x00-\x08\x0a-\x1f\x7f-\x9f]/u;
+const PLAIN_INVALID = /[\uFEFF\uFFFE\uFFFF]/u;
+// oxlint-disable no-control-regex -- one explicit shared blank set rejects empty error signatures.
+const ERROR_BLANK =
+  /^[\u0009-\u000d\u001c-\u001f\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+$/u;
+// oxlint-enable no-control-regex
+const NUMBER =
+  /^(?:0o[0-7]+|[-+]?[0-9]+|0x[0-9a-fA-F]+|[-+]?\.(?:inf|Inf|INF)|\.nan|\.NaN|\.NAN|[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)[eE][-+]?[0-9]+|[-+]?(?:\.[0-9]+|[0-9]+\.[0-9]*))$/u;
+type Value = string | boolean | number | null | ReadonlyArray<Value>;
+
+export class EntryError extends Error {
+  readonly code: string;
+  readonly reason: string;
+  readonly line: number | null;
+  readonly field: string | null;
+  constructor(
+    code: string,
+    reason: string,
+    line: number | null = null,
+    field: string | null = null,
+  ) {
+    super(`${line === null ? "" : `line ${line}: `}${reason}`);
+    this.code = code;
+    this.reason = reason;
+    this.line = line;
+    this.field = field;
+  }
+}
 
 export interface Entry extends EntryKeys {
   readonly id: string;
@@ -56,15 +50,11 @@ export interface Entry extends EntryKeys {
   readonly text: string;
   readonly mustKnowBefore: boolean;
   readonly file: string;
+  readonly self: string;
   readonly target: string | null;
+  readonly long: boolean;
+  readonly legacy: string | null;
 }
-
-export interface Store {
-  readonly entries: ReadonlyArray<Entry>;
-  readonly owners: Record<string, string | null>;
-  readonly errors: ReadonlyArray<string>;
-}
-
 export interface CueEntry {
   readonly id: string;
   readonly version: string;
@@ -72,119 +62,277 @@ export interface CueEntry {
   readonly applies: string;
   readonly text: string;
   readonly file: string;
+  readonly self: string;
   readonly target: string | null;
+  readonly long: boolean;
+  readonly legacy: string | null;
 }
-
-export interface CueStore {
-  readonly entries: ReadonlyArray<CueEntry>;
+export interface Source {
+  readonly directory: string;
+  readonly registered: boolean;
+}
+export interface Library {
+  readonly entries: ReadonlyArray<Entry>;
+  readonly cue: ReadonlyArray<CueEntry>;
   readonly owners: Record<string, string | null>;
   readonly errors: ReadonlyArray<string>;
+  readonly legacy: ReadonlyArray<string>;
 }
-
-/**
- * Parsed entries by file, kept while the file's size and modification time are unchanged. Each loader
- * (`load`, `loadCue`) needs a cache of its own.
- */
+interface Parsed {
+  readonly id: string;
+  readonly version: string;
+  readonly fields: Readonly<Record<string, Value>>;
+  readonly body: string;
+  readonly long: boolean;
+  readonly commands: ReadonlyArray<ReadonlyArray<string>>;
+  readonly paths: ReadonlyArray<string>;
+  readonly rawErrors: ReadonlyArray<string>;
+  readonly mustKnowBefore: boolean;
+  readonly name: string | null;
+  readonly applies: string | null;
+  readonly target: string | null;
+  readonly exact: boolean;
+  readonly legacy: string | null;
+}
 export type ParseCache = Map<
   string,
-  { readonly stamp: string; readonly result: Entry | CueEntry | string }
+  { readonly stamp: string; strict?: Parsed | EntryError; tolerant?: Parsed | EntryError }
 >;
+const trim = (v: string) => v.replace(/^[ \t]+|[ \t]+$/gu, "");
 
-class EntryError extends Error {}
-
-/** An entry file's front-matter fields and body; throws `EntryError` on a malformed entry. */
-const frontMatter = (text: string, allowed: ReadonlySet<string>) => {
-  const lines = text.split("\n");
-  if (lines.length === 0 || lines[0]!.trim() !== "---")
-    throw new EntryError("missing front matter");
-  const end = lines.indexOf("---", 1);
-  if (end < 0) throw new EntryError("front matter is not closed");
-  const fields = new Map<string, string[]>();
-  for (const line of lines.slice(1, end)) {
-    if (line.trim() === "") continue;
-    const sep = line.indexOf(":");
-    if (sep < 0) throw new EntryError(`not a 'name: value' line: '${line}'`);
-    const name = line.slice(0, sep).trim();
-    fields.set(name, [...(fields.get(name) ?? []), line.slice(sep + 1).trim()]);
+const scalar = (value: string, line: number, tolerant = false): Value => {
+  if (value === "") return null;
+  let out: string;
+  if (value.startsWith("'")) {
+    out = "";
+    let closed = false;
+    for (let i = 1; i < value.length; i++) {
+      if (value[i] === "'") {
+        if (value[i + 1] === "'") {
+          out += "'";
+          i++;
+          continue;
+        }
+        if (trim(value.slice(i + 1)) !== "")
+          throw new EntryError("syntax", "unexpected text after quoted value", line);
+        closed = true;
+        break;
+      }
+      out += value[i];
+    }
+    if (!closed) throw new EntryError("syntax", "unclosed quoted value", line);
+  } else if (value.startsWith('"')) {
+    try {
+      // YAML permits raw tabs. Preserve existing escapes so backslash + raw tab stays invalid.
+      const decoded: unknown = JSON.parse(
+        value.replace(/\\[\s\S]|\t/gu, (part) => (part === "\t" ? "\\t" : part)),
+      );
+      if (typeof decoded !== "string") throw new Error("not a string");
+      out = decoded;
+    } catch {
+      throw new EntryError("syntax", "invalid quoted value", line);
+    }
+  } else {
+    if (PLAIN_INVALID.test(value))
+      throw new EntryError("syntax", "invalid character in plain value or comment", line);
+    if (/[ \t]#/u.test(value))
+      throw new EntryError("syntax", "trailing comments are unsupported; quote the value", line);
+    const legacy = "*@`%".includes(value[0]!) || /:[ \t]|:$/u.test(value);
+    if ("-?:,[]{}#&*!|>'\"%@`".includes(value[0]!) || legacy) {
+      if (
+        !(tolerant && legacy && !"['\"".includes(value[0]!) && !"-?:,]{}#&!|>".includes(value[0]!))
+      )
+        throw new EntryError("syntax", "quote the value", line);
+    }
+    if (!legacy) {
+      if (["~", "null", "Null", "NULL"].includes(value)) return null;
+      if (["true", "True", "TRUE", "false", "False", "FALSE"].includes(value))
+        return value.toLowerCase() === "true";
+      if (NUMBER.test(value)) return 0; // Numeric fields are rejected by the typed header.
+    }
+    out = value;
   }
-  const unknown = [...fields.keys()].filter((f) => !allowed.has(f));
-  if (unknown.length > 0) throw new EntryError(`unknown fields: ${unknown.sort().join(", ")}`);
+  if (CONTROL.test(out) || /[\uD800-\uDFFF]/u.test(out))
+    throw new EntryError("syntax", "control character or lone surrogate in value", line);
+  return out;
+};
+
+const fieldValue = (value: string, line: number, tolerant: boolean): Value => {
+  if (!value.startsWith("[")) return scalar(value, line, tolerant);
+  if (!value.endsWith("]")) throw new EntryError("syntax", "unclosed flow list", line);
+  const inner = value.slice(1, -1);
+  if (trim(inner) === "") return [];
+  const parts: string[] = [];
+  let start = 0,
+    quote: string | null = null;
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner[i]!;
+    if (quote !== null) {
+      if (quote === '"' && c === "\\") {
+        i++;
+        continue;
+      }
+      if (c === quote) {
+        if (quote === "'" && inner[i + 1] === "'") {
+          i++;
+          continue;
+        }
+        quote = null;
+      }
+    } else if ((c === "'" || c === '"') && trim(inner.slice(start, i)) === "") quote = c;
+    else if ("[]{}".includes(c))
+      throw new EntryError("syntax", "nested collections are unsupported", line);
+    else if (c === ",") {
+      parts.push(trim(inner.slice(start, i)));
+      start = i + 1;
+    }
+  }
+  parts.push(trim(inner.slice(start)));
+  if (quote !== null || parts.some((p) => p === ""))
+    throw new EntryError("syntax", "invalid flow list", line);
+  return parts.map((p) => scalar(p, line));
+};
+
+const strict = (fileName: string, text: string, version: string, tolerant: boolean): Parsed => {
+  text = text.replace(/^\uFEFF/u, "").replace(/\r\n/gu, "\n");
+  if (text.includes("\r"))
+    throw new EntryError(
+      "encoding",
+      "bare carriage return",
+      text.slice(0, text.indexOf("\r")).split("\n").length,
+    );
+  const lines = text.split("\n");
+  if (lines[0]!.replace(/[ \t]+$/u, "") !== "---")
+    throw new EntryError("no_header", "missing front matter");
+  const end = lines.findIndex((l, i) => i > 0 && l.replace(/[ \t]+$/u, "") === "---");
+  if (end < 0) throw new EntryError("no_header", "front matter is not closed");
+  const fields = new Map<string, Value>(),
+    locations = new Map<string, number>();
+  for (let i = 1; i < end; i++) {
+    const line = lines[i]!;
+    if (CONTROL.test(line)) throw new EntryError("encoding", "control character in header", i + 1);
+    if (trim(line) === "") continue;
+    if (/^ *#/u.test(line)) {
+      if (PLAIN_INVALID.test(line))
+        throw new EntryError("syntax", "invalid character in plain value or comment", i + 1);
+      continue;
+    }
+    const m = /^([A-Za-z_][A-Za-z0-9_-]*):(?:[ \t]+(.*))?$/su.exec(line);
+    if (m === null) throw new EntryError("syntax", "expected a field at column zero", i + 1);
+    const name = m[1]!,
+      value = trim(m[2] ?? "");
+    if (fields.has(name) && !(tolerant && KEY_FIELDS.includes(name)))
+      throw new EntryError("duplicate_field", "repeated field; use a flow list", i + 1, name);
+    const parsed = fieldValue(value, i + 1, tolerant);
+    if (fields.has(name)) {
+      const old = fields.get(name)!;
+      fields.set(name, [
+        ...(Array.isArray(old) ? old : [old]),
+        ...(Array.isArray(parsed) ? parsed : [parsed]),
+      ]);
+    } else {
+      fields.set(name, parsed);
+      locations.set(name, i + 1);
+    }
+  }
+  const unknown = [...fields.keys()].filter((k) => !FIELDS.includes(k)).sort();
+  if (unknown.length > 0)
+    throw new EntryError("unknown_field", `unknown fields: ${unknown.join(", ")}`);
+  for (const name of FIELDS) {
+    if (!fields.has(name)) continue;
+    const value = fields.get(name)!;
+    if (value === null || value === "" || (Array.isArray(value) && value.length === 0))
+      throw new EntryError("empty_value", "empty field value", locations.get(name), name);
+    const values: ReadonlyArray<Value> =
+      Array.isArray(value) && KEY_FIELDS.includes(name) ? value : [value];
+    for (const item of values) {
+      if (item === null || item === "")
+        throw new EntryError("empty_value", "empty field value", locations.get(name), name);
+      if (name === "must-know-before" ? typeof item !== "boolean" : typeof item !== "string")
+        throw new EntryError("wrong_type", "wrong field type", locations.get(name), name);
+      if (name === "command" && typeof item === "string" && trim(item) === "")
+        throw new EntryError("empty_value", "empty command key", locations.get(name), name);
+      if (name === "error" && typeof item === "string" && ERROR_BLANK.test(item))
+        throw new EntryError("empty_value", "empty error key", locations.get(name), name);
+    }
+  }
+  const string = (name: string): string | null => {
+    const v = fields.get(name);
+    return typeof v === "string" ? v : null;
+  };
+  const values = (name: string): ReadonlyArray<string> => {
+    const v = fields.get(name);
+    if (typeof v === "string") return [v];
+    return Array.isArray(v) ? v.filter((item): item is string => typeof item === "string") : [];
+  };
+  const id = string("id") ?? fileName.slice(0, -3);
+  if (id === "") throw new EntryError("empty_value", "empty entry id", null, "id");
+  if ([...id].length > MAX_ID_CHARS)
+    throw new EntryError(
+      "id_too_long",
+      `id is ${[...id].length} characters, over ${MAX_ID_CHARS}`,
+      null,
+      "id",
+    );
   const body = lines
     .slice(end + 1)
     .join("\n")
-    .trim();
-  if (body === "") throw new EntryError("empty body");
-  const bytes = Buffer.byteLength(body, "utf8");
-  if (bytes > MAX_ENTRY_BYTES)
-    throw new EntryError(`body is ${bytes} UTF-8 bytes, over ${MAX_ENTRY_BYTES}`);
-  const last = (name: string) => fields.get(name)?.at(-1);
-  return { fields, body, last };
-};
-
-const entryId = (last: (name: string) => string | undefined, file: string, path: Path.Path) => {
-  const id = last("id") ?? path.basename(file, ".md");
-  if (id.length > MAX_ID_CHARS)
-    throw new EntryError(`id is ${id.length} characters, over ${MAX_ID_CHARS}`);
-  return id;
-};
-
-const parseText = (
-  file: string,
-  text: string,
-  version: string,
-  path: Path.Path,
-  home: string,
-): Entry => {
-  const { fields, body, last } = frontMatter(text, new Set([...KEY_FIELDS, ...OTHER_FIELDS]));
-  const flag = (last("must-know-before") ?? "false").toLowerCase();
-  if (flag !== "true" && flag !== "false")
-    throw new EntryError("must-know-before is not true or false");
-  let target = last("target") ?? null;
-  if (target !== null) {
-    if (flag !== "true") throw new EntryError("target is only for must-know-before entries");
-    target = path.resolve(path.dirname(file), expandHomePath(target, home));
-  }
-  const entry: Entry = {
-    id: entryId(last, file, path),
-    version,
-    text: body,
-    mustKnowBefore: flag === "true",
-    file,
-    target,
-    commands: (fields.get("command") ?? [])
-      .map((c) => c.split(/\s+/u).filter(Boolean))
-      .filter((c) => c.length > 0),
-    paths: (fields.get("path") ?? []).filter(Boolean),
-    errors: (fields.get("error") ?? []).filter(Boolean).map(normalizeError),
-  };
-  if (entry.commands.length + entry.paths.length + entry.errors.length === 0) {
-    throw new EntryError("no command, path or error key");
-  }
-  return entry;
-};
-
-const parseCueText = (
-  file: string,
-  text: string,
-  version: string,
-  path: Path.Path,
-  home: string,
-): CueEntry => {
-  const { body, last } = frontMatter(text, CUE_FIELDS);
-  const name = last("name") ?? "";
-  const applies = last("applies") ?? "";
-  if (name === "") throw new EntryError("no name");
-  if (applies === "") throw new EntryError("no applies");
-  const target = last("target");
+    .replace(/^[ \t\n]+|[ \t\n]+$/gu, "");
+  if (body === "") throw new EntryError("empty_body", "empty body");
+  const exact = KEY_FIELDS.some((k) => fields.has(k)),
+    cue = fields.has("name") || fields.has("applies");
+  if (!exact && !cue)
+    throw new EntryError("no_matcher", "no command, path or error key or Cue fields");
+  if (cue && !(fields.has("name") && fields.has("applies")))
+    throw new EntryError("cue_incomplete", `no ${fields.has("name") ? "applies" : "name"}`);
+  if (fields.get("must-know-before") === true && !exact)
+    throw new EntryError("must_know_without_key", "must-know-before needs an exact key");
   return {
-    id: entryId(last, file, path),
+    id,
     version,
-    name,
-    applies,
-    text: body,
-    file,
-    target: target ? path.resolve(path.dirname(file), expandHomePath(target, home)) : null,
+    fields: Object.fromEntries(fields),
+    body,
+    long: Buffer.byteLength(body, "utf8") > MAX_ENTRY_BYTES,
+    commands: values("command").map((c) => trim(c).split(/[ \t]+/u)),
+    paths: values("path"),
+    rawErrors: values("error"),
+    mustKnowBefore: fields.get("must-know-before") === true,
+    name: string("name"),
+    applies: string("applies"),
+    target: string("target"),
+    exact,
+    legacy: null,
   };
+};
+
+/** Pure parsing stays separate from the filesystem-dependent active targets. */
+const parseText = (fileName: string, text: string, version: string, tolerant: boolean): Parsed => {
+  try {
+    return strict(fileName, text, version, false);
+  } catch (error) {
+    if (!(error instanceof EntryError) || !tolerant) throw error;
+    return { ...strict(fileName, text, version, true), legacy: error.message };
+  }
+};
+
+export const parseBytes = (
+  fileName: string,
+  raw: Uint8Array,
+  version: string,
+  tolerant: boolean,
+) => {
+  try {
+    let text: string;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(raw);
+    } catch {
+      throw new EntryError("encoding", "not UTF-8");
+    }
+    return parseText(fileName, text, version, tolerant);
+  } catch (error) {
+    if (!(error instanceof EntryError)) throw error;
+    return error;
+  }
 };
 
 /** The commit checked out in the repository holding `directory`, read without git. */
@@ -231,112 +379,144 @@ export const headCommit = Effect.fn("contextmd.headCommit")(function* (directory
   }
 });
 
-const loadWith = <E extends Entry | CueEntry>(
-  directories: ReadonlyArray<string>,
-  cache: ParseCache,
-  parse: (file: string, text: string, version: string, path: Path.Path, home: string) => E,
-  isEntry: (result: Entry | CueEntry | string) => result is E,
-) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const home = yield* HostProcess.HomeDirectory;
-    const crypto = yield* Crypto.Crypto;
-    const entries: E[] = [];
-    const owners: Record<string, string | null> = {};
-    const errors: string[] = [];
-    const seen = new Map<string, string>();
-    for (const directory of directories) {
-      const root = expandHomePath(directory, home);
-      const info = yield* fs.stat(root).pipe(Effect.option);
-      if (Option.isNone(info) || info.value.type !== "Directory") {
-        errors.push(`${root}: not a directory`);
-        continue;
-      }
-      owners[root] = yield* headCommit(root);
-      const names = yield* fs
-        .readDirectory(root, { recursive: true })
-        .pipe(Effect.orElseSucceed(() => []));
-      const files = names
-        .filter((n) => n.endsWith(".md"))
-        .filter((n) => !n.split("/").includes(".git"))
-        .filter((n) => path.basename(n).toLowerCase() !== "readme.md")
-        .map((n) => path.join(root, n))
-        .sort();
-      for (const file of files) {
-        const stat = yield* fs.stat(file).pipe(Effect.option);
-        if (Option.isNone(stat) || stat.value.type !== "File") continue;
-        const mtime = Option.match(stat.value.mtime, {
-          onNone: () => 0,
-          onSome: (d) => d.getTime(),
-        });
-        const stamp = `${mtime}:${stat.value.size}`;
-        let hit = cache.get(file);
-        if (hit === undefined || hit.stamp !== stamp) {
-          const raw = yield* fs.readFile(file);
-          const version = Hex.encode(yield* crypto.digest("SHA-256", raw)).slice(0, 12);
-          let result = yield* Effect.try({
-            try: (): E | string =>
-              parse(
-                file,
-                new TextDecoder("utf-8", { fatal: true }).decode(raw),
-                version,
-                path,
-                home,
-              ),
-            catch: (cause) => (cause instanceof EntryError ? cause.message : "not UTF-8"),
-          }).pipe(
-            Effect.match({
-              onFailure: (reason): E | string => reason,
-              onSuccess: (entry) => entry,
-            }),
-          );
-          // A target resolves through symlinks, as reads do; a missing target stays as written.
-          if (typeof result !== "string" && result.target !== null) {
-            const target = result.target;
-            result = {
-              ...result,
-              target: yield* fs.realPath(target).pipe(Effect.orElseSucceed(() => target)),
-            };
-          }
-          hit = { stamp, result };
-          cache.set(file, hit);
-        }
-        const result = hit.result;
-        if (typeof result === "string") {
-          errors.push(`${file}: ${result}`);
-          continue;
-        }
-        if (!isEntry(result)) continue;
-        const prior = seen.get(result.id);
-        if (prior !== undefined) {
-          errors.push(`${file}: id '${result.id}' already used by ${prior}`);
-          continue;
-        }
-        seen.set(result.id, file);
-        entries.push(result);
-      }
+/** Discover the checkout containing the joined thread directory, never the hook's cwd. */
+export const libraryDir = Effect.fn("contextmd.libraryDir")(function* (threadDir: string) {
+  const home = yield* HostProcess.HomeDirectory;
+  const fs = yield* FileSystem.FileSystem,
+    path = yield* Path.Path;
+  const original = yield* fs.realPath(expandHomePath(threadDir, home)).pipe(Effect.option);
+  if (Option.isNone(original)) return null;
+  const info = yield* fs.stat(original.value).pipe(Effect.option);
+  if (Option.isNone(info) || info.value.type !== "Directory") return null;
+  let root = original.value;
+  for (let d = original.value; ; d = path.dirname(d)) {
+    const dot = yield* fs.stat(path.join(d, ".git")).pipe(Effect.option);
+    if (Option.isSome(dot) && (dot.value.type === "File" || dot.value.type === "Directory")) {
+      root = d;
+      break;
     }
-    return { entries, owners, errors };
-  });
-
-const isExactKey = (r: Entry | CueEntry | string): r is Entry =>
-  typeof r !== "string" && "mustKnowBefore" in r;
-const isCue = (r: Entry | CueEntry | string): r is CueEntry =>
-  typeof r !== "string" && "applies" in r;
-
-/** Load every entry of the exact-key store directories. */
-export const load = Effect.fn("contextmd.loadStore")(function* (
-  directories: ReadonlyArray<string>,
-  cache: ParseCache,
-) {
-  return (yield* loadWith(directories, cache, parseText, isExactKey)) satisfies Store;
+    if (path.dirname(d) === d) break;
+  }
+  const library = path.join(root, "library"),
+    stat = yield* fs.stat(library).pipe(Effect.option);
+  return Option.isSome(stat) && stat.value.type === "Directory"
+    ? yield* fs.realPath(library).pipe(Effect.orElseSucceed(() => library))
+    : null;
 });
 
-/** Load every entry of the Cue entry directories. */
-export const loadCue = Effect.fn("contextmd.loadCue")(function* (
-  directories: ReadonlyArray<string>,
+/** One load returns both matcher views; cached parses never freeze active source or target identity. */
+export const load = Effect.fn("contextmd.loadStore")(function* (
+  sources: ReadonlyArray<Source | string>,
   cache: ParseCache,
 ) {
-  return (yield* loadWith(directories, cache, parseCueText, isCue)) satisfies CueStore;
+  const home = yield* HostProcess.HomeDirectory;
+  const fs = yield* FileSystem.FileSystem,
+    path = yield* Path.Path,
+    crypto = yield* Crypto.Crypto;
+  const normalized = yield* Effect.forEach(sources, (s) => {
+    const source = typeof s === "string" ? { directory: s, registered: true } : s;
+    const lexical = path.resolve(expandHomePath(source.directory, home));
+    return fs.realPath(lexical).pipe(
+      Effect.orElseSucceed(() => lexical),
+      Effect.map((directory) => ({ ...source, directory })),
+    );
+  });
+  const registered = new Set(normalized.filter((s) => s.registered).map((s) => s.directory));
+  const entries: Entry[] = [],
+    cue: CueEntry[] = [],
+    owners: Record<string, string | null> = {},
+    errors: string[] = [],
+    legacy: string[] = [];
+  const roots = new Set<string>(),
+    exactIds = new Map<string, string>(),
+    cueIds = new Map<string, string>();
+  for (const source of normalized) {
+    const root = source.directory;
+    if (roots.has(root)) continue;
+    roots.add(root);
+    const info = yield* fs.stat(root).pipe(Effect.option);
+    if (Option.isNone(info) || info.value.type !== "Directory") {
+      if (source.registered) errors.push(`${root}: not a directory`);
+      continue;
+    }
+    owners[root] = yield* headCommit(root);
+    const listed = yield* fs.readDirectory(root).pipe(Effect.option);
+    if (Option.isNone(listed)) {
+      errors.push(`${root}: unreadable directory`);
+      continue;
+    }
+    const names = listed.value
+      .filter((n) => n.endsWith(".md") && n.toLowerCase() !== "readme.md")
+      .sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+    for (const name of names) {
+      const file = path.join(root, name),
+        stat = yield* fs.stat(file).pipe(Effect.option);
+      if (Option.isNone(stat)) {
+        errors.push(`${file}: unreadable`);
+        continue;
+      }
+      if (stat.value.type !== "File") continue;
+      const self = yield* fs.realPath(file).pipe(Effect.orElseSucceed(() => file));
+      const stamp = `${Option.match(stat.value.mtime, { onNone: () => 0, onSome: (d) => d.getTime() })}:${stat.value.size}:${self}`;
+      let hit = cache.get(file);
+      if (hit === undefined || hit.stamp !== stamp) {
+        hit = { stamp };
+        cache.set(file, hit);
+      }
+      const mode = registered.has(root) ? "tolerant" : "strict";
+      let result = hit[mode];
+      if (result === undefined) {
+        const raw = yield* fs.readFile(file).pipe(Effect.option);
+        if (Option.isNone(raw)) {
+          errors.push(`${file}: unreadable`);
+          continue;
+        }
+        const version = Hex.encode(yield* crypto.digest("SHA-256", raw.value)).slice(0, 12);
+        result = parseBytes(name, raw.value, version, mode === "tolerant");
+        hit[mode] = result;
+      }
+      if (result instanceof EntryError) {
+        errors.push(`${file}: ${result.message}`);
+        continue;
+      }
+      const prior =
+        (result.exact ? exactIds.get(result.id) : undefined) ??
+        (result.name !== null ? cueIds.get(result.id) : undefined);
+      if (prior !== undefined) {
+        errors.push(`${file}: id '${result.id}' already used by ${prior}`);
+        continue;
+      }
+      let target: string | null = null;
+      if (result.target !== null) {
+        const lexical = path.resolve(path.dirname(file), expandHomePath(result.target, home));
+        target = yield* fs.realPath(lexical).pipe(Effect.orElseSucceed(() => lexical));
+      }
+      const common = {
+        id: result.id,
+        version: result.version,
+        text: result.body,
+        file,
+        self,
+        target,
+        long: result.long,
+        legacy: result.legacy,
+      };
+      if (result.exact) {
+        exactIds.set(result.id, file);
+        entries.push({
+          ...common,
+          commands: result.commands,
+          paths: result.paths,
+          errors: result.rawErrors.map(normalizeError),
+          mustKnowBefore: result.mustKnowBefore,
+        });
+      }
+      if (result.name !== null && result.applies !== null) {
+        cueIds.set(result.id, file);
+        cue.push({ ...common, name: result.name, applies: result.applies });
+      }
+      if (result.legacy !== null) legacy.push(`${file}: ${result.legacy}`);
+    }
+  }
+  return { entries, cue, owners, errors, legacy } satisfies Library;
 });
