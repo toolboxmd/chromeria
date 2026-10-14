@@ -739,6 +739,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/childThreads/ForkCommitPlan.ts",
     "apps/server/src/childThreads/crossProject.test.ts",
     "apps/server/src/childThreads/delegatedIntake.ts",
+    "apps/server/src/childThreads/delegatedFollowups.ts",
+    "apps/server/src/childThreads/delegatedFollowupQueries.ts",
     "apps/server/src/childThreads/lineageBackfill.test.ts",
     "apps/server/src/childThreads/lineageBackfill.ts",
     "apps/server/src/childThreads/pendingRequests.test.ts",
