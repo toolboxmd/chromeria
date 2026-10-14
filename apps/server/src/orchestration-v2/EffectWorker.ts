@@ -28,6 +28,7 @@ import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationServic
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
+import { RESTART_CUT_REASONS } from "@t3tools/shared/restartCut";
 
 export class OrchestrationEffectExecutionError extends Schema.TaggedError<OrchestrationEffectExecutionError>()(
   "OrchestrationEffectExecutionError",
@@ -106,7 +107,15 @@ export const layerExecutor: Layer.Layer<
               Effect.tapError(() =>
                 willRetry
                   ? Effect.void
-                  : threads.recoverDelegatedTask(effect.threadId, sourceRunId),
+                  : threads
+                      .recordRestartCutDecline(
+                        effect.threadId,
+                        sourceRunId,
+                        RESTART_CUT_REASONS.EFFECT_FAILED,
+                      )
+                      .pipe(
+                        Effect.andThen(threads.recoverDelegatedTask(effect.threadId, sourceRunId)),
+                      ),
               ),
               Effect.mapError(
                 (cause) =>

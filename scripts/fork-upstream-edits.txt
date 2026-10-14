@@ -36,6 +36,7 @@ apps/server/src/orchestration-v2/CommandPolicy.test.ts
 apps/server/src/orchestration-v2/CommandPolicy.ts
 apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts
 apps/server/src/orchestration-v2/EffectOutbox.ts
+apps/server/src/orchestration-v2/EffectWorker.test.ts
 apps/server/src/orchestration-v2/EffectWorker.ts
 apps/server/src/orchestration-v2/EventSink.ts
 apps/server/src/orchestration-v2/FoundationPersistence.test.ts
@@ -130,14 +131,9 @@ apps/server/src/auth/EnvironmentAuth.ts
 apps/server/src/auth/SessionStore.test.ts
 apps/server/src/auth/SessionStore.ts
 apps/server/src/auth/http.ts
-apps/server/src/mcp/OrchestratorMcpService.ts
-apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts
 apps/server/src/mcp/toolkits/project/handlers.test.ts
 apps/server/src/mcp/toolkits/project/handlers.ts
-apps/server/src/mcp/toolkits/thread/handlers.ts
-apps/server/src/orchestration-v2/Orchestrator.ts
 apps/server/src/orchestration-v2/ProjectionStore.ts
-apps/server/src/orchestration-v2/ThreadLaunchService.ts
 apps/server/src/orchestration-v2/testkit/OrchestratorScenario.ts
 apps/server/src/persistence/AuthSessions.ts
 apps/server/src/persistence/Sqlite.ts
@@ -154,15 +150,12 @@ packages/contracts/src/orchestrationV2.ts
 packages/provider-core/src/server/subagentProjection.ts
 # Prism routing, settings and shared runtime guidance (#169)
 apps/server/src/mcp/toolkits/orchestrator/tools.ts
-apps/server/src/mcp/toolkits/project/handlers.test.ts
-apps/server/src/mcp/toolkits/project/handlers.ts
 apps/server/src/mcp/toolkits/project/tools.ts
 apps/server/src/orchestration-v2/runtimeLayer.ts
 packages/provider-core/src/server/runtimeInstructions.ts
 packages/provider-core/src/server/orchestrationInstructions.ts
 apps/web/src/components/settings/SettingsSidebarNav.tsx
 apps/web/src/routeTree.gen.ts
-packages/contracts/src/index.ts
 apps/web/src/components/settings/SettingsPanels.restore.test.tsx
 apps/server/src/orchestration-v2/testkit/ReplayRuntimeInstructions.ts
 
@@ -241,6 +234,8 @@ apps/server/src/mcp/WorktreeMcpService.ts
 apps/server/src/mcp/toolkits/attachment/handlers.ts
 apps/server/src/mcp/toolkits/orchestrator/handlers.ts
 apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts
+apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts
+apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts
 apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts
 apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts
 apps/server/src/orchestration-v2/ThreadManagementService.test.ts
@@ -249,9 +244,13 @@ apps/server/src/project/ProjectEnrichmentService.ts
 apps/server/src/project/ProjectService.ts
 apps/server/src/project/ProjectSetupScriptRunner.test.ts
 apps/server/src/project/ProjectSetupScriptRunner.ts
-apps/server/src/relay/AgentAwarenessRelay.test.ts
 packages/shared/src/t3McpToolPresentation.ts
 apps/server/src/cli/environment.ts
+apps/server/src/orchestration-v2/ProviderRuntimeRecoveryPerformance.test.ts
+apps/server/src/orchestration-v2/RestartContinuation.test.ts
+apps/server/src/orchestration-v2/RestartContinuation.ts
+apps/server/src/orchestration-v2/SubagentProjection.test.ts
+packages/client-runtime/src/work-log/presentation.ts
 
 # Nested CLI startup: upstream fix carried until absorption (#295).
 apps/server/src/cloud/serviceLauncherClient.test.ts

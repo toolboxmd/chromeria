@@ -76,6 +76,7 @@ const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
 );
+import { restartCutView } from "@t3tools/shared/restartCut";
 
 describe("OrchestratorMcpService", () => {
   it.effect("retries terminal acknowledgement with a fresh command id", () =>
@@ -152,6 +153,7 @@ describe("OrchestratorMcpService", () => {
         NodeServices.layer,
         NodeCrypto.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) =>
             Effect.sync(() => {
               if (threadId !== parentThreadId) {
@@ -301,6 +303,7 @@ describe("OrchestratorMcpService", () => {
         NodeServices.layer,
         NodeCrypto.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
           delegatedTaskResultPending: () =>
@@ -504,6 +507,7 @@ describe("OrchestratorMcpService", () => {
         NodeServices.layer,
         NodeCrypto.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
           getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
@@ -704,6 +708,7 @@ describe("OrchestratorMcpService", () => {
         NodeServices.layer,
         NodeCrypto.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
           getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
@@ -794,6 +799,7 @@ describe("OrchestratorMcpService", () => {
         NodeServices.layer,
         NodeCrypto.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
           getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
@@ -890,6 +896,7 @@ describe("OrchestratorMcpService", () => {
         NodeServices.layer,
         NodeCrypto.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
           getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
@@ -1046,6 +1053,7 @@ describe("OrchestratorMcpService", () => {
         NodeServices.layer,
         NodeCrypto.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId, fields, filter) =>
             ((fields as ReadonlyArray<string>).includes("subagents")
               ? Ref.update(subagentReads, (reads) => [...reads, filter])
@@ -1498,6 +1506,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           NodeServices.layer,
           NodeCrypto.layer,
           Layer.mock(ThreadManagementService.ThreadManagementService)({
+            readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
             getThreadRecords: () => Effect.succeed(parentProjection([])),
           }),
           ServerSettings.layerTest({
@@ -1834,6 +1843,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         NodeCrypto.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           hasReceipt: () => Effect.succeed(false),
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: () => Effect.succeed(parentProjection([])),
         }),
         ServerSettings.layerTest(),
@@ -2032,6 +2042,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           NodeServices.layer,
           NodeCrypto.layer,
           Layer.mock(ThreadManagementService.ThreadManagementService)({
+            readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
             getThreadRecords: (threadId) =>
               Ref.get(accepted).pipe(
                 Effect.map((isAccepted) =>
@@ -2410,6 +2421,7 @@ describe("OrchestratorMcpService provider resolution", () => {
               hasReceipt: () => Effect.succeed(false),
               assertProviderInstanceEnabled: () => Effect.void,
               isProviderInstanceEnabledForProject: () => Effect.succeed(true),
+              readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
               getThreadRecords: (threadId) =>
                 Effect.succeed(
                   threadId === parentThreadId
@@ -2620,6 +2632,7 @@ describe("OrchestratorMcpService provider resolution", () => {
             NodeServices.layer,
             NodeCrypto.layer,
             Layer.mock(ThreadManagementService.ThreadManagementService)({
+              readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
               getThreadShell: (threadId) =>
                 Effect.succeed(threadId === boundThreadId ? boundThread : null),
             }),
@@ -2690,6 +2703,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                   NodeServices.layer,
                   NodeCrypto.layer,
                   Layer.mock(ThreadManagementService.ThreadManagementService)({
+                    readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
                     getThreadShell: () => Effect.succeed(null),
                     getThreadRecords: () => Effect.succeed(idleThreadProjection(shell)),
                   }),
@@ -2772,6 +2786,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                   NodeServices.layer,
                   NodeCrypto.layer,
                   Layer.mock(ThreadManagementService.ThreadManagementService)({
+                    readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
                     getThreadShell: (threadId) =>
                       Ref.getAndUpdate(lookups, (count) => count + 1).pipe(
                         Effect.flatMap((count) =>

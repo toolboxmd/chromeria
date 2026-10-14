@@ -277,6 +277,9 @@ export function layerWithRegistry<Error>(
       MigrationError | PlatformError.PlatformError | SqlError
     >;
     readonly runEffectWorker?: boolean;
+    readonly effectWorkerOptions?: EffectWorker.OrchestrationEffectWorkerOptions;
+    // Start continuation runs for provider wake turns, as the live runtime does.
+    // Off by default: most fixtures record no wake turn.
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
@@ -539,7 +542,7 @@ export function layerWithRegistry<Error>(
       ),
     ),
   );
-  const layerEffectWorkerProvided = EffectWorker.layer.pipe(
+  const layerEffectWorkerProvided = EffectWorker.layerWithOptions(options.effectWorkerOptions).pipe(
     Layer.provide(Layer.merge(layerStores, layerEffectExecutorProvided)),
   );
   const layerReplayRuntime = Layer.mergeAll(
