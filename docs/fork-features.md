@@ -244,7 +244,8 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "scripts/fork-rebase.sh",
     "scripts/fork-upstream-edits.txt",
     "patches/vitest@5.0.1.patch",
-    "scripts/lib/vitest-cache.test.ts"
+    "scripts/lib/vitest-cache.test.ts",
+    "apps/server/src/forkWsRpc.ts"
   ],
   "upstreamFiles": [
     ".github/workflows/ci.yml",

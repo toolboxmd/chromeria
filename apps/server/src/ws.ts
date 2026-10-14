@@ -112,6 +112,8 @@ import {
   HttpServerResponse,
 } from "effect/http";
 import { RpcGroup, RpcSerialization, RpcServer } from "effect/rpc";
+import * as Struct from "effect/Struct";
+import * as ForkWsRpc from "./forkWsRpc.ts";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as ServerConfig from "./config.ts";
@@ -573,7 +575,9 @@ const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
 // the group, so its type cost grows with handlers × RPCs. Near 200 methods that
 // crosses TypeScript's instantiation limit and the layer's requirements degrade to
 // `any`, so the handlers are registered as two disjoint, smaller groups.
-type ServerWsRpc = RpcGroup.Rpcs<typeof ServerWsRpcGroup>;
+// Fork RPCs are registered as their own group below, outside this split.
+const CoreServerWsRpcGroup = ServerWsRpcGroup.omit(...ForkWsRpc.methods);
+type ServerWsRpc = RpcGroup.Rpcs<typeof CoreServerWsRpcGroup>;
 const SPLIT_WS_RPC_PREFIXES = ["server", "pullRequests", "provider", "orchestration"] as const;
 type SplitWsRpc = Extract<
   ServerWsRpc,
@@ -583,7 +587,7 @@ const isSplitWsRpc = (rpc: ServerWsRpc): rpc is SplitWsRpc =>
   SPLIT_WS_RPC_PREFIXES.some((prefix) => rpc._tag.startsWith(`${prefix}.`));
 const isOtherWsRpc = (rpc: ServerWsRpc): rpc is Exclude<ServerWsRpc, SplitWsRpc> =>
   !isSplitWsRpc(rpc);
-const serverWsRpcs = Array.from(ServerWsRpcGroup.requests.values());
+const serverWsRpcs = Array.from(CoreServerWsRpcGroup.requests.values());
 const SplitWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isSplitWsRpc));
 const OtherWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isOtherWsRpc));
 // Replaying each intervening event costs a shell refetch; past this gap a
@@ -3287,8 +3291,12 @@ export const layerWsRpc = (
       const otherHandlers: Pick<typeof handlers, Exclude<ServerWsRpc, SplitWsRpc>["_tag"]> =
         handlers;
       return Context.merge(
-        yield* SplitWsRpcGroup.toHandlers(splitHandlers),
-        yield* OtherWsRpcGroup.toHandlers(otherHandlers),
+        Context.merge(
+          yield* SplitWsRpcGroup.toHandlers(splitHandlers),
+          yield* OtherWsRpcGroup.toHandlers(otherHandlers),
+        ),
+        // Fork RPCs register as their own group (toolboxmd/chromeria#304).
+        yield* ForkWsRpc.group.toHandlers(Struct.pick(handlers, ForkWsRpc.methods)),
       );
     }),
   );
