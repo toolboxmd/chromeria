@@ -24,8 +24,10 @@ export interface Candidate {
   readonly key: string | null;
   readonly text: string;
   readonly must_know: boolean;
-  readonly rule: "pointer" | "inline" | null;
+  readonly rule: "pointer" | "inline" | "entry" | null;
   readonly target: string | null;
+  /** The complete read paths and instruction that a deny must preserve. */
+  readonly opening?: string | null;
   readonly deny_text?: string | null;
   /** Cue's score (logit yes minus no) for an `intent` candidate. */
   readonly score?: number | null;

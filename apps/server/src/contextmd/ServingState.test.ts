@@ -162,6 +162,187 @@ const makeHarness = (file = ":memory:") => {
   return { db, state, fire, text, decision, outcomes, advance, now: () => now };
 };
 
+describe("ServingState entry reads", () => {
+  const self = "/repo/library/long.md";
+  const long = (version: string) =>
+    entry("long", `Read ${self} in full.`, {
+      version,
+      must_know: true,
+      rule: "entry",
+      target: self,
+      deny_text: `Read ${self} in full, then run the same call again.`,
+    });
+
+  it("lifts after following a retargeted Library's newly emitted entry path", () => {
+    const h = makeHarness();
+    const movedPath = "/repo/other-library/long.md";
+    const moved = {
+      ...long("v1"),
+      target: movedPath,
+      text: `Read ${movedPath} in full.`,
+      deny_text: `Read ${movedPath} in full, then run the same call again.`,
+    };
+    const firstDenied = h.now();
+    h.fire({ kind: "pre_tool", candidates: [long("v1")] });
+    h.advance(10);
+    const again = h.fire({ kind: "pre_tool", candidates: [moved] });
+    assert.include(h.text(again)!, movedPath);
+    h.advance(10);
+    h.fire({ kind: "tool_result", reads: [{ path: movedPath, kind: "shell_partial" }] });
+    assert.notInclude(h.outcomes("long"), "lifted");
+    h.advance(10);
+    h.fire({ kind: "tool_result", reads: [{ path: movedPath, kind: "shell_full" }] });
+    assert.strictEqual(h.fire({ kind: "pre_tool", candidates: [moved] }).status, 204);
+    const row = h.db.prepare("SELECT first_denied_at, denies, lift_outcome FROM deny_state").get();
+    assert.deepStrictEqual(
+      { ...row },
+      { first_denied_at: firstDenied, denies: 2, lift_outcome: "read" },
+    );
+    h.advance(10);
+    const relinked = { ...moved, target: "/repo/third-library/long.md" };
+    assert.strictEqual(h.fire({ kind: "pre_tool", candidates: [relinked] }).status, 204);
+    assert.deepStrictEqual(
+      { ...h.db.prepare("SELECT target, lifted, denies FROM deny_state").get() },
+      { target: movedPath, lifted: 1, denies: 2 },
+    );
+  });
+
+  it("requires a full read after the current entry version's first deny", () => {
+    const h = makeHarness();
+    h.fire({ kind: "tool_result", reads: [{ path: self, kind: "shell_full" }] });
+    h.advance(10);
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [long("v1")] })), "deny");
+    h.advance(10);
+    h.fire({ kind: "tool_result", reads: [{ path: self, kind: "shell_full" }] });
+    assert.strictEqual(h.fire({ kind: "pre_tool", candidates: [long("v1")] }).status, 204);
+    h.advance(10);
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [long("v2")] })), "deny");
+    h.advance(10);
+    h.fire({ kind: "tool_result", reads: [{ path: self, kind: "shell_partial" }] });
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [long("v2")] })), "deny");
+    h.advance(10);
+    h.fire({ kind: "tool_result", reads: [{ path: self, kind: "read_tool" }] });
+    assert.strictEqual(h.fire({ kind: "pre_tool", candidates: [long("v2")] }).status, 204);
+    assert.deepStrictEqual(
+      h.db
+        .prepare("SELECT version, reason FROM candidates WHERE outcome = 'lifted'")
+        .all()
+        .map((r) => ({ ...r })),
+      [
+        { version: "v1", reason: "read" },
+        { version: "v2", reason: "read" },
+      ],
+    );
+  });
+
+  it("uses a pending Codex read's original time when its exit status arrives later", () => {
+    const h = makeHarness();
+    h.fire({ kind: "pre_tool", candidates: [long("v1")] });
+    h.advance(10);
+    h.fire({
+      kind: "tool_result",
+      failed: null,
+      toolUseId: "old-read",
+      reads: [{ path: self, kind: "shell_full" }],
+    });
+    h.advance(10);
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [long("v2")] })), "deny");
+    h.advance(10);
+    assert.strictEqual(
+      h.decision(
+        h.fire({
+          kind: "pre_tool",
+          candidates: [long("v2")],
+          readChecks: [{ toolUseId: "old-read", ok: true }],
+        }),
+      ),
+      "deny",
+    );
+    h.advance(10);
+    h.fire({
+      kind: "tool_result",
+      failed: null,
+      toolUseId: "new-read",
+      reads: [{ path: self, kind: "shell_full" }],
+    });
+    assert.strictEqual(
+      h.fire({
+        kind: "pre_tool",
+        candidates: [long("v2")],
+        readChecks: [{ toolUseId: "new-read", ok: true }],
+      }).status,
+      204,
+    );
+    assert.notInclude(h.outcomes("long"), "not_read_capped");
+  });
+
+  it("binds an armed old inline row when the new build emits an entry pointer for the same version", () => {
+    const h = makeHarness(),
+      profile = { ...GROK, limit_bytes: 256, deny_limit_bytes: 256 };
+    const firstDenied = h.now();
+    h.fire({ kind: "pre_tool", profile, candidates: [inline("long", "K".repeat(413))] });
+    assert.deepStrictEqual(
+      { ...h.db.prepare("SELECT rule_kind, target, denies, lifted FROM deny_state").get() },
+      { rule_kind: "inline", target: null, denies: 1, lifted: 0 },
+    );
+    h.advance(10);
+    h.fire({ kind: "pre_tool", profile, candidates: [long("v1")] });
+    assert.deepStrictEqual(
+      {
+        ...h.db.prepare("SELECT rule_kind, target, first_denied_at, denies FROM deny_state").get(),
+      },
+      { rule_kind: "entry", target: self, first_denied_at: firstDenied, denies: 2 },
+    );
+    h.advance(10);
+    h.fire({ kind: "tool_result", profile, reads: [{ path: self, kind: "shell_full" }] });
+    assert.strictEqual(h.fire({ kind: "pre_tool", profile, candidates: [long("v1")] }).status, 204);
+    assert.include(h.outcomes("long"), "lifted");
+    assert.strictEqual(
+      h.db.prepare("SELECT lift_outcome FROM deny_state").get()!.lift_outcome,
+      "read",
+    );
+  });
+
+  it("keeps the record as the lift target when a deny also names the entry", () => {
+    const h = makeHarness(),
+      target = "/repo/procedure.md";
+    const rule = entry("record", "Knowledge.", {
+      must_know: true,
+      rule: "pointer",
+      target,
+      deny_text: `Read ${target} and ${self} in full, then run the same call again.`,
+    });
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [rule] })), "deny");
+    h.fire({ kind: "tool_result", reads: [{ path: self, kind: "shell_full" }] });
+    assert.strictEqual(h.decision(h.fire({ kind: "pre_tool", candidates: [rule] })), "deny");
+    h.fire({ kind: "tool_result", reads: [{ path: target, kind: "shell_full" }] });
+    assert.strictEqual(h.fire({ kind: "pre_tool", candidates: [rule] }).status, 204);
+  });
+
+  it.each(["inline", "pointer"] as const)(
+    "does not rebind an armed entry row for an incoming %s deny",
+    (kind) => {
+      const h = makeHarness(),
+        profile = { ...GROK, limit_bytes: 256, deny_limit_bytes: 256 };
+      h.fire({ kind: "pre_tool", profile, candidates: [long("v1")] });
+      const original = h.db
+        .prepare("SELECT rule_kind, target, first_denied_at FROM deny_state")
+        .get();
+      h.advance(10);
+      const other =
+        kind === "inline" ? inline("long", "K".repeat(413)) : pointer("long", "/other/record.md");
+      assert.strictEqual(
+        h.decision(h.fire({ kind: "pre_tool", profile, candidates: [other] })),
+        "deny",
+      );
+      assert.deepStrictEqual(
+        { ...h.db.prepare("SELECT rule_kind, target, first_denied_at FROM deny_state").get() },
+        { ...original },
+      );
+    },
+  );
+});
+
 describe("ServingState budgets", () => {
   it("gives each run its own serve budget and cuts at the budget", () => {
     const h = makeHarness();
@@ -555,6 +736,21 @@ describe("ServingState deny length, long targets (#229, Sol review)", () => {
     const reason = h.text(h.fire({ kind: "pre_tool", profile, candidates: [pointerTo(target)] }))!;
     assert.isAtMost(Buffer.byteLength(reason), 256);
     assert.include(reason, `Read ${target} in full`);
+  });
+
+  it("protects the complete two-path opening supplied by selection", () => {
+    const h = makeHarness();
+    const target = `/work in full/${"a".repeat(100)}/record.md`,
+      self = "/repo/library/e.md";
+    const opening = `Read ${target} and ${self} in full`;
+    const candidate = {
+      ...pointerTo(target),
+      opening,
+      deny_text: `${opening}, then run the same call again.\n${"Knowledge. ".repeat(100)}`,
+    };
+    const reason = h.text(h.fire({ kind: "pre_tool", profile, candidates: [candidate] }))!;
+    assert.isAtMost(Buffer.byteLength(reason), 256);
+    assert.include(reason, opening);
   });
 
   it("denies nothing when even the read line cannot fit, and says why", () => {
