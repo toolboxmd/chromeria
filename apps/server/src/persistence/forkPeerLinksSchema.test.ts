@@ -5,10 +5,11 @@ import * as Sqlite from "./Sqlite.ts";
 import { ensurePeerLinksSchema } from "./forkPeerLinksSchema.ts";
 
 it.effect(
-  "creates upstream's exact peer_environment_links schema idempotently without migration 061",
+  "creates upstream's exact peer_environment_links schema idempotently without a fork migration",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
+      const migrations = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
       yield* ensurePeerLinksSchema;
       yield* ensurePeerLinksSchema;
       assert.deepEqual(yield* sql`PRAGMA table_info(peer_environment_links)`, [
@@ -26,6 +27,12 @@ it.effect(
         { cid: 7, name: "last_reached_at", type: "TEXT", notnull: 0, dflt_value: null, pk: 0 },
         { cid: 8, name: "last_error", type: "TEXT", notnull: 0, dflt_value: null, pk: 0 },
       ]);
-      assert.isEmpty(yield* sql`SELECT * FROM effect_sql_migrations WHERE migration_id = 61`);
+      assert.isEmpty(
+        yield* sql`SELECT * FROM effect_sql_migrations WHERE name = 'PeerEnvironmentLinks'`,
+      );
+      assert.deepEqual(
+        yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+        migrations,
+      );
     }).pipe(Effect.provide(Sqlite.layerMemory)),
 );

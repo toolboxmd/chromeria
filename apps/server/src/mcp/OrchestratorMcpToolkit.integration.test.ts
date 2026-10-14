@@ -472,7 +472,7 @@ describe("orchestrator MCP toolkit", () => {
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace("ancestor-mcp-notices");
         const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
-        const started = yield* Queue.unbounded<ProviderAdapterV2TurnInput>();
+        const started = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2TurnInput>();
         const parentGate = yield* Deferred.make<void>();
         const childGate = yield* Deferred.make<void>();
         const calls: string[] = [];
@@ -827,7 +827,7 @@ describe("orchestrator MCP toolkit", () => {
           yield* Deferred.succeed(parentGate, undefined);
           yield* waitForRun(parentThreadId, create.sequence, "completed");
           yield* worker.drain();
-          const noticeInputs: ProviderAdapterV2TurnInput[] = [];
+          const noticeInputs: ProviderAdapter.ProviderAdapterV2TurnInput[] = [];
           while (noticeInputs.length < notices.length) {
             const next = yield* Queue.take(started);
             if (notices.some((message) => message.id === next.message.messageId))
