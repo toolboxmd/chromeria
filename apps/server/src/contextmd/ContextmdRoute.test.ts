@@ -571,6 +571,56 @@ describe("contextmd routes", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.live("logs a Grok pre_tool for both PreToolUse and pre_tool_use (#273)", () =>
+    Effect.gen(function* () {
+      const s = yield* serve(
+        insertAttempt({ attempt: "a", run: "run-1", status: "running", native: "S" }),
+      );
+      const call = (event: string, extra: Record<string, unknown> = {}) =>
+        s.moment(
+          {
+            hook_event_name: event,
+            session_id: "S",
+            cwd: "/tmp",
+            tool_name: "run_terminal_command",
+            tool_input: { command: "gh pr create" },
+            tool_use_id: `g-${event}`,
+            ...extra,
+          },
+          { harness: "grok" },
+        );
+      // The live wire: Claude's name in hook_event_name, Grok's name beside it.
+      const live = yield* call("PreToolUse", { hookEventName: "pre_tool_use" });
+      assert.strictEqual(live.status, 200);
+      assert.include(live.body, "PreToolUse");
+      assert.include(live.body, "rule pr");
+      // The name the grok map was written for, with no PascalCase field.
+      const snake = yield* call("pre_tool_use");
+      assert.strictEqual(snake.status, 200);
+      assert.include(snake.body, "PreToolUse");
+      assert.include(snake.body, "rule pr");
+      const others: ReadonlyArray<readonly [string, string]> = [
+        ["PostToolUse", "post_tool_use"],
+        ["UserPromptSubmit", "user_prompt_submit"],
+        ["Stop", "stop"],
+        ["SessionStart", "session_start"],
+        ["PostToolUseFailure", "post_tool_use_failure"],
+        ["PostCompact", "post_compact"],
+      ];
+      for (const [pascal, native] of others) {
+        const response = yield* s.moment(
+          { hook_event_name: pascal, hookEventName: native, session_id: "S", cwd: "/tmp" },
+          { harness: "grok" },
+        );
+        assert.notStrictEqual(response.status, 401, pascal);
+      }
+      const rows = s.log();
+      assert.strictEqual(rows.filter((row) => row.status === "bad_event").length, 0);
+      assert.strictEqual(rows.filter((row) => row.kind === "pre_tool").length, 2);
+      assert.ok(rows.every((row) => row.status === "ok"));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.live("reads an edited entry on the next moment", () =>
     Effect.gen(function* () {
       const s = yield* serve(
