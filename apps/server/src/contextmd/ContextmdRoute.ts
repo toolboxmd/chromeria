@@ -106,7 +106,13 @@ export const layer = HttpRouter.use((router) =>
                   url.value.searchParams.get("reason") ?? "client_release",
                 );
           return HttpServerResponse.empty({ status: reply.status });
-        }).pipe(Effect.withTracerEnabled(false)),
+        }).pipe(
+          Effect.withTracerEnabled(false),
+          Effect.catchTags({
+            ContextmdPointerDeliveryError: () =>
+              Effect.succeed(HttpServerResponse.empty({ status: 500 })),
+          }),
+        ),
       );
     }
   }),

@@ -120,18 +120,30 @@ export class SessionInstructionsError extends Schema.TaggedError<SessionInstruct
   }
 }
 
-export interface InstructionsStage {
+export class PointerDeliveryError extends Schema.TaggedError<PointerDeliveryError>()(
+  "ContextmdPointerDeliveryError",
+  {
+    delivery: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return "Failed to move the ContextMD pointer delivery.";
+  }
+}
+
+interface InstructionsStage {
   readonly reservation: string | null;
   readonly text: string | undefined;
 }
 
-export interface InstallationReceipt {
+interface InstallationReceipt {
   readonly nativeSessionId: string;
   readonly text: string;
   readonly site: "open" | "fallback" | "rollback";
 }
 
-export interface NativeForkRequest {
+interface NativeForkRequest {
   readonly driver: string;
   readonly threadId: string;
   readonly runId: string;
@@ -148,12 +160,16 @@ export class ContextmdServing extends Context.Service<
     readonly settle: (delivery: string) => Effect.Effect<{ readonly status: 204 | 404 }>;
     /** The hook dropped a reserved reply before the model saw it. */
     readonly release: (delivery: string) => Effect.Effect<{ readonly status: 204 | 404 }>;
-    readonly pointerApplying: (delivery: string) => Effect.Effect<{ readonly status: 204 | 409 }>;
-    readonly pointerSettle: (delivery: string) => Effect.Effect<{ readonly status: 204 | 409 }>;
+    readonly pointerApplying: (
+      delivery: string,
+    ) => Effect.Effect<{ readonly status: 204 | 409 }, PointerDeliveryError>;
+    readonly pointerSettle: (
+      delivery: string,
+    ) => Effect.Effect<{ readonly status: 204 | 409 }, PointerDeliveryError>;
     readonly pointerRelease: (
       delivery: string,
       reason: string,
-    ) => Effect.Effect<{ readonly status: 204 | 409 }>;
+    ) => Effect.Effect<{ readonly status: 204 | 409 }, PointerDeliveryError>;
     readonly currentInstructions: (
       driver: string,
     ) => Effect.Effect<string | undefined, SessionInstructionsError>;
@@ -948,7 +964,7 @@ const make = Effect.gen(function* () {
       Effect.map((now) => (transition(now) ? { status: 204 as const } : { status: 409 as const })),
       Effect.catchCause((cause) =>
         Effect.logWarning("ContextMD pointer transition failed", { delivery, cause }).pipe(
-          Effect.as({ status: 409 as const }),
+          Effect.andThen(Effect.fail(new PointerDeliveryError({ delivery, cause }))),
         ),
       ),
     );
