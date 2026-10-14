@@ -354,7 +354,16 @@ export const resolvePackageManagedProviderMaintenance = Effect.fn(
         ...(nativeUpdate.env ? { env: nativeUpdate.env } : {}),
       })
     : manual;
-  if (nativeUpdate?.isCommandPath && commandPaths.some(nativeUpdate.isCommandPath)) {
+  // A native-looking launcher can still delegate to a mise-owned install.
+  // A shim whose real path is the Homebrew mise keg has neither a mise install
+  // path nor a wrapper script (the keg file is the mise binary).
+  if (
+    nativeUpdate?.isCommandPath &&
+    commandPaths.some(nativeUpdate.isCommandPath) &&
+    !commandPaths.some(isMiseCommandPath) &&
+    !isMiseKeg(homebrewOwnershipFromCommandPath(context.realCommandPath)) &&
+    !(yield* isMiseWrapperScript(context))
+  ) {
     return native;
   }
   // A `node_modules` path not proven below belongs to another package or a
@@ -437,15 +446,40 @@ export const resolvePackageManagedProviderMaintenance = Effect.fn(
     });
   }
 
-  if (commandPaths.some(isMiseCommandPath) || (yield* isMiseWrapperScript(context))) {
+  if (
+    commandPaths.some(isMiseCommandPath) ||
+    isMiseKeg(homebrewOwnershipFromCommandPath(context.realCommandPath)) ||
+    (yield* isMiseWrapperScript(context))
+  ) {
     return manual;
   }
 
-  const homebrew = homebrewOwnershipFromCommandPath(context.realCommandPath);
-  if (homebrew) {
-    // Mise shims resolve to the version manager, not the provider.
-    if (homebrew.kind === "formula" && homebrew.name.toLowerCase() === "mise") {
-      return manual;
+  return (
+    (yield* resolveHomebrewProviderMaintenance(
+      { provider: definition.provider, packageName },
+      context,
+    )) ?? fallback
+  );
+});
+
+/** Mise shims resolve to the version manager's keg, not the provider's. */
+function isMiseKeg(homebrew: HomebrewOwnership | null): boolean {
+  return homebrew?.kind === "formula" && homebrew.name.toLowerCase() === "mise";
+}
+
+/**
+ * `brew upgrade` capabilities when Homebrew provably owns the executable, with
+ * `latestVersion` from `brew info`. Null when the path is not a keg or cask,
+ * no `brew` is found, or the keg is not under that brew's prefix.
+ */
+export const resolveHomebrewProviderMaintenance = Effect.fn("resolveHomebrewProviderMaintenance")(
+  function* (
+    input: { readonly provider: ProviderDriverKind; readonly packageName: string | null },
+    context: ProviderMaintenanceResolutionContext,
+  ) {
+    const homebrew = homebrewOwnershipFromCommandPath(context.realCommandPath);
+    if (!homebrew || isMiseKeg(homebrew)) {
+      return null;
     }
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -456,7 +490,7 @@ export const resolvePackageManagedProviderMaintenance = Effect.fn(
       ? kegBrewPath
       : yield* resolveCommandPath("brew", { env: context.env });
     if (!brewPath) {
-      return fallback;
+      return null;
     }
     const brewPrefix = nonEmptyString(yield* runHomebrew(brewPath, ["--prefix"], context.env));
     const realBrewPrefix = brewPrefix
@@ -466,7 +500,7 @@ export const resolvePackageManagedProviderMaintenance = Effect.fn(
       !realBrewPrefix ||
       normalizeCommandPath(realBrewPrefix) !== normalizeCommandPath(homebrew.prefix)
     ) {
-      return fallback;
+      return null;
     }
     const args =
       homebrew.kind === "cask" ? ["upgrade", "--cask", homebrew.name] : ["upgrade", homebrew.name];
@@ -474,18 +508,16 @@ export const resolvePackageManagedProviderMaintenance = Effect.fn(
     // `brew upgrade` can actually deliver.
     const info = yield* runHomebrew(brewPath, ["info", "--json=v2", homebrew.name], context.env);
     return makeProviderMaintenanceCapabilities({
-      provider: definition.provider,
-      packageName,
+      provider: input.provider,
+      packageName: input.packageName,
       updateExecutable: brewPath,
       updateArgs: args,
       updateLockKey: "homebrew",
       updateCommand: ["brew", ...args].join(" "),
       latestVersion: info ? parseHomebrewLatestVersion(info, homebrew) : null,
     });
-  }
-
-  return fallback;
-});
+  },
+);
 
 const isMiseWrapperScript = Effect.fn("isMiseWrapperScript")(function* (
   context: ProviderMaintenanceResolutionContext,
