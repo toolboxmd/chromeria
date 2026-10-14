@@ -1,5 +1,11 @@
 import { assert, it } from "@effect/vitest";
-import { CommandId, EventId, MessageId } from "@t3tools/contracts";
+import {
+  CommandId,
+  EventId,
+  MessageId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
@@ -24,7 +30,12 @@ it.effect(
         return yield* (yield* Launch.SpectrumLaunchService).register(input);
       }).pipe(Effect.provide(Launch.layer));
       const settings = Settings.layerTest({
-        providerInstances: { codex: { driver: "codex", enabled: false } },
+        providerInstances: {
+          [ProviderInstanceId.make("codex")]: {
+            driver: ProviderDriverKind.make("codex"),
+            enabled: false,
+          },
+        },
       });
       const command = {
         type: "message.dispatch" as const,

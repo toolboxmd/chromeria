@@ -3,6 +3,8 @@ import {
   CommandId,
   EventId,
   MessageId,
+  ProviderDriverKind,
+  ProviderInstanceId,
   RunId,
   ScheduledTaskId,
   ThreadId,
@@ -383,9 +385,16 @@ it.effect(
       const gate = Layer.fresh(Threads.layer).pipe(
         Layer.provideMerge(
           Settings.layerTest({
-            providerInstances: { codex: { driver: "codex", enabled: true } },
+            providerInstances: {
+              [ProviderInstanceId.make("codex")]: {
+                driver: ProviderDriverKind.make("codex"),
+                enabled: true,
+              },
+            },
             projectSettingsOverrides: {
-              [projectId]: { providerInstances: { codex: { enabled: false } } },
+              [projectId]: {
+                providerInstances: { [ProviderInstanceId.make("codex")]: { enabled: false } },
+              },
             },
           }),
         ),
@@ -518,6 +527,8 @@ it.effect(
       // The same durable start remains eligible after the instance is enabled again.
       const prepared = yield* read(state.threadId);
       const command = prepared.outbox[0]!;
+      if (command.type !== "message.dispatch")
+        return yield* Effect.dieMessage("Expected a pending native message dispatch");
       yield* (yield* Round.SpectrumRoundService).dispatch(state.threadId, command.commandId);
       assert.strictEqual(
         (yield* projections.getThreadRecords(command.threadId, ["runs"])).runs.length,

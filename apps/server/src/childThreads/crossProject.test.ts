@@ -92,9 +92,11 @@ it.effect(
       const gate = Layer.fresh(Threads.layer).pipe(
         Layer.provideMerge(
           Settings.layerTest({
-            providerInstances: { codex: { driver: "codex", enabled: true } },
+            providerInstances: {
+              [instanceId]: { driver: ProviderDriverKind.make("codex"), enabled: true },
+            },
             projectSettingsOverrides: {
-              [destinationId]: { providerInstances: { codex: { enabled: false } } },
+              [destinationId]: { providerInstances: { [instanceId]: { enabled: false } } },
             },
           }),
         ),
