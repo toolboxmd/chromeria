@@ -119,6 +119,7 @@ import {
 import * as ServerConfig from "../../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
+import { withClaudeRequestRecords } from "../../contextmd/Harnesses.ts";
 import {
   claudeSignedOutMessage,
   makeClaudeEnvironment,
@@ -8135,7 +8136,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             cwd: turnInput.runtimePolicy.cwd,
             attachmentsDir,
             settings: adapterOptions.settings,
-            environment: adapterOptions.environment,
+            environment: withClaudeRequestRecords(adapterOptions.environment),
             tools: queryPolicy.tools ?? CLAUDE_CODE_PRESET_TOOLS,
             ...(mcpOverrides.allowedTools === undefined
               ? {}

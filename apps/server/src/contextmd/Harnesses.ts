@@ -25,6 +25,8 @@ export interface Harness {
     readonly exitCode?: Field;
     /** The tool's output; error keys and a printed non-zero exit are read from it. */
     readonly output: Field;
+    readonly transcript?: Field;
+    readonly turn?: Field;
   };
   /** How the harness reports a failed call: its own event, an exit code, or not at all. */
   readonly failureBy: "event" | "exit_code" | "none";
@@ -41,6 +43,7 @@ export interface Harness {
   readonly templates: { readonly context: unknown; readonly deny: unknown };
   /** Where the module can see what the model was shown for a denied call. */
   readonly denyEvidence: "projection" | "none";
+  readonly shownEvidence: "claude_request_replay" | "codex_rollout" | "none";
   /** A deny reason the harness shows only up to this many bytes (Grok cuts at 256, #229). */
   readonly denyLimitBytes?: number;
   /** A shorter deny head where the reason is that short. */
@@ -80,7 +83,12 @@ export const HARNESSES: Readonly<Record<string, Harness>> = {
       PostToolUseFailure: "tool_failure",
       Stop: "before_done",
     },
-    fields: { ...COMMAND_HOOK_FIELDS, error: "error", output: "tool_response" },
+    fields: {
+      ...COMMAND_HOOK_FIELDS,
+      error: "error",
+      output: "tool_response",
+      transcript: "transcript_path",
+    },
     failureBy: "event",
     newEpochSources: ["compact", "clear"],
     shellTools: ["Bash"],
@@ -98,6 +106,7 @@ export const HARNESSES: Readonly<Record<string, Harness>> = {
     sessionStartLimitBytes: 9500,
     templates: HOOK_OUTPUT,
     denyEvidence: "projection",
+    shownEvidence: "claude_request_replay",
   },
   // A failed command fires PostToolUse with the output only, no exit code; context over
   // 2,500 tokens is cut in the middle. A denied call leaves no projected item.
@@ -111,7 +120,12 @@ export const HARNESSES: Readonly<Record<string, Harness>> = {
       PostCompact: "compaction",
       Stop: "before_done",
     },
-    fields: { ...COMMAND_HOOK_FIELDS, output: "tool_response" },
+    fields: {
+      ...COMMAND_HOOK_FIELDS,
+      output: "tool_response",
+      transcript: "transcript_path",
+      turn: "turn_id",
+    },
     failureBy: "none",
     newEpochSources: [],
     shellTools: ["Bash", "shell", "exec_command", "local_shell", "unified_exec"],
@@ -122,6 +136,7 @@ export const HARNESSES: Readonly<Record<string, Harness>> = {
     sessionStartLimitBytes: 0,
     templates: HOOK_OUTPUT,
     denyEvidence: "none",
+    shownEvidence: "codex_rollout",
   },
   // Prompt-hook and post-tool output are discarded; PreToolUse context arrives with the
   // tool result; context is clipped at 10,000 characters; hooks fail open at 5 s.
@@ -160,6 +175,7 @@ export const HARNESSES: Readonly<Record<string, Harness>> = {
     sessionStartLimitBytes: 0,
     templates: HOOK_OUTPUT,
     denyEvidence: "projection",
+    shownEvidence: "none",
     denyLimitBytes: 256,
     denyHead: "The user's own ContextMD rule stopped this call:",
   },
@@ -193,5 +209,14 @@ export const HARNESSES: Readonly<Record<string, Harness>> = {
     sessionStartLimitBytes: 0,
     templates: { context: { context: "{{text}}" }, deny: { deny: "{{text}}" } },
     denyEvidence: "none",
+    shownEvidence: "none",
   },
 };
+
+/** Threaded records restore logical messages and cannot prove the sent body (#245 B1).
+ * Explicit provider or inherited values win over these agent-session defaults. */
+export const withClaudeRequestRecords = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({
+  ...env,
+  ...(env.CLAUDE_CODE_ELEGANT_MEADOW === undefined && { CLAUDE_CODE_ELEGANT_MEADOW: "1" }),
+  ...(env.CLAUDE_CODE_TETHER_LIVE === undefined && { CLAUDE_CODE_TETHER_LIVE: "0" }),
+});
