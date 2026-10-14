@@ -7,6 +7,7 @@ import type {
   OrchestrationV2ThreadProjection,
   ThreadId,
 } from "@t3tools/contracts";
+import { RESTART_CUT_REASONS } from "@t3tools/shared/restartCut";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 
 type ChildWork = Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "messages">;
@@ -105,6 +106,10 @@ export function untransferredDelegatedRuns(
         (!legacyResult ||
           run.restartContinuationOfRunId !== undefined ||
           (run.status === "cancelled" && run.restartCut !== undefined)) &&
+        !(
+          run.restartCut?.continuation === "declined" &&
+          run.restartCut.reason === RESTART_CUT_REASONS.TASK_SETTLED
+        ) &&
         !transferredIds.has(run.id) &&
         (firstResultRun === undefined || runRanAfter(run, firstResultRun)) &&
         !continuedSources.has(run.id),

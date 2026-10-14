@@ -12468,6 +12468,31 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         task.id,
         parent.contextTransfers,
       )) {
+        // Pre-#301 cuts have no durable continuation decision. Replaying an
+        // old cancelled follow-up after its task returned a result invents a
+        // new parent wake. Fresh cuts and actual continuations keep their
+        // existing continue-or-explain path.
+        if (
+          task.result !== null &&
+          resultRun.status === "cancelled" &&
+          resultRun.restartCut === undefined &&
+          childControls.providerTurns.some(
+            (turn) =>
+              turn.runAttemptId === resultRun.activeAttemptId &&
+              turn.status === "cancelled" &&
+              turn.completedAt !== null &&
+              resultRun.completedAt !== null &&
+              DateTime.Equivalence(turn.completedAt, resultRun.completedAt),
+          ) &&
+          !(yield* childAwaitsRestartContinuation(childControls.runs, resultRun))
+        ) {
+          yield* recordRestartCutDecline(
+            childThreadId,
+            resultRun.id,
+            RESTART_CUT_REASONS.TASK_SETTLED,
+          );
+          continue;
+        }
         yield* finalizeAppOwnedSubagentTask(childControls, { ...options, task, resultRun });
       }
     }
