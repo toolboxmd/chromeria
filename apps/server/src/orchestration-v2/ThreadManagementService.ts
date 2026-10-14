@@ -51,6 +51,7 @@ import * as Stream from "effect/Stream";
 
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import { readStopDescendants } from "../childThreads/stopDescendants.ts";
+import { ForkProviderlessMessages } from "../fork/ForkProviderlessMessages.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { projectedRowEncodedBytes } from "./threadHistoryPaging.ts";
@@ -557,6 +558,7 @@ const make = Effect.gen(function* () {
   const legacyImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+  const providerlessMessages = yield* ForkProviderlessMessages;
 
   const assertProviderInstanceEnabled: ThreadManagementServiceShape["assertProviderInstanceEnabled"] =
     (input) =>
@@ -688,20 +690,33 @@ const make = Effect.gen(function* () {
   const assertDispatchTargetEnabled = (command: OrchestrationV2ServerCommand) => {
     switch (command.type) {
       case "message.dispatch":
-        return orchestrator.getThreadRecords(command.threadId, []).pipe(
-          Effect.flatMap((projection) =>
-            assertProviderInstanceEnabled({
-              projectId: projection.thread.projectId,
-              commandId: command.commandId,
-              instanceId: (command.modelSelection ?? projection.thread.modelSelection).instanceId,
-            }),
-          ),
-        );
+        return Effect.gen(function* () {
+          if (yield* hasReceipt(command.commandId)) return;
+          if (
+            yield* providerlessMessages.contains(command.threadId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new Orchestrator.OrchestratorCommandRejectedError({
+                    commandId: command.commandId,
+                    commandType: command.type,
+                    cause,
+                  }),
+              ),
+            )
+          )
+            return;
+          const projection = yield* orchestrator.getThreadRecords(command.threadId, []);
+          yield* assertProviderInstanceEnabled({
+            projectId: projection.thread.projectId,
+            commandId: command.commandId,
+            instanceId: (command.modelSelection ?? projection.thread.modelSelection).instanceId,
+          });
+        });
       case "delegated_task.request":
         return orchestrator.getThreadRecords(command.parentThreadId, []).pipe(
           Effect.flatMap((parent) =>
             assertProviderInstanceEnabled({
-              projectId: parent.thread.projectId,
+              projectId: command.projectId ?? parent.thread.projectId,
               commandId: command.commandId,
               instanceId: command.modelSelection.instanceId,
             }),

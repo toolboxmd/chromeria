@@ -477,7 +477,14 @@ export function layerWithRegistry<Error>(
     ),
   );
   const layerThreadManagementProvided = ThreadManagementService.layer.pipe(
-    Layer.provide(layerOrchestratorProvided),
+    Layer.provide(
+      Layer.mergeAll(
+        layerOrchestratorProvided,
+        layerProviderSessionManagerProvided,
+        layerServerSettings,
+        layerStores,
+      ),
+    ),
   );
   const layerContinuationWorkerProvided =
     options.runContinuationWorker === true

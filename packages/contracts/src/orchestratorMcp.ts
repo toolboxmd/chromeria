@@ -196,7 +196,7 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   runtimeMode: Schema.optional(
     OrchestratorMcpRuntimeMode.annotate({
       description:
-        "Omit unless the user asks for a supervised child. Narrow modes pause for human approval, not read-only. Above yours is rejected.",
+        "Omit unless the user asks for a supervised child. Narrow modes pause for human approval, not read-only; an ancestor thread may answer exposed descendant requests through `t3_pending_request_respond`. Above yours is rejected.",
     }),
   ),
   interactionMode: Schema.optional(OrchestratorMcpInteractionMode),

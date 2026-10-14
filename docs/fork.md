@@ -4,13 +4,13 @@ Chromeria (`toolboxmd/chromeria`) is a personal, rebasable stack of topic commit
 `pingdotgg/t3code`. `origin` names the fork and `upstream` names the canonical
 repository. Never push fork commits to `upstream`.
 
-## V2 integration
+## Upstream absorption
 
-`fork/v2` begins at the exact upstream commit
-`12069eefd707f78eafc27812027c994eea0613cf`. Foundation and feature PRs target
-that integration branch. The existing `main` is not the V2 integration base;
-changing it or cutting over the daily app requires a separate reviewed action.
-Use the approved pinned foundation even when a newer upstream commit exists.
+`main` contains the completed V2 port. For each absorption, record its upstream
+merge base and the approved target SHA in the owning Issue, then replay the fork
+topics onto that target in one exclusive integration worktree. Keep the approved
+target fixed while preparing the candidate. Before delivery, carry every fork
+topic merged into `main` since preparation began and record the complete range-diff.
 
 Keep a merge-free topic stack. Features live in fork-owned modules; upstream
 files carry only the hooks those modules need. [The feature map](fork-features.md) assigns
@@ -95,11 +95,17 @@ does not authorize running them. The additional Fork Stack Model job verifies
 no merge commits, the allowlist and exactly one owner per carried upstream edit.
 
 Keep exact base/head, reviewed decisions, mechanical conflict resolutions,
-commands/results and independent exact-head review in the integration PR. Link
-its owning Issue without closing it before merge. No merge, main rewrite,
-installation or cutover follows merely from opening that PR. Preview background
-capture runtime retest from #152 remains required before #177 cutover, after the
-user explicitly grants browser authority.
+commands/results and independent exact-head review in the integration PR. A proof
+PR may target a branch at the approved upstream SHA so pull-request CI checks the
+candidate's native ancestry. Mark it **DO NOT MERGE**: a squash into the old main
+would discard the upstream history and defeat the stack model.
+
+Link the owning Issue without closing it before delivery. Replacing `main` needs
+explicit authority and a coordinated window. Preserve its current tip in a pushed
+backup tag before preparing the replacement, refresh the fork-topic coverage and
+proof, then use `--force-with-lease` against the exact recorded live main SHA.
+Stop if branch protection rejects the replacement; do not change protection.
+Opening a PR grants no replacement, installation or deployment authority.
 
 ## Absorbed projects
 

@@ -98,6 +98,7 @@ const clientLaunchHarness = (input: {
     model: input.overrideModel === undefined ? modelSelection : null,
   };
   const layerDependencies = Layer.mergeAll(
+    prismDependencies,
     Layer.mock(ProviderRegistry.ProviderRegistry)({
       getProviders: Effect.succeed(input.providers ?? []),
     }),
@@ -219,18 +220,14 @@ it.effect(
         });
         const toolkit = yield* ProjectToolkit.pipe(
           Effect.provide(
-            McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer)
-              .pipe(Layer.provide(prismDependencies))
-              .pipe(Layer.provide(dependencies)),
+            McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+              Layer.provide(dependencies),
+            ),
           ),
         );
         const result = yield* toolkit
           .handle("t3_thread_launch", targeted === false ? input : { ...input, projectId })
-          .pipe(
-            Stream.unwrap,
-            Stream.runCollect,
-            Effect.provide(Layer.mergeAll(dependencies, prismDependencies)),
-          );
+          .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
         return { result: result.at(-1)?.result, launched, projectId, modelSelection };
       });
 

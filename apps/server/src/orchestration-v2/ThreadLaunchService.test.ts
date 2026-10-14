@@ -274,6 +274,8 @@ function makeHarness(options: HarnessOptions = {}) {
       layerOutbox,
       layerDatabase,
       layerExternalServices,
+      NodeServices.layer,
+      Layer.mock(GitVcsDriver.GitVcsDriver)({}),
       ProjectStore.layer.pipe(Layer.provide(layerDatabase)),
     ),
     createWorktree,
