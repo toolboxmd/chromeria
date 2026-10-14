@@ -23,10 +23,12 @@
  * @module ContextmdServing
  */
 import * as NodeSqlite from "node:sqlite";
+import type { OrchestrationV2ProviderThread } from "@t3tools/contracts";
 
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -63,6 +65,7 @@ import {
   type RunJoin,
   type Unserved,
   type ShownCheck,
+  type SessionInstructions,
 } from "./ServingState.ts";
 
 export const MAX_BODY_BYTES = 1_048_576;
@@ -90,6 +93,7 @@ export interface MomentRequest {
   readonly authorized: Effect.Effect<boolean>;
   readonly harness: string | undefined;
   readonly delivery: string | undefined;
+  readonly pointerDelivery?: string | undefined;
   readonly contentLength: number | undefined;
   /** The request body, or null when it exceeds `MAX_BODY_BYTES` or cannot be read. */
   readonly body: Effect.Effect<string | null>;
@@ -108,6 +112,51 @@ export class StateOpenError extends Schema.TaggedError<StateOpenError>()(
 
 export type MomentResponse = Reply | { readonly status: 400 } | { readonly status: 401 };
 
+export class SessionInstructionsError extends Schema.TaggedError<SessionInstructionsError>()(
+  "ContextmdSessionInstructionsError",
+  {
+    operation: Schema.Literals(["stage", "record", "attach"]),
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return "Failed to account for native session instructions.";
+  }
+}
+
+export class PointerDeliveryError extends Schema.TaggedError<PointerDeliveryError>()(
+  "ContextmdPointerDeliveryError",
+  {
+    delivery: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return "Failed to move the ContextMD pointer delivery.";
+  }
+}
+
+interface InstructionsStage {
+  readonly reservation: string | null;
+  readonly text: string | undefined;
+}
+
+interface InstallationReceipt {
+  readonly nativeSessionId: string;
+  readonly text: string;
+  readonly site: "open" | "fallback" | "rollback";
+}
+
+interface NativeForkRequest {
+  readonly driver: string;
+  readonly threadId: string;
+  readonly runId: string;
+  readonly sourceThreadId: string;
+  readonly source: OrchestrationV2ProviderThread;
+  readonly target: OrchestrationV2ProviderThread;
+  readonly boundaryAt: DateTime.Utc;
+}
+
 export class ContextmdServing extends Context.Service<
   ContextmdServing,
   {
@@ -116,6 +165,37 @@ export class ContextmdServing extends Context.Service<
     /** The hook dropped a reserved reply before the model saw it. */
     readonly release: (delivery: string) => Effect.Effect<{ readonly status: 204 | 404 }>;
     readonly checkShown: Effect.Effect<void>;
+    readonly pointerApplying: (
+      delivery: string,
+    ) => Effect.Effect<{ readonly status: 204 | 409 }, PointerDeliveryError>;
+    readonly pointerSettle: (
+      delivery: string,
+    ) => Effect.Effect<{ readonly status: 204 | 409 }, PointerDeliveryError>;
+    readonly pointerRelease: (
+      delivery: string,
+      reason: string,
+    ) => Effect.Effect<{ readonly status: 204 | 409 }, PointerDeliveryError>;
+    readonly currentInstructions: (
+      driver: string,
+    ) => Effect.Effect<string | undefined, SessionInstructionsError>;
+    readonly stageSessionInstructions: (input: {
+      readonly driver: string;
+      readonly threadId: string;
+      readonly runId: string;
+    }) => Effect.Effect<InstructionsStage, SessionInstructionsError>;
+    readonly recordInstallations: (
+      receipts: ReadonlyArray<InstallationReceipt>,
+      input: { readonly threadId: string },
+    ) => Effect.Effect<void, SessionInstructionsError>;
+    readonly attachSessionInstructions: (input: {
+      readonly driver: string;
+      readonly threadId: string;
+      readonly runId: string;
+      readonly nativeSessionId: string;
+      readonly reservation: string | null;
+    }) => Effect.Effect<void, SessionInstructionsError>;
+    readonly releaseSessionInstructions: (reservation: string | null) => Effect.Effect<void>;
+    readonly recordNativeFork: (fork: NativeForkRequest) => Effect.Effect<void>;
     /** Log a hook call the transport refused for its credential. */
     readonly rejected: (request: {
       readonly harness: string | undefined;
@@ -211,6 +291,31 @@ const make = Effect.gen(function* () {
       moment: () => Effect.succeed({ status: 204 } as const),
       settle: () => Effect.succeed({ status: 404 } as const),
       release: () => Effect.succeed({ status: 404 } as const),
+      pointerApplying: () => Effect.succeed({ status: 409 } as const),
+      pointerSettle: () => Effect.succeed({ status: 409 } as const),
+      pointerRelease: () => Effect.succeed({ status: 409 } as const),
+      currentInstructions: () => Effect.succeed(undefined),
+      stageSessionInstructions: () => Effect.succeed({ reservation: null, text: undefined }),
+      recordInstallations: (receipts) =>
+        receipts.length === 0
+          ? Effect.void
+          : Effect.fail(
+              new SessionInstructionsError({
+                operation: "record",
+                cause: new Error("Serving state unavailable"),
+              }),
+            ),
+      attachSessionInstructions: (input) =>
+        input.driver !== "grok"
+          ? Effect.void
+          : Effect.fail(
+              new SessionInstructionsError({
+                operation: "attach",
+                cause: new Error("Serving state unavailable"),
+              }),
+            ),
+      releaseSessionInstructions: () => Effect.void,
+      recordNativeFork: () => Effect.void,
       rejected: () => Effect.void,
       checkShown: Effect.void,
     });
@@ -241,6 +346,193 @@ const make = Effect.gen(function* () {
   yield* Effect.addFinalizer(() => Effect.sync(() => db.close()));
 
   const nowSeconds = Clock.currentTimeMillis.pipe(Effect.map((ms) => ms / 1000));
+  const canServe = () =>
+    fileSystem.exists(path.join(dir, "off")).pipe(Effect.map((off) => mapped && !off));
+  const withFiles = <A, E>(
+    work: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path | Crypto.Crypto>,
+  ) =>
+    work.pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+      Effect.provideService(Crypto.Crypto, crypto),
+    );
+  const instructions = (candidate: NonNullable<Selection["greatLibrary"]>) =>
+    Effect.gen(function* () {
+      const text = Select.greatLibraryText(candidate.text);
+      return {
+        entry: candidate.entry,
+        version: candidate.version,
+        text,
+        bytes: Buffer.byteLength(text, "utf8"),
+        owners: {
+          [path.dirname(candidate.entry)]: yield* Store.headCommit(path.dirname(candidate.entry)),
+        },
+      } satisfies SessionInstructions;
+    });
+  const currentConfigured = () =>
+    Effect.gen(function* () {
+      if (!(yield* canServe())) return null;
+      return yield* Select.loadConfig(servingConfig).pipe(
+        Effect.flatMap(Select.configuredGreatLibrary),
+      );
+    }).pipe(withFiles);
+  const instructionsError =
+    (operation: SessionInstructionsError["operation"]) => (cause: unknown) =>
+      new SessionInstructionsError({ operation, cause });
+
+  const currentInstructions: ContextmdServing["Service"]["currentInstructions"] = (driver) =>
+    Effect.gen(function* () {
+      if (driver !== "grok" || !(yield* canServe())) return undefined;
+      const candidate = yield* Select.loadConfig(servingConfig).pipe(
+        Effect.flatMap(Select.prepareGreatLibrary),
+      );
+      return candidate === null ? undefined : Select.greatLibraryText(candidate.text);
+    }).pipe(
+      withFiles,
+      Effect.catchCause((cause) => Effect.fail(instructionsError("stage")(cause))),
+    );
+
+  const stageSessionInstructions: ContextmdServing["Service"]["stageSessionInstructions"] = (
+    input,
+  ) =>
+    Effect.gen(function* () {
+      if (input.driver !== "grok" || !(yield* canServe()))
+        return { reservation: null, text: undefined };
+      const config = yield* Select.loadConfig(servingConfig);
+      const candidate = yield* Select.prepareGreatLibrary(config);
+      const current = candidate === null ? null : yield* instructions(candidate);
+      const now = yield* nowSeconds;
+      state.releaseStale(now);
+      const delivery = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+      const reservation = state.stageSessionInstructions({
+        ...input,
+        delivery,
+        current,
+        now,
+        ...(candidate === null && config.greatLibrary !== undefined
+          ? { missing: config.greatLibrary }
+          : {}),
+      });
+      return { reservation, text: reservation === null ? undefined : current?.text };
+    }).pipe(
+      withFiles,
+      Effect.catchCause((cause) => Effect.fail(instructionsError("stage")(cause))),
+    );
+
+  const recordInstallations: ContextmdServing["Service"]["recordInstallations"] = (
+    receipts,
+    input,
+  ) =>
+    Effect.gen(function* () {
+      for (const receipt of receipts) {
+        const entry = Select.greatLibraryEntry(receipt.text);
+        if (
+          entry === null ||
+          receipt.text !== Select.greatLibraryText(Select.greatLibraryLine(entry))
+        ) {
+          return yield* new SessionInstructionsError({
+            operation: "record",
+            cause: new Error("Invalid native instructions receipt"),
+          });
+        }
+        const candidate = yield* Select.configuredGreatLibrary({
+          exactKeys: [],
+          cue: [],
+          sessionStart: [],
+          cueUrl: null,
+          greatLibrary: entry,
+        });
+        const installed = yield* instructions(candidate!);
+        state.recordInstallation({
+          ...installed,
+          session: receipt.nativeSessionId,
+          threadId: input.threadId,
+          site: receipt.site,
+          now: yield* nowSeconds,
+        });
+      }
+    }).pipe(
+      withFiles,
+      Effect.catchCause((cause) => Effect.fail(instructionsError("record")(cause))),
+    );
+
+  const attachSessionInstructions: ContextmdServing["Service"]["attachSessionInstructions"] = (
+    input,
+  ) =>
+    Effect.gen(function* () {
+      if (input.driver !== "grok") return;
+      const candidate = yield* currentConfigured();
+      const current = candidate === null ? null : yield* instructions(candidate);
+      state.attachSessionInstructions({
+        ...input,
+        session: input.nativeSessionId,
+        current,
+        delivery: yield* crypto.randomUUIDv4().pipe(Effect.orDie),
+        now: yield* nowSeconds,
+      });
+    }).pipe(
+      withFiles,
+      Effect.catchCause((cause) => Effect.fail(instructionsError("attach")(cause))),
+    );
+
+  const releaseSessionInstructions: ContextmdServing["Service"]["releaseSessionInstructions"] = (
+    reservation,
+  ) =>
+    Effect.sync(() => {
+      if (reservation !== null) state.releaseReservation(reservation);
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("ContextMD session stage release failed", { cause }),
+      ),
+    );
+
+  const recordNativeFork: ContextmdServing["Service"]["recordNativeFork"] = (fork) =>
+    Effect.gen(function* () {
+      if ((fork.driver !== "codex" && fork.driver !== "claudeAgent") || !(yield* canServe()))
+        return;
+      const harness = fork.driver === "claudeAgent" ? "claude" : fork.driver;
+      const source = fork.source.nativeThreadRef?.nativeId;
+      const target = fork.target.nativeThreadRef?.nativeId;
+      if (source == null || target == null) return;
+      const line = yield* Select.loadConfig(servingConfig).pipe(
+        Effect.flatMap(Select.prepareGreatLibrary),
+      );
+      if (line === null) return;
+      const reverted = new Set(
+        (yield* sql<{ readonly run_id: string }>`SELECT run_id FROM orchestration_v2_projection_runs
+      WHERE thread_id = ${fork.sourceThreadId} AND status = 'rolled_back'`).map(
+          (row) => row.run_id,
+        ),
+      );
+      const compactions = yield* sql<{
+        readonly run_id: string | null;
+        readonly started_at: string | null;
+      }>`
+      SELECT run_id, json_extract(payload_json, '$.startedAt') AS started_at FROM orchestration_v2_projection_turn_items
+      WHERE thread_id = ${fork.sourceThreadId} AND provider_thread_id = ${fork.source.id} AND type = 'compaction'`;
+      const boundaryAt = DateTime.toEpochMillis(fork.boundaryAt) / 1000;
+      state.recordNativeFork({
+        harness,
+        source,
+        target,
+        threadId: fork.threadId,
+        runId: fork.runId,
+        line,
+        boundaryAt,
+        compactions: compactions.map((row) => ({
+          runId: row.run_id,
+          startedAt: row.started_at === null ? boundaryAt : Date.parse(row.started_at) / 1000,
+        })),
+        reverted,
+        now: yield* nowSeconds,
+        delivery: yield* crypto.randomUUIDv4().pipe(Effect.orDie),
+      });
+    }).pipe(
+      withFiles,
+      Effect.catchCause((cause) =>
+        Effect.logWarning("ContextMD native fork record failed", { cause }),
+      ),
+    );
 
   const maxRead = 64 * 1024 * 1024;
   const decodeSeen = Schema.decodeUnknownOption(
@@ -643,11 +935,17 @@ const make = Effect.gen(function* () {
           yield* unserved("bad_request");
           return { reply: { status: 400 } as const };
         }
+        if (request.pointerDelivery === delivery || request.pointerDelivery === "") {
+          yield* unserved("bad_request");
+          return { reply: { status: 400 } as const };
+        }
+        if (yield* fileSystem.exists(path.join(dir, "off")))
+          return { reply: { status: 204 } as const };
         if (request.contentLength !== undefined && request.contentLength > MAX_BODY_BYTES) {
           yield* unserved("oversize");
           return { reply: { status: 204 } as const };
         }
-        const replay = state.replayed(delivery);
+        const replay = state.replayed(delivery, request.pointerDelivery);
         if (replay !== undefined) return { reply: replay };
         state.releaseStale(startedAt);
         if (!mapped) {
@@ -701,8 +999,45 @@ const make = Effect.gen(function* () {
           yield* unserved(selected.status, { reason: selected.reason });
           return { reply: { status: 204 } as const };
         }
-        let selection = selected.selection;
+        let selection: Selection = selected.selection;
         const join = selected.join;
+        const configured = yield* withFiles(Select.configuredGreatLibrary(selected.config));
+        if (configured !== null) {
+          const m = selection.moment;
+          const epoch = state.epochAfter(harness, selection);
+          const eligible =
+            (m.kind === "user_message" && selection.profile.delivering.includes(m.kind)) ||
+            (m.kind === "session_start" &&
+              m.source !== null &&
+              selection.profile.new_epoch_sources.includes(m.source)) ||
+            (m.kind === "compaction" && selection.profile.templates.pointer !== undefined);
+          let candidate: Selection["greatLibrary"] = null;
+          if (harness === "grok" && m.kind === "compaction") candidate = configured;
+          else if (
+            join.type === "run" &&
+            eligible &&
+            state.greatLibraryOwed(harness, m.session, epoch)
+          ) {
+            candidate = yield* withFiles(Select.prepareGreatLibrary(selected.config));
+            if (candidate === null)
+              selection = {
+                ...selection,
+                notes: [
+                  ...selection.notes,
+                  {
+                    matcher: "great_library",
+                    entry: configured.entry,
+                    outcome: "not_on_machine",
+                  },
+                ],
+              };
+          }
+          selection = {
+            ...selection,
+            greatLibrary: candidate,
+            greatLibraryBytes: Buffer.byteLength(Select.greatLibraryText(configured.text), "utf8"),
+          };
+        }
         if (join.type === "run") known = { ...known, threadId: join.threadId, runId: join.runId };
         let readChecks: ReadonlyArray<ReadCheck> = [];
         let cue: CueMoment | null = null;
@@ -738,6 +1073,9 @@ const make = Effect.gen(function* () {
       return state.decide({
         harness,
         delivery,
+        ...(request.pointerDelivery === undefined
+          ? {}
+          : { pointerDelivery: request.pointerDelivery }),
         selection,
         join,
         readChecks,
@@ -790,7 +1128,34 @@ const make = Effect.gen(function* () {
       Effect.ignoreCause,
     );
 
-  return ContextmdServing.of({ moment, settle, release, rejected, checkShown });
+  const pointerTransition = (delivery: string, transition: (now: number) => boolean) =>
+    nowSeconds.pipe(
+      Effect.map((now) => (transition(now) ? { status: 204 as const } : { status: 409 as const })),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("ContextMD pointer transition failed", { delivery, cause }).pipe(
+          Effect.andThen(Effect.fail(new PointerDeliveryError({ delivery, cause }))),
+        ),
+      ),
+    );
+  return ContextmdServing.of({
+    moment,
+    settle,
+    release,
+    rejected,
+    checkShown,
+    pointerApplying: (delivery) =>
+      pointerTransition(delivery, (now) => state.markPointerApplying(delivery, now)),
+    pointerSettle: (delivery) =>
+      pointerTransition(delivery, (now) => state.settlePointer(delivery, now)),
+    pointerRelease: (delivery, reason) =>
+      pointerTransition(delivery, () => state.releasePointer(delivery, reason)),
+    currentInstructions,
+    stageSessionInstructions,
+    recordInstallations,
+    attachSessionInstructions,
+    releaseSessionInstructions,
+    recordNativeFork,
+  });
 });
 
 export const layer = Layer.effect(ContextmdServing, make);

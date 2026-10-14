@@ -35,12 +35,14 @@ import * as ProjectStore from "./ProjectStore.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as ContextmdServing from "../contextmd/ContextmdServing.ts";
 
 // A root that does not exist never overlaps, so other owners decide isolation.
 const unrelatedProject = Option.some({
   workspaceRoot: "/nonexistent/t3-rollback-project",
 } as never);
 const layerCheckpointRollbackService = CheckpointRollbackService.layer.pipe(
+  Layer.provide(Layer.mock(ContextmdServing.ContextmdServing)({})),
   Layer.provide(
     Layer.mergeAll(
       NodeServices.layer,
@@ -435,6 +437,7 @@ it.effect.each([
       providerTurns: [],
     } as unknown as OrchestrationV2ThreadProjection;
     const testLayer = CheckpointRollbackService.layer.pipe(
+      Layer.provide(Layer.mock(ContextmdServing.ContextmdServing)({})),
       Layer.provide(
         Layer.mergeAll(
           ThreadCommandExecutor.layer,
@@ -563,9 +566,11 @@ it.effect.each([
   { restoreFiles: true, shared: "historical" },
   { restoreFiles: false, shared: "none", targetOrdinal: 1 },
   { restoreFiles: false, shared: "none", targetOrdinal: 1, multipleTurns: true },
+  { restoreFiles: false, shared: "none", grok: true },
+  { restoreFiles: false, shared: "none", grok: true, failBind: true },
 ])(
   "rewinds safely with %s",
-  ({ restoreFiles, shared, targetOrdinal = 0, multipleTurns = false }) => {
+  ({ restoreFiles, shared, targetOrdinal = 0, multipleTurns = false, grok = false, failBind = false }) => {
     const threadId = ThreadId.make("rewind-files");
     const providerThreadId = ProviderThreadId.make("rewind-provider");
     const providerSessionId = ProviderSessionId.make("rewind-session");
@@ -630,7 +635,32 @@ it.effect.each([
         activeAttemptId: `attempt-${ordinal}`,
       })),
     } as unknown as OrchestrationV2ThreadProjection;
-    const layerTest = layerCheckpointRollbackService.pipe(
+    const layerTest = CheckpointRollbackService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeed(unrelatedProject) }),
+          Layer.mock(ContextmdServing.ContextmdServing)({
+            currentInstructions: () =>
+              Effect.sync(() => {
+                calls.push("instructions");
+                return "rules A";
+              }),
+            recordInstallations: (receipts) =>
+              Effect.gen(function* () {
+                calls.push("bind");
+                assert.deepEqual(receipts, [
+                  { nativeSessionId: "replacement", text: "rules A", site: "rollback" },
+                ]);
+                if (failBind)
+                  return yield* new ContextmdServing.SessionInstructionsError({
+                    operation: "record",
+                    cause: "unwritable",
+                  });
+              }),
+          }),
+        ),
+      ),
       Layer.provide(
         Layer.mergeAll(
           layerThreadCommands,
@@ -686,10 +716,19 @@ it.effect.each([
           Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
             open: () =>
               Effect.succeed({
+                ...(grok
+                  ? {
+                      driver: "grok",
+                      createdSessions: () => [
+                        { nativeSessionId: "replacement", text: "rules A", site: "rollback" as const },
+                      ],
+                    }
+                  : {}),
                 rollbackThread: (input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) =>
                   Effect.gen(function* () {
                     const count = yield* resolveCodexRollbackTurnCount(input);
                     assert.equal(count, 2 - targetOrdinal);
+                    if (grok) assert.equal(input.newSessionInstructions, "rules A");
                     calls.push("provider");
                     return { providerThread };
                   }),
@@ -709,10 +748,20 @@ it.effect.each([
         assert.deepEqual(calls, []);
         return;
       }
+      if (failBind) {
+        const error = yield* service
+          .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles })
+          .pipe(Effect.flip);
+        assert.equal(error.reason, "unexpected-failure");
+        assert.deepEqual(calls, ["instructions", "provider", "bind"]);
+        return;
+      }
       yield* service.execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles });
       assert.deepEqual(
         calls,
-        restoreFiles ? ["provider", "files", "projection"] : ["provider", "projection"],
+        grok
+          ? ["instructions", "provider", "bind", "projection"]
+          : restoreFiles ? ["provider", "files", "projection"] : ["provider", "projection"],
       );
     }).pipe(Effect.provide(layerTest));
   },

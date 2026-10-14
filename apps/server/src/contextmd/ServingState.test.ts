@@ -1101,7 +1101,7 @@ describe("ServingState epochs and carries", () => {
   it("starts a new epoch on a compaction moment", () => {
     const h = makeHarness();
     h.fire({ kind: "tool_result", candidates: [entry("a", "A")] });
-    h.fire({ kind: "compaction" });
+    h.fire({ kind: "compaction", profile: { ...PROFILE, new_epoch_sources: [] } });
     assert.strictEqual(h.fire({ kind: "tool_result", candidates: [entry("a", "A")] }).status, 200);
   });
 
