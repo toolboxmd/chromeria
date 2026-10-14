@@ -10252,13 +10252,21 @@ describe("AcpAdapterV2", () => {
           driver: ACP_TEST_DRIVER,
           nativeTurnId: acpScopedNativeId(instanceId, "mock-session-1:turn:1"),
         });
+        let monitorStatus: string | null = null;
         let terminalStatus: string | null = null;
         while (terminalStatus === null) {
           const event = yield* Queue.take(events);
+          if (
+            event.type === "turn_item.updated" &&
+            event.turnItem.nativeItemRef?.nativeId === "tool-call-monitor-1"
+          ) {
+            monitorStatus = event.turnItem.status;
+          }
           if (event.type === "turn.terminal" && event.providerTurnId === providerTurnId) {
             terminalStatus = event.status;
           }
         }
+        assert.equal(monitorStatus, "completed", "the structured end must finish the Monitor row");
         assert.equal(terminalStatus, "completed");
         yield* Effect.yieldNow;
         yield* Effect.yieldNow;
@@ -10292,37 +10300,71 @@ describe("AcpAdapterV2", () => {
         yield* Effect.yieldNow;
         yield* Effect.yieldNow;
 
+        assert.lengthOf(continuationRequests, 1, "late frames must reuse the offered continuation");
+        // The root already completed. Its late report stays buffered until the
+        // offered continuation attaches and drains it without another prompt.
+        const continuationInput = makeTurnInput({
+          threadId,
+          providerThread,
+          instanceId,
+          runtimePolicy,
+          now: yield* DateTime.now,
+          ordinal: 2,
+          messageCreatedBy: "agent",
+          messageCreationSource: "provider",
+          messageText: continuationRequests[0]!.notification!.summary,
+        });
+        const continuationProviderTurnId = idAllocator.derive.providerTurn({
+          driver: ACP_TEST_DRIVER,
+          nativeTurnId: acpScopedNativeId(instanceId, "mock-session-1:turn:2"),
+        });
+        yield* runtime.startTurn(continuationInput);
+
         let reportSeen = false;
+        let reportMessageSeen = false;
         const trackReport = (event: ProviderAdapter.ProviderAdapterV2Event): void => {
           if (
             event.type === "turn_item.updated" &&
             event.turnItem.type === "assistant_message" &&
             event.turnItem.text.includes("MONITOR_REPORT_TOKEN")
           ) {
+            assert.equal(event.turnItem.providerTurnId, continuationProviderTurnId);
+            assert.equal(event.turnItem.runId, continuationInput.runId);
+            assert.equal(event.turnItem.text, "Monitor finished. MONITOR_REPORT_TOKEN");
             reportSeen = true;
           }
           if (
             event.type === "message.updated" &&
             event.message.text.includes("MONITOR_REPORT_TOKEN")
           ) {
-            reportSeen = true;
+            assert.equal(event.message.runId, continuationInput.runId);
+            assert.equal(event.message.role, "assistant");
+            assert.equal(event.message.text, "Monitor finished. MONITOR_REPORT_TOKEN");
+            reportMessageSeen = true;
           }
         };
-        let drained = yield* Queue.poll(events);
-        while (Option.isSome(drained)) {
-          trackReport(drained.value);
+        while (!reportSeen || !reportMessageSeen) {
+          const event = yield* Queue.take(events);
+          trackReport(event);
           assert.notEqual(
-            drained.value.type,
+            event.type,
             "turn.terminal",
-            "turn must stay open while hydration hold / quiet window remain",
+            "the continuation must stay open until the buffered report projects",
           );
-          drained = yield* Queue.poll(events);
         }
-        assert.isTrue(reportSeen, "injected report must project into the held turn");
+        assert.isTrue(reportSeen, "injected report must project into the held continuation turn");
+        assert.isTrue(reportMessageSeen, "the continuation must retain the report message");
 
         yield* TestClock.adjust("60 seconds");
-        yield* Effect.yieldNow;
-        yield* Effect.yieldNow;
+        let continuationTerminalStatus: string | null = null;
+        while (continuationTerminalStatus === null) {
+          const event = yield* Queue.take(events);
+          if (event.type === "turn.terminal") {
+            assert.equal(event.providerTurnId, continuationProviderTurnId);
+            continuationTerminalStatus = event.status;
+          }
+        }
+        assert.equal(continuationTerminalStatus, "completed");
         assert.lengthOf(
           continuationRequests,
           1,
