@@ -27,10 +27,12 @@ import {
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -776,6 +778,269 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       assert.deepEqual(yield* collect(false), expected);
       assert.deepEqual(yield* collect(true), expected);
     }),
+  );
+
+  it.effect("replays interleaved threads across more than three pages", () =>
+    Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:foundation-interleaved-pages");
+      const otherThreadId = ThreadId.make("thread:foundation-interleaved-pages-other");
+      const thread = makeThread(threadId, now);
+      const other = makeThread(otherThreadId, now);
+      // Four 500-row pages. READ_PAGE_SIZE is 500.
+      const perThread = 2_000;
+      const metadata = (
+        id: string,
+        target: ThreadId,
+        title: string,
+      ): OrchestrationV2DomainEvent => ({
+        id: EventId.make(id),
+        type: "thread.metadata-updated",
+        threadId: target,
+        providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...(target === threadId ? thread : other),
+          title,
+        },
+      });
+      const events: Array<OrchestrationV2DomainEvent> = [
+        threadCreatedEvent({ id: "event:interleaved-pages:created", thread, now }),
+        threadCreatedEvent({ id: "event:interleaved-pages:other-created", thread: other, now }),
+      ];
+      const updates = perThread - 1;
+      const chunk = 100;
+      for (let start = 0; start < updates; start += chunk) {
+        const count = Math.min(chunk, updates - start);
+        for (let offset = 0; offset < count; offset += 1) {
+          const index = start + offset;
+          events.push(metadata(`event:interleaved-pages:a:${index}`, threadId, `a ${index}`));
+        }
+        for (let offset = 0; offset < count; offset += 1) {
+          const index = start + offset;
+          events.push(metadata(`event:interleaved-pages:b:${index}`, otherThreadId, `b ${index}`));
+        }
+      }
+      const written = yield* eventSink.write({ events });
+      const expected = written
+        .filter((stored) => stored.event.threadId === threadId)
+        .map((stored) => stored.sequence);
+      assert.lengthOf(expected, perThread);
+      assert.isAbove(expected.at(-1)! - expected[0]!, expected.length - 1);
+
+      const collect = (bounded: boolean) =>
+        Effect.gen(function* () {
+          const seen: Array<number> = [];
+          yield* eventSink
+            .stream({
+              threadId,
+              afterSequence: 0,
+              ...(bounded ? { bounded: true } : {}),
+            })
+            .pipe(
+              Stream.take(perThread),
+              Stream.runForEach((stored) =>
+                Effect.sync(() => {
+                  seen.push(stored.sequence);
+                }),
+              ),
+            );
+          return seen;
+        });
+
+      assert.deepEqual(yield* collect(false), expected);
+      assert.deepEqual(yield* collect(true), expected);
+    }),
+  );
+
+  it.effect.each(["bounded", "unbounded"] as const)(
+    "delivers one event committed after the high-water mark once on the %s path",
+    (path) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const eventSink = yield* EventSink.EventSinkV2;
+          const now = yield* DateTime.now;
+          const threadId = ThreadId.make(`thread:foundation-after-high-water:${path}`);
+          const thread = makeThread(threadId, now);
+          const metadata = (id: string, title: string): OrchestrationV2DomainEvent => ({
+            id: EventId.make(id),
+            type: "thread.metadata-updated",
+            threadId,
+            providerInstanceId,
+            occurredAt: now,
+            payload: { ...thread, title },
+          });
+          const written = yield* eventSink.write({
+            events: [
+              threadCreatedEvent({ id: `event:after-high-water:${path}:created`, thread, now }),
+              metadata(`event:after-high-water:${path}:1`, "one"),
+              metadata(`event:after-high-water:${path}:2`, "two"),
+            ],
+          });
+          const expected = written.map((stored) => stored.sequence);
+          const pull = yield* Stream.toPull(
+            eventSink.stream({
+              threadId,
+              afterSequence: 0,
+              ...(path === "bounded" ? { bounded: true } : {}),
+            }),
+          );
+          const seen: Array<number> = [];
+          while (seen.length < expected.length) {
+            for (const stored of yield* pull) seen.push(stored.sequence);
+          }
+          assert.deepEqual(seen, expected);
+
+          const pending = yield* Effect.forkChild(pull);
+          yield* Effect.yieldNow;
+          yield* Effect.yieldNow;
+          assert.equal(pending.pollUnsafe(), undefined);
+          const [live] = yield* eventSink.write({
+            events: [metadata(`event:after-high-water:${path}:live`, "live")],
+          });
+          assert.deepEqual(
+            (yield* Fiber.join(pending)).map((stored) => stored.sequence),
+            [live!.sequence],
+          );
+          const extra = yield* Effect.forkChild(pull);
+          yield* Effect.yieldNow;
+          yield* Effect.yieldNow;
+          assert.equal(extra.pollUnsafe(), undefined);
+          yield* Fiber.interrupt(extra);
+        }),
+      ),
+  );
+
+  it.effect.each(["bounded", "unbounded"] as const)(
+    "cancels a replay after the first page is emitted on the %s path",
+    (path) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const eventSink = yield* EventSink.EventSinkV2;
+          const now = yield* DateTime.now;
+          const threadId = ThreadId.make(`thread:foundation-cancel-replay:${path}`);
+          const thread = makeThread(threadId, now);
+          const eventCount = 1_000;
+          yield* eventSink.write({
+            events: [
+              threadCreatedEvent({ id: `event:cancel-replay:${path}:0`, thread, now }),
+              ...Array.from({ length: eventCount - 1 }, (_, index) => ({
+                id: EventId.make(`event:cancel-replay:${path}:${index + 1}`),
+                type: "thread.metadata-updated" as const,
+                threadId,
+                providerInstanceId,
+                occurredAt: now,
+                payload: { ...thread, title: `Cancel ${index + 1}` },
+              })),
+            ],
+          });
+          const secondPage = yield* Deferred.make<void>();
+          let payloadPages = 0;
+          // Paginate emits a 500-row page before it fetches the next one.
+          const blockSecondPage: Statement.Transformer = (statement) => {
+            const [query] = statement.compile();
+            if (
+              !query.includes("payload_json") ||
+              !query.includes("FROM orchestration_events") ||
+              query.includes("MAX(sequence)")
+            ) {
+              return Effect.succeed(statement);
+            }
+            payloadPages += 1;
+            if (payloadPages < 2) return Effect.succeed(statement);
+            return Deferred.succeed(secondPage, undefined).pipe(
+              Effect.ignore,
+              Effect.andThen(Effect.never),
+              Effect.as(statement),
+            );
+          };
+          const seen: Array<number> = [];
+          const fiber = yield* eventSink
+            .stream({
+              threadId,
+              afterSequence: 0,
+              ...(path === "bounded" ? { bounded: true } : {}),
+            })
+            .pipe(
+              Stream.provideService(Statement.CurrentTransformer, blockSecondPage),
+              Stream.runForEach((stored) =>
+                Effect.sync(() => {
+                  seen.push(stored.sequence);
+                }),
+              ),
+              Effect.forkScoped,
+            );
+          yield* Deferred.await(secondPage);
+          yield* Fiber.interrupt(fiber);
+          const exit = yield* Fiber.await(fiber);
+          assert.lengthOf(seen, 500);
+          assert.isTrue(Exit.isFailure(exit));
+          if (Exit.isFailure(exit)) assert.isTrue(Cause.hasInterruptsOnly(exit.cause));
+        }),
+      ),
+  );
+
+  it.effect.each(["bounded", "unbounded"] as const)(
+    "emits earlier rows when a matching row in the page cannot be decoded on the %s path",
+    (path) =>
+      Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const sql = yield* SqlClient.SqlClient;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make(`thread:foundation-bad-row:${path}`);
+        const thread = makeThread(threadId, now);
+        const written = yield* eventSink.write({
+          events: [
+            threadCreatedEvent({ id: `event:bad-row:${path}:0`, thread, now }),
+            ...Array.from({ length: 9 }, (_, index) => ({
+              id: EventId.make(`event:bad-row:${path}:${index + 1}`),
+              type: "thread.metadata-updated" as const,
+              threadId,
+              providerInstanceId,
+              occurredAt: now,
+              payload: { ...thread, title: `Row ${index + 1}` },
+            })),
+          ],
+        });
+        const bad = written[5]!;
+        const original = yield* sql<{ readonly payload_json: string }>`
+          SELECT payload_json FROM orchestration_events WHERE sequence = ${bad.sequence}
+        `;
+        yield* sql`
+          UPDATE orchestration_events SET payload_json = 'not-json'
+          WHERE sequence = ${bad.sequence}
+        `;
+        const seen: Array<number> = [];
+        const result = yield* eventSink
+          .stream({
+            threadId,
+            afterSequence: 0,
+            ...(path === "bounded" ? { bounded: true } : {}),
+          })
+          .pipe(
+            Stream.runForEach((stored) =>
+              Effect.sync(() => {
+                seen.push(stored.sequence);
+              }),
+            ),
+            Effect.result,
+            Effect.ensuring(
+              sql`
+                UPDATE orchestration_events SET payload_json = ${original[0]!.payload_json}
+                WHERE sequence = ${bad.sequence}
+              `.pipe(Effect.orDie),
+            ),
+          );
+        assert.deepEqual(
+          seen,
+          written.slice(0, 5).map((stored) => stored.sequence),
+        );
+        assert.equal(result._tag, "Failure");
+        if (result._tag === "Failure") {
+          assert.equal(result.failure._tag, "EventSinkStreamError");
+        }
+      }),
   );
 
   it.effect("does not lose or duplicate events while transitioning from catch-up to live", () =>
