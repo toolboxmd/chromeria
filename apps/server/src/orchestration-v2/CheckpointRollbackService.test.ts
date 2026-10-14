@@ -344,7 +344,13 @@ it.effect("reports a missing provider turn as a structured rollback failure", ()
   }).pipe(Effect.provide(layerTest));
 });
 
-it.effect.each([
+const rewindCases: ReadonlyArray<{
+  restoreFiles: boolean;
+  shared: string;
+  targetOrdinal?: number;
+  grok?: boolean;
+  failBind?: boolean;
+}> = [
   { restoreFiles: true, shared: "none" },
   { restoreFiles: false, shared: "root" },
   { restoreFiles: true, shared: "root" },
@@ -352,7 +358,11 @@ it.effect.each([
   { restoreFiles: false, shared: "worktree" },
   { restoreFiles: true, shared: "historical" },
   { restoreFiles: false, shared: "none", targetOrdinal: 1 },
-])("rewinds safely with %s", ({ restoreFiles, shared, targetOrdinal = 0 }) => {
+  { restoreFiles: false, shared: "none", grok: true },
+  { restoreFiles: false, shared: "none", grok: true, failBind: true },
+];
+it.effect.each(rewindCases)("rewinds safely with %s", (input) => {
+  const { restoreFiles, shared, targetOrdinal = 0, grok = false, failBind = false } = input;
   const threadId = ThreadId.make("rewind-files");
   const providerThreadId = ProviderThreadId.make("rewind-provider");
   const providerSessionId = ProviderSessionId.make("rewind-session");
@@ -404,7 +414,32 @@ it.effect.each([
       activeAttemptId: `attempt-${ordinal}`,
     })),
   } as unknown as OrchestrationV2ThreadProjection;
-  const layerTest = layerCheckpointRollbackService.pipe(
+  const layerTest = CheckpointRollbackService.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeed(unrelatedProject) }),
+        Layer.mock(ContextmdServing.ContextmdServing)({
+          currentInstructions: () =>
+            Effect.sync(() => {
+              calls.push("instructions");
+              return "rules A";
+            }),
+          recordInstallations: (receipts) =>
+            Effect.gen(function* () {
+              calls.push("bind");
+              assert.deepEqual(receipts, [
+                { nativeSessionId: "replacement", text: "rules A", site: "rollback" },
+              ]);
+              if (failBind)
+                return yield* new ContextmdServing.SessionInstructionsError({
+                  operation: "record",
+                  cause: "unwritable",
+                });
+            }),
+        }),
+      ),
+    ),
     Layer.provide(
       Layer.mergeAll(
         layerThreadCommands,
@@ -459,10 +494,23 @@ it.effect.each([
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
           open: () =>
             Effect.succeed({
+              ...(grok
+                ? {
+                    driver: "grok",
+                    createdSessions: () => [
+                      {
+                        nativeSessionId: "replacement",
+                        text: "rules A",
+                        site: "rollback" as const,
+                      },
+                    ],
+                  }
+                : {}),
               rollbackThread: (input: ProviderAdapterV2RollbackThreadInput) =>
                 Effect.gen(function* () {
                   const count = yield* resolveCodexRollbackTurnCount(input);
                   assert.equal(count, 2 - targetOrdinal);
+                  if (grok) assert.equal(input.newSessionInstructions, "rules A");
                   calls.push("provider");
                   return { providerThread };
                 }),
@@ -482,10 +530,22 @@ it.effect.each([
       assert.deepEqual(calls, []);
       return;
     }
+    if (failBind) {
+      const error = yield* service
+        .execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles })
+        .pipe(Effect.flip);
+      assert.equal(error.reason, "unexpected-failure");
+      assert.deepEqual(calls, ["instructions", "provider", "bind"]);
+      return;
+    }
     yield* service.execute({ threadId, providerThreadId, checkpointId, scopeId, restoreFiles });
     assert.deepEqual(
       calls,
-      restoreFiles ? ["provider", "files", "projection"] : ["provider", "projection"],
+      grok
+        ? ["instructions", "provider", "bind", "projection"]
+        : restoreFiles
+          ? ["provider", "files", "projection"]
+          : ["provider", "projection"],
     );
   }).pipe(Effect.provide(layerTest));
 });
