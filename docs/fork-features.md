@@ -254,6 +254,30 @@ are evidence for review, not proof that a feature has been adopted upstream.
 }
 ```
 
+## claude-steer-queue
+
+```json
+{
+  "id": "claude-steer-queue",
+  "purpose": "Queue a steer into Claude instead of cancelling running tools and reporting that as a user refusal.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/280"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/282"],
+  "newFiles": [],
+  "upstreamFiles": [
+    "apps/server/src/orchestration-v2/ClaudeAutomaticDelivery.integration.test.ts",
+    "apps/server/src/orchestration-v2/CommandPolicy.test.ts",
+    "apps/server/src/orchestration-v2/CommandPolicy.ts",
+    "docs/orchestration-v2/orchestrator-mcp-server.md"
+  ],
+  "sharedFiles": [
+    "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+    "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "packages/client-runtime/src/operations/commands.ts"
+  ],
+  "keywords": ["activeSteeringInterruptsTools", "steeringCancelsRunningTools", "queue_after_active"]
+}
+```
+
 ## query-interrupt-retry
 
 ```json
