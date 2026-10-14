@@ -92,6 +92,8 @@ export interface AcpSpawnInput {
 }
 
 export interface AcpSessionRuntimeOptions {
+  /** Application rules on a newly created session only. Never sent on initialize, load or resume. */
+  readonly newSessionRules?: string;
   readonly spawn: AcpSpawnInput;
   readonly cwd: string;
   readonly resumeSessionId?: string;
@@ -1096,6 +1098,7 @@ function isAcpAuthenticationRequired(error: EffectAcpErrors.AcpError): boolean {
 }
 
 export interface AcpSessionRuntimeStartResult {
+  readonly newSessionRules?: string;
   readonly sessionId: string;
   readonly initializeResult: EffectAcpSchema.InitializeResponse;
   readonly sessionSetupResult:
@@ -2209,6 +2212,9 @@ export const make = (
           }
         } else {
           const createPayload = {
+            ...(options.newSessionRules === undefined
+              ? {}
+              : { _meta: { rules: options.newSessionRules } }),
             cwd: options.cwd,
             mcpServers: sessionMcpServers(initializeResult),
             ...additionalDirectories,
@@ -2249,6 +2255,9 @@ export const make = (
       yield* Ref.set(configOptionsRef, sessionConfigOptionsFromSetup(sessionSetupResult));
 
       const nextState = {
+        ...(options.resumeSessionId !== undefined || options.newSessionRules === undefined
+          ? {}
+          : { newSessionRules: options.newSessionRules }),
         sessionId,
         initializeResult,
         sessionSetupResult,

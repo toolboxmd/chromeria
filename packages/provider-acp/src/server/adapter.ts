@@ -129,6 +129,7 @@ export const ACP_PROTOCOL = "acp.ndjson-jsonrpc" as const;
 const ACP_DEFERRED_FINALIZE_DEBOUNCE: Duration.Input = "3000 millis";
 
 export interface AcpAdapterV2RuntimeInput {
+  readonly newSessionRules?: string;
   readonly cwd: string;
   readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
   readonly mcpServers: ReadonlyArray<EffectAcpSchema.McpServer>;
@@ -1880,8 +1881,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           resumeSessionId?: string,
           onTermination: AcpAdapterV2RuntimeInput["onTermination"] = () =>
             handleRuntimeTerminationAtGeneration(runtimeGeneration),
+          newSessionRules?: string,
         ): AcpAdapterV2RuntimeInput => {
           return {
+            ...(newSessionRules === undefined ? {} : { newSessionRules }),
             cwd: input.runtimePolicy.cwd ?? process.cwd(),
             runtimePolicy: input.runtimePolicy,
             mcpServers: mcpContext.servers,
@@ -5611,6 +5614,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         const spawnAcpRuntime = Effect.fnUntraced(function* (
           threadId: ThreadId | null,
           resumeSessionId?: string,
+          newSessionRules?: string,
         ) {
           if (runtimeScope !== undefined) {
             yield* Scope.close(runtimeScope, Exit.void);
@@ -5620,7 +5624,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           runtimeMcpBridge = yield* makeRuntimeMcpBridge(mcpContext, runtimeScope);
           const runtimeGeneration = yield* Ref.get(runtimeCallbackGeneration);
           runtime = yield* flavor
-            .makeRuntime(makeRuntimeInput(runtimeGeneration, mcpContext, resumeSessionId))
+            .makeRuntime(
+              makeRuntimeInput(
+                runtimeGeneration,
+                mcpContext,
+                resumeSessionId,
+                undefined,
+                newSessionRules,
+              ),
+            )
             .pipe(
               Effect.provideService(Scope.Scope, runtimeScope),
               Effect.provideService(Crypto.Crypto, crypto),
@@ -5633,9 +5645,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         const startAcpRuntime = Effect.fnUntraced(function* (
           threadId: ThreadId | null,
           resumeSessionId?: string,
+          newSessionRules?: string,
         ) {
           const startup = Effect.gen(function* () {
-            yield* spawnAcpRuntime(threadId, resumeSessionId);
+            yield* spawnAcpRuntime(threadId, resumeSessionId, newSessionRules);
             yield* wireAcpRuntimeHandlers(runtime, yield* Ref.get(runtimeCallbackGeneration));
             return yield* runtime.start();
           });
@@ -5652,6 +5665,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           commitSessionState: (
             replacement: AcpSessionRuntime.AcpSessionRuntimeStartResult,
           ) => Effect.Effect<void>,
+          newSessionRules?: string,
         ) {
           const previousScope = runtimeScope;
           const previousGeneration = yield* Ref.get(runtimeCallbackGeneration);
@@ -5700,6 +5714,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   mcpContext,
                   undefined,
                   handleCandidateTermination,
+                  newSessionRules,
                 ),
               )
               .pipe(
@@ -5813,8 +5828,28 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           return replacementExit.value.started;
         });
 
+        const createdWith: Array<{
+          nativeSessionId: string;
+          text: string;
+          site: "open" | "fallback" | "rollback";
+        }> = [];
+        const rememberCreation = (
+          result: AcpSessionRuntime.AcpSessionRuntimeStartResult,
+          site: "open" | "fallback" | "rollback",
+        ) => {
+          if (driver === "grok" && result.newSessionRules !== undefined)
+            createdWith.push({
+              nativeSessionId: result.sessionId,
+              text: result.newSessionRules,
+              site,
+            });
+        };
         const initialStart = yield* Effect.result(
-          startAcpRuntime(input.threadId, input.initialNativeThreadId),
+          startAcpRuntime(
+            input.threadId,
+            input.initialNativeThreadId,
+            input.newSessionInstructions,
+          ).pipe(Effect.tap((result) => Effect.sync(() => rememberCreation(result, "open")))),
         );
         const started = Result.isSuccess(initialStart)
           ? initialStart.success
@@ -5834,7 +5869,13 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               itemIdentityVersion = 2;
               yield* Ref.set(runtimeRestartRequired, false);
               prepareClaimableTerminalEnvironment(yield* readMcpContext(input.threadId));
-              return yield* startAcpRuntime(input.threadId);
+              return yield* startAcpRuntime(
+                input.threadId,
+                undefined,
+                input.newSessionInstructions,
+              ).pipe(
+                Effect.tap((result) => Effect.sync(() => rememberCreation(result, "fallback"))),
+              );
             });
         yield* Ref.set(activeSessionId, started.sessionId);
         yield* Ref.set(activeSessionSetup, started);
@@ -6879,6 +6920,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         );
 
         const sessionRuntime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
+          createdSessions: () => createdWith.slice(),
           instanceId: options.instanceId,
           driver,
           providerSessionId: input.providerSessionId,
@@ -7471,7 +7513,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                           }),
                         );
                       }),
+                    rollbackInput.newSessionInstructions,
                   ).pipe(Effect.retry({ times: 1 }));
+                  rememberCreation(replacement, "rollback");
                   const now = yield* DateTime.now;
                   return {
                     providerThread: {

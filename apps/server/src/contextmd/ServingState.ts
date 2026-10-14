@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS claims (delivery TEXT NOT NULL, kind TEXT NOT NULL, h
   rule TEXT, whole INTEGER NOT NULL, settled INTEGER NOT NULL DEFAULT 0, candidate_id INTEGER NOT NULL,
   evidence TEXT, tool_use_id TEXT, probe TEXT, checked TEXT);
 CREATE INDEX IF NOT EXISTS claims_delivery ON claims(delivery);
+CREATE INDEX IF NOT EXISTS claims_session_epoch ON claims(harness, session, epoch);
 CREATE INDEX IF NOT EXISTS claims_entry ON claims(run_id, epoch, entry, version) WHERE settled = 1;
 CREATE TABLE IF NOT EXISTS deny_state (harness TEXT NOT NULL, session TEXT NOT NULL, epoch INTEGER NOT NULL,
   entry TEXT NOT NULL, version TEXT NOT NULL, rule_kind TEXT NOT NULL, target TEXT,
@@ -78,6 +79,11 @@ CREATE INDEX IF NOT EXISTS candidates_moment ON candidates(moment_id);
 CREATE INDEX IF NOT EXISTS candidates_entry ON candidates(entry, served_at);
 CREATE TABLE IF NOT EXISTS heartbeats (at REAL PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS cue_down (url TEXT PRIMARY KEY, since REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS installations (
+  harness TEXT NOT NULL, session TEXT NOT NULL, thread_id TEXT, site TEXT NOT NULL,
+  text TEXT NOT NULL, entry TEXT NOT NULL, version TEXT NOT NULL, bytes INTEGER NOT NULL,
+  owners_json TEXT, created_at REAL NOT NULL, consumed_run TEXT, consumed_candidate INTEGER,
+  PRIMARY KEY (harness, session));
 `;
 
 /** Columns added after a table first shipped: created on open when an older state file lacks them. */
@@ -86,6 +92,7 @@ const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, type
   ["moments", "cue_ms", "REAL"],
   ["moments", "cue_wait_ms", "REAL"],
   ["moments", "cue_json", "TEXT"],
+  ["moments", "source", "TEXT"],
   ["carries", "matcher", "TEXT"],
   ["carries", "score", "REAL"],
   ["deliveries", "transcript_path", "TEXT"],
@@ -93,6 +100,7 @@ const ADDED_COLUMNS: ReadonlyArray<readonly [table: string, column: string, type
   ["deliveries", "shown", "TEXT"],
   ["deliveries", "shown_json", "TEXT"],
   ["deliveries", "shown_next", "REAL"],
+  ["candidates", "delivery", "TEXT"],
 ];
 
 /** Cue's part of one moment: its reply, and the candidate each scored entry would be. */
@@ -110,6 +118,7 @@ export type RunJoin =
 export interface MomentInput {
   readonly harness: string;
   readonly delivery: string;
+  readonly pointerDelivery?: string;
   readonly selection: Selection;
   readonly join: RunJoin;
   /** Projected exit status of earlier calls whose reads are pending (Codex). */
@@ -121,6 +130,41 @@ export interface MomentInput {
 }
 
 export type Reply = { readonly status: 200; readonly body: string } | { readonly status: 204 };
+
+/** Immutable bytes installed into a native Grok session, rather than a transient hook reply. */
+export interface SessionInstructions {
+  readonly entry: string;
+  readonly version: string;
+  readonly text: string;
+  readonly bytes: number;
+  readonly owners: Readonly<Record<string, string | null>>;
+}
+
+interface NativeForkInput {
+  readonly harness: "codex" | "claude";
+  readonly source: string;
+  readonly target: string;
+  readonly threadId: string;
+  readonly runId: string;
+  readonly line: Candidate;
+  readonly boundaryAt: number;
+  readonly compactions: ReadonlyArray<{
+    readonly runId: string | null;
+    readonly startedAt: number;
+  }>;
+  readonly reverted: ReadonlySet<string>;
+  readonly now: number;
+  readonly delivery: string;
+}
+
+interface InstallationRow {
+  readonly entry: string;
+  readonly version: string;
+  readonly text: string;
+  readonly bytes: number;
+  readonly owners_json: string | null;
+  readonly consumed_run: string | null;
+}
 
 /** A moment that was not served: why, and what of it was known by then, for the log. */
 export interface Unserved {
@@ -191,6 +235,7 @@ const renderTemplate = (template: unknown, values: { text: string; event: string
 };
 
 interface CandidateRow {
+  readonly delivery?: string;
   readonly matcher: string;
   readonly entry?: string | null;
   readonly version?: string | null;
@@ -230,6 +275,10 @@ class Composer {
   };
   /** Room left for one more part under the output limit. */
   room = () => this.limit - this.used - 2;
+  /** Ordinary text leaves the configured whole pointer's headroom intact. */
+  keepBack = (bytes: number) => {
+    this.budgetLeft -= bytes;
+  };
   /** Give up the head for a first part that cannot fit beside it. */
   dropHead = () => {
     if (this.parts.length > 0) return;
@@ -338,15 +387,30 @@ export class ServingState {
   }
 
   /** The stored reply of a delivery id already handled, so a repeated delivery is not charged twice. */
-  replayed(delivery: string): Reply | undefined {
+  replayed(delivery: string, pointerDelivery?: string): Reply | undefined {
     const row = this.get<{ status: number; body: string | null }>(
       "SELECT status, body FROM deliveries WHERE delivery = ?",
       delivery,
     );
     if (!row) return undefined;
-    return row.status === 200 && row.body !== null
-      ? { status: 200, body: row.body }
-      : { status: 204 };
+    const ordinary: Reply =
+      row.status === 200 && row.body !== null ? { status: 200, body: row.body } : { status: 204 };
+    const pointer =
+      pointerDelivery === undefined
+        ? undefined
+        : this.get<{ status: number; body: string | null }>(
+            "SELECT status, body FROM deliveries WHERE delivery = ?",
+            pointerDelivery,
+          );
+    return pointer?.status === 200 && pointer.body !== null
+      ? {
+          status: 200,
+          body: JSON.stringify({
+            ...(ordinary.status === 200 ? JSON.parse(ordinary.body) : {}),
+            ...JSON.parse(pointer.body),
+          }),
+        }
+      : ordinary;
   }
 
   heartbeat(now: number) {
@@ -397,7 +461,7 @@ export class ServingState {
         "SELECT stage FROM deliveries WHERE delivery = ?",
         delivery,
       );
-      if (d?.stage !== "reserved") return false;
+      if (d?.stage !== "reserved" || this.isPointerDelivery(delivery)) return false;
       this.release(delivery);
       return true;
     });
@@ -457,8 +521,9 @@ export class ServingState {
     this.run("DELETE FROM claims WHERE delivery = ?", delivery);
     this.run("UPDATE carries SET state = 'waiting', delivery = NULL WHERE delivery = ?", delivery);
     this.run(
-      "UPDATE candidates SET stage = 'released', outcome = 'delivery_unverified' WHERE moment_id = ? AND stage = 'reserved'",
-      d.moment_id,
+      `UPDATE candidates SET stage = 'released', outcome = 'delivery_unverified'
+       WHERE coalesce(delivery, (SELECT delivery FROM moments WHERE id = moment_id)) = ? AND stage = 'reserved'`,
+      delivery,
     );
   }
 
@@ -473,7 +538,7 @@ export class ServingState {
         "SELECT stage, moment_id, expires_at FROM deliveries WHERE delivery = ?",
         delivery,
       );
-      if (!d || d.stage !== "reserved") return false;
+      if (!d || d.stage !== "reserved" || this.isPointerDelivery(delivery)) return false;
       if (d.expires_at < now) {
         this.release(delivery);
         return false;
@@ -488,9 +553,9 @@ export class ServingState {
       this.run(
         `UPDATE candidates SET stage = 'settled', served_at = ?,
            outcome = CASE WHEN outcome = 'reserved_truncated' THEN 'truncated' ELSE 'injected' END
-         WHERE moment_id = ? AND stage = 'reserved'`,
+         WHERE coalesce(delivery, (SELECT delivery FROM moments WHERE id = moment_id)) = ? AND stage = 'reserved'`,
         now,
-        d.moment_id,
+        delivery,
       );
       this.run(
         `UPDATE deliveries SET shown = 'unknown', shown_json = ?, shown_next = ?
@@ -558,6 +623,551 @@ export class ServingState {
       next,
       delivery,
     );
+  }
+
+  /** Independent OpenCode pointer receipts cannot be moved by generic context closures. */
+  isPointerDelivery(delivery: string): boolean {
+    return (
+      this.get(
+        "SELECT 1 FROM candidates WHERE delivery = ? AND matcher = 'great_library'",
+        delivery,
+      ) !== undefined
+    );
+  }
+
+  markPointerApplying(delivery: string, now: number): boolean {
+    return this.tx(() => {
+      if (!this.isPointerDelivery(delivery)) return false;
+      const d = this.get<{ stage: string; expires_at: number }>(
+        "SELECT stage, expires_at FROM deliveries WHERE delivery = ?",
+        delivery,
+      );
+      if (d?.stage === "applying") return true;
+      if (d?.stage !== "reserved" || d.expires_at < now) return false;
+      this.run("UPDATE deliveries SET stage = 'applying' WHERE delivery = ?", delivery);
+      this.run(
+        "UPDATE candidates SET stage = 'applying', outcome = 'applying' WHERE delivery = ?",
+        delivery,
+      );
+      return true;
+    });
+  }
+
+  settlePointer(delivery: string, now: number): boolean {
+    return this.tx(() => {
+      if (!this.isPointerDelivery(delivery)) return false;
+      const d = this.get<{ stage: string; expires_at: number }>(
+        "SELECT stage, expires_at FROM deliveries WHERE delivery = ?",
+        delivery,
+      );
+      if (d?.stage === "settled") return true;
+      if (d?.stage !== "applying" && !(d?.stage === "reserved" && d.expires_at >= now))
+        return false;
+      this.run(
+        "UPDATE deliveries SET stage = 'settled', settled_at = ? WHERE delivery = ?",
+        now,
+        delivery,
+      );
+      this.run("UPDATE claims SET settled = 1 WHERE delivery = ?", delivery);
+      this.run(
+        "UPDATE candidates SET stage = 'settled', outcome = 'injected', served_at = ? WHERE delivery = ?",
+        now,
+        delivery,
+      );
+      return true;
+    });
+  }
+
+  releasePointer(delivery: string, reason: string): boolean {
+    return this.tx(() => {
+      if (!this.isPointerDelivery(delivery)) return false;
+      const d = this.get<{ stage: string }>(
+        "SELECT stage FROM deliveries WHERE delivery = ?",
+        delivery,
+      );
+      if (d?.stage === "released") return true;
+      if (d?.stage !== "reserved" && d?.stage !== "applying") return false;
+      this.release(delivery);
+      this.run(
+        "UPDATE candidates SET stage = 'released', outcome = 'released', reason = ? WHERE delivery = ?",
+        reason,
+        delivery,
+      );
+      return true;
+    });
+  }
+
+  greatLibraryOwed(harness: string, session: string, epoch: number): boolean {
+    return (
+      this.get(
+        `SELECT 1 FROM claims c JOIN candidates k ON k.id = c.candidate_id
+      WHERE c.harness = ? AND c.session = ? AND c.epoch = ? AND k.matcher = 'great_library'`,
+        harness,
+        session,
+        epoch,
+      ) === undefined
+    );
+  }
+
+  /** Reserve before opening a Grok session. Its native id does not exist yet, so no claim is written. */
+  stageSessionInstructions(input: {
+    readonly threadId: string;
+    readonly runId: string;
+    readonly delivery: string;
+    readonly current: SessionInstructions | null;
+    readonly now: number;
+    readonly missing?: string;
+  }): string | null {
+    return this.tx(() => {
+      const { current, now } = input;
+      if (current === null && input.missing === undefined) return null;
+      const moment = this.insertMoment({
+        harness: "grok",
+        kind: "session_start",
+        threadId: input.threadId,
+        runId: input.runId,
+        delivery: input.delivery,
+        status: "ok",
+        now,
+        startedAt: now,
+        ...(current === null ? {} : { owners: current.owners }),
+      });
+      if (current === null) {
+        this.insertCandidate(moment, {
+          matcher: "great_library",
+          entry: input.missing ?? null,
+          outcome: "not_on_machine",
+        });
+        return null;
+      }
+      if (current.bytes > this.budgetLeft(input.runId).serve) {
+        this.insertCandidate(moment, {
+          matcher: "great_library",
+          entry: current.entry,
+          version: current.version,
+          seam: "context",
+          outcome: "cut_budget",
+          reason: "turn",
+        });
+        return null;
+      }
+      this.insertCandidate(moment, {
+        matcher: "great_library",
+        entry: current.entry,
+        version: current.version,
+        seam: "context",
+        stage: "reserved",
+        outcome: "reserved",
+        bytes: current.bytes,
+      });
+      this.charge(input.runId, current.bytes, 0);
+      this.run(
+        `INSERT INTO deliveries (delivery, harness, moment_id, stage, status, body, run_id, serve_bytes, created_at, expires_at)
+        VALUES (?, 'grok', ?, 'reserved', 200, ?, ?, ?, ?, ?)`,
+        input.delivery,
+        moment,
+        current.text,
+        input.runId,
+        current.bytes,
+        now,
+        now + 120,
+      );
+      return input.delivery;
+    });
+  }
+
+  recordInstallation(
+    input: SessionInstructions & {
+      readonly session: string;
+      readonly threadId: string;
+      readonly site: string;
+      readonly now: number;
+    },
+  ) {
+    this.tx(() => {
+      const existing = this.get<InstallationRow>(
+        "SELECT * FROM installations WHERE harness = 'grok' AND session = ?",
+        input.session,
+      );
+      if (existing !== undefined) {
+        if (existing.text !== input.text)
+          throw new Error("Conflicting immutable Grok installation receipt");
+        return;
+      }
+      this.run(
+        `INSERT INTO installations (harness, session, thread_id, site, text, entry, version, bytes, owners_json, created_at)
+        VALUES ('grok', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        input.session,
+        input.threadId,
+        input.site,
+        input.text,
+        input.entry,
+        input.version,
+        input.bytes,
+        JSON.stringify(input.owners),
+        input.now,
+      );
+    });
+  }
+
+  /** Charge the actual immutable head once, before a run can persist its running state or prompt. */
+  attachSessionInstructions(input: {
+    readonly session: string;
+    readonly threadId: string;
+    readonly runId: string;
+    readonly reservation: string | null;
+    readonly delivery: string;
+    readonly current: SessionInstructions | null;
+    readonly now: number;
+  }) {
+    this.tx(() => {
+      const { session, runId, now, current, reservation } = input;
+      const inst = this.get<InstallationRow>(
+        "SELECT * FROM installations WHERE harness = 'grok' AND session = ?",
+        session,
+      );
+      const stage =
+        reservation === null
+          ? undefined
+          : this.get<{ stage: string; moment_id: number; expires_at: number }>(
+              "SELECT stage, moment_id, expires_at FROM deliveries WHERE delivery = ? AND harness = 'grok' AND run_id = ?",
+              reservation,
+              runId,
+            );
+      const live = stage?.stage === "reserved" && stage.expires_at >= now;
+      const release = () => {
+        if (stage?.stage === "reserved" && reservation !== null) this.release(reservation);
+      };
+      if (inst?.consumed_run != null) {
+        release();
+        return;
+      }
+      const epoch =
+        this.get<{ epoch: number }>(
+          "SELECT epoch FROM sessions WHERE harness = 'grok' AND session = ?",
+          session,
+        )?.epoch ?? 0;
+      if (inst === undefined) {
+        release();
+        this.run(
+          "INSERT OR IGNORE INTO sessions (harness, session, epoch) VALUES ('grok', ?, ?)",
+          session,
+          epoch,
+        );
+        if (
+          current === null ||
+          this.get(
+            `SELECT 1 FROM candidates c JOIN moments m ON m.id = c.moment_id
+          WHERE m.harness = 'grok' AND m.session = ? AND m.epoch = ? AND c.matcher = 'great_library' AND c.outcome = 'not_installed'`,
+            session,
+            epoch,
+          )
+        )
+          return;
+        const moment = this.insertMoment({
+          harness: "grok",
+          session,
+          epoch,
+          kind: "session_start",
+          threadId: input.threadId,
+          runId,
+          delivery: input.delivery,
+          status: "ok",
+          now,
+          startedAt: now,
+          owners: current.owners,
+        });
+        this.insertCandidate(moment, {
+          matcher: "great_library",
+          entry: current.entry,
+          version: current.version,
+          outcome: "not_installed",
+          bytes: 0,
+        });
+        return;
+      }
+      const same = current?.version === inst.version;
+      const confirm = same && live;
+      if (!confirm) release();
+      if (!confirm && inst.bytes > this.budgetLeft(runId).serve)
+        throw new Error("Grok installation exceeds the attaching run's serve budget");
+      const delivery = confirm ? reservation! : input.delivery;
+      const moment =
+        stage?.moment_id ??
+        this.insertMoment({
+          harness: "grok",
+          session,
+          epoch,
+          kind: "session_start",
+          threadId: input.threadId,
+          runId,
+          delivery,
+          status: "ok",
+          now,
+          startedAt: now,
+        });
+      this.run(
+        "UPDATE moments SET session = ?, epoch = ?, owners_json = ? WHERE id = ?",
+        session,
+        epoch,
+        inst.owners_json,
+        moment,
+      );
+      let candidate: number;
+      if (confirm) {
+        candidate = this.get<{ id: number }>(
+          "SELECT id FROM candidates WHERE moment_id = ? AND matcher = 'great_library' AND stage = 'reserved'",
+          moment,
+        )!.id;
+        this.run(
+          "UPDATE candidates SET outcome = 'injected', stage = 'settled', served_at = ? WHERE id = ?",
+          now,
+          candidate,
+        );
+        this.run(
+          "UPDATE deliveries SET stage = 'settled', settled_at = ? WHERE delivery = ?",
+          now,
+          delivery,
+        );
+      } else {
+        candidate = this.insertCandidate(moment, {
+          matcher: "great_library",
+          entry: inst.entry,
+          version: inst.version,
+          delivery,
+          seam: "context",
+          stage: "settled",
+          outcome: same ? "injected" : "installed_stale",
+          bytes: inst.bytes,
+          ...(same ? {} : { extra: { current_version: current?.version ?? null } }),
+        });
+        this.run("UPDATE candidates SET served_at = ? WHERE id = ?", now, candidate);
+        this.charge(runId, inst.bytes, 0);
+        this.run(
+          `INSERT INTO deliveries (delivery, harness, moment_id, stage, status, run_id, serve_bytes, created_at, expires_at, settled_at)
+          VALUES (?, 'grok', ?, 'settled', 204, ?, ?, ?, ?, ?)`,
+          delivery,
+          moment,
+          runId,
+          inst.bytes,
+          now,
+          now,
+          now,
+        );
+      }
+      if (same) {
+        this.writeClaims(delivery, "grok", session, epoch, runId, [
+          {
+            kind: "serve",
+            entry: inst.entry,
+            version: inst.version,
+            rule: null,
+            whole: true,
+            candidateId: candidate,
+          },
+        ]);
+        this.run("UPDATE claims SET settled = 1 WHERE delivery = ?", delivery);
+      }
+      this.run(
+        "INSERT OR IGNORE INTO sessions (harness, session, epoch) VALUES ('grok', ?, ?)",
+        session,
+        epoch,
+      );
+      this.run(
+        "UPDATE installations SET consumed_run = ?, consumed_candidate = ? WHERE harness = 'grok' AND session = ?",
+        runId,
+        candidate,
+        session,
+      );
+    });
+  }
+
+  private retainInstallation(
+    sel: Selection,
+    epoch: number,
+    moment: number,
+    runId: string,
+    delivery: string,
+    now: number,
+  ) {
+    const current = sel.greatLibrary;
+    if (current == null || !this.greatLibraryOwed("grok", sel.moment.session, epoch)) return;
+    const inst = this.get<InstallationRow>(
+      "SELECT * FROM installations WHERE harness = 'grok' AND session = ?",
+      sel.moment.session,
+    );
+    if (inst === undefined) {
+      this.insertCandidate(moment, { ...this.base(current), outcome: "not_installed", bytes: 0 });
+      return;
+    }
+    const same = current.version === inst.version;
+    this.run("UPDATE moments SET owners_json = ? WHERE id = ?", inst.owners_json, moment);
+    const candidate = this.insertCandidate(moment, {
+      matcher: "great_library",
+      entry: inst.entry,
+      version: inst.version,
+      seam: "context",
+      stage: same ? "settled" : null,
+      outcome: same ? "retained" : "retained_stale",
+      bytes: 0,
+      extra: {
+        owners: inst.owners_json === null ? {} : JSON.parse(inst.owners_json),
+        ...(same ? {} : { current_version: current.version }),
+      },
+    });
+    if (same) {
+      this.run("UPDATE candidates SET served_at = ? WHERE id = ?", now, candidate);
+      this.writeClaims(delivery, "grok", sel.moment.session, epoch, runId, [
+        {
+          kind: "serve",
+          entry: inst.entry,
+          version: inst.version,
+          rule: null,
+          whole: true,
+          candidateId: candidate,
+        },
+      ]);
+      this.run("UPDATE claims SET settled = 1 WHERE candidate_id = ?", candidate);
+    }
+  }
+
+  /** A native fork inherits only settled current evidence in its surviving prefix. */
+  recordNativeFork(fork: NativeForkInput) {
+    return this.tx(() => {
+      if (
+        this.get(
+          "SELECT 1 FROM moments WHERE harness = ? AND session = ?",
+          fork.harness,
+          fork.target,
+        )
+      )
+        return "skipped";
+      const delivered = this.all<{
+        delivery: string;
+        version: string;
+        bytes: number;
+        outcome: string;
+        received_at: number;
+        run_id: string;
+        moment_id: number;
+        epoch: number;
+      }>(
+        `SELECT c.delivery, c.version, k.bytes, k.outcome, m.received_at, m.run_id, m.id AS moment_id, m.epoch FROM claims c
+         JOIN candidates k ON k.id = c.candidate_id AND k.matcher = 'great_library'
+         JOIN moments m ON m.id = k.moment_id
+         WHERE c.harness = ? AND c.session = ? AND c.settled = 1 AND m.received_at <= ?`,
+        fork.harness,
+        fork.source,
+        fork.boundaryAt,
+      ).filter((row) => row.outcome === "inherited" || !fork.reverted.has(row.run_id));
+      const compactions = fork.compactions.filter(
+        (c) => c.startedAt <= fork.boundaryAt && (c.runId === null || !fork.reverted.has(c.runId)),
+      );
+      const compactedAt =
+        compactions.length === 0 ? null : Math.max(...compactions.map((c) => c.startedAt));
+      const epochMoments =
+        fork.harness === "claude"
+          ? this.all<{
+              id: number;
+              epoch: number;
+              run_id: string | null;
+              source: string;
+            }>(
+              `SELECT id, epoch, run_id, source FROM moments
+          WHERE harness = ? AND session = ? AND kind = 'session_start' AND source IN ('compact', 'clear')
+            AND epoch IS NOT NULL AND received_at <= ? ORDER BY id`,
+              fork.harness,
+              fork.source,
+              fork.boundaryAt,
+            ).filter((m) => m.run_id === null || !fork.reverted.has(m.run_id))
+          : [];
+      const sourceEpoch = epochMoments.at(-1)?.epoch;
+      const latest = compactions.filter((c) => c.startedAt === compactedAt);
+      const compactRun = latest[0]?.runId;
+      let compactHookId: number | null = null;
+      if (compactRun != null && latest.every((c) => c.runId === compactRun)) {
+        const hooks = epochMoments.filter((m) => m.run_id === compactRun && m.source === "compact");
+        // Claude emits SessionStart(compact) before compact_boundary reaches its SDK stream.
+        // Pair the last hook with the last surviving compaction only when that run's counts agree.
+        // A missing or failed last re-serve cannot borrow an older epoch's settled copy.
+        if (hooks.length === compactions.filter((c) => c.runId === compactRun).length)
+          compactHookId = hooks.at(-1)?.id ?? null;
+      }
+      const retained = delivered.filter(
+        (row) =>
+          (sourceEpoch === undefined || row.epoch === sourceEpoch) &&
+          (compactedAt === null ||
+            row.received_at > compactedAt ||
+            row.moment_id === compactHookId),
+      );
+      const from = retained.find((row) => row.version === fork.line.version);
+      const reason =
+        from !== undefined
+          ? null
+          : retained.length > 0
+            ? "stale_version"
+            : delivered.length > 0
+              ? "compacted"
+              : "no_delivery";
+      const moment = this.insertMoment({
+        harness: fork.harness,
+        session: fork.target,
+        epoch: 0,
+        kind: "native_fork",
+        threadId: fork.threadId,
+        runId: fork.runId,
+        delivery: fork.delivery,
+        status: "none",
+        now: fork.now,
+        startedAt: fork.now,
+      });
+      const candidate = this.insertCandidate(moment, {
+        ...this.base(fork.line),
+        seam: "context",
+        outcome: from === undefined ? "not_inherited" : "inherited",
+        stage: from === undefined ? null : "settled",
+        reason,
+        bytes: 0,
+        extra: {
+          source: fork.source,
+          source_delivery: from?.delivery ?? null,
+          source_bytes: from?.bytes ?? null,
+          boundary_at: fork.boundaryAt,
+          compacted_at: compactedAt,
+          compact_hook_moment_id: from?.moment_id === compactHookId ? compactHookId : null,
+        },
+      });
+      this.run(
+        `INSERT INTO deliveries (delivery, harness, moment_id, stage, status, run_id, created_at, expires_at)
+        VALUES (?, ?, ?, 'none', 204, ?, ?, ?)`,
+        fork.delivery,
+        fork.harness,
+        moment,
+        fork.runId,
+        fork.now,
+        fork.now,
+      );
+      this.run(
+        "INSERT OR IGNORE INTO sessions (harness, session, epoch) VALUES (?, ?, 0)",
+        fork.harness,
+        fork.target,
+      );
+      if (from !== undefined) {
+        this.writeClaims(fork.delivery, fork.harness, fork.target, 0, fork.runId, [
+          {
+            kind: "serve",
+            entry: fork.line.entry,
+            version: fork.line.version,
+            rule: null,
+            whole: true,
+            candidateId: candidate,
+          },
+        ]);
+        this.run("UPDATE claims SET settled = 1 WHERE candidate_id = ?", candidate);
+        this.run("UPDATE candidates SET served_at = ? WHERE id = ?", fork.now, candidate);
+      }
+      return from === undefined ? reason! : "inherited";
+    });
   }
 
   /**
@@ -690,6 +1300,7 @@ export class ServingState {
     now: number;
     startedAt: number;
     kind?: string;
+    source?: string | null;
     session?: string;
     threadId?: string | null;
     runId?: string | null;
@@ -702,8 +1313,8 @@ export class ServingState {
     const cue = m.cue ?? null;
     const result = this.run(
       `INSERT INTO moments (received_at, harness, kind, session, thread_id, run_id, tool_use_id, epoch, holdout,
-         status, reason, owners_json, cue_adapter, server_ms, delivery, cue_status, cue_ms, cue_wait_ms, cue_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         status, reason, owners_json, cue_adapter, server_ms, delivery, cue_status, cue_ms, cue_wait_ms, cue_json, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       m.now,
       m.harness,
       m.kind ?? null,
@@ -723,14 +1334,15 @@ export class ServingState {
       cue?.ms ?? null,
       cue?.waitMs ?? null,
       cue?.detail ? JSON.stringify(cue.detail) : null,
+      m.source ?? null,
     );
     return Number(result.lastInsertRowid);
   }
 
   private insertCandidate(momentId: number, c: CandidateRow) {
     const result = this.run(
-      `INSERT INTO candidates (moment_id, matcher, entry, version, key, seam, stage, outcome, reason, score, bytes, extra_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO candidates (moment_id, matcher, entry, version, key, seam, stage, outcome, reason, score, bytes, extra_json, delivery)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       momentId,
       c.matcher,
       c.entry ?? null,
@@ -743,11 +1355,12 @@ export class ServingState {
       c.score ?? null,
       c.bytes ?? null,
       c.extra ? JSON.stringify(c.extra) : null,
+      c.delivery ?? null,
     );
     return Number(result.lastInsertRowid);
   }
 
-  private epochFor(harness: string, sel: Selection): number {
+  epochAfter(harness: string, sel: Selection): number {
     const row = this.get<{ epoch: number }>(
       "SELECT epoch FROM sessions WHERE harness = ? AND session = ?",
       harness,
@@ -755,11 +1368,16 @@ export class ServingState {
     );
     const bump =
       row !== undefined &&
-      (sel.moment.kind === "compaction" ||
+      ((sel.profile.new_epoch_sources.length === 0 && sel.moment.kind === "compaction") ||
         (sel.moment.kind === "session_start" &&
           sel.moment.source !== null &&
           sel.profile.new_epoch_sources.includes(sel.moment.source)));
     const epoch = row === undefined ? 0 : row.epoch + (bump ? 1 : 0);
+    return epoch;
+  }
+
+  private epochFor(harness: string, sel: Selection): number {
+    const epoch = this.epochAfter(harness, sel);
     this.run(
       "INSERT INTO sessions (harness, session, epoch) VALUES (?, ?, ?) ON CONFLICT (harness, session) DO UPDATE SET epoch = excluded.epoch",
       harness,
@@ -794,7 +1412,7 @@ export class ServingState {
 
   private decideTx(input: MomentInput): Reply {
     // A delivery id decided while this moment was selecting gets that same reply.
-    const replay = this.replayed(input.delivery);
+    const replay = this.replayed(input.delivery, input.pointerDelivery);
     if (replay !== undefined) return replay;
     const { harness, now } = input;
     let sel = input.selection;
@@ -810,6 +1428,7 @@ export class ServingState {
       now,
       startedAt: input.startedAt,
       kind: m.kind,
+      source: m.source,
       session: m.session,
       threadId: joined?.threadId ?? null,
       runId: joined?.runId ?? null,
@@ -846,13 +1465,28 @@ export class ServingState {
         reply.status === 200 ? nativeField(m.transcript_path) : null,
         reply.status === 200 ? nativeField(m.native_turn) : null,
       );
-      return reply;
+      return this.replayed(input.delivery, input.pointerDelivery)!;
     };
     if (joined === null) {
       for (const c of sel.candidates) {
         this.insertCandidate(momentId, { ...this.base(c), outcome: status });
       }
       return finish({ status: 204 });
+    }
+    if (harness === "grok" && m.kind === "compaction")
+      this.retainInstallation(sel, epoch, momentId, joined.runId, input.delivery, now);
+    if (
+      sel.profile.templates.pointer !== undefined &&
+      (m.kind === "user_message" || m.kind === "compaction") &&
+      sel.greatLibrary !== null &&
+      sel.greatLibrary !== undefined &&
+      this.greatLibraryOwed(harness, m.session, epoch)
+    ) {
+      if (input.pointerDelivery === undefined) {
+        this.insertCandidate(momentId, { matcher: "great_library", outcome: "client_unsupported" });
+      } else {
+        this.reservePointer(sel, epoch, momentId, joined.runId, input.pointerDelivery, now);
+      }
     }
     const fires = this.cueFires(input.cue ?? null, holdout, momentId);
     if (fires.length > 0) sel = { ...sel, candidates: [...sel.candidates, ...fires] };
@@ -864,7 +1498,9 @@ export class ServingState {
     const delivering = sel.profile.delivering.includes(m.kind);
     switch (m.kind) {
       case "session_start":
-        return finish(...this.sessionStart(sel, momentId, joined.runId, delivering));
+        return finish(
+          ...this.sessionStart(sel, epoch, momentId, joined.runId, input.delivery, delivering),
+        );
       case "pre_tool":
         return finish(
           ...this.preTool(harness, sel, epoch, momentId, joined.runId, input.delivery, now),
@@ -873,7 +1509,8 @@ export class ServingState {
       case "tool_result":
       case "tool_failure": {
         const after = this.dropAfterAction(sel, momentId);
-        if (after.candidates.length === 0) return finish({ status: 204 });
+        if (after.candidates.length === 0 && this.eligiblePointer(after, epoch) === null)
+          return finish({ status: 204 });
         if (!delivering && after.profile.carry_to !== null) {
           this.carry(harness, after, epoch, momentId, joined.runId, now);
           return finish({ status: 204 });
@@ -1107,17 +1744,54 @@ export class ServingState {
 
   private sessionStart(
     sel: Selection,
+    epoch: number,
     momentId: number,
     runId: string,
+    delivery: string,
     delivering: boolean,
   ): [Reply, { runId: string; serve: number; deny: number }?] {
-    if (!delivering) {
+    const pointer = this.eligiblePointer(sel, epoch);
+    if (!delivering && pointer === null) {
       for (const c of sel.candidates)
         this.insertCandidate(momentId, { ...this.base(c), outcome: "no_seam" });
       return [{ status: 204 }];
     }
-    const out = new Composer("", sel.profile.session_start_limit_bytes, Number.POSITIVE_INFINITY);
+    const out = new Composer(
+      "",
+      delivering ? sel.profile.session_start_limit_bytes : sel.profile.limit_bytes,
+      Number.POSITIVE_INFINITY,
+    );
+    let charged = 0;
+    if (pointer !== null) {
+      const text = this.pointerText(sel, pointer);
+      const bytes = utf8(text);
+      if (bytes > this.budgetLeft(runId).serve) {
+        this.insertCandidate(momentId, {
+          ...this.base(pointer),
+          seam: "context",
+          outcome: "cut_budget",
+          reason: "turn",
+        });
+      } else if (!out.fits(text)) {
+        this.insertCandidate(momentId, {
+          ...this.base(pointer),
+          seam: "context",
+          outcome: "cut_budget",
+          reason: "moment",
+        });
+      } else {
+        const claim = this.pointerClaim(pointer, momentId, bytes);
+        out.add(text, claim);
+        this.writeClaims(delivery, sel.profile.harness, sel.moment.session, epoch, runId, [claim]);
+        this.charge(runId, bytes, 0);
+        charged = bytes;
+      }
+    }
     for (const c of sel.candidates) {
+      if (!delivering) {
+        this.insertCandidate(momentId, { ...this.base(c), outcome: "no_seam" });
+        continue;
+      }
       if (!out.fits(c.text)) {
         this.insertCandidate(momentId, {
           ...this.base(c),
@@ -1144,15 +1818,91 @@ export class ServingState {
     }
     const text = out.text();
     if (text === null) return [{ status: 204 }];
-    return [this.render(sel, "context", text), { runId, serve: 0, deny: 0 }];
+    return [this.render(sel, "context", text), { runId, serve: charged, deny: 0 }];
   }
 
-  private render(sel: Selection, template: "context" | "deny", text: string): Reply {
+  private render(sel: Selection, template: "context" | "deny" | "pointer", text: string): Reply {
     const body = renderTemplate(sel.profile.templates[template], {
       text,
       event: sel.moment.event ?? "",
     });
     return { status: 200, body: JSON.stringify(body) };
+  }
+
+  private pointerText(sel: Selection, pointer: Candidate) {
+    return `${sel.profile.heads.context}\n\n${pointer.text}`;
+  }
+
+  private pointerClaim(c: Candidate, momentId: number, bytes: number, delivery?: string): Claim {
+    const candidateId = this.insertCandidate(momentId, {
+      ...this.base(c),
+      seam: "context",
+      stage: "reserved",
+      outcome: "reserved",
+      bytes,
+      ...(delivery === undefined ? {} : { delivery }),
+    });
+    return {
+      kind: "serve",
+      entry: c.entry,
+      version: c.version,
+      rule: null,
+      whole: true,
+      candidateId,
+    };
+  }
+
+  private eligiblePointer(sel: Selection, epoch: number): Candidate | null {
+    const m = sel.moment;
+    const eligible =
+      (m.kind === "user_message" && sel.profile.delivering.includes(m.kind)) ||
+      (m.kind === "session_start" &&
+        m.source !== null &&
+        sel.profile.new_epoch_sources.includes(m.source));
+    return eligible &&
+      sel.profile.templates.pointer === undefined &&
+      sel.greatLibrary != null &&
+      this.greatLibraryOwed(sel.profile.harness, m.session, epoch)
+      ? sel.greatLibrary
+      : null;
+  }
+
+  private reservePointer(
+    sel: Selection,
+    epoch: number,
+    momentId: number,
+    runId: string,
+    delivery: string,
+    now: number,
+  ) {
+    const c = sel.greatLibrary!;
+    const text = this.pointerText(sel, c);
+    const bytes = utf8(text);
+    if (bytes > this.budgetLeft(runId).serve || bytes > sel.profile.limit_bytes) {
+      this.insertCandidate(momentId, {
+        ...this.base(c),
+        seam: "context",
+        outcome: "cut_budget",
+        reason: bytes > sel.profile.limit_bytes ? "moment" : "turn",
+      });
+      return;
+    }
+    const claim = this.pointerClaim(c, momentId, bytes, delivery);
+    this.writeClaims(delivery, sel.profile.harness, sel.moment.session, epoch, runId, [claim]);
+    this.charge(runId, bytes, 0);
+    const reply = this.render(sel, "pointer", text);
+    this.run(
+      `INSERT INTO deliveries (delivery, harness, moment_id, stage, status, body, run_id, serve_bytes, created_at, expires_at)
+      VALUES (?, ?, ?, 'reserved', 200, ?, ?, ?, ?, ?)`,
+      delivery,
+      sel.profile.harness,
+      momentId,
+      reply.status === 200 ? reply.body : null,
+      runId,
+      bytes,
+      now,
+      now + sel.profile.settle_within_ms / 1000,
+    );
   }
 
   private writeClaims(
@@ -1426,6 +2176,22 @@ export class ServingState {
       Math.max(left.serve, 0),
     );
     const claims: Claim[] = [];
+    const pointer = this.eligiblePointer(sel, epoch);
+    if (pointer !== null) {
+      if (out.fits(pointer.text)) {
+        const claim = this.pointerClaim(pointer, momentId, utf8(this.pointerText(sel, pointer)));
+        out.add(pointer.text, claim);
+        claims.push(claim);
+      } else {
+        this.insertCandidate(momentId, {
+          ...this.base(pointer),
+          seam: "context",
+          outcome: "cut_budget",
+          reason: out.overLimit(pointer.text) ? "moment" : "turn",
+        });
+      }
+    }
+    out.keepBack(sel.greatLibraryBytes ?? 0);
     for (const c of sel.candidates) {
       if (this.settledIn(runId, epoch, c.entry, c.version)) {
         this.insertCandidate(momentId, { ...this.base(c), outcome: "deduped" });
@@ -1556,7 +2322,7 @@ export class ServingState {
     const out = new Composer(
       sel.profile.heads.context,
       sel.profile.limit_bytes,
-      Math.max(left.serve, 0),
+      Math.max(left.serve - (sel.greatLibraryBytes ?? 0), 0),
     );
     const claims: Claim[] = [];
     for (const w of waiting) {

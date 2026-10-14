@@ -11,6 +11,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as ContextmdServing from "../contextmd/ContextmdServing.ts";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -104,6 +105,7 @@ it.effect.each([
       runs: [{ id: "later-run", ordinal: 1, status: "completed", rootNodeId: null }],
     } as unknown as OrchestrationV2ThreadProjection;
     const layerTest = CheckpointRollbackService.layer.pipe(
+      Layer.provide(Layer.mock(ContextmdServing.ContextmdServing)({})),
       Layer.provide(
         Layer.mergeAll(
           NodeServices.layer,
