@@ -1,3 +1,4 @@
+import * as McpRouting from "../../McpRouting.ts";
 import {
   IssueLinkError,
   McpCapabilityUnavailableError,
@@ -60,7 +61,7 @@ const IssueIdentity = {
 const LinkIssueTool = Tool.make("link_issue", {
   description:
     "Link a GitHub Issue to this thread so T3 Code shows it beside the thread and the Issue shows this thread. Link the Issue you are working on when it is not already linked by your branch name (<type>/<number>-<slug>) or a closing reference in your pull request. Pass the URL, or the number (repository defaults to this project's). Linking an already-linked Issue succeeds with alreadyLinked=true.",
-  parameters: IssueTargetInput,
+  parameters: McpRouting.parameters(IssueTargetInput),
   success: Schema.Struct({
     ...IssueIdentity,
     alreadyLinked: Schema.Boolean.annotate({
@@ -79,7 +80,7 @@ const LinkIssueTool = Tool.make("link_issue", {
 const UnlinkIssueTool = Tool.make("unlink_issue", {
   description:
     "Remove an Issue link from this thread, including one derived from the branch name or a closing reference. Pass the URL, or the number. Unlinking an Issue that is not linked succeeds with wasLinked=false.",
-  parameters: IssueTargetInput,
+  parameters: McpRouting.parameters(IssueTargetInput),
   success: Schema.Struct({
     ...IssueIdentity,
     wasLinked: Schema.Boolean.annotate({
@@ -96,6 +97,7 @@ const UnlinkIssueTool = Tool.make("unlink_issue", {
   .annotate(Tool.OpenWorld, false);
 
 const ListThreadIssuesTool = Tool.make("list_thread_issues", {
+  parameters: Schema.Struct(McpRouting.fields),
   description:
     "List the GitHub Issues linked to this thread and why each is linked: manual, agent, started (thread started from the Issue), branch, or closing-reference.",
   success: Schema.Struct({ issues: Schema.Array(ThreadIssueLink) }),

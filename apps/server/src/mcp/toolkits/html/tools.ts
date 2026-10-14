@@ -1,3 +1,4 @@
+import * as McpRouting from "../../McpRouting.ts";
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import {
   HTML_RENDER_COLUMN_WIDTH,
@@ -24,19 +25,21 @@ const PAGE_RULES =
 
 export const HtmlPreviewTool = Tool.make("html_preview", {
   description: `Render an HTML page in T3's headless browser and get back a PNG screenshot, contentHeight (the height the page needs at this width), and its console output: log, info, warning, error, and uncaught exceptions, with stack traces pointing into page.html. console.log is a fine way to report your own checks. Use it to check and iterate on a page before html_render. The first preview on a machine can report that T3 is still installing its preview browser; call again a minute later. ${PAGE_RULES} The page gets the theme variables and layout described in html_render.`,
-  parameters: Schema.Struct({
-    html: Html,
-    width: Schema.optional(
-      Schema.Int.annotate({
-        description: `Viewport width in CSS pixels, 240-1600. Defaults to ${HTML_RENDER_COLUMN_WIDTH}, the reply column; use about 390 to check phones.`,
-      }),
-    ),
-    appearance: Schema.optional(
-      Schema.Literals(["dark", "light"]).annotate({
-        description: "Theme to preview. Defaults to dark.",
-      }),
-    ),
-  }),
+  parameters: McpRouting.parameters(
+    Schema.Struct({
+      html: Html,
+      width: Schema.optional(
+        Schema.Int.annotate({
+          description: `Viewport width in CSS pixels, 240-1600. Defaults to ${HTML_RENDER_COLUMN_WIDTH}, the reply column; use about 390 to check phones.`,
+        }),
+      ),
+      appearance: Schema.optional(
+        Schema.Literals(["dark", "light"]).annotate({
+          description: "Theme to preview. Defaults to dark.",
+        }),
+      ),
+    }),
+  ),
   success: Schema.Struct({
     width: Schema.Int,
     contentHeight: Schema.Int,
@@ -72,26 +75,33 @@ export const HtmlPreviewTool = Tool.make("html_preview", {
 // touches no workspace, so plan mode and read-only sandboxes can use it.
 const HtmlRenderTool = Tool.make(HTML_RENDER_TOOL_NAME, {
   description: `Show a finished HTML page (chart, table, diagram, collage, mockup) inline in this thread, above your final text reply; call it before writing that reply. The reader already sees the page, so the reply should not announce it, say where it is, or restate it: add only what the page doesn't say. Preview with html_preview first. T3 fits the frame to the page's height at each reader's width. A height below the page's contentHeight caps the frame there, and the rest scrolls inside it. ${PAGE_RULES} ${HTML_RENDER_LAYOUT_GUIDE} ${HTML_RENDER_THEME_GUIDE}`,
-  parameters: Schema.Struct({
-    html: Html,
-    title: Schema.String.check(
-      Schema.isMinLength(1),
-      Schema.isMaxLength(HTML_RENDER_MAX_TITLE_LENGTH),
-    ).annotate({ description: "Short name for the page." }),
-    height: Schema.Int.annotate({
-      description: `The frame height in CSS pixels, ${HTML_RENDER_MIN_HEIGHT}-${HTML_RENDER_MAX_HEIGHT}. Use html_preview's contentHeight, or less to make long content scroll inside the frame.`,
+  parameters: McpRouting.parameters(
+    Schema.Struct({
+      html: Html,
+      title: Schema.String.check(
+        Schema.isMinLength(1),
+        Schema.isMaxLength(HTML_RENDER_MAX_TITLE_LENGTH),
+      ).annotate({ description: "Short name for the page." }),
+      height: Schema.Int.annotate({
+        description: `The frame height in CSS pixels, ${HTML_RENDER_MIN_HEIGHT}-${HTML_RENDER_MAX_HEIGHT}. Use html_preview's contentHeight, or less to make long content scroll inside the frame.`,
+      }),
     }),
-  }),
-  success: Schema.Struct({
-    htmlRender: Schema.Struct({
-      attachmentId: Schema.String,
-      title: Schema.String,
-      height: Schema.Number,
-      heights: Schema.optional(Schema.Array(Schema.Tuple([Schema.Int, Schema.Int]))),
-      outline: Schema.optional(Schema.String),
+  ),
+  success: Schema.Union([
+    // Peer-only transfer. Routing stores this document in the source thread,
+    // where the returned tool reference is consumed by web, desktop and mobile.
+    HtmlRender.PreparedDocument,
+    Schema.Struct({
+      htmlRender: Schema.Struct({
+        attachmentId: Schema.String,
+        title: Schema.String,
+        height: Schema.Number,
+        heights: Schema.optional(Schema.Array(Schema.Tuple([Schema.Int, Schema.Int]))),
+        outline: Schema.optional(Schema.String),
+      }),
+      message: Schema.String,
     }),
-    message: Schema.String,
-  }),
+  ]),
   failure: OrchestratorMcpFailure,
   failureMode: "return",
   dependencies: [

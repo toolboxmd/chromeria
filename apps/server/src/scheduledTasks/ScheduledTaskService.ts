@@ -2,6 +2,7 @@ import {
   CommandId,
   MessageId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+  OrchestrationV2LinkOrigin,
   ScheduledTask,
   ScheduledTaskError,
   ScheduledTaskId,
@@ -133,6 +134,9 @@ export type WebhookTriggerResult =
     }
   | { readonly _tag: "expired" };
 
+const decodeLinkOriginJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(OrchestrationV2LinkOrigin),
+);
 const decodeTask = Schema.decodeUnknownEffect(ScheduledTask);
 const decodeTaskId = Schema.decodeUnknownOption(ScheduledTaskId);
 const decodeScheduleJson = Schema.decodeUnknownEffect(
@@ -165,6 +169,7 @@ interface ScheduledTaskRow {
   readonly interaction_mode: string;
   readonly created_by: string;
   readonly creation_source: string;
+  readonly link_origin_json: string | null;
   readonly created_at: string;
   readonly updated_at: string;
   readonly next_run_at: string | null;
@@ -302,6 +307,9 @@ const decodeRow = (row: ScheduledTaskRow, origin: WebhookOrigin | null = null) =
       interactionMode: row.interaction_mode,
       createdBy: row.created_by,
       creationSource: row.creation_source,
+      ...(row.link_origin_json == null
+        ? {}
+        : { linkOrigin: yield* decodeLinkOriginJson(row.link_origin_json) }),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       nextRunAt: row.next_run_at,
@@ -399,6 +407,7 @@ export const layer = Layer.effect(
         interaction_mode,
         created_by,
         creation_source,
+        link_origin_json,
         created_at,
         updated_at,
         next_run_at,
@@ -433,6 +442,7 @@ export const layer = Layer.effect(
         interaction_mode,
         created_by,
         creation_source,
+        link_origin_json,
         created_at,
         updated_at,
         next_run_at,
@@ -511,6 +521,7 @@ export const layer = Layer.effect(
           interaction_mode,
           created_by,
           creation_source,
+          link_origin_json,
           created_at,
           updated_at,
           next_run_at,
@@ -535,6 +546,7 @@ export const layer = Layer.effect(
           ${task.interactionMode},
           ${task.createdBy},
           ${task.creationSource},
+          ${task.linkOrigin === undefined ? null : JSON.stringify(task.linkOrigin)},
           ${task.createdAt},
           ${task.updatedAt},
           ${task.nextRunAt},
@@ -668,6 +680,24 @@ export const layer = Layer.effect(
         ),
       );
 
+    const validateBinding = (task: Pick<ScheduledTask, "id" | "threadId" | "linkOrigin">) =>
+      Effect.gen(function* () {
+        if (task.linkOrigin !== undefined && task.threadId !== null) {
+          const target = yield* threadManagement
+            .getThreadShell(task.threadId)
+            .pipe(
+              Effect.mapError((cause) =>
+                taskError("Could not read the scheduled thread.", { taskId: task.id, cause }),
+              ),
+            );
+          if (target?.linkOrigin?.sessionId !== task.linkOrigin.sessionId)
+            return yield* taskError(
+              "A linked scheduled task may run only in a thread from its own link.",
+              { taskId: task.id },
+            );
+        }
+      });
+
     const runTask = Effect.fn("ScheduledTaskService.runTask")(function* (
       task: ScheduledTask,
       trigger: "scheduled" | "manual" | "webhook",
@@ -729,6 +759,7 @@ export const layer = Layer.effect(
                   : null;
           if (reason !== null) return yield* new WebhookDeliverySkipped({ reason });
         }
+        yield* validateBinding(active);
         // Fork: decided before the task is marked running; a skip consumed the slot.
         const decision = yield* dispatchPolicy
           .decide({ task: active, trigger, startedAt })
@@ -773,6 +804,7 @@ export const layer = Layer.effect(
                   },
                   createdBy: active.createdBy,
                   creationSource: active.creationSource,
+                  ...(active.linkOrigin === undefined ? {} : { linkOrigin: active.linkOrigin }),
                 }),
               )
             : yield* Effect.exit(
@@ -972,6 +1004,12 @@ export const layer = Layer.effect(
         // keep their run history, and so real load failures propagate instead
         // of silently resetting an existing row.
         const existingTask = yield* findTask(id);
+        const linkOrigin = existingTask === null ? input.linkOrigin : existingTask.linkOrigin;
+        yield* validateBinding({
+          id,
+          threadId: input.threadId ?? null,
+          ...(linkOrigin === undefined ? {} : { linkOrigin }),
+        });
         // Keep the existing next_run_at when the schedule itself is untouched:
         // editing a title or prompt must not postpone (or resurrect) a due
         // run — only schedule/enabled changes restart the clock.
@@ -1045,6 +1083,8 @@ export const layer = Layer.effect(
           interactionMode: input.interactionMode,
           createdBy: existingTask?.createdBy ?? input.createdBy ?? "user",
           creationSource: input.creationSource ?? "web",
+          // Origin belongs to creation, not editable forms or later caller metadata.
+          ...(linkOrigin === undefined ? {} : { linkOrigin }),
           createdAt: existingTask?.createdAt ?? iso(now),
           updatedAt: iso(now),
           nextRunAt: scheduleUnchanged

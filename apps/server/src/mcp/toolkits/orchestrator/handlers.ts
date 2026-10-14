@@ -90,7 +90,7 @@ const handlers = {
         const service = yield* OrchestratorMcpService.OrchestratorMcpService;
         return yield* service.scheduleTask(scope, input);
       }),
-    // A scheduled run starts long after its caller, with nothing to carry the link.
+    // Linked descendants remain fenced; direct full-access peers persist their origin.
     { refused: "schedule tasks in this environment" },
   ),
   list_scheduled_tasks: McpToolAccess.reads((input) =>
