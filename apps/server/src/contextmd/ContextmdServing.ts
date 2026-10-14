@@ -212,7 +212,6 @@ const make = Effect.gen(function* () {
   const { db, state } = opened.value;
   const clock = yield* Clock.Clock;
   const parsed: ParseCache = new Map();
-  const cueParsed: ParseCache = new Map();
   // One client per Cue service URL, so its availability is shared by every moment on this machine.
   const cueClients = new Map<string, CueClient>();
   const cueClient = (url: string) => {
@@ -279,6 +278,15 @@ const make = Effect.gen(function* () {
         return { type: "run", runId: rows[0]!.run_id, threadId: rows[0]!.thread_id };
       }),
       Effect.orElseSucceed((): RunJoin => ({ type: "unjoined" })),
+    );
+
+  const threadDirectory = (threadId: string) =>
+    sql<{ readonly directory: string | null }>`
+      SELECT COALESCE(json_extract(t.payload_json, '$.worktreePath'), p.workspace_root) AS directory
+      FROM orchestration_v2_projection_threads t JOIN projection_projects p ON p.project_id = t.project_id
+      WHERE t.thread_id = ${threadId} AND t.deleted_at IS NULL AND p.deleted_at IS NULL`.pipe(
+      Effect.map((rows) => rows[0]?.directory ?? null),
+      Effect.orElseSucceed(() => null),
     );
 
   /**
@@ -371,16 +379,15 @@ const make = Effect.gen(function* () {
     selection: Selection,
     threadId: string,
     config: Select.ServingConfig,
+    library: Store.Library,
     waitUntil: number,
   ) =>
     Effect.gen(function* () {
       const m = selection.moment;
-      if (config.cueUrl === null || config.cue.length === 0) return null;
+      if (config.cueUrl === null || library.cue.length === 0) return null;
       if (!["user_message", "pre_tool", "tool_result", "tool_failure"].includes(m.kind))
         return null;
       if (m.kind !== "user_message" && m.tool_use_id === null) return null;
-      const store = yield* Store.loadCue(config.cue, cueParsed);
-      if (store.entries.length === 0) return null;
       const client = cueClient(config.cueUrl);
       const key = `${harness}\0${m.session}\0${m.tool_use_id ?? ""}`;
       const request = (kind: string) =>
@@ -392,7 +399,7 @@ const make = Effect.gen(function* () {
               ...(m.call ? { call: m.call } : {}),
               ...(m.output ? { output: m.output } : {}),
             },
-            entries: store.entries.map((e) => ({ id: e.id, doc: `${e.name}: ${e.applies}` })),
+            entries: library.cue.map((e) => ({ id: e.id, doc: `${e.name}: ${e.applies}` })),
           })),
         );
       // The wait is whatever the moment's budget still leaves.
@@ -419,9 +426,9 @@ const make = Effect.gen(function* () {
       return {
         moment: {
           reply,
-          candidates: store.entries.map(Select.cueCandidate),
+          candidates: library.cue.map((e) => Select.cueCandidate(e, selection.profile)),
         } satisfies CueMoment,
-        owners: store.owners,
+        owners: library.owners,
       };
     }).pipe(
       Effect.catchCause((cause) =>
@@ -498,9 +505,20 @@ const make = Effect.gen(function* () {
         }
         const selected = yield* Select.loadConfig(servingConfig).pipe(
           Effect.flatMap((config) =>
-            Select.select(harness, raw.value, config, parsed).pipe(
-              Effect.map((selection) => ({ selection, config })),
-            ),
+            Effect.gen(function* () {
+              const identity = yield* Select.identify(harness, raw.value);
+              const join = yield* resolveRun(identity.session);
+              const directory = join.type === "run" ? yield* threadDirectory(join.threadId) : null;
+              const project = directory === null ? null : yield* Store.libraryDir(directory);
+              const sources = [
+                ...(project === null ? [] : [{ directory: project, registered: false }]),
+                ...config.exactKeys.map((directory) => ({ directory, registered: true })),
+                ...config.cue.map((directory) => ({ directory, registered: true })),
+              ];
+              const library = yield* Store.load(sources, parsed);
+              const selection = yield* Select.select(harness, raw.value, config, library);
+              return { selection, config, library, join };
+            }),
           ),
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
@@ -517,8 +535,7 @@ const make = Effect.gen(function* () {
           return { reply: { status: 204 } as const };
         }
         let selection = selected.selection;
-        const m = selection.moment;
-        const join = yield* resolveRun(m.session);
+        const join = selected.join;
         if (join.type === "run") known = { ...known, threadId: join.threadId, runId: join.runId };
         let readChecks: ReadonlyArray<ReadCheck> = [];
         let cue: CueMoment | null = null;
@@ -530,6 +547,7 @@ const make = Effect.gen(function* () {
             selection,
             join.threadId,
             selected.config,
+            selected.library,
             workBy - CUE_MARGIN_MS / 1000,
           ).pipe(
             Effect.provideService(FileSystem.FileSystem, fileSystem),

@@ -908,6 +908,7 @@ export class ServingState {
     read: { readonly path: string; readonly kind: string },
     momentId: number,
     now: number,
+    readAt = now,
   ) {
     if (!FULL_READS.has(read.kind)) return;
     const waiting = this.all<{
@@ -917,11 +918,13 @@ export class ServingState {
       first_denied_at: number | null;
     }>(
       `SELECT entry, version, denies, first_denied_at FROM deny_state
-       WHERE harness = ? AND session = ? AND epoch = ? AND target = ? AND lifted = 0`,
+       WHERE harness = ? AND session = ? AND epoch = ? AND target = ? AND lifted = 0
+       AND (rule_kind != 'entry' OR first_denied_at < ?)`,
       harness,
       session,
       epoch,
       read.path,
+      readAt,
     );
     for (const w of waiting) {
       this.run(
@@ -986,8 +989,8 @@ export class ServingState {
           continue;
         }
         if (r.ok === null) continue;
-        const proven = this.all<{ path: string; kind: string; epoch: number }>(
-          `SELECT path, kind, epoch FROM reads
+        const proven = this.all<{ path: string; kind: string; epoch: number; read_at: number }>(
+          `SELECT path, kind, epoch, read_at FROM reads
            WHERE harness = ? AND session = ? AND pending_tool_use_id = ?`,
           harness,
           session,
@@ -1000,7 +1003,7 @@ export class ServingState {
           r.toolUseId,
         );
         for (const read of proven)
-          this.liftOnRead(harness, session, read.epoch, read, momentId, now);
+          this.liftOnRead(harness, session, read.epoch, read, momentId, now, read.read_at);
       }
       this.run(
         "DELETE FROM reads WHERE pending_tool_use_id IS NOT NULL AND read_at < ?",
@@ -1254,7 +1257,9 @@ export class ServingState {
           // Built from the entry's own target, never found by searching the text: a path may
           // itself contain " in full".
           const opening =
-            c.rule === "pointer" && c.target !== null ? `Read ${c.target} in full` : "";
+            (c.rule === "pointer" || c.rule === "entry") && c.target !== null
+              ? (c.opening ?? `Read ${c.target} in full`)
+              : "";
           const readLine = text.startsWith(opening) ? opening : "";
           if (utf8(readLine) > out.room()) out.dropHead();
           if (utf8(readLine) > out.room()) {
@@ -1267,7 +1272,7 @@ export class ServingState {
             return;
           }
           part = cutBytes(text, out.room());
-          whole = false;
+          whole = part === text;
         }
       } else if (!out.fits(text)) {
         this.insertCandidate(momentId, {
@@ -1302,7 +1307,9 @@ export class ServingState {
       this.run(
         `INSERT INTO deny_state (harness, session, epoch, entry, version, rule_kind, target, denies, first_denied_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
-         ON CONFLICT (harness, session, epoch, entry, version) DO NOTHING`,
+         ON CONFLICT (harness, session, epoch, entry, version) DO UPDATE
+         SET rule_kind = excluded.rule_kind, target = excluded.target
+         WHERE deny_state.lifted = 0 AND excluded.rule_kind = 'entry'`,
         harness,
         sel.moment.session,
         epoch,
