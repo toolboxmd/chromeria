@@ -51,7 +51,7 @@ export function ThreadParentCrumbs({
           to="/$environmentId/$threadId"
           params={{ environmentId, threadId: parent.id }}
           aria-label={`Open parent thread ${parent.title}`}
-          className="inline-flex min-w-0 max-w-full items-center rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+          className="inline-flex min-w-0 max-w-full items-center rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         >
           <WorkspaceBreadcrumbText className="max-w-48">{parent.title}</WorkspaceBreadcrumbText>
         </Link>

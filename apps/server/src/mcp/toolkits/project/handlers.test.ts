@@ -41,7 +41,7 @@ import { ProjectToolkit } from "./tools.ts";
 const prismDependencies = Layer.mergeAll(
   Layer.mock(AdapterRegistry.ProviderAdapterRegistryV2)({
     list: () =>
-      Effect.succeed([ProviderInstanceId.make("codex"), ProviderInstanceId.make("claude")]),
+      Effect.succeed([ProviderInstanceId.make("codex"), ProviderInstanceId.make("claudeAgent")]),
   }),
   ServerSettings.layerTest(),
   Layer.mock(ProviderRegistry.ProviderRegistry)({
@@ -60,8 +60,21 @@ const prismDependencies = Layer.mergeAll(
         slashCommands: [],
       },
       {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        driver: ProviderDriverKind.make("claudeAgent"),
+        enabled: true,
+        installed: true,
+        version: "test",
+        status: "ready",
+        auth: { status: "authenticated" },
+        checkedAt: "2026-10-08T00:00:00Z",
+        models: [{ slug: "claude-opus", name: "test", isCustom: false, capabilities: null }],
+        skills: [],
+        slashCommands: [],
+      },
+      {
         instanceId: ProviderInstanceId.make("claude"),
-        driver: ProviderDriverKind.make("claude"),
+        driver: ProviderDriverKind.make("claudeAgent"),
         enabled: true,
         installed: true,
         version: "test",
