@@ -1302,6 +1302,31 @@ Child creation paths are owned by child-threads and shared with thread-people.
 }
 ```
 
+## bounded-stored-event-replay
+
+```json
+{
+  "id": "bounded-stored-event-replay",
+  "purpose": "Replay stored orchestration events from an explicit cursor through the paged event-store read, so a missing cursor cannot decode the whole log.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/256"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/267"],
+  "newFiles": [],
+  "upstreamFiles": [
+    "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts",
+    "apps/server/src/relay/AgentAwarenessRelay.test.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/orchestration-v2/EventSink.ts",
+    "apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
+    "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+    "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+    "apps/server/src/orchestration-v2/testkit/OrchestratorScenario.ts"
+  ],
+  "keywords": ["afterSequence", "catchUp", "streamStoredEvents"]
+}
+```
+
 ## feature-map
 
 ```json
