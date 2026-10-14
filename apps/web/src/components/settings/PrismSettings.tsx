@@ -378,7 +378,7 @@ function RoleRow({
       <div className="pointer-events-none relative flex min-w-0 flex-1 items-start gap-3 rounded-md text-left">
         <button
           type="button"
-          className="pointer-events-auto absolute inset-0 cursor-pointer rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="pointer-events-auto absolute inset-0 cursor-pointer rounded-md outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           onClick={onSelect}
           aria-label={`Select ${name}`}
           aria-pressed={selected}
@@ -457,7 +457,11 @@ export function PrismSettings() {
   const [workerLane, setWorkerLane] = useState<PrismLane>("medium");
 
   const providers = environment?.serverConfig?.providers ?? EMPTY_SERVER_PROVIDERS;
-  const entries = applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings);
+  const entries = applyProviderInstanceSettings(
+    deriveProviderInstanceEntries(providers),
+    settings,
+    target?.projectId ?? null,
+  );
   const options = getCustomModelOptionsByInstance(settings, providers);
   const disabledReason = useScopedModelDisabledReason(settings, entries);
   const choices = prismModelChoices(entries, options, disabledReason);
