@@ -80,13 +80,19 @@ const commandTool = {
 };
 const queueEntry = Schema.Struct({
   queuedRunId: RunId,
+  // Older peers omit this field; absence means the hold state is unknown.
+  held: Schema.optional(
+    Schema.Boolean.annotate({
+      description: "Whether this message is held. Absence means an older peer did not report it.",
+    }),
+  ),
   text: Schema.String,
   truncated: Schema.Boolean,
 });
 const QueueListTool = Tool.make("t3_queue_list", {
   ...commandTool,
   description:
-    "List queued messages in delivery order. Results are a live offset page; use t3_thread_read for full thread history.",
+    "List queued messages in delivery order, including whether each is held. Resume a held queue with t3_queue_resume. Results are a live offset page; use t3_thread_read for full thread history.",
   parameters: McpRouting.parameters(
     Schema.Struct({
       threadId: Schema.optional(ThreadId),
@@ -124,6 +130,12 @@ const QueueCancelTool = Tool.make("t3_queue_cancel", {
   ...commandTool,
   description: "Cancel a queued run using the existing queue command.",
   parameters: McpRouting.parameters(Schema.Struct(queueTarget)),
+}).annotate(Tool.Destructive, true);
+const QueueResumeTool = Tool.make("t3_queue_resume", {
+  ...commandTool,
+  description:
+    "Explicitly resume a held queue using the existing queue.resume command. Omit threadId for this thread. Clears holds and delivers queued messages in their existing order when the thread can start another turn. The same thread mutation permissions and Stop/retirement rules apply.",
+  parameters: McpRouting.parameters(Schema.Struct({ threadId: Schema.optional(ThreadId) })),
 }).annotate(Tool.Destructive, true);
 const QueueReorderTool = Tool.make("t3_queue_reorder", {
   ...commandTool,
@@ -323,6 +335,7 @@ export const ThreadToolkit = Toolkit.make(
   QueueReadTool,
   QueueEditTool,
   QueueCancelTool,
+  QueueResumeTool,
   QueueReorderTool,
   QueuePromoteTool,
 );

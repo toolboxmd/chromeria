@@ -78,8 +78,10 @@ import * as Stream from "effect/Stream";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
   subagentResultForRun,
+  restartResultRunIds,
   delegatedTaskProgress,
 } from "@t3tools/provider-core/server/subagentProjection";
+import { restartCutView } from "@t3tools/shared/restartCut";
 import {
   DispatchModeLimit,
   type DispatchModeRefusal,
@@ -513,6 +515,8 @@ function pageIncludesTerminalTaskResult(input: {
   if (run === undefined || !isTerminalTaskStatus(taskStatusForRun(run))) return false;
 
   const result = subagentResultForRun(input.target, run);
+  // Reading old partial output does not acknowledge the restart explanation.
+  if (result.restartNote !== null) return false;
   if (result.messageId === null && result.turnItemId === null) return false;
 
   return input.page.some((row) => {
@@ -544,7 +548,10 @@ function latestTerminalResultRun(
         ThreadManagementService.isTerminalRunStatus(run.status) &&
         !monitorRunIds.has(run.id) &&
         run.status !== "rolled_back" &&
-        (run.id === delegatedRun?.id || run.startedAt !== null),
+        (run.id === delegatedRun?.id ||
+          run.startedAt !== null ||
+          run.restartContinuationOfRunId !== undefined ||
+          (run.status === "cancelled" && run.restartCut !== undefined)),
     )
     .reduce<OrchestrationV2Run | undefined>(
       (latest, run) => (latest === undefined || runRanAfter(run, latest) ? run : latest),
@@ -735,7 +742,10 @@ function threadDetail(
   };
 }
 
-function threadRun(run: OrchestrationV2Run): OrchestratorMcpThreadRun {
+function threadRun(
+  run: OrchestrationV2Run,
+  cut: ReturnType<typeof restartCutView>,
+): OrchestratorMcpThreadRun {
   return {
     runId: run.id,
     ordinal: run.ordinal,
@@ -745,6 +755,7 @@ function threadRun(run: OrchestrationV2Run): OrchestratorMcpThreadRun {
     requestedAt: DateTime.formatIso(run.requestedAt),
     startedAt: run.startedAt === null ? null : DateTime.formatIso(run.startedAt),
     completedAt: run.completedAt === null ? null : DateTime.formatIso(run.completedAt),
+    ...(cut === undefined ? {} : { restartCut: cut }),
   };
 }
 
@@ -1354,11 +1365,10 @@ const make = Effect.gen(function* () {
             ? "result_available"
             : "working"
           : progress.state;
-      const resultRunIds = [
-        ...new Set(
-          [taskResultRun?.id, terminalRun?.id].filter((id): id is RunId => id !== undefined),
-        ),
-      ];
+      const resultRunIds = restartResultRunIds(
+        childControls.runs,
+        [taskResultRun?.id, terminalRun?.id].filter((id): id is RunId => id !== undefined),
+      );
       const resultRecords = yield* threadManagement
         .getThreadRecords(task.childThreadId, ["messages", "turnItems"], {
           messageRoles: ["assistant"],
@@ -1372,6 +1382,13 @@ const make = Effect.gen(function* () {
         messages: [...childControls.messages, ...resultRecords.messages],
         turnItems: resultRecords.turnItems,
       };
+      const resultForRun = (run: OrchestrationV2Run) =>
+        threadManagement.readRestartCutView(run, childControls.runs).pipe(
+          Effect.mapError(threadManagementFailure),
+          Effect.map((cut) =>
+            subagentResultForRun(childProjection, { ...run, status: runOutcome(run) }, cut),
+          ),
+        );
       // A restart cut the child's run and its continuation has not settled, or
       // the child started working again after this read.
       const heldForRestart =
@@ -1401,7 +1418,7 @@ const make = Effect.gen(function* () {
         task.result !== null
           ? task.result
           : taskResultRun !== undefined && isTerminalTaskStatus(status)
-            ? subagentResultForRun(childProjection, taskResultRun).text
+            ? (yield* resultForRun(taskResultRun)).text
             : null;
       const resultTransfers = parentProjection.contextTransfers.filter(
         (transfer) =>
@@ -1431,6 +1448,9 @@ const make = Effect.gen(function* () {
         (yield* threadManagement
           .delegatedTaskResultPending(task.childThreadId, task.id)
           .pipe(Effect.mapError(threadManagementFailure)));
+      const terminalResult = canExposeTaskRunResult(terminalRun)
+        ? yield* resultForRun(terminalRun)
+        : undefined;
       const response = {
         taskId: task.id,
         childThreadId: task.childThreadId,
@@ -1446,11 +1466,12 @@ const make = Effect.gen(function* () {
         latestTerminalRunId: terminalRun?.id ?? null,
         latestTerminalStatus:
           terminalStatus !== null && isTerminalTaskStatus(terminalStatus) ? terminalStatus : null,
-        latestTerminalSummary: canExposeTaskRunResult(terminalRun)
-          ? terminalRun.id === childRun?.id
-            ? derivedResult
-            : subagentResultForRun(childProjection, terminalRun).text
-          : null,
+        latestTerminalSummary:
+          terminalResult !== undefined
+            ? terminalRun?.id === childRun?.id && terminalResult.restartNote === null
+              ? derivedResult
+              : terminalResult.text
+            : null,
         latestTerminalResultContextTransferId: resultTransferForRun(terminalRun)?.id ?? null,
         // A finished task has no question of its own; later child runs belong to other tasks.
         hasPendingQuestion:
@@ -2775,7 +2796,10 @@ const make = Effect.gen(function* () {
               parent.thread.id,
             );
             const resultRunId = transfer?.sourcePoint.runId ?? delegatedTaskRun(target, task)?.id;
-            const resultRunIds = resultRunId === undefined ? [] : [resultRunId];
+            const resultRunIds = restartResultRunIds(
+              target.runs,
+              resultRunId === undefined ? [] : [resultRunId],
+            );
             const resultRecords = yield* threadManagement
               .getThreadRecords(target.thread.id, ["messages", "turnItems"], {
                 messageRoles: ["assistant"],
@@ -2805,10 +2829,17 @@ const make = Effect.gen(function* () {
         }
         return {
           thread: threadDetail(target, timeline.totalItems, shell, yield* Clock.currentTimeMillis),
-          recentRuns: target.runs
-            .toSorted((left, right) => right.ordinal - left.ordinal)
-            .slice(0, input.runLimit ?? DEFAULT_THREAD_RUN_LIMIT)
-            .map(threadRun),
+          recentRuns: yield* Effect.forEach(
+            target.runs
+              .toSorted((left, right) => right.ordinal - left.ordinal)
+              .slice(0, input.runLimit ?? DEFAULT_THREAD_RUN_LIMIT),
+            (run) =>
+              threadManagement.readRestartCutView(run, target.runs).pipe(
+                Effect.mapError(threadManagementFailure),
+                Effect.map((cut) => threadRun(run, cut)),
+              ),
+            { concurrency: 1 },
+          ),
           items: page.map((row) =>
             timelineItem({
               row,

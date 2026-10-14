@@ -1,6 +1,8 @@
 import {
   CommandId,
+  EventId,
   type OrchestrationV2Run,
+  OrchestrationV2RunJson,
   OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
   OrchestrationV2StoredEvent,
@@ -24,6 +26,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { readStopDescendants } from "../childThreads/stopDescendants.ts";
+import type { RestartCutReason } from "@t3tools/shared/restartCut";
 import { ForkCommitGuardRejected, type ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
 
 import { replayAndBufferProjectedLiveEvents } from "./LiveStreamBudget.ts";
@@ -150,6 +153,11 @@ export interface EventSinkV2Shape {
     readonly acceptedAt: DateTime.Utc;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
     readonly effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
+    readonly restartCutDecline?: {
+      readonly runId: RunId;
+      readonly eventId: EventId;
+      readonly reason: RestartCutReason;
+    };
     readonly cancelUnsettledEffects?: {
       readonly includeSubagentDescendants?: boolean;
       readonly drain?: boolean;
@@ -574,6 +582,65 @@ const layerBase: Layer.Layer<
       );
     });
 
+    const decodeRestartCutRun = Schema.decodeUnknownEffect(
+      Schema.fromJsonString(OrchestrationV2RunJson),
+    );
+    const patchRestartCutDecline = Effect.fnUntraced(function* (
+      input: Parameters<EventSinkV2Shape["commitCommand"]>[0],
+    ) {
+      const decline = input.restartCutDecline;
+      if (decline === undefined) return undefined;
+      const rows = yield* sql<{ readonly payload_json: string }>`
+        UPDATE orchestration_v2_projection_runs AS source
+        SET payload_json = json_set(
+          payload_json, '$.restartCut', json_object(
+            'continuation', 'declined',
+            'cutAt', coalesce(
+              json_extract(payload_json, '$.restartCut.cutAt'),
+              json_extract(payload_json, '$.completedAt')
+            ),
+            'reason', ${decline.reason}
+          )
+        )
+        WHERE source.run_id = ${decline.runId} AND source.thread_id = ${input.threadId}
+          AND source.status = 'cancelled'
+          AND coalesce(json_extract(payload_json, '$.restartCut.cutAt'), json_extract(payload_json, '$.completedAt')) IS NOT NULL
+          AND (
+            json_extract(payload_json, '$.restartCut.continuation') = 'scheduled'
+            OR (
+              json_type(payload_json, '$.restartCut') IS NULL
+              AND EXISTS (
+                SELECT 1 FROM orchestration_v2_effect_outbox AS intent
+                WHERE intent.effect_id = 'effect:restart-continuation:' || source.run_id
+                  AND intent.thread_id = source.thread_id
+                  AND intent.effect_type = 'provider-runtime.continue'
+                  AND json_extract(intent.payload_json, '$.type') = 'provider-runtime.continue'
+                  AND json_extract(intent.payload_json, '$.sourceRunId') = source.run_id
+              )
+            )
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM orchestration_v2_projection_runs AS replacement
+            WHERE replacement.thread_id = source.thread_id
+              AND json_extract(replacement.payload_json, '$.restartContinuationOfRunId') = source.run_id
+          )
+        RETURNING payload_json
+      `;
+      const row = rows[0];
+      if (row === undefined) return undefined;
+      const patched = yield* decodeRestartCutRun(row.payload_json);
+      return {
+        id: decline.eventId,
+        type: "run.updated",
+        threadId: input.threadId,
+        runId: patched.id,
+        providerInstanceId: patched.providerInstanceId,
+        ...(patched.rootNodeId === null ? {} : { nodeId: patched.rootNodeId }),
+        occurredAt: input.acceptedAt,
+        payload: patched,
+      } satisfies OrchestrationV2DomainEvent;
+    });
+
     const existingCommandResult = (commandId: CommandId) =>
       Effect.gen(function* () {
         const existing = yield* commandReceipts.getByCommandId(commandId);
@@ -594,6 +661,38 @@ const layerBase: Layer.Layer<
     ) {
       const result = yield* commitThenPublish(
         Effect.gen(function* () {
+          let standaloneDeclineEvent: OrchestrationV2DomainEvent | undefined;
+          if (
+            input.restartCutDecline !== undefined &&
+            input.events.length === 0 &&
+            input.effects.length === 0 &&
+            (input.forkPlans?.length ?? 0) === 0 &&
+            input.cancelUnsettledEffects === undefined
+          ) {
+            if (Option.isSome(yield* commandReceipts.getByCommandId(input.commandId))) {
+              const existing = yield* existingCommandResult(input.commandId);
+              return { ...existing, committed: false as const, cancelledEffectIds: [] };
+            }
+            standaloneDeclineEvent = yield* patchRestartCutDecline(input);
+            if (standaloneDeclineEvent === undefined) {
+              // No receipt is persisted: an early guarded no-op must remain retryable.
+              const receipt: CommandReceiptStore.CommandReceiptV2 = {
+                commandId: input.commandId,
+                threadId: input.threadId,
+                commandType: input.commandType,
+                acceptedAt: input.acceptedAt,
+                resultSequence: yield* eventStore.latestSequence({ threadId: input.threadId }),
+                status: "accepted",
+                error: null,
+              };
+              return {
+                receipt,
+                storedEvents: [],
+                committed: false as const,
+                cancelledEffectIds: [],
+              };
+            }
+          }
           const reserved = yield* commandReceipts.insertIfAbsent({
             commandId: input.commandId,
             threadId: input.threadId,
@@ -608,7 +707,10 @@ const layerBase: Layer.Layer<
             return { ...existing, committed: false as const, cancelledEffectIds: [] };
           }
 
-          yield* validateForkStateOnlyCommand(input);
+          yield* validateForkStateOnlyCommand({
+            ...input,
+            events: standaloneDeclineEvent === undefined ? input.events : [standaloneDeclineEvent],
+          });
           for (const plan of input.forkPlans ?? []) {
             for (const guard of plan.guards) {
               const decision = yield* guard.pipe(
@@ -643,16 +745,25 @@ const layerBase: Layer.Layer<
               );
           }
           const normalized = yield* normalizeEvents(input.events);
-          const storedEvents = yield* eventStore.append({
+          let storedEvents = yield* eventStore.append({
             commandId: input.commandId,
             events: normalized,
           });
+          yield* applyStoredEvents(storedEvents);
+          const declineEvent = standaloneDeclineEvent ?? (yield* patchRestartCutDecline(input));
+          if (declineEvent !== undefined) {
+            const appended = yield* eventStore.append({
+              commandId: input.commandId,
+              events: [declineEvent],
+            });
+            yield* applyStoredEvents(appended);
+            storedEvents = [...storedEvents, ...appended];
+          }
           const sequence = yield* forkCommitSequence(
             input,
             storedEvents,
             eventStore.latestSequence({ threadId: input.threadId }),
           );
-          yield* applyStoredEvents(storedEvents);
           yield* effectOutbox.enqueue(input.effects);
           const receipt: CommandReceiptStore.CommandReceiptV2 = {
             commandId: input.commandId,

@@ -11,6 +11,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import type { ProjectionRuntimeRecoveryState } from "./ProjectionStore.ts";
+import { RESTART_CUT_REASONS, type RestartCutReason } from "@t3tools/shared/restartCut";
 
 import * as ServerSettings from "../serverSettings.ts";
 import { isNativeMaintenanceCommand } from "./Orchestrator.ts";
@@ -117,41 +118,45 @@ function hasOpenAwaitedWork(
   );
 }
 
-/**
- * The run a restart continues: an unfinished root turn, or a settled one
- * waiting on awaited work that the restart cancels. A settled run needs a
- * live session, so stale records from an older crash never wake it. Other
- * leftover work is cleaned up and reported on the next user turn.
- */
-export function restartContinuationRun(
-  projection: Pick<
-    ProjectionRuntimeRecoveryState,
-    | "thread"
-    | "runs"
-    | "providerThreads"
-    | "providerSessions"
-    | "providerTurns"
-    | "runtimeRequests"
-    | "turnItems"
-  >,
-  now: DateTime.Utc,
-): OrchestrationV2Run | undefined {
+type RestartProjection = Pick<
+  ProjectionRuntimeRecoveryState,
+  | "thread"
+  | "runs"
+  | "providerThreads"
+  | "providerSessions"
+  | "providerTurns"
+  | "runtimeRequests"
+  | "turnItems"
+>;
+
+function latestRestartSource(projection: RestartProjection) {
   // Queued runs never started; recovery holds them behind the cut run.
-  const run = projection.runs.reduce<OrchestrationV2Run | undefined>(
+  return projection.runs.reduce<OrchestrationV2Run | undefined>(
     (latest, candidate) =>
       candidate.status !== "queued" && (!latest || runRanAfter(candidate, latest))
         ? candidate
         : latest,
     undefined,
   );
-  if (!run) return;
+}
+
+function restartContinuationReason(
+  projection: RestartProjection,
+  run: OrchestrationV2Run,
+  now: DateTime.Utc,
+): RestartCutReason | undefined {
+  if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null)
+    return RESTART_CUT_REASONS.THREAD_INACTIVE;
   const preparedContinuation =
     run.status === "starting" && run.restartContinuationOfRunId !== undefined;
   const settled = run.status === "completed" || run.status === "waiting";
-  if (run.status !== "running" && !preparedContinuation && !settled) return;
-  if (restartContinuationBlocked(projection, run, now, settled)) return;
+  if (run.status !== "running" && !preparedContinuation && !settled)
+    return RESTART_CUT_REASONS.NOT_STARTED;
+  if (restartContinuationBlocked(projection, run, now, settled))
+    return RESTART_CUT_REASONS.NO_CONTINUATION;
   const liveTurnRequired = !preparedContinuation && !settled;
-  if (projection.thread.providerInstanceId !== run.providerInstanceId) return;
+  if (projection.thread.providerInstanceId !== run.providerInstanceId)
+    return RESTART_CUT_REASONS.PROVIDER_CHANGED;
   const providerThread = projection.providerThreads.find(
     (thread) => thread.id === run.providerThreadId,
   );
@@ -163,24 +168,30 @@ export function restartContinuationRun(
     providerThread.nativeThreadRef?.nativeId == null ||
     providerThread.nativeThreadRef.strength !== "strong" ||
     providerThread.nativeThreadRef.driver !== providerThread.driver ||
-    (liveTurnRequired && providerThread.status !== "active") ||
     providerThread.status === "closed" ||
     providerThread.status === "archived"
   )
-    return;
+    return RESTART_CUT_REASONS.NOT_RESUMABLE;
   const session = projection.providerSessions.find(
     (candidate) => candidate.id === providerThread.providerSessionId,
   );
-  // Most adapters keep a live session "ready" through its turns, so only a
-  // stopped or failed session rules out a live turn.
+  // Recovery stops shared sessions while visiting other bound threads. The
+  // run's own live turn establishes liveness; a prior runtime error still rules it out.
   if (
     session === undefined ||
     session.providerInstanceId !== run.providerInstanceId ||
-    session.driver !== providerThread.driver ||
-    (!preparedContinuation && (session.status === "stopped" || session.status === "error"))
+    session.driver !== providerThread.driver
   )
-    return;
-  if (settled) return hasOpenAwaitedWork(projection, providerThread) ? run : undefined;
+    return RESTART_CUT_REASONS.NOT_RESUMABLE;
+  if (liveTurnRequired && session.status === "error") return RESTART_CUT_REASONS.SESSION_FAILED;
+  // Settled turns have no live attempt to distinguish this cut from an older crash.
+  if (settled) {
+    if (session.status === "stopped" || session.status === "error")
+      return RESTART_CUT_REASONS.NOT_RESUMABLE;
+    return hasOpenAwaitedWork(projection, providerThread)
+      ? undefined
+      : RESTART_CUT_REASONS.BACKGROUND_ONLY;
+  }
   if (
     liveTurnRequired &&
     !projection.providerTurns.some(
@@ -190,15 +201,54 @@ export function restartContinuationRun(
         turn.status === "running",
     )
   )
-    return;
-  return run;
+    return RESTART_CUT_REASONS.NO_LIVE_TURN;
+}
+
+export function restartContinuationRun(
+  projection: RestartProjection,
+  now: DateTime.Utc,
+): OrchestrationV2Run | undefined {
+  const run = latestRestartSource(projection);
+  return run !== undefined && restartContinuationReason(projection, run, now) === undefined
+    ? run
+    : undefined;
+}
+
+type RestartCutDecision =
+  | { readonly run: OrchestrationV2Run; readonly cut: { readonly continuation: "scheduled" } }
+  | {
+      readonly run: OrchestrationV2Run;
+      readonly cut: { readonly continuation: "declined"; readonly reason: RestartCutReason };
+    };
+
+/** Decide only a run this reconciliation actually cancels; checkpoint replay is not a cut. */
+export function restartCutDecision(
+  projection: RestartProjection,
+  cancelled: ReadonlySet<RunId>,
+  enabled: boolean | undefined,
+  now: DateTime.Utc,
+): RestartCutDecision | undefined {
+  const run = latestRestartSource(projection);
+  if (run === undefined || !cancelled.has(run.id)) return;
+  const reason =
+    projection.thread.archivedAt !== null || projection.thread.deletedAt !== null
+      ? RESTART_CUT_REASONS.THREAD_INACTIVE
+      : run.status !== "running" &&
+          run.status !== "waiting" &&
+          !(run.status === "starting" && run.restartContinuationOfRunId !== undefined)
+        ? RESTART_CUT_REASONS.NOT_STARTED
+        : enabled === undefined
+          ? RESTART_CUT_REASONS.SETTINGS_UNAVAILABLE
+          : !enabled
+            ? RESTART_CUT_REASONS.CONTINUATION_OFF
+            : restartContinuationReason(projection, run, now);
+  return reason === undefined
+    ? { run, cut: { continuation: "scheduled" } }
+    : { run, cut: { continuation: "declined", reason } };
 }
 
 export const continueRestartedRun = Effect.fn("RestartContinuation.continueRestartedRun")(
   function* (input: { readonly threadId: ThreadId; readonly sourceRunId: RunId }) {
-    const settings = yield* ServerSettings.ServerSettingsService;
-    const enabled = yield* settings.getSettings.pipe(Effect.orElseSucceed(() => null));
-    if (!enabled) return;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const messageId = MessageId.make(`message:restart-continuation:${input.sourceRunId}`);
     const projection = yield* threads.getThreadRecords(
@@ -206,36 +256,38 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
       ["messages", "runs", "providerTurns", "attempts", "runtimeRequests", "turnItems"],
       { messageIds: [messageId], turnItemTypes: ["secret_request"] },
     );
+    if (projection.messages.some((message) => message.id === messageId)) return;
+    const source = projection.runs.find((run) => run.id === input.sourceRunId);
+    // A native note continuation may wake a settled run that lost awaited work.
+    if (!source || source.restartCut?.continuation === "declined") return;
+    const decline = (reason: RestartCutReason) =>
+      threads.recordRestartCutDecline(input.threadId, input.sourceRunId, reason);
+    if (!isRestartContinuationSource(source, projection.providerTurns)) {
+      if (source.status === "cancelled") yield* decline(RESTART_CUT_REASONS.BACKGROUND_ONLY);
+      return;
+    }
+    // Settings failures use the worker's existing retry/failure path, never a successful no-op.
+    const settings = yield* ServerSettings.ServerSettingsService;
+    const enabled = yield* settings.getSettings;
     if (
       !resolveProjectSettings(enabled, projection.thread.projectId).settings
         .continueThreadsAfterServerUpdate
-    )
+    ) {
+      yield* decline(RESTART_CUT_REASONS.CONTINUATION_OFF);
       return;
-    if (projection.messages.some((message) => message.id === messageId)) return;
-    const source = projection.runs.find((run) => run.id === input.sourceRunId);
-    // Reconciliation cancels a waiting run it cannot checkpoint, so a settled
-    // source can be cancelled too. It continues only for awaited work.
+    }
     if (
-      !source ||
-      !isRestartContinuationSource(source, projection.providerTurns) ||
       restartContinuationBlocked(
         projection,
         source,
         yield* DateTime.now,
         isRestartNoteSource(source, projection.providerTurns),
       )
-    )
+    ) {
+      yield* decline(RESTART_CUT_REASONS.NO_CONTINUATION);
       return;
-    // A user submission after reconciliation takes precedence over an automatic
-    // prompt. Queued runs never started and stay held behind this one.
-    if (
-      projection.runs.some(
-        (run) => run.id !== source.id && run.status !== "queued" && runRanAfter(run, source),
-      )
-    )
-      return;
-    if (projection.thread.providerInstanceId !== source.providerInstanceId) return;
-    // A turn that keeps crashing the server would otherwise restart it forever.
+    }
+    // Bound consecutive crash recovery without creating another retry owner.
     let chainLength = 0;
     for (
       let run: OrchestrationV2Run | undefined = source;
@@ -245,12 +297,11 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
       chainLength += 1;
     }
     if (chainLength >= MAX_CONTINUATION_CHAIN) {
-      yield* Effect.logWarning("Not continuing a run restarted too many times in a row", {
-        threadId: input.threadId,
-        sourceRunId: input.sourceRunId,
-      });
+      yield* decline(RESTART_CUT_REASONS.INVALID_CHAIN);
       return;
     }
+    // Archive, provider changes and newer work are decided again at dispatch,
+    // in the same transaction that records their refusal.
     const sourceRecords = yield* threads.getThreadRecords(
       input.threadId,
       ["messages", "turnItems"],
@@ -265,12 +316,17 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
       sourceRecords.turnItems.some(
         (item) => item.runId === source.id && item.type === "run_interrupt_request",
       )
-    )
+    ) {
+      yield* decline(RESTART_CUT_REASONS.STOP_REQUESTED);
       return;
+    }
     const sourceMessage = sourceRecords.messages.find(
       (message) => message.id === source.userMessageId,
     );
-    if (sourceMessage !== undefined && isNativeMaintenanceCommand(sourceMessage)) return;
+    if (sourceMessage !== undefined && isNativeMaintenanceCommand(sourceMessage)) {
+      yield* decline(RESTART_CUT_REASONS.MAINTENANCE);
+      return;
+    }
     const note = restartContinuationNote(
       source,
       projection.runs,
@@ -292,7 +348,6 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
         threadId: input.threadId,
         messageId,
         text,
-        // Shown as a work log row; the prompt the agent got is its detail.
         notification: {
           source: { kind: "system" },
           outcome: "updated",
@@ -309,19 +364,9 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
         restartContinuationOfRunId: input.sourceRunId,
       })
       .pipe(
-        // The project turned this instance off since the restart. No turn
-        // resumes, and the success path below still runs so a delegated
-        // child waiting on this run is recovered immediately instead of
-        // after EffectWorker exhausts its retries on a refusal that will
-        // not change.
         Effect.catchTags({
-          ThreadManagementProviderInstanceDisabledError: (error) =>
-            Effect.logInfo("orchestration-v2.restart-continuation.instance-disabled", {
-              threadId: input.threadId,
-              sourceRunId: input.sourceRunId,
-              projectId: error.projectId,
-              instanceId: error.instanceId,
-            }),
+          ThreadManagementProviderInstanceDisabledError: () =>
+            decline(RESTART_CUT_REASONS.NOT_RESUMABLE),
         }),
       );
   },

@@ -500,6 +500,39 @@ export const OrchestrationV2RunStatus = Schema.Literals([
 ]);
 export type OrchestrationV2RunStatus = typeof OrchestrationV2RunStatus.Type;
 
+const RestartCutReason = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
+
+/** Recovery's durable cut and intent; actual continuation is derived from linked runs. */
+export const OrchestrationV2RestartCut = Schema.Union([
+  Schema.Struct({
+    continuation: Schema.Literal("scheduled"),
+    cutAt: Schema.DateTimeUtc,
+  }),
+  Schema.Struct({
+    continuation: Schema.Literal("declined"),
+    cutAt: Schema.DateTimeUtc,
+    reason: RestartCutReason,
+  }),
+]);
+export type OrchestrationV2RestartCut = typeof OrchestrationV2RestartCut.Type;
+
+/** Read-side outcome, including historical evidence that a linked run actually started. */
+export const OrchestrationV2RestartCutView = Schema.Union([
+  Schema.Struct({ state: Schema.Literal("continuation_pending") }),
+  Schema.Struct({
+    state: Schema.Literal("continued"),
+    continuationRunId: RunId,
+    continuationStatus: OrchestrationV2RunStatus,
+  }),
+  Schema.Struct({
+    state: Schema.Literal("declined"),
+    reason: RestartCutReason,
+    continuationRunId: Schema.optional(RunId),
+    continuationStatus: Schema.optional(OrchestrationV2RunStatus),
+  }),
+]);
+export type OrchestrationV2RestartCutView = typeof OrchestrationV2RestartCutView.Type;
+
 export const OrchestrationV2DelegatedCompletionTaskDeliveryState = Schema.Literals([
   "pending",
   "claimed",
@@ -599,6 +632,7 @@ export const OrchestrationV2Run = Schema.Struct({
   restartContinuationOfRunId: Schema.optional(RunId),
   /** The delegated task this run answers, including a follow-up in an existing child thread. */
   delegatedTaskId: Schema.optional(NodeId),
+  restartCut: Schema.optional(OrchestrationV2RestartCut),
   /**
    * Set on wake runs (background notifications, delegated task results,
    * restart continuations): when the work they continue started. Read it
@@ -2211,12 +2245,24 @@ export const OrchestrationV2AppThreadJson = OrchestrationV2AppThread.mapFields((
 }));
 export type OrchestrationV2AppThreadJson = typeof OrchestrationV2AppThreadJson.Type;
 
+const OrchestrationV2RestartCutJson = Schema.Union([
+  OrchestrationV2RestartCut.members[0].mapFields((fields) => ({
+    ...fields,
+    cutAt: Schema.DateTimeUtcFromString,
+  })),
+  OrchestrationV2RestartCut.members[1].mapFields((fields) => ({
+    ...fields,
+    cutAt: Schema.DateTimeUtcFromString,
+  })),
+]);
+
 export const OrchestrationV2RunJson = OrchestrationV2Run.mapFields((fields) => ({
   ...fields,
   requestedAt: Schema.DateTimeUtcFromString,
   startedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
   completedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
   workStartedAt: Schema.optional(Schema.DateTimeUtcFromString),
+  restartCut: Schema.optional(OrchestrationV2RestartCutJson),
 }));
 export type OrchestrationV2RunJson = typeof OrchestrationV2RunJson.Type;
 

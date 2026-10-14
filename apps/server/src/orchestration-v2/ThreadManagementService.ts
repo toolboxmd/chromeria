@@ -509,6 +509,8 @@ export interface ThreadManagementServiceShape {
   >;
   readonly getThreadEventSequence: Orchestrator.OrchestratorV2["Service"]["getThreadEventSequence"];
   readonly recoverDelegatedTask: Orchestrator.OrchestratorV2["Service"]["recoverDelegatedTask"];
+  readonly recordRestartCutDecline: Orchestrator.OrchestratorV2["Service"]["recordRestartCutDecline"];
+  readonly readRestartCutView: Orchestrator.OrchestratorV2["Service"]["readRestartCutView"];
   readonly delegatedTaskResultPending: Orchestrator.OrchestratorV2["Service"]["delegatedTaskResultPending"];
   readonly streamStoredEventsFrom: Orchestrator.OrchestratorV2["Service"]["streamStoredEventsFrom"];
   readonly streamDomainEvents: Orchestrator.OrchestratorV2["Service"]["streamDomainEvents"];
@@ -1396,6 +1398,8 @@ const make = Effect.gen(function* () {
     stopWorkflow,
     getThreadEventSequence: orchestrator.getThreadEventSequence,
     recoverDelegatedTask: orchestrator.recoverDelegatedTask,
+    recordRestartCutDecline: orchestrator.recordRestartCutDecline,
+    readRestartCutView: orchestrator.readRestartCutView,
     delegatedTaskResultPending: orchestrator.delegatedTaskResultPending,
     streamStoredEventsFrom: orchestrator.streamStoredEventsFrom,
     streamDomainEvents: orchestrator.streamDomainEvents,
