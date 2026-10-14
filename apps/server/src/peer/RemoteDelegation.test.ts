@@ -769,12 +769,16 @@ const seedParent = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>) =>
     });
   });
 
-const delegateToBox = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>) =>
+const delegateToBox = (
+  laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
+  route: "target" | "environmentId" = "target",
+) =>
   laptopEnv
     .call("delegate_task", {
       task: "Run the full suite on the box.",
+      ...(route === "environmentId" ? { environmentId: box.environmentId } : {}),
       target: {
-        environmentId: box.environmentId,
+        ...(route === "target" ? { environmentId: box.environmentId } : {}),
         providerInstanceId: instanceId,
         model: "gpt-5.4",
       },
@@ -817,102 +821,126 @@ const taskResult = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>, ta
       ),
     );
 
-it.effect("a task delegated to the box wakes the laptop's parent when it ends there", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const thread = yield* makeBoxThread;
-      const b = yield* serveBox(thread);
-      const offers = yield* SubscriptionRef.make<
-        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
-      >([]);
-      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-      const a = yield* makeLaptop(database, offers);
-      yield* linkTo(a.links, b, "full-access");
-      yield* seedParent(a);
+it.effect.each(["target", "environmentId"] as const)(
+  "$0 delegation keeps the source parent's record and completion wake",
+  (route) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
 
-      const delegated = yield* delegateToBox(a);
-      expect(delegated).toMatchObject({
-        status: "running",
-        childThreadId: null,
-        remoteChild: { environmentId: box.environmentId, label: "Box" },
-      });
-      expect((yield* Ref.get(thread.launchedWith))?.modelSelection).toEqual(modelSelection);
-      // The box launched it in the project with the same repository.
-      expect(yield* Ref.get(thread.launched)).toBe(delegated.remoteChild.threadId);
-      // ...naming the parent here, so the thread there links back to it.
-      expect(yield* Ref.get(thread.delegatedFrom)).toEqual({
-        environmentId: laptop.environmentId,
-        threadId: parentThreadId,
-        title: "Laptop parent",
-      });
-      // A retry with the same key launches nothing new and records nothing new.
-      const retried = yield* delegateToBox(a);
-      expect(retried.taskId).toBe(delegated.taskId);
-      expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(1);
+        const conflict = yield* a.call("delegate_task", {
+          task: "Conflicting destination",
+          environmentId: box.environmentId,
+          target: { environmentId: laptop.environmentId },
+          mode: "async",
+        });
+        expect(conflict.isError).toBe(true);
+        expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(
+          0,
+        );
+        expect(yield* Ref.get(thread.launchIds)).toEqual([]);
+        const delegated = yield* delegateToBox(a, route);
+        expect(delegated).toMatchObject({
+          status: "running",
+          childThreadId: null,
+          remoteChild: { environmentId: box.environmentId, label: "Box" },
+        });
+        expect((yield* Ref.get(thread.launchedWith))?.modelSelection).toEqual(modelSelection);
+        // The box launched it in the project with the same repository.
+        expect(yield* Ref.get(thread.launched)).toBe(delegated.remoteChild.threadId);
+        // ...naming the parent here, so the thread there links back to it.
+        expect(yield* Ref.get(thread.delegatedFrom)).toEqual({
+          environmentId: laptop.environmentId,
+          threadId: parentThreadId,
+          title: "Laptop parent",
+        });
+        // A retry with the same key launches nothing new and records nothing new.
+        const retried = yield* delegateToBox(a);
+        expect(retried.taskId).toBe(delegated.taskId);
+        expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(
+          1,
+        );
 
-      yield* Ref.set(thread.reply, "All 412 tests pass on the box.");
-      yield* Ref.set(thread.status, "completed");
-      yield* Deferred.succeed(thread.finished, undefined);
-      const task = yield* taskResult(a, delegated.taskId);
-      expect(task).toMatchObject({ status: "completed", result: "All 412 tests pass on the box." });
-      // The parent's live run claims the result, as for a child here.
-      const parentRun = (yield* a.orchestrator.getThreadProjection(parentThreadId)).runs.find(
-        (run) => run.id === parentRunId,
-      );
-      expect(parentRun?.delegatedCompletion?.delivery?.taskIds).toEqual([delegated.taskId]);
-      // The wake is offered after the result commits, so the result can be seen first.
-      const offered = yield* SubscriptionRef.changes(offers).pipe(
-        Stream.filter((seen) => seen.some((offer) => offer.threadId === parentThreadId)),
-        Stream.runHead,
-      );
-      expect(Option.isSome(offered)).toBe(true);
+        yield* Ref.set(thread.reply, "All 412 tests pass on the box.");
+        yield* Ref.set(thread.status, "completed");
+        yield* Deferred.succeed(thread.finished, undefined);
+        const task = yield* taskResult(a, delegated.taskId);
+        expect(task).toMatchObject({
+          status: "completed",
+          result: "All 412 tests pass on the box.",
+        });
+        // The parent's live run claims the result, as for a child here.
+        const parentRun = (yield* a.orchestrator.getThreadProjection(parentThreadId)).runs.find(
+          (run) => run.id === parentRunId,
+        );
+        expect(parentRun?.delegatedCompletion?.delivery?.taskIds).toEqual([delegated.taskId]);
+        // The wake is offered after the result commits, so the result can be seen first.
+        const offered = yield* SubscriptionRef.changes(offers).pipe(
+          Stream.filter((seen) => seen.some((offer) => offer.threadId === parentThreadId)),
+          Stream.runHead,
+        );
+        expect(Option.isSome(offered)).toBe(true);
 
-      const status = yield* a.call("task_status", { taskId: delegated.taskId });
-      expect(status.structuredContent).toMatchObject({
-        status: "completed",
-        summary: "All 412 tests pass on the box.",
-      });
-    }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+        const status = yield* a.call("task_status", { taskId: delegated.taskId });
+        expect(status.structuredContent).toMatchObject({
+          status: "completed",
+          summary: "All 412 tests pass on the box.",
+        });
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect("a task named only by environment uses target Prism within the link", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const thread = yield* makeBoxThread;
-      const b = yield* serveBox(thread);
-      const offers = yield* SubscriptionRef.make<
-        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
-      >([]);
-      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-      const a = yield* makeLaptop(database, offers);
-      // The parent runs with full access; the link allows less.
-      yield* linkTo(a.links, b, "auto-accept-edits");
-      yield* seedParent(a);
+it.effect.each(["target", "environmentId"] as const)(
+  "$0 destination uses target Prism and refuses a broader mode than the link",
+  (route) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        // The parent runs with full access; the link allows less.
+        yield* linkTo(a.links, b, "auto-accept-edits");
+        yield* seedParent(a);
 
-      const result = yield* a.call("delegate_task", {
-        task: "Run the suite on the box.",
-        target: { environmentId: box.environmentId },
-        lane: "hard",
-      });
-      expect(result.isError, JSON.stringify(result.content)).toBe(false);
-      // The destination kit picks a different model; the link caps the modes.
-      expect(yield* Ref.get(thread.launchedWith)).toMatchObject({
-        modelSelection: { instanceId, model: "box-prism" },
-        runtimeMode: "auto-accept-edits",
-        interactionMode: "default",
-      });
+        const result = yield* a.call("delegate_task", {
+          task: "Run the suite on the box.",
+          ...(route === "target"
+            ? { target: { environmentId: box.environmentId } }
+            : { environmentId: box.environmentId }),
+          lane: "hard",
+        });
+        expect(result.isError, JSON.stringify(result.content)).toBe(false);
+        // The destination kit picks a different model; the link caps the modes.
+        expect(yield* Ref.get(thread.launchedWith)).toMatchObject({
+          modelSelection: { instanceId, model: "box-prism" },
+          runtimeMode: "auto-accept-edits",
+          interactionMode: "default",
+        });
 
-      // Asking for more than the link allows is still refused there.
-      const broader = yield* a.call("delegate_task", {
-        task: "Run the suite on the box.",
-        target: { environmentId: box.environmentId },
-        runtimeMode: "full-access",
-        clientRequestId: "broader",
-      });
-      expect(broader.isError).toBe(true);
-    }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+        // Asking for more than the link allows is still refused there.
+        const broader = yield* a.call("delegate_task", {
+          task: "Run the suite on the box.",
+          ...(route === "target"
+            ? { target: { environmentId: box.environmentId } }
+            : { environmentId: box.environmentId }),
+          runtimeMode: "full-access",
+          clientRequestId: "broader",
+        });
+        expect(broader.isError).toBe(true);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("follows an open task again after the laptop restarts", () =>

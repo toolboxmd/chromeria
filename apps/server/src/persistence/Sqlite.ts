@@ -6,6 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { runMigrations } from "./Migrations.ts";
+import { ensureScheduledTaskOriginsSchema } from "./forkScheduledTaskOriginsSchema.ts";
 import { ensureThreadPeopleSchema } from "./forkThreadPeopleSchema.ts";
 import { initializeV2Database } from "./initializeV2Database.ts";
 import * as ServerConfig from "../config.ts";
@@ -25,6 +26,7 @@ const layerSetup = Layer.effectDiscard(
     yield* sql.unsafe(`PRAGMA journal_size_limit = ${WAL_SIZE_LIMIT_BYTES};`);
     yield* runMigrations();
     yield* ensureThreadPeopleSchema;
+    yield* ensureScheduledTaskOriginsSchema;
   }),
 );
 

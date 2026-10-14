@@ -1461,7 +1461,9 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/persistence/forkPeerLinksSchema.test.ts",
     "apps/server/src/persistence/forkPeerLinksSchema.ts",
     "packages/contracts/src/peerLink.ts",
-    "apps/server/src/mcp/McpRouting.ts"
+    "apps/server/src/mcp/McpRouting.ts",
+    "apps/server/src/persistence/forkScheduledTaskOriginsSchema.ts",
+    "apps/server/src/persistence/forkScheduledTaskOriginsSchema.test.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/auth/McpOAuth.ts",
@@ -1542,7 +1544,14 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "packages/contracts/src/orchestrationV2.ts",
     "packages/contracts/src/orchestratorMcp.ts",
     "packages/contracts/src/rpc.ts",
-    "scripts/fork-features.mjs"
+    "scripts/fork-features.mjs",
+    "apps/server/src/persistence/Sqlite.ts",
+    "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
+    "packages/contracts/src/scheduledTask.ts",
+    "apps/server/src/scheduledTaskChecks/state.ts",
+    "apps/server/src/scheduledTaskChecks/engine.ts",
+    "apps/server/src/scheduledTaskChecks/engine.test.ts",
+    "apps/server/src/scheduledTaskChecks/ScheduledTaskChecks.ts"
   ],
   "keywords": [
     "peer_environment_links",

@@ -22,7 +22,9 @@ import type { Caller } from "./threadAccess.ts";
 
 /** The link a caller acts for: its own session, or the link that started its thread. */
 export const callerLinkOrigin = (
-  caller: Pick<Caller, "scope" | "caller">,
+  caller: Pick<Caller, "scope"> & {
+    readonly caller: Pick<OrchestrationV2ThreadShell, "linkOrigin"> | undefined;
+  },
 ): OrchestrationV2LinkOrigin | undefined =>
   caller.caller?.linkOrigin ??
   (caller.scope.client?.linked === true
@@ -35,10 +37,12 @@ const outsideLink = (origin: OrchestrationV2LinkOrigin, message: string) =>
     message: `This work was started from ${origin.label} through a linked environment, so ${message}`,
   });
 
-/** A thread a linked caller may change: one its own link started. */
-export const assertSameLink = (
-  caller: Pick<Caller, "scope" | "caller">,
-  target: Pick<OrchestrationV2ThreadShell, "id" | "linkOrigin">,
+/** Work a linked caller may change: only what its own link started. */
+export const assertSameLink = <T extends Pick<OrchestrationV2ThreadShell, "linkOrigin">>(
+  caller: Pick<Caller, "scope"> & {
+    readonly caller: Pick<OrchestrationV2ThreadShell, "linkOrigin"> | undefined;
+  },
+  target: T,
 ) => {
   const origin = callerLinkOrigin(caller);
   return origin === undefined || target.linkOrigin?.sessionId === origin.sessionId

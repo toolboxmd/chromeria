@@ -107,7 +107,9 @@ Peer calls keep the calling agent's capability and mode limits. The destination
 checks its own declaration again against the narrower link grant. A direct
 full-access/default peer session can manage projects, preferences and scheduled
 tasks; narrower sessions and linked descendant agents retain the environment
-fence. Thread mutations remain restricted to the link's own threads. A peer
+fence. Thread and scheduled-task mutations remain restricted to the link's own work.
+Scheduled tasks retain their immutable link origin through edits, restarts and
+ordinary or checked launches; binding and execution recheck thread ownership. A peer
 cannot forward through the destination's links.
 
 Tools that act as their caller need a destination-owned thread. The selected
@@ -125,3 +127,7 @@ A forwarded HTML render prepares the document on the destination, including its
 local images, then stores that self-contained output in the originating thread.
 This preserves the local attachment reference consumed by web, desktop and
 mobile, without requiring a connection to the peer in the reader's client.
+
+Delegation keeps its task record and completion delivery on the source parent.
+Its top-level destination field aliases `target.environmentId`, entering the
+existing remote-delegation path rather than borrowing a destination parent.

@@ -2,6 +2,7 @@ import {
   EnvironmentId,
   OrchestratorMcpFailure,
   OrchestratorMcpThreadWaitInput,
+  OrchestratorMcpDelegateTaskInput,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -22,7 +23,7 @@ import { assertTargetWithinLimits, unavailable } from "./threadAccess.ts";
 export const fields = {
   environmentId: Schema.optional(EnvironmentId).annotate({
     description:
-      "Run this tool on a linked environment. IDs, paths and pending uploads name destination resources. Omit for this environment.",
+      "Run this tool on a linked environment. IDs, paths and pending uploads name destination resources. delegate_task keeps its source parent and launches its child there. Omit for this environment.",
   }),
   contextThreadId: Schema.optional(ThreadId).annotate({
     description:
@@ -45,6 +46,7 @@ export class CurrentTool extends Context.Reference<Tool.Any | undefined>("t3/mcp
 }) {}
 
 const decodePreparedDocument = Schema.decodeUnknownEffect(HtmlRender.PreparedDocument);
+const decodeDelegate = Schema.decodeUnknownEffect(OrchestratorMcpDelegateTaskInput);
 const decodeWait = Schema.decodeUnknownEffect(OrchestratorMcpThreadWaitInput);
 const target = Schema.decodeUnknownOption(Schema.Struct(fields));
 export const isRemote = (params: unknown, scope: Invocation.McpInvocationScope) => {
@@ -147,6 +149,23 @@ export const invoke = <P, A, E, R>(
     if (Option.isNone(scopeOption)) return yield* here;
     const scope = scopeOption.value;
     const environmentId = PeerForwarding.remoteTarget(scope, decoded.value.environmentId);
+    if (tool.name === "delegate_task" && decoded.value.environmentId !== undefined) {
+      const input = yield* decodeDelegate(params).pipe(Effect.mapError(unavailable));
+      if (
+        input.target?.environmentId !== undefined &&
+        input.target.environmentId !== decoded.value.environmentId
+      )
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "environmentId and target.environmentId must name the same destination.",
+        });
+      if (environmentId === undefined) return yield* here;
+      if (!scope.capabilities.has("orchestration"))
+        return yield* denied("This credential cannot delegate tasks.");
+      // Delegation records ownership and report-back here; only its child launches there.
+      // Both destination spellings use the existing RemoteDelegation service path.
+      return yield* handle({ ...input, target: { ...input.target, environmentId } } as P);
+    }
     if (environmentId === undefined) return yield* here;
     const capability = capabilityFor(tool.name);
     if (capability !== undefined && !scope.capabilities.has(capability))

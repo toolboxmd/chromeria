@@ -8,6 +8,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   RuntimeRequestId,
+  ScheduledTaskId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -237,6 +238,18 @@ const makeFixture = (realHtml = false) =>
         ThreadCommandExecutor.layer,
         Layer.mock(Orchestrator.OrchestratorMcpService)({
           listScheduledTasks: () => record("schedules-list", { tasks: [] }),
+          scheduleTask: (_scope, input) =>
+            record("schedule-create", {
+              scheduledTaskId: ScheduledTaskId.make("timer"),
+              title: "Timer",
+              prompt: input.prompt,
+              enabled: true,
+              projectId,
+              boundThreadId: null,
+              schedule: { type: "interval" as const, everyMs: 60_000 },
+              nextRunAt: null,
+              lastRunStatus: "never" as const,
+            }),
           deleteScheduledTask: (_scope, input) =>
             record("schedule-delete", { scheduledTaskId: input.scheduledTaskId, deleted: true }),
           createThreads: () => record("threads-create", { threads: [] }),
@@ -414,6 +427,17 @@ const makeFixture = (realHtml = false) =>
 const fixture = makeFixture();
 
 const cases = [
+  {
+    group: "scheduled creation",
+    name: "schedule_task",
+    args: {
+      projectId,
+      prompt: "Do peer work",
+      schedule: { type: "interval", everyMs: 60_000 },
+      bindToCurrentThread: false,
+    },
+    operation: "schedule-create",
+  },
   {
     group: "batch thread creation",
     name: "create_threads",
