@@ -104,6 +104,11 @@ import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingEr
 import * as FileSystem from "effect/FileSystem";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { assertProjectWorktree } from "../childThreads/workspaceAccess.ts";
+import {
+  delegatedTaskRuns,
+  delegatedResultTransfers,
+  latestDelegatedResultTransfer,
+} from "../childThreads/delegatedFollowups.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
@@ -432,11 +437,19 @@ function taskStatusForRun(
 }
 
 function delegatedTaskRun(
-  childProjection: Pick<OrchestrationV2ThreadProjection, "runs" | "contextTransfers">,
+  childProjection: Pick<OrchestrationV2ThreadProjection, "runs" | "contextTransfers"> &
+    Partial<Pick<OrchestrationV2ThreadProjection, "thread">>,
   task: OrchestrationV2Subagent,
 ): OrchestrationV2Run | undefined {
-  const taskRun = childProjection.runs.find((run) => run.delegatedTaskId === task.id);
-  if (taskRun !== undefined) return taskRun;
+  const boundRun = childProjection.runs
+    .filter((run) => run.delegatedTaskId === task.id)
+    .toSorted((a, b) => a.ordinal - b.ordinal)[0];
+  if (
+    childProjection.thread?.forkedFrom?.type === "node" &&
+    childProjection.thread.forkedFrom.nodeId !== task.id
+  ) {
+    return boundRun;
+  }
   const spawnTransfer = childProjection.contextTransfers.find(
     (transfer) =>
       transfer.type === "subagent_spawn" &&
@@ -444,7 +457,8 @@ function delegatedTaskRun(
       transfer.targetThreadId === task.childThreadId,
   );
   if (spawnTransfer === undefined) {
-    return childProjection.runs[0];
+    // The first binding remains the original run when the same job takes more work.
+    return boundRun ?? childProjection.runs.toSorted((a, b) => a.ordinal - b.ordinal)[0];
   }
   return spawnTransfer.targetRunId === null
     ? undefined
@@ -452,12 +466,20 @@ function delegatedTaskRun(
 }
 
 function hasPendingChildRuns(
-  childProjection: Pick<OrchestrationV2ThreadProjection, "runs">,
+  childProjection: Pick<OrchestrationV2ThreadProjection, "runs"> &
+    Partial<Pick<OrchestrationV2ThreadProjection, "messages">>,
   delegatedRun: OrchestrationV2Run | undefined,
 ): boolean {
+  // Held queued runs wait for the user to resume the child; task_cancel holds them.
+  const monitorIds = new Set(
+    (childProjection.messages ?? [])
+      .filter((message) => message.notification?.source.kind === "monitor")
+      .map((message) => message.runId),
+  );
   return childProjection.runs.some(
     (run) =>
       !ThreadManagementService.isTerminalRunStatus(run.status) &&
+      !monitorIds.has(run.id) &&
       !(run.status === "queued" && run.queueHeld === true) &&
       (delegatedRun === undefined || run.ordinal > delegatedRun.ordinal),
   );
@@ -555,28 +577,18 @@ function directAppOwnedChildTasks(
 
 function taskResultTransfer(
   parent: Pick<OrchestrationV2ThreadProjection, "thread" | "contextTransfers">,
-  child: Pick<OrchestrationV2ThreadProjection, "runs" | "contextTransfers">,
+  child: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "contextTransfers">,
   task: OrchestrationV2Subagent,
 ) {
-  const originalRun = delegatedTaskRun(child, task);
-  const resultRunIds = new Set(
-    child.runs
-      .filter(
-        (run) =>
-          run.delegatedTaskId === task.id ||
-          (originalRun?.delegatedTaskId === undefined && run.delegatedTaskId === undefined),
-      )
-      .map((run) => run.id),
-  );
-  if (originalRun !== undefined) resultRunIds.add(originalRun.id);
-  return parent.contextTransfers.find(
-    (transfer) =>
-      transfer.type === "subagent_result" &&
-      transfer.sourceThreadId === task.childThreadId &&
-      transfer.targetThreadId === parent.thread.id &&
-      ((transfer.sourcePoint.runId !== undefined && resultRunIds.has(transfer.sourcePoint.runId)) ||
-        (transfer.sourcePoint.runId === undefined && originalRun?.delegatedTaskId === undefined)),
-  );
+  const ordinals = new Map(child.runs.map((run) => [run.id, run.ordinal]));
+  const ordinal = (transfer: (typeof parent.contextTransfers)[number]) =>
+    transfer.sourcePoint.runId === undefined ? 0 : (ordinals.get(transfer.sourcePoint.runId) ?? 0);
+  return delegatedResultTransfers(
+    child,
+    task.id,
+    parent.contextTransfers,
+    parent.thread.id,
+  ).toSorted((a, b) => ordinal(a) - ordinal(b))[0];
 }
 
 function pageIncludesTerminalTaskResult(input: {
@@ -589,7 +601,12 @@ function pageIncludesTerminalTaskResult(input: {
   >;
   readonly maxChars: number;
 }): boolean {
-  const transfer = taskResultTransfer(input.parent, input.target, input.task);
+  const transfer = latestDelegatedResultTransfer(
+    input.target,
+    input.task.id,
+    input.parent.contextTransfers,
+    input.parent.thread.id,
+  );
   if (transfer === undefined) return false;
   const run =
     transfer.sourcePoint.runId === undefined
@@ -1450,14 +1467,17 @@ const make = Effect.gen(function* () {
     const childRun = delegatedTaskRun(childControls, task);
     const terminalRun = latestTerminalResultRun(childControls, childRun);
     const progress = delegatedTaskProgress(childControls);
+    const isOriginalTask =
+      childControls.thread.forkedFrom?.type === "node" &&
+      childControls.thread.forkedFrom.nodeId === task.id;
     const taskResultRun =
-      childRun?.delegatedTaskId === task.id
-        ? childControls.runs
-            .filter((run) => run.delegatedTaskId === task.id)
+      !isOriginalTask && childRun?.delegatedTaskId === task.id
+        ? delegatedTaskRuns(childControls, task.id)
+            .filter((run) => !(run.status === "queued" && run.queueHeld === true))
             .toSorted((a, b) => b.ordinal - a.ordinal)[0]
         : progress.resultRun;
     const taskWorkState =
-      childRun?.delegatedTaskId === task.id
+      !isOriginalTask && childRun?.delegatedTaskId === task.id
         ? isTerminalTaskStatus(taskStatusForRun(taskResultRun))
           ? "result_available"
           : "working"
@@ -1525,6 +1545,18 @@ const make = Effect.gen(function* () {
           null);
     const resultTransfer = taskResultTransfer(parentProjection, childProjection, task) ?? null;
     const terminalStatus = terminalRun === undefined ? null : taskStatusForRun(terminalRun);
+    const workRuns = delegatedTaskRuns(childControls, task.id);
+    const continuedSources = new Set(workRuns.map((run) => run.restartContinuationOfRunId));
+    const pendingRestart =
+      workRuns.some(
+        (run) =>
+          (run.status === "cancelled" || run.restartCancelledBackgroundWork !== undefined) &&
+          !continuedSources.has(run.id) &&
+          (childRun === undefined || run.ordinal > childRun.ordinal),
+      ) &&
+      (yield* threadManagement
+        .delegatedTaskResultPending(task.childThreadId, task.id)
+        .pipe(Effect.mapError(threadManagementFailure)));
     const latestTerminalSummary = canExposeTaskRunResult(terminalRun)
       ? terminalRun.id === childRun?.id
         ? derivedResult
@@ -1548,7 +1580,7 @@ const make = Effect.gen(function* () {
       childNodeId: task.id,
       status,
       workState,
-      hasPendingChildRuns: hasPendingChildRuns(childProjection, childRun),
+      hasPendingChildRuns: hasPendingChildRuns(childProjection, childRun) || pendingRestart,
       providerInstanceId: modelSelection.instanceId,
       model: modelSelection.model,
       options: modelSelection.options ?? [],
@@ -2929,7 +2961,12 @@ const make = Effect.gen(function* () {
         (input.textOffset ?? 0) === 0
       ) {
         for (const task of tasks) {
-          const transfer = taskResultTransfer(parent, target, task);
+          const transfer = latestDelegatedResultTransfer(
+            target,
+            task.id,
+            parent.contextTransfers,
+            parent.thread.id,
+          );
           const resultRunId = transfer?.sourcePoint.runId ?? delegatedTaskRun(target, task)?.id;
           const resultRunIds = resultRunId === undefined ? [] : [resultRunId];
           const resultRecords = yield* threadManagement

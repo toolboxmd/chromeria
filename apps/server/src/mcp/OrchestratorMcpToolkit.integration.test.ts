@@ -5,6 +5,7 @@ import {
   EnvironmentId,
   isProviderNativeSubagentThread,
   MessageId,
+  NodeId,
   type ModelSelection,
   OrchestratorMcpDelegateTaskResult,
   OrchestratorMcpThreadInterruptResult,
@@ -376,12 +377,18 @@ describe("orchestrator MCP toolkit", () => {
             latestTerminalResultContextTransferId: null,
           });
           expect(delegated.resultContextTransferId).not.toBeNull();
+          const originalTask = (yield* orchestrator.getThreadProjection(
+            parentThreadId,
+          )).subagents.find((task) => task.id === delegated.taskId)!;
 
           const delegatedChild = yield* orchestrator.getThreadProjection(
             localChild(delegated.childThreadId),
           );
           expect(delegatedChild.thread.lineage.relationshipToParent).toBe("subagent");
           expect(isProviderNativeSubagentThread(delegatedChild.thread)).toBe(false);
+          expect(
+            delegatedChild.runs.find((run) => run.id === delegated.childRunId)?.delegatedTaskId,
+          ).toBe(delegated.taskId);
           const followupStartSequence = yield* orchestrator.getThreadEventSequence(
             localChild(delegated.childThreadId),
           );
@@ -480,6 +487,7 @@ describe("orchestrator MCP toolkit", () => {
           const finalSequence = yield* orchestrator.getThreadEventSequence(
             localChild(delegated.childThreadId),
           );
+          const finalParentSequence = yield* orchestrator.getThreadEventSequence(parentThreadId);
           const interruptCall = yield* invoke("t3_thread_interrupt", {
             threadId: localChild(delegated.childThreadId),
             runId: runningFollowup.runId,
@@ -534,30 +542,53 @@ describe("orchestrator MCP toolkit", () => {
           yield* orchestrator
             .streamStoredEventsFrom({
               threadId: parentThreadId,
-              afterSequence: finalSequence,
+              afterSequence: finalParentSequence,
             })
             .pipe(
               Stream.filter(
                 (stored) =>
-                  stored.event.type === "subagent.updated" &&
-                  stored.event.payload.id === followupTasks[1]!.id &&
-                  stored.event.payload.status === "completed",
+                  stored.event.type === "context-transfer.created" &&
+                  stored.event.payload.type === "subagent_result" &&
+                  stored.event.payload.sourceThreadId === delegated.childThreadId &&
+                  stored.event.payload.sourcePoint.runId === queuedFollowup.runId,
               ),
               Stream.runHead,
               Effect.flatMap(
                 Option.match({
-                  onNone: () => Effect.die("Follow-up task did not settle."),
+                  onNone: () => Effect.die("Queued follow-up result did not reach the parent."),
                   onSome: () => Effect.void,
                 }),
               ),
             );
           const finishedParent = yield* orchestrator.getThreadProjection(parentThreadId);
           expect(
-            finishedParent.subagents.find((task) => task.id === followupTasks[0]!.id)?.status,
-          ).toBe("interrupted");
+            finishedParent.contextTransfers.some(
+              (transfer) =>
+                transfer.type === "subagent_result" &&
+                transfer.sourceThreadId === delegated.childThreadId &&
+                transfer.sourcePoint.runId === runningFollowup.runId,
+            ),
+          ).toBe(true);
+          const finishedTask = finishedParent.subagents.find(
+            (task) => task.id === delegated.taskId,
+          )!;
+          const {
+            completionDelivery: _firstDelivery,
+            updatedAt: _firstUpdatedAt,
+            ...firstResult
+          } = originalTask;
+          const {
+            completionDelivery: _delivery,
+            updatedAt: _updatedAt,
+            ...stableResult
+          } = finishedTask;
+          expect(stableResult).toEqual(firstResult);
           expect(
-            finishedParent.subagents.find((task) => task.id === followupTasks[1]!.id),
-          ).toMatchObject({
+            finishedParent.subagents.filter(
+              (task) => task.childThreadId === delegated.childThreadId,
+            ),
+          ).toHaveLength(1);
+          expect(finishedTask).toMatchObject({
             status: "completed",
             result,
           });
@@ -568,10 +599,7 @@ describe("orchestrator MCP toolkit", () => {
                 transfer.sourceThreadId === delegated.childThreadId,
             ),
           ).toHaveLength(3);
-          expect(
-            finishedParent.subagents.find((task) => task.id === followupTasks[1]!.id)
-              ?.completionDelivery?.state,
-          ).toBe("claimed");
+          expect(finishedTask.completionDelivery?.state).toBe("claimed");
           const finalStatusCall = yield* invoke("task_status", {
             taskId: delegated.taskId,
           });
