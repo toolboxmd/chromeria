@@ -1222,6 +1222,58 @@ it.effect(
     }),
 );
 
+it.effect(
+  "bare session open drops accidental native ContextMD instructions at the adapter boundary",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const forwarded = yield* Ref.make<Array<string | undefined>>([]);
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-bare-native-instructions");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const input = {
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy: { ...runtimePolicy, bare: { additions: [] } },
+          newSessionInstructions: "UNNAMED_CONTEXTMD_NATIVE_POINTER",
+        };
+        const first = yield* manager.open(input);
+        const cached = yield* manager.open(input);
+        assert.strictEqual(cached, first);
+        assert.deepEqual(yield* Ref.get(forwarded), [undefined]);
+        assert.equal((yield* Ref.get(state)).openCount, 1);
+        yield* manager.close(providerSessionId);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            bareSupport: Effect.succeed({ supported: true }),
+            beforeOpen: (input) =>
+              Effect.sync(() => {
+                assert.notProperty(input, "newSessionInstructions");
+              }).pipe(
+                Effect.andThen(
+                  Ref.update(forwarded, (values) => [...values, input.newSessionInstructions]),
+                ),
+              ),
+          }),
+        ),
+      );
+    }),
+);
+
 it.effect("ProviderSessionManagerV2 cleans up an open interrupted mid-handshake", () =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);

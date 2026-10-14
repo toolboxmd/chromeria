@@ -2133,7 +2133,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           newSessionRules?: string,
         ): AcpAdapterV2RuntimeInput => {
           return {
-            ...(newSessionRules === undefined ? {} : { newSessionRules }),
+            ...(input.runtimePolicy.bare !== undefined || newSessionRules === undefined
+              ? {}
+              : { newSessionRules }),
             cwd: input.runtimePolicy.cwd ?? process.cwd(),
             runtimePolicy: input.runtimePolicy,
             mcpServers: mcpContext.servers,
@@ -6305,7 +6307,11 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           result: AcpSessionRuntime.AcpSessionRuntimeStartResult,
           site: "open" | "fallback" | "rollback",
         ) => {
-          if (driver === "grok" && result.newSessionRules !== undefined)
+          if (
+            input.runtimePolicy.bare === undefined &&
+            driver === "grok" &&
+            result.newSessionRules !== undefined
+          )
             createdWith.push({
               nativeSessionId: result.sessionId,
               text: result.newSessionRules,

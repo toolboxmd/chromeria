@@ -2141,7 +2141,8 @@ export const layerWithOptions = (
               yield* agentScope.clear(input.threadId);
               const runtime = yield* adapter
                 .openSession({
-                  ...(input.newSessionInstructions === undefined
+                  ...(input.runtimePolicy.bare !== undefined ||
+                  input.newSessionInstructions === undefined
                     ? {}
                     : { newSessionInstructions: input.newSessionInstructions }),
                   threadId: input.threadId,

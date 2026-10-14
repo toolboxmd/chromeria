@@ -34,6 +34,7 @@ import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuth from "../provider/ProviderAuthService.ts";
+import * as ContextmdServing from "../contextmd/ContextmdServing.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 
 /** External native-runtime and store ports, with the real turn-start owner and projector. */
@@ -44,10 +45,12 @@ function harness(
     resumeFailure?: boolean;
     missed?: "user" | "mixed";
     fork?: "before-carrier" | "after-carrier";
+    driver?: "codex" | "grok";
+    bare?: boolean;
   } = {},
 ) {
   const now = DateTime.makeUnsafe("2026-10-14T00:00:00Z");
-  const driver = ProviderDriverKind.make("codex");
+  const driver = ProviderDriverKind.make(options.driver ?? "codex");
   const instanceId = ProviderInstanceId.make("bare-history");
   const threadId = ThreadId.make("thread:bare-history");
   const runId = RunId.make("run:bare-history:current");
@@ -58,11 +61,19 @@ function harness(
   const providerThreadId = ProviderThreadId.make("provider-thread:bare-history");
   const sessionId = ProviderSessionId.make("session:bare-history");
   const selection = { instanceId, model: "test" };
-  const bare = {
-    additions: [
-      { type: "file" as const, path: "/named.txt", sha256: "a".repeat(64), byteCount: 10 },
-    ],
-  };
+  const bare =
+    options.bare === false
+      ? undefined
+      : {
+          additions: [
+            {
+              type: "skill" as const,
+              path: "/named/SKILL.md",
+              sha256: "a".repeat(64),
+              byteCount: 10,
+            },
+          ],
+        };
   const nativeRef = { driver, nativeId: "bare-native", strength: "strong" as const };
   const providerThread = {
     id: providerThreadId,
@@ -163,7 +174,7 @@ function harness(
       title: "Bare history",
       providerInstanceId: instanceId,
       modelSelection: selection,
-      bare,
+      ...(bare === undefined ? {} : { bare }),
       coOwners: [],
       createdBy: "user",
       creationSource: "web",
@@ -278,6 +289,13 @@ function harness(
   const sourceThreadId = ThreadId.make("thread:bare-history:source");
   const source: OrchestrationV2ThreadProjection = {
     ...projection,
+    providerThreads: [
+      {
+        ...providerThread,
+        appThreadId: sourceThreadId,
+        nativeThreadRef: { ...nativeRef, nativeId: "source-native" },
+      },
+    ],
     runs: [previousRun],
     attempts: [
       { ...attempt, id: previousAttempt, runId: previousId, nativeThreadId: "source-native" },
@@ -310,6 +328,18 @@ function harness(
     };
   }
   const delivered: ProviderAdapter.ProviderAdapterV2TurnInput[] = [];
+  const contextmd = {
+    stageSessionInstructions: vi.fn(() =>
+      Effect.succeed({
+        reservation: "contextmd-reservation",
+        text: "UNNAMED_CONTEXTMD_NATIVE_POINTER",
+      }),
+    ),
+    recordInstallations: vi.fn(() => Effect.void),
+    attachSessionInstructions: vi.fn(() => Effect.void),
+    recordNativeFork: vi.fn(() => Effect.void),
+    releaseSessionInstructions: vi.fn(() => Effect.void),
+  };
   const additions = vi.fn(() => Effect.succeed("NAMED_BODY"));
   const ensure = vi.fn(() => Effect.succeed({ ...providerThread, nativeThreadRef: nativeRef }));
   const resume = vi.fn(() =>
@@ -340,6 +370,13 @@ function harness(
       lastError: null,
     },
     events: Stream.never,
+    createdSessions: () => [
+      {
+        nativeSessionId: nativeRef.nativeId,
+        text: "UNNAMED_CONTEXTMD_NATIVE_POINTER",
+        site: "open",
+      },
+    ],
     ensureThread: ensure,
     resumeThread: resume,
     startTurn: (turn) =>
@@ -353,12 +390,16 @@ function harness(
     rollbackThread: () => Effect.die("unexpected rollback"),
     forkThread: () => Effect.succeed({ ...providerThread, nativeThreadRef: nativeRef }),
   };
+  const open = vi.fn<ProviderSessions.ProviderSessionManagerV2["Service"]["open"]>(() =>
+    Effect.succeed(session),
+  );
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         IdAllocator.layer,
         FileSystem.layerNoop({}),
         Layer.mock(BareLaunch.BareLaunch)({ deliveryText: additions }),
+        Layer.mock(ContextmdServing.ContextmdServing)(contextmd),
         Layer.mock(ContextHandoff.ContextHandoffServiceV2)({}),
         Layer.mock(GitWorkflow.GitWorkflowService)({}),
         Layer.mock(ProjectService.ProjectService)({}),
@@ -368,14 +409,14 @@ function harness(
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({
           resolve: () =>
             Effect.succeed({
-              bare,
+              ...(bare === undefined ? {} : { bare }),
               runtimeMode: "approval-required",
               interactionMode: "default",
               cwd: "/workspace",
             }),
         }),
         Layer.mock(ProviderSessions.ProviderSessionManagerV2)({
-          open: () => Effect.succeed(session),
+          open,
         }),
         Layer.mock(EventSink.EventSinkV2)({
           writeIfRunCurrent: ({ events }) =>
@@ -426,6 +467,8 @@ function harness(
     additions,
     ensure,
     resume,
+    open,
+    contextmd,
     projection: () => projection,
     start: Effect.gen(function* () {
       yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2).start({ threadId, runId });
@@ -508,5 +551,54 @@ it.effect.each(["before-carrier", "after-carrier"] as const)(
       expect(h.delivered.map((turn) => turn.message.text)).toEqual([
         fork === "after-carrier" ? "Run the task." : "NAMED_BODY\n\nRun the task.",
       ]);
+      for (const effect of Object.values(h.contextmd)) expect(effect).not.toHaveBeenCalled();
     }),
+);
+
+it.effect.each([false, true])(
+  "bare Grok bypasses ContextMD lifecycle with named skill body, recovery=%s",
+  (resumeFailure) =>
+    Effect.gen(function* () {
+      const h = harness({ driver: "grok", resumeFailure });
+      yield* h.start;
+      expect(h.open).toHaveBeenCalledOnce();
+      expect(h.open.mock.calls[0]?.[0]).not.toHaveProperty("newSessionInstructions");
+      expect(h.delivered.map((turn) => turn.message.text)).toEqual(["NAMED_BODY\n\nRun the task."]);
+      for (const effect of Object.values(h.contextmd)) expect(effect).not.toHaveBeenCalled();
+    }),
+);
+
+it.effect("normal Grok retains native instructions and lifecycle accounting", () =>
+  Effect.gen(function* () {
+    const h = harness({ driver: "grok", bare: false });
+    yield* h.start;
+    expect(h.open.mock.calls[0]?.[0].newSessionInstructions).toBe(
+      "UNNAMED_CONTEXTMD_NATIVE_POINTER",
+    );
+    expect(h.delivered.map((turn) => turn.message.text)).toEqual(["Run the task."]);
+    expect(h.contextmd.stageSessionInstructions).toHaveBeenCalledOnce();
+    expect(h.contextmd.recordInstallations).toHaveBeenCalledOnce();
+    expect(h.contextmd.attachSessionInstructions).toHaveBeenCalledOnce();
+    expect(h.contextmd.releaseSessionInstructions).toHaveBeenCalledWith("contextmd-reservation");
+    expect(h.additions).not.toHaveBeenCalled();
+  }),
+);
+
+it.effect("normal native forks retain ContextMD accounting", () =>
+  Effect.gen(function* () {
+    const h = harness({ bare: false, fork: "after-carrier" });
+    yield* h.start;
+    expect(h.contextmd.recordNativeFork).toHaveBeenCalledOnce();
+    expect(h.contextmd.recordNativeFork).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: expect.objectContaining({
+          nativeThreadRef: expect.objectContaining({ nativeId: "source-native" }),
+        }),
+        target: expect.objectContaining({
+          nativeThreadRef: expect.objectContaining({ nativeId: "bare-native" }),
+        }),
+      }),
+    );
+    expect(h.delivered.map((turn) => turn.message.text)).toEqual(["Run the task."]);
+  }),
 );

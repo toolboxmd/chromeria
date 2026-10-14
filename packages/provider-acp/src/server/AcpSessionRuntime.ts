@@ -2348,11 +2348,17 @@ export const make = (
           }
         } else {
           const createPayload = {
-            ...(options.newSessionRules === undefined
+            ...(options.newSessionRules === undefined && options.sessionMeta === undefined
               ? {}
-              : { _meta: { rules: options.newSessionRules } }),
+              : {
+                  _meta: {
+                    ...options.sessionMeta,
+                    ...(options.newSessionRules === undefined
+                      ? {}
+                      : { rules: options.newSessionRules }),
+                  },
+                }),
             cwd: options.cwd,
-            ...(options.sessionMeta === undefined ? {} : { _meta: options.sessionMeta }),
             mcpServers: sessionMcpServers(initializeResult),
             ...additionalDirectories,
           } satisfies EffectAcpSchema.NewSessionRequest;

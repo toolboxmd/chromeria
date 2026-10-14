@@ -119,7 +119,7 @@ export const layer: Layer.Layer<
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
-    const contextmd = yield* ContextmdServing.ContextmdServing;
+    const contextmdServing = yield* ContextmdServing.ContextmdServing;
 
     // These callbacks outlive startup while a run drains background work. Build
     // them outside start's scope so they cannot retain its full thread history.
@@ -234,6 +234,7 @@ export const layer: Layer.Layer<
     ) {
       const { runId } = input;
       const projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
+      const contextmd = projection.thread.bare === undefined ? contextmdServing : undefined;
       const run = projection.runs.find((candidate) => candidate.id === runId);
       if (run === undefined) {
         return yield* new ProviderTurnStartError({ runId, cause: `Run ${runId} was not found.` });
@@ -537,17 +538,17 @@ export const layer: Layer.Layer<
         (candidate) => candidate.id === providerSessionId,
       );
       const instructionStage =
-        providerThread.driver === "grok"
+        contextmd !== undefined && providerThread.driver === "grok"
           ? yield* contextmd.stageSessionInstructions({
               driver: providerThread.driver,
               threadId: projection.thread.id,
               runId: run.id,
             })
-          : { reservation: null, text: undefined };
-      onInstructionsStaged(instructionStage.reservation);
+          : undefined;
+      if (instructionStage !== undefined) onInstructionsStaged(instructionStage.reservation);
       const sessionResult = yield* Effect.result(
         providerSessions.open({
-          ...(instructionStage.text === undefined
+          ...(instructionStage?.text === undefined
             ? {}
             : { newSessionInstructions: instructionStage.text }),
           threadId: projection.thread.id,
@@ -611,7 +612,7 @@ export const layer: Layer.Layer<
         return;
       }
       const session = sessionResult.success;
-      if (session.driver === "grok") {
+      if (contextmd !== undefined && session.driver === "grok") {
         const bound = yield* Effect.result(
           contextmd.recordInstallations(session.createdSessions?.() ?? [], {
             threadId: projection.thread.id,
@@ -715,7 +716,7 @@ export const layer: Layer.Layer<
                 : { providerTurnId: sourceProviderTurn.id }),
             }),
           );
-          if (forked !== undefined)
+          if (contextmd !== undefined && forked !== undefined)
             yield* contextmd.recordNativeFork({
               driver: session.driver,
               threadId: projection.thread.id,
@@ -895,7 +896,7 @@ export const layer: Layer.Layer<
       if (!(yield* isCurrentAttemptInStatus("starting"))) {
         return;
       }
-      if (session.driver === "grok") {
+      if (contextmd !== undefined && session.driver === "grok") {
         const nativeSessionId = loadedProviderThread.nativeThreadRef?.nativeId;
         if (nativeSessionId == null)
           return yield* new ContextmdServing.SessionInstructionsError({
@@ -908,7 +909,7 @@ export const layer: Layer.Layer<
             threadId: projection.thread.id,
             runId: run.id,
             nativeSessionId,
-            reservation: instructionStage.reservation,
+            reservation: instructionStage?.reservation ?? null,
           }),
         );
         if (attached._tag === "Failure") {
@@ -1484,12 +1485,16 @@ export const layer: Layer.Layer<
       start: (input) =>
         Effect.suspend(() => {
           // This reservation belongs to one start attempt, including every early return and failure.
-          let reservation: string | null = null;
+          let reservation: string | null | undefined;
           return start(input, (staged) => {
             reservation = staged;
           }).pipe(
             Effect.ensuring(
-              Effect.suspend(() => contextmd.releaseSessionInstructions(reservation)),
+              Effect.suspend(() =>
+                reservation === undefined
+                  ? Effect.void
+                  : contextmdServing.releaseSessionInstructions(reservation),
+              ),
             ),
             Effect.mapError((cause) =>
               isProviderTurnStartError(cause)
