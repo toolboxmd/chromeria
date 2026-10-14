@@ -10,6 +10,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as ContextmdServing from "../contextmd/ContextmdServing.ts";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -91,6 +92,7 @@ it.effect.each([
       runsToRollback: [{ id: "later-run", ordinal: 1, status: "completed", rootNodeId: null }],
     } as unknown as ProjectionCheckpointRollbackContext;
     const layerTest = CheckpointRollbackService.layer.pipe(
+      Layer.provide(Layer.mock(ContextmdServing.ContextmdServing)({})),
       Layer.provide(
         Layer.mergeAll(
           NodeServices.layer,

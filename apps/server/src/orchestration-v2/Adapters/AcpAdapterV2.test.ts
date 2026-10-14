@@ -816,6 +816,93 @@ describe("AcpAdapterV2", () => {
     }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
+  it.effect.each([false, true])(
+    "receipts cover Grok open/fallback and rollback creation, fallback=%s",
+    (fallback) =>
+      Effect.gen(function* () {
+        const requests: Array<AcpSessionRuntime.AcpSessionRequestLogEvent> = [];
+        const native = makeMockRuntime({
+          childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+          mockAgentPath: yield* (yield* Path.Path).fromFileUrl(
+            new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+          ),
+          environment: fallback ? { T3_ACP_FAIL_LOAD_SESSION: "1" } : {},
+        });
+        const instanceId = ProviderInstanceId.make("grok-pointer-test");
+        const threadId = ThreadId.make("thread-grok-pointer-test");
+        const adapter = yield* makeAcpAdapterV2({
+          instanceId,
+          selfInvocation: yield* resolveSelfInvocation(),
+          flavor: {
+            driver: ProviderDriverKind.make("grok"),
+            capabilities: AcpProviderCapabilitiesV2,
+            makeRuntime: (input) =>
+              native({
+                ...input,
+                requestLogger: (event) =>
+                  Effect.sync(() => {
+                    requests.push(event);
+                  }),
+              }),
+          },
+        });
+        const policy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const selection = { instanceId, model: "default" };
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("session-grok-pointer-test"),
+          modelSelection: selection,
+          runtimePolicy: policy,
+          newSessionInstructions: "installed A",
+          ...(fallback ? { initialNativeThreadId: "missing-session" } : {}),
+        });
+        const receipts = runtime.createdSessions!();
+        assert.lengthOf(receipts, 1);
+        assert.strictEqual(receipts[0]!.text, "installed A");
+        assert.strictEqual(receipts[0]!.site, fallback ? "fallback" : "open");
+        const thread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection: selection,
+          runtimePolicy: policy,
+        });
+        assert.strictEqual(thread.nativeThreadRef?.nativeId, receipts[0]!.nativeSessionId);
+        const replacement = yield* runtime.rollbackThread({
+          providerThread: thread,
+          target: {
+            type: "thread_start",
+            appRunOrdinal: 0,
+            checkpointId: CheckpointId.make("instructions-rollback"),
+          },
+          providerThreadTurns: [],
+          newSessionInstructions: "installed B",
+        });
+        const all = runtime.createdSessions!();
+        assert.lengthOf(all, 2);
+        assert.strictEqual(all[1]!.site, "rollback");
+        assert.strictEqual(all[1]!.text, "installed B");
+        assert.strictEqual(
+          all[1]!.nativeSessionId,
+          replacement.providerThread.nativeThreadRef?.nativeId,
+        );
+        const calls = requests.filter((event) => event.status === "started");
+        assert.deepStrictEqual(
+          calls
+            .filter((event) => event.method === "session/new")
+            .map((event) => (event.payload as { _meta: { rules: string } })._meta.rules),
+          ["installed A", "installed B"],
+        );
+        assert.isFalse(calls.some((event) => event.method === "session/prompt"));
+        for (const event of calls.filter(
+          (event) => event.method === "initialize" || event.method === "session/load",
+        ))
+          assert.notNestedProperty((event.payload ?? {}) as object, "_meta.rules");
+      }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
   it.live.each(["failed", "recovered", "cancelled"] as const)(
     "projects Mistral retry notices and their %s outcome",
     (outcome) =>

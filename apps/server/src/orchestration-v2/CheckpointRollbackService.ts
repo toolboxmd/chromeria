@@ -35,6 +35,7 @@ import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAda
 import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
 import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
+import * as ContextmdServing from "../contextmd/ContextmdServing.ts";
 
 export const ROLLBACK_FAILED_MESSAGE =
   "The provider could not roll back this conversation. Try again; if it keeps failing, check the provider and server logs.";
@@ -118,6 +119,7 @@ export const layer: Layer.Layer<
   | ServerConfig.ServerConfig
   | ServerSettings.ServerSettingsService
   | ThreadCommandExecutor.ThreadCommandExecutor
+  | ContextmdServing.ContextmdServing
 > = Layer.effect(
   CheckpointRollbackServiceV2,
   Effect.gen(function* () {
@@ -133,6 +135,7 @@ export const layer: Layer.Layer<
     const path = yield* Path.Path;
     const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
+    const contextmd = yield* ContextmdServing.ContextmdServing;
 
     const execute = Effect.fn("orchestrationV2.checkpointRollback.execute")(function* (input: {
       readonly threadId: ThreadId;
@@ -265,14 +268,23 @@ export const layer: Layer.Layer<
           (turn.runAttemptId === null || !rolledBackAttemptIds.has(turn.runAttemptId)),
       );
 
+      const newSessionInstructions =
+        session.driver === "grok" && runsToRollback.length > 0
+          ? yield* contextmd.currentInstructions(session.driver)
+          : undefined;
       const snapshot =
         runsToRollback.length === 0
           ? { providerThread }
           : yield* session.rollbackThread({
+              ...(newSessionInstructions === undefined ? {} : { newSessionInstructions }),
               providerThread,
               target: rollbackTarget,
               providerThreadTurns,
             });
+      if (session.driver === "grok")
+        yield* contextmd.recordInstallations(session.createdSessions?.() ?? [], {
+          threadId: input.threadId,
+        });
       if (input.restoreFiles !== false) yield* checkpoints.restore({ scope, checkpoint });
       if (staleCheckpoints.length > 0) {
         yield* checkpoints.deleteStaleRefs({ scope, checkpoints: staleCheckpoints });

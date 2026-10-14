@@ -7,6 +7,7 @@ import {
   MessageId,
   NodeId,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2ThreadProjection,
   ProviderDriverKind,
   ProviderTurnId,
   RunAttemptId,
@@ -45,11 +46,13 @@ import * as ProjectStore from "./ProjectStore.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import * as ContextmdServing from "../contextmd/ContextmdServing.ts";
 
 const unrelatedProject = Option.some({
   workspaceRoot: "/nonexistent/t3-rollback-project",
 } as never);
 const layerCheckpointRollbackService = CheckpointRollbackService.layer.pipe(
+  Layer.provide(Layer.mock(ContextmdServing.ContextmdServing)({})),
   Layer.provide(
     Layer.mergeAll(
       NodeServices.layer,
@@ -220,6 +223,7 @@ it.effect.each([
       providerTurns: [],
     } as unknown as ProjectionStore.ProjectionCheckpointRollbackContext;
     const testLayer = CheckpointRollbackService.layer.pipe(
+      Layer.provide(Layer.mock(ContextmdServing.ContextmdServing)({})),
       Layer.provide(
         Layer.mergeAll(
           ThreadCommandExecutor.layer,
@@ -729,5 +733,137 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
           );
         }),
     );
+  },
+);
+
+it.effect.each([{ failBind: false }, { failBind: true }])(
+  "rolls back a Grok session with its instructions and records them, %s",
+  ({ failBind }) => {
+    const threadId = ThreadId.make("rewind-grok");
+    const providerThreadId = ProviderThreadId.make("rewind-grok-provider");
+    const providerSessionId = ProviderSessionId.make("rewind-grok-session");
+    const instanceId = ProviderInstanceId.make("rewind-grok-instance");
+    const checkpointId = CheckpointId.make("rewind-grok-start");
+    const scopeId = CheckpointScopeId.make("rewind-grok-scope");
+    const calls: string[] = [];
+    const providerThread = {
+      id: providerThreadId,
+      providerSessionId,
+      providerInstanceId: instanceId,
+    };
+    const projection = {
+      thread: {
+        worktreePath: process.cwd(),
+        activeProviderThreadId: providerThreadId,
+        modelSelection: { instanceId, model: "test" },
+      },
+      providerThreads: [providerThread],
+      providerSessions: [],
+      providerTurns: [1, 2, 3].map((ordinal) => ({
+        id: `turn-${ordinal}`,
+        providerThreadId,
+        runAttemptId: `attempt-${ordinal}`,
+        ordinal,
+        status: "completed",
+      })),
+      nodes: [],
+      attempts: [1, 2, 3].map((ordinal) => ({ id: `attempt-${ordinal}`, runId: `run-${ordinal}` })),
+      checkpoints: [{ id: checkpointId, scopeId, status: "ready", appRunOrdinal: null }],
+      checkpointScopes: [{ id: scopeId, cwd: process.cwd() }],
+      runs: [1, 2, 3].map((ordinal) => ({
+        id: `run-${ordinal}`,
+        ordinal,
+        status: ordinal === 3 ? "rolled_back" : "completed",
+        rootNodeId: null,
+        activeAttemptId: `attempt-${ordinal}`,
+      })),
+    } as unknown as OrchestrationV2ThreadProjection;
+    const layerTest = CheckpointRollbackService.layer.pipe(
+      Layer.provide(
+        Layer.mock(ContextmdServing.ContextmdServing)({
+          currentInstructions: () =>
+            Effect.sync(() => {
+              calls.push("instructions");
+              return "rules A";
+            }),
+          recordInstallations: (receipts) =>
+            Effect.gen(function* () {
+              calls.push("bind");
+              assert.deepEqual(receipts, [
+                { nativeSessionId: "replacement", text: "rules A", site: "rollback" },
+              ]);
+              if (failBind)
+                return yield* new ContextmdServing.SessionInstructionsError({
+                  operation: "record",
+                  cause: "unwritable",
+                });
+            }),
+        }),
+      ),
+      Layer.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          Layer.mock(ServerConfig.ServerConfig)({ worktreesDir: "/synthetic-worktrees" } as never),
+          ServerSettings.layerTest(),
+          Layer.mock(GitWorkflow.GitWorkflowService)({}),
+          Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeed(unrelatedProject) }),
+          ThreadCommandExecutor.layer,
+          Layer.mock(CheckpointService.CheckpointServiceV2)({}),
+          Layer.mock(EventSink.EventSinkV2)({
+            write: () =>
+              Effect.sync(() => {
+                calls.push("projection");
+                return [];
+              }),
+          }),
+          IdAllocator.layer,
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getThreadRecords: () => Effect.succeed(projection),
+            getThreadProviderContext: () => Effect.succeed({ providerSessions: [] } as never),
+            getCheckpointContext: () =>
+              Effect.succeed({
+                checkpointScopes: [{ cwd: process.cwd() }],
+                runs: [],
+                checkpoints: [],
+              } as never),
+            getShellSnapshot: () =>
+              Effect.succeed({
+                schemaVersion: 1,
+                snapshotSequence: 0,
+                threads: [],
+                archivedThreads: [],
+              }),
+          }),
+          Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+            open: () =>
+              Effect.succeed({
+                driver: "grok",
+                createdSessions: () => [
+                  { nativeSessionId: "replacement", text: "rules A", site: "rollback" as const },
+                ],
+                rollbackThread: (input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) =>
+                  Effect.sync(() => {
+                    assert.equal(input.newSessionInstructions, "rules A");
+                    calls.push("provider");
+                    return { providerThread };
+                  }),
+              } as never),
+          }),
+          Layer.mock(RuntimePolicy.RuntimePolicyV2)({ resolve: () => Effect.succeed({} as never) }),
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      const service = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
+      const input = { threadId, providerThreadId, checkpointId, scopeId, restoreFiles: false };
+      if (failBind) {
+        const error = yield* Effect.flip(service.execute(input));
+        assert.equal(error.reason, "unexpected-failure");
+        assert.deepEqual(calls, ["instructions", "provider", "bind"]);
+        return;
+      }
+      yield* service.execute(input);
+      assert.deepEqual(calls, ["instructions", "provider", "bind", "projection"]);
+    }).pipe(Effect.provide(layerTest));
   },
 );

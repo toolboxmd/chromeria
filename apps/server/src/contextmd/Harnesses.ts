@@ -40,7 +40,11 @@ export interface Harness {
   /** How long a reply may wait for its settle: the hook settles at once, OpenCode when the model reads it. */
   readonly settleWithinMs: number;
   readonly sessionStartLimitBytes: number;
-  readonly templates: { readonly context: unknown; readonly deny: unknown };
+  readonly templates: {
+    readonly context: unknown;
+    readonly deny: unknown;
+    readonly pointer?: unknown;
+  };
   /** Where the module can see what the model was shown for a denied call. */
   readonly denyEvidence: "projection" | "none";
   readonly shownEvidence: "claude_request_replay" | "codex_rollout" | "none";
@@ -127,7 +131,7 @@ export const HARNESSES: Readonly<Record<string, Harness>> = {
       turn: "turn_id",
     },
     failureBy: "none",
-    newEpochSources: [],
+    newEpochSources: ["compact", "clear"],
     shellTools: ["Bash", "shell", "exec_command", "local_shell", "unified_exec"],
     delivering: ["user_message", "pre_tool", "tool_result", "tool_failure", "before_done"],
     carryTo: null,
@@ -207,7 +211,11 @@ export const HARNESSES: Readonly<Record<string, Harness>> = {
     limitBytes: 2000,
     settleWithinMs: 120_000,
     sessionStartLimitBytes: 0,
-    templates: { context: { context: "{{text}}" }, deny: { deny: "{{text}}" } },
+    templates: {
+      context: { context: "{{text}}" },
+      deny: { deny: "{{text}}" },
+      pointer: { pointer: "{{text}}" },
+    },
     denyEvidence: "none",
     shownEvidence: "none",
   },

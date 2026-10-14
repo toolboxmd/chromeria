@@ -32,6 +32,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
+import * as ContextmdServing from "../contextmd/ContextmdServing.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import {
@@ -140,6 +141,7 @@ export const layer: Layer.Layer<
   | ProviderSessionManager.ProviderSessionManagerV2
   | RunExecutionService.RunExecutionServiceV2
   | RuntimePolicy.RuntimePolicyV2
+  | ContextmdServing.ContextmdServing
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
@@ -156,6 +158,7 @@ export const layer: Layer.Layer<
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
+    const contextmd = yield* ContextmdServing.ContextmdServing;
 
     const recreateMissingWorktree = Effect.fn("ProviderTurnStartService.recreateMissingWorktree")(
       function* (input: {
@@ -296,11 +299,14 @@ export const layer: Layer.Layer<
       };
     };
 
-    const start = Effect.fn("orchestrationV2.providerTurnStart.start")(function* (input: {
-      readonly threadId: ThreadId;
-      readonly runId: RunId;
-      readonly willRetry?: boolean;
-    }) {
+    const start = Effect.fn("orchestrationV2.providerTurnStart.start")(function* (
+      input: {
+        readonly threadId: ThreadId;
+        readonly runId: RunId;
+        readonly willRetry?: boolean;
+      },
+      onInstructionsStaged: (reservation: string | null) => void,
+    ) {
       const { runId } = input;
       const projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
       const run = projection.runs.find((candidate) => candidate.id === runId);
@@ -711,8 +717,20 @@ export const layer: Layer.Layer<
         });
         if (!repaired.committed) return;
       }
+      const instructionStage =
+        providerThread.driver === "grok"
+          ? yield* contextmd.stageSessionInstructions({
+              driver: providerThread.driver,
+              threadId: projection.thread.id,
+              runId: run.id,
+            })
+          : { reservation: null, text: undefined };
+      onInstructionsStaged(instructionStage.reservation);
       const sessionResult = yield* Effect.result(
         providerSessions.open({
+          ...(instructionStage.text === undefined
+            ? {}
+            : { newSessionInstructions: instructionStage.text }),
           threadId: projection.thread.id,
           providerSessionId,
           modelSelection: run.modelSelection,
@@ -742,6 +760,24 @@ export const layer: Layer.Layer<
       }
       const session = sessionResult.success;
       if (!(yield* isCurrentAttemptInStatus("starting"))) return;
+      if (session.driver === "grok") {
+        const bound = yield* Effect.result(
+          contextmd.recordInstallations(session.createdSessions?.() ?? [], {
+            threadId: projection.thread.id,
+          }),
+        );
+        if (bound._tag === "Failure") {
+          if (input.willRetry === true) return yield* bound.failure;
+          yield* settleStartFailure({
+            signal: "native-instructions-bind-failure",
+            title: "Native session instructions could not be recorded",
+            error: bound.failure,
+          });
+          return;
+        }
+      }
+      // Only the provider's own thread load fails the run on the last attempt;
+      // store, id and handoff failures around it keep their typed errors.
       const loadFromProvider = Effect.fn("ProviderTurnStartService.loadFromProvider")(function* (
         load: Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapter.ProviderAdapterV2Error>,
       ) {
@@ -1056,7 +1092,8 @@ export const layer: Layer.Layer<
               cause: `Native fork transfer ${nativeForkTransfer.id} has no source provider execution.`,
             });
           }
-          return yield* loadFromProvider(
+          const forkStartedAt = yield* DateTime.now;
+          const forked = yield* loadFromProvider(
             session.forkThread({
               sourceProviderThread,
               sourceProviderTurns: sourceProjection.providerTurns,
@@ -1068,6 +1105,17 @@ export const layer: Layer.Layer<
                 : { providerTurnId: sourceProviderTurn.id }),
             }),
           );
+          if (forked !== undefined)
+            yield* contextmd.recordNativeFork({
+              driver: session.driver,
+              threadId: projection.thread.id,
+              runId: run.id,
+              sourceThreadId: nativeForkTransfer.sourceThreadId,
+              source: sourceProviderThread,
+              target: forked,
+              boundaryAt: sourceProviderTurn?.completedAt ?? forkStartedAt,
+            });
+          return forked;
         }
         if (providerThread.nativeThreadRef === null) {
           // Pass the stored provider row for adoption; adapter-minted duplicates make activeProviderThreadId flap.
@@ -1233,6 +1281,32 @@ export const layer: Layer.Layer<
       if (loadedProviderThread === undefined) return;
       if (!(yield* isCurrentAttemptInStatus("starting"))) {
         return;
+      }
+      if (session.driver === "grok") {
+        const nativeSessionId = loadedProviderThread.nativeThreadRef?.nativeId;
+        if (nativeSessionId == null)
+          return yield* new ContextmdServing.SessionInstructionsError({
+            operation: "attach",
+            cause: new Error("Native session id unavailable"),
+          });
+        const attached = yield* Effect.result(
+          contextmd.attachSessionInstructions({
+            driver: session.driver,
+            threadId: projection.thread.id,
+            runId: run.id,
+            nativeSessionId,
+            reservation: instructionStage.reservation,
+          }),
+        );
+        if (attached._tag === "Failure") {
+          if (input.willRetry === true) return yield* attached.failure;
+          yield* settleStartFailure({
+            signal: "native-instructions-attach-failure",
+            title: "Native session instructions could not be accounted",
+            error: attached.failure,
+          });
+          return;
+        }
       }
       const now = yield* DateTime.now;
       const handoffContext = resumedHandoffContext ?? handoffContextForThread(loadedProviderThread);
@@ -1522,13 +1596,22 @@ export const layer: Layer.Layer<
     return ProviderTurnStartServiceV2.of({
       start: Effect.fn("ProviderTurnStartService.start")(
         function* (input) {
-          // Storage cleanup removes worktrees under the same lease. Only startup
-          // holds it; the provider turn runs after it is released.
-          const { thread } = yield* projectionStore.getThreadRecords(input.threadId, []);
-          const providerTurn = yield* thread.worktreePath === null
-            ? start(input)
-            : withWorkspaceLease(path.resolve(thread.worktreePath), start(input));
-          if (providerTurn !== undefined) yield* providerTurn;
+          // This reservation belongs to one start attempt, including every early return and failure.
+          let reservation: string | null = null;
+          const onInstructionsStaged = (staged: string | null) => {
+            reservation = staged;
+          };
+          yield* Effect.gen(function* () {
+            // Storage cleanup and startup share the lease; provider execution runs after release.
+            const { thread } = yield* projectionStore.getThreadRecords(input.threadId, []);
+            const startup = start(input, onInstructionsStaged);
+            const providerTurn = yield* thread.worktreePath === null
+              ? startup
+              : withWorkspaceLease(path.resolve(thread.worktreePath), startup);
+            if (providerTurn !== undefined) yield* providerTurn;
+          }).pipe(
+            Effect.ensuring(Effect.suspend(() => contextmd.releaseSessionInstructions(reservation))),
+          );
         },
         (effect, input) =>
           effect.pipe(

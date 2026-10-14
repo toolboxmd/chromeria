@@ -11,7 +11,6 @@
  */
 import * as ByteSize from "effect/ByteSize";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import * as HttpIncomingMessage from "effect/http/HttpIncomingMessage";
@@ -49,6 +48,7 @@ export const layer = HttpRouter.use((router) =>
           harness: request.headers["x-contextmd-harness"],
           delivery: request.headers["x-contextmd-delivery"],
           contentLength: length === undefined ? undefined : Number(length),
+          pointerDelivery: request.headers["x-contextmd-pointer-delivery"],
           // Chunked requests carry no content-length, so the reader itself is capped.
           body: request.text.pipe(
             Effect.provideService(
@@ -87,5 +87,33 @@ export const layer = HttpRouter.use((router) =>
         return HttpServerResponse.empty({ status: reply.status });
       }).pipe(Effect.withTracerEnabled(false)),
     );
+    for (const action of ["applying", "settle", "release"] as const) {
+      yield* router.add(
+        "POST",
+        `${PREFIX}/pointer/${action}/*`,
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          if (!(yield* authorized(request))) return yield* unauthorized(request);
+          const url = HttpServerRequest.toURL(request);
+          if (Option.isNone(url)) return HttpServerResponse.empty({ status: 400 });
+          const delivery = url.value.pathname.slice(`${PREFIX}/pointer/${action}/`.length);
+          const reply = yield* action === "applying"
+            ? serving.pointerApplying(delivery)
+            : action === "settle"
+              ? serving.pointerSettle(delivery)
+              : serving.pointerRelease(
+                  delivery,
+                  url.value.searchParams.get("reason") ?? "client_release",
+                );
+          return HttpServerResponse.empty({ status: reply.status });
+        }).pipe(
+          Effect.withTracerEnabled(false),
+          Effect.catchTags({
+            ContextmdPointerDeliveryError: () =>
+              Effect.succeed(HttpServerResponse.empty({ status: 500 })),
+          }),
+        ),
+      );
+    }
   }),
-).pipe(Layer.provide(ContextmdServing.layer));
+);

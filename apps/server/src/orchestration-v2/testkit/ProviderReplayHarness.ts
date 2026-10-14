@@ -5,6 +5,7 @@ import type { ProviderDriverKind, ProviderReplayTranscript } from "@t3tools/cont
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import type * as SqlClient from "effect/sql/SqlClient";
@@ -47,6 +48,7 @@ import * as CommandOutputRecorder from "./CommandOutputRecorder.ts";
 import * as ProviderSwitchService from "../ProviderSwitchService.ts";
 import * as ProviderTurnControlService from "../ProviderTurnControlService.ts";
 import * as ProviderTurnStartService from "../ProviderTurnStartService.ts";
+import * as ContextmdServing from "../../contextmd/ContextmdServing.ts";
 import * as ProviderTurnStartServiceTestkit from "../ProviderTurnStartService.testkit.ts";
 import * as McpAppModelContext from "../../mcpApps/McpAppModelContext.ts";
 import * as PreviewAgentActivity from "../../preview/PreviewAgentActivity.ts";
@@ -414,7 +416,18 @@ export function layerWithRegistry<Error>(
       ),
     ),
   );
+  const layerContextmd = ContextmdServing.layer.pipe(
+    Layer.provide(Layer.mergeAll(layerDatabase, layerServerConfig)),
+    Layer.provide(
+      ConfigProvider.layer(
+        ConfigProvider.fromUnknown({
+          CONTEXTMD_SERVING_CONFIG: "/nonexistent/t3-contextmd-replay/serving.json",
+        }),
+      ),
+    ),
+  );
   const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
+    Layer.provide(layerContextmd),
     Layer.provide(
       Layer.mergeAll(
         layerContextHandoffServiceProvided,
@@ -439,6 +452,7 @@ export function layerWithRegistry<Error>(
     Layer.provide(Layer.merge(layerStores, layerProviderSessionManagerProvided)),
   );
   const layerCheckpointRollbackServiceProvided = CheckpointRollbackService.layer.pipe(
+    Layer.provide(layerContextmd),
     Layer.provide(
       Layer.mergeAll(
         layerCheckpointServiceProvided,
