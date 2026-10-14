@@ -210,6 +210,7 @@ const make = Effect.gen(function* () {
     });
   }
   const { db, state } = opened.value;
+  const clock = yield* Clock.Clock;
   const parsed: ParseCache = new Map();
   const cueParsed: ParseCache = new Map();
   // One client per Cue service URL, so its availability is shared by every moment on this machine.
@@ -218,9 +219,10 @@ const make = Effect.gen(function* () {
     let client = cueClients.get(url);
     if (client === undefined) {
       // A previous process may already have seen this URL fail. Start skipped until health returns.
-      client = new CueClient(httpTransport(url), Date.now, !state.cueDown(url), (available) => {
+      const nowMs = () => clock.currentTimeMillisUnsafe();
+      client = new CueClient(httpTransport(url), nowMs, !state.cueDown(url), (available) => {
         if (available) state.clearCueDown(url);
-        else state.markCueDown(url, Date.now() / 1000);
+        else state.markCueDown(url, nowMs() / 1000);
       });
       cueClients.set(url, client);
     }
