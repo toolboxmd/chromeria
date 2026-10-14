@@ -121,6 +121,7 @@ const layerMcpRegistry = Layer.succeed(
     touch: () => Effect.void,
     revokeProviderSession: () => Effect.void,
     revokeThread: () => Effect.void,
+    scopeForThread: () => Effect.succeed(undefined),
     revokeAll: Effect.void,
   }),
 );

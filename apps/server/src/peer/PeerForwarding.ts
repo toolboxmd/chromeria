@@ -18,7 +18,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import type * as Tool from "effect/ai/Tool";
 
-import { assertNotLinked } from "../mcp/linkOrigin.ts";
+import { assertNotLinked, callerLinkOrigin } from "../mcp/linkOrigin.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { loadCaller, unavailable } from "../mcp/threadAccess.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
@@ -106,7 +106,16 @@ const make = Effect.gen(function* () {
    */
   const callerLimits = (scope: Scope) =>
     loadCaller().pipe(
-      Effect.tap((caller) => assertNotLinked(caller, "use this environment's links")),
+      Effect.tap((caller) =>
+        callerLinkOrigin(caller) === undefined
+          ? assertNotLinked(caller, "use this environment's links")
+          : Effect.fail(
+              new OrchestratorMcpFailure({
+                code: "capability_denied",
+                message: "A peer link cannot forward through another environment's links.",
+              }),
+            ),
+      ),
       Effect.map((caller) => caller.limits),
       Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
       Effect.provideService(ThreadManagement.ThreadManagementService, threads),
@@ -140,7 +149,11 @@ const make = Effect.gen(function* () {
       ).pipe(Effect.mapError(unavailable))) as Record<string, unknown>;
       const { environmentId: _target, ...args } = encoded;
       // A pending upload lives here, so it cannot go with the call.
-      if (Array.isArray(args.attachments) && args.attachments.length > 0) {
+      if (
+        (toolName === "t3_thread_launch" || toolName === "delegate_task") &&
+        Array.isArray(args.attachments) &&
+        args.attachments.length > 0
+      ) {
         return yield* new OrchestratorMcpFailure({
           code: "invalid_request",
           message: "A launch in a linked environment cannot carry attachments yet.",

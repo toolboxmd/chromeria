@@ -1,3 +1,4 @@
+import * as McpRouting from "../../McpRouting.ts";
 import {
   McpCapabilityUnavailableError,
   OrchestratorMcpFailure,
@@ -277,7 +278,7 @@ export type ListThreadPullRequestsResult = typeof ListThreadPullRequestsResult.T
 
 const LinkPullRequestTool = Tool.make("link_pull_request", {
   description: `${REGISTER_EVERY_PR} Links a pull request to this thread so T3 Code tracks it, shows its status beside the thread, and settles the thread when it merges. Pass the URL, or repository plus number. Linking an already-linked pull request succeeds with alreadyLinked=true.`,
-  parameters: PullRequestTargetInput,
+  parameters: McpRouting.parameters(PullRequestTargetInput),
   success: LinkPullRequestResult,
   failure: PullRequestToolError,
   dependencies,
@@ -291,7 +292,7 @@ const LinkPullRequestTool = Tool.make("link_pull_request", {
 const UnlinkPullRequestTool = Tool.make("unlink_pull_request", {
   description:
     "Remove a pull request link from this thread, for example after closing a pull request you opened by mistake. Pass the URL, or repository plus number. Unlinking a pull request that is not linked succeeds with wasLinked=false.",
-  parameters: PullRequestTargetInput,
+  parameters: McpRouting.parameters(PullRequestTargetInput),
   success: UnlinkPullRequestResult,
   failure: PullRequestToolError,
   dependencies,
@@ -304,11 +305,13 @@ const UnlinkPullRequestTool = Tool.make("unlink_pull_request", {
 
 const ListThreadPullRequestsTool = Tool.make("list_thread_pull_requests", {
   description: `List the pull requests linked to a thread (omit threadId for this thread) with their last known host state, and how they chain into stacks (bottom to top). ${REGISTER_EVERY_PR}`,
-  parameters: Schema.Struct({
-    threadId: Schema.optional(
-      ThreadId.annotate({ description: "Thread to list. Omit for this thread." }),
-    ),
-  }),
+  parameters: McpRouting.parameters(
+    Schema.Struct({
+      threadId: Schema.optional(
+        ThreadId.annotate({ description: "Thread to list. Omit for this thread." }),
+      ),
+    }),
+  ),
   success: ListThreadPullRequestsResult,
   failure: PullRequestToolError,
   dependencies,
@@ -322,7 +325,7 @@ const ListThreadPullRequestsTool = Tool.make("list_thread_pull_requests", {
 const WatchPullRequestTool = Tool.make("watch_pull_request", {
   description:
     "Have T3 Code watch an open pull request for this thread, linking it first if needed. T3 Code checks it every two minutes and wakes you with a message when a check fails, the required checks pass, someone else comments or reviews, or the branch starts to conflict with its base. Use this to monitor or babysit a pull request instead of polling, sleeping, or running a watcher. Only comments posted after this call wake you, so handle the existing ones first, then end your turn. A wake is news, not a merge decision: check readiness yourself before merging. While T3 Code watches, the thread stays in the user's Working list, not their inbox. When you hand the work back to the user, call unwatch_pull_request first so the thread returns to their inbox. Watching ends when the pull request merges or closes, when its thread settles or is archived, when T3 Code fails to read it 8 times in a row (a host rate limit only delays it), when the user stops this thread, or when you call unwatch_pull_request. Unsettle the thread before starting a new watch. A subagent cannot watch: its parent thread owns the pull request.",
-  parameters: PullRequestTargetInput,
+  parameters: McpRouting.parameters(PullRequestTargetInput),
   success: WatchPullRequestResult,
   failure: PullRequestToolError,
   dependencies,
@@ -336,7 +339,7 @@ const WatchPullRequestTool = Tool.make("watch_pull_request", {
 const UnwatchPullRequestTool = Tool.make("unwatch_pull_request", {
   description:
     "Stop T3 Code from watching a pull request for this thread. The pull request stays linked. Pass the URL, or repository plus number.",
-  parameters: PullRequestTargetInput,
+  parameters: McpRouting.parameters(PullRequestTargetInput),
   success: WatchPullRequestResult,
   failure: PullRequestToolError,
   dependencies,
