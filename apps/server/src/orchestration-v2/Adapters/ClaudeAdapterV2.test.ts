@@ -2555,7 +2555,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           makeResultFrame({ uuid: "recording-result", result: "done" }),
         );
         yield* Queue.take(harness.terminalReceipts);
-      }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
   );
 
   it.effect.each([
