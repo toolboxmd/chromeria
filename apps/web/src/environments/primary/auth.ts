@@ -235,7 +235,7 @@ async function exchangeBootstrapCredential(credential: string): Promise<AuthBrow
           PrimaryEnvironmentHttpClient.pipe(
             Effect.flatMap((client) => client.metadata.descriptor()),
           ),
-        ).catch(() => null)
+        )
       : null;
   const slot = descriptor
     ? await runRenewal(

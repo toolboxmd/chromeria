@@ -17,6 +17,7 @@ import * as ServerSecretStore from "./ServerSecretStore.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as AuthSessions from "../persistence/AuthSessions.ts";
 
 const testLayer = Layer.mergeAll(SessionStore.layer, SessionRenewal.layer).pipe(
   Layer.provide(Sqlite.layerMemory),
@@ -30,6 +31,43 @@ const testLayer = Layer.mergeAll(SessionStore.layer, SessionRenewal.layer).pipe(
 );
 
 it.layer(NodeServices.layer)("paired auth renewal", (it) => {
+  it.effect("rejects renewal when expiry passes between validation and the guarded update", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionStore.SessionStore;
+      const original = yield* sessions.issue({
+        method: "bearer-access-token",
+        ttl: Duration.minutes(10),
+        renewalCommitment: SessionRenewal.commitment("expiry-boundary"),
+      });
+      const clock = yield* Clock.Clock;
+      let reads = 0;
+      const boundaryClock = {
+        ...clock,
+        currentTimeMillis: Effect.sync(
+          () => original.expiresAt.epochMilliseconds + (++reads === 1 ? -1 : 1),
+        ),
+      };
+      const result = yield* sessions
+        .renewSession({ secret: "expiry-boundary", next: SessionRenewal.commitment("expiry-next") })
+        .pipe(Effect.provideService(Clock.Clock, boundaryClock), Effect.result);
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") expect(result.failure._tag).toBe("RenewalRejected");
+      const repository = yield* AuthSessions.AuthSessionRepository;
+      const row = yield* repository.getById({ sessionId: original.sessionId });
+      expect(row._tag).toBe("Some");
+      if (row._tag === "Some") expect(row.value.expiresAt).toEqual(original.expiresAt);
+      // The failed rotation must roll back its successor, not just the auth row.
+      yield* TestClock.adjust("6 minutes");
+      const retry = yield* sessions.renewSession({
+        secret: "expiry-boundary",
+        next: SessionRenewal.commitment("different-next"),
+      });
+      expect(retry.generation).toBe(1);
+      expect(retry.expiresAt.epochMilliseconds).toBe(
+        original.expiresAt.epochMilliseconds + 360_000,
+      );
+    }).pipe(Effect.provide(testLayer)),
+  );
   it.effect("keeps a real socket usable past its old deadline and closes it on revocation", () =>
     Effect.gen(function* () {
       const sessions = yield* SessionStore.SessionStore;

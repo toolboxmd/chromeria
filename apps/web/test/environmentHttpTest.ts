@@ -12,6 +12,7 @@ import {
   type AuthSessionState,
   type ExecutionEnvironmentDescriptor,
   type EnvironmentAuthInvalidError,
+  type EnvironmentInternalError,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import type * as Context from "effect/Context";
@@ -31,7 +32,10 @@ type BrowserSessionHandler = (
 
 interface EnvironmentHttpTestScenario {
   readonly renewal?: SessionRenewal.SessionRenewal["Service"]["ensure"];
-  readonly descriptor?: () => Effect.Effect<ExecutionEnvironmentDescriptor>;
+  readonly descriptor?: () => Effect.Effect<
+    ExecutionEnvironmentDescriptor,
+    EnvironmentInternalError
+  >;
   readonly session?: () => Effect.Effect<AuthSessionState>;
   readonly browserSession?: BrowserSessionHandler;
   readonly pairingCredential?: (
@@ -133,6 +137,18 @@ export async function installEnvironmentHttpTest(scenario: EnvironmentHttpTestSc
       Layer.succeed(PrimaryEnvironmentHttpClient, client),
       Layer.mock(SessionRenewal.SessionRenewal, {
         ensure: scenario.renewal ?? (() => Effect.succeed({ _tag: "NotEnrolled" })),
+        stage: (input) =>
+          Effect.succeed({
+            ...input,
+            epoch: "fixture",
+            current: "a".repeat(43),
+            generation: 0,
+            pending: null,
+            accessToken: null,
+            expiresAt: null,
+            renewAfter: null,
+          }),
+        complete: () => Effect.void,
       }),
     ),
   );

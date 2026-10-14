@@ -302,11 +302,16 @@ export const make = Effect.gen(function* () {
           yield* sql`UPDATE auth_session_renewal SET previous_hash = current_hash, previous_next_hash = ${input.next},
         current_hash = ${input.next}, generation = generation + 1, renew_after = ${DateTime.formatIso(renewAfter)}
         WHERE session_id = ${sessionId} AND current_hash = ${hash}`;
-          yield* sql`UPDATE auth_sessions SET issued_at = ${DateTime.formatIso(now)}, expires_at = ${DateTime.formatIso(expiresAt)}
-        WHERE session_id = ${sessionId} AND revoked_at IS NULL AND expires_at > ${DateTime.formatIso(now)}`;
+          const updated =
+            yield* sql`UPDATE auth_sessions SET issued_at = ${DateTime.formatIso(now)}, expires_at = ${DateTime.formatIso(expiresAt)}
+        WHERE session_id = ${sessionId} AND revoked_at IS NULL AND expires_at > ${DateTime.formatIso(now)}
+        RETURNING session_id`;
+          if (updated.length !== 1) return yield* new RenewalRejected({});
+          const persisted = yield* sessions.getById({ sessionId });
+          if (Option.isNone(persisted)) return yield* new RenewalRejected({});
           return {
             kind: "success",
-            session: { ...row, issuedAt: now, expiresAt },
+            session: persisted.value,
             generation: renewal.generation + 1,
             outcome: "rotated",
             renewAfter: renewAfter.epochMilliseconds,
