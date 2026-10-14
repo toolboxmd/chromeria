@@ -100,9 +100,11 @@ nothing to update on the host: stop the server and relaunch it as
 
 ## Update providers automatically
 
-**Settings → General → Update providers automatically** is off by default. Turn
-it on to let an environment install newer supported provider CLI versions without
-clicking the update notice. It needs **Provider update checks** enabled. Updates
+**Settings → Providers → Advanced → Update providers automatically** is off by
+default on web and desktop. Turn it on to let an environment install newer
+supported provider CLI versions without clicking the update notice. It needs
+**Provider update checks** in that same Advanced section. The phone app has no
+automatic-update switch. Updates
 wait until that provider's active work ends, and new starts wait while its CLI
 installation is being updated. Installs without a supported update command are
 skipped. Each version is attempted once per server start; a failed update remains
