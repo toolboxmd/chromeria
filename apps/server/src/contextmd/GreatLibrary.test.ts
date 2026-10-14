@@ -5,9 +5,8 @@ import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeCrypto from "node:crypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, it, vi } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { HARNESSES } from "./Harnesses.ts";
@@ -145,27 +144,38 @@ describe("Great Library grammar", () => {
   it.effect.each(corpus)("$name", (fixture) =>
     Effect.gen(function* () {
       const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "great-library-"));
+      if (fixture.expanded !== undefined)
+        vi.stubEnv("HOME", fixture.expanded.slice(0, -String(fixture.value).slice(1).length));
       try {
         const file = NodePath.join(dir, "serving.json");
         NodeFS.writeFileSync(file, JSON.stringify({ great_library: fixture.value }));
-        const path = yield* Path.Path;
-        const config = yield* Effect.result(
-          Select.loadConfig(file).pipe(
-            Effect.provideService(
-              Path.Path,
-              "expanded" in fixture ? { ...path, join: () => fixture.expanded! } : path,
-            ),
-          ),
-        );
+        const config = yield* Effect.result(Select.loadConfig(file));
         assert.strictEqual(Result.isSuccess(config), fixture.valid);
         if (Result.isSuccess(config)) {
           const expected = "expanded" in fixture ? fixture.expanded : fixture.value;
           assert.strictEqual(config.success.greatLibrary, expected);
         }
       } finally {
+        if (fixture.expanded !== undefined) vi.unstubAllEnvs();
         NodeFS.rmSync(dir, { recursive: true });
       }
     }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect.each(["~/a/../index.md", "~//space index.md", "~/a/./知識.md"])(
+    "keeps Python expanduser path spelling for %s",
+    (value) =>
+      Effect.gen(function* () {
+        const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "great-library-"));
+        try {
+          const file = NodePath.join(dir, "serving.json");
+          NodeFS.writeFileSync(file, JSON.stringify({ great_library: value }));
+          const config = yield* Select.loadConfig(file);
+          assert.equal(config.greatLibrary, NodeOS.homedir() + value.slice(1));
+        } finally {
+          NodeFS.rmSync(dir, { recursive: true });
+        }
+      }).pipe(Effect.provide(NodeServices.layer)),
   );
 
   it.effect("requires a regular index and versions the accurate plain line", () =>

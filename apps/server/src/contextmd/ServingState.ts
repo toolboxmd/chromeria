@@ -134,7 +134,7 @@ export interface SessionInstructions {
   readonly owners: Readonly<Record<string, string | null>>;
 }
 
-export interface NativeForkInput {
+interface NativeForkInput {
   readonly source: string;
   readonly target: string;
   readonly threadId: string;
