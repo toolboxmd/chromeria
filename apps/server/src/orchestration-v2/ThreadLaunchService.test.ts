@@ -117,6 +117,7 @@ interface HarnessOptions {
   readonly serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
   readonly providers?: ReadonlyArray<ServerProvider>;
   readonly git?: Partial<GitWorkflow.GitWorkflowService["Service"]>;
+  readonly gitVcs?: Partial<GitVcsDriver.GitVcsDriver["Service"]>;
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -129,7 +130,7 @@ function makeHarness(options: HarnessOptions = {}) {
   );
   const layerServerSettings = ServerSettings.layerTest(options.serverSettings);
   const layerReceipts = CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase));
-  const layerThreadManagement = ThreadManagement.layer.pipe(
+  const layerThreadManagement = Layer.fresh(ThreadManagement.layer).pipe(
     Layer.provide(layerOrchestrator),
     Layer.provide(layerServerSettings),
     Layer.provide(layerReceipts),
@@ -258,7 +259,7 @@ function makeHarness(options: HarnessOptions = {}) {
       layerDatabase,
       layerExternalServices,
       NodeServices.layer,
-      Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+      Layer.mock(GitVcsDriver.GitVcsDriver)(options.gitVcs ?? {}),
       ProjectStore.layer.pipe(Layer.provide(layerDatabase)),
     ),
     createWorktree,
@@ -2927,6 +2928,7 @@ it.effect.each(
           : Effect.succeed({ commitSha: "parent-local-commit" }),
       );
       const harness = makeHarness({
+        gitVcs: { resolveCommit },
         closeTerminal: () => Deferred.succeed(terminalClosed, undefined).pipe(Effect.asVoid),
         adapters: [
           adapter,
@@ -2987,7 +2989,6 @@ it.effect.each(
       const layerService = OrchestratorMcpService.layer.pipe(
         Layer.provide(NodeCrypto.layer),
         Layer.provide(harness.layer),
-        Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({ resolveCommit })),
         Layer.provide(Layer.mock(ScheduledTasks.ScheduledTaskService)({})),
         Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
       );
@@ -2995,6 +2996,9 @@ it.effect.each(
         const service = yield* OrchestratorMcpService.OrchestratorMcpService;
         const threads = yield* ThreadManagement.ThreadManagementService;
         const parentThreadId = ThreadId.make("thread:delegated-worktree-parent");
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO projection_projects (project_id,title,workspace_root,scripts_json,created_at,updated_at)
+          VALUES (${projectId},${project.title},${project.workspaceRoot},'[]',${project.createdAt},${project.updatedAt})`;
         yield* threads.dispatch({
           type: "thread.create",
           commandId: CommandId.make("create-parent"),
@@ -3209,6 +3213,12 @@ it.effect.each([false, true])(
       const release = yield* Deferred.make<void>();
       const harness = makeHarness({
         otherWorkspaceRoot: "/destination",
+        gitVcs: {
+          listWorktreePaths: (cwd) => {
+            assert.equal(cwd, "/destination");
+            return Effect.succeed(["/destination", "/destination-worktree"]);
+          },
+        },
         runSetup: () =>
           Deferred.succeed(entered, undefined).pipe(
             Effect.andThen(Deferred.await(release)),
@@ -3360,12 +3370,6 @@ it.effect.each([false, true])(
             Layer.provideMerge(
               Layer.mergeAll(
                 ProjectStore.layer,
-                Layer.mock(GitVcsDriver.GitVcsDriver)({
-                  listWorktreePaths: (cwd) => {
-                    assert.equal(cwd, "/destination");
-                    return Effect.succeed(["/destination", "/destination-worktree"]);
-                  },
-                }),
                 ServerConfig.layerTest(process.cwd(), { prefix: "t3-delegated-intake-" }).pipe(
                   Layer.provideMerge(NodeServices.layer),
                 ),
