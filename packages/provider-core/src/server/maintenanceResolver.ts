@@ -462,6 +462,9 @@ export const resolvePackageManagedProviderMaintenance = Effect.fn(
     nativeUpdate?.isCommandPath &&
     commandPaths.some(nativeUpdate.isCommandPath) &&
     !commandPaths.some(isMiseCommandPath) &&
+    // Fork: a shim whose real path is the Homebrew mise keg has neither a mise install path
+    // nor a wrapper script (the keg file is the mise binary).
+    !isMiseKeg(homebrewOwnershipFromCommandPath(context.realCommandPath)) &&
     !(yield* isMiseWrapperScript(context))
   ) {
     return native;
@@ -577,6 +580,10 @@ export const resolvePackageManagedProviderMaintenance = Effect.fn(
  * that reports it as its own. Version checks defer `brew info` until needed.
  * Null when no `brew` is found or it owns another prefix.
  */
+function isMiseKeg(homebrew: HomebrewOwnership | null): boolean {
+  return homebrew?.kind === "formula" && homebrew.name.toLowerCase() === "mise";
+}
+
 export const resolveHomebrewProviderMaintenance = Effect.fn("resolveHomebrewProviderMaintenance")(
   function* (
     input: { readonly provider: ProviderDriverKind; readonly packageName: string | null },

@@ -301,7 +301,8 @@ are evidence for review, not proof that a feature has been adopted upstream.
   "purpose": "Let each environment opt in to installing provider CLI updates without a click.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/159",
-    "https://github.com/toolboxmd/chromeria/issues/266"
+    "https://github.com/toolboxmd/chromeria/issues/266",
+    "https://github.com/toolboxmd/chromeria/issues/263"
   ],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/160"],
   "newFiles": [
@@ -319,6 +320,10 @@ are evidence for review, not proof that a feature has been adopted upstream.
   "upstreamFiles": [
     "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
     "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+    "apps/server/src/provider/Drivers/GrokDriver.test.ts",
+    "apps/server/src/provider/Drivers/GrokDriver.ts",
+    "apps/server/src/provider/providerMaintenance.test.ts",
+    "apps/server/src/provider/providerMaintenance.ts",
     "apps/server/src/provider/providerMaintenanceRunner.test.ts",
     "apps/server/src/provider/providerMaintenanceRunner.ts",
     "apps/server/src/server.ts",
