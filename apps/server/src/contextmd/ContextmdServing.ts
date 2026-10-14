@@ -107,6 +107,8 @@ export class ContextmdServing extends Context.Service<
   {
     readonly moment: (request: MomentRequest) => Effect.Effect<MomentResponse>;
     readonly settle: (delivery: string) => Effect.Effect<{ readonly status: 204 | 404 }>;
+    /** The hook dropped a reserved reply before the model saw it. */
+    readonly release: (delivery: string) => Effect.Effect<{ readonly status: 204 | 404 }>;
     /** Log a hook call the transport refused for its credential. */
     readonly rejected: (request: {
       readonly harness: string | undefined;
@@ -201,6 +203,7 @@ const make = Effect.gen(function* () {
     return ContextmdServing.of({
       moment: () => Effect.succeed({ status: 204 } as const),
       settle: () => Effect.succeed({ status: 404 } as const),
+      release: () => Effect.succeed({ status: 404 } as const),
       rejected: () => Effect.void,
     });
   }
@@ -569,6 +572,17 @@ const make = Effect.gen(function* () {
       ),
     );
 
+  const release: ContextmdServing["Service"]["release"] = (delivery) =>
+    Effect.sync(() =>
+      state.releaseReservation(delivery) ? ({ status: 204 } as const) : ({ status: 404 } as const),
+    ).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("ContextMD release failed", { cause }).pipe(
+          Effect.as({ status: 404 } as const),
+        ),
+      ),
+    );
+
   const rejected: ContextmdServing["Service"]["rejected"] = (request) =>
     nowSeconds.pipe(
       Effect.map((now) =>
@@ -583,7 +597,7 @@ const make = Effect.gen(function* () {
       Effect.ignoreCause,
     );
 
-  return ContextmdServing.of({ moment, settle, rejected });
+  return ContextmdServing.of({ moment, settle, release, rejected });
 });
 
 export const layer = Layer.effect(ContextmdServing, make);

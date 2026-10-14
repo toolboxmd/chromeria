@@ -11,9 +11,9 @@
  * - The budget key is the Chromeria run: an 8,000-byte serve budget and a
  *   2,000-byte deny budget, in UTF-8 bytes. Session-start files sit outside both.
  * - A reply is `reserved` until the hook settles it. Only settled claims count
- *   for dedupe and deny lifts; a reservation not settled within
- *   the harness's settle deadline is released as `delivery_unverified`, with its bytes
- *   and claims returned.
+ *   for dedupe and deny lifts. A reservation the hook drops, or one not settled
+ *   within the harness's settle deadline, is released as `delivery_unverified`,
+ *   with its bytes and claims returned.
  * - A must-know entry denies every matching call until it lifts: a pointer
  *   rule on an observed successful read of its target in the same session and
  *   epoch, an inline rule on a settled whole delivery. After `DENY_CAP`
@@ -340,6 +340,23 @@ export class ServingState {
         threadId: u.threadId ?? null,
         runId: u.runId ?? null,
       });
+    });
+  }
+
+  /**
+   * The hook dropped this reply before the model saw it. Release that one
+   * reservation now, the same way a missed settle deadline does. A settled,
+   * already released, or unknown delivery is left alone.
+   */
+  releaseReservation(delivery: string): boolean {
+    return this.tx(() => {
+      const d = this.get<{ stage: string }>(
+        "SELECT stage FROM deliveries WHERE delivery = ?",
+        delivery,
+      );
+      if (d?.stage !== "reserved") return false;
+      this.release(delivery);
+      return true;
     });
   }
 
