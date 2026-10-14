@@ -123,10 +123,7 @@ function createSignal() {
 let disposeHttpTest: (() => Promise<void>) | undefined;
 
 async function installAuthApi(input: {
-  readonly descriptor?: () => Effect.Effect<
-    ExecutionEnvironmentDescriptor,
-    EnvironmentInternalError
-  >;
+  readonly descriptor?: () => Effect.Effect<ExecutionEnvironmentDescriptor>;
   readonly renewal?: SessionRenewal.SessionRenewal["Service"]["ensure"];
   readonly session?: () => AuthSessionState;
   readonly browserSession?: (
@@ -160,7 +157,7 @@ describe("resolveInitialServerAuthGateState", () => {
     const testApi = await installAuthApi({
       descriptor: () =>
         unavailable
-          ? Effect.fail(
+          ? Effect.die(
               new EnvironmentInternalError({
                 code: "internal_error",
                 reason: "internal_error",
