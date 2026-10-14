@@ -11,6 +11,7 @@ import { BotIcon, RefreshCwIcon } from "lucide-react";
 import { Suspense, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 
 import { useOpenLink } from "~/browser/useOpenLink";
+import { observeResize } from "~/lib/observeResize";
 import { useOpenChangeRequestLink } from "~/lib/openPullRequestLink";
 import { useEnvironments } from "~/state/environments";
 import { useFeatureMap } from "~/state/featureMap";
@@ -336,9 +337,9 @@ function FeatureMapDiagram({
       setIcons(placements);
     };
     place();
-    const observer = new ResizeObserver(place);
-    observer.observe(wrapper);
-    return () => observer.disconnect();
+    return observeResize(wrapper, () => {
+      place();
+    });
   }, [svg, workingIds]);
 
   return (

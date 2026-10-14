@@ -3383,6 +3383,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
           Layer.mock(GitVcsDriver.GitVcsDriver)({}),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
+            hasReceipt: () => Effect.succeed(false),
             getThreadRecords: (threadId) =>
               Effect.succeed(
                 threadId === parentThreadId ? parentProjection([task]) : childProjection,
