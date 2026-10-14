@@ -117,6 +117,18 @@ const insertAttempt = (input: {
       )`;
   }).pipe(Effect.orDie);
 
+const projectThread = (thread: string, root: string, worktree: string | null = null) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const project = `project-${thread}`;
+    yield* sql`INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+      VALUES (${project}, 'Library project', ${root}, '[]', '', '')`;
+    yield* sql`INSERT INTO orchestration_v2_projection_threads (
+      thread_id, project_id, title, default_provider, runtime_mode, interaction_mode, created_at, updated_at, payload_json
+    ) VALUES (${thread}, ${project}, 'Library thread', 'claudeAgent', 'full-access', 'default', '', '',
+      ${JSON.stringify({ worktreePath: worktree })})`;
+  }).pipe(Effect.orDie);
+
 // Environment sessions are the boundary here: "reader" holds orchestration:read, "weak" holds no scope.
 /** Credentials: `reader` may read, `weak` may not; a `slow-` prefix answers the same after 1.3 s. */
 const layerAuth = Layer.mock(EnvironmentAuth.EnvironmentAuth)({
@@ -465,6 +477,89 @@ const projectUserMessage = (text: string, ordinal = 1) =>
   }).pipe(Effect.orDie);
 
 describe("contextmd routes", () => {
+  it.live(
+    "discovers the joined project and worktree while ignoring another project's hook cwd",
+    () =>
+      Effect.gen(function* () {
+        const s = yield* serve(
+          Effect.all([
+            insertAttempt({ attempt: "a", run: "run-1", status: "running", native: "A" }),
+            insertAttempt({ attempt: "b", run: "run-2", status: "running", native: "B" }),
+          ]).pipe(Effect.asVoid),
+        );
+        const base = NodePath.dirname(s.store.keys),
+          a = NodePath.join(base, "a"),
+          b = NodePath.join(base, "b");
+        NodeFS.mkdirSync(NodePath.join(a, ".git"), { recursive: true });
+        NodeFS.mkdirSync(NodePath.join(a, "sub"));
+        NodeFS.mkdirSync(NodePath.join(a, "library"));
+        NodeFS.mkdirSync(NodePath.join(b, "library"), { recursive: true });
+        NodeFS.writeFileSync(NodePath.join(b, ".git"), "gitdir: /unused");
+        for (const [root, id] of [
+          [a, "project-a"],
+          [b, "project-b"],
+        ]) {
+          NodeFS.writeFileSync(
+            NodePath.join(root!, "library", "rule.md"),
+            `---\nid: ${id}\ncommand: x\nmust-know-before: true\n---\n${"Knowledge. ".repeat(200)}`,
+          );
+        }
+        yield* Effect.all([
+          projectThread("thread-of-run-1", NodePath.join(a, "sub")),
+          projectThread("thread-of-run-2", a, b),
+        ]).pipe(Effect.provide(s.database));
+        const first = yield* s.moment({ ...claude("PreToolUse", "A", "x"), cwd: b });
+        assert.strictEqual(first.status, 200);
+        assert.include(first.body, NodePath.join(a, "library", "rule.md"));
+        assert.notInclude(first.body, NodePath.join(b, "library"));
+        const second = yield* s.moment({ ...claude("PreToolUse", "B", "x"), cwd: a });
+        assert.include(second.body, NodePath.join(b, "library", "rule.md"));
+        assert.notInclude(second.body, NodePath.join(a, "library"));
+        assert.deepStrictEqual(s.outcomes("project-a"), ["reserved"]);
+        assert.deepStrictEqual(s.outcomes("project-b"), ["reserved"]);
+        const sql = Context.get(s.database, SqlClient.SqlClient);
+        yield* sql`UPDATE projection_projects SET deleted_at = 'deleted' WHERE workspace_root = ${NodePath.join(a, "sub")}`;
+        assert.strictEqual(
+          (yield* s.moment({ ...claude("PreToolUse", "A", "x"), cwd: b })).status,
+          204,
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("scores a conventional Cue entry when no Cue directory is registered", () =>
+    Effect.gen(function* () {
+      const cue = yield* fakeCue({ "project-cue": 2.5 });
+      const s = yield* serve(
+        Effect.all([
+          insertAttempt({ attempt: "a", run: "run-1", status: "running", native: servedSession }),
+          projectUserMessage("Look at the logs"),
+        ]).pipe(Effect.asVoid),
+        { cueUrl: cue.url },
+      );
+      const root = NodePath.join(NodePath.dirname(s.store.keys), "project");
+      NodeFS.mkdirSync(NodePath.join(root, "library"), { recursive: true });
+      NodeFS.writeFileSync(
+        NodePath.join(root, "library", "cue.md"),
+        '---\nid: project-cue\nname: Project\napplies: "When looking at logs. Not: a build."\n---\nProject knowledge.',
+      );
+      NodeFS.writeFileSync(
+        s.store.config,
+        JSON.stringify({ exact_keys: [], cue: [], cue_url: cue.url }),
+      );
+      yield* projectThread("thread-of-run-1", root).pipe(Effect.provide(s.database));
+      const reply = yield* s.moment({
+        hook_event_name: "UserPromptSubmit",
+        session_id: servedSession,
+        cwd: "/tmp",
+      });
+      assert.strictEqual(reply.status, 200);
+      assert.include(reply.body, "Project knowledge.");
+      assert.deepStrictEqual(cue.requests[0]!["entries"], [
+        { id: "project-cue", doc: "Project: When looking at logs. Not: a build." },
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.live("joins the running attempt of a run, across a steering restart", () =>
     Effect.gen(function* () {
       const s = yield* serve(
