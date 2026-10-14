@@ -509,7 +509,7 @@ const projectUserMessage = (text: string, ordinal = 1) =>
   }).pipe(Effect.orDie);
 
 describe("contextmd routes", () => {
-  it.live("separates real mixed Cue/pointer rows and refuses generic pointer receipts", () =>
+  it.live("separates mixed Cue/pointer receipts from shown observation and generic closures", () =>
     Effect.gen(function* () {
       let session = "mixed-0";
       for (let n = 1; isHoldout("opencode", session); n++) session = `mixed-${n}`;
@@ -557,7 +557,37 @@ describe("contextmd routes", () => {
         );
         assert.strictEqual(yield* s.postDelivery("pointer/applying", "P"), 204);
         assert.strictEqual(yield* s.postDelivery("pointer/applying", "P"), 204);
+        const accounting = () => ({
+          budgets: query("SELECT * FROM budgets ORDER BY run_id"),
+          claims: query("SELECT * FROM claims ORDER BY rowid"),
+          candidates: query(
+            "SELECT matcher, delivery, stage, outcome, bytes, served_at FROM candidates ORDER BY id",
+          ),
+          sessions: query("SELECT * FROM sessions ORDER BY harness, session"),
+        });
+        const beforeCheck = accounting();
+        yield* s.serving.checkShown;
+        assert.deepStrictEqual(accounting(), beforeCheck);
+        assert.deepStrictEqual(
+          query("SELECT delivery, stage, shown, shown_next FROM deliveries ORDER BY delivery"),
+          [
+            { delivery: "D", stage: "settled", shown: "unknown", shown_next: null },
+            { delivery: "P", stage: "applying", shown: null, shown_next: null },
+          ],
+        );
+        const evidence = query("SELECT shown_json FROM deliveries WHERE delivery = 'D'");
+        assert.strictEqual(
+          JSON.parse(String(evidence[0]!.shown_json)).reason,
+          "no_evidence_source",
+        );
+        assert.strictEqual(yield* s.settle("P"), 404);
+        assert.strictEqual(yield* s.release("P"), 404);
+        assert.deepStrictEqual(accounting(), beforeCheck);
         assert.strictEqual(yield* s.postDelivery("pointer/release", "P"), 204);
+        assert.deepStrictEqual(
+          query("SELECT shown_json FROM deliveries WHERE delivery = 'D'"),
+          evidence,
+        );
         assert.deepStrictEqual(query("SELECT serve_used FROM budgets WHERE run_id = 'run-1'"), [
           { serve_used: bytes },
         ]);
@@ -568,6 +598,10 @@ describe("contextmd routes", () => {
         assert.strictEqual(retry.status, 200);
         assert.strictEqual(yield* s.postDelivery("pointer/settle", "P2"), 204);
         assert.strictEqual(yield* s.postDelivery("pointer/release", "P2"), 409);
+        yield* s.serving.checkShown;
+        assert.deepStrictEqual(query("SELECT stage, shown FROM deliveries WHERE delivery = 'P2'"), [
+          { stage: "settled", shown: null },
+        ]);
         assert.strictEqual(cue.requests.length, 2);
       } finally {
         db.close();
