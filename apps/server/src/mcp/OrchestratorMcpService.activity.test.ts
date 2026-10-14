@@ -28,6 +28,7 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import { restartCutView } from "@t3tools/shared/restartCut";
 import type * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 
@@ -146,6 +147,7 @@ it("readThread prefers activity-run status over a newer cancelled queued run", a
         Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
           getThreadRecords: (threadId) =>
             threadId === parentThreadId
@@ -217,6 +219,7 @@ it("readThread prefers waiting activity status over a newer cancelled queued run
         Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
           getThreadRecords: (threadId) =>
             threadId === parentThreadId
@@ -345,6 +348,7 @@ it("taskStatus returns task.providerInstanceId rather than the driver kind", asy
         Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
           getThreadRecords: (threadId) => {
             if (threadId === parentThreadId) return Effect.succeed(parentProjection);
@@ -449,6 +453,7 @@ it("readThread and sendToThread reach threads in other projects", async () => {
         Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) => {
             if (threadId === parentThreadId) return Effect.succeed(parentProjection);
             if (threadId === foreignThreadId) return Effect.succeed(foreignProjection(threadId));
