@@ -91,6 +91,8 @@ export const loadCaller = Effect.fn("mcp.loadCaller")(function* () {
       message: "The calling thread was not found.",
     });
   }
+  if (scope.client !== undefined)
+    yield* assertTargetWithinLimits(McpInvocationContext.clientModeCeiling(scope.client), caller);
   return {
     scope,
     threads,

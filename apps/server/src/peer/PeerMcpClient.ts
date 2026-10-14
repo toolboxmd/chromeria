@@ -51,7 +51,12 @@ const ToolCallResponse = Schema.Struct({
   result: Schema.optional(
     Schema.Struct({
       content: Schema.Array(
-        Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String) }),
+        Schema.Struct({
+          type: Schema.String,
+          text: Schema.optional(Schema.String),
+          data: Schema.optional(Schema.String),
+          mimeType: Schema.optional(Schema.String),
+        }),
       ),
       structuredContent: Schema.optional(Schema.Unknown),
       isError: Schema.optional(Schema.Boolean),
@@ -59,6 +64,7 @@ const ToolCallResponse = Schema.Struct({
   ),
   error: Schema.optional(Schema.Struct({ code: Schema.Number, message: Schema.String })),
 });
+const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeToolCallResponse = Schema.decodeUnknownEffect(Schema.fromJsonString(ToolCallResponse));
 const decodeFailure = Schema.decodeUnknownOption(
   Schema.fromJsonString(
@@ -225,8 +231,36 @@ const make = Effect.gen(function* () {
               message: text || "The linked environment refused the call.",
             });
       }
-      const success = Schema.fromJsonString(input.success);
-      return yield* Schema.decodeUnknownEffect(success)(text).pipe(
+      let value =
+        body.result.structuredContent ??
+        (yield* decodeJson(text).pipe(
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "The linked environment returned invalid JSON.",
+              }),
+          ),
+        ));
+      if (typeof value === "object" && value !== null) {
+        const structured: Record<string, unknown> = { ...value };
+        const image = body.result.content.find(
+          (part) => part.type === "image" && part.data !== undefined,
+        );
+        if (
+          image !== undefined &&
+          typeof structured.screenshot === "object" &&
+          structured.screenshot !== null
+        ) {
+          structured.screenshot = { ...structured.screenshot, data: image.data };
+        }
+        if (input.tool === "t3_attachment_prepare_upload") {
+          structured.uploadOrigin = resolved.url;
+        }
+        value = structured;
+      }
+      // oxlint-disable-next-line t3code/no-inline-schema-compile -- The caller supplies this tool's result schema dynamically.
+      return yield* Schema.decodeUnknownEffect(input.success)(value).pipe(
         Effect.mapError(
           () =>
             new OrchestratorMcpFailure({

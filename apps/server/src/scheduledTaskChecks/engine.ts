@@ -295,6 +295,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
         kind,
         createdAt: iso(now),
         payload: {
+          ...(task.linkOrigin === undefined ? {} : { linkOrigin: task.linkOrigin }),
           text: sendText(task, run, { kind }, kind === "start" ? (role?.kitText ?? null) : null),
           modelSelection: launch === null ? null : launch.modelSelection,
           launch,
