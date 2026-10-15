@@ -2417,7 +2417,7 @@ describe("ClaudeAdapterV2 attachments", () => {
 });
 
 describe("ClaudeAdapterV2 native fork", () => {
-  it.effect("forks at the source assistant cursor and resumes the forked session", () =>
+  it.effect.each([false, true])("forks at the source assistant cursor and resumes the forked session (legacy: %s)", (legacy) =>
     Effect.scoped(
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
@@ -2506,9 +2506,10 @@ describe("ClaudeAdapterV2 native fork", () => {
               runAttemptId: RunAttemptId.make("run-attempt-claude-source"),
               nativeTurnRef: {
                 driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
-                nativeId: "assistant-message-cursor",
+                nativeId: legacy ? "assistant-message-cursor" : "native-user-uuid",
                 strength: "weak",
               },
+              ...(legacy ? {} : { nativeConversationHeadRef: { driver: ClaudeAdapterV2.CLAUDE_PROVIDER, nativeId: "assistant-message-cursor", strength: "weak" as const } }),
               ordinal: 1,
               status: "completed",
               startedAt: now,
