@@ -37,6 +37,7 @@ apps/server/src/orchestration-v2/ClaudeAutomaticDelivery.integration.test.ts
 apps/server/src/orchestration-v2/CommandPolicy.test.ts
 apps/server/src/orchestration-v2/CommandPolicy.ts
 apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts
+apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts
 apps/server/src/orchestration-v2/EffectOutbox.ts
 apps/server/src/orchestration-v2/EffectWorker.test.ts
 apps/server/src/orchestration-v2/EffectWorker.ts

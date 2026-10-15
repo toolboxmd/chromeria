@@ -47,14 +47,22 @@ export const reconcileChildRequests = Effect.fn("childThreads.reconcileRequests"
         Effect.gen(function* () {
           const current = yield* projections.getThreadRecords(childId, ["runtimeRequests"]);
           const retirement = yield* readRetirementState(childId);
-          const parent = yield* projections.getThreadRecords(parentId, ["runs", "messages"]);
+          const parent = yield* projections.getThreadRecords(parentId, ["runs", "subagents"]);
           const parentRetirement = yield* readRetirementState(parentId);
+          const nativeQuestions = parent.subagents.some(
+            (task) => task.origin === "app_owned" && task.childThreadId === childId,
+          );
           for (const request of current.runtimeRequests) {
             if (isUndeliveredKind(request)) continue;
             const identity = `child-request:${childId}:${request.id}:${parentId}`;
             const messageId = MessageId.make(identity);
             const pending =
-              request.status === "pending" && retirement.complete && !retirement.retired;
+              request.status === "pending" &&
+              retirement.complete &&
+              !retirement.retired &&
+              // Native delegated-task questions have their own wake and blocking-wait policy.
+              // Let the cancellation path remove any older fork notice for the same question.
+              !(nativeQuestions && request.kind === "user_input");
             if (!pending || parentRetirement.retired || !parentRetirement.complete) {
               for (const run of parent.runs) {
                 if (run.userMessageId === messageId && run.status === "queued") {

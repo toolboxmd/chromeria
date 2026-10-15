@@ -676,7 +676,7 @@ const layerBase: Layer.Layer<
                   AND json_extract(intent.payload_json, '$.sourceRunId') = source.run_id
                 )
                 OR (
-                  ${decline.reason === RESTART_CUT_REASONS.TASK_SETTLED}
+                  ${decline.reason === RESTART_CUT_REASONS.TASK_SETTLED ? 1 : 0}
                   AND EXISTS (
                     SELECT 1 FROM orchestration_v2_projection_provider_turns AS turn
                     WHERE turn.run_attempt_id = json_extract(source.payload_json, '$.activeAttemptId')
