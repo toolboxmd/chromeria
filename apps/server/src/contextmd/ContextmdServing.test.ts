@@ -1,9 +1,11 @@
-// @effect-diagnostics nodeBuiltinImport:off - tests inspect only their isolated serving database and public synthetic files.
+// @effect-diagnostics nodeBuiltinImport:off - tests use isolated databases, public files and a loopback Cue fixture.
 import * as NodeFS from "node:fs";
+import * as NodeHttp from "node:http";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { AuthSessionId } from "@t3tools/contracts";
 import { assert, describe, it, vi } from "@effect/vitest";
 import * as ByteSize from "effect/ByteSize";
@@ -251,6 +253,374 @@ const makeHarness = (
   });
 const withNode = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provide(NodeServices.layer));
+const decodeDeadline = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      phase: Schema.String,
+      active_ms: Schema.Number,
+      completed_ms: Schema.Record(Schema.String, Schema.Number),
+    }),
+  ),
+);
+
+describe("ContextMD deadline phase diagnostics", () => {
+  it.effect("records completed and active phase durations only for a deadline cut", () =>
+    withNode(
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        const authEntered = yield* Deferred.make<void>();
+        const authRelease = yield* Deferred.make<void>();
+        const bodyEntered = yield* Deferred.make<void>();
+        const bodyRelease = yield* Deferred.make<void>();
+        const request = yield* Effect.forkScoped(
+          h.service.moment({
+            harness: "claude",
+            delivery: "phase-body",
+            contentLength: undefined,
+            authorized: Deferred.succeed(authEntered, undefined).pipe(
+              Effect.andThen(Deferred.await(authRelease)),
+              Effect.as(true),
+            ),
+            body: Deferred.succeed(bodyEntered, undefined).pipe(
+              Effect.andThen(Deferred.await(bodyRelease)),
+              Effect.as("private body that must never enter diagnostics"),
+            ),
+          }),
+        );
+        yield* Deferred.await(authEntered);
+        yield* TestClock.adjust("100 millis");
+        yield* Deferred.succeed(authRelease, undefined);
+        yield* Deferred.await(bodyEntered);
+        yield* TestClock.adjust("850 millis");
+        assert.equal((yield* Fiber.join(request)).status, 204);
+        assert.deepEqual(
+          h.db.prepare("SELECT status, reason FROM moments WHERE delivery = 'phase-body'").get(),
+          {
+            status: "over_budget",
+            reason:
+              '{"phase":"body","active_ms":850,"completed_ms":{"authorization":100,"off_flag":0,"request":0}}',
+          },
+        );
+        assert.deepEqual(h.db.prepare("SELECT count(*) AS n FROM candidates").get(), { n: 0 });
+        assert.deepEqual(h.db.prepare("SELECT count(*) AS n FROM budgets").get(), { n: 0 });
+      }).pipe(Effect.scoped),
+    ),
+  );
+
+  it.effect("keeps concurrent deadline phase observations request-local", () =>
+    withNode(
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        const authEntered = yield* Deferred.make<void>();
+        const bodyEntered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const auth = yield* Effect.forkScoped(
+          h.service.moment({
+            harness: "claude",
+            delivery: "phase-auth",
+            contentLength: undefined,
+            authorized: Deferred.succeed(authEntered, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+              Effect.as(true),
+            ),
+            body: Effect.succeed("{}"),
+          }),
+        );
+        const body = yield* Effect.forkScoped(
+          h.service.moment({
+            harness: "codex",
+            delivery: "phase-body-concurrent",
+            contentLength: undefined,
+            authorized: Effect.succeed(true),
+            body: Deferred.succeed(bodyEntered, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+              Effect.as("{}"),
+            ),
+          }),
+        );
+        yield* Deferred.await(authEntered);
+        yield* Deferred.await(bodyEntered);
+        yield* TestClock.adjust("950 millis");
+        assert.equal((yield* Fiber.join(auth)).status, 204);
+        assert.equal((yield* Fiber.join(body)).status, 204);
+        assert.deepEqual(
+          h.db.prepare("SELECT reason FROM moments WHERE delivery = 'phase-auth'").get(),
+          { reason: '{"phase":"authorization","active_ms":950,"completed_ms":{}}' },
+        );
+        assert.deepEqual(
+          h.db.prepare("SELECT reason FROM moments WHERE delivery = 'phase-body-concurrent'").get(),
+          {
+            reason:
+              '{"phase":"body","active_ms":950,"completed_ms":{"authorization":0,"off_flag":0,"request":0}}',
+          },
+        );
+      }).pipe(Effect.scoped),
+    ),
+  );
+
+  it.effect("preserves malformed-event and unauthorized reasons", () =>
+    withNode(
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        for (const authorized of [true, false]) {
+          assert.equal(
+            (yield* h.service.moment({
+              harness: "claude",
+              delivery: `invalid-${authorized}`,
+              contentLength: undefined,
+              authorized: Effect.succeed(authorized),
+              body: Effect.succeed("{private malformed body"),
+            })).status,
+            authorized ? 204 : 401,
+          );
+        }
+        assert.deepEqual(h.db.prepare("SELECT status, reason FROM moments ORDER BY id").all(), [
+          { status: "bad_event", reason: "json" },
+          { status: "unauthorized", reason: null },
+        ]);
+      }).pipe(Effect.scoped),
+    ),
+  );
+
+  it.effect("measures elapsed time with the request's injected monotonic clock", () =>
+    withNode(
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        const clock = yield* Clock.Clock;
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const pending = yield* Effect.forkScoped(
+          h.service
+            .moment({
+              harness: "claude",
+              delivery: "fixed-wall-clock",
+              contentLength: undefined,
+              authorized: Deferred.succeed(entered, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+                Effect.as(true),
+              ),
+              body: Effect.succeed("{}"),
+            })
+            .pipe(
+              Effect.provideService(Clock.Clock, {
+                ...clock,
+                currentTimeMillis: Effect.succeed(1_000_000),
+                currentTimeMillisUnsafe: () => 1_000_000,
+              }),
+            ),
+        );
+        yield* Deferred.await(entered);
+        yield* TestClock.adjust("950 millis");
+        assert.equal((yield* Fiber.join(pending)).status, 204);
+        assert.deepEqual(
+          h.db
+            .prepare("SELECT reason, server_ms FROM moments WHERE delivery = 'fixed-wall-clock'")
+            .get(),
+          {
+            reason: '{"phase":"authorization","active_ms":950,"completed_ms":{}}',
+            server_ms: 0,
+          },
+        );
+      }).pipe(Effect.scoped),
+    ),
+  );
+
+  it.effect.each(["config", "library_load", "selection", "pointer_prepare"])(
+    "attributes a blocked %s filesystem boundary",
+    (phase) =>
+      withNode(
+        Effect.gen(function* () {
+          const entered = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const gate = Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+          );
+          const h = yield* makeHarness((fs) => ({
+            ...fs,
+            readFileString: (path, options) => {
+              const read = fs.readFileString(path, options);
+              return (phase === "config" && path.endsWith("/serving.json")) ||
+                (phase === "selection" && path.endsWith("/session-start.md"))
+                ? gate.pipe(Effect.andThen(read))
+                : read;
+            },
+            readDirectory: (path) =>
+              phase === "library_load" && path.endsWith("/keys")
+                ? gate.pipe(Effect.andThen(fs.readDirectory(path)))
+                : fs.readDirectory(path),
+            stat: (path) =>
+              phase === "pointer_prepare" && path.endsWith("/library-index.md")
+                ? gate.pipe(Effect.andThen(fs.stat(path)))
+                : fs.stat(path),
+          }));
+          const index = NodePath.join(h.config.baseDir, "library-index.md");
+          const start = NodePath.join(h.config.baseDir, "session-start.md");
+          NodeFS.writeFileSync(index, "# Public Library\n");
+          NodeFS.writeFileSync(start, "Public session instructions.\n");
+          NodeFS.writeFileSync(
+            h.configPath,
+            JSON.stringify({
+              exact_keys: [NodePath.join(h.config.baseDir, "keys")],
+              great_library: index,
+              session_start: [{ path: start, max_chars: 100 }],
+            }),
+          );
+          const pending = yield* Effect.forkScoped(
+            h.moment("claude", `phase-${phase}`, {
+              hook_event_name: phase === "selection" ? "SessionStart" : "UserPromptSubmit",
+              source: "startup",
+            }),
+          );
+          yield* Deferred.await(entered);
+          yield* TestClock.adjust("950 millis");
+          assert.equal((yield* Fiber.join(pending)).reply.status, 204);
+          const row = h.db.prepare("SELECT reason FROM moments ORDER BY id DESC LIMIT 1").get();
+          assert.isDefined(row);
+          const diagnostic = decodeDeadline(String(row!.reason));
+          assert.equal(diagnostic.phase, phase);
+          assert.equal(diagnostic.active_ms, 950);
+          assert.equal(diagnostic.completed_ms.authorization, 0);
+          assert.notProperty(diagnostic.completed_ms, phase);
+        }).pipe(Effect.scoped),
+      ),
+  );
+
+  it.effect.each(["run_join", "cue_window"])(
+    "attributes a blocked %s on the actual SQLite reader",
+    (phase) =>
+      withNode(
+        Effect.gen(function* () {
+          const entered = yield* Deferred.make<void>();
+          const proceed = yield* Deferred.make<void>();
+          const gate = Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(proceed)),
+          );
+          const h = yield* makeHarness(
+            (fs) => ({
+              ...fs,
+              readFileString: (path, options) => {
+                const read = fs.readFileString(path, options);
+                return phase === "run_join" && path.endsWith("/serving.json")
+                  ? read.pipe(Effect.tap(() => gate))
+                  : read;
+              },
+              stat: (path) => {
+                const stat = fs.stat(path);
+                return phase === "cue_window" && path.endsWith("/library-index.md")
+                  ? stat.pipe(Effect.tap(() => gate))
+                  : stat;
+              },
+            }),
+            true,
+          );
+          const index = NodePath.join(h.config.baseDir, "library-index.md");
+          const cue = NodePath.join(h.config.baseDir, "cue");
+          NodeFS.writeFileSync(index, "# Public Library\n");
+          NodeFS.mkdirSync(cue);
+          NodeFS.writeFileSync(
+            NodePath.join(cue, "public.md"),
+            `---\nid: public-cue\nname: Public\napplies: A public request.\ntarget: ${index}\n---\nPublic knowledge.\n`,
+          );
+          NodeFS.writeFileSync(
+            h.configPath,
+            JSON.stringify({
+              exact_keys: [],
+              great_library: index,
+              cue: [cue],
+              cue_url: "http://127.0.0.1:1",
+            }),
+          );
+          const pending = yield* Effect.forkScoped(
+            h.moment("claude", `phase-${phase}`, { hook_event_name: "UserPromptSubmit" }),
+          );
+          yield* Deferred.await(entered);
+          const acquired = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const reader = yield* Effect.forkScoped(
+            h.sql
+              .withTransaction(
+                Deferred.succeed(acquired, undefined).pipe(Effect.andThen(Deferred.await(release))),
+              )
+              .pipe(NodeSqliteClient.readOnly),
+          );
+          yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined));
+          yield* Deferred.await(acquired);
+          yield* Deferred.succeed(proceed, undefined);
+          yield* TestClock.adjust("950 millis");
+          assert.equal((yield* Fiber.join(pending)).reply.status, 204);
+          const row = h.db.prepare("SELECT reason FROM moments ORDER BY id DESC LIMIT 1").get();
+          const diagnostic = decodeDeadline(String(row!.reason));
+          assert.equal(diagnostic.phase, phase);
+          assert.equal(diagnostic.active_ms, 950);
+          assert.equal(diagnostic.completed_ms.config, 0);
+          assert.notProperty(diagnostic.completed_ms, phase);
+          yield* Deferred.succeed(release, undefined);
+          yield* Fiber.join(reader);
+        }).pipe(Effect.scoped),
+      ),
+  );
+
+  it.effect("distinguishes a Cue wait from building its window", () =>
+    withNode(
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        const requested = yield* Deferred.make<NodeHttp.ServerResponse>();
+        const server = NodeHttp.createServer((request, response) => {
+          request.resume();
+          Deferred.doneUnsafe(requested, Effect.succeed(response));
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.promise(
+            () =>
+              new Promise<void>((resolve) => {
+                server.closeAllConnections();
+                server.close(() => resolve());
+              }),
+          ),
+        );
+        yield* Effect.callback<void>((resume) => {
+          server.listen(0, "127.0.0.1", () => resume(Effect.void));
+        });
+        const address = server.address();
+        assert.isNotNull(address);
+        if (address === null || typeof address === "string") return;
+        const index = NodePath.join(h.config.baseDir, "library-index.md");
+        const cue = NodePath.join(h.config.baseDir, "cue");
+        NodeFS.writeFileSync(index, "# Public Library\n");
+        NodeFS.mkdirSync(cue);
+        NodeFS.writeFileSync(
+          NodePath.join(cue, "public.md"),
+          `---\nid: public-cue\nname: Public\napplies: A public request.\ntarget: ${index}\n---\nPublic knowledge.\n`,
+        );
+        NodeFS.writeFileSync(
+          h.configPath,
+          JSON.stringify({
+            exact_keys: [],
+            cue: [cue],
+            cue_url: `http://127.0.0.1:${address.port}`,
+          }),
+        );
+        yield* h.sql`INSERT INTO orchestration_v2_projection_turn_items (
+          turn_item_id, thread_id, ordinal, type, status, updated_at, payload_json
+        ) VALUES ('public-user', 'thread-phase-cue-wait', 1, 'user_message', 'completed',
+          '2026-01-01T00:00:00Z', ${JSON.stringify({ text: "Public request." })})`;
+        const pending = yield* Effect.forkScoped(
+          h.moment("claude", "phase-cue-wait", { hook_event_name: "UserPromptSubmit" }),
+        );
+        const response = yield* Deferred.await(requested);
+        yield* TestClock.adjust("950 millis");
+        assert.equal((yield* Fiber.join(pending)).reply.status, 204);
+        const row = h.db.prepare("SELECT reason FROM moments ORDER BY id DESC LIMIT 1").get();
+        const diagnostic = decodeDeadline(String(row!.reason));
+        assert.equal(diagnostic.phase, "cue_wait");
+        assert.equal(diagnostic.active_ms, 950);
+        assert.equal(diagnostic.completed_ms.cue_window, 0);
+        response.writeHead(503);
+        response.end("{}");
+      }).pipe(Effect.scoped),
+    ),
+  );
+});
 
 describe("ContextMD serving under database contention", () => {
   it.live.each(["claude", "codex", "opencode"])(
@@ -330,11 +700,19 @@ describe("ContextMD serving under database contention", () => {
             body: Effect.succeed(JSON.stringify(raw)),
           });
           const reply = yield* h.service.moment(request("first-input"));
+          const observation = JSON.stringify(
+            h.db
+              .prepare(
+                "SELECT status, reason, server_ms FROM moments WHERE delivery = 'first-input'",
+              )
+              .get(),
+          );
           assert.isBelow(
             (yield* Clock.currentTimeMillis) - started,
             ContextmdServing.MOMENT_BUDGET_MS,
+            observation,
           );
-          assert.equal(reply.status, 200);
+          assert.equal(reply.status, 200, observation);
           if (reply.status !== 200) return;
           assert.include(reply.body, "Great Library");
           const delivery = harness === "opencode" ? "first-input-pointer" : "first-input";
