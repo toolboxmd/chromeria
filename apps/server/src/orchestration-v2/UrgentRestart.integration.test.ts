@@ -2200,6 +2200,16 @@ const codexOverlappingHeldRoots = () =>
               event.payload.nativeItemRef?.nativeId === "next-child-command" &&
               event.payload.status === "running",
           );
+          // Child tool items can commit before the parent task row.
+          // Wait for both before testing cancellation of the two-root cohort.
+          const nextChildRegistered = yield* scenario.watch(
+            (event) =>
+              event.type === "subagent.updated" &&
+              event.threadId === threadId &&
+              event.payload.origin === "provider_native" &&
+              event.payload.id !== firstChild.id &&
+              event.payload.status === "running",
+          );
           yield* scenario.management.sendToThread({
             commandId: CommandId.make("next-root"),
             threadId,
@@ -2213,6 +2223,7 @@ const codexOverlappingHeldRoots = () =>
           });
           yield* scenario.worker.drain();
           yield* Fiber.join(nextChildReady);
+          yield* Fiber.join(nextChildRegistered);
           const second = yield* scenario.orchestrator.getThreadProjection(threadId);
           const secondTurn = second.providerTurns.findLast((turn) => turn.status === "running")!;
           const secondChild = second.subagents.find(
