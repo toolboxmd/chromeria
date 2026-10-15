@@ -10,6 +10,7 @@
  * `orchestration:read`, checked by `EnvironmentAuth`.
  */
 import * as ByteSize from "effect/ByteSize";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -28,6 +29,8 @@ export const layer = HttpRouter.use((router) =>
       auth.authenticateHttpRequest(request).pipe(
         Effect.map((session) => session.scopes.includes("orchestration:read")),
         Effect.orElseSucceed(() => false),
+        // Receipt hooks have only 300 ms after printing. Their auth lookup must not queue on writers.
+        NodeSqliteClient.readOnly,
       );
     const unauthorized = (request: HttpServerRequest.HttpServerRequest) =>
       serving

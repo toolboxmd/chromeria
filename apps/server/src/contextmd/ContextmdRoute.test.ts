@@ -11,11 +11,14 @@ import { assert, describe, it, vi } from "@effect/vitest";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
-import { OrchestrationV2ProviderThread } from "@t3tools/contracts";
+import { AuthSessionId, OrchestrationV2ProviderThread } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import { HttpClient, HttpClientRequest, HttpRouter } from "effect/http";
@@ -23,12 +26,18 @@ import { HttpClient, HttpClientRequest, HttpRouter } from "effect/http";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as AuthSessions from "../persistence/AuthSessions.ts";
 import * as ContextmdRoute from "./ContextmdRoute.ts";
 import { MOMENT_BUDGET_MS } from "./ContextmdServing.ts";
 import * as ContextmdServing from "./ContextmdServing.ts";
 import * as Store from "./Store.ts";
 import { isHoldout } from "./ServingState.ts";
 const decodeProviderThread = Schema.decodeUnknownEffect(OrchestrationV2ProviderThread);
+const decodeInlineReply = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({ hookSpecificOutput: Schema.Struct({ additionalContext: Schema.String }) }),
+  ),
+);
 
 // The store and config are ContextMD's data files; the matcher runs in this module.
 const writeStore = (dir: string) => {
@@ -150,6 +159,31 @@ const layerAuth = Layer.mock(EnvironmentAuth.EnvironmentAuth)({
   },
 });
 
+// Keep the route and real auth repository lookup; no signing key or issued credential is needed.
+const layerRepositoryAuth = Layer.unwrap(
+  Effect.gen(function* () {
+    const sessions = yield* AuthSessions.AuthSessionRepository;
+    return Layer.mock(EnvironmentAuth.EnvironmentAuth)({
+      authenticateHttpRequest: (request) =>
+        Effect.gen(function* () {
+          const sessionId = AuthSessionId.make(
+            request.headers.authorization?.replace(/^Bearer /u, "") ?? "missing",
+          );
+          const row = yield* sessions.getById({ sessionId }).pipe(Effect.orDie);
+          if (Option.isNone(row) || row.value.revokedAt !== null) {
+            return yield* new EnvironmentAuth.ServerAuthMissingCredentialError({});
+          }
+          return {
+            sessionId,
+            subject: row.value.subject,
+            method: row.value.method,
+            scopes: row.value.scopes,
+          };
+        }),
+    });
+  }),
+).pipe(Layer.provide(AuthSessions.layer));
+
 /** A command item as Codex's adapter projects it, with the call's exit code. */
 const projectCommand = (input: {
   readonly toolUseId: string;
@@ -256,6 +290,8 @@ const serve = <R>(
     /** A serving database already marked, so this server starts as the next process would. */
     readonly seedState?: string;
     readonly greatLibrary?: boolean;
+    /** Real disk/WAL reader and auth-session lookup for receipt contention regressions. */
+    readonly repositoryAuth?: boolean;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -289,14 +325,22 @@ const serve = <R>(
     if (options.breakStateFile) {
       NodeFS.mkdirSync(NodePath.join(config.stateDir, "contextmd.sqlite"), { recursive: true });
     }
-    const database = yield* Layer.build(SqlitePersistence.layerMemory);
+    const database = yield* Layer.build(
+      options.repositoryAuth
+        ? SqlitePersistence.layerFromPath(config.dbPath)
+        : SqlitePersistence.layerMemory,
+    );
     yield* setup.pipe(Effect.provide(database));
     const services = yield* Layer.build(
       HttpRouter.serve(ContextmdRoute.layer, { disableListenLog: true }).pipe(
         Layer.provideMerge(ContextmdServing.layer),
         Layer.provideMerge(Layer.succeedContext(database)),
         Layer.provideMerge(Layer.succeedContext(configContext)),
-        Layer.provideMerge(layerAuth),
+        Layer.provideMerge(
+          options.repositoryAuth
+            ? layerRepositoryAuth.pipe(Layer.provide(Layer.succeedContext(database)))
+            : layerAuth,
+        ),
         Layer.provideMerge(
           ConfigProvider.layer(
             ConfigProvider.fromUnknown({ CONTEXTMD_SERVING_CONFIG: store.config }),
@@ -337,11 +381,12 @@ const serve = <R>(
     const postDelivery = (
       action: "settle" | "release" | "pointer/applying" | "pointer/settle" | "pointer/release",
       delivery: string,
+      credential = token,
     ) =>
       client
         .execute(
           HttpClientRequest.post(`/contextmd/v1/${action}/${delivery}`).pipe(
-            HttpClientRequest.setHeaders({ authorization: `Bearer ${token}` }),
+            HttpClientRequest.setHeaders({ authorization: `Bearer ${credential}` }),
           ),
         )
         .pipe(
@@ -509,6 +554,106 @@ const projectUserMessage = (text: string, ordinal = 1) =>
   }).pipe(Effect.orDie);
 
 describe("contextmd routes", () => {
+  it.live.each(["settle", "release"] as const)(
+    "%s authenticates within the hook receipt deadline while a writer owns the connection",
+    (action) =>
+      Effect.gen(function* () {
+        const session = "receipt-contention";
+        const sessionId = AuthSessionId.make("reader");
+        const setup = Effect.gen(function* () {
+          yield* insertAttempt({ attempt: "a", run: "run-1", status: "running", native: session });
+          const sessions = yield* AuthSessions.AuthSessionRepository;
+          for (const [id, scopes] of [
+            [sessionId, ["orchestration:read"]],
+            [AuthSessionId.make("weak"), []],
+          ] as const) {
+            yield* sessions.create({
+              sessionId: id,
+              subject: "public-fixture",
+              scopes,
+              method: "bearer-access-token",
+              client: {
+                label: null,
+                ipAddress: null,
+                userAgent: null,
+                deviceType: "unknown",
+                os: null,
+                browser: null,
+              },
+              issuedAt: DateTime.makeUnsafe("2026-01-01T00:00:00Z"),
+              expiresAt: DateTime.makeUnsafe("2099-01-01T00:00:00Z"),
+            });
+          }
+        }).pipe(Effect.provide(AuthSessions.layer), Effect.orDie);
+        const s = yield* serve(setup, { greatLibrary: true, repositoryAuth: true });
+        const sql = Context.get(s.database, SqlClient.SqlClient);
+        const raw = { hook_event_name: "UserPromptSubmit", session_id: session, cwd: "/tmp" };
+        const first = yield* s.moment(raw, { delivery: "first-pointer" });
+        assert.equal(first.status, 200);
+        assert.include(first.body, "Great Library");
+        const decoded = decodeInlineReply(first.body);
+        const expectedBytes = Buffer.byteLength(
+          decoded.hookSpecificOutput.additionalContext,
+          "utf8",
+        );
+        const acquired = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const writer = yield* Effect.forkScoped(
+          sql.withTransaction(
+            Deferred.succeed(acquired, undefined).pipe(Effect.andThen(Deferred.await(release))),
+          ),
+        );
+        yield* Deferred.await(acquired);
+        // contextmd-hook prints the reply before this request, then cuts it off at 300 ms.
+        const response = yield* s
+          .postDelivery(action, "first-pointer")
+          .pipe(Effect.timeoutOption("300 millis"));
+        assert.deepEqual(response, Option.some(204));
+        assert.equal(yield* s.postDelivery(action, "first-pointer", "weak"), 401);
+        const db = new NodeSqlite.DatabaseSync(s.sqlitePath, { readOnly: true });
+        try {
+          const query = (text: string) =>
+            db
+              .prepare(text)
+              .all()
+              .map((row) => ({ ...row }));
+          assert.deepEqual(query("SELECT stage FROM deliveries WHERE delivery = 'first-pointer'"), [
+            { stage: action === "settle" ? "settled" : "released" },
+          ]);
+          const bytes = Number(
+            db.prepare("SELECT serve_bytes FROM deliveries WHERE delivery = 'first-pointer'").get()!
+              .serve_bytes,
+          );
+          assert.equal(bytes, expectedBytes);
+          assert.deepEqual(query("SELECT serve_used FROM budgets WHERE run_id = 'run-1'"), [
+            { serve_used: action === "settle" ? bytes : 0 },
+          ]);
+          assert.deepEqual(
+            query("SELECT settled FROM claims WHERE delivery = 'first-pointer'"),
+            action === "settle" ? [{ settled: 1 }] : [],
+          );
+          const repeat = yield* s.moment(raw, { delivery: "same-epoch" });
+          assert.equal(repeat.status, action === "settle" ? 204 : 200);
+        } finally {
+          db.close();
+        }
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(writer);
+        // The marker is local to auth reads. Committed revocation remains authoritative.
+        const sessions = Context.get(
+          yield* Layer.build(
+            AuthSessions.layer.pipe(Layer.provide(Layer.succeedContext(s.database))),
+          ),
+          AuthSessions.AuthSessionRepository,
+        );
+        yield* sessions.revoke({
+          sessionId,
+          revokedAt: DateTime.makeUnsafe("2026-10-15T00:00:00Z"),
+        });
+        assert.equal(yield* s.postDelivery(action, "same-epoch"), 401);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.live("separates mixed Cue/pointer receipts from shown observation and generic closures", () =>
     Effect.gen(function* () {
       let session = "mixed-0";
