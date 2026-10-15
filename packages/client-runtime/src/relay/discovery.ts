@@ -34,6 +34,8 @@ export interface RelayDiscoveredEnvironment {
 
 export interface RelayEnvironmentDiscoveryState {
   readonly environments: ReadonlyMap<string, RelayDiscoveredEnvironment>;
+  /** A complete account listing, tied to the session that obtained it. */
+  readonly listedSession: Option.Option<ClientCapabilities.CloudSessionIdentity>;
   readonly refreshing: boolean;
   readonly offline: boolean;
   readonly error: Option.Option<ConnectionAttemptError>;
@@ -49,6 +51,7 @@ export class RelayEnvironmentDiscovery extends Context.Service<
 
 export const EMPTY_RELAY_ENVIRONMENT_DISCOVERY_STATE: RelayEnvironmentDiscoveryState = {
   environments: new Map(),
+  listedSession: Option.none(),
   refreshing: false,
   offline: false,
   error: Option.none(),
@@ -218,13 +221,18 @@ export const make = Effect.fn("RelayEnvironmentDiscovery.make")(function* () {
       yield* Ref.set(refreshGeneration, generation);
       yield* SubscriptionRef.set(state, {
         environments: new Map(),
+        listedSession: Option.none(),
         refreshing: true,
         offline: false,
         error: Option.none(),
       });
 
-      // Sign-out triggers credentials-changed refreshes and must settle to an empty list.
-      // Only session-level missing credentials are benign; relay-side auth failures must surface.
+      // Signed out is the idle state, not a failure: the proactive refresh on
+      // credentials-changed also runs on sign-out and must settle back to a
+      // clean empty list. Only the session-level "no credentials" error is
+      // benign — relay-side auth failures (expired/invalid tokens) happen
+      // after this point and must surface as errors.
+      const listingSession = yield* session.identity;
       const tokenResult = yield* Effect.result(session.clerkToken);
       if (tokenResult._tag === "Failure") {
         const failure = tokenResult.failure;
@@ -258,7 +266,13 @@ export const make = Effect.fn("RelayEnvironmentDiscovery.make")(function* () {
       const environments = yield* relay
         .listEnvironments({ clerkToken })
         .pipe(Effect.mapError(mapManagedRelayError));
-      if ((yield* Ref.get(accountGeneration)) !== generation) {
+      const currentSession = yield* session.identity;
+      if (
+        (yield* Ref.get(accountGeneration)) !== generation ||
+        Option.isNone(listingSession) ||
+        Option.isNone(currentSession) ||
+        listingSession.value !== currentSession.value
+      ) {
         return;
       }
       const next = new Map<string, RelayDiscoveredEnvironment>();
@@ -273,6 +287,7 @@ export const make = Effect.fn("RelayEnvironmentDiscovery.make")(function* () {
       yield* SubscriptionRef.update(state, (current) => ({
         ...current,
         environments: next,
+        listedSession: listingSession,
       }));
 
       yield* Effect.forEach(
@@ -301,6 +316,7 @@ export const make = Effect.fn("RelayEnvironmentDiscovery.make")(function* () {
             ...current,
             refreshing: false,
             error: Option.some(error),
+            listedSession: Option.none(),
           }));
         }),
       ),
@@ -332,7 +348,11 @@ export const make = Effect.fn("RelayEnvironmentDiscovery.make")(function* () {
             yield* SubscriptionRef.set(state, EMPTY_RELAY_ENVIRONMENT_DISCOVERY_STATE);
             yield* refresh.pipe(Effect.forkScoped);
           })
-        : Effect.void,
+        : reason === "application-active" ||
+            reason === "application-active-probe" ||
+            reason === "application-active-reconnect"
+          ? refresh.pipe(Effect.forkScoped)
+          : Effect.void,
     ),
     Effect.forkScoped,
   );

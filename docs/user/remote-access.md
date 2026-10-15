@@ -106,6 +106,16 @@ allows it on private networks by default. You can reorder a learned route, but n
 goes away with the route it was learned through, or when the machine stops
 reporting that address.
 
+When you sign in to T3 Connect, a saved remote machine also gains its T3 Connect
+route automatically once its managed tunnel answers and supports this client.
+The new route goes after LAN and Tailscale. This uses the machine's existing
+tunnel; it does not create another one. Without a T3 Connect sign-in, your
+paired routes keep working. If the account no longer lists that tunnel, its
+relay route is removed when another independently authorized route remains.
+A machine whose only routes depend on T3 Connect stays saved to preserve its
+local data. Removing a relay route by hand can cause it to be learned again
+while the account still lists the tunnel.
+
 T3 Code connects over the first route that answers. Away from home, a LAN
 address that does not answer is checked briefly and skipped. It is only tried
 again, after the other routes, if none of them connect. While connected over a

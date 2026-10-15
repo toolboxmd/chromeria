@@ -33,11 +33,13 @@ import type {
   PersistedConnectionTarget,
   SupervisorConnectionState,
 } from "./model.ts";
-import { ConnectionBlockedError } from "./model.ts";
+import { ConnectionBlockedError, RelayConnectionTarget } from "./model.ts";
 import * as Persistence from "../platform/persistence.ts";
 import * as EnvironmentSupervisor from "./supervisor.ts";
 import * as ConnectionDriver from "./driver.ts";
 import * as ConnectionWakeups from "./wakeups.ts";
+import * as RelayEnvironmentDiscovery from "../relay/discovery.ts";
+import { orchestrationProtocolCompatibilityError } from "./compatibility.ts";
 import {
   PullRequestRoutingPermissions,
   pullRequestRoutingConnectionKey,
@@ -157,6 +159,11 @@ export class EnvironmentRegistry extends Context.Service<
       | ConnectionAttemptError
       | PlatformEnvironmentRemovalError
     >;
+    /** Reconciles saved remote routes against the current account's confirmed tunnel list. */
+    readonly reconcileRelayRoutes: Effect.Effect<
+      void,
+      Persistence.ConnectionPersistenceError | ConnectionAttemptError
+    >;
     readonly retryNow: (environmentId: EnvironmentId) => Effect.Effect<void>;
     readonly setEnabled: (
       environmentId: EnvironmentId,
@@ -220,6 +227,11 @@ export const make = Effect.gen(function* () {
   const driver = yield* ConnectionDriver.ConnectionDriver;
   const wakeups = yield* ConnectionWakeups.ConnectionWakeups;
   const ssh = yield* ClientCapabilities.SshEnvironmentGateway;
+  const cloudSession = yield* ClientCapabilities.CloudSession;
+  const discovery = yield* RelayEnvironmentDiscovery.RelayEnvironmentDiscovery;
+  // Account cleanup must drain an automatic write before taking its snapshot.
+  // Always acquire this before an environment's lease lock.
+  const relayRoutesLock = yield* Semaphore.make(1);
   const persistedTargets = yield* storage.list;
   const disabledEnvironmentIds = new Set(yield* storage.listDisabled);
   const loadRoute = Effect.fn("EnvironmentRegistry.loadRoute")(function* (
@@ -1019,7 +1031,67 @@ export const make = Effect.gen(function* () {
         },
       );
     },
+    relayRoutesLock.withPermits(1),
   );
+
+  const reconcileRelayRoutes = relayRoutesLock
+    .withPermits(1)(
+      Effect.gen(function* () {
+        const environmentIds = [...(yield* SubscriptionRef.get(entries)).keys()];
+        for (const environmentId of environmentIds) {
+          yield* withLeaseLock(
+            environmentId,
+            Effect.gen(function* () {
+              // Read after acquiring both locks: sign-out or a refreshed listing
+              // may have invalidated the update that woke the watcher.
+              const current = yield* SubscriptionRef.get(discovery.state);
+              const identity = yield* cloudSession.identity;
+              if (
+                current.offline ||
+                Option.isSome(current.error) ||
+                Option.isNone(current.listedSession) ||
+                Option.isNone(identity) ||
+                current.listedSession.value !== identity.value ||
+                (yield* Ref.get(platformEnvironmentIds)).has(environmentId)
+              )
+                return;
+              const entry = (yield* SubscriptionRef.get(entries)).get(environmentId);
+              if (entry === undefined) return;
+              const routes = connectionRoutes(entry);
+              const hasRelay = routes.some(
+                (route) => route.target._tag === "RelayConnectionTarget",
+              );
+              const discovered = current.environments.get(environmentId);
+              const managed = discovered?.environment.endpoint.providerKind === "cloudflare_tunnel";
+              if (managed) {
+                const status = Option.getOrNull(discovered.status);
+                if (
+                  hasRelay ||
+                  entry.unsupportedReason !== undefined ||
+                  discovered.availability !== "online" ||
+                  Option.isSome(discovered.error) ||
+                  status?.descriptor === undefined ||
+                  orchestrationProtocolCompatibilityError(status.descriptor) !== null
+                )
+                  return;
+                yield* replaceRoutesLocked(
+                  entry,
+                  upsertRoute(routes, {
+                    target: new RelayConnectionTarget({ environmentId, label: entry.target.label }),
+                    profile: Option.none(),
+                  }),
+                );
+              } else if (hasRelay) {
+                const remaining = routesAfterRemoving(routes, RELAY_ROUTE_ID);
+                // Removing the last route would delete local cache and drafts.
+                if (remaining.length > 0) yield* replaceRoutesLocked(entry, remaining);
+              }
+            }),
+          );
+        }
+      }),
+    )
+    .pipe(Effect.withSpan("EnvironmentRegistry.reconcileRelayRoutes"));
 
   const retryNow = (environmentId: EnvironmentId) =>
     acquireSupervisor(environmentId).pipe(
@@ -1168,6 +1240,7 @@ export const make = Effect.gen(function* () {
     removeRoute,
     reorderRoutes,
     removeRelayEnvironments,
+    reconcileRelayRoutes,
     retryNow,
     setEnabled,
     setCompatibility,

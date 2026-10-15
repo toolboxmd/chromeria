@@ -64,7 +64,7 @@ import {
 import * as RpcSession from "../rpc/session.ts";
 import * as EnvironmentSupervisor from "./supervisor.ts";
 import * as ConnectionWakeups from "./wakeups.ts";
-import { watchDiscoveredCompatibility } from "./layer.ts";
+import { watchAccountRelayRoutes, watchDiscoveredCompatibility } from "./layer.ts";
 import * as RelayEnvironmentDiscovery from "../relay/discovery.ts";
 import type { RelayEnvironmentStatusResponse } from "@t3tools/contracts/relay";
 import { runDesktopCommitWithReconnectObserver } from "../state/server.ts";
@@ -157,6 +157,10 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
     readonly beforeRegistrationRemove?: (
       environmentId: EnvironmentId,
     ) => Effect.Effect<void, Persistence.ConnectionPersistenceError>;
+    readonly beforeRegistrationSetRoutes?: Effect.Effect<
+      void,
+      Persistence.ConnectionPersistenceError
+    >;
     readonly checkRoute?: (route: ConnectionRoute) => RouteCheck;
     readonly prepareRoute?: (target: ConnectionTarget) => ConnectionBlockedError | undefined;
     readonly beforePrepareRoute?: (
@@ -167,6 +171,12 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
   },
 ) {
   const storedTargets = yield* Ref.make<ReadonlyArray<ConnectionTarget>>(initialTargets);
+  const cloudIdentity = yield* Ref.make<Option.Option<ClientCapabilities.CloudSessionIdentity>>(
+    Option.some({ accountId: "account-1" }),
+  );
+  const discoveryState = yield* SubscriptionRef.make(
+    RelayEnvironmentDiscovery.EMPTY_RELAY_ENVIRONMENT_DISCOVERY_STATE,
+  );
   const shellCache = yield* Ref.make(new Map([[TARGET.environmentId, CACHED_SNAPSHOT]]));
   const cacheClears = yield* Ref.make<ReadonlyArray<EnvironmentId>>([]);
   const ownedDataClears = yield* Ref.make<ReadonlyArray<EnvironmentId>>([]);
@@ -231,7 +241,11 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
         }
       }),
     setRoutes: (environmentId, routes) =>
-      Ref.update(storedTargets, (current) => replaceRoutes(current, environmentId, routes)),
+      (options?.beforeRegistrationSetRoutes ?? Effect.void).pipe(
+        Effect.andThen(
+          Ref.update(storedTargets, (current) => replaceRoutes(current, environmentId, routes)),
+        ),
+      ),
     remove: (environmentId) =>
       Effect.gen(function* () {
         yield* options?.beforeRegistrationRemove?.(environmentId) ?? Effect.void;
@@ -445,6 +459,14 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
         Layer.succeed(ConnectionCredentialStore.ConnectionCredentialStore, credentialStore),
         Layer.succeed(TokenStore.RemoteDpopAccessTokenStore, tokenStore),
         Layer.succeed(ClientCapabilities.SshEnvironmentGateway, sshGateway),
+        Layer.succeed(ClientCapabilities.CloudSession, {
+          identity: Ref.get(cloudIdentity),
+          clerkToken: Effect.die("Registry reconciliation never reads a token"),
+        }),
+        Layer.succeed(RelayEnvironmentDiscovery.RelayEnvironmentDiscovery, {
+          state: discoveryState,
+          refresh: Effect.void,
+        }),
         Layer.succeed(Connectivity.Connectivity, connectivity),
         Layer.succeed(
           ConnectionWakeups.ConnectionWakeups,
@@ -459,6 +481,8 @@ const makeHarness = Effect.fn("TestEnvironmentRegistry.makeHarness")(function* (
 
   return {
     layer,
+    cloudIdentity,
+    discoveryState,
     storedTargets,
     shellCache,
     cacheClears,
@@ -2138,6 +2162,312 @@ describe("EnvironmentRegistry routes", () => {
         const entry = (yield* SubscriptionRef.get(registry.entries)).get(LAN_TARGET.environmentId);
         expect(entry?.target).toEqual(LAN_TARGET);
         expect(entry?.alternateRoutes ?? []).toEqual([]);
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+});
+
+describe("account relay route learning", () => {
+  const lan = new BearerConnectionProfile({
+    ...BEARER_PROFILE,
+    httpBaseUrl: "http://192.168.1.10:3773/",
+    wsBaseUrl: "ws://192.168.1.10:3773/",
+  });
+  const tailnet = new BearerConnectionTarget({ ...BEARER_TARGET, connectionId: "tailnet" });
+  const tailnetProfile = new BearerConnectionProfile({
+    ...BEARER_PROFILE,
+    connectionId: tailnet.connectionId,
+    httpBaseUrl: "https://desk.tail1234.ts.net/",
+    wsBaseUrl: "wss://desk.tail1234.ts.net/",
+  });
+  const discovered = (options?: {
+    readonly environmentId?: EnvironmentId;
+    readonly providerKind?: "cloudflare_tunnel" | "manual" | "t3_relay";
+    readonly protocolVersion?: number;
+  }): RelayEnvironmentDiscovery.RelayDiscoveredEnvironment => {
+    const environmentId = options?.environmentId ?? BEARER_TARGET.environmentId;
+    const environment = {
+      environmentId,
+      label: "Account label",
+      endpoint: {
+        httpBaseUrl: "https://desk.example.test/",
+        wsBaseUrl: "wss://desk.example.test/",
+        providerKind: options?.providerKind ?? "cloudflare_tunnel",
+      },
+      linkedAt: "2026-10-15T00:00:00Z",
+    };
+    return {
+      environment,
+      availability: "online",
+      error: Option.none(),
+      status: Option.some({
+        environmentId,
+        endpoint: environment.endpoint,
+        status: "online",
+        checkedAt: "2026-10-15T00:00:00Z",
+        descriptor: {
+          environmentId,
+          label: "Account label",
+          platform: { os: "linux", arch: "x64" },
+          serverVersion: "1.0.0",
+          orchestrationProtocolVersion: options?.protocolVersion ?? ORCHESTRATION_PROTOCOL_VERSION,
+          capabilities: { repositoryIdentity: true },
+        },
+      }),
+    };
+  };
+  const listing = (
+    identity: Option.Option<ClientCapabilities.CloudSessionIdentity>,
+    records: ReadonlyArray<RelayEnvironmentDiscovery.RelayDiscoveredEnvironment>,
+  ): RelayEnvironmentDiscovery.RelayEnvironmentDiscoveryState => ({
+    ...RelayEnvironmentDiscovery.EMPTY_RELAY_ENVIRONMENT_DISCOVERY_STATE,
+    listedSession: identity,
+    environments: new Map(records.map((entry) => [entry.environment.environmentId, entry])),
+  });
+
+  it.effect(
+    "automatically persists relay last for a saved server without changing its tokens or enabled state",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness(
+          [BEARER_TARGET, tailnet],
+          [lan, tailnetProfile],
+          [[BEARER_TARGET.connectionId, BEARER_CREDENTIAL]],
+          { initialDisabled: [BEARER_TARGET.environmentId] },
+        );
+        yield* Effect.gen(function* () {
+          const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+          yield* SubscriptionRef.set(
+            harness.discoveryState,
+            listing(yield* Ref.get(harness.cloudIdentity), [discovered()]),
+          );
+          const refreshed = yield* Deferred.make<void>();
+          yield* watchAccountRelayRoutes().pipe(
+            Effect.provideService(RelayEnvironmentDiscovery.RelayEnvironmentDiscovery, {
+              state: harness.discoveryState,
+              refresh: Deferred.succeed(refreshed, undefined).pipe(Effect.asVoid),
+            }),
+            Effect.forkScoped,
+          );
+          yield* Deferred.await(refreshed);
+          const entry = yield* SubscriptionRef.changes(registry.entries).pipe(
+            Stream.map((entries) => entries.get(BEARER_TARGET.environmentId)),
+            Stream.filter(
+              (entry) =>
+                entry?.alternateRoutes?.some(
+                  (route) => route.target._tag === "RelayConnectionTarget",
+                ) === true,
+            ),
+            Stream.runHead,
+            Effect.map(Option.getOrThrow),
+          );
+          expect(entry?.enabled).toBe(false);
+          expect((yield* Ref.get(harness.storedTargets)).map(connectionRouteId)).toEqual([
+            BEARER_TARGET.connectionId,
+            "tailnet",
+            "relay",
+          ]);
+          expect((yield* Ref.get(harness.storedTargets)).at(-1)?.label).toBe(BEARER_TARGET.label);
+          expect(yield* Ref.get(harness.storedCredentials)).toEqual(
+            new Map([[BEARER_TARGET.connectionId, BEARER_CREDENTIAL]]),
+          );
+          yield* registry.reconcileRelayRoutes;
+          expect(yield* Ref.get(harness.sessions)).toHaveLength(0);
+        }).pipe(Effect.provide(harness.layer), Effect.scoped);
+      }),
+  );
+
+  it.effect("requires a current successful listing and a managed compatible health result", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness([BEARER_TARGET], [lan]);
+      yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        const identity = yield* Ref.get(harness.cloudIdentity);
+        const healthy = listing(identity, [discovered()]);
+        const checking = {
+          ...discovered(),
+          availability: "checking" as const,
+          status: Option.none<RelayEnvironmentStatusResponse>(),
+        };
+        const variants = [
+          listing(identity, [discovered({ providerKind: "manual" })]),
+          listing(identity, [discovered({ providerKind: "t3_relay" })]),
+          listing(identity, [checking]),
+          listing(identity, [discovered({ protocolVersion: ORCHESTRATION_PROTOCOL_VERSION + 1 })]),
+          listing(identity, [{ ...discovered(), availability: "offline" as const }]),
+          { ...healthy, listedSession: Option.none<ClientCapabilities.CloudSessionIdentity>() },
+          { ...healthy, listedSession: Option.some({ accountId: "account-1" }) },
+          { ...healthy, offline: true },
+          {
+            ...healthy,
+            error: Option.some(
+              new ConnectionTransientError({ reason: "network", detail: "Listing failed" }),
+            ),
+          },
+          listing(identity, [discovered({ environmentId: SECOND_RELAY_TARGET.environmentId })]),
+        ];
+        for (const state of variants) {
+          yield* SubscriptionRef.set(harness.discoveryState, state);
+          yield* registry.reconcileRelayRoutes;
+          expect(yield* Ref.get(harness.storedTargets)).toEqual([BEARER_TARGET]);
+        }
+        // Sign-out also fences an otherwise valid cached listing.
+        yield* SubscriptionRef.set(harness.discoveryState, healthy);
+        yield* Ref.set(harness.cloudIdentity, Option.none());
+        yield* registry.reconcileRelayRoutes;
+        expect(yield* Ref.get(harness.storedTargets)).toEqual([BEARER_TARGET]);
+        yield* Ref.set(harness.cloudIdentity, identity);
+        yield* registry.setCompatibility(
+          BEARER_TARGET.environmentId,
+          new ConnectionBlockedError({ reason: "unsupported", detail: "Unsupported saved server" }),
+        );
+        yield* registry.reconcileRelayRoutes;
+        expect(yield* Ref.get(harness.storedTargets)).toEqual([BEARER_TARGET]);
+        yield* registry.registerPlatform(new PrimaryConnectionRegistration({ target: TARGET }));
+        yield* SubscriptionRef.set(
+          harness.discoveryState,
+          listing(identity, [discovered({ environmentId: TARGET.environmentId })]),
+        );
+        yield* registry.reconcileRelayRoutes;
+        expect(
+          (yield* SubscriptionRef.get(registry.entries)).get(TARGET.environmentId)?.alternateRoutes,
+        ).toBeUndefined();
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect(
+    "removes an unlinked or downgraded relay, but retains it through failed refreshes and offline health",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness(
+          [BEARER_TARGET],
+          [lan],
+          [[BEARER_TARGET.connectionId, BEARER_CREDENTIAL]],
+        );
+        yield* Effect.gen(function* () {
+          const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+          const identity = yield* Ref.get(harness.cloudIdentity);
+          const healthy = listing(identity, [discovered()]);
+          yield* SubscriptionRef.set(harness.discoveryState, healthy);
+          yield* registry.reconcileRelayRoutes;
+          yield* SubscriptionRef.set(
+            harness.discoveryState,
+            RelayEnvironmentDiscovery.EMPTY_RELAY_ENVIRONMENT_DISCOVERY_STATE,
+          );
+          yield* registry.reconcileRelayRoutes;
+          expect(yield* Ref.get(harness.storedTargets)).toHaveLength(2);
+          yield* SubscriptionRef.set(
+            harness.discoveryState,
+            listing(identity, [
+              { ...discovered(), availability: "offline", status: Option.none() },
+            ]),
+          );
+          yield* registry.reconcileRelayRoutes;
+          expect(yield* Ref.get(harness.storedTargets)).toHaveLength(2);
+          yield* SubscriptionRef.set(
+            harness.discoveryState,
+            listing(identity, [discovered({ providerKind: "manual" })]),
+          );
+          yield* registry.reconcileRelayRoutes;
+          expect(yield* Ref.get(harness.storedTargets)).toEqual([BEARER_TARGET]);
+          yield* SubscriptionRef.set(harness.discoveryState, healthy);
+          yield* registry.reconcileRelayRoutes;
+          yield* SubscriptionRef.set(harness.discoveryState, listing(identity, []));
+          yield* registry.reconcileRelayRoutes;
+          expect(yield* Ref.get(harness.storedTargets)).toEqual([BEARER_TARGET]);
+          expect(
+            (yield* Ref.get(harness.storedCredentials)).get(BEARER_TARGET.connectionId),
+          ).toEqual(BEARER_CREDENTIAL);
+          expect(yield* Ref.get(harness.ownedDataClears)).toEqual([]);
+        }).pipe(Effect.provide(harness.layer), Effect.scoped);
+      }),
+  );
+
+  it.effect("retains an unlinked relay-only entry and its local data", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness([RELAY_TARGET]);
+      yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        yield* SubscriptionRef.set(
+          harness.discoveryState,
+          listing(yield* Ref.get(harness.cloudIdentity), []),
+        );
+        yield* registry.reconcileRelayRoutes;
+        expect(yield* Ref.get(harness.storedTargets)).toEqual([RELAY_TARGET]);
+        expect(yield* Ref.get(harness.cacheClears)).toEqual([]);
+        expect(yield* Ref.get(harness.ownedDataClears)).toEqual([]);
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("drains an in-flight automatic write before sign-out snapshots relay routes", () =>
+    Effect.gen(function* () {
+      const writing = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const harness = yield* makeHarness([BEARER_TARGET], [lan], [], {
+        beforeRegistrationSetRoutes: Deferred.succeed(writing, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        ),
+      });
+      yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        yield* SubscriptionRef.set(
+          harness.discoveryState,
+          listing(yield* Ref.get(harness.cloudIdentity), [discovered()]),
+        );
+        const adding = yield* registry.reconcileRelayRoutes.pipe(Effect.forkChild);
+        yield* Deferred.await(writing);
+        yield* Ref.set(harness.cloudIdentity, Option.none());
+        const cleanup = yield* registry
+          .removeRelayEnvironments()
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(adding);
+        yield* Fiber.join(cleanup);
+        expect(yield* Ref.get(harness.storedTargets)).toEqual([BEARER_TARGET]);
+        expect(
+          (yield* SubscriptionRef.get(registry.entries)).get(BEARER_TARGET.environmentId)
+            ?.alternateRoutes,
+        ).toBeUndefined();
+      }).pipe(Effect.provide(harness.layer), Effect.scoped);
+    }),
+  );
+
+  it.effect("rechecks session identity after waiting for the environment lease", () =>
+    Effect.gen(function* () {
+      const locked = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const harness = yield* makeHarness([BEARER_TARGET], [lan], [], {
+        beforeRegistrationRegister: () =>
+          Deferred.succeed(locked, undefined).pipe(Effect.andThen(Deferred.await(release))),
+      });
+      yield* Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        yield* SubscriptionRef.set(
+          harness.discoveryState,
+          listing(yield* Ref.get(harness.cloudIdentity), [discovered()]),
+        );
+        const registration = yield* registry
+          .register(
+            new BearerConnectionRegistration({
+              target: BEARER_TARGET,
+              profile: lan,
+              credential: BEARER_CREDENTIAL,
+            }),
+          )
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(locked);
+        const reconciling = yield* registry.reconcileRelayRoutes.pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Ref.set(harness.cloudIdentity, Option.some({ accountId: "account-2" }));
+        const cleanup = yield* registry.removeRelayEnvironments().pipe(Effect.forkChild);
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(registration);
+        yield* Fiber.join(reconciling);
+        yield* Fiber.join(cleanup);
+        expect(yield* Ref.get(harness.storedTargets)).toEqual([BEARER_TARGET]);
       }).pipe(Effect.provide(harness.layer), Effect.scoped);
     }),
   );
