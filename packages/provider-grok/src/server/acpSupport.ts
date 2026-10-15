@@ -146,6 +146,9 @@ export const makeGrokAcpRuntime = Effect.fn("GrokAcpSupport.makeGrokAcpRuntime")
       authMethodId: resolveGrokAuthMethodId(input.environment),
       cancelMeta: { ...input.cancelMeta, ...GROK_ACP_CANCEL_META },
       initializeMeta: GROK_ACP_INITIALIZE_META,
+      // Grok persists input chunks without broadcasting them unless the client
+      // requests live echoes. Their promptIndex is the native input identity.
+      clientCapabilities: { _meta: { "x.ai/userMessageEcho": true } },
       ...grokAcpRuntimeProcessOwnership(processGroupPlatform),
     }),
   );

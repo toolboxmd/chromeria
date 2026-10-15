@@ -56,6 +56,7 @@ import type * as EffectAcpSchema from "effect-acp/compat";
 
 import { writeFakeCli } from "@t3tools/provider-testing/fakeCli";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
+import { writeFakeCli } from "@t3tools/provider-testing/fakeCli";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
 import {
@@ -814,6 +815,127 @@ describe("AcpAdapterV2", () => {
       );
       assert.equal(Option.getOrThrow(terminal).status, "completed");
     }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.live.each([false, true])(
+    "persists Grok's capability-gated root echo through the native wire, bare=%s",
+    (bare) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped();
+        yield* fs.makeDirectory(`${root}/native`);
+        yield* fs.writeFileString(`${root}/native/auth.json`, "FAKE_TEST_AUTH");
+        const binary = writeFakeCli({
+          directory: root,
+          name: "grok-root-echo",
+          source: `
+            import { createInterface } from "node:readline";
+            if (process.argv.includes("inspect")) {
+              console.log(JSON.stringify({ skills: [], plugins: [], hooks: [] }));
+              process.exit(0);
+            }
+            const send = (frame) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...frame }) + "\\n");
+            const update = (sessionId, meta) => send({ method: "session/update", params: {
+              sessionId,
+              update: {
+                sessionUpdate: "user_message_chunk",
+                content: { type: "text", text: "Native input identity." },
+                _meta: { modelId: "grok-4.7-build-fast", ...meta },
+              },
+              _meta: { eventId: sessionId + "-2", agentTimestampMs: 1792036514092 },
+            } });
+            let echo = false;
+            for await (const line of createInterface({ input: process.stdin })) {
+              const request = JSON.parse(line);
+              if (request.id === undefined) continue;
+              let result = {};
+              if (request.method === "initialize") {
+                echo = request.params.clientCapabilities?._meta?.["x.ai/userMessageEcho"] === true;
+                result = { protocolVersion: 1, agentCapabilities: {} };
+              } else if (request.method === "session/new") {
+                result = { sessionId: "native-root" };
+                send({ method: "session/update", params: {
+                  sessionId: "native-root",
+                  update: {
+                    sessionUpdate: "available_commands_update",
+                    availableCommands: ["compact", "always-approve", "context", "plugins", "reload-plugins", "session-info", "feedback"].map(name => ({ name, description: name })),
+                    _meta: { tools: ["run_terminal_command", "read_file", "search_replace", "list_dir", "grep", "write"] },
+                  },
+                } });
+              } else if (request.method === "session/prompt") {
+                // Grok persists every input, but broadcasts it only when the client opts in.
+                if (echo) {
+                  update("native-child", { promptIndex: 99 });
+                  update("native-root", { promptIndex: 98, syntheticPrompt: true });
+                  update("native-root", { promptIndex: 97, hideFromScrollback: true });
+                  update("native-root", { promptIndex: 0 });
+                  update("native-root", { promptIndex: 0 });
+                }
+                send({ method: "session/update", params: {
+                  sessionId: "native-root",
+                  update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done." } },
+                } });
+                result = { stopReason: "end_turn" };
+              }
+              send({ id: request.id, result });
+            }
+          `,
+        });
+        const instanceId = ProviderInstanceId.make("grok-wire-input");
+        const adapter = yield* makeGrokAdapterV2({
+          instanceId,
+          settings: { ...DEFAULT_GROK_SETTINGS, binaryPath: binary },
+          environment: { HOME: root, GROK_HOME: `${root}/native`, PATH: process.env.PATH },
+          hostPlatform: yield* HostProcess.Platform,
+          selfInvocation: yield* resolveSelfInvocation(),
+        });
+        const threadId = ThreadId.make(`grok-wire-input-${bare}`);
+        const policy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: root,
+          ...(bare ? { bare: { additions: [] } } : {}),
+        });
+        const selection = { instanceId, model: "grok-build" };
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make(`grok-wire-input-${bare}`),
+          modelSelection: selection,
+          runtimePolicy: policy,
+        });
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection: selection,
+          runtimePolicy: policy,
+        });
+        yield* runtime.startTurn(
+          makeTurnInput({
+            threadId,
+            providerThread,
+            instanceId,
+            runtimePolicy: policy,
+            modelSelection: selection,
+            now: yield* DateTime.now,
+            ordinal: 23,
+            messageCreatedBy: bare ? "agent" : "user",
+            messageCreationSource: bare ? "mcp" : "web",
+          }),
+        );
+        const events = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        );
+        const turns = events.flatMap((event) =>
+          event.type === "provider_turn.updated" ? [event.providerTurn] : [],
+        );
+        assert.equal(turns.at(-1)?.status, "completed");
+        assert.deepEqual(turns.at(-1)?.nativeTurnRef, {
+          driver: ProviderDriverKind.make("grok"),
+          nativeId: "prompt:0",
+          strength: "strong",
+        });
+        assert.equal(turns.at(-1)?.id, turns[0]?.id);
+      }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
   it.live.each([
