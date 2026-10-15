@@ -2001,7 +2001,12 @@ const resolveClaudeForkUpToMessageId = Effect.fn("ClaudeAdapterV2.resolveForkUpT
       });
     }
 
-    const boundaryNativeId = sourceTurns[boundaryIndex]?.nativeTurnRef?.nativeId;
+    const boundaryTurn = sourceTurns[boundaryIndex];
+    const boundaryNativeId = (
+      boundaryTurn?.nativeConversationHeadRef === undefined
+        ? boundaryTurn?.nativeTurnRef
+        : boundaryTurn.nativeConversationHeadRef
+    )?.nativeId;
     if (
       boundaryNativeId !== undefined &&
       boundaryNativeId !== null &&
@@ -2041,7 +2046,10 @@ const resolveClaudeRollbackResumeSessionAt = Effect.fn(
         });
       }
 
-      const nativeTurnRef = target.providerTurn.nativeTurnRef;
+      const nativeTurnRef =
+        target.providerTurn.nativeConversationHeadRef === undefined
+          ? target.providerTurn.nativeTurnRef
+          : target.providerTurn.nativeConversationHeadRef;
       if (
         nativeTurnRef !== null &&
         nativeTurnRef.driver === CLAUDE_PROVIDER &&
@@ -4951,19 +4959,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             driver: CLAUDE_PROVIDER,
             threadId: context.input.threadId,
             providerTurn: {
-              id: context.providerTurnId,
-              providerThreadId: context.input.providerThread.id,
-              nodeId: context.input.rootNodeId,
-              runAttemptId: context.input.attemptId,
-              nativeTurnRef: {
-                driver: CLAUDE_PROVIDER,
-                nativeId: context.nativeTurnId,
-                strength: "strong",
-              },
-              ordinal: context.providerTurnOrdinal,
-              status: "running",
-              startedAt: context.startedAt,
-              completedAt: null,
+              ...providerTurnPayload({ context, status: "running", completedAt: null }),
               tokenUsage,
             },
           });
@@ -5449,9 +5445,17 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           runAttemptId: input.context.input.attemptId,
           nativeTurnRef: {
             driver: CLAUDE_PROVIDER,
-            nativeId: input.context.nativeMessageCursor ?? input.context.nativeTurnId,
+            nativeId: input.context.promptUuid ?? input.context.nativeTurnId,
             strength: "weak",
           },
+          nativeConversationHeadRef:
+            input.context.nativeMessageCursor === null
+              ? null
+              : {
+                  driver: CLAUDE_PROVIDER,
+                  nativeId: input.context.nativeMessageCursor,
+                  strength: "weak",
+                },
           ordinal: input.context.providerTurnOrdinal,
           status: input.status,
           startedAt: input.context.startedAt,
@@ -8573,19 +8577,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 driver: CLAUDE_PROVIDER,
                 threadId: context.input.threadId,
                 providerTurn: {
-                  id: context.providerTurnId,
-                  providerThreadId: context.input.providerThread.id,
-                  nodeId: context.input.rootNodeId,
-                  runAttemptId: context.input.attemptId,
-                  nativeTurnRef: {
-                    driver: CLAUDE_PROVIDER,
-                    nativeId: context.nativeTurnId,
-                    strength: "strong",
-                  },
-                  ordinal: context.providerTurnOrdinal,
-                  status: "running",
-                  startedAt: context.startedAt,
-                  completedAt: null,
+                  ...providerTurnPayload({ context, status: "running", completedAt: null }),
                   tokenUsage: {
                     usedTokens: afterTokenCount,
                     maxTokens,

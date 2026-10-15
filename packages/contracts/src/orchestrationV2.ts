@@ -1249,6 +1249,9 @@ export const OrchestrationV2ProviderTurn = Schema.Struct({
   nodeId: NodeId,
   runAttemptId: Schema.NullOr(RunAttemptId),
   nativeTurnRef: Schema.NullOr(OrchestrationV2ProviderRef),
+  /** Claude's assistant boundary for fork/rollback, separate from its input UUID.
+      Absent on older turns whose nativeTurnRef carried this cursor. */
+  nativeConversationHeadRef: Schema.optional(Schema.NullOr(OrchestrationV2ProviderRef)),
   ordinal: PositiveInt,
   status: Schema.Literals([
     "pending",

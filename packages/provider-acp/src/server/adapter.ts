@@ -242,6 +242,10 @@ export interface AcpAdapterV2Flavor {
   readonly normalizeSessionUpdate?: (
     notification: EffectAcpSchema.SessionNotification,
   ) => EffectAcpSchema.SessionNotification;
+  /** Native identity reported by the live root input echo, never a turn ordinal. */
+  readonly extractNativePromptId?: (
+    notification: EffectAcpSchema.SessionNotification,
+  ) => string | undefined;
   readonly beforePrompt?: Effect.Effect<void, EffectAcpErrors.AcpError>;
   readonly onAvailableCommandsUpdate?: (
     commands: ReadonlyArray<EffectAcpSchema.AvailableCommand>,
@@ -1058,6 +1062,7 @@ interface ActiveAcpTurn {
   readonly providerTurnId: OrchestrationV2ProviderTurn["id"];
   readonly nativeThreadId: string;
   readonly nativeTurnId: string;
+  nativePromptId: string | null;
   readonly startedAt: DateTime.Utc;
   readonly completed: Deferred.Deferred<void, never>;
   readonly itemOrdinals: Map<string, number>;
@@ -5024,6 +5029,22 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               break;
             }
             case "user_message_chunk": {
+              if (
+                context.nativePromptId === null &&
+                !context.promptSettled &&
+                !acpIsProviderContinuationMessage(context.input.message) &&
+                flavor.isProviderWakeNotification?.(notification) !== true
+              ) {
+                const nativePromptId = flavor.extractNativePromptId?.(notification);
+                if (nativePromptId !== undefined) {
+                  context.nativePromptId = nativePromptId;
+                  yield* emitProviderEvent({
+                    type: "provider_turn.updated",
+                    driver,
+                    providerTurn: providerTurnPayload(context, "running", null),
+                  });
+                }
+              }
               if (update.content.type === "text" && flavor.extractBackgroundToolMutation) {
                 const mutations = flavor.extractBackgroundToolMutation(update.content.text);
                 const terminalTaskIds = mutations
@@ -6984,8 +7005,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           runAttemptId: context.input.attemptId,
           nativeTurnRef: {
             driver,
-            nativeId: context.nativeTurnId,
-            strength: "weak",
+            nativeId: context.nativePromptId ?? context.nativeTurnId,
+            strength: context.nativePromptId === null ? "weak" : "strong",
           },
           ordinal: context.input.providerTurnOrdinal,
           status,
@@ -7515,6 +7536,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               providerTurnId,
               nativeThreadId: requestedSessionId,
               nativeTurnId,
+              nativePromptId: null,
               startedAt,
               completed,
               itemOrdinals: new Map(),

@@ -431,6 +431,21 @@ export function makeGrokAcpAdapterFlavor(
       ...extractXAiKilledBackgroundTasks(toolCall),
     ],
     isPersistentBackgroundTool: isXAiPersistentMonitor,
+    extractNativePromptId: (notification) => {
+      const update = notification.update;
+      if (update.sessionUpdate !== "user_message_chunk") return undefined;
+      const meta = update._meta;
+      const index = meta?.promptIndex;
+      if (
+        meta?.syntheticPrompt === true ||
+        meta?.hideFromScrollback === true ||
+        typeof index !== "number" ||
+        !Number.isSafeInteger(index) ||
+        index < 0
+      )
+        return undefined;
+      return `prompt:${index}`;
+    },
     isProviderWakeNotification: isXAiTaskCompletedWakeNotification,
     deferFinalizeForBackgroundWork: true,
     enablePostSettleContinuation: true,

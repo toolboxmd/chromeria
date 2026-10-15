@@ -816,6 +816,114 @@ describe("AcpAdapterV2", () => {
     }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
+  it.live.each([
+    { createdBy: "user", promptIndex: 0 },
+    { createdBy: "agent", promptIndex: 7 },
+    { createdBy: "user", promptIndex: undefined },
+  ] as const)(
+    "retains Grok's reported native promptIndex without ordinal inference: %s",
+    ({ createdBy, promptIndex }) =>
+      Effect.gen(function* () {
+        type Runtime = AcpSessionRuntime.AcpSessionRuntime["Service"];
+        let handler: Parameters<Runtime["handleSessionUpdate"]>[0] | undefined;
+        const instanceId = ProviderInstanceId.make("grok-native-input");
+        const adapter = yield* makeGrokAdapterV2({
+          instanceId,
+          settings: DEFAULT_GROK_SETTINGS,
+          environment: {},
+          hostPlatform: yield* HostProcess.Platform,
+          selfInvocation: yield* resolveSelfInvocation(),
+          makeRuntime: makeMockRuntime({
+            childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+            mockAgentPath: yield* (yield* Path.Path).fromFileUrl(
+              new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+            ),
+            wrapRuntime: (runtime) => ({
+              ...runtime,
+              handleSessionUpdate: (next) =>
+                Effect.sync(() => {
+                  handler = next;
+                }).pipe(Effect.andThen(runtime.handleSessionUpdate(next))),
+              prompt: () =>
+                Effect.gen(function* () {
+                  const echo = (sessionId: string, index: number | string | undefined, meta = {}) =>
+                    handler!({
+                      sessionId,
+                      update: {
+                        sessionUpdate: "user_message_chunk",
+                        content: { type: "text", text: "Native input identity." },
+                        _meta: {
+                          modelId: "grok-4.6",
+                          ...(index === undefined ? {} : { promptIndex: index }),
+                          ...meta,
+                        },
+                      },
+                    });
+                  yield* echo("child-session", 99);
+                  yield* echo("mock-session-1", 98, {
+                    syntheticPrompt: true,
+                    hideFromScrollback: true,
+                  });
+                  yield* echo("mock-session-1", "7");
+                  yield* echo("mock-session-1", -1);
+                  yield* echo("mock-session-1", 1.5);
+                  yield* echo("mock-session-1", promptIndex);
+                  yield* echo("mock-session-1", promptIndex); // Repeated chunks belong to the same native input.
+                  yield* echo("mock-session-1", 8, { syntheticPrompt: true });
+                  return { stopReason: "end_turn" as const };
+                }),
+            }),
+          }),
+        });
+        const threadId = ThreadId.make("grok-native-input");
+        const policy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const selection = { instanceId, model: "default" };
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("grok-native-input"),
+          modelSelection: selection,
+          runtimePolicy: policy,
+        });
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection: selection,
+          runtimePolicy: policy,
+        });
+        yield* runtime.startTurn(
+          makeTurnInput({
+            threadId,
+            providerThread,
+            instanceId,
+            runtimePolicy: policy,
+            now: yield* DateTime.now,
+            ordinal: 23,
+            messageCreatedBy: createdBy,
+            messageCreationSource: createdBy === "user" ? "web" : "mcp",
+          }),
+        );
+        const events = yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        );
+        const turns = events.flatMap((event) =>
+          event.type === "provider_turn.updated" ? [event.providerTurn] : [],
+        );
+        assert.equal(
+          turns.at(-1)?.nativeTurnRef?.nativeId,
+          promptIndex === undefined ? "mock-session-1:turn:23" : `prompt:${promptIndex}`,
+        );
+        assert.equal(
+          turns.at(-1)?.nativeTurnRef?.strength,
+          promptIndex === undefined ? "weak" : "strong",
+        );
+        assert.equal(turns.at(-1)?.id, turns[0]?.id); // Correlation cannot change the orchestration identity.
+      }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
   it.effect.each([
     { fallback: false, bare: false },
     { fallback: true, bare: false },
