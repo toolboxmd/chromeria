@@ -107,6 +107,9 @@ export function createSidebarSortingStrategy(input: {
   settledOrder: readonly string[];
   /** Time-ordered inbox (Working beta): where the lifted row would land. */
   activeOrder?: readonly string[];
+  /** Scratch lifecycle drops return to this shelf instead of the Active order. */
+  noProjectOrder?: readonly string[];
+  noProjectExpanded?: boolean;
   settledExpanded: boolean;
   settledVisibleCount?: number;
   routeThreadKey?: string | null;
@@ -164,9 +167,13 @@ export function createSidebarSortingStrategy(input: {
     cardHeight ??= 82 * scale;
     slimHeight ??= 36 * scale;
     const labelHeight = (input.boundaryLabelHeight ?? 0) * scale;
-    const group = groups[target.section];
-    const order =
-      target.section === "pinned"
+    const scratchReturn =
+      target.section === "active" && input.noProjectOrder?.includes(active.key) === true;
+    const destination = scratchReturn ? "no-project" : target.section;
+    const group = groups[destination];
+    const order = scratchReturn
+      ? (input.noProjectOrder ?? [])
+      : target.section === "pinned"
         ? target.pinnedOrder
         : target.section === "settled"
           ? input.settledOrder
@@ -176,7 +183,12 @@ export function createSidebarSortingStrategy(input: {
     const index = group.findIndex(
       (item) => (ranks.get(item.key) ?? Number.POSITIVE_INFINITY) > rank,
     );
-    group.splice(index < 0 ? group.length : index, 0, { ...active, section: target.section });
+    group.splice(index < 0 ? group.length : index, 0, { ...active, section: destination });
+    if (scratchReturn && input.noProjectExpanded !== true) {
+      groups["no-project"] = groups["no-project"].filter(
+        (item) => item.key === input.routeThreadKey,
+      );
+    }
     const settledOrder = (
       input.settledOrder.length > 0 ? input.settledOrder : groups.settled.map((item) => item.key)
     ).filter((key) => key !== active.key || target.section === "settled");

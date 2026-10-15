@@ -3911,6 +3911,14 @@ export default function Sidebar() {
     },
     [sectionByThreadKey],
   );
+  const draggedScratchThread =
+    dragState === null ? undefined : threadByKey.get(dragState.activeKey);
+  const draggingScratch =
+    draggedScratchThread !== undefined &&
+    noProjectKeys.has(`${draggedScratchThread.environmentId}:${draggedScratchThread.projectId}`);
+  // Mount the destination header when a lifecycle drop creates the first scratch row.
+  const noProjectShelfCount =
+    noProjectThreads.length + (draggingScratch && dragState?.targetSection === "active" ? 1 : 0);
   // Include every visible row in the measured order. Older servers disable
   // pickup on their rows without changing where those rows render.
   const sidebarListItems = useMemo((): readonly SidebarListItem[] => {
@@ -3944,7 +3952,7 @@ export default function Sidebar() {
       items.push({ kind: "marker", marker: "working-header" });
       items.push(...rowsOf(visibleWorkingThreads, "working"));
     }
-    if (noProjectThreads.length > 0) {
+    if (noProjectShelfCount > 0) {
       items.push({ kind: "marker", marker: "no-project-header" });
       items.push(...rowsOf(visibleNoProjectThreads, "no-project"));
     }
@@ -3962,6 +3970,7 @@ export default function Sidebar() {
     pinnedThreads,
     renderedSettledThreads,
     noProjectThreads.length,
+    noProjectShelfCount,
     visibleNoProjectThreads,
     settledThreads.length,
     snoozedThreads.length,
@@ -4043,6 +4052,14 @@ export default function Sidebar() {
       inboxReturns.returnedAt,
     ).map(key);
   }, [activeThreads, dragState, threadByKey, workingShelfEnabled]);
+  const draggedNoProjectOrder = useMemo(() => {
+    if (!draggingScratch || dragState === null || draggedScratchThread === undefined)
+      return undefined;
+    return sortThreadsForSidebar([
+      ...noProjectThreads,
+      applySidebarThreadDrop(draggedScratchThread, "active", dragState.occurredAt),
+    ]).map((thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)));
+  }, [draggingScratch, dragState, draggedScratchThread, noProjectThreads]);
   const sidebarSortingStrategy = useMemo(
     () =>
       createSidebarSortingStrategy({
@@ -4050,6 +4067,8 @@ export default function Sidebar() {
         enabled: !isContextDrag,
         boundaryLabelHeight: SIDEBAR_DRAG_LABEL_HEIGHT,
         settledOrder: draggedSettledOrder,
+        ...(draggedNoProjectOrder === undefined ? {} : { noProjectOrder: draggedNoProjectOrder }),
+        noProjectExpanded: noProjectShelfExpanded,
         ...(draggedActiveOrder === undefined ? {} : { activeOrder: draggedActiveOrder }),
         settledExpanded: settledShelfExpanded,
         settledVisibleCount,
@@ -4059,6 +4078,8 @@ export default function Sidebar() {
     [
       draggedActiveOrder,
       draggedSettledOrder,
+      draggedNoProjectOrder,
+      noProjectShelfExpanded,
       isContextDrag,
       routeThreadKey,
       settledShelfExpanded,
@@ -4114,7 +4135,9 @@ export default function Sidebar() {
             activeOrder: activeKeys,
             activeKeysById,
             activeReorderableKeys: activeReorderableThreadKeys,
-            activeTimeOrdered: workingShelfEnabled,
+            activeTimeOrdered:
+              workingShelfEnabled ||
+              noProjectKeys.has(`${source.environmentId}:${source.projectId}`),
           }).kind !== "none"
         );
       },
@@ -4129,6 +4152,7 @@ export default function Sidebar() {
     serverConfigs,
     activeKeys,
     activeReorderableThreadKeys,
+    noProjectKeys,
     draggedThreadKey,
     draggedFromSection,
     dragActivationY,
@@ -4164,7 +4188,9 @@ export default function Sidebar() {
         activeOrder: activeKeys,
         activeKeysById,
         activeReorderableKeys: activeReorderableThreadKeys,
-        activeTimeOrdered: workingShelfEnabled,
+        activeTimeOrdered:
+          workingShelfEnabled ||
+          noProjectKeys.has(`${activeThread.environmentId}:${activeThread.projectId}`),
       });
       if (plan.kind === "none") return;
       if (plan.kind === "settle" && settlingThreadKeysRef.current.has(activeKey)) return;
@@ -4292,6 +4318,7 @@ export default function Sidebar() {
     },
     [
       activeKeysById,
+      noProjectKeys,
       pinnedKeysById,
       serverConfigs,
       activeKeys,
@@ -5631,7 +5658,7 @@ export default function Sidebar() {
                                 label={
                                   noProjectShelfExpanded
                                     ? "No project"
-                                    : `No project (${noProjectThreads.length})`
+                                    : `No project (${noProjectShelfCount})`
                                 }
                                 toggle={{
                                   expanded: noProjectShelfExpanded,
@@ -5646,8 +5673,7 @@ export default function Sidebar() {
                                 key="snoozed-shelf-header"
                                 marker="snoozed-header"
                                 className={cn(
-                                  workingThreads.length + noProjectThreads.length === 0 &&
-                                    "mt-auto",
+                                  workingThreads.length + noProjectShelfCount === 0 && "mt-auto",
                                 )}
                                 label={
                                   snoozedShelfExpanded
@@ -5668,7 +5694,7 @@ export default function Sidebar() {
                                 marker="settled-header"
                                 className={cn(
                                   workingThreads.length +
-                                    noProjectThreads.length +
+                                    noProjectShelfCount +
                                     snoozedThreads.length ===
                                     0 && "mt-auto",
                                 )}
