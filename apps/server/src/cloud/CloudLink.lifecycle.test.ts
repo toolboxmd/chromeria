@@ -241,6 +241,7 @@ describe("releaseManagedTunnelOnShutdown", () => {
     readonly onRequest?: (request: HttpClientRequest.HttpClientRequest) => Effect.Effect<void>;
     readonly respond?: () => Response;
     readonly respondEffect?: Effect.Effect<Response>;
+    readonly getExistingToken?: CliTokenManager.CloudCliTokenManager["Service"]["getExisting"];
   }
 
   const writeLauncherState = (update: ServiceUpdateRecord) =>
@@ -314,7 +315,7 @@ describe("releaseManagedTunnelOnShutdown", () => {
           CliTokenManager.CloudCliTokenManager,
           CliTokenManager.CloudCliTokenManager.of({
             get: unusedSecretStoreOperation(),
-            getExisting: Effect.succeedSome(cliToken),
+            getExisting: harness.getExistingToken ?? Effect.succeedSome(cliToken),
             hasCredential: unusedSecretStoreOperation(),
             store: () => unusedSecretStoreOperation(),
             clear: unusedSecretStoreOperation(),
@@ -367,7 +368,7 @@ describe("releaseManagedTunnelOnShutdown", () => {
     }).pipe(provideReleaseHarness({ store, applyConfigCalls, requests }));
   });
 
-  it.effect("stops the connector, releases the relay tunnel, and drops the dead token", () => {
+  it.effect("stops and releases the tunnel while keeping its startup recovery identity", () => {
     const { store, values } = makeMemorySecretStore(managedLinkSecrets);
     const applyConfigCalls: Array<unknown> = [];
     const requests: Array<HttpClientRequest.HttpClientRequest> = [];
@@ -385,9 +386,91 @@ describe("releaseManagedTunnelOnShutdown", () => {
         "https://relay.example.test/v1/client/environment-links/env_123/tunnel",
       );
       expect(request.headers.authorization).toBe("Bearer cli-access-token");
-      expect(values.has(CLOUD_ENDPOINT_RUNTIME_CONFIG)).toBe(false);
+      expect(values.has(CLOUD_ENDPOINT_RUNTIME_CONFIG)).toBe(true);
       expect(values.has(CLOUD_ENDPOINT_CONFIRMED_ORIGIN)).toBe(false);
     }).pipe(provideReleaseHarness({ store, applyConfigCalls, requests }));
+  });
+
+  it.effect("recovers a released tunnel on a fresh service start without CLI authorization", () => {
+    const releasedConfig = {
+      providerKind: "cloudflare_tunnel" as const,
+      connectorToken: "released-token",
+      tunnelId: "released-tunnel",
+    };
+    const replacementConfig = {
+      providerKind: "cloudflare_tunnel" as const,
+      connectorToken: "replacement-token",
+      tunnelId: "replacement-tunnel",
+    };
+    const { store, values } = makeMemorySecretStore([
+      ...managedLinkSecrets,
+      [CLOUD_ENDPOINT_RUNTIME_CONFIG, JSON.stringify(releasedConfig)],
+      [CLOUD_LINKED_USER_ID, "user-123"],
+      [RELAY_ENVIRONMENT_CREDENTIAL_SECRET, "environment-credential"],
+    ]);
+    const applyConfigCalls: Array<unknown> = [];
+    const requests: Array<HttpClientRequest.HttpClientRequest> = [];
+    const localOrigin = "http://127.0.0.1:3773";
+
+    return Effect.gen(function* () {
+      yield* Effect.gen(function* () {
+        const link = yield* CloudLink.CloudLink;
+        expect(yield* link.releaseManagedTunnelOnShutdown()).toBe(true);
+      }).pipe(provideReleaseHarness({ store, applyConfigCalls, requests }));
+
+      // A new service instance shares only persisted secrets. Its environment
+      // credential must suffice even when the build has no public OAuth config.
+      yield* Effect.gen(function* () {
+        const link = yield* CloudLink.CloudLink;
+        expect(yield* link.startManagedTunnelIfOriginConfirmed(localOrigin)).toBe(false);
+        const registration = yield* link.registerManagedTunnelRecovery(localOrigin);
+        const action = managedTunnelStartupAction({ wantsCliLink: false, registration });
+        expect(action.action).toBe("request_recovery");
+        if (action.action !== "request_recovery") return;
+        expect(yield* link.recoverManagedTunnel(localOrigin, action.config)).toBe(true);
+        expect(applyConfigCalls).toEqual([null, replacementConfig]);
+        expect(requests.map((request) => [request.method, request.url])).toEqual([
+          ["DELETE", "https://relay.example.test/v1/client/environment-links/env_123/tunnel"],
+          ["POST", "https://relay.example.test/v1/environments/env_123/tunnel/recovery"],
+          ["POST", "https://relay.example.test/v1/environments/env_123/tunnel"],
+        ]);
+        expect(requests.slice(1).map((request) => request.headers.authorization)).toEqual([
+          "Bearer environment-credential",
+          "Bearer environment-credential",
+        ]);
+        expect(
+          Option.getOrThrow(
+            decodeRuntimeConfig(
+              new TextDecoder().decode(values.get(CLOUD_ENDPOINT_RUNTIME_CONFIG)),
+            ),
+          ),
+        ).toEqual(replacementConfig);
+        expect(values.has(CLOUD_ENDPOINT_CONFIRMED_ORIGIN)).toBe(true);
+        yield* link.unlink();
+        expect(yield* link.registerManagedTunnelRecovery(localOrigin)).toEqual({
+          status: "not_linked",
+        });
+        expect(values.has(CLOUD_ENDPOINT_RUNTIME_CONFIG)).toBe(false);
+      }).pipe(
+        provideReleaseHarness({
+          store,
+          applyConfigCalls,
+          requests,
+          getExistingToken: Effect.die("Startup recovery must not read CLI authorization"),
+          respond: () =>
+            requests.at(-1)?.url.endsWith("/recovery")
+              ? Response.json({ status: "recovery_required" })
+              : Response.json({
+                  endpoint: {
+                    httpBaseUrl: "https://environment.example.test",
+                    wsBaseUrl: "wss://environment.example.test",
+                    providerKind: "cloudflare_tunnel",
+                  },
+                  endpointRuntime: replacementConfig,
+                }),
+        }),
+      );
+    });
   });
 
   it.effect("does nothing for links without a stored managed tunnel runtime config", () => {
@@ -525,7 +608,7 @@ describe("releaseManagedTunnelOnShutdown", () => {
 
       expect(released).toBe(true);
       expect(requests).toHaveLength(1);
-      expect(values.has(CLOUD_ENDPOINT_RUNTIME_CONFIG)).toBe(false);
+      expect(values.has(CLOUD_ENDPOINT_RUNTIME_CONFIG)).toBe(true);
     }).pipe(provideReleaseHarness({ store, applyConfigCalls, requests }));
   });
 
@@ -547,7 +630,7 @@ describe("releaseManagedTunnelOnShutdown", () => {
 
       expect(released).toBe(true);
       expect(requests).toHaveLength(1);
-      expect(values.has(CLOUD_ENDPOINT_RUNTIME_CONFIG)).toBe(false);
+      expect(values.has(CLOUD_ENDPOINT_RUNTIME_CONFIG)).toBe(true);
     }).pipe(provideReleaseHarness({ store, applyConfigCalls, requests }));
   });
 
@@ -556,6 +639,7 @@ describe("releaseManagedTunnelOnShutdown", () => {
     const applyConfigCalls: Array<unknown> = [];
     const requests: Array<HttpClientRequest.HttpClientRequest> = [];
     const freshConfig = new TextEncoder().encode("fresh-runtime-config");
+    const freshMarker = new TextEncoder().encode("fresh-confirmed-origin");
 
     return Effect.gen(function* () {
       const link = yield* CloudLink.CloudLink;
@@ -564,6 +648,7 @@ describe("releaseManagedTunnelOnShutdown", () => {
       expect(released).toBe(true);
 
       expect(values.get(CLOUD_ENDPOINT_RUNTIME_CONFIG)).toBe(freshConfig);
+      expect(values.get(CLOUD_ENDPOINT_CONFIRMED_ORIGIN)).toBe(freshMarker);
     }).pipe(
       provideReleaseHarness({
         store,
@@ -571,6 +656,7 @@ describe("releaseManagedTunnelOnShutdown", () => {
         requests,
         respond: () => {
           values.set(CLOUD_ENDPOINT_RUNTIME_CONFIG, freshConfig);
+          values.set(CLOUD_ENDPOINT_CONFIRMED_ORIGIN, freshMarker);
           return Response.json({ ok: true });
         },
       }),

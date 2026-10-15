@@ -1216,7 +1216,9 @@ const make = Effect.gen(function* () {
   );
 
   // Cloudflare bills per provisioned tunnel, so an environment that goes offline
-  // must not leave its tunnel behind.
+  // must not leave its tunnel behind. Releasing deletes only the tunnel — the
+  // relay keeps the link and its hostname reservation. Startup recovers a
+  // replacement under the same URL using the saved environment credential.
   const releaseManagedTunnelOnShutdown = Effect.fn(
     "environment.cloud.releaseManagedTunnelOnShutdown",
   )(function* () {
@@ -1273,18 +1275,17 @@ const make = Effect.gen(function* () {
     if (!response.ok) {
       return false;
     }
-    // The connector token died with the tunnel. Drop the stored config so the
-    // next start waits for the link reconcile instead of respawning the relay
-    // client with a dead token. Only dropped while it is still the config this
-    // shutdown released — a fast restart may already have reconciled and stored
-    // a fresh config for its replacement tunnel, and that one must survive this
-    // finalizer.
+    // Keep the config as startup's recovery identity: registration discovers
+    // the released tunnel and replaces it with the environment credential.
+    // Dropping it would require CLI relinking, which a headless service without
+    // public OAuth config cannot do. Only clear this config's confirmed origin
+    // so startup registers before trying the dead connector token. A fast
+    // restart's replacement config and marker must survive this finalizer.
     const storedConfig = yield* secrets.get(CLOUD_ENDPOINT_RUNTIME_CONFIG);
     if (
       Option.isSome(storedConfig) &&
       bytesToString(storedConfig.value) === bytesToString(runtimeConfig.value)
     ) {
-      yield* secrets.remove(CLOUD_ENDPOINT_RUNTIME_CONFIG);
       yield* secrets.remove(CLOUD_ENDPOINT_CONFIRMED_ORIGIN);
     }
     return true;
