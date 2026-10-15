@@ -6,6 +6,7 @@ import {
   deriveThreadRelationshipGraph,
   getThreadRelationshipNode,
   immediateThreadRelationships,
+  isParentThreadRelationship,
   orderWebThreadLineageRows,
   relatedThreadIds,
   resolveMergeBackTargetThreadId,
@@ -367,6 +368,36 @@ describe("thread relationships", () => {
       "running",
       "completed",
     ]);
+  });
+
+  it("does not classify a same-id remote child as the current thread's parent", () => {
+    const shared = ThreadId.make("thread-shared");
+    const remoteEnvironment = EnvironmentId.make("environment-cavallo");
+    const graph = deriveThreadRelationshipGraph({
+      threads: [
+        { id: shared, status: "running", forkedFrom: null, lineage: { parentThreadId: null } },
+      ] as never,
+      projection: {
+        thread: { id: shared },
+        subagents: [
+          {
+            childThreadId: null,
+            remoteChild: {
+              environmentId: remoteEnvironment,
+              threadId: shared,
+              label: "cavallo",
+            },
+            status: "running",
+          },
+        ],
+        contextTransfers: [],
+      } as never,
+    });
+
+    const row = immediateThreadRelationships(graph, shared)[0]!;
+    expect(row.environmentId).toBe(remoteEnvironment);
+    expect(isParentThreadRelationship(row.edge, shared)).toBe(false);
+    expect(threadRelationshipRowStatus(graph, row)).toBe("running");
   });
 
   it("keeps an unattached remote launch rowless until its thread is known", () => {

@@ -310,7 +310,14 @@ export function isParentThreadRelationship(
   edge: ThreadRelationshipEdge,
   currentThreadId: ThreadId,
 ): boolean {
-  return edge.kind !== "transfer" && edge.targetThreadId === currentThreadId;
+  // The current thread is the graph's local root, so a same-id child in a
+  // linked environment (target environment set) is not its parent edge:
+  // bare id equality would misclassify that child as the parent.
+  return (
+    edge.kind !== "transfer" &&
+    edge.targetThreadId === currentThreadId &&
+    edge.targetEnvironmentId === null
+  );
 }
 
 /** An incoming parent row shows its own activity, not the child's edge status. */
@@ -318,7 +325,10 @@ export function threadRelationshipRowStatus(
   graph: ThreadRelationshipGraph,
   row: Pick<ThreadRelationshipWalkRow, "threadId" | "environmentId" | "edge">,
 ): string | null {
-  if (row.edge.kind === "transfer" || row.threadId === row.edge.targetThreadId) {
+  if (
+    row.edge.kind === "transfer" ||
+    (row.threadId === row.edge.targetThreadId && row.environmentId === row.edge.targetEnvironmentId)
+  ) {
     return row.edge.status;
   }
   const thread = getThreadRelationshipNode(graph, row.threadId, row.environmentId)?.thread;
