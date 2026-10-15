@@ -1729,7 +1729,11 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
       // run only. History must not cost one thread reload per past delivery.
       assert.lengthOf(
         statements.filter((statement) =>
-          statement.includes("FROM orchestration_v2_projection_messages AS message"),
+          statement
+            .trimStart()
+            .startsWith(
+              "SELECT message.payload_json FROM orchestration_v2_projection_messages AS message",
+            ),
         ),
         1,
       );
