@@ -2660,6 +2660,107 @@ describe("No project shelf", () => {
     ).toEqual([pinned.id]);
   });
 
+  it.each([
+    ["pinned", { pinnedAt: NOW }],
+    ["snoozed", { snoozedUntil: "2026-06-03T00:00:00.000Z" }],
+    ["settled", { settledOverride: "settled" as const }],
+  ])("returns %s scratch threads without an Active position or key writes", (_, state) => {
+    const source = scratch("source", state);
+    const normal = scratch("normal", { projectId: ProjectId.make("real"), activeOrderKey: null });
+    const shelf = scratch("existing", { activeOrderKey: "a" });
+    for (const existing of [[], [shelf]]) {
+      for (const noProjectShelfExpanded of [false, true]) {
+        const threads = [source, normal, ...existing];
+        const ordered = getThreadListV2OrderedSection({
+          threads,
+          projects,
+          section: "active",
+          now: NOW,
+        });
+        const planner = createThreadMovePlanner({
+          ordered,
+          allThreads: threads,
+          projects,
+          section: "active",
+          reorderableEnvironmentIds: new Set([environmentId]),
+        });
+        for (const targetId of [null, `${environmentId}:normal`]) {
+          for (const placement of ["before", "after"] as const) {
+            // Empty assignments mean the lifecycle move is accepted, with no
+            // positional preview and no writes, even to keyless real neighbors.
+            expect(
+              planner(`${environmentId}:source`, {
+                section: "active",
+                targetId,
+                placement,
+              }),
+            ).toEqual([]);
+          }
+        }
+        const lifecycle = threadDropLifecycle(source, "active", NOW);
+        expect(lifecycle.unpin || lifecycle.unsettle || lifecycle.unsnooze).toBe(true);
+        const returned = { ...source, pinnedAt: null, settledOverride: null, snoozedUntil: null };
+        const result = layout([returned, normal, ...existing], { noProjectShelfExpanded });
+        expect(result.noProjectCount).toBe(existing.length + 1);
+        expect(ids(result).includes(source.id)).toBe(noProjectShelfExpanded);
+        expect(
+          getThreadListV2OrderedSection({
+            threads: [returned, normal, ...existing],
+            projects,
+            section: "active",
+            now: NOW,
+          }).map((thread) => thread.id),
+        ).toEqual([normal.id]);
+      }
+    }
+  });
+
+  it("accepts scratch returns to an empty Active header but still respects reorder capability", () => {
+    const source = scratch("source", { pinnedAt: NOW });
+    const input = { ordered: [], allThreads: [source], projects, section: "active" as const };
+    const destination = {
+      section: "active" as const,
+      targetId: null,
+      placement: "before" as const,
+    };
+    expect(
+      createThreadMovePlanner({ ...input, reorderableEnvironmentIds: new Set([environmentId]) })(
+        `${environmentId}:source`,
+        destination,
+      ),
+    ).toEqual([]);
+    expect(
+      createThreadMovePlanner({ ...input, reorderableEnvironmentIds: new Set() })(
+        `${environmentId}:source`,
+        destination,
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps positional planning for pins and unrecognized or other-environment projects", () => {
+    const source = scratch("source", { pinnedAt: NOW });
+    for (const section of ["pinned", "active"] as const) {
+      for (const knownProjects of [
+        projects,
+        [],
+        [{ ...projects[0]!, environmentId: otherEnvironmentId }],
+      ]) {
+        const plan = createThreadMovePlanner({
+          ordered: [],
+          allThreads: [source],
+          projects: knownProjects,
+          section,
+          reorderableEnvironmentIds: new Set([environmentId]),
+        })(`${environmentId}:source`, { section, targetId: null, placement: "before" });
+        if (section === "active" && knownProjects === projects) expect(plan).toEqual([]);
+        else {
+          expect(plan).toHaveLength(1);
+          expect(plan![0]!.id).toBe(`${environmentId}:source`);
+        }
+      }
+    }
+  });
+
   it("invalidates recycled headers when expansion, count or load state changes", () => {
     const header = {
       type: "v2-no-project-shelf",

@@ -220,6 +220,7 @@ export function ThreadArrangementSheet(props: { onClose: () => void }) {
   const planners = useMemo(() => {
     const planner = (section: "pinned" | "active") =>
       createThreadMovePlanner({
+        projects,
         ordered: sections[section],
         allThreads: threads,
         section,
@@ -238,7 +239,7 @@ export function ThreadArrangementSheet(props: { onClose: () => void }) {
         ),
       });
     return { pinned: planner("pinned"), active: planner("active") };
-  }, [sections, threads, configs, workingShelfEnabled]);
+  }, [sections, threads, projects, configs, workingShelfEnabled]);
   const rows = useMemo(() => {
     const result: Row[] = [];
     let offset = 0;
@@ -368,17 +369,24 @@ export function ThreadArrangementSheet(props: { onClose: () => void }) {
     ? rows.find((row) => row.key === keyOf(visiblePreview.thread))
     : undefined;
   const destination = visiblePreview?.destination;
-  const targetRow = destination
-    ? rows.find(
-        (row) =>
-          row.section === destination.section &&
-          row.key === (destination.targetId ?? destination.section),
-      )
-    : undefined;
+  const noProjectDrop =
+    destination?.section === "active" &&
+    visiblePreview !== null &&
+    planners.active(keyOf(visiblePreview.thread), destination)?.length === 0;
+  const targetRow =
+    destination && !noProjectDrop
+      ? rows.find(
+          (row) =>
+            row.section === destination.section &&
+            row.key === (destination.targetId ?? destination.section),
+        )
+      : undefined;
   const insertionOffset = targetRow
     ? targetRow.offset +
       (!targetRow.thread || destination?.placement === "after" ? targetRow.height : 0)
-    : sourceRow?.offset;
+    : noProjectDrop
+      ? undefined
+      : sourceRow?.offset;
   return (
     <Modal
       visible
@@ -564,6 +572,7 @@ export function ThreadArrangementSheet(props: { onClose: () => void }) {
                       visiblePreview.sourceSection,
                       visiblePreview.destination.section,
                     )}
+                    {noProjectDrop ? " · No project" : ""}
                   </Text>
                 ) : null}
               </Animated.View>

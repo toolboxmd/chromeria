@@ -625,8 +625,9 @@ export function useThreadListActions(): {
         );
         return false;
       }
+      const projects = appAtomRegistry.get(environmentProjects.projectsAtom);
       const ordered = getThreadListV2OrderedSection({
-        projects: appAtomRegistry.get(environmentProjects.projectsAtom),
+        projects,
         threads: shells,
         section,
         now: new Date().toISOString(),
@@ -643,6 +644,7 @@ export function useThreadListActions(): {
         ),
       });
       const assignments = createThreadMovePlanner({
+        projects,
         allThreads: shells,
         ordered,
         section,
