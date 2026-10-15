@@ -62,6 +62,7 @@ import {
   ThreadListV2SettledShelfHeader,
   ThreadListV2ShowMoreRow,
   ThreadListV2SnoozedShelfHeader,
+  ThreadListV2NoProjectShelfHeader,
   ThreadListV2WorkingShelfHeader,
 } from "./thread-list-v2-items";
 import { useThreadRowProviderInstanceResolver } from "./thread-provider-instance";
@@ -282,6 +283,8 @@ function ThreadNavigationSidebarPane(
   );
   const {
     loaded: shelfPreferencesLoaded,
+    noProjectShelfExpanded,
+    toggleNoProjectShelf,
     settledShelfExpanded,
     snoozedShelfExpanded,
     workingShelfEnabled,
@@ -325,6 +328,7 @@ function ThreadNavigationSidebarPane(
         ordered: getThreadListV2OrderedSection({
           threads,
           section,
+          projects,
           pendingOrder,
           now: new Date().toISOString(),
           settlementEnvironmentIds,
@@ -338,6 +342,7 @@ function ThreadNavigationSidebarPane(
     ]);
   }, [
     workingShelfEnabled,
+    projects,
     pinReorderEnvironmentIds,
     activeReorderEnvironmentIds,
     threads,
@@ -352,6 +357,7 @@ function ThreadNavigationSidebarPane(
     threadListInboxReturns.observe(workingShelfEnabled ? threads : null);
     return buildThreadListV2Items({
       pendingOrder,
+      projects,
       threads: threads.filter((thread) => thread.archivedAt === null),
       environmentId: options.selectedEnvironmentId,
       projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
@@ -364,12 +370,15 @@ function ThreadNavigationSidebarPane(
       now: new Date().toISOString(),
       workingShelfEnabled,
       workingShelfExpanded,
+      noProjectShelfExpanded,
       inboxReturnAt: threadListInboxReturns.returnedAt,
       snoozedShelfExpanded,
       settledShelfExpanded,
       selectedThreadKey: props.selectedThreadKey ?? null,
     });
   }, [
+    projects,
+    noProjectShelfExpanded,
     workingShelfEnabled,
     workingShelfExpanded,
     pendingOrder,
@@ -416,6 +425,9 @@ function ThreadNavigationSidebarPane(
     const items: SidebarListItem[] = buildThreadListV2ListItems({
       items: threadListV2Layout.items,
       pendingTasks: v2PendingTasks,
+      noProjectCount: threadListV2Layout.noProjectCount,
+      noProjectShelfExpanded: noProjectShelfExpanded || props.searchQuery.trim().length > 0,
+      noProjectShelfHeaderIndex: threadListV2Layout.noProjectShelfHeaderIndex,
       workingCount: threadListV2Layout.workingCount,
       workingShelfExpanded,
       workingShelfHeaderIndex: threadListV2Layout.workingShelfHeaderIndex,
@@ -447,6 +459,7 @@ function ThreadNavigationSidebarPane(
     queuedThreadKeys,
     threadMoveAvailability,
     selectedProjectRefs,
+    noProjectShelfExpanded,
     settledShelfExpanded,
     shelfPreferencesLoaded,
     snoozedShelfExpanded,
@@ -727,6 +740,16 @@ function ThreadNavigationSidebarPane(
             />
           );
         }
+        case "v2-no-project-shelf":
+          return (
+            <ThreadListV2NoProjectShelfHeader
+              count={item.count}
+              disabled={item.disabled}
+              expanded={item.expanded}
+              onToggle={toggleNoProjectShelf}
+              pane="sidebar"
+            />
+          );
         case "v2-working-shelf":
           return (
             <ThreadListV2WorkingShelfHeader
@@ -804,6 +827,7 @@ function ThreadNavigationSidebarPane(
       sidebarScrollGesture,
       snoozeEnvironmentIds,
       snoozeThread,
+      toggleNoProjectShelf,
       toggleSettledShelf,
       toggleSnoozedShelf,
       toggleWorkingShelf,

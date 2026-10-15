@@ -60,6 +60,7 @@ import {
   ThreadListV2SettledShelfHeader,
   ThreadListV2ShowMoreRow,
   ThreadListV2SnoozedShelfHeader,
+  ThreadListV2NoProjectShelfHeader,
   ThreadListV2WorkingShelfHeader,
 } from "../threads/thread-list-v2-items";
 import { useThreadRowProviderInstanceResolver } from "../threads/thread-provider-instance";
@@ -510,6 +511,8 @@ export function HomeScreen(props: HomeScreenProps) {
   );
   const {
     loaded: shelfPreferencesLoaded,
+    noProjectShelfExpanded,
+    toggleNoProjectShelf,
     settledShelfExpanded,
     snoozedShelfExpanded,
     workingShelfEnabled,
@@ -555,6 +558,7 @@ export function HomeScreen(props: HomeScreenProps) {
         ordered: getThreadListV2OrderedSection({
           threads: props.threads,
           section,
+          projects: props.projects,
           pendingOrder,
           now: new Date().toISOString(),
           settlementEnvironmentIds,
@@ -568,6 +572,7 @@ export function HomeScreen(props: HomeScreenProps) {
     ]);
   }, [
     workingShelfEnabled,
+    props.projects,
     pinReorderEnvironmentIds,
     activeReorderEnvironmentIds,
     props.threads,
@@ -582,6 +587,7 @@ export function HomeScreen(props: HomeScreenProps) {
     threadListInboxReturns.observe(workingShelfEnabled ? props.threads : null);
     return buildThreadListV2Items({
       pendingOrder,
+      projects: props.projects,
       threads: props.threads.filter((thread) => thread.archivedAt === null),
       environmentId: props.selectedEnvironmentId,
       projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
@@ -594,12 +600,15 @@ export function HomeScreen(props: HomeScreenProps) {
       now: new Date().toISOString(),
       workingShelfEnabled,
       workingShelfExpanded,
+      noProjectShelfExpanded,
       inboxReturnAt: threadListInboxReturns.returnedAt,
       snoozedShelfExpanded,
       settledShelfExpanded,
       selectedThreadKey,
     });
   }, [
+    props.projects,
+    noProjectShelfExpanded,
     workingShelfEnabled,
     workingShelfExpanded,
     pendingOrder,
@@ -651,6 +660,9 @@ export function HomeScreen(props: HomeScreenProps) {
       buildThreadListV2ListItems({
         items: threadListV2Layout.items,
         pendingTasks: v2PendingTasks,
+        noProjectCount: threadListV2Layout.noProjectCount,
+        noProjectShelfExpanded: noProjectShelfExpanded || props.searchQuery.trim().length > 0,
+        noProjectShelfHeaderIndex: threadListV2Layout.noProjectShelfHeaderIndex,
         workingCount: threadListV2Layout.workingCount,
         workingShelfExpanded,
         workingShelfHeaderIndex: threadListV2Layout.workingShelfHeaderIndex,
@@ -670,6 +682,8 @@ export function HomeScreen(props: HomeScreenProps) {
       nowMinute,
       queuedThreadKeys,
       threadMoveAvailability,
+      noProjectShelfExpanded,
+      props.searchQuery,
       settledShelfExpanded,
       shelfPreferencesLoaded,
       snoozedShelfExpanded,
@@ -708,6 +722,16 @@ export function HomeScreen(props: HomeScreenProps) {
             showTrailingDivider={item.showTrailingDivider}
             onSelectPendingTask={props.onSelectPendingTask}
             onDeletePendingTask={props.onDeletePendingTask}
+          />
+        );
+      }
+      if (item.type === "v2-no-project-shelf") {
+        return (
+          <ThreadListV2NoProjectShelfHeader
+            count={item.count}
+            disabled={item.disabled}
+            expanded={item.expanded}
+            onToggle={toggleNoProjectShelf}
           />
         );
       }
@@ -849,6 +873,7 @@ export function HomeScreen(props: HomeScreenProps) {
       snoozeEnvironmentIds,
       threadSearchMatchByKey,
       titleRegenerationEnvironmentIds,
+      toggleNoProjectShelf,
       toggleSettledShelf,
       toggleSnoozedShelf,
       toggleWorkingShelf,

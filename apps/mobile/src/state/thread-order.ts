@@ -1,3 +1,4 @@
+import { environmentProjects } from "./projects";
 import { useAtomValue } from "@effect/atom-react";
 import { useEffect } from "react";
 import { Atom } from "effect/reactivity";
@@ -51,6 +52,7 @@ export function beginPendingThreadOrder(pending: PendingThreadOrder) {
     if (current === null) return;
     const configs = appAtomRegistry.get(environmentServerConfigsAtom);
     const ordered = getThreadListV2OrderedSection({
+      projects: appAtomRegistry.get(environmentProjects.projectsAtom),
       threads: appAtomRegistry.get(environmentThreadShells.threadShellsAtom),
       section: current.section,
       now: new Date().toISOString(),
@@ -75,6 +77,7 @@ export function beginPendingThreadOrder(pending: PendingThreadOrder) {
   unsubscribers.push(
     appAtomRegistry.subscribe(environmentThreadShells.threadShellsAtom, refresh),
     appAtomRegistry.subscribe(environmentServerConfigsAtom, refresh),
+    appAtomRegistry.subscribe(environmentProjects.projectsAtom, refresh),
     appAtomRegistry.subscribe(queuedThreadKeysAtom, refresh),
   );
   return {
