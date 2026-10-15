@@ -1,6 +1,17 @@
 // @effect-diagnostics nodeBuiltinImport:off - fixture for the copied Chromium SQLite index.
 import * as NodeSqlite from "node:sqlite";
 import * as NodeVM from "node:vm";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodeURL from "node:url";
+import * as NodePath from "node:path";
+import { build } from "vite-plus/pack";
+import { findEsmImportsOfExternalPackages } from "../../../../scripts/lib/cli-executable-imports.ts";
+import {
+  isExternalCliDependency,
+  shouldBundleCliDependency,
+} from "../../../../scripts/lib/cli-external-packages.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { renewalCommitment } from "@t3tools/shared/sessionRenewal";
@@ -125,3 +136,62 @@ it.effect(
       expect(yield* fs.readFileString(path.join(source, "Cookies"))).toBe("never copy cookies");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
+
+it("keeps the executable reader importable without Playwright and loads it only on read", async () => {
+  const scratch = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-renewal-package-"));
+  try {
+    const entry = NodePath.join(scratch, "probe.mjs");
+    await NodeFSP.writeFile(
+      entry,
+      `
+      import * as Reader from ${JSON.stringify(NodeURL.fileURLToPath(new URL("./BrowserRenewalCommitments.ts", import.meta.url)))};
+      import * as Effect from ${JSON.stringify(import.meta.resolve("effect/Effect"))};
+      export const read = () => Effect.runPromise(Effect.gen(function* () {
+        const engine = yield* Reader.BrowserRenewalEngine;
+        return yield* engine.read({ executable: "/not-launched", profileDirectory: "/not-opened", origin: "http://paired.test" });
+      }).pipe(Effect.provide(Reader.layer)));
+    `,
+    );
+    await build({
+      config: false,
+      entry: [entry],
+      outDir: NodePath.join(scratch, "bundle"),
+      platform: "node",
+      format: "esm",
+      dts: false,
+      logLevel: "error",
+      deps: {
+        alwaysBundle: shouldBundleCliDependency,
+        neverBundle: isExternalCliDependency,
+        onlyBundle: false,
+      },
+    });
+    const probe = NodePath.join(scratch, "bundle/probe.mjs");
+    expect(findEsmImportsOfExternalPackages(await NodeFSP.readFile(probe, "utf8"))).toEqual([]);
+    const output = NodeChildProcess.execFileSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+      import assert from "node:assert/strict";
+      import { registerHooks } from "node:module";
+      let loads = 0;
+      registerHooks({ resolve(specifier, context, next) {
+        if (specifier === "playwright-core") { loads++; throw new Error("playwright requested by reader"); }
+        return next(specifier, context);
+      }});
+      const reader = await import(${JSON.stringify(NodeURL.pathToFileURL(probe).href)});
+      assert.equal(loads, 0);
+      await assert.rejects(reader.read(), error => error.cause?.message === "playwright requested by reader");
+      assert.equal(loads, 1);
+      console.log("reader loads Playwright only on read");
+    `,
+      ],
+      { encoding: "utf8" },
+    );
+    expect(output).toContain("reader loads Playwright only on read");
+  } finally {
+    await NodeFSP.rm(scratch, { recursive: true, force: true });
+  }
+});

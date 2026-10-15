@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - SQLite reads Chromium's copied quota index at this boundary.
 import * as NodeSqlite from "node:sqlite";
-import { chromium } from "playwright-core";
+import * as NodeModule from "node:module";
 import { AuthRenewalCommitment } from "@t3tools/contracts";
 import { renewalCommitment } from "@t3tools/shared/sessionRenewal";
 import * as Context from "effect/Context";
@@ -9,6 +9,9 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+
+// Playwright needs files on disk; Node SEA resolves these through createRequire.
+const requirePlaywright = NodeModule.createRequire(import.meta.url);
 
 export const PublicCommitments = Schema.Array(
   Schema.Struct({
@@ -69,8 +72,11 @@ export const layer = Layer.succeed(BrowserRenewalEngine, {
   read: (input) =>
     Effect.acquireUseRelease(
       Effect.tryPromise({
-        try: () =>
-          chromium.launchPersistentContext(input.profileDirectory, {
+        try: () => {
+          const { chromium } = requirePlaywright(
+            "playwright-core",
+          ) as typeof import("playwright-core");
+          return chromium.launchPersistentContext(input.profileDirectory, {
             executablePath: input.executable,
             headless: true,
             chromiumSandbox: true,
@@ -82,7 +88,8 @@ export const layer = Layer.succeed(BrowserRenewalEngine, {
               "--no-first-run",
               "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
             ],
-          }),
+          });
+        },
         catch: (cause) => new BrowserCommitmentReadError({ cause }),
       }),
       (context) =>
