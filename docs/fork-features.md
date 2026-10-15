@@ -289,6 +289,7 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "apps/server/src/orchestration-v2/ClaudeAutomaticDelivery.integration.test.ts",
     "apps/server/src/orchestration-v2/CommandPolicy.test.ts",
     "apps/server/src/orchestration-v2/CommandPolicy.ts",
+    "apps/server/src/orchestration-v2/testkit/fixtures/message_steering/claude_output.ts",
     "apps/server/src/orchestration-v2/testkit/fixtures/shared.ts",
     "docs/orchestration-v2/orchestrator-mcp-server.md"
   ],

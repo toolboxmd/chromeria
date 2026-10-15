@@ -64,7 +64,7 @@ FAIL=0
 while IFS= read -r path; do
   [[ -z "$path" ]] && continue
   if git cat-file -e "$BASE:$path" 2>/dev/null; then
-    if printf '%s\n' "$ALLOWLIST" | grep -qxF "$path"; then
+    if grep -qxF "$path" <<< "$ALLOWLIST"; then
       echo "fork-check: modified (allowlisted): $path"
     else
       echo "fork-check: FAIL: upstream file modified but not allowlisted: $path" >&2
