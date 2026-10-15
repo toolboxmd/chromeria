@@ -269,7 +269,8 @@ export function ThreadRelationshipsPanel(props: {
     [runtimeSubagents],
   );
   const threadShells = useThreadShells();
-  const projects = useProjects().filter((project) => project.environmentId === props.environmentId);
+  const allProjects = useProjects();
+  const projects = allProjects.filter((project) => project.environmentId === props.environmentId);
   const archived = useArchivedThreadSnapshots([props.environmentId]);
   const archivedShells = archived.snapshots.find(
     (entry) => entry.environmentId === props.environmentId,
@@ -545,7 +546,13 @@ export function ThreadRelationshipsPanel(props: {
               const trailingVisibilityClass = (workflowGroup ? canStopWorkflow : canStop)
                 ? "group-hover:opacity-0 group-focus-within:opacity-0 pointer-coarse:opacity-0 [@media(hover:none)]:opacity-0"
                 : "";
-              const project = projects.find((project) => project.id === node?.thread?.projectId);
+              // Project ids are only unique inside one environment, so a
+              // remote row resolves its project there, not locally.
+              const project = allProjects.find(
+                (project) =>
+                  project.id === node?.thread?.projectId &&
+                  project.environmentId === (rowEnvironment ?? props.environmentId),
+              );
               const relationshipHint = remoteUnreachable
                 ? `Runs on ${agent?.remoteChild?.label ?? "another machine"}, which this client is not connected to`
                 : node?.missing && remoteEnvironmentId === null
