@@ -15,6 +15,7 @@ import {
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2ThreadProjection,
   orchestrationV2RunWorkStartedAt,
+  type NodeId,
   type ThreadId,
 } from "@t3tools/contracts";
 import {
@@ -450,4 +451,18 @@ export function notificationChildThreadId(
       source satisfies never;
       return undefined;
   }
+}
+
+/**
+ * The one delegated task a notification reports, when it reports exactly
+ * one. A task delegated to a linked environment has no `childThreadId` for
+ * the source to carry, so its row resolves the opening thread through the
+ * task record itself.
+ */
+export function notificationSubagentId(
+  source: OrchestrationV2NotificationSource,
+): NodeId | undefined {
+  return source.kind === "delegated_task" && source.taskIds.length === 1
+    ? source.taskIds[0]
+    : undefined;
 }

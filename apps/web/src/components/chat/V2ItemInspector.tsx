@@ -12,6 +12,7 @@ import {
   turnItemOutputText,
 } from "@t3tools/client-runtime/work-log/item-detail";
 import { formatDiffCount } from "@t3tools/client-runtime/diff-count";
+import { subagentChildTarget } from "@t3tools/client-runtime/state/thread-relationships";
 import { isJavaScriptReplTool } from "@t3tools/shared/toolActivity";
 import { ExternalLinkIcon, GitBranchIcon, RotateCcwIcon } from "lucide-react";
 import { memo, Suspense, use, useMemo } from "react";
@@ -35,7 +36,7 @@ interface V2ItemInspectorProps {
   readonly environmentId: EnvironmentId;
   readonly cwd?: string | undefined;
   readonly workspaceRoot?: string | undefined;
-  readonly onOpenThread: (threadId: ThreadId) => void;
+  readonly onOpenThread: (threadId: ThreadId, environmentId?: EnvironmentId) => void;
   readonly onOpenTurnDiff: (runId: RunId, filePath?: string) => void;
   readonly onRollbackCheckpoint?: (input: {
     readonly checkpointId: string;
@@ -240,6 +241,7 @@ function ToolCallBody(
 export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspectorProps) {
   const fetched = useFetchedTurnItem(props.projectedItem, props.environmentId);
   const item = fetched.item;
+  const subagentTarget = item.type === "subagent" ? subagentChildTarget(item) : null;
   const outputState = fetched.output;
   const support = useV2ItemSupport({
     environmentId: props.environmentId,
@@ -420,8 +422,14 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
         </Button>
       ) : null}
 
-      {item.type === "subagent" && item.childThreadId !== null ? (
-        <Button size="xs" variant="outline" onClick={() => props.onOpenThread(item.childThreadId!)}>
+      {subagentTarget !== null ? (
+        <Button
+          size="xs"
+          variant="outline"
+          onClick={() =>
+            props.onOpenThread(subagentTarget.threadId, subagentTarget.environmentId ?? undefined)
+          }
+        >
           Open subagent thread
         </Button>
       ) : null}

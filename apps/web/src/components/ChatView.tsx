@@ -7482,10 +7482,12 @@ export default function ChatView(props: ChatViewProps) {
     }
   }, [activeThread, environmentId, interruptThreadTurn, setThreadError]);
   const onOpenRelatedThread = useCallback(
-    (threadId: ThreadId) => {
+    (threadId: ThreadId, targetEnvironmentId?: EnvironmentId) => {
       void navigate({
         to: "/$environmentId/$threadId",
-        params: buildThreadRouteParams(scopeThreadRef(environmentId, threadId)),
+        params: buildThreadRouteParams(
+          scopeThreadRef(targetEnvironmentId ?? environmentId, threadId),
+        ),
       });
     },
     [environmentId, navigate],

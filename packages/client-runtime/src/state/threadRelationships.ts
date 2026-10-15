@@ -1,4 +1,6 @@
 import type {
+  EnvironmentId,
+  OrchestrationV2Subagent,
   OrchestrationV2ThreadProjection,
   OrchestrationV2ThreadShell,
   ThreadId,
@@ -11,6 +13,8 @@ export interface ThreadRelationshipNode {
   readonly threadId: ThreadId;
   readonly thread: OrchestrationV2ThreadShell | null;
   readonly missing: boolean;
+  /** The linked environment this thread runs in, when it is not the local one. */
+  readonly environmentId: EnvironmentId | null;
 }
 
 export interface ThreadRelationshipEdge {
@@ -18,6 +22,31 @@ export interface ThreadRelationshipEdge {
   readonly targetThreadId: ThreadId;
   readonly kind: ThreadRelationshipKind;
   readonly status: string | null;
+  /** Set when the target runs in a linked environment instead of locally. */
+  readonly targetEnvironmentId: EnvironmentId | null;
+}
+
+export interface SubagentChildTarget {
+  readonly threadId: ThreadId;
+  /** The linked environment the child runs in; null for a local child thread. */
+  readonly environmentId: EnvironmentId | null;
+}
+
+/**
+ * Where a subagent's work can be opened. A task delegated to a linked
+ * environment has no local `childThreadId`; its thread lives in
+ * `remoteChild` once the launch there is attached. Before that there is
+ * nothing to open yet.
+ */
+export function subagentChildTarget(
+  subagent: Pick<OrchestrationV2Subagent, "childThreadId" | "remoteChild">,
+): SubagentChildTarget | null {
+  if (subagent.childThreadId !== null) {
+    return { threadId: subagent.childThreadId, environmentId: null };
+  }
+  const remoteChild = subagent.remoteChild;
+  if (remoteChild?.threadId === undefined) return null;
+  return { threadId: remoteChild.threadId, environmentId: remoteChild.environmentId };
 }
 
 export interface ThreadRelationshipGraph {
@@ -60,17 +89,23 @@ export function deriveThreadRelationshipGraph(input: {
   }
   const threads = [...threadsById.values()];
   const nodes = new Map<ThreadId, ThreadRelationshipNode>(
-    threads.map((thread) => [thread.id, { threadId: thread.id, thread, missing: false }]),
+    threads.map((thread) => [
+      thread.id,
+      { threadId: thread.id, thread, missing: false, environmentId: null },
+    ]),
   );
   const edgesByKey = new Map<string, ThreadRelationshipEdge>();
-  const ensureNode = (threadId: ThreadId) => {
-    if (!nodes.has(threadId)) {
-      nodes.set(threadId, { threadId, thread: null, missing: true });
+  const ensureNode = (threadId: ThreadId, environmentId: EnvironmentId | null = null) => {
+    const node = nodes.get(threadId);
+    if (node === undefined) {
+      nodes.set(threadId, { threadId, thread: null, missing: true, environmentId });
+    } else if (node.environmentId === null && environmentId !== null) {
+      nodes.set(threadId, { ...node, environmentId });
     }
   };
   const addEdge = (edge: ThreadRelationshipEdge) => {
     ensureNode(edge.sourceThreadId);
-    ensureNode(edge.targetThreadId);
+    ensureNode(edge.targetThreadId, edge.targetEnvironmentId);
     edgesByKey.set(
       edgeKey(edge),
       edge.kind === "subagent" && edge.status === "rolled_back"
@@ -90,22 +125,25 @@ export function deriveThreadRelationshipGraph(input: {
       targetThreadId: thread.id,
       kind: thread.lineage.relationshipToParent === "subagent" ? "subagent" : "fork",
       status: thread.activityRunStatus ?? thread.status,
+      targetEnvironmentId: null,
     });
   }
 
   if (input.projection !== null) {
     const ownerThreadId = input.projection.thread.id;
     for (const subagent of input.projection.subagents) {
-      if (subagent.childThreadId === null) continue;
-      const child = threadsById.get(subagent.childThreadId);
+      const target = subagentChildTarget(subagent);
+      if (target === null) continue;
+      const child = threadsById.get(target.threadId);
       // The row describes the child conversation, including queued follow-ups
       // and their outcomes. A child without an app run still uses its task.
       addEdge({
         sourceThreadId: ownerThreadId,
-        targetThreadId: subagent.childThreadId,
+        targetThreadId: target.threadId,
         kind: "subagent",
         status:
           child?.activityRunStatus ?? (child?.latestRunId != null ? child.status : subagent.status),
+        targetEnvironmentId: target.environmentId,
       });
     }
     for (const transfer of input.projection.contextTransfers) {
@@ -115,6 +153,7 @@ export function deriveThreadRelationshipGraph(input: {
         targetThreadId: transfer.targetThreadId,
         kind: "transfer",
         status: transfer.status,
+        targetEnvironmentId: null,
       });
     }
   }

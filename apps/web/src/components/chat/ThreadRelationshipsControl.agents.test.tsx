@@ -1272,3 +1272,90 @@ it.each(["source", "target"])(
     }
   },
 );
+
+it("shows a child delegated to a linked environment and opens it there", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  state.navigate.mockClear();
+  const agent = {
+    id: "remote-agent",
+    childThreadId: null,
+    remoteChild: {
+      environmentId: EnvironmentId.make("cavallo"),
+      threadId: ThreadId.make("remote-child"),
+      label: "cavallo",
+    },
+    origin: "app_owned",
+    driver: "cursor",
+    providerInstanceId: "cursor",
+    title: "Remote roast",
+    prompt: "Roast the draft",
+    model: "grok-4.7",
+    status: "running",
+    progress: null,
+    result: null,
+    startedAt: DateTime.makeUnsafe("2026-09-16T12:00:00Z"),
+    completedAt: null,
+    updatedAt: DateTime.makeUnsafe("2026-09-16T12:00:00Z"),
+  };
+  state.shells = [
+    {
+      environmentId: "cavallo",
+      source: {
+        id: "remote-child",
+        title: "Remote roast",
+        status: "running",
+        activityRunStatus: "running",
+        lineage: { parentThreadId: null, relationshipToParent: null },
+      },
+    },
+  ];
+  state.configs.set("test", { providers: [] });
+  state.configs.set("cavallo", { providers: [] });
+  state.projection = {
+    thread: {
+      id: "parent",
+      lineage: { relationshipToParent: null },
+      activeProviderThreadId: null,
+    },
+    runs: [],
+    providerThreads: [],
+    providerSessions: [],
+    contextTransfers: [],
+    subagents: [agent],
+  };
+  await act(async () => {
+    renderer = create(
+      <ThreadRelationshipsPanel
+        environmentId={EnvironmentId.make("test")}
+        threadId={ThreadId.make("parent")}
+      />,
+    );
+  });
+  const text = renderer.root
+    .findAll((node) => typeof node.type === "string")
+    .flatMap((node) => node.children.filter((child) => typeof child === "string"))
+    .join(" ")
+    .replace(/\s+/g, " ");
+  // The remote child has its own row and is counted once, not once as a
+  // childless runner and again as an active row.
+  expect(text).toContain("Remote roast");
+  expect(text).toContain("Lineage · 1 running");
+  expect(text).not.toContain("2 running");
+  // Stopping it belongs to the owning task, not a local interrupt.
+  expect(renderer.root.findAllByProps({ "aria-label": "Stop subagent Remote roast" })).toHaveLength(
+    0,
+  );
+  const rowButton = renderer.root
+    .findAllByType("button")
+    .find((button) =>
+      button
+        .findAll((node) => typeof node.type === "string")
+        .some((node) => node.children.includes("Remote roast")),
+    );
+  expect(rowButton).toBeDefined();
+  await act(async () => rowButton!.props.onClick());
+  expect(state.navigate).toHaveBeenCalledWith({
+    to: "/$environmentId/$threadId",
+    params: { environmentId: "cavallo", threadId: "remote-child" },
+  });
+});

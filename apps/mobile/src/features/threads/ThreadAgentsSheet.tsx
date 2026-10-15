@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { subagentChildTarget } from "@t3tools/client-runtime/state/thread-relationships";
 import type { ThreadTurnSubagents } from "@t3tools/client-runtime/state/thread-subagents";
 import {
   isOrchestrationV2WorkActive,
@@ -42,13 +43,13 @@ export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
   const subagents = turn?.subagents ?? [];
   const hasLiveAgent = (turn?.liveCount ?? 0) > 0;
 
-  const openChildThread = (childThreadId: ThreadId) => {
+  const openChildThread = (childThreadId: ThreadId, environmentId: EnvironmentId) => {
     void Haptics.selectionAsync();
     // Replace rather than push: the sheet is a leaf, and the child thread
     // belongs in the workspace stack where Home's back button expects it.
     navigation.dispatch(
       StackActions.replace("Thread", {
-        environmentId: target.environmentId,
+        environmentId,
         threadId: childThreadId,
       }),
     );
@@ -129,10 +130,10 @@ function AgentRow(props: {
   readonly environmentId: EnvironmentId;
   readonly subagent: OrchestrationV2Subagent;
   readonly tickSeconds: boolean;
-  readonly onOpen: (childThreadId: ThreadId) => void;
+  readonly onOpen: (childThreadId: ThreadId, environmentId: EnvironmentId) => void;
 }) {
   const { subagent } = props;
-  const childThreadId = subagent.childThreadId;
+  const target = subagentChildTarget(subagent);
 
   const row = (
     <View className="border-b border-border py-3.5">
@@ -144,11 +145,15 @@ function AgentRow(props: {
     </View>
   );
 
-  if (childThreadId === null) {
+  if (target === null) {
     return (
       <View
         accessible
-        accessibilityHint="Provider-managed agent. Its work appears in the transcript."
+        accessibilityHint={
+          subagent.remoteChild
+            ? `Running on ${subagent.remoteChild.label}. Its thread opens once the launch there is attached.`
+            : "Provider-managed agent. Its work appears in the transcript."
+        }
       >
         {row}
       </View>
@@ -159,7 +164,7 @@ function AgentRow(props: {
     <Pressable
       accessibilityRole="link"
       accessibilityHint="Opens this agent's thread"
-      onPress={() => props.onOpen(childThreadId)}
+      onPress={() => props.onOpen(target.threadId, target.environmentId ?? props.environmentId)}
       className="active:opacity-70"
     >
       {row}

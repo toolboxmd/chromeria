@@ -17,6 +17,7 @@ import {
 } from "@t3tools/client-runtime/handoff";
 import { Fragment } from "react";
 import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subagent-display";
+import { subagentChildTarget } from "@t3tools/client-runtime/state/thread-relationships";
 import {
   ProviderDriverKind,
   type OrchestrationV2Notification,
@@ -75,7 +76,7 @@ export function V2LifecycleRow(props: {
   readonly timestampFormat: TimestampFormat;
   readonly providerStatuses: ReadonlyArray<ServerProvider>;
   readonly runs: ReadonlyArray<HandoffTimelineRun>;
-  readonly onOpenThread: (threadId: ThreadId) => void;
+  readonly onOpenThread: (threadId: ThreadId, environmentId?: EnvironmentId) => void;
 }) {
   const { item } = props;
   if (item.type === "run_interrupt_request") {
@@ -202,7 +203,10 @@ export function V2LifecycleRow(props: {
         progress={item.progress}
         startedAt={item.startedAt}
         completedAt={item.completedAt}
-        threadId={item.childThreadId}
+        threadId={item.childThreadId ?? item.remoteChild?.threadId ?? null}
+        childEnvironmentId={
+          item.childThreadId === null ? item.remoteChild?.environmentId : undefined
+        }
         onOpenThread={props.onOpenThread}
       />
     );
@@ -330,21 +334,28 @@ const NOTIFICATION_OUTCOME_LABEL: Record<OrchestrationV2Notification["outcome"],
 /** A notification about one subagent, drawn as that subagent's card. Renders `fallback` when the parent has no record of it. */
 export function SubagentNotificationLink(props: {
   readonly parentRef: ScopedThreadRef;
-  readonly childThreadId: ThreadId;
+  readonly childThreadId?: ThreadId | undefined;
+  /** The one delegated task reported, for tasks whose thread runs elsewhere. */
+  readonly subagentId?: NodeId | undefined;
   readonly outcome: OrchestrationV2Notification["outcome"];
   readonly createdAt: string;
   readonly timestampFormat: TimestampFormat;
   readonly providerStatuses: ReadonlyArray<ServerProvider>;
-  readonly onOpenThread: (threadId: ThreadId) => void;
+  readonly onOpenThread: (threadId: ThreadId, environmentId?: EnvironmentId) => void;
   readonly fallback: ReactNode;
 }) {
   const agent = useAtomValue(
     environmentThreadDetails.threadAtom(props.parentRef),
     (thread) =>
-      thread?.projection.subagents.find((agent) => agent.childThreadId === props.childThreadId) ??
-      null,
+      thread?.projection.subagents.find(
+        (agent) =>
+          agent.id === props.subagentId ||
+          (props.childThreadId !== undefined && agent.childThreadId === props.childThreadId),
+      ) ?? null,
   );
-  if (agent === null) return props.fallback;
+  const target = agent === null ? null : subagentChildTarget(agent);
+  const childThreadId = target?.threadId ?? props.childThreadId;
+  if (agent === null || childThreadId === undefined) return props.fallback;
   return (
     <SubagentTimelineLink
       parentRef={props.parentRef}
@@ -362,7 +373,8 @@ export function SubagentNotificationLink(props: {
       progress={agent.progress}
       startedAt={agent.startedAt}
       completedAt={agent.completedAt}
-      threadId={props.childThreadId}
+      threadId={childThreadId}
+      childEnvironmentId={target?.environmentId ?? undefined}
       onOpenThread={props.onOpenThread}
       event={{
         status: NOTIFICATION_OUTCOME_STATUS[props.outcome],
@@ -388,7 +400,9 @@ function SubagentTimelineLink(props: {
   readonly startedAt: DateTime.Utc | null;
   readonly completedAt: DateTime.Utc | null;
   readonly threadId: ThreadId | null;
-  readonly onOpenThread: (threadId: ThreadId) => void;
+  /** The linked environment the child thread runs in, when it is not local. */
+  readonly childEnvironmentId?: EnvironmentId | undefined;
+  readonly onOpenThread: (threadId: ThreadId, environmentId?: EnvironmentId) => void;
   /** Draws a past event about the subagent: its status then, and when it happened instead of elapsed time. */
   readonly event?: {
     readonly status: OrchestrationV2TurnItem["status"] | null;
@@ -400,7 +414,11 @@ function SubagentTimelineLink(props: {
     environmentThreadDetails.threadAtom(props.parentRef),
     (thread) => thread?.projection.subagents.find((agent) => agent.id === props.subagentId) ?? null,
   );
-  const threadId = props.threadId;
+  // The live record outranks the turn item: a remote launch attaches its
+  // thread there after the item was first projected.
+  const liveTarget = agent === null ? null : subagentChildTarget(agent);
+  const threadId = props.threadId ?? liveTarget?.threadId ?? null;
+  const childEnvironmentId = props.childEnvironmentId ?? liveTarget?.environmentId ?? undefined;
   const liveStatus = agent?.status ?? props.status;
   const status = props.event ? props.event.status : liveStatus;
   const statusLabel = props.event?.label ?? subagentStatusVisual(liveStatus).label;
@@ -482,7 +500,11 @@ function SubagentTimelineLink(props: {
               data-v2-item-type="subagent"
               aria-label={`Open ${props.title}`}
               aria-description={statusLabel}
-              onClick={() => props.onOpenThread(threadId)}
+              onClick={() =>
+                childEnvironmentId === undefined
+                  ? props.onOpenThread(threadId)
+                  : props.onOpenThread(threadId, childEnvironmentId)
+              }
               className={cn(
                 className,
                 "cursor-pointer transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
@@ -516,14 +538,17 @@ function SubagentTimelineTooltip(
   },
 ) {
   const environmentId = props.parentRef.environmentId;
+  const childEnvironmentId = props.childEnvironmentId ?? environmentId;
   const parent = useThreadShell(props.parentRef)?.source;
   const child = useThreadShell(
-    props.threadId ? scopeThreadRef(environmentId, props.threadId) : null,
+    props.threadId ? scopeThreadRef(childEnvironmentId, props.threadId) : null,
   )?.source;
   const parentProject = useProject(
     parent ? scopeProjectRef(environmentId, parent.projectId) : null,
   );
-  const childProject = useProject(child ? scopeProjectRef(environmentId, child.projectId) : null);
+  const childProject = useProject(
+    child ? scopeProjectRef(childEnvironmentId, child.projectId) : null,
+  );
   return (
     <SubagentTooltipContent
       title={formatSubagentDisplayTitle(child?.title ?? props.title)}

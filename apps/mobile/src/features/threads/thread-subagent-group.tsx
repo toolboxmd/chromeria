@@ -3,6 +3,7 @@ import { StackActions, useIsFocused, useNavigation } from "@react-navigation/nat
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { summarizeSubagentStatuses } from "@t3tools/client-runtime/state/subagent-display";
 import { isActiveSubagentStatus } from "@t3tools/client-runtime/state/subagentRuntime";
+import { subagentChildTarget } from "@t3tools/client-runtime/state/thread-relationships";
 import type {
   EnvironmentId,
   OrchestrationV2Subagent,
@@ -89,6 +90,10 @@ export function ThreadSubagentGroup(props: {
       result: live?.result ?? item.result,
       progress: live?.progress ?? item.progress,
       model: live?.model ?? null,
+      // A remote launch attaches its thread on the live record after the
+      // turn item was first projected.
+      childThreadId: live?.childThreadId ?? item.childThreadId,
+      remoteChild: live?.remoteChild ?? item.remoteChild,
     };
   });
   const grouped = agents.length > 1;
@@ -147,24 +152,24 @@ export function ThreadSubagentGroup(props: {
       {!grouped || expanded ? (
         <View className="mb-1 gap-px rounded-xl border border-border bg-card/30 p-1">
           {agents.map((agent) => {
-            const threadId = agent.childThreadId;
+            const target = subagentChildTarget(agent);
             return (
               <Pressable
                 key={agent.item.id}
                 accessible
-                accessibilityRole={threadId === null ? undefined : "link"}
+                accessibilityRole={target === null ? undefined : "link"}
                 accessibilityHint={
-                  threadId === null ? "Provider-managed agent" : "Opens this agent's thread"
+                  target === null ? "Provider-managed agent" : "Opens this agent's thread"
                 }
-                disabled={threadId === null}
+                disabled={target === null}
                 onPress={() => {
                   // Push, not navigate: navigate reuses this Thread route, so back
                   // would skip the parent thread.
-                  if (threadId !== null)
+                  if (target !== null)
                     navigation.dispatch(
                       StackActions.push("Thread", {
-                        environmentId: String(props.environmentId),
-                        threadId: String(threadId),
+                        environmentId: String(target.environmentId ?? props.environmentId),
+                        threadId: String(target.threadId),
                       }),
                     );
                 }}

@@ -50,7 +50,10 @@ import { environmentThreadDetails } from "../../state/threads";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
 import { Link } from "@tanstack/react-router";
 import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
-import { notificationChildThreadId } from "@t3tools/client-runtime/state/thread-execution";
+import {
+  notificationChildThreadId,
+  notificationSubagentId,
+} from "@t3tools/client-runtime/state/thread-execution";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import {
   liveThoughtLine,
@@ -355,7 +358,10 @@ interface TimelineRowSharedState {
   onImageExpand: (preview: ExpandedImagePreview) => void;
   displayThreadKey?: string;
   onOpenTurnDiff: (runId: RunId, filePath?: string) => void;
-  onOpenThread: (threadId: OrchestrationV2TurnItem["threadId"]) => void;
+  onOpenThread: (
+    threadId: OrchestrationV2TurnItem["threadId"],
+    environmentId?: EnvironmentId,
+  ) => void;
   onForkFromRun: (input: {
     readonly sourceThreadId: ThreadId;
     readonly runId: RunId;
@@ -503,7 +509,10 @@ interface MessagesTimelineProps {
   /** The rows are a held snapshot of the previous thread while the next one loads. */
   paintOnly?: boolean;
   onOpenTurnDiff: (runId: RunId, filePath?: string) => void;
-  onOpenThread: (threadId: OrchestrationV2TurnItem["threadId"]) => void;
+  onOpenThread: (
+    threadId: OrchestrationV2TurnItem["threadId"],
+    environmentId?: EnvironmentId,
+  ) => void;
   parentThreadLink?: {
     readonly threadId: ThreadId;
     readonly title: string;
@@ -5519,9 +5528,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: WorkEntryRowP
   const item = props.workEntry.projectedItem?.item;
   const childThreadId =
     item?.type === "notification" ? notificationChildThreadId(item.source) : undefined;
+  const subagentId =
+    item?.type === "notification" ? notificationSubagentId(item.source) : undefined;
   if (
     item?.type !== "notification" ||
-    childThreadId === undefined ||
+    (childThreadId === undefined && subagentId === undefined) ||
     (item.outcome === "updated" && Boolean(item.detail?.trim()))
   ) {
     return <WorkEntryLogRow {...props} />;
@@ -5530,6 +5541,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: WorkEntryRowP
     <SubagentNotificationLink
       parentRef={scopeThreadRef(ctx.activeThreadEnvironmentId, item.threadId)}
       childThreadId={childThreadId}
+      subagentId={subagentId}
       outcome={item.outcome}
       createdAt={props.workEntry.createdAt}
       timestampFormat={ctx.timestampFormat}

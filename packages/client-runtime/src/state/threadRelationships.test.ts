@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
 import {
@@ -224,6 +224,70 @@ describe("thread relationships", () => {
       expect(threadRelationshipRowStatus(graph, row)).toBe(expected);
     },
   );
+
+  it("links a remote delegated child through remoteChild, not childThreadId", () => {
+    const parent = ThreadId.make("thread-parent");
+    const child = ThreadId.make("thread-remote-child");
+    const remoteEnvironment = EnvironmentId.make("environment-cavallo");
+    const graph = deriveThreadRelationshipGraph({
+      threads: [
+        { id: parent, status: "running", forkedFrom: null, lineage: { parentThreadId: null } },
+      ] as never,
+      projection: {
+        thread: { id: parent },
+        subagents: [
+          {
+            childThreadId: null,
+            remoteChild: {
+              environmentId: remoteEnvironment,
+              threadId: child,
+              label: "cavallo",
+            },
+            status: "running",
+          },
+        ],
+        contextTransfers: [],
+      } as never,
+    });
+
+    expect(graph.edges).toEqual([
+      expect.objectContaining({
+        sourceThreadId: parent,
+        targetThreadId: child,
+        kind: "subagent",
+        status: "running",
+        targetEnvironmentId: remoteEnvironment,
+      }),
+    ]);
+    expect(graph.nodes.get(child)?.environmentId).toBe(remoteEnvironment);
+    const row = immediateThreadRelationships(graph, parent)[0]!;
+    expect(threadRelationshipRowStatus(graph, row)).toBe("running");
+  });
+
+  it("keeps an unattached remote launch rowless until its thread is known", () => {
+    const parent = ThreadId.make("thread-parent");
+    const graph = deriveThreadRelationshipGraph({
+      threads: [
+        { id: parent, status: "running", forkedFrom: null, lineage: { parentThreadId: null } },
+      ] as never,
+      projection: {
+        thread: { id: parent },
+        subagents: [
+          {
+            childThreadId: null,
+            remoteChild: {
+              environmentId: EnvironmentId.make("environment-cavallo"),
+              label: "cavallo",
+            },
+            status: "running",
+          },
+        ],
+        contextTransfers: [],
+      } as never,
+    });
+
+    expect(graph.edges).toEqual([]);
+  });
 
   it("keeps the live shell when an archived snapshot contains the same thread id", () => {
     const parent = ThreadId.make("thread-parent");
