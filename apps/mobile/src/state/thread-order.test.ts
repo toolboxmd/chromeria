@@ -1,5 +1,6 @@
+import type { EnvironmentProject } from "@t3tools/client-runtime/state/models";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import type { Atom } from "effect/reactivity";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -12,6 +13,7 @@ import {
   pendingThreadOrderAtom,
 } from "./thread-order";
 import { environmentThreadShells } from "./threads";
+import { environmentProjects } from "./projects";
 
 vi.mock("./atom-registry", async () => {
   const { AtomRegistry } = await import("effect/reactivity");
@@ -20,6 +22,10 @@ vi.mock("./atom-registry", async () => {
 vi.mock("./threads", async () => {
   const { Atom } = await import("effect/reactivity");
   return { environmentThreadShells: { threadShellsAtom: Atom.make([]).pipe(Atom.keepAlive) } };
+});
+vi.mock("./projects", async () => {
+  const { Atom } = await import("effect/reactivity");
+  return { environmentProjects: { projectsAtom: Atom.make([]).pipe(Atom.keepAlive) } };
 });
 vi.mock("./server", async () => {
   const { Atom } = await import("effect/reactivity");
@@ -36,12 +42,33 @@ const shellsAtom = environmentThreadShells.threadShellsAtom as Atom.Writable<
   readonly EnvironmentThreadShell[]
 >;
 
+const projectsAtom = environmentProjects.projectsAtom as Atom.Writable<
+  readonly EnvironmentProject[],
+  readonly EnvironmentProject[]
+>;
+
+function makeProject(input: Partial<EnvironmentProject> = {}): EnvironmentProject {
+  return {
+    id: ProjectId.make("project-test"),
+    environmentId: EnvironmentId.make("env"),
+    title: "Project",
+    workspaceRoot: "/workspaces/project-test",
+    repositoryIdentity: null,
+    defaultModelSelection: null,
+    scripts: [],
+    createdAt: "2026-06-01T00:00:00.000Z",
+    updatedAt: "2026-06-01T00:00:00.000Z",
+    ...input,
+  };
+}
+
 function fixture() {
   // The shared section helper also reads lineage/settled/snooze fields, so
   // partial casts break when it grows — build complete shells instead.
   const rows = ["a", "b"].map((id, index) =>
     makeThreadShellFixture({
       id: ThreadId.make(id),
+      projectId: ProjectId.make("project-test"),
       environmentId: EnvironmentId.make("env"),
       createdAt: `2026-06-01T0${2 - index}:00:00.000Z`,
     }),
@@ -104,6 +131,25 @@ describe("shared mobile pending move", () => {
     move.cancel();
     expect(next.isPending()).toBe(true);
     next.cancel();
+  });
+
+  it("keeps an Active move for a colliding remote project, then cancels when its own project becomes scratch", () => {
+    const { start } = fixture();
+    appAtomRegistry.set(projectsAtom, [makeProject()]);
+    const move = start();
+    appAtomRegistry.set(projectsAtom, [
+      makeProject(),
+      makeProject({ environmentId: EnvironmentId.make("other"), isScratch: true }),
+    ]);
+    expect(move.isPending()).toBe(true);
+    expect(appAtomRegistry.get(pendingThreadOrderAtom)).not.toBeNull();
+
+    appAtomRegistry.set(projectsAtom, [makeProject({ isScratch: true })]);
+    expect(appAtomRegistry.get(pendingThreadOrderAtom)).toBeNull();
+    expect(move.isPending()).toBe(false);
+    move.complete();
+    appAtomRegistry.set(projectsAtom, [makeProject()]);
+    expect(getPendingThreadOrder()).toBeNull();
   });
 
   it("stops remaining writes when a canonical membership change invalidates the move", () => {

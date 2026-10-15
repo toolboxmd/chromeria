@@ -1952,6 +1952,7 @@ sources and reasons.
   "upstreamFiles": [
     "apps/mobile/src/features/home/HomeScreen.tsx",
     "apps/mobile/src/features/home/useThreadListActions.ts",
+    "apps/mobile/src/features/home/useThreadListActions.test.ts",
     "apps/mobile/src/features/threads/ThreadArrangementSheet.tsx",
     "apps/mobile/src/features/threads/ThreadNavigationSidebar.tsx",
     "apps/mobile/src/features/threads/thread-list-v2-items.tsx",
@@ -1962,6 +1963,7 @@ sources and reasons.
     "apps/mobile/src/lib/storage.test.ts",
     "apps/mobile/src/persistence/mobile-preferences.ts",
     "apps/mobile/src/state/thread-order.ts",
+    "apps/mobile/src/state/thread-order.test.ts",
     "apps/web/src/components/Sidebar.drag.test.ts",
     "apps/web/src/components/Sidebar.drag.ts",
     "apps/web/src/components/Sidebar.logic.test.ts",
