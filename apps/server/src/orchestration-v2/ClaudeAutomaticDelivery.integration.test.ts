@@ -167,29 +167,41 @@ it.effect.each(["active", "completed-before-effect", "completed-before-effect-se
           idAllocator: yield* IdAllocator.IdAllocatorV2,
           queryRunner: {
             allocateSessionId: Effect.succeed(sessionId),
-            open: () =>
-              Effect.succeed({
-                messages: Stream.fromQueue(sdkMessages),
-                offer: (message) =>
-                  Effect.sync(() => {
-                    offers.push(message);
-                    nativeQueue.push(message);
-                    // Claude Code 2.1.289 aborts on now-priority commands even while Bash blocks reads.
-                    if (nativeQueue.some((command) => command.priority === "now")) {
-                      batchAbort.abort({ kind: "interrupt" });
-                    }
-                  }),
-                setModel: () => Effect.void,
-                applyFlagSettings: () => Effect.void,
-                setPermissionMode: () => Effect.void,
-                backgroundTasks: () => Effect.succeed(false),
-                mcpServerStatus: Effect.succeed([]),
-                readMcpResource: () => Effect.die("unexpected MCP resource read"),
-                callMcpTool: () => Effect.die("unexpected MCP tool call"),
-                listPermissionRules: Effect.die("unexpected permission rules read"),
-                stopTask: () => Effect.void,
-                interrupt: Effect.die("automatic delivery must never interrupt"),
-                close: Effect.void,
+            open: (input) =>
+              Effect.gen(function* () {
+                openedEfforts.push(input.options.effort);
+                const messages =
+                  queryCount++ === 0 ? sdkMessages : yield* Queue.unbounded<SDKMessage>();
+                return {
+                  messages: Stream.fromQueue(messages).pipe(
+                    Stream.flatMap((message) =>
+                      Stream.make(message).pipe(
+                        Stream.concat(
+                          Stream.fromEffect(
+                            Effect.suspend(() => {
+                              const processed = processedMessages.get(message);
+                              return processed === undefined
+                                ? Effect.void
+                                : Deferred.succeed(processed, undefined);
+                            }),
+                          ).pipe(Stream.drain),
+                        ),
+                      ),
+                    ),
+                  ),
+                  offer: () => Effect.void,
+                  setModel: () => Effect.void,
+                  applyFlagSettings: () => Effect.void,
+                  backgroundTasks: () => Effect.succeed(false),
+                  setPermissionMode: () => Effect.void,
+                  mcpServerStatus: Effect.succeed([]),
+                  readMcpResource: () => Effect.die("unexpected MCP resource read"),
+                  callMcpTool: () => Effect.die("unexpected MCP tool call"),
+                  listPermissionRules: Effect.die("unexpected permission rules read"),
+                  stopTask: () => Effect.void,
+                  interrupt: Effect.void,
+                  close: Queue.shutdown(messages),
+                };
               }),
             forkSession: () => Effect.die("unused"),
             subagentLaunchToolUseId: () => Effect.succeed(null),
@@ -554,6 +566,8 @@ it.effect("completes a reused Claude child after its resuming attempt ends in th
                 ),
                 offer: () => Effect.void,
                 setModel: () => Effect.void,
+                applyFlagSettings: () => Effect.void,
+                backgroundTasks: () => Effect.succeed(false),
                 setPermissionMode: () => Effect.void,
                 stopTask: () => Effect.void,
                 interrupt: Effect.void,
@@ -1038,6 +1052,8 @@ it.effect("keeps a native Claude child running until failed-close retry detaches
                     offers.push(message);
                   }),
                 setModel: () => Effect.void,
+                applyFlagSettings: () => Effect.void,
+                backgroundTasks: () => Effect.succeed(false),
                 setPermissionMode: () => Effect.void,
                 stopTask: () => Effect.void,
                 interrupt: Effect.gen(function* () {

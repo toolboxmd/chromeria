@@ -721,7 +721,326 @@ it.effect("steers a delegated task question notice into the running parent turn"
         assert.deepEqual(after.thread.modelSelection, composerSelection);
       }).pipe(Effect.provide(layer));
     }),
-  ),
+  ).pipe(Effect.provide(TestClock.layer())),
+);
+
+it.effect.each([
+  { cutIn: false, rootStatus: "completed", publishTerminal: true },
+  { cutIn: true, rootStatus: "completed", publishTerminal: true },
+  { cutIn: true, rootStatus: "failed", publishTerminal: false },
+] as const)(
+  "persists one root writer across restart or next turn while earlier native work drains: %j",
+  ({ cutIn, rootStatus, publishTerminal }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let oldBackground:
+          | Extract<ProviderAdapterV2Event, { type: "turn_item.updated" }>
+          | undefined;
+        const cancellations: Array<
+          Parameters<ProviderAdapterV2SessionRuntime["interruptTurn"]>[0]
+        > = [];
+        const { events, started, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+          `completed-restart-root-owner-${rootStatus}-${cutIn}`,
+          true,
+          (input): Effect.Effect<void, ProviderAdapterInterruptError> =>
+            Effect.gen(function* () {
+              cancellations.push(input);
+              if (oldBackground?.turnItem.type !== "command_execution")
+                return yield* Effect.die("missing old tool");
+              const now = yield* DateTime.now;
+              yield* Queue.offer(events, {
+                ...oldBackground,
+                turnItem: {
+                  ...oldBackground.turnItem,
+                  status: "interrupted",
+                  output: "OLD_TOOL_STOPPED",
+                  completedAt: now,
+                },
+              });
+            }),
+          { endedTurnHold: () => Effect.succeed("descendants" as const) },
+        );
+        const oldIngestionEnded = yield* Deferred.make<void>();
+        const replacementIngestionEnded = yield* Deferred.make<void>();
+        const terminalHandlerBlocked = yield* Deferred.make<void>();
+        const releaseTerminalHandler = yield* Deferred.make<void>();
+        let terminalHandlerWasGated = false;
+        let oldAttemptId: RunAttemptId | undefined;
+        let replacementAttemptId: RunAttemptId | undefined;
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const threadId = yield* startFirstTurn;
+          const first = started[0]!;
+          oldAttemptId = first.attemptId;
+          const now = yield* DateTime.now;
+          const watch = (predicate: (event: OrchestrationV2DomainEvent) => boolean) =>
+            orchestrator.streamDomainEvents.pipe(
+              Stream.filter(predicate),
+              Stream.take(1),
+              Stream.runDrain,
+              Effect.forkScoped({ startImmediately: true }),
+            );
+          const before = yield* orchestrator.getThreadProjection(threadId);
+          const oldTurn = before.providerTurns[0]!;
+          const background = {
+            type: "turn_item.updated",
+            driver,
+            turnItem: {
+              id: TurnItemId.make("tool:old-completed-attempt"),
+              type: "command_execution",
+              threadId,
+              runId: first.runId,
+              nodeId: first.rootNodeId,
+              providerThreadId: first.providerThread.id,
+              providerTurnId: oldTurn.id,
+              nativeItemRef: { driver, nativeId: "old-background", strength: "strong" },
+              parentItemId: null,
+              ordinal: 1,
+              status: "running",
+              title: "Old native work",
+              input: "old command",
+              startedAt: now,
+              completedAt: null,
+              updatedAt: now,
+            },
+          } satisfies ProviderAdapterV2Event;
+          oldBackground = background;
+          const backgroundRunning = yield* watch(
+            (event) =>
+              event.type === "turn-item.updated" && event.payload.id === background.turnItem.id,
+          );
+          yield* Queue.offer(events, background);
+          yield* Fiber.join(backgroundRunning);
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("restart-before-completion"),
+            threadId,
+            messageId: MessageId.make("message:restart-before-completion"),
+            text: "Change course",
+            attachments: [],
+            ...(cutIn ? {} : { modelSelection: composerSelection }),
+            dispatchMode: {
+              type: cutIn ? "restart_active" : "steer_active",
+              targetRunId: first.runId,
+            },
+            createdBy: cutIn ? "user" : "agent",
+            creationSource: cutIn ? "web" : "mcp",
+          });
+          // The native turn settles before its restart effect. A retained old
+          // background artifact must not make that attempt a second root writer.
+          yield* Queue.offer(events, {
+            type: "provider_turn.updated",
+            driver,
+            providerTurn: { ...oldTurn, status: rootStatus, completedAt: now },
+          });
+          const rootTerminal = {
+            type: "turn.terminal",
+            driver,
+            providerThreadId: first.providerThread.id,
+            providerTurnId: oldTurn.id,
+            runOrdinal: first.runOrdinal,
+            ...(rootStatus === "failed"
+              ? {
+                  status: "failed" as const,
+                  failureItemOrdinal: 2,
+                  failure: makeProviderFailure({ message: "Native root failed" }),
+                }
+              : { status: "completed" as const, failure: null }),
+            threadDisposition: "reusable",
+          } satisfies ProviderAdapterV2Event;
+          if (publishTerminal) yield* Queue.offer(events, rootTerminal);
+          if (cutIn && publishTerminal) {
+            // The projection is terminal, but the old ingestor has not handled
+            // turn.terminal yet. Stop outcomes are queued before replacement.
+            yield* Deferred.await(terminalHandlerBlocked);
+          } else {
+            const pastTerminal = yield* watch(
+              (event) =>
+                event.type === "turn-item.updated" &&
+                event.payload.id === background.turnItem.id &&
+                event.payload.type === "command_execution" &&
+                event.payload.output === "ROOT_TERMINAL_PROCESSED",
+            );
+            yield* Queue.offer(events, {
+              ...background,
+              turnItem: { ...background.turnItem, output: "ROOT_TERMINAL_PROCESSED" },
+            });
+            yield* Fiber.join(pastTerminal);
+          }
+          const replacementRunning = yield* watch(
+            (event) =>
+              event.type === "provider-turn.updated" &&
+              event.payload.id !== oldTurn.id &&
+              event.payload.status === "running",
+          );
+          yield* worker.drain();
+          yield* Fiber.join(replacementRunning);
+          assert.lengthOf(started, 2);
+          assert.lengthOf(cancellations, cutIn ? 1 : 0);
+          if (cutIn) {
+            assert.isTrue(cancellations[0]?.requestRuntimeRestart);
+            assert.isTrue(cancellations[0]?.replacementFollows);
+            if (publishTerminal) assert.isFalse(yield* Deferred.isDone(releaseTerminalHandler));
+          }
+          const replacement = started[1]!;
+          replacementAttemptId = replacement.attemptId;
+          if (cutIn) assert.equal(replacement.runId, first.runId);
+          else
+            assert.notEqual(
+              replacement.runId,
+              first.runId,
+              "routine selection waits for the next run",
+            );
+          assert.notEqual(replacement.attemptId, first.attemptId);
+          const current = yield* orchestrator.getThreadProjection(threadId);
+          const root = current.nodes.find((node) => node.id === replacement.rootNodeId)!;
+          const messageId = MessageId.make("message:replacement-root-once");
+          const message = {
+            id: messageId,
+            threadId,
+            runId: replacement.runId,
+            nodeId: replacement.rootNodeId,
+            role: "assistant",
+            text: "NEW_ROOT_ONCE",
+            attachments: [],
+            streaming: false,
+            createdBy: "agent",
+            creationSource: "provider",
+            createdAt: now,
+            updatedAt: now,
+          } as const;
+          yield* Queue.offer(events, { type: "message.updated", driver, message });
+          yield* Queue.offer(events, {
+            type: "node.updated",
+            driver,
+            node: {
+              ...root,
+              nativeItemRef: { driver, nativeId: "NEW_ROOT_ONCE", strength: "strong" },
+            },
+          });
+          const rootToolId = TurnItemId.make("tool:replacement-root-once");
+          const nextTurn = current.providerTurns.find(
+            (turn) => turn.runAttemptId === replacement.attemptId,
+          )!;
+          yield* Queue.offer(events, {
+            ...background,
+            turnItem: {
+              ...background.turnItem,
+              id: rootToolId,
+              runId: replacement.runId,
+              nodeId: replacement.rootNodeId,
+              providerTurnId: nextTurn.id,
+              input: "NEW_ROOT_ONCE",
+              status: "completed",
+              completedAt: now,
+            },
+          });
+          yield* Queue.offer(events, {
+            type: "provider_turn.updated",
+            driver,
+            providerTurn: { ...nextTurn, status: "completed", completedAt: now },
+          });
+          yield* Queue.offer(events, {
+            type: "turn.terminal",
+            driver,
+            providerThreadId: replacement.providerThread.id,
+            providerTurnId: nextTurn.id,
+            runOrdinal: replacement.runOrdinal,
+            status: "completed",
+            failure: null,
+            threadDisposition: "reusable",
+          });
+          yield* Deferred.await(replacementIngestionEnded);
+          if (cutIn && publishTerminal) {
+            yield* Deferred.succeed(releaseTerminalHandler, undefined);
+          } else if (!cutIn) {
+            yield* Queue.offer(events, {
+              ...background,
+              turnItem: {
+                ...background.turnItem,
+                status: "completed",
+                output: "OLD_TOOL_TAIL",
+                completedAt: now,
+              },
+            });
+          }
+          if (!publishTerminal) yield* Queue.offer(events, rootTerminal);
+          yield* Deferred.await(oldIngestionEnded);
+          const sequence = yield* orchestrator.getThreadEventSequence(threadId);
+          const stored = yield* orchestrator
+            .streamStoredEventsFrom({ threadId, afterSequence: 0 })
+            .pipe(
+              Stream.takeUntil((event) => event.sequence === sequence),
+              Stream.map((event) => event.event),
+              Stream.runCollect,
+            );
+          assert.deepEqual(
+            {
+              messages: stored.filter(
+                (event) => event.type === "message.updated" && event.payload.id === messageId,
+              ).length,
+              nodes: stored.filter(
+                (event) =>
+                  event.type === "node.updated" &&
+                  event.payload.nativeItemRef?.nativeId === "NEW_ROOT_ONCE",
+              ).length,
+              tools: stored.filter(
+                (event) => event.type === "turn-item.updated" && event.payload.id === rootToolId,
+              ).length,
+            },
+            { messages: 1, nodes: 1, tools: 1 },
+          );
+          const oldEnds = stored.filter(
+            (event) =>
+              event.type === "turn-item.updated" &&
+              event.payload.id === background.turnItem.id &&
+              (event.payload.status === "completed" || event.payload.status === "interrupted"),
+          );
+          assert.lengthOf(oldEnds, 1);
+          const oldEnd = oldEnds[0];
+          assert.equal(oldEnd?.type, "turn-item.updated");
+          if (oldEnd?.type !== "turn-item.updated") return;
+          assert.equal(oldEnd.payload.nodeId, first.rootNodeId);
+          assert.equal(oldEnd.payload.status, cutIn ? "interrupted" : "completed");
+        }).pipe(
+          Effect.provide(
+            layer.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  Layer.succeed(StreamClock.StreamClockHooks, {
+                    beginAttempt: () => Effect.void,
+                    observe: () => Effect.void,
+                    endAttempt: (_threadId, _runId, attemptId) =>
+                      Effect.gen(function* () {
+                        if (attemptId === oldAttemptId)
+                          yield* Deferred.succeed(oldIngestionEnded, undefined);
+                        if (attemptId === replacementAttemptId)
+                          yield* Deferred.succeed(replacementIngestionEnded, undefined);
+                      }),
+                  }),
+                  Layer.succeed(ProviderEventIngestor.ProviderTurnAnalytics, {
+                    record: (properties) =>
+                      Effect.gen(function* () {
+                        if (
+                          !cutIn ||
+                          !publishTerminal ||
+                          terminalHandlerWasGated ||
+                          properties.terminalStatus !== "completed"
+                        )
+                          return;
+                        terminalHandlerWasGated = true;
+                        yield* Deferred.succeed(terminalHandlerBlocked, undefined);
+                        yield* Deferred.await(releaseTerminalHandler);
+                      }),
+                  }),
+                ),
+              ),
+            ),
+          ),
+        );
+      }),
+    ),
 );
 
 it.effect("sends a selected held message once and preserves the remaining queue order", () =>
