@@ -1981,10 +1981,11 @@ sources and reasons.
 ```json
 {
   "id": "rejected-connect-link",
-  "purpose": "Carry upstream's rejected-link state and explicit CLI relink until upstream PR #19379 is absorbed.",
+  "purpose": "Carry upstream's rejected-link state and explicit CLI relink, and preserve environment-credential tunnel recovery after service shutdown.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/358"],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/359",
+    "https://github.com/toolboxmd/chromeria/pull/366",
     "https://github.com/pingdotgg/t3code/pull/19379"
   ],
   "newFiles": [],
