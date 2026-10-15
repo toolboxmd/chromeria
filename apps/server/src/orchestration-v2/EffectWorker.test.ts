@@ -115,6 +115,7 @@ function layerExecutorFor(input: {
     Layer.succeed(
       ProviderTurnStartService.ProviderTurnStartServiceV2,
       ProviderTurnStartService.ProviderTurnStartServiceV2.of({
+        settleUnstartedRun: () => record("failed-before-start"),
         start: () =>
           Effect.gen(function* () {
             yield* record("start");
@@ -228,6 +229,49 @@ it.effect("settles a stopped run when its adapter has already lost the native tu
       });
     }).pipe(Effect.provide(layer));
     assert.deepEqual(yield* Ref.get(events), ["thread.background-work.settle"]);
+  }),
+);
+
+it.effect("does not settle work when the captured replacement target rejects Stop", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const layer = layerExecutorFor({
+      events,
+      interrupt: (request) => {
+        assert.equal(request.providerSessionId, oldSessionId);
+        assert.equal(request.replacementProviderSessionId, replacementSessionId);
+        return new ProviderTurnControlService.ProviderTurnControlError({
+          threadId,
+          operation: "interrupt",
+          providerTurnId,
+          cause: "Provider turn is not active.",
+        });
+      },
+      threads: {
+        dispatch: (command) =>
+          Ref.update(events, (current) => [...current, command.type]).pipe(
+            Effect.as({ sequence: 1, storedEvents: [] }),
+          ),
+      },
+    });
+    const result = yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      return yield* Effect.exit(
+        executor.execute({
+          ...restartEffect(now, { type: "detach" }),
+          request: {
+            type: "provider-turn.interrupt",
+            providerSessionId: oldSessionId,
+            replacementProviderSessionId: replacementSessionId,
+            providerThreadId,
+            providerTurnId,
+          },
+        }),
+      );
+    }).pipe(Effect.provide(layer));
+    assert.isTrue(Exit.isFailure(result));
+    assert.deepEqual(yield* Ref.get(events), []);
   }),
 );
 

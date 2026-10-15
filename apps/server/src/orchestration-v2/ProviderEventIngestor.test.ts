@@ -887,6 +887,7 @@ layer("ProviderEventIngestorV2", (it) => {
         runId: currentRunId,
         attemptId: RunAttemptId.make("attempt:provider-event-inherited:current"),
         providerThreadId,
+        rootNodeId: NodeId.make("node:provider-event-inherited:current"),
       };
       const inheritedBackgroundTurnItems = selectInheritedBackgroundTurnItems({
         threadId: threadEvent.threadId,
@@ -1005,12 +1006,14 @@ layer("ProviderEventIngestorV2", (it) => {
         runId: priorRunId,
         attemptId: RunAttemptId.make("attempt:provider-event-completed:prior"),
         providerThreadId,
+        rootNodeId: NodeId.make("node:provider-event-completed:prior"),
       };
       const currentIdentity: ProviderEventRouteIdentity = {
         threadId: threadEvent.threadId,
         runId: currentRunId,
         attemptId: RunAttemptId.make("attempt:provider-event-completed:current"),
         providerThreadId,
+        rootNodeId: NodeId.make("node:provider-event-completed:current"),
       };
       const inheritedBackgroundTurnItems = selectInheritedBackgroundTurnItems({
         threadId: threadEvent.threadId,

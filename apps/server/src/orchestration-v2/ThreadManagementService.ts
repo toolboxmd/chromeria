@@ -82,6 +82,7 @@ export function withCreationProvenance(
     case "thread.fork":
     case "thread.merge_back":
     case "delegated_task.request":
+    case "queued-message.promote-to-steer":
       return { ...command, ...provenance };
     default:
       return command;

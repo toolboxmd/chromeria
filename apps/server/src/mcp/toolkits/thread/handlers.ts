@@ -328,12 +328,18 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     })),
   ),
   t3_queue_promote_to_steer: writesThread((input) =>
-    dispatch(input.threadId, (common) => ({
-      ...common,
-      type: "queued-message.promote-to-steer",
-      queuedRunId: input.queuedRunId,
-      targetRunId: input.targetRunId,
-    })),
+    Effect.gen(function* () {
+      const { caller } = yield* readCaller();
+      return yield* dispatch(input.threadId, (common) => ({
+        ...common,
+        type: "queued-message.promote-to-steer",
+        queuedRunId: input.queuedRunId,
+        targetRunId: input.targetRunId,
+        createdBy: "agent",
+        creationSource: "mcp",
+        ...(caller === undefined ? {} : { senderThreadId: caller.id }),
+      }));
+    }),
   ),
   t3_thread_organize: writesThread((input) =>
     Effect.gen(function* () {

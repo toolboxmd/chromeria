@@ -15,6 +15,12 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import {
+  canInterruptSteer,
+  isMobileSteer,
+  isPersonSteering,
+  type SteeringRequester,
+} from "./SteeringInterruption.ts";
 
 export const MessageDispatchDecisionV2 = Schema.Union([
   Schema.Struct({
@@ -158,6 +164,7 @@ export function resolveMessageDispatchIntent(
   projection: OrchestrationV2ThreadProjection,
   requestedMode: MessageDispatchMode,
   deliveryIntent?: "auto" | "steer" | "restart",
+  requester?: SteeringRequester,
 ): MessageDispatchMode {
   const mode = resolveDeliveryIntent(projection, requestedMode, deliveryIntent);
   if (mode.type !== "steer_active") return mode;
@@ -188,6 +195,19 @@ function resolveDeliveryIntent(
       run.status === "waiting",
   );
   if (activeRun === undefined) return { type: "start_immediately" };
+  if (
+    requester !== undefined &&
+    isPersonSteering(requester) &&
+    (deliveryIntent === "steer" || isMobileSteer(requester, deliveryIntent))
+  ) {
+    const targetId =
+      requestedMode.type === "steer_active" ? requestedMode.targetRunId : activeRun.id;
+    if (canInterruptSteer(projection, targetId))
+      return { type: "restart_active", targetRunId: targetId };
+    const target = projection.runs.find((run) => run.id === targetId);
+    if (target?.status === "preparing" || target?.status === "starting")
+      return { type: "queue_after_active" };
+  }
   if (deliveryIntent === "steer") {
     const targetId =
       requestedMode.type === "steer_active" ? requestedMode.targetRunId : activeRun.id;
@@ -226,7 +246,7 @@ function resolveDeliveryIntent(
     return { type: "queue_after_active" };
   }
   if (capabilities?.supportsSteeringByInterruptRestart === true) {
-    return { type: "restart_active", targetRunId: activeRun.id };
+    return { type: "steer_active", targetRunId: activeRun.id };
   }
   return { type: "queue_after_active" };
 }
@@ -314,10 +334,15 @@ const ensureQueuedMessages: CommandPolicyV2Shape["ensureQueuedMessages"] = (inpu
       );
 
 const decideSteeringExecution: CommandPolicyV2Shape["decideSteeringExecution"] = (input) => {
-  if (!input.forceRestart && input.capabilities.turns.supportsActiveSteering) {
+  if (
+    !input.forceRestart &&
+    input.capabilities.turns.supportsActiveSteering &&
+    input.capabilities.turns.activeSteeringInterruptsTools !== true
+  ) {
     return Effect.succeed("active_steering");
   }
   if (
+    (input.forceRestart || input.capabilities.turns.activeSteeringInterruptsTools !== true) &&
     input.capabilities.turns.supportsInterrupt &&
     input.capabilities.turns.supportsSteeringByInterruptRestart
   ) {

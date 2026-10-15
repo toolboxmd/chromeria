@@ -291,7 +291,7 @@ export const ClaudeProviderCapabilitiesV2 = {
     supportsInterrupt: true,
     supportsActiveSteering: true,
     activeSteeringInterruptsTools: true,
-    supportsSteeringByInterruptRestart: false,
+    supportsSteeringByInterruptRestart: true,
     supportsQueuedMessages: true,
     terminalStatusQuality: "strong",
   },
@@ -3045,6 +3045,8 @@ interface ActiveClaudeTurnContext {
   promptStarted: boolean;
   gatedFramesBeforeEcho: number;
   readonly heldRootFrames: Array<SDKMessage>;
+  // Retain usage from a native abort until the interrupted query detaches.
+  interruptedResult: SDKResultMessage | undefined;
 }
 
 interface ActiveClaudeProviderRetry {
@@ -3057,6 +3059,11 @@ interface ActiveClaudeProviderRetry {
 interface ActiveClaudeSubagent {
   task: OrchestrationV2Subagent;
   readonly confirmedOutcome: ProviderAdapter.ProviderAdapterV2SubagentOutcome | undefined;
+  readonly nativeThreadId: string;
+  readonly providerThreadId: OrchestrationV2ProviderThread["id"];
+  readonly providerTurnId: OrchestrationV2ProviderTurn["id"];
+  // The root of the attempt whose turn launched or last resumed it. In that tree,
+  // task.parentNodeId can remain the node of the subagent that started it.
   readonly rootNodeId: OrchestrationV2ExecutionNode["id"];
   readonly childThreadId: ThreadId;
   childThread: OrchestrationV2AppThread | null;
@@ -4406,6 +4413,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const subagent: ActiveClaudeSubagent = {
             confirmedOutcome: undefined,
             childThread: null,
+            nativeThreadId: resume.nativeThreadId,
+            providerThreadId: resume.context.input.providerThread.id,
+            providerTurnId: resume.context.providerTurnId,
             task: {
               id: ids.nodeId,
               threadId: resume.context.input.threadId,
@@ -4832,7 +4842,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           readonly result?: string;
           readonly status: Extract<
             OrchestrationV2ExecutionNode["status"],
-            "running" | "completed" | "failed" | "cancelled"
+            "running" | "completed" | "failed" | "cancelled" | "interrupted"
           >;
           readonly reopen?: boolean;
           readonly nativeOutcome?: Extract<
@@ -4840,16 +4850,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             { readonly type: "system"; readonly subtype: "task_notification" }
           >;
           readonly onlyIfRunningInRun?: RunId | null;
+          readonly onlyIf?: ActiveClaudeSubagent;
         }) {
           const registeredSubagent = (yield* Ref.get(sessionSubagentsByTaskId)).get(input.taskId);
           const existingSubagent =
-            input.onlyIfRunningInRun !== undefined
+            input.onlyIf ??
+            (input.onlyIfRunningInRun !== undefined
               ? registeredSubagent
               : (input.context.subagentsByTaskId.get(input.taskId) ??
                 (input.toolUseId === undefined
                   ? undefined
                   : input.context.subagentsByToolUseId.get(input.toolUseId)) ??
-                registeredSubagent);
+                registeredSubagent));
           if (existingSubagent === undefined && input.status !== "running") {
             return;
           }
@@ -4888,6 +4900,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             input.prompt !== undefined
               ? input.toolUseId
               : null;
+          // A resume moves the run, native turn and tree together. A task that
+          // leaves its launch tree belongs to the resuming attempt's root.
+          const resumedIn =
+            input.reopen === true && input.status === "running" && existingSubagent !== undefined
+              ? {
+                  context: input.context,
+                  movesTree: existingSubagent.rootNodeId !== input.context.input.rootNodeId,
+                }
+              : undefined;
           const lifecycleChanged =
             existingSubagent === undefined ||
             existingSubagent.task.status !== input.status ||
@@ -4956,11 +4977,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               startedAt: now,
             }),
             status: input.status,
-            ...(input.reopen === true &&
-            input.status === "running" &&
-            existingSubagent !== undefined
-              ? { runId: input.context.input.runId }
-              : {}),
+            // The resuming attempt must keep ingesting the child's outcome
+            // after its own root ends; the launch attempt may already be gone.
+            ...(resumedIn === undefined
+              ? {}
+              : {
+                  runId: resumedIn.context.input.runId,
+                  ...(resumedIn.movesTree
+                    ? { parentNodeId: resumedIn.context.input.rootNodeId }
+                    : {}),
+                }),
             ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
             ...(input.title === undefined ? {} : { title: input.title }),
             model,
@@ -4989,7 +5015,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 : isReopen
                   ? undefined
                   : existingSubagent?.confirmedOutcome,
-            rootNodeId: existingSubagent?.rootNodeId ?? input.context.input.rootNodeId,
+            nativeThreadId: existingSubagent?.nativeThreadId ?? input.context.nativeThreadId,
+            providerThreadId:
+              resumedIn?.context.input.providerThread.id ??
+              existingSubagent?.providerThreadId ??
+              input.context.input.providerThread.id,
+            providerTurnId:
+              resumedIn?.context.providerTurnId ??
+              existingSubagent?.providerTurnId ??
+              input.context.providerTurnId,
+            rootNodeId:
+              resumedIn?.context.input.rootNodeId ??
+              existingSubagent?.rootNodeId ??
+              input.context.input.rootNodeId,
             childThreadId,
             childRootNodeId,
             turnItemId: existingSubagent?.turnItemId ?? derivedIds.turnItemId,
@@ -5017,6 +5055,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const accepted = yield* Ref.modify(sessionSubagentsByTaskId, (current) => {
             const registered = current.get(input.taskId);
             if (
+              (input.onlyIf !== undefined && registered !== input.onlyIf) ||
               (input.onlyIfRunningInRun !== undefined &&
                 (registered?.task.status !== "running" ||
                   registered.task.runId !== input.onlyIfRunningInRun)) ||
@@ -5038,7 +5077,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             yield* endToolCalls({
               context: input.context,
               toolCalls: openCalls,
-              status: input.status === "cancelled" ? "interrupted" : "failed",
+              status:
+                input.status === "cancelled" || input.status === "interrupted"
+                  ? "interrupted"
+                  : "failed",
               completedAt: yield* DateTime.now,
             });
             for (const toolCall of openCalls) {
@@ -5100,8 +5142,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 kind: "subagent",
                 status: input.status,
                 countsForRun: false,
-                providerThreadId: input.context.input.providerThread.id,
-                providerTurnId: input.context.providerTurnId,
+                providerThreadId: subagent.providerThreadId,
+                providerTurnId: subagent.providerTurnId,
                 nativeItemRef: {
                   driver: CLAUDE_PROVIDER,
                   nativeId: input.taskId,
@@ -5177,8 +5219,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               threadId: task.threadId,
               runId: task.runId,
               nodeId: task.id,
-              providerThreadId: input.context.input.providerThread.id,
-              providerTurnId: input.context.providerTurnId,
+              providerThreadId: subagent.providerThreadId,
+              providerTurnId: subagent.providerTurnId,
               nativeItemRef: task.nativeTaskRef,
               parentItemId: null,
               ordinal: subagent.turnItemOrdinal,
@@ -5656,21 +5698,63 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             );
           }
         });
-        const endSubagentCallsOfClosedQuery = Effect.fnUntraced(function* (
-          nativeThreadId: string,
+        // Detachment ends native work from every run this process served. Older
+        // completed runs still have their own subscribers; the active run's
+        // terminal already carries its single projection cascade.
+        const endSubagentsOfClosedQuery = Effect.fnUntraced(function* (
+          closedQuery: ClaudeLiveQueryContext,
           status: "interrupted" | "failed",
         ) {
-          const settled = settledTurnByNativeThread.get(nativeThreadId);
-          if (settled === undefined || subagentToolCalls.size === 0) {
-            return;
+          const context = closedQuery.lastTurn;
+          if (context === null) return;
+          const active = yield* Ref.get(activeTurn);
+          const buffered =
+            (yield* Ref.get(wakeBuffers)).get(closedQuery.nativeThreadId)?.messages ?? [];
+          for (const [taskId, subagent] of yield* Ref.get(sessionSubagentsByTaskId)) {
+            if (
+              subagent.task.origin !== "provider_native" ||
+              // Query-exit workflow cleanup applies buffered outcomes and guards
+              // resumed members. Leave that owner's entries intact until then.
+              subagent.task.workflow !== undefined ||
+              subagent.task.status !== "running" ||
+              subagent.nativeThreadId !== closedQuery.nativeThreadId ||
+              closedQuery.subagentsFromEarlierProcesses.has(subagent)
+            )
+              continue;
+            // A buffered native outcome still belongs to its continuation drain.
+            // Keep that output and its child routing intact across query exit.
+            const lifecycle = buffered.findLast(
+              (message) =>
+                message.type === "system" &&
+                (message.subtype === "task_started" || message.subtype === "task_notification") &&
+                message.task_id === taskId,
+            );
+            if (lifecycle?.type === "system" && lifecycle.subtype === "task_notification") continue;
+            if (active === context && subagent.task.runId === active.input.runId) {
+              const now = yield* DateTime.now;
+              yield* endToolCalls({
+                context,
+                toolCalls: [...subagentToolCalls.values()].filter(
+                  (call) => call.threadId === subagent.childThreadId,
+                ),
+                status,
+                completedAt: now,
+              });
+              for (const [id, call] of subagentToolCalls) {
+                if (call.threadId === subagent.childThreadId) subagentToolCalls.delete(id);
+              }
+              yield* Ref.update(sessionSubagentsByTaskId, (current) =>
+                current.get(taskId) !== subagent
+                  ? current
+                  : new Map(current).set(taskId, {
+                      ...subagent,
+                      task: { ...subagent.task, status, completedAt: now, updatedAt: now },
+                    }),
+              );
+            } else {
+              yield* updateClaudeSubagentNode({ context, taskId, status, onlyIf: subagent });
+            }
           }
-          yield* endToolCalls({
-            context: settled,
-            toolCalls: [...subagentToolCalls.values()],
-            status,
-            completedAt: yield* DateTime.now,
-          });
-          subagentToolCalls.clear();
         });
 
         const finalizeActiveTurn = Effect.fnUntraced(function* (input: {
@@ -5684,6 +5768,17 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           readonly threadDisposition?: "reusable" | "broken";
           readonly result?: SDKResultMessage;
         }) {
+          const pendingQuery = yield* Ref.get(queryContext);
+          // A native result can precede close. Keep the reader moving and let
+          // the query exit or bounded close wait own terminal settlement.
+          if (
+            pendingQuery !== null &&
+            (yield* Ref.get(interruptedTurns)).has(input.context.providerTurnId)
+          ) {
+            input.context.interruptedResult ??= input.result;
+            return;
+          }
+          const result = input.result ?? input.context.interruptedResult;
           yield* reasoningDeltas.flushTurn(input.context.nativeTurnId);
           if (input.status !== "completed") {
             const liveQuery = yield* Ref.get(queryContext);
@@ -5805,6 +5900,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
 
           const threadDisposition = input.threadDisposition ?? "reusable";
+          const backgroundWorkEnded = input.status !== "completed" && liveQuery === null;
           const terminalEvent: ProviderAdapter.ProviderAdapterV2Event =
             input.status === "failed"
               ? {
@@ -5819,6 +5915,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   ),
                   status: input.status,
                   failure: input.failure ?? makeProviderFailure({ class: "provider_error" }),
+                  ...(backgroundWorkEnded ? { backgroundWork: "ended" as const } : {}),
                   ...(providerRetry === undefined
                     ? {}
                     : {
@@ -5835,6 +5932,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   runOrdinal: input.context.input.runOrdinal,
                   status: input.status,
                   failure: null,
+                  ...(backgroundWorkEnded ? { backgroundWork: "ended" as const } : {}),
                   threadDisposition,
                 };
           yield* Effect.all(
@@ -5849,7 +5947,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     completedAt: input.completedAt,
                   }),
                   turnTokenUsage: normalizeClaudeTurnTokenUsage(
-                    input.result,
+                    result,
                     input.context.subagentsByTaskId.size > 0 ||
                       input.context.subagentsByToolUseId.size > 0,
                     input.status,
@@ -5888,7 +5986,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 const goal =
                   nativeThreadId === null ? undefined : goalsByNativeThread.get(nativeThreadId);
                 const goalChecked = goalCheckedTurns.delete(input.context.providerTurnId);
-                const terminalReason = input.result?.terminal_reason;
+                const terminalReason = result?.terminal_reason;
                 if (
                   nativeThreadId !== null &&
                   goal?.status === "active" &&
@@ -8314,13 +8412,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   current?.query === querySession ? [true, null] : [false, current],
                 );
                 if (ownsLiveQuery) {
+                  yield* endSubagentsOfClosedQuery(
+                    context,
+                    context.stopping ? "interrupted" : "failed",
+                  );
                   yield* finalizeActiveTurnAfterQueryExit(
                     context,
                     exit._tag === "Failure" ? exit.cause : undefined,
-                  );
-                  yield* endSubagentCallsOfClosedQuery(
-                    context.nativeThreadId,
-                    context.stopping ? "interrupted" : "failed",
                   );
                 }
               }),
@@ -8416,6 +8514,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               promptStarted: false,
               gatedFramesBeforeEcho: 0,
               heldRootFrames: [],
+              interruptedResult: undefined,
             };
             const userMessage =
               promptUuid === null
@@ -8589,13 +8688,26 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 detail: `Claude provider turn ${turnInput.providerTurnId} is not the active turn.`,
               });
             }
-            yield* Ref.update(interruptedTurns, (current) => {
-              const next = new Set(current);
-              next.add(turnInput.providerTurnId);
-              return next;
-            });
-            yield* existing.query.interrupt;
-            yield* existing.query.close.pipe(Effect.ignore);
+            const alreadyInterrupting = yield* Ref.modify(interruptedTurns, (current) =>
+              current.has(turnInput.providerTurnId)
+                ? [true, current]
+                : [false, new Set(current).add(turnInput.providerTurnId)],
+            );
+            existing.stopping = true;
+            // After a failed close, retry close without repeating the interrupt.
+            // A missing acknowledgement must not prevent closing this process.
+            if (!alreadyInterrupting) {
+              yield* existing.query.interrupt.pipe(
+                Effect.timeoutOption("10 seconds"),
+                Effect.catch(() =>
+                  Effect.logWarning("orchestration-v2.claude-query-interrupt-failed", {
+                    providerSessionId: input.providerSessionId,
+                    providerTurnId: turnInput.providerTurnId,
+                  }),
+                ),
+              );
+            }
+            yield* existing.query.close;
             const closed = yield* Deferred.await(existing.closed).pipe(
               Effect.timeoutOption("10 seconds"),
             );
@@ -8603,24 +8715,24 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               return;
             }
 
-            const completedAt = yield* DateTime.now;
             yield* Effect.logWarning("orchestration-v2.claude-query-interrupt-timeout", {
               providerSessionId: input.providerSessionId,
               providerThreadId: turnInput.providerThread.id,
               providerTurnId: turnInput.providerTurnId,
             });
-            const ownedLiveQuery = yield* Ref.modify(queryContext, (current) =>
+            const detached = yield* Ref.modify(queryContext, (current) =>
               current?.query === existing.query ? [true, null] : [false, current],
             );
-            if (ownedLiveQuery) {
-              existing.stopping = true;
+            if (detached) {
+              yield* endSubagentsOfClosedQuery(existing, "interrupted");
               yield* finalizeActiveTurnAfterQueryExit(existing);
-              yield* endSubagentCallsOfClosedQuery(existing.nativeThreadId, "interrupted");
-            } else {
+            } else if ((yield* Ref.get(activeTurn)) === currentTurn) {
+              // The closed stream can be finalizing its captured turn on another
+              // fiber. Settle that same turn without adopting a later query.
               yield* finalizeActiveTurn({
                 context: currentTurn,
                 status: "interrupted",
-                completedAt,
+                completedAt: yield* DateTime.now,
               });
             }
             yield* Deferred.succeed(existing.closed, undefined);
@@ -8790,7 +8902,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
 
           existing.stopping = true;
-          yield* existing.query.close.pipe(Effect.ignore);
+          yield* existing.query.close;
           const closed = yield* Deferred.await(existing.closed).pipe(
             Effect.timeoutOption("10 seconds"),
           );
@@ -8806,8 +8918,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             current?.query === existing.query ? [true, null] : [false, current],
           );
           if (ownedLiveQuery) {
+            yield* endSubagentsOfClosedQuery(existing, "interrupted");
             yield* finalizeActiveTurnAfterQueryExit(existing);
-            yield* endSubagentCallsOfClosedQuery(nativeThreadId, "interrupted");
           }
           yield* Deferred.succeed(existing.closed, undefined);
         });
