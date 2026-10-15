@@ -119,8 +119,8 @@ const readRestartTranscript = Effect.fn("readRestartTranscript")(function* (
     ...recorded,
     entries: [
       ...recorded.entries.slice(0, rootResult + 1),
-      // The server dies here, with the background subagent still running.
-      { type: "runtime_exit", status: "success" },
+      // The server stops while the CLI has not reported the subagent's end.
+      // Native runtime_exit would fail it under a live server, before recovery.
       {
         type: "expect_outbound",
         label: "query.open:resume",

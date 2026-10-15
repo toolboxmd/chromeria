@@ -80,6 +80,27 @@ it("stamps authoritative provenance on commands that create threads or messages"
   expect(stamped).not.toHaveProperty("delegatedFrom");
 });
 
+it.each(["web", "mobile"] as const)(
+  "stamps a queued promotion with its actual %s requester",
+  (creationSource) => {
+    const command: OrchestrationV2Command = {
+      type: "queued-message.promote-to-steer",
+      commandId: CommandId.make("promote"),
+      threadId: ThreadId.make("thread"),
+      queuedRunId: RunId.make("queued"),
+      targetRunId: RunId.make("active"),
+      createdBy: "agent",
+      creationSource: "mcp",
+    };
+    expect(
+      ThreadManagementService.withCreationProvenance(command, {
+        createdBy: "user",
+        creationSource,
+      }),
+    ).toMatchObject({ createdBy: "user", creationSource });
+  },
+);
+
 it("leaves commands that do not create durable authored content unchanged", () => {
   const command: OrchestrationV2Command = {
     type: "run.interrupt",

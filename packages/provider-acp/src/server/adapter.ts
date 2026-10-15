@@ -410,8 +410,8 @@ export interface AcpAdapterV2Flavor {
   readonly restartRuntimeAfterInterrupt?: boolean;
   /**
    * When true, every interrupt restarts the runtime, not just those carrying
-   * `requestRuntimeRestart` (user Stop). Leave unset to keep non-Stop
-   * interrupts (steering, restart_active) soft: `session/cancel` plus session
+   * `requestRuntimeRestart` (Stop or an explicit cut-in). Leave unset to keep
+   * routine steering restarts soft: `session/cancel` plus session
    * reuse in the same process.
    */
   readonly restartRuntimeOnEveryInterrupt?: boolean;
@@ -6723,8 +6723,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           if (settledStatus === "completed") {
             yield* terminalizeOpenForegroundTools(context);
           } else if (settledStatus === "interrupted") {
-            // Direct Stop terminalizes every visible run-owned item. restart_active
-            // keeps live subagent lineages for in-process replacement carryover.
+            // Stop and explicit cut-ins terminalize every visible run-owned item.
+            // Routine restarts retain live subagents for in-process carryover.
             yield* terminalizeOpenRunOwnedItems(context, {
               terminalizeSubagents: directStopQuarantine,
             });
