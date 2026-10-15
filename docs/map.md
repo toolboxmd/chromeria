@@ -51,7 +51,7 @@ flowchart TD
     XM["Cross-machine control"]
     %% XM: #164 PR #291 PR #290 PR #303 #302 PR #304
     NR["Network routes"]
-    %% NR: #292
+    %% NR: #292 PR #359 #358
     PRN["Paired session renewal"]
     %% PRN: #323 PR #334 PR #339
 
