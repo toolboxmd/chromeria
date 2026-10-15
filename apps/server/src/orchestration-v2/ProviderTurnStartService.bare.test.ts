@@ -1,3 +1,4 @@
+import * as NodePath from "@effect/platform-node/NodePath";
 import { expect, it, vi } from "@effect/vitest";
 import {
   CheckpointScopeId,
@@ -405,6 +406,7 @@ function harness(
     Effect.succeed(session),
   );
   const layer = ProviderTurnStart.layer.pipe(
+    Layer.provide(NodePath.layer),
     Layer.provide(
       Layer.mergeAll(
         IdAllocator.layer,

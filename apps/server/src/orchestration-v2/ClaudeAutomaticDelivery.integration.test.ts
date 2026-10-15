@@ -185,6 +185,8 @@ it.effect.each(["active", "completed-before-effect", "completed-before-effect-se
                   ),
                   offer: () => Effect.void,
                   setModel: () => Effect.void,
+                  applyFlagSettings: () => Effect.void,
+                  backgroundTasks: () => Effect.succeed(false),
                   setPermissionMode: () => Effect.void,
                   stopTask: () => Effect.void,
                   interrupt: Effect.void,
@@ -554,6 +556,8 @@ it.effect("completes a reused Claude child after its resuming attempt ends in th
                 ),
                 offer: () => Effect.void,
                 setModel: () => Effect.void,
+                applyFlagSettings: () => Effect.void,
+                backgroundTasks: () => Effect.succeed(false),
                 setPermissionMode: () => Effect.void,
                 stopTask: () => Effect.void,
                 interrupt: Effect.void,
@@ -1038,6 +1042,8 @@ it.effect("keeps a native Claude child running until failed-close retry detaches
                     offers.push(message);
                   }),
                 setModel: () => Effect.void,
+                applyFlagSettings: () => Effect.void,
+                backgroundTasks: () => Effect.succeed(false),
                 setPermissionMode: () => Effect.void,
                 stopTask: () => Effect.void,
                 interrupt: Effect.gen(function* () {

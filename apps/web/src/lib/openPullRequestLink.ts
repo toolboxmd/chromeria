@@ -253,7 +253,16 @@ export function useOpenChangeRequestLink(
       });
       return true;
     },
-    [allProjects, navigate, openInApp, panelRef, primaryEnvironmentId, router, serverConfigs, threadRef],
+    [
+      allProjects,
+      navigate,
+      openInApp,
+      panelRef,
+      primaryEnvironmentId,
+      router,
+      serverConfigs,
+      threadRef,
+    ],
   );
 }
 

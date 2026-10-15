@@ -1656,6 +1656,8 @@ const make = Effect.gen(function* () {
         status,
         workState: terminal ? "result_available" : "working",
         hasPendingChildRuns: false,
+        // Remote task rows mirror terminal results, not destination runtime requests.
+        hasPendingQuestion: false,
         providerInstanceId: task.providerInstanceId,
         model: task.model,
         summary: task.result,
