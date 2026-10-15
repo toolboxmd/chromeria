@@ -30,7 +30,21 @@ const activityTestState = vi.hoisted(() => ({
   expanded: false,
   expandedRuns: false,
   subagentTooltips: false,
+  remoteEnvironmentConnected: true,
 }));
+
+// The timeline's remote-child links only render for environments this
+// client is connected to; tests control that through activityTestState.
+vi.mock("../../state/entities", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../state/entities")>();
+  return {
+    ...original,
+    useServerConfigs: () =>
+      activityTestState.remoteEnvironmentConnected
+        ? new Map([["environment-cavallo" as never, {} as never]])
+        : new Map(),
+  };
+});
 
 // Expose tooltip contents in the renderer without requiring a browser portal.
 vi.mock("../ui/tooltip", async (importOriginal) => {
@@ -2364,6 +2378,93 @@ describe("MessagesTimeline", () => {
       }
     },
   );
+
+  it("opens a subagent delegated to a linked environment in that environment", async () => {
+    activityTestState.expandedRuns = true;
+    activityTestState.subagentTooltips = true;
+    vi.stubGlobal("HTMLElement", ElementStub);
+    window.HTMLElement = ElementStub as typeof HTMLElement;
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    const onOpenThread = vi.fn();
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      const timeline = (
+        <MessagesTimeline
+          {...buildProps()}
+          onOpenThread={onOpenThread}
+          timelineEntries={[
+            {
+              id: "subagent-remote",
+              kind: "event",
+              createdAt: MESSAGE_CREATED_AT,
+              projectedItem: {
+                position: 0,
+                visibility: "local",
+                sourceThreadId: "thread-1",
+                sourceItemId: "subagent-remote",
+                item: {
+                  id: "subagent-remote",
+                  threadId: "thread-1",
+                  runId: "run-1",
+                  nodeId: "node-subagent-remote",
+                  providerThreadId: "provider-thread-1",
+                  providerTurnId: "provider-turn-1",
+                  nativeItemRef: null,
+                  parentItemId: null,
+                  ordinal: 1,
+                  status: "running",
+                  title: "Remote roast",
+                  startedAt: null,
+                  completedAt: null,
+                  updatedAt: {},
+                  type: "subagent",
+                  subagentId: "node-subagent-remote",
+                  origin: "app_owned",
+                  driver: "cursor",
+                  providerInstanceId: "cursor",
+                  childThreadId: null,
+                  remoteChild: {
+                    environmentId: "environment-cavallo",
+                    threadId: "thread-remote-child",
+                    label: "cavallo",
+                  },
+                  prompt: "Roast the draft",
+                  progress: "Reading the draft",
+                  result: null,
+                },
+              } as never,
+            },
+          ]}
+        />
+      );
+      await act(() => {
+        renderer = create(timeline);
+      });
+      const childButtons = () =>
+        renderer!.root.findAll(
+          (node) => node.type === "button" && node.props["aria-label"] === "Open Remote roast",
+        );
+      expect(childButtons()).toHaveLength(1);
+      await act(() => childButtons()[0]!.props.onClick());
+      expect(onOpenThread).toHaveBeenCalledWith("thread-remote-child", "environment-cavallo");
+
+      // Disconnected from cavallo, the same card renders without a link.
+      onOpenThread.mockClear();
+      activityTestState.remoteEnvironmentConnected = false;
+      await act(() => renderer!.unmount());
+      await act(() => {
+        renderer = create(timeline);
+      });
+      expect(childButtons()).toHaveLength(0);
+      expect(onOpenThread).not.toHaveBeenCalled();
+    } finally {
+      activityTestState.remoteEnvironmentConnected = true;
+      await act(() => renderer?.unmount());
+      vi.stubGlobal("HTMLElement", undefined);
+    }
+  });
 
   it("renders V2 provider retries in the normal work log", () => {
     activityTestState.expanded = true;

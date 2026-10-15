@@ -1594,7 +1594,8 @@ sources and reasons.
   "purpose": "Port upstream server peer links and record-first remote delegation until absorption replaces the port; retain permanent pairing-code sessions, target Prism launch intent and recovery-aware waits. Extend routing to all MCP toolkit groups while retaining caller capabilities and link-mode narrowing.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/164",
-    "https://github.com/toolboxmd/chromeria/issues/302"
+    "https://github.com/toolboxmd/chromeria/issues/302",
+    "https://github.com/toolboxmd/chromeria/issues/367"
   ],
   "prs": [
     "https://github.com/pingdotgg/t3code/pull/16653",
@@ -1604,7 +1605,8 @@ sources and reasons.
     "https://github.com/pingdotgg/t3code/pull/16695",
     "https://github.com/pingdotgg/t3code/pull/16719",
     "https://github.com/pingdotgg/t3code/pull/17051",
-    "https://github.com/toolboxmd/chromeria/pull/304"
+    "https://github.com/toolboxmd/chromeria/pull/304",
+    "https://github.com/toolboxmd/chromeria/pull/368"
   ],
   "newFiles": [
     "apps/server/src/mcp/delegatedTaskModes.ts",
@@ -1617,7 +1619,8 @@ sources and reasons.
     "packages/contracts/src/peerLink.ts",
     "apps/server/src/mcp/McpRouting.ts",
     "apps/server/src/persistence/forkScheduledTaskOriginsSchema.ts",
-    "apps/server/src/persistence/forkScheduledTaskOriginsSchema.test.ts"
+    "apps/server/src/persistence/forkScheduledTaskOriginsSchema.test.ts",
+    "apps/web/src/components/chat/V2LifecycleRow.remote.test.tsx"
   ],
   "upstreamFiles": [
     "apps/server/src/auth/McpOAuth.ts",
@@ -1657,7 +1660,25 @@ sources and reasons.
     "apps/server/src/mcp/toolkits/worktree/tools.ts",
     "apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts",
     "docs/internals/remote.md",
-    "packages/contracts/src/assets.ts"
+    "packages/contracts/src/assets.ts",
+    "apps/mobile/src/features/threads/SubagentRow.tsx",
+    "apps/mobile/src/features/threads/ThreadAgentsSheet.tsx",
+    "apps/mobile/src/features/threads/thread-subagent-group.tsx",
+    "apps/mobile/src/features/threads/threadAgentsPresentation.test.ts",
+    "apps/mobile/src/features/threads/threadAgentsPresentation.ts",
+    "apps/web/src/components/chat/ThreadRelationshipsControl.agents.test.tsx",
+    "apps/web/src/components/chat/ThreadRelationshipsControl.tsx",
+    "apps/web/src/components/chat/V2ItemInspector.tsx",
+    "apps/web/src/components/chat/V2LifecycleRow.tsx",
+    "packages/client-runtime/src/state/threadExecution.test.ts",
+    "packages/client-runtime/src/state/threadExecution.ts",
+    "packages/client-runtime/src/state/threadRelationships.test.ts",
+    "packages/client-runtime/src/state/threadRelationships.ts",
+    "apps/mobile/src/features/threads/thread-work-log.tsx",
+    "packages/client-runtime/src/work-log/itemDetail.test.ts",
+    "packages/client-runtime/src/work-log/itemDetail.ts",
+    "packages/shared/src/orchestrationV2PendingBackgroundWork.test.ts",
+    "packages/shared/src/orchestrationV2PendingBackgroundWork.ts"
   ],
   "sharedFiles": [
     "apps/server/src/mcp/toolkits/orchestrator/tools.test.ts",
