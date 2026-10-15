@@ -1,5 +1,10 @@
 // Fork: opt-in automatic provider updates (toolboxmd/chromeria#159).
-import type { ServerProvider, ServerSettings, ServerSettingsError } from "@t3tools/contracts";
+import type {
+  ServerProvider,
+  ServerProviderUpdateState,
+  ServerSettings,
+  ServerSettingsError,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
@@ -33,12 +38,11 @@ export interface ProviderAutoUpdateTarget {
  * one-click rule per driver: every outdated instance must share one update
  * command, and that command runs once for all of them. A driver is skipped
  * while an update is active or its last result was a failure, and deferred
- * while any of its sessions is mid-turn.
+ * while work is active unless the resolved updater supports active sessions.
  */
 function selectProviderAutoUpdateTargets(input: {
   readonly settings: Pick<ServerSettings, "autoUpdateProviders" | "enableProviderUpdateChecks">;
   readonly providers: ReadonlyArray<ServerProvider>;
-  readonly busyDrivers: ReadonlySet<string>;
   readonly attempted: ReadonlySet<string>;
   readonly updateActions: ReadonlyMap<string, ProviderMaintenanceCommandAction | null>;
 }): Array<ProviderAutoUpdateTarget> {
@@ -76,7 +80,8 @@ function selectProviderAutoUpdateTargets(input: {
       outdated.some(
         (provider) =>
           provider.versionAdvisory?.canUpdate !== true ||
-          provider.updateState?.status === "queued" ||
+          (provider.updateState?.status === "queued" &&
+            provider.updateState.message !== PROVIDER_UPDATE_BUSY_REASON) ||
           provider.updateState?.status === "running" ||
           provider.updateState?.status === "failed" ||
           provider.updateState?.status === "unchanged",
@@ -98,11 +103,19 @@ function selectProviderAutoUpdateTargets(input: {
         provider.versionAdvisory?.latestVersion,
       ]);
     });
-    if (identities.some((identity) => identity === null) || new Set(identities).size !== 1) {
+    if (
+      identities.some((identity) => identity === null) ||
+      new Set(identities).size !== 1 ||
+      new Set(
+        outdated.map(
+          (provider) => input.updateActions.get(provider.instanceId)?.canRunWhileBusy === true,
+        ),
+      ).size !== 1
+    ) {
       continue;
     }
     const attemptKey = identities[0]!;
-    if (input.attempted.has(attemptKey) || input.busyDrivers.has(driver)) {
+    if (input.attempted.has(attemptKey)) {
       continue;
     }
     targets.push({ provider: first, attemptKey });
@@ -123,13 +136,27 @@ export function makeProviderAutoUpdater(deps: {
     instanceId: ServerProvider["instanceId"],
     driver: ServerProvider["driver"],
   ) => Effect.Effect<ProviderMaintenanceCapabilities>;
+  readonly setUpdateState: (
+    instanceId: ServerProvider["instanceId"],
+    state: ServerProviderUpdateState | null,
+  ) => Effect.Effect<void>;
   readonly updateProvider: ProviderMaintenanceRunner.ProviderMaintenanceRunnerShape["updateProvider"];
 }) {
   const attempted = new Set<string>();
   const evaluate = Effect.gen(function* () {
     const settings = yield* deps.getSettings;
-    if (!settings.autoUpdateProviders || !settings.enableProviderUpdateChecks) return;
     const providers = yield* deps.getProviders;
+    if (!settings.autoUpdateProviders || !settings.enableProviderUpdateChecks) {
+      for (const provider of providers) {
+        if (
+          provider.updateState?.status === "queued" &&
+          provider.updateState.message === PROVIDER_UPDATE_BUSY_REASON
+        ) {
+          yield* deps.setUpdateState(provider.instanceId, null);
+        }
+      }
+      return;
+    }
     const busyDrivers = yield* deps.getBusyDrivers;
     const updateActions = new Map<string, ProviderMaintenanceCommandAction | null>();
     for (const provider of providers) {
@@ -137,8 +164,7 @@ export function makeProviderAutoUpdater(deps: {
         provider.enabled &&
         provider.installed &&
         provider.versionAdvisory?.status === "behind_latest" &&
-        provider.versionAdvisory.canUpdate &&
-        !busyDrivers.has(provider.driver)
+        provider.versionAdvisory.canUpdate
       ) {
         const capabilities = yield* deps.getMaintenanceCapabilities(
           provider.instanceId,
@@ -150,36 +176,64 @@ export function makeProviderAutoUpdater(deps: {
     const targets = selectProviderAutoUpdateTargets({
       settings,
       providers,
-      busyDrivers,
       updateActions,
       attempted,
     });
+    const targetedInstances = new Set(targets.map(({ provider }) => provider.instanceId));
+    for (const provider of providers) {
+      if (
+        !targetedInstances.has(provider.instanceId) &&
+        provider.updateState?.status === "queued" &&
+        provider.updateState.message === PROVIDER_UPDATE_BUSY_REASON
+      ) {
+        yield* deps.setUpdateState(provider.instanceId, null);
+      }
+    }
     yield* Effect.forEach(
       targets,
-      ({ provider, attemptKey }) => {
-        attempted.add(attemptKey);
-        return Effect.logInfo("Updating provider automatically", {
-          driver: provider.driver,
-          instanceId: provider.instanceId,
-        }).pipe(
-          Effect.andThen(
-            deps.updateProvider({ provider: provider.driver, instanceId: provider.instanceId }),
-          ),
-          Effect.catch((error) => {
-            if (isProviderUpdateError(error) && error.reason === PROVIDER_UPDATE_BUSY_REASON) {
-              attempted.delete(attemptKey);
-              return Effect.void;
-            }
-            return Effect.fail(error);
-          }),
-          Effect.catchCause(() =>
-            Effect.logWarning("Automatic provider update failed", {
-              driver: provider.driver,
-              instanceId: provider.instanceId,
+      ({ provider, attemptKey }) =>
+        Effect.gen(function* () {
+          const deferred =
+            provider.updateState?.status === "queued" &&
+            provider.updateState.message === PROVIDER_UPDATE_BUSY_REASON;
+          if (
+            busyDrivers.has(provider.driver) &&
+            !updateActions.get(provider.instanceId)?.canRunWhileBusy
+          ) {
+            if (!deferred)
+              yield* deps.setUpdateState(provider.instanceId, {
+                status: "queued",
+                startedAt: null,
+                finishedAt: null,
+                message: PROVIDER_UPDATE_BUSY_REASON,
+                output: null,
+              });
+            return;
+          }
+          if (deferred) yield* deps.setUpdateState(provider.instanceId, null);
+          attempted.add(attemptKey);
+          yield* Effect.logInfo("Updating provider automatically", {
+            driver: provider.driver,
+            instanceId: provider.instanceId,
+          }).pipe(
+            Effect.andThen(
+              deps.updateProvider({ provider: provider.driver, instanceId: provider.instanceId }),
+            ),
+            Effect.catch((error) => {
+              if (isProviderUpdateError(error) && error.reason === PROVIDER_UPDATE_BUSY_REASON) {
+                attempted.delete(attemptKey);
+                return Effect.void;
+              }
+              return Effect.fail(error);
             }),
-          ),
-        );
-      },
+            Effect.catchCause(() =>
+              Effect.logWarning("Automatic provider update failed", {
+                driver: provider.driver,
+                instanceId: provider.instanceId,
+              }),
+            ),
+          );
+        }),
       { discard: true },
     );
   }).pipe(Effect.catchCause(() => Effect.logWarning("Automatic provider update check failed")));
@@ -211,6 +265,10 @@ export const layer = Layer.effectDiscard(
       getProviders: providerRegistry.getProviders,
       getBusyDrivers: readBusyProviderDrivers.pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       getMaintenanceCapabilities: providerRegistry.getProviderMaintenanceCapabilitiesForInstance,
+      setUpdateState: (instanceId, state) =>
+        providerRegistry
+          .setProviderMaintenanceActionState({ instanceId, action: "update", state })
+          .pipe(Effect.asVoid),
       updateProvider: runner.updateProvider,
     });
 

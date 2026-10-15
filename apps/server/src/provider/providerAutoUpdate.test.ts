@@ -20,6 +20,7 @@ import * as Stream from "effect/Stream";
 import * as ServerSettingsModule from "../serverSettings.ts";
 import * as ProviderAutoUpdate from "./providerAutoUpdate.ts";
 import { makeProviderAutoUpdater } from "./providerAutoUpdate.ts";
+import { PROVIDER_UPDATE_BUSY_REASON } from "./providerAutoUpdateState.ts";
 import * as ProviderMaintenanceRunner from "./providerMaintenanceRunner.ts";
 import type { ProviderMaintenanceCommandAction } from "@t3tools/provider-core/server/maintenanceResolver";
 import { ProviderRegistry } from "./ProviderRegistry.ts";
@@ -92,6 +93,14 @@ function harness(input: {
     getBusyDrivers: Effect.sync(() => new Set(state.busyDrivers)),
     getMaintenanceCapabilities: (instanceId, driver) =>
       Effect.succeed(maintenanceCapabilities(driver, input.actions?.[instanceId] ?? sharedAction)),
+    setUpdateState: (instanceId, updateState) =>
+      Effect.sync(() => {
+        state.providers = state.providers.map((provider) => {
+          if (provider.instanceId !== instanceId) return provider;
+          const { updateState: _previous, ...rest } = provider;
+          return updateState ? { ...rest, updateState } : rest;
+        });
+      }),
     updateProvider: (target) =>
       Effect.suspend(() => {
         if (typeof target === "string") return Effect.die("expected an instance target");
@@ -180,6 +189,55 @@ describe("providerAutoUpdate", () => {
       assert.deepStrictEqual(state.calls, ["claudeAgent", "codex"]);
     }),
   );
+  it.effect("updates a busy driver when its resolved updater supports active sessions", () =>
+    Effect.gen(function* () {
+      const { state, updater } = harness({
+        providers: [outdated(CODEX)],
+        busyDrivers: [CODEX],
+        actions: {
+          codex: {
+            command: "codex update",
+            executable: "/home/test/.local/bin/codex",
+            args: ["update"],
+            lockKey: "codex-native",
+            canRunWhileBusy: true,
+          },
+        },
+      });
+      yield* updater.evaluate;
+      yield* updater.evaluate;
+      assert.deepStrictEqual(state.calls, ["codex"]);
+    }),
+  );
+
+  it.effect("publishes busy deferral and clears it when an unproved updater becomes idle", () =>
+    Effect.gen(function* () {
+      const { state, updater } = harness({
+        providers: [outdated(CLAUDE)],
+        busyDrivers: [CLAUDE],
+      });
+      yield* updater.evaluate;
+      assert.deepStrictEqual(state.calls, []);
+      assert.equal(state.providers[0]?.updateState?.status, "queued");
+      assert.equal(state.providers[0]?.updateState?.message, PROVIDER_UPDATE_BUSY_REASON);
+      state.busyDrivers = [];
+      yield* updater.evaluate;
+      assert.deepStrictEqual(state.calls, ["claudeAgent"]);
+      assert.isUndefined(state.providers[0]?.updateState);
+    }),
+  );
+
+  it.effect("removes busy deferral when automatic updates are disabled", () =>
+    Effect.gen(function* () {
+      const { state, updater } = harness({ providers: [outdated(CLAUDE)], busyDrivers: [CLAUDE] });
+      yield* updater.evaluate;
+      state.settings.autoUpdateProviders = false;
+      yield* updater.evaluate;
+      assert.isUndefined(state.providers[0]?.updateState);
+      assert.deepStrictEqual(state.calls, []);
+    }),
+  );
+
   it.effect("leaves a failed or unchanged update for the user", () =>
     Effect.gen(function* () {
       const failed: ServerProvider = {
@@ -218,6 +276,7 @@ describe("providerAutoUpdate", () => {
     { name: "arguments", change: { args: ["upgrade", "--cask", "codex"] } },
     { name: "environment", change: { env: { CODEX_HOME: "/other/install" } } },
     { name: "install target", change: { lockKey: "other-install" } },
+    { name: "active-session safety", change: { canRunWhileBusy: true as const } },
   ])("skips distinct resolved $name", ({ change }) =>
     Effect.gen(function* () {
       const { state, updater } = harness({
@@ -281,6 +340,7 @@ describe("providerAutoUpdate", () => {
           ),
           getProviderMaintenanceCapabilitiesForInstance: (_instanceId, driver) =>
             Effect.succeed(maintenanceCapabilities(driver)),
+          setProviderMaintenanceActionState: () => Effect.succeed([]),
           streamChanges: Stream.never,
         }),
         Layer.mock(EventSink.EventSinkV2)({
