@@ -439,6 +439,154 @@ describe("ContextMD Library callback scheduling", () => {
       }).pipe(Effect.scoped),
     ),
   );
+
+  it.effect("serves overlapping first inputs when each filesystem turn stays busy", () =>
+    withNode(
+      Effect.gen(function* () {
+        const completions = yield* Queue.unbounded<void>();
+        let inFlight = 0;
+        let ready: Deferred.Deferred<void>[] = [];
+        // Same gate as the single-load test. 45ms is long enough that the
+        // 6/1/9 census misses 950ms if each Library still waits for the
+        // previous one, and short enough that one shared read of those
+        // files fits. It is a controlled turn, not a live callback rate.
+        const turn = "45 millis";
+        const callback = <A, E>(read: Effect.Effect<A, E>) =>
+          Effect.gen(function* () {
+            inFlight += 1;
+            const result = yield* Effect.exit(read).pipe(
+              Effect.ensuring(
+                Effect.sync(() => {
+                  inFlight -= 1;
+                }),
+              ),
+            );
+            const release = yield* Deferred.make<void>();
+            ready.push(release);
+            yield* Queue.offer(completions, undefined);
+            yield* Deferred.await(release);
+            return yield* result;
+          });
+        const h = yield* makeHarness((fs) => ({
+          ...fs,
+          stat: (path) => callback(fs.stat(path)),
+          realPath: (path) => callback(fs.realPath(path)),
+          readDirectory: (path, options) => callback(fs.readDirectory(path, options)),
+          readFile: (path) => callback(fs.readFile(path)),
+          readFileString: (path, options) => callback(fs.readFileString(path, options)),
+        }));
+        const roots = ["keys", "great", "cue"].map((name) => NodePath.join(h.config.baseDir, name));
+        NodeFS.unlinkSync(NodePath.join(roots[0]!, "public.md"));
+        const index = NodePath.join(h.config.baseDir, "library-index.md");
+        NodeFS.writeFileSync(index, "# Public Great Library\n");
+        NodeFS.mkdirSync(NodePath.join(h.config.baseDir, ".git"));
+        NodeFS.writeFileSync(NodePath.join(h.config.baseDir, ".git", "HEAD"), "public-owner\n");
+        for (const [source, count] of [6, 1, 9].entries()) {
+          const root = roots[source]!;
+          NodeFS.mkdirSync(root, { recursive: true });
+          for (let entry = 0; entry < count; entry++) {
+            NodeFS.writeFileSync(
+              NodePath.join(root, `${entry}.md`),
+              source === 2
+                ? `---\nid: cue-${entry}\nname: Public ${entry}\napplies: A public request.\ntarget: ${index}\n---\nUseful Cue ${entry}.\n`
+                : `---\nid: exact-${source}-${entry}\ncommand: public-${entry}\n${source === 0 && entry === 0 ? "name: In exact source\napplies: A public request.\n" : ""}target: ${index}\n---\nExact knowledge.\n`,
+            );
+          }
+        }
+        const cueRequests: ReturnType<typeof decodeCueRequest>[] = [];
+        const server = NodeHttp.createServer((request, response) => {
+          let body = "";
+          request.setEncoding("utf8");
+          request.on("data", (chunk: string) => {
+            body += chunk;
+          });
+          request.on("end", () => {
+            cueRequests.push(decodeCueRequest(body));
+            response.writeHead(200, { "content-type": "application/json" });
+            response.end(
+              JSON.stringify({ adapter: "public", threshold: 0.5, scores: { "cue-0": 1 } }),
+            );
+          });
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.promise(
+            () =>
+              new Promise<void>((resolve) => {
+                server.closeAllConnections();
+                server.close(() => resolve());
+              }),
+          ),
+        );
+        yield* Effect.callback<void>((resume) => {
+          server.listen(0, "127.0.0.1", () => resume(Effect.void));
+        });
+        const address = server.address();
+        assert.isNotNull(address);
+        if (address === null || typeof address === "string") return;
+        NodeFS.writeFileSync(
+          h.configPath,
+          JSON.stringify({
+            exact_keys: roots.slice(0, 2),
+            cue: [roots[2]],
+            cue_url: `http://127.0.0.1:${address.port}`,
+            great_library: index,
+          }),
+        );
+        const sessions = ["busy-overlap-claude", "busy-overlap-codex"] as const;
+        for (const session of sessions) {
+          yield* h.sql`INSERT INTO orchestration_v2_projection_turn_items (
+            turn_item_id, thread_id, ordinal, type, status, updated_at, payload_json
+          ) VALUES (${`busy-user-${session}`}, ${`thread-${session}`}, 1, 'user_message', 'completed',
+            '2026-01-01T00:00:00Z', ${JSON.stringify({ text: "Public request." })})`;
+        }
+        const left = yield* Effect.forkScoped(
+          h.moment("claude", sessions[0], { hook_event_name: "UserPromptSubmit" }),
+        );
+        const right = yield* Effect.forkScoped(
+          h.moment("codex", sessions[1], { hook_event_name: "UserPromptSubmit" }),
+        );
+        let batches = 0;
+        while (true) {
+          const next = yield* Effect.raceFirst(
+            Queue.take(completions).pipe(Effect.as("callbacks" as const)),
+            Effect.all([Fiber.await(left), Fiber.await(right)], { concurrency: 2 }).pipe(
+              Effect.as("done" as const),
+            ),
+          );
+          if (next === "done") break;
+          if (inFlight > 0 || ready.length === 0) continue;
+          const batch = ready;
+          ready = [];
+          batches += 1;
+          yield* TestClock.adjust(turn);
+          yield* Effect.forEach(batch, (release) => Deferred.succeed(release, undefined), {
+            concurrency: "unbounded",
+          });
+        }
+        const replies = [yield* Fiber.join(left), yield* Fiber.join(right)];
+        for (const reply of replies) {
+          const row = h.db
+            .prepare(
+              "SELECT status, reason, owners_json, cue_status, server_ms FROM moments WHERE delivery = ?",
+            )
+            .get(reply.delivery);
+          assert.equal(reply.reply.status, 200, JSON.stringify({ batches, row }));
+          if (reply.reply.status !== 200) return;
+          assert.include(
+            decodeBody(reply.reply.body).hookSpecificOutput.additionalContext,
+            `Read ${index} in full.`,
+          );
+          assert.deepEqual(
+            JSON.parse(String(row!.owners_json)),
+            Object.fromEntries(roots.map((root) => [root, "public-owner"])),
+          );
+          assert.equal(row!.cue_status, "ok");
+          assert.isBelow(Number(row!.server_ms), 950);
+        }
+        assert.equal(cueRequests.length, 2);
+      }).pipe(Effect.scoped),
+    ),
+  );
 });
 
 describe("ContextMD deadline phase diagnostics", () => {

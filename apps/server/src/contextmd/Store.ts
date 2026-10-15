@@ -448,12 +448,72 @@ export const load = Effect.fn("contextmd.loadStore")(function* (
       if (Option.isNone(info) || info.value.type !== "Directory") {
         return { type: "missing" as const, source };
       }
-      const owner = yield* headCommit(root);
       const listed = yield* fs.readDirectory(root).pipe(Effect.option);
-      return { type: "directory" as const, source, owner, listed };
+      return { type: "directory" as const, source, listed };
     }),
     { concurrency: FILE_CONCURRENCY },
   );
+  // Commit reads overlap one cross-directory file pass. Stat and realPath share
+  // a turn. Fold in source, then name, order so completion cannot choose a
+  // duplicate id or resolve a rejected target.
+  const existingRoots = directories.flatMap((directory) =>
+    directory.type === "directory" ? [directory.source.directory] : [],
+  );
+  const jobs = directories.flatMap((directory) => {
+    if (directory.type !== "directory" || Option.isNone(directory.listed)) return [];
+    const root = directory.source.directory;
+    return directory.listed.value
+      .filter((name) => name.endsWith(".md") && name.toLowerCase() !== "readme.md")
+      .sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))
+      .map((name) => ({ root, name, file: path.join(root, name) }));
+  });
+  const [ownerList, loaded] = yield* Effect.all(
+    [
+      Effect.forEach(existingRoots, (root) => headCommit(root), { concurrency: FILE_CONCURRENCY }),
+      Effect.forEach(
+        jobs,
+        Effect.fnUntraced(function* ({ root, name, file }) {
+          const [stat, self] = yield* Effect.all(
+            [
+              fs.stat(file).pipe(Effect.option),
+              fs.realPath(file).pipe(Effect.orElseSucceed(() => file)),
+            ],
+            { concurrency: 2 },
+          );
+          if (Option.isNone(stat)) {
+            return { type: "error" as const, file, reason: "unreadable" };
+          }
+          if (stat.value.type !== "File") return null;
+          const stamp = `${Option.match(stat.value.mtime, { onNone: () => 0, onSome: (d) => d.getTime() })}:${stat.value.size}:${self}`;
+          let hit = cache.get(file);
+          if (hit === undefined || hit.stamp !== stamp) {
+            hit = { stamp };
+            cache.set(file, hit);
+          }
+          const mode = registered.has(root) ? "tolerant" : "strict";
+          let result = hit[mode];
+          if (result === undefined) {
+            const raw = yield* fs.readFile(file).pipe(Effect.option);
+            if (Option.isNone(raw)) {
+              return { type: "error" as const, file, reason: "unreadable" };
+            }
+            const version = Hex.encode(yield* crypto.digest("SHA-256", raw.value)).slice(0, 12);
+            result = parseBytes(name, raw.value, version, mode === "tolerant");
+            hit[mode] = result;
+          }
+          if (result instanceof EntryError) {
+            return { type: "error" as const, file, reason: result.message };
+          }
+          return { type: "entry" as const, file, self, result };
+        }),
+        { concurrency: FILE_CONCURRENCY },
+      ),
+    ],
+    { concurrency: "unbounded" },
+  );
+  let ownerIndex = 0;
+  let loadedIndex = 0;
+  const accepted: Array<(typeof loaded)[number] & { type: "entry" }> = [];
   for (const directory of directories) {
     const { source } = directory;
     const root = source.directory;
@@ -461,56 +521,18 @@ export const load = Effect.fn("contextmd.loadStore")(function* (
       if (source.registered) errors.push(`${root}: not a directory`);
       continue;
     }
-    owners[root] = directory.owner;
-    const listed = directory.listed;
-    if (Option.isNone(listed)) {
+    owners[root] = ownerList[ownerIndex] ?? null;
+    ownerIndex += 1;
+    if (Option.isNone(directory.listed)) {
       errors.push(`${root}: unreadable directory`);
       continue;
     }
-    const names = listed.value
-      .filter((n) => n.endsWith(".md") && n.toLowerCase() !== "readme.md")
-      .sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
-    // Process independent files together so a busy event loop does not serialize every callback.
-    // Keep results in name order: completion order must never decide which duplicate id wins.
-    const loaded = yield* Effect.forEach(
-      names,
-      Effect.fnUntraced(function* (name) {
-        const file = path.join(root, name),
-          stat = yield* fs.stat(file).pipe(Effect.option);
-        if (Option.isNone(stat)) {
-          return { type: "error" as const, file, reason: "unreadable" };
-        }
-        if (stat.value.type !== "File") return null;
-        const self = yield* fs.realPath(file).pipe(Effect.orElseSucceed(() => file));
-        const stamp = `${Option.match(stat.value.mtime, { onNone: () => 0, onSome: (d) => d.getTime() })}:${stat.value.size}:${self}`;
-        let hit = cache.get(file);
-        if (hit === undefined || hit.stamp !== stamp) {
-          hit = { stamp };
-          cache.set(file, hit);
-        }
-        const mode = registered.has(root) ? "tolerant" : "strict";
-        let result = hit[mode];
-        if (result === undefined) {
-          const raw = yield* fs.readFile(file).pipe(Effect.option);
-          if (Option.isNone(raw)) {
-            return { type: "error" as const, file, reason: "unreadable" };
-          }
-          const version = Hex.encode(yield* crypto.digest("SHA-256", raw.value)).slice(0, 12);
-          result = parseBytes(name, raw.value, version, mode === "tolerant");
-          hit[mode] = result;
-        }
-        if (result instanceof EntryError) {
-          return { type: "error" as const, file, reason: result.message };
-        }
-        return { type: "entry" as const, file, self, result };
-      }),
-      { concurrency: FILE_CONCURRENCY },
-    );
-    const accepted = loaded.flatMap((item) => {
-      if (item === null) return [];
+    const count = jobs.filter((job) => job.root === root).length;
+    for (const item of loaded.slice(loadedIndex, loadedIndex + count)) {
+      if (item === null) continue;
       if (item.type === "error") {
         errors.push(`${item.file}: ${item.reason}`);
-        return [];
+        continue;
       }
       const { file, result } = item;
       const prior =
@@ -518,50 +540,51 @@ export const load = Effect.fn("contextmd.loadStore")(function* (
         (result.name !== null ? cueIds.get(result.id) : undefined);
       if (prior !== undefined) {
         errors.push(`${file}: id '${result.id}' already used by ${prior}`);
-        return [];
+        continue;
       }
       if (result.exact) exactIds.set(result.id, file);
       if (result.name !== null) cueIds.set(result.id, file);
-      return [item];
-    });
-    // Resolve only accepted targets, with the same fresh identity checks as entry files.
-    const resolved = yield* Effect.forEach(
-      accepted,
-      Effect.fnUntraced(function* ({ file, self, result }) {
-        let target: string | null = null;
-        if (result.target !== null) {
-          const lexical = path.resolve(path.dirname(file), expandHomePath(result.target, home));
-          target = yield* fs.realPath(lexical).pipe(Effect.orElseSucceed(() => lexical));
-        }
-        const common = {
-          id: result.id,
-          version: result.version,
-          text: result.body,
-          file,
-          self,
-          target,
-          long: result.long,
-          legacy: result.legacy,
-        };
-        return { result, common };
-      }),
-      { concurrency: FILE_CONCURRENCY },
-    );
-    for (const { result, common } of resolved) {
-      if (result.exact) {
-        entries.push({
-          ...common,
-          commands: result.commands,
-          paths: result.paths,
-          errors: result.rawErrors.map(normalizeError),
-          mustKnowBefore: result.mustKnowBefore,
-        });
-      }
-      if (result.name !== null && result.applies !== null) {
-        cue.push({ ...common, name: result.name, applies: result.applies });
-      }
-      if (result.legacy !== null) legacy.push(`${common.file}: ${result.legacy}`);
+      accepted.push(item);
     }
+    loadedIndex += count;
+  }
+  // Resolve only accepted targets, with the same fresh identity checks as entry files.
+  const resolved = yield* Effect.forEach(
+    accepted,
+    Effect.fnUntraced(function* ({ file, self, result }) {
+      let target: string | null = null;
+      if (result.target !== null) {
+        const lexical = path.resolve(path.dirname(file), expandHomePath(result.target, home));
+        target = yield* fs.realPath(lexical).pipe(Effect.orElseSucceed(() => lexical));
+      }
+      const common = {
+        id: result.id,
+        version: result.version,
+        text: result.body,
+        file,
+        self,
+        target,
+        long: result.long,
+        legacy: result.legacy,
+      };
+      return { result, common };
+    }),
+    { concurrency: FILE_CONCURRENCY },
+  );
+  for (const { result, common } of resolved) {
+    if (result.exact) {
+      entries.push({
+        ...common,
+        commands: result.commands,
+        paths: result.paths,
+        errors: result.rawErrors.map(normalizeError),
+        mustKnowBefore: result.mustKnowBefore,
+      });
+    }
+    if (result.name !== null && result.applies !== null) {
+      cue.push({ ...common, name: result.name, applies: result.applies });
+    }
+    if (result.legacy !== null) legacy.push(`${common.file}: ${result.legacy}`);
   }
   return { entries, cue, owners, errors, legacy } satisfies Library;
 });
