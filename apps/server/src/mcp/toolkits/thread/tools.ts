@@ -148,7 +148,7 @@ const QueueReorderTool = Tool.make("t3_queue_reorder", {
 const QueuePromoteTool = Tool.make("t3_queue_promote_to_steer", {
   ...commandTool,
   description:
-    "Deliver a queued message as steering to the specified active run. Existing provider and run-state rules apply.",
+    "Deliver a queued message as steering to the specified active run. An agent promotion follows t3_thread_send steer rules: on Claude the message stays queued. Use t3_thread_send with mode='restart' for an urgent interruption. Existing provider and run-state rules apply.",
   parameters: McpRouting.parameters(Schema.Struct({ ...queueTarget, targetRunId: RunId })),
 }).annotate(Tool.Destructive, true);
 

@@ -254,14 +254,10 @@ export function makeGrokAcpAdapterFlavor(
     runtimeHarness: "Grok",
     capabilities: GrokProviderCapabilitiesV2,
     interruptPromptOnCancel: false,
-    // User Stop (requestRuntimeRestart) still hard-kills the process group and
-    // respawns so existing background tasks stop too. Older 0.2.x builds could
-    // detach a cancelled foreground command (E3 harness 2026-07-18); current
-    // source kills foreground work but intentionally preserves already-
-    // backgrounded tasks. Non-Stop interrupts (mid-prompt steering,
-    // restart_active) omit requestRuntimeRestart and stay soft: session/cancel
-    // carries cancelTrigger=ctrl_c, the session survives, and background work
-    // remains available to the replacement turn.
+    // Stop and explicit cut-ins (requestRuntimeRestart) kill the process group
+    // and respawn so background tasks end too. Routine steering restarts omit
+    // the flag: session/cancel carries cancelTrigger=ctrl_c, the session
+    // survives, and background work remains available to the replacement turn.
     restartRuntimeAfterInterrupt: true,
     terminateRuntimeProcessGroupOnInterrupt: true,
     // Steering restarts on a settled turn additionally skip session/cancel so
