@@ -4,6 +4,7 @@ import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { AuthSessionId } from "@t3tools/contracts";
 import { assert, describe, it, vi } from "@effect/vitest";
 import * as ByteSize from "effect/ByteSize";
 import * as Clock from "effect/Clock";
@@ -11,8 +12,11 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -20,6 +24,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as AuthSessions from "../persistence/AuthSessions.ts";
 import * as ServerActivation from "../serverActivation.ts";
 import * as ContextmdServing from "./ContextmdServing.ts";
 import * as Shown from "./Shown.ts";
@@ -124,6 +129,9 @@ const decodeBody = Schema.decodeUnknownSync(
     }),
   ),
 );
+const decodePointerBody = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Struct({ pointer: Schema.String })),
+);
 const decodeEvidence = Schema.decodeUnknownSync(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
 );
@@ -135,6 +143,7 @@ interface Fact {
 
 const makeHarness = (
   overrideFs: (fs: FileSystem.FileSystem) => FileSystem.FileSystem = (fs) => fs,
+  disk = false,
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -150,7 +159,9 @@ const makeHarness = (
     );
     const configPath = NodePath.join(config.baseDir, "serving.json");
     NodeFS.writeFileSync(configPath, JSON.stringify({ exact_keys: [keys] }));
-    const database = yield* Layer.build(SqlitePersistence.layerMemory);
+    const database = yield* Layer.build(
+      disk ? SqlitePersistence.layerFromPath(config.dbPath) : SqlitePersistence.layerMemory,
+    );
     const sql = Context.get(database, SqlClient.SqlClient);
     const services = yield* Layer.build(
       ContextmdServing.layer.pipe(
@@ -236,10 +247,142 @@ const makeHarness = (
         now,
       );
     };
-    return { service, db, config, moment, fact, evidence, seed };
+    return { service, db, sql, config, configPath, moment, fact, evidence, seed };
   });
 const withNode = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provide(NodeServices.layer));
+
+describe("ContextMD serving under database contention", () => {
+  it.live.each(["claude", "codex", "opencode"])(
+    "serves the first %s pointer while a writer owns the shared connection",
+    (harness) =>
+      withNode(
+        Effect.gen(function* () {
+          const h = yield* makeHarness(undefined, true);
+          const session = "first-input-contention";
+          // Seed a committed run without calling moment or warming its reader first.
+          yield* h.sql`INSERT INTO orchestration_v2_projection_run_attempts (
+            attempt_id, thread_id, run_id, attempt_ordinal, root_node_id, provider,
+            provider_instance_id, provider_thread_id, status, payload_json
+          ) VALUES ('first-attempt', 'first-thread', 'first-run', 1, 'node', 'codex',
+            'codex', 'provider-thread', 'running', ${JSON.stringify({ nativeThreadId: session })})`;
+          const index = NodePath.join(h.config.baseDir, "library-index.md");
+          NodeFS.writeFileSync(index, "# Public Library\n");
+          NodeFS.writeFileSync(
+            h.configPath,
+            JSON.stringify({ exact_keys: [], great_library: index }),
+          );
+          const authContext = yield* Layer.build(
+            AuthSessions.layer.pipe(Layer.provide(Layer.succeed(SqlClient.SqlClient, h.sql))),
+          );
+          const auth = Context.get(authContext, AuthSessions.AuthSessionRepository);
+          const sessionId = AuthSessionId.make("public-reader");
+          // Only an isolated repository fixture, with no issued token or signing credential.
+          yield* auth.create({
+            sessionId,
+            subject: "public-fixture",
+            scopes: ["orchestration:read"],
+            method: "bearer-access-token",
+            client: {
+              label: null,
+              ipAddress: null,
+              userAgent: null,
+              deviceType: "unknown",
+              os: null,
+              browser: null,
+            },
+            issuedAt: DateTime.makeUnsafe("2026-01-01T00:00:00Z"),
+            expiresAt: DateTime.makeUnsafe("2099-01-01T00:00:00Z"),
+          });
+          const acquired = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const writer = yield* Effect.forkScoped(
+            h.sql.withTransaction(
+              Deferred.succeed(acquired, undefined).pipe(Effect.andThen(Deferred.await(release))),
+            ),
+          );
+          yield* Deferred.await(acquired);
+          // The actual repository lookup SessionStore.verify performs before body identification.
+          const authorized = auth.getById({ sessionId }).pipe(
+            Effect.map(
+              (row) =>
+                Option.isSome(row) &&
+                row.value.revokedAt === null &&
+                row.value.scopes.includes("orchestration:read"),
+            ),
+            Effect.orDie,
+          );
+          const raw =
+            harness === "opencode"
+              ? { hook: "chat.message", input: { sessionID: session }, output: {} }
+              : {
+                  hook_event_name: "UserPromptSubmit",
+                  session_id: session,
+                  prompt: "Public question",
+                };
+          const started = yield* Clock.currentTimeMillis;
+          const request = (delivery: string) => ({
+            harness,
+            delivery,
+            ...(harness === "opencode" ? { pointerDelivery: `${delivery}-pointer` } : {}),
+            authorized,
+            contentLength: undefined,
+            body: Effect.succeed(JSON.stringify(raw)),
+          });
+          const reply = yield* h.service.moment(request("first-input"));
+          assert.isBelow(
+            (yield* Clock.currentTimeMillis) - started,
+            ContextmdServing.MOMENT_BUDGET_MS,
+          );
+          assert.equal(reply.status, 200);
+          if (reply.status !== 200) return;
+          assert.include(reply.body, "Great Library");
+          const delivery = harness === "opencode" ? "first-input-pointer" : "first-input";
+          const settled = yield* harness === "opencode"
+            ? h.service.pointerSettle(delivery)
+            : h.service.settle(delivery);
+          assert.equal(settled.status, 204);
+          assert.deepEqual(
+            h.db
+              .prepare(
+                "SELECT matcher, outcome FROM candidates WHERE moment_id = (SELECT id FROM moments WHERE delivery = 'first-input')",
+              )
+              .all()
+              .map((r) => ({ ...r })),
+            [{ matcher: "great_library", outcome: "injected" }],
+          );
+          const text =
+            harness === "opencode"
+              ? decodePointerBody(reply.body).pointer
+              : decodeBody(reply.body).hookSpecificOutput.additionalContext;
+          const bytes = Buffer.byteLength(text, "utf8");
+          assert.deepEqual(
+            h.db
+              .prepare("SELECT serve_bytes FROM deliveries WHERE delivery = ?")
+              .all(delivery)
+              .map((r) => ({ ...r })),
+            [{ serve_bytes: bytes }],
+          );
+          assert.isAtMost(bytes, 8000);
+          assert.deepEqual(
+            h.db
+              .prepare("SELECT serve_used FROM budgets WHERE run_id = 'first-run'")
+              .all()
+              .map((r) => ({ ...r })),
+            [{ serve_used: bytes }],
+          );
+          // Settlement/claims stay on the serving connection and suppress another same-epoch copy.
+          assert.equal((yield* h.service.moment(request("same-epoch"))).status, 204);
+          yield* Deferred.succeed(release, undefined);
+          yield* Fiber.join(writer);
+          // The readOnly scope must end with the moment. A later write still succeeds, and
+          // the next authorization reads the committed revocation rather than an old snapshot.
+          yield* auth.revoke({ sessionId, revokedAt: DateTime.makeUnsafe("2026-10-15T00:00:00Z") });
+          assert.equal((yield* h.service.moment(request("revoked"))).status, 401);
+        }).pipe(Effect.scoped),
+      ),
+  );
+});
 
 describe("ContextMD shown service and harness seams", () => {
   it.effect.each(["claude", "codex"])(
