@@ -7,6 +7,8 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as FileSystem from "effect/FileSystem";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { parse as yaml } from "yaml";
 
@@ -81,6 +83,67 @@ describe("Library entry contract", () => {
 });
 
 describe("Library sources and cache", () => {
+  it.effect("keeps duplicate precedence when a later file finishes first", () =>
+    Effect.gen(function* () {
+      const root = temp();
+      yield* Effect.addFinalizer(() => Effect.sync(() => NodeFS.rmSync(root, { recursive: true })));
+      const first = NodePath.join(root, "first"),
+        second = NodePath.join(root, "second");
+      NodeFS.mkdirSync(first);
+      NodeFS.mkdirSync(second);
+      const a = NodePath.join(first, "a.md"),
+        z = NodePath.join(first, "z.md"),
+        later = NodePath.join(second, "a.md");
+      for (const [file, text, target] of [
+        [a, "First knowledge.", "first-record"],
+        [z, "Later name.", "ignored-record"],
+        [later, "Later source.", "ignored-record"],
+      ]) {
+        NodeFS.writeFileSync(
+          file!,
+          `---\nid: shared\ncommand: x\nname: Shared\napplies: Public work.\ntarget: ${target}\n---\n${text}\n`,
+        );
+      }
+      const fs = yield* FileSystem.FileSystem;
+      const releaseFirst = yield* Deferred.make<void>();
+      const targets: string[] = [];
+      const library = yield* Store.load([first, second], new Map()).pipe(
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          readFile: (file) =>
+            fs
+              .readFile(file)
+              .pipe(
+                Effect.tap(() =>
+                  file === a
+                    ? Deferred.await(releaseFirst)
+                    : file === z
+                      ? Deferred.succeed(releaseFirst, undefined)
+                      : Effect.void,
+                ),
+              ),
+          realPath: (file) => {
+            if (file.endsWith("-record")) targets.push(file);
+            return fs.realPath(file);
+          },
+        }),
+      );
+      assert.deepEqual(
+        library.entries.map((entry) => entry.text),
+        ["First knowledge."],
+      );
+      assert.deepEqual(
+        library.cue.map((entry) => entry.text),
+        ["First knowledge."],
+      );
+      assert.deepEqual(library.errors, [
+        `${z}: id 'shared' already used by ${a}`,
+        `${later}: id 'shared' already used by ${a}`,
+      ]);
+      assert.deepEqual(targets, [NodePath.join(first, "first-record")]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("expands the joined checkout, Library and record from the injected home", () =>
     Effect.gen(function* () {
       const home = temp();

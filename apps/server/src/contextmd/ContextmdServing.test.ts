@@ -19,6 +19,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -136,6 +137,13 @@ const decodePointerBody = Schema.decodeUnknownSync(
 );
 const decodeEvidence = Schema.decodeUnknownSync(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+);
+const decodeCueRequest = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      entries: Schema.Array(Schema.Struct({ id: Schema.String, doc: Schema.String })),
+    }),
+  ),
 );
 interface Fact {
   readonly shown: string | null;
@@ -262,6 +270,176 @@ const decodeDeadline = Schema.decodeUnknownSync(
     }),
   ),
 );
+
+describe("ContextMD Library callback scheduling", () => {
+  it.effect("serves first input when filesystem callbacks share a busy event-loop turn", () =>
+    withNode(
+      Effect.gen(function* () {
+        const completions = yield* Queue.unbounded<void>();
+        let inFlight = 0;
+        let ready: Deferred.Deferred<void>[] = [];
+        // The files are real and fast. Delay processing their completed callbacks together,
+        // as a busy main loop does, rather than inventing slow disk or holding a SQL lock.
+        const callback = <A, E>(read: Effect.Effect<A, E>) =>
+          Effect.gen(function* () {
+            inFlight += 1;
+            const result = yield* Effect.exit(read).pipe(
+              Effect.ensuring(
+                Effect.sync(() => {
+                  inFlight -= 1;
+                }),
+              ),
+            );
+            const release = yield* Deferred.make<void>();
+            ready.push(release);
+            yield* Queue.offer(completions, undefined);
+            yield* Deferred.await(release);
+            return yield* result;
+          });
+        const h = yield* makeHarness((fs) => ({
+          ...fs,
+          stat: (path) => callback(fs.stat(path)),
+          realPath: (path) => callback(fs.realPath(path)),
+          readDirectory: (path, options) => callback(fs.readDirectory(path, options)),
+          readFile: (path) => callback(fs.readFile(path)),
+          readFileString: (path, options) => callback(fs.readFileString(path, options)),
+        }));
+        const roots = ["keys", "great", "cue"].map((name) => NodePath.join(h.config.baseDir, name));
+        NodeFS.unlinkSync(NodePath.join(roots[0]!, "public.md"));
+        const index = NodePath.join(h.config.baseDir, "library-index.md");
+        NodeFS.writeFileSync(index, "# Public Great Library\n");
+        NodeFS.mkdirSync(NodePath.join(h.config.baseDir, ".git"));
+        NodeFS.writeFileSync(NodePath.join(h.config.baseDir, ".git", "HEAD"), "public-owner\n");
+        for (const [source, count] of [6, 1, 9].entries()) {
+          const root = roots[source]!;
+          NodeFS.mkdirSync(root, { recursive: true });
+          for (let entry = 0; entry < count; entry++) {
+            NodeFS.writeFileSync(
+              NodePath.join(root, `${entry}.md`),
+              source === 2
+                ? `---\nid: cue-${entry}\nname: Public ${entry}\napplies: A public request.\ntarget: ${index}\n---\nUseful Cue ${entry}.\n`
+                : `---\nid: exact-${source}-${entry}\ncommand: public-${entry}\n${source === 0 && entry === 0 ? "name: In exact source\napplies: A public request.\n" : ""}target: ${index}\n---\nExact knowledge.\n`,
+            );
+          }
+        }
+        const cueRequests: ReturnType<typeof decodeCueRequest>[] = [];
+        const server = NodeHttp.createServer((request, response) => {
+          let body = "";
+          request.setEncoding("utf8");
+          request.on("data", (chunk: string) => {
+            body += chunk;
+          });
+          request.on("end", () => {
+            cueRequests.push(decodeCueRequest(body));
+            response.writeHead(200, { "content-type": "application/json" });
+            response.end(
+              JSON.stringify({ adapter: "public", threshold: 0.5, scores: { "cue-0": 1 } }),
+            );
+          });
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.promise(
+            () =>
+              new Promise<void>((resolve) => {
+                server.closeAllConnections();
+                server.close(() => resolve());
+              }),
+          ),
+        );
+        yield* Effect.callback<void>((resume) => {
+          server.listen(0, "127.0.0.1", () => resume(Effect.void));
+        });
+        const address = server.address();
+        assert.isNotNull(address);
+        if (address === null || typeof address === "string") return;
+        NodeFS.writeFileSync(
+          h.configPath,
+          JSON.stringify({
+            exact_keys: roots.slice(0, 2),
+            cue: [roots[2]],
+            cue_url: `http://127.0.0.1:${address.port}`,
+            great_library: index,
+          }),
+        );
+        const session = "busy-files-first-input";
+        yield* h.sql`INSERT INTO orchestration_v2_projection_turn_items (
+          turn_item_id, thread_id, ordinal, type, status, updated_at, payload_json
+        ) VALUES ('busy-user', ${`thread-${session}`}, 1, 'user_message', 'completed',
+          '2026-01-01T00:00:00Z', ${JSON.stringify({ text: "Public request." })})`;
+        const serve = <A, E>(work: Effect.Effect<A, E>) =>
+          Effect.gen(function* () {
+            const pending = yield* Effect.forkScoped(work);
+            while (true) {
+              const next = yield* Effect.raceFirst(
+                Queue.take(completions).pipe(Effect.as("callbacks" as const)),
+                Fiber.await(pending).pipe(Effect.as("done" as const)),
+              );
+              if (next === "done") return yield* Fiber.join(pending);
+              if (inFlight > 0 || ready.length === 0) continue;
+              const batch = ready;
+              ready = [];
+              // Controlled pressure, not a callback-rate estimate from the live context switches.
+              yield* TestClock.adjust("15 millis");
+              yield* Effect.forEach(batch, (release) => Deferred.succeed(release, undefined));
+            }
+          });
+        const first = yield* serve(
+          h.moment("claude", session, { hook_event_name: "UserPromptSubmit" }),
+        );
+        const row = h.db
+          .prepare(
+            "SELECT status, reason, owners_json, cue_status, server_ms FROM moments WHERE delivery = ?",
+          )
+          .get(first.delivery);
+        assert.equal(first.reply.status, 200, JSON.stringify(row));
+        if (first.reply.status !== 200) return;
+        const context = decodeBody(first.reply.body).hookSpecificOutput.additionalContext;
+        assert.include(context, `Read ${index} in full.`);
+        assert.include(context, "Useful Cue 0.");
+        assert.deepEqual(
+          JSON.parse(String(row!.owners_json)),
+          Object.fromEntries(roots.map((root) => [root, "public-owner"])),
+        );
+        assert.equal(row!.cue_status, "ok");
+        assert.isBelow(Number(row!.server_ms), 950);
+        assert.equal(cueRequests.length, 1);
+        assert.lengthOf(cueRequests[0]!.entries, 10);
+        assert.include(
+          cueRequests[0]!.entries.map((entry) => entry.id),
+          "exact-0-0",
+        );
+        yield* h.service.settle(first.delivery);
+        const charged = h.db.prepare("SELECT serve_used FROM budgets").get();
+        assert.deepEqual(
+          h.db
+            .prepare(
+              "SELECT bytes FROM candidates WHERE matcher = 'great_library' AND outcome = 'injected'",
+            )
+            .get(),
+          {
+            bytes: Buffer.byteLength(
+              `ContextMD, the user's own rule store, applies this rule from the user here:\n\nThe Great Library holds knowledge shared across projects and personal knowledge outside any project. Read ${index} in full.`,
+              "utf8",
+            ),
+          },
+        );
+        const repeat = yield* serve(
+          h.moment("claude", session, { hook_event_name: "UserPromptSubmit" }),
+        );
+        assert.equal(repeat.reply.status, 204);
+        assert.deepEqual(h.db.prepare("SELECT serve_used FROM budgets").get(), charged);
+        assert.deepEqual(
+          h.db
+            .prepare(
+              "SELECT count(*) AS n FROM candidates WHERE matcher = 'great_library' AND outcome = 'injected'",
+            )
+            .get(),
+          { n: 1 },
+        );
+      }).pipe(Effect.scoped),
+    ),
+  );
+});
 
 describe("ContextMD deadline phase diagnostics", () => {
   it.effect("records completed and active phase durations only for a deadline cut", () =>
