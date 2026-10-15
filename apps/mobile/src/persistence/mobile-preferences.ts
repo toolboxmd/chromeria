@@ -91,6 +91,7 @@ export interface Preferences {
   /** Fresh keys reset both shelves to collapsed when users update. */
   readonly threadListSettledShelfExpanded?: boolean;
   readonly threadListSnoozedShelfExpanded?: boolean;
+  readonly threadListNoProjectShelfExpanded?: boolean;
   readonly threadListWorkingShelfExpanded?: boolean;
   /** Home list filters, restored on the next launch. */
   readonly threadListFilters?: ThreadListFilters;
@@ -160,6 +161,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     modelFavorites?: Preferences["modelFavorites"];
     threadListSettledShelfExpanded?: boolean;
     threadListSnoozedShelfExpanded?: boolean;
+    threadListNoProjectShelfExpanded?: boolean;
     threadListWorkingShelfExpanded?: boolean;
     threadListFilters?: ThreadListFilters;
     pullRequestListFilters?: PullRequestListPreferences;
@@ -273,6 +275,9 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (typeof parsed.threadListSnoozedShelfExpanded === "boolean") {
     preferences.threadListSnoozedShelfExpanded = parsed.threadListSnoozedShelfExpanded;
+  }
+  if (typeof parsed.threadListNoProjectShelfExpanded === "boolean") {
+    preferences.threadListNoProjectShelfExpanded = parsed.threadListNoProjectShelfExpanded;
   }
   if (typeof parsed.threadListWorkingShelfExpanded === "boolean") {
     preferences.threadListWorkingShelfExpanded = parsed.threadListWorkingShelfExpanded;

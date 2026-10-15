@@ -8,7 +8,10 @@ import {
   snoozeWakeLabel,
 } from "@t3tools/client-runtime/state/thread-settled";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
-import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import type {
+  EnvironmentProject,
+  EnvironmentThreadShell,
+} from "@t3tools/client-runtime/state/shell";
 import { resolveThreadProviderStack } from "@t3tools/client-runtime/state/models";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import {
@@ -236,9 +239,21 @@ export function sortThreadsForListV2<
   return sortActiveThreadsByOrderKey(threads);
 }
 
+/** Unknown project metadata keeps the existing placement. */
+function scratchProjectKeys(
+  projects: ReadonlyArray<Pick<EnvironmentProject, "id" | "environmentId" | "isScratch">> = [],
+): ReadonlySet<string> {
+  return new Set(
+    projects
+      .filter((project) => project.isScratch === true)
+      .map((project) => `${project.environmentId}:${project.id}`),
+  );
+}
+
 /** Canonical card section for Move up/down, independent of search or scope. */
 export function getThreadListV2OrderedSection(input: {
   readonly threads: readonly EnvironmentThreadShell[];
+  readonly projects?: ReadonlyArray<Pick<EnvironmentProject, "id" | "environmentId" | "isScratch">>;
   readonly section: "pinned" | "active";
   readonly pendingOrder?: PendingThreadOrder | null;
   readonly now: string;
@@ -248,6 +263,7 @@ export function getThreadListV2OrderedSection(input: {
 }): EnvironmentThreadShell[] {
   // An empty set is treated as absent so `?.` skips building the key.
   const queuedThreadKeys = input.queuedThreadKeys?.size ? input.queuedThreadKeys : undefined;
+  const scratchKeys = scratchProjectKeys(input.projects);
   const threads = input.threads.filter((thread) => {
     if (thread.archivedAt !== null || thread.lineage.relationshipToParent === "subagent")
       return false;
@@ -264,6 +280,11 @@ export function getThreadListV2OrderedSection(input: {
     ) {
       return false;
     }
+    if (
+      input.section === "active" &&
+      scratchKeys.has(`${thread.environmentId}:${thread.projectId}`)
+    )
+      return false;
     return (thread.pinnedAt != null) === (input.section === "pinned");
   });
   const ordered =
@@ -291,6 +312,9 @@ export interface ThreadListV2Layout {
   readonly items: ThreadListV2Item[];
   /** Settled threads beyond the render limit (behind "Show more"). */
   readonly hiddenSettledCount: number;
+  /** Scratch threads matching the current filters, including collapsed rows. */
+  readonly noProjectCount: number;
+  readonly noProjectShelfHeaderIndex: number | null;
   /** Working threads folded away by the Working section beta. */
   readonly workingCount: number;
   /** Index in `items` where the Working shelf header belongs. */
@@ -351,6 +375,15 @@ export interface ThreadListV2PendingListItem {
   readonly showTrailingDivider: boolean;
 }
 
+export interface ThreadListV2NoProjectShelfListItem {
+  readonly type: "v2-no-project-shelf";
+  readonly key: "v2-no-project-shelf";
+  readonly count: number;
+  readonly expanded: boolean;
+  /** See the snoozed shelf header's field. */
+  readonly disabled: boolean;
+}
+
 export interface ThreadListV2WorkingShelfListItem {
   readonly type: "v2-working-shelf";
   readonly key: "v2-working-shelf";
@@ -384,6 +417,7 @@ export interface ThreadListV2SettledShelfListItem {
 export type ThreadListV2ListItem =
   | ThreadListV2ThreadListItem
   | ThreadListV2PendingListItem
+  | ThreadListV2NoProjectShelfListItem
   | ThreadListV2WorkingShelfListItem
   | ThreadListV2SnoozedShelfListItem
   | ThreadListV2SettledShelfListItem;
@@ -396,6 +430,7 @@ export function isThreadListV2ListItem(value: {
   return (
     value.type === "v2-thread" ||
     value.type === "v2-pending" ||
+    value.type === "v2-no-project-shelf" ||
     value.type === "v2-working-shelf" ||
     value.type === "v2-snoozed-shelf" ||
     value.type === "v2-settled-shelf"
@@ -437,6 +472,13 @@ export function threadListV2ListItemsAreEqual(
         previous.pendingTask === item.pendingTask &&
         previous.showPendingDivider === item.showPendingDivider &&
         previous.showTrailingDivider === item.showTrailingDivider
+      );
+    case "v2-no-project-shelf":
+      return (
+        previous.type === "v2-no-project-shelf" &&
+        previous.count === item.count &&
+        previous.expanded === item.expanded &&
+        previous.disabled === item.disabled
       );
     case "v2-working-shelf":
       return (
@@ -486,14 +528,17 @@ function resolveThreadListV2ItemTimeLabel(
 
 /**
  * Builds the shared mobile order: active → pending → working shelf (beta) →
- * snoozed shelf → settled. Pending tasks are waiting rather than asking, and
+ * No project shelf → snoozed shelf → settled. Pending tasks are waiting rather than asking, and
  * busy or parked work remains reachable without competing with either the
  * inbox or settled history.
  */
 export function buildThreadListV2ListItems(input: {
   readonly items: ReadonlyArray<ThreadListV2Item>;
   readonly pendingTasks: ReadonlyArray<PendingNewTask>;
+  readonly noProjectCount?: number;
+  readonly noProjectShelfHeaderIndex?: number | null;
   readonly workingCount?: number;
+  readonly noProjectShelfExpanded?: boolean;
   readonly workingShelfExpanded?: boolean;
   readonly workingShelfHeaderIndex?: number | null;
   readonly snoozedCount?: number;
@@ -571,7 +616,10 @@ export function buildThreadListV2ListItems(input: {
   const settledCount = input.settledCount ?? 0;
   const settledShelfHeaderIndex = input.settledShelfHeaderIndex ?? null;
   const snoozedEnd = settledShelfHeaderIndex ?? threadItems.length;
-  const workingEnd = snoozedShelfHeaderIndex ?? snoozedEnd;
+  const noProjectCount = input.noProjectCount ?? 0;
+  const noProjectShelfHeaderIndex = input.noProjectShelfHeaderIndex ?? null;
+  const noProjectEnd = snoozedShelfHeaderIndex ?? snoozedEnd;
+  const workingEnd = noProjectShelfHeaderIndex ?? noProjectEnd;
   const activeEnd = workingShelfHeaderIndex ?? workingEnd;
   const result: ThreadListV2ListItem[] = [...threadItems.slice(0, activeEnd), ...pendingItems];
   const shelfDisabled = input.shelfPreferencesLoading === true;
@@ -584,6 +632,16 @@ export function buildThreadListV2ListItems(input: {
       disabled: shelfDisabled,
     });
     result.push(...threadItems.slice(workingShelfHeaderIndex, workingEnd));
+  }
+  if (noProjectShelfHeaderIndex !== null && noProjectCount > 0) {
+    result.push({
+      type: "v2-no-project-shelf",
+      key: "v2-no-project-shelf",
+      count: noProjectCount,
+      expanded: input.noProjectShelfExpanded === true,
+      disabled: shelfDisabled,
+    });
+    result.push(...threadItems.slice(noProjectShelfHeaderIndex, noProjectEnd));
   }
   if (snoozedShelfHeaderIndex !== null && snoozedCount > 0) {
     result.push({
@@ -651,6 +709,7 @@ function sortSettledThreadsReusingLast(
 export function buildThreadListV2Items(input: {
   readonly pendingOrder?: PendingThreadOrder | null;
   readonly threads: ReadonlyArray<EnvironmentThreadShell>;
+  readonly projects?: ReadonlyArray<Pick<EnvironmentProject, "id" | "environmentId" | "isScratch">>;
   readonly environmentId: EnvironmentId | null;
   readonly projectRefs?: ReadonlyArray<{
     readonly environmentId: EnvironmentId;
@@ -673,6 +732,8 @@ export function buildThreadListV2Items(input: {
       shelf, and the inbox orders by when each thread came back to the user
       instead of the saved arrangement. */
   readonly workingShelfEnabled?: boolean;
+  /** Expands No project into cards. Search also reveals matching rows. */
+  readonly noProjectShelfExpanded?: boolean;
   /** Expands the Working shelf into rows. Collapsed is the default. */
   readonly workingShelfExpanded?: boolean;
   /** Returns this device observed but the server does not stamp, such as an
@@ -711,6 +772,8 @@ export function buildThreadListV2Items(input: {
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
   const working: EnvironmentThreadShell[] = [];
+  const noProject: EnvironmentThreadShell[] = [];
+  const scratchKeys = scratchProjectKeys(input.projects);
   const settled: EnvironmentThreadShell[] = [];
   const snoozed: EnvironmentThreadShell[] = [];
   let nextSnoozeWakeAt: string | null = null;
@@ -758,6 +821,8 @@ export function buildThreadListV2Items(input: {
       settled.push(thread);
     } else if (thread.pinnedAt != null) {
       pinned.push(thread);
+    } else if (scratchKeys.has(`${thread.environmentId}:${thread.projectId}`)) {
+      noProject.push(thread);
     } else if (workingShelfEnabled && isThreadWorking(thread)) {
       working.push(thread);
     } else {
@@ -777,6 +842,13 @@ export function buildThreadListV2Items(input: {
       parseTimestampMs(left.snoozedUntil ?? "") - parseTimestampMs(right.snoozedUntil ?? ""),
   );
   const selectedThreadKey = input.selectedThreadKey ?? null;
+  const orderedNoProject = sortThreadsForListV2(noProject);
+  const visibleNoProject =
+    input.noProjectShelfExpanded === true || query.length > 0
+      ? orderedNoProject
+      : orderedNoProject.filter(
+          (thread) => `${thread.environmentId}:${thread.id}` === selectedThreadKey,
+        );
   const visibleWorking =
     input.workingShelfExpanded === true
       ? orderedWorking
@@ -841,6 +913,10 @@ export function buildThreadListV2Items(input: {
       isLast: false,
     });
   }
+  const noProjectShelfHeaderIndex = orderedNoProject.length > 0 ? items.length : null;
+  for (const thread of visibleNoProject) {
+    items.push({ thread, variant: "card", snoozed: false, pinned: false, isLast: false });
+  }
   const snoozedShelfHeaderIndex = orderedSnoozed.length > 0 ? items.length : null;
   for (const thread of visibleSnoozed) {
     items.push({
@@ -868,6 +944,8 @@ export function buildThreadListV2Items(input: {
   return {
     items,
     hiddenSettledCount: orderedSettled.length - pagedSettled.length,
+    noProjectCount: orderedNoProject.length,
+    noProjectShelfHeaderIndex,
     workingCount: orderedWorking.length,
     workingShelfHeaderIndex,
     snoozedCount: orderedSnoozed.length,

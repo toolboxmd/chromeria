@@ -354,6 +354,28 @@ packages/provider-opencode/src/server/v2/adapter.ts
 apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts
 apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts
 apps/server/src/orchestration-v2/testkit/OrchestratorReplayRestartBackgroundNote.integration.test.ts
+
+# No project sidebar section (#356).
+apps/mobile/src/features/home/HomeScreen.tsx
+apps/mobile/src/features/home/useThreadListActions.ts
+apps/mobile/src/features/home/useThreadListActions.test.ts
+apps/mobile/src/features/threads/ThreadArrangementSheet.tsx
+apps/mobile/src/features/threads/ThreadNavigationSidebar.tsx
+apps/mobile/src/features/threads/thread-list-v2-items.tsx
+apps/mobile/src/features/threads/threadListV2.test.ts
+apps/mobile/src/features/threads/threadListV2.ts
+apps/mobile/src/features/threads/threadOrder.ts
+apps/mobile/src/features/threads/use-thread-list-v2-shelf-preferences.ts
+apps/mobile/src/lib/storage.test.ts
+apps/mobile/src/persistence/mobile-preferences.ts
+apps/mobile/src/state/thread-order.ts
+apps/mobile/src/state/thread-order.test.ts
+apps/web/src/components/Sidebar.drag.test.ts
+apps/web/src/components/Sidebar.drag.ts
+apps/web/src/components/Sidebar.logic.test.ts
+apps/web/src/components/Sidebar.logic.ts
+
+# Rejected Connect link (#358).
 apps/server/src/cli/connect.ts
 apps/server/src/cloud/CliState.test.ts
 apps/server/src/cloud/CliState.ts
