@@ -321,6 +321,72 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
     ).toBeNull();
   });
 
+  it.effect.each([
+    {
+      provider: "claudeAgent",
+      path: "/home/test/.local/share/claude/versions/2.1.300",
+      platform: "linux",
+      allowed: true,
+    },
+    {
+      provider: "codex",
+      path: "/home/test/.codex/packages/standalone/releases/0.162.1/bin/codex",
+      platform: "darwin",
+      allowed: true,
+    },
+    {
+      provider: "opencode",
+      path: "/home/test/.opencode/bin/opencode",
+      platform: "linux",
+      allowed: true,
+    },
+    {
+      provider: "codex",
+      path: "C:/test/packages/standalone/current/bin/codex.exe",
+      platform: "win32",
+      allowed: false,
+    },
+    {
+      provider: "cursor",
+      path: "/home/test/.local/bin/cursor-agent",
+      platform: "linux",
+      allowed: false,
+    },
+    { provider: "claudeAgent", path: "/unknown/claude", platform: "linux", allowed: false },
+    {
+      provider: "claudeAgent",
+      path: "/home/test/lib/node_modules/@anthropic-ai/claude-code/cli.js",
+      platform: "linux",
+      allowed: false,
+    },
+  ] as const)(
+    "bounds active-session safety to proven native $provider on $platform ($path)",
+    ({ provider, path, platform, allowed }) =>
+      Effect.gen(function* () {
+        const capabilities = yield* resolvePackageManagedProviderMaintenance(
+          {
+            provider: driver(provider),
+            npmPackageName: "@example/test",
+            nativeUpdate: {
+              args: [provider === "opencode" ? "upgrade" : "update"],
+              isCommandPath: (candidate) =>
+                candidate.includes("/.local/") ||
+                candidate.includes("/standalone/") ||
+                candidate.includes("/.opencode/"),
+            },
+          },
+          {
+            binaryPath: path,
+            resolvedCommandPath: path,
+            realCommandPath: path,
+            env: { PATH: "" },
+            platform,
+          },
+        );
+        expect(capabilities.update?.canRunWhileBusy === true).toBe(allowed);
+      }),
+  );
+
   // The Codex Windows installer exposes `%LOCALAPPDATA%\\Programs\\OpenAI\\Codex\\bin`
   // as a junction into `%CODEX_HOME%\\packages\\standalone\\current\\bin`. Node's
   // realpath follows junctions, so the real path carries the standalone marker

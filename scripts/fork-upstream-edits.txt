@@ -65,6 +65,7 @@ apps/server/src/project/RepositoryIdentityResolver.test.ts
 apps/server/src/project/RepositoryIdentityResolver.ts
 packages/provider-grok/src/server/driver.test.ts
 packages/provider-grok/src/server/driver.ts
+packages/provider-core/src/server/maintenance.ts
 packages/provider-core/src/server/maintenanceResolver.test.ts
 packages/provider-core/src/server/maintenanceResolver.ts
 apps/server/src/provider/providerMaintenanceRunner.test.ts
