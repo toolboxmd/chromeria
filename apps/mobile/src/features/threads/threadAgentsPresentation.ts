@@ -17,6 +17,7 @@ import type {
 import { resolveSelectableModel } from "@t3tools/shared/model";
 
 import { subagentCardDetail } from "./subagent-card-presentation";
+import { subagentChildTarget } from "@t3tools/client-runtime/state/thread-relationships";
 
 const PROMPT_TITLE_LIMIT = 80;
 
@@ -47,7 +48,7 @@ export function subagentThreadTarget(
     return { environmentId, threadId: subagent.childThreadId };
   }
   const remote = subagent.remoteChild;
-  return remote !== undefined && isKnownEnvironment(remote.environmentId)
+  return remote !== undefined && remote.threadId !== undefined && isKnownEnvironment(remote.environmentId)
     ? { environmentId: remote.environmentId, threadId: remote.threadId }
     : null;
 }
@@ -103,8 +104,7 @@ export function resolveSubagentRowPresentation(
     statusLabel: rowStatusLabel(subagent.status),
     tone: rowTone(subagent.status),
     live,
-    canOpenThread:
-      subagent.childThreadId !== null || (subagent.remoteChild !== undefined && canOpenRemote),
+    canOpenThread: subagentChildTarget(subagent) !== null,
     runsOn: subagent.remoteChild?.label ?? null,
   };
 }

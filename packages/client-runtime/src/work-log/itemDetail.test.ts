@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
-import { ThreadId, TurnItemId, type OrchestrationV2TurnItem } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId, TurnItemId, type OrchestrationV2TurnItem } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-import { turnItemOutputImages, turnItemOutputText } from "./itemDetail.ts";
+import { turnItemHasDetail, turnItemOutputImages, turnItemOutputText } from "./itemDetail.ts";
 
 function toolItem(output: unknown): OrchestrationV2TurnItem {
   return {
@@ -26,6 +26,55 @@ function toolItem(output: unknown): OrchestrationV2TurnItem {
     output,
   };
 }
+
+describe("turn item detail", () => {
+  const subagentItem = (overrides: Record<string, unknown>) =>
+    ({
+      id: TurnItemId.make("subagent-remote"),
+      type: "subagent",
+      threadId: ThreadId.make("thread-1"),
+      runId: null,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 1,
+      status: "running",
+      title: "Remote roast",
+      subagentId: "node-remote",
+      childThreadId: null,
+      startedAt: DateTime.makeUnsafe("2026-10-05T00:00:00.000Z"),
+      completedAt: null,
+      updatedAt: DateTime.makeUnsafe("2026-10-05T00:00:01.000Z"),
+      ...overrides,
+    }) as never;
+
+  it("offers detail for an attached remote subagent but not an unattached one", () => {
+    expect(
+      turnItemHasDetail(
+        subagentItem({
+          remoteChild: {
+            environmentId: EnvironmentId.make("environment-cavallo"),
+            threadId: ThreadId.make("thread-remote"),
+            label: "cavallo",
+          },
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      turnItemHasDetail(
+        subagentItem({
+          remoteChild: {
+            environmentId: EnvironmentId.make("environment-cavallo"),
+            label: "cavallo",
+          },
+        }),
+      ),
+    ).toBe(false);
+    expect(turnItemHasDetail(subagentItem({}))).toBe(false);
+  });
+});
 
 describe("tool image output parsing", () => {
   it.each(["array", "content"] as const)(

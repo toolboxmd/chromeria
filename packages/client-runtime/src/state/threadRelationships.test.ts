@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
-import { ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
 import {
   deriveThreadRelationshipGraph,
+  getThreadRelationshipNode,
   immediateThreadRelationships,
+  isParentThreadRelationship,
   orderWebThreadLineageRows,
   resolveMergeBackTargetThreadId,
   threadRelationshipRowStatus,
@@ -171,6 +173,204 @@ describe("thread relationships", () => {
         }),
       ]),
     );
+  });
+
+  it("links a remote delegated child through remoteChild, not childThreadId", () => {
+    const parent = ThreadId.make("thread-parent");
+    const child = ThreadId.make("thread-remote-child");
+    const remoteEnvironment = EnvironmentId.make("environment-cavallo");
+    const graph = deriveThreadRelationshipGraph({
+      threads: [
+        { id: parent, status: "running", forkedFrom: null, lineage: { parentThreadId: null } },
+      ] as never,
+      projection: {
+        thread: { id: parent },
+        subagents: [
+          {
+            childThreadId: null,
+            remoteChild: {
+              environmentId: remoteEnvironment,
+              threadId: child,
+              label: "cavallo",
+            },
+            status: "running",
+          },
+        ],
+        contextTransfers: [],
+      } as never,
+    });
+
+    expect(graph.edges).toEqual([
+      expect.objectContaining({
+        sourceThreadId: parent,
+        targetThreadId: child,
+        kind: "subagent",
+        status: "running",
+        targetEnvironmentId: remoteEnvironment,
+      }),
+    ]);
+    expect(getThreadRelationshipNode(graph, child, remoteEnvironment)?.environmentId).toBe(
+      remoteEnvironment,
+    );
+    expect(getThreadRelationshipNode(graph, child)).toBeUndefined();
+    const row = immediateThreadRelationships(graph, parent)[0]!;
+    expect(row.environmentId).toBe(remoteEnvironment);
+    expect(threadRelationshipRowStatus(graph, row)).toBe("running");
+  });
+
+  it.each([
+    ["running", "running"],
+    ["rolled_back", "interrupted"],
+  ])(
+    "shows a remote child shell activity %s as %s after its delegated task settled",
+    (childActivity, expected) => {
+      const parent = ThreadId.make("thread-parent");
+      const child = ThreadId.make("thread-remote-child");
+      const remoteEnvironment = EnvironmentId.make("environment-cavallo");
+      const graph = deriveThreadRelationshipGraph({
+        threads: [
+          { id: parent, status: "running", forkedFrom: null, lineage: { parentThreadId: null } },
+          {
+            shell: {
+              id: child,
+              title: "Remote child",
+              status: "completed",
+              activityRunStatus: childActivity,
+              forkedFrom: null,
+              lineage: { parentThreadId: null, relationshipToParent: null },
+            },
+            environmentId: remoteEnvironment,
+          },
+        ] as never,
+        projection: {
+          thread: { id: parent },
+          subagents: [
+            {
+              childThreadId: null,
+              remoteChild: {
+                environmentId: remoteEnvironment,
+                threadId: child,
+                label: "cavallo",
+              },
+              status: "completed",
+            },
+          ],
+          contextTransfers: [],
+        } as never,
+      });
+
+      const row = immediateThreadRelationships(graph, parent)[0]!;
+      expect(threadRelationshipRowStatus(graph, row)).toBe(expected);
+      expect(getThreadRelationshipNode(graph, child, remoteEnvironment)?.thread?.title).toBe(
+        "Remote child",
+      );
+    },
+  );
+
+  it("keeps same-id threads in different environments as separate rows", () => {
+    const parent = ThreadId.make("thread-parent");
+    const shared = ThreadId.make("thread-shared");
+    const cavallo = EnvironmentId.make("environment-cavallo");
+    const bestia = EnvironmentId.make("environment-bestia");
+    const remoteShell = (environmentId: EnvironmentId, title: string, status: string) => ({
+      shell: {
+        id: shared,
+        title,
+        status,
+        activityRunStatus: status,
+        forkedFrom: null,
+        lineage: { parentThreadId: null, relationshipToParent: null },
+      },
+      environmentId,
+    });
+    const graph = deriveThreadRelationshipGraph({
+      threads: [
+        { id: parent, status: "running", forkedFrom: null, lineage: { parentThreadId: null } },
+        remoteShell(cavallo, "Cavallo child", "running"),
+        remoteShell(bestia, "Bestia child", "completed"),
+      ] as never,
+      projection: {
+        thread: { id: parent },
+        subagents: [
+          {
+            childThreadId: null,
+            remoteChild: { environmentId: cavallo, threadId: shared, label: "cavallo" },
+            status: "running",
+          },
+          {
+            childThreadId: null,
+            remoteChild: { environmentId: bestia, threadId: shared, label: "bestia" },
+            status: "completed",
+          },
+        ],
+        contextTransfers: [],
+      } as never,
+    });
+
+    const rows = immediateThreadRelationships(graph, parent);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.environmentId)).toEqual([cavallo, bestia]);
+    expect(getThreadRelationshipNode(graph, shared, cavallo)?.thread?.title).toBe("Cavallo child");
+    expect(getThreadRelationshipNode(graph, shared, bestia)?.thread?.title).toBe("Bestia child");
+    expect(rows.map((row) => threadRelationshipRowStatus(graph, row))).toEqual([
+      "running",
+      "completed",
+    ]);
+  });
+
+  it("does not classify a same-id remote child as the current thread's parent", () => {
+    const shared = ThreadId.make("thread-shared");
+    const remoteEnvironment = EnvironmentId.make("environment-cavallo");
+    const graph = deriveThreadRelationshipGraph({
+      threads: [
+        { id: shared, status: "running", forkedFrom: null, lineage: { parentThreadId: null } },
+      ] as never,
+      projection: {
+        thread: { id: shared },
+        subagents: [
+          {
+            childThreadId: null,
+            remoteChild: {
+              environmentId: remoteEnvironment,
+              threadId: shared,
+              label: "cavallo",
+            },
+            status: "running",
+          },
+        ],
+        contextTransfers: [],
+      } as never,
+    });
+
+    const row = immediateThreadRelationships(graph, shared)[0]!;
+    expect(row.environmentId).toBe(remoteEnvironment);
+    expect(isParentThreadRelationship(row.edge, shared)).toBe(false);
+    expect(threadRelationshipRowStatus(graph, row)).toBe("running");
+  });
+
+  it("keeps an unattached remote launch rowless until its thread is known", () => {
+    const parent = ThreadId.make("thread-parent");
+    const graph = deriveThreadRelationshipGraph({
+      threads: [
+        { id: parent, status: "running", forkedFrom: null, lineage: { parentThreadId: null } },
+      ] as never,
+      projection: {
+        thread: { id: parent },
+        subagents: [
+          {
+            childThreadId: null,
+            remoteChild: {
+              environmentId: EnvironmentId.make("environment-cavallo"),
+              label: "cavallo",
+            },
+            status: "running",
+          },
+        ],
+        contextTransfers: [],
+      } as never,
+    });
+
+    expect(graph.edges).toEqual([]);
   });
 
   it("keeps the live shell when an archived snapshot contains the same thread id", () => {
@@ -380,6 +580,51 @@ describe("web thread lineage ordering", () => {
         mergeTargetThreadId: mergeTarget,
       }),
     ).toEqual([parent, mergeTarget, newestFork]);
+  });
+
+  it("does not pin a same-id remote child as the merge-back target", () => {
+    const parent = ThreadId.make("thread-parent");
+    const newestFork = ThreadId.make("thread-newest-fork");
+    const cavallo = EnvironmentId.make("environment-cavallo");
+    const graph = deriveThreadRelationshipGraph({
+      threads: [
+        forkShell({ id: parent, parentThreadId: null, createdAt: "2026-06-01T00:00:00.000Z" }),
+        forkShell({ id: current, parentThreadId: parent, createdAt: "2026-06-02T00:00:00.000Z" }),
+        forkShell({
+          id: newestFork,
+          parentThreadId: current,
+          createdAt: "2026-06-09T00:00:00.000Z",
+        }),
+        {
+          shell: forkShell({
+            id: parent,
+            parentThreadId: null,
+            createdAt: "2026-06-03T00:00:00.000Z",
+          }),
+          environmentId: cavallo,
+        },
+      ] as never,
+      projection: {
+        thread: { id: current },
+        subagents: [
+          {
+            childThreadId: null,
+            remoteChild: { environmentId: cavallo, threadId: parent, label: "cavallo" },
+            status: "running",
+          },
+        ],
+        contextTransfers: [],
+      } as never,
+    });
+
+    const ordered = orderWebThreadLineageRows({
+      graph,
+      rows: immediateThreadRelationships(graph, current),
+      currentThreadId: current,
+      mergeTargetThreadId: parent,
+    }).map((row) => `${row.environmentId ?? "local"}:${row.threadId}`);
+
+    expect(ordered).toEqual([`local:${parent}`, `local:${newestFork}`, `${cavallo}:${parent}`]);
   });
 
   it("sinks missing nodes and shells without a decoded createdAt", () => {

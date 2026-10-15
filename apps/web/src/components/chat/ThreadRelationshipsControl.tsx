@@ -15,12 +15,16 @@ import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subage
 import { deriveProviderSubagentStatus } from "@t3tools/client-runtime/state/thread-execution";
 import {
   deriveThreadRelationshipGraph,
+  getThreadRelationshipNode,
   immediateThreadRelationships,
   isParentThreadRelationship,
+  subagentChildTarget,
+  threadRelationshipNodeKey,
   threadRelationshipRowStatus,
   orderWebThreadLineageRows,
   resolveMergeBackTargetThreadId,
   type ThreadRelationshipEdge,
+  type ThreadRelationshipShellInput,
   type ThreadRelationshipWalkRow,
 } from "@t3tools/client-runtime/state/thread-relationships";
 import {
@@ -395,29 +399,19 @@ export function ThreadRelationshipsPanel(props: {
   const projected = projection?.subagents ?? [];
   const runtimeSubagents = projectedSubagentsToRuntime(projected);
   const byId = new Map(runtimeSubagents.map((agent) => [agent.id, agent]));
-  const subagentsByThreadId = new Map(
-    projected
-      .filter((subagent) => subagent.childThreadId !== null)
-      .map((subagent) => [
-        subagent.childThreadId,
-        {
-          ...byId.get(subagent.id)!,
-          id: subagent.id,
-          threadId: subagent.threadId,
-          runId: subagent.runId,
-          nativeTaskRef: subagent.nativeTaskRef,
-          nativeStatus: subagent.status,
-          driver: subagent.driver,
-          providerInstanceId: subagent.providerInstanceId,
-          origin: subagent.origin,
-          modelSelection: subagent.modelSelection,
-        },
-      ]),
-  );
+  const subagentsByThreadId = new Map(projected.flatMap((subagent) => {
+    const target = subagentChildTarget(subagent);
+    return target === null ? [] : [[threadRelationshipNodeKey(target.threadId, target.environmentId), {
+      ...byId.get(subagent.id)!, id: subagent.id, threadId: subagent.threadId, runId: subagent.runId,
+      nativeTaskRef: subagent.nativeTaskRef, nativeStatus: subagent.status, driver: subagent.driver,
+      providerInstanceId: subagent.providerInstanceId, origin: subagent.origin,
+      modelSelection: subagent.modelSelection, remoteChild: subagent.remoteChild,
+    }] as const];
+  }));
   const workflowGroupsById = new Map(
     deriveWorkflowGroups(runtimeSubagents).map((group) => [group.workflow.id, group]),
   );
-  const shells: ReadonlyArray<OrchestrationV2ThreadShell> = [
+  const shells: ReadonlyArray<ThreadRelationshipShellInput> = [
     ...relationshipShells,
     ...(archivedShells ?? []),
   ];
@@ -433,7 +427,7 @@ export function ThreadRelationshipsPanel(props: {
   }).map((row) => {
     const agent =
       row.edge.kind === "subagent" && !isParentThreadRelationship(row.edge, props.threadId)
-        ? subagentsByThreadId.get(row.threadId)
+        ? subagentsByThreadId.get(threadRelationshipNodeKey(row.threadId, row.environmentId))
         : undefined;
     const workflowGroup = agent === undefined ? undefined : workflowGroupsById.get(agent.id);
     return workflowGroup === undefined
@@ -468,7 +462,7 @@ export function ThreadRelationshipsPanel(props: {
   );
   const runningCount =
     (projection?.subagents.filter(
-      (agent) => agent.childThreadId === null && agent.status === "running",
+      (agent) => subagentChildTarget(agent) === null && agent.status === "running",
     ).length ?? 0) + active.filter(({ edge }) => edge.status === "running").length;
 
   // A linked environment's agent may have delegated this thread from there.
@@ -483,10 +477,10 @@ export function ThreadRelationshipsPanel(props: {
     return null;
   }
 
-  const openThread = (threadId: ThreadId) => {
+  const openThread = (threadId: ThreadId, environmentId: EnvironmentId = props.environmentId) => {
     void navigate({
       to: "/$environmentId/$threadId",
-      params: buildThreadRouteParams(scopeThreadRef(props.environmentId, threadId)),
+      params: buildThreadRouteParams(scopeThreadRef(environmentId, threadId)),
     });
   };
 
@@ -547,7 +541,7 @@ export function ThreadRelationshipsPanel(props: {
   const parentTitle =
     mergeTargetThreadId === null
       ? null
-      : (graph.nodes.get(mergeTargetThreadId)?.thread?.title ?? null);
+      : (getThreadRelationshipNode(graph, mergeTargetThreadId)?.thread?.title ?? null);
 
   return (
     <ThreadDetailsSection
@@ -599,15 +593,18 @@ export function ThreadRelationshipsPanel(props: {
       {groups.map((group) => (
         <ThreadLineageGroup key={`${scopedThreadKey(ref)}:${group.id}`} {...group}>
           {(visibleRows) =>
-            visibleRows.map(({ threadId, edge }) => {
-              const node = graph.nodes.get(threadId);
+            visibleRows.map(({ threadId, environmentId: rowEnvironment, edge }) => {
+              const node = getThreadRelationshipNode(graph, threadId, rowEnvironment);
               const isSubagent = edge.kind === "subagent";
-              const isMergeTarget = threadId === mergeTargetThreadId;
+              // The merge target is a local thread; a same-id child in a
+              // linked environment must not inherit its merge control.
+              const isMergeTarget = threadId === mergeTargetThreadId && rowEnvironment === null;
               const isParent = isParentThreadRelationship(edge, props.threadId);
               const rowStatus =
                 (isParent && threadId === parentRef?.threadId
                   ? (node?.thread?.activityRunStatus ?? parentNativeStatus)
-                  : undefined) ?? threadRelationshipRowStatus(graph, { threadId, edge });
+                  : undefined) ??
+                threadRelationshipRowStatus(graph, { threadId, environmentId: rowEnvironment, edge });
               const RelationshipIcon = isParent
                 ? CornerLeftUpIcon
                 : isSubagent
@@ -615,7 +612,9 @@ export function ThreadRelationshipsPanel(props: {
                   : GitForkIcon;
               const relationship = relationshipLabel(edge, props.threadId);
               const projectedAgent =
-                isSubagent && !isParent ? subagentsByThreadId.get(threadId) : undefined;
+                isSubagent && !isParent
+                  ? subagentsByThreadId.get(threadRelationshipNodeKey(threadId, rowEnvironment))
+                  : undefined;
               const workflowGroup =
                 projectedAgent === undefined
                   ? undefined
@@ -624,8 +623,18 @@ export function ThreadRelationshipsPanel(props: {
                 ? projectedAgent
                 : currentSubagent(projectedAgent, node?.thread);
               const failed = rowStatus === "failed" || rowStatus === "error";
+              // A remote child runs in a linked environment: it opens there,
+              // and stopping it goes through the owning task, not a local
+              // interrupt against a thread this environment does not have.
+              const remoteEnvironmentId = !isParent ? rowEnvironment : null;
+              const rowEnvironmentId = remoteEnvironmentId ?? props.environmentId;
+              const remoteUnreachable =
+                remoteEnvironmentId !== null && !providersByEnvironment.has(remoteEnvironmentId);
+              const rowUnavailable =
+                remoteUnreachable || (node?.missing === true && remoteEnvironmentId === null);
               const canStop =
                 agent &&
+                agent.remoteChild === undefined &&
                 (agent.origin === "app_owned" ||
                   (agent.origin === "provider_native" &&
                     agent.driver === "claudeAgent" &&
@@ -657,10 +666,20 @@ export function ThreadRelationshipsPanel(props: {
               const trailingVisibilityClass = (workflowGroup ? canStopWorkflow : canStop)
                 ? "group-hover:opacity-0 group-focus-within:opacity-0 pointer-coarse:opacity-0 [@media(hover:none)]:opacity-0"
                 : "";
-              const project = projects.find((project) => project.id === node?.thread?.projectId);
-              const relationshipHint = node?.missing
-                ? "This related thread is unavailable"
-                : `Open ${relationship.toLowerCase()} in this chat`;
+              // Project ids are only unique inside one environment, so a
+              // remote row resolves its project there, not locally.
+              const project = allProjects.find(
+                (project) =>
+                  project.id === node?.thread?.projectId &&
+                  project.environmentId === (rowEnvironment ?? props.environmentId),
+              );
+              const relationshipHint = remoteUnreachable
+                ? `Runs on ${agent?.remoteChild?.label ?? "another machine"}, which this client is not connected to`
+                : node?.missing && remoteEnvironmentId === null
+                  ? "This related thread is unavailable"
+                  : remoteEnvironmentId !== null
+                    ? `Open ${relationship.toLowerCase()} on ${agent?.remoteChild?.label ?? "another machine"}`
+                    : `Open ${relationship.toLowerCase()} in this chat`;
               const RelationshipPopup = agent ? ThreadHoverCardPopup : TooltipPopup;
               const relationshipTooltip = agent ? (
                 <SubagentTooltipContent
@@ -730,8 +749,8 @@ export function ThreadRelationshipsPanel(props: {
                         size="sm"
                         variant="ghost"
                         part={workflowGroup ? "primary" : "row"}
-                        disabled={node?.missing === true}
-                        onClick={() => openThread(threadId)}
+                        disabled={rowUnavailable}
+                        onClick={() => openThread(threadId, rowEnvironmentId)}
                       />
                     }
                   >
@@ -743,15 +762,19 @@ export function ThreadRelationshipsPanel(props: {
               if (workflowGroup && agent) {
                 return (
                   <ThreadLineageWorkflowRow
-                    key={threadId}
+                    key={threadRelationshipNodeKey(threadId, rowEnvironment)}
                     group={workflowGroup}
                     providerInstanceId={agent.providerInstanceId}
                     provider={provider}
                     providers={providers}
                     driver={providerDriver}
-                    onOpenThread={(memberThreadId) => openThread(memberThreadId as ThreadId)}
+                    onOpenThread={(memberThreadId) =>
+                      openThread(memberThreadId as ThreadId, rowEnvironmentId)
+                    }
                     isThreadAvailable={(memberThreadId) =>
-                      graph.nodes.get(memberThreadId as ThreadId)?.missing === false
+                      !remoteUnreachable &&
+                      getThreadRelationshipNode(graph, memberThreadId as ThreadId, rowEnvironment)
+                        ?.missing === false
                     }
                     onStop={canStopWorkflow ? () => void stopWorkflow(agent.id) : undefined}
                     stopping={stoppingId === agent.id}
@@ -761,7 +784,10 @@ export function ThreadRelationshipsPanel(props: {
                 );
               }
               return (
-                <li key={threadId} className="group relative flex h-8 items-center rounded-lg">
+                <li
+                  key={threadRelationshipNodeKey(threadId, rowEnvironment)}
+                  className="group relative flex h-8 items-center rounded-lg"
+                >
                   {isMergeTarget ? (
                     <div className={THREAD_DETAILS_PANEL_SPLIT_GROUP_CLASS}>
                       <Tooltip>
@@ -773,8 +799,8 @@ export function ThreadRelationshipsPanel(props: {
                               variant="ghost"
                               part="primary"
                               aria-label={`${threadTitle} ${threadRelationshipStatusLabel(rowStatus)}`}
-                              disabled={node?.missing === true}
-                              onClick={() => openThread(threadId)}
+                              disabled={rowUnavailable}
+                              onClick={() => openThread(threadId, rowEnvironmentId)}
                             />
                           }
                         >

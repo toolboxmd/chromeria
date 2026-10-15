@@ -16,6 +16,8 @@ import {
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2ThreadProjection,
   orchestrationV2RunWorkStartedAt,
+  type EnvironmentId,
+  type NodeId,
   type ThreadId,
 } from "@t3tools/contracts";
 import {
@@ -298,6 +300,8 @@ export interface PendingBackgroundWorkItem {
   readonly kind: BackgroundWorkKind;
   readonly label: string;
   readonly childThreadId: ThreadId | undefined;
+  /** The linked environment that thread runs in, for a remote delegated task. */
+  readonly childEnvironmentId: EnvironmentId | undefined;
 }
 
 export interface PendingBackgroundWorkPresentation {
@@ -331,6 +335,7 @@ export function presentPendingBackgroundWork(
             ? BACKGROUND_WORK_KINDS[task.kind].singular
             : label,
         childThreadId: task.kind === "subagent" ? task.childThreadId : undefined,
+        childEnvironmentId: task.kind === "subagent" ? task.childEnvironmentId : undefined,
       };
     })
     // `map` returned a new array; Hermes has no `toSorted`.
@@ -424,4 +429,18 @@ export function notificationChildThreadId(
       source satisfies never;
       return undefined;
   }
+}
+
+/**
+ * The one delegated task a notification reports, when it reports exactly
+ * one. A task delegated to a linked environment has no `childThreadId` for
+ * the source to carry, so its row resolves the opening thread through the
+ * task record itself.
+ */
+export function notificationSubagentId(
+  source: OrchestrationV2NotificationSource,
+): NodeId | undefined {
+  return source.kind === "delegated_task" && source.taskIds.length === 1
+    ? source.taskIds[0]
+    : undefined;
 }

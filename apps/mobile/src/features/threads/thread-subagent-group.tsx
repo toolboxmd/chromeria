@@ -3,6 +3,7 @@ import { StackActions, useNavigation } from "@react-navigation/native";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { summarizeSubagentStatuses } from "@t3tools/client-runtime/state/subagent-display";
 import { isActiveSubagentStatus } from "@t3tools/client-runtime/state/subagentRuntime";
+import { subagentChildTarget } from "@t3tools/client-runtime/state/thread-relationships";
 import type {
   EnvironmentId,
   OrchestrationV2Subagent,
@@ -16,6 +17,7 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { cn } from "../../lib/cn";
 import type { ThreadFeedActivity } from "../../lib/threadActivity";
+import { useServerConfigs } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
 import { environmentThreadDetails } from "../../state/threads";
 import { subagentCardElapsed } from "./subagent-card-presentation";
@@ -71,6 +73,7 @@ export function ThreadSubagentGroup(props: {
   readonly onToggleRow: (rowId: string, anchorKey: string) => void;
 }) {
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
+  const serverConfigs = useServerConfigs();
   const navigation = useNavigation();
   const openInspector = useOpenThreadInspector();
   const members = props.activities.flatMap(({ projectedItem }) =>
@@ -92,6 +95,10 @@ export function ThreadSubagentGroup(props: {
       result: live?.result ?? item.result,
       progress: live?.progress ?? item.progress,
       model: live?.model ?? null,
+      // A remote launch attaches its thread on the live record after the
+      // turn item was first projected.
+      childThreadId: live?.childThreadId ?? item.childThreadId,
+      remoteChild: live?.remoteChild ?? item.remoteChild,
     };
   });
   const grouped = agents.length > 1;

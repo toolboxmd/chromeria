@@ -51,6 +51,7 @@ import {
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { useServerConfigs } from "../../state/entities";
 import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { toolActivityFaviconUrl } from "@t3tools/shared/favicon";
@@ -86,7 +87,11 @@ import {
   workEntryViewedImagePath,
 } from "@t3tools/client-runtime/work-log/presentation";
 import { resolveWorkGroupScrollAnchor } from "@t3tools/client-runtime/work-log/scroll-anchor";
-import { notificationChildThreadId } from "@t3tools/client-runtime/state/thread-execution";
+import {
+  notificationChildThreadId,
+  notificationSubagentId,
+} from "@t3tools/client-runtime/state/thread-execution";
+import { subagentChildTarget } from "@t3tools/client-runtime/state/thread-relationships";
 import type { MarkdownImageRenderer } from "../../native/SelectableMarkdownText";
 import type { FilePreviewSource } from "../../components/FilePreviewModal";
 import { FilePreviewGallery } from "../../components/FilePreviewGallery";
@@ -880,6 +885,25 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
       ? { environmentId: props.environmentId, row: row.projectedItem }
       : null,
   );
+  const serverConfigs = useServerConfigs();
+  // A remote delegated task's notification names only the task, so resolve
+  // its thread through the parent's live subagent record. The selector
+  // returns a primitive key so rows re-render only when the target changes.
+  const notifiedTaskId =
+    row.projectedItem.item.type === "notification"
+      ? notificationSubagentId(row.projectedItem.item.source)
+      : undefined;
+  const notifiedRemoteTargetKey = useAtomValue(
+    environmentThreadDetails.threadAtom(
+      scopeThreadRef(props.environmentId, row.projectedItem.item.threadId),
+    ),
+    (thread) => {
+      if (notifiedTaskId === undefined) return null;
+      const agent = thread?.projection.subagents.find((agent) => agent.id === notifiedTaskId);
+      const target = agent === undefined ? null : subagentChildTarget(agent);
+      return target === null ? null : `${target.environmentId ?? ""}\u001f${target.threadId}`;
+    },
+  );
   const failureItem = row.projectedItem.item;
   if (failureItem.type === "error" && failureItem.status === "failed") {
     const warning = failureItem.failure.class === "usage_limit";
@@ -958,7 +982,22 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
     row.projectedItem.item.type === "notification"
       ? notificationChildThreadId(row.projectedItem.item.source)
       : undefined;
-  const canExpand = row.canExpand && notifiedSubagentThreadId === undefined;
+  const [remoteEnvironmentId = "", remoteThreadId = ""] =
+    notifiedRemoteTargetKey?.split("\u001f") ?? [];
+  const notifiedTarget =
+    notifiedSubagentThreadId !== undefined
+      ? { threadId: notifiedSubagentThreadId, environmentId: props.environmentId }
+      : remoteThreadId !== "" &&
+          (remoteEnvironmentId === "" || serverConfigs.has(remoteEnvironmentId as EnvironmentId))
+        ? {
+            threadId: remoteThreadId as ThreadId,
+            environmentId:
+              remoteEnvironmentId === ""
+                ? props.environmentId
+                : (remoteEnvironmentId as EnvironmentId),
+          }
+        : null;
+  const canExpand = row.canExpand && notifiedTarget === null;
   const reasoning = row.projectedItem.item.type === "reasoning" ? row.projectedItem.item : null;
   const fetchedItem = fetchedDetail.data?.item ?? null;
   const isRead = toolGroupAction(row.workEntry) === "read";
@@ -1031,12 +1070,10 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
       {...(isFreshRow(row.createdAt) ? { entering: FadeIn.duration(200) } : {})}
     >
       <WorkLogPressable
-        accessibilityRole={
-          notifiedSubagentThreadId !== undefined ? "link" : canExpand ? "button" : undefined
-        }
+        accessibilityRole={notifiedTarget !== null ? "link" : canExpand ? "button" : undefined}
         accessibilityLabel={failed ? `${accessiblePreview}, tool call failed` : accessiblePreview}
         accessibilityHint={
-          notifiedSubagentThreadId !== undefined
+          notifiedTarget !== null
             ? "Opens this agent's thread. Long press to copy."
             : canExpand
               ? `Double tap to ${expanded ? "hide" : "show"} full details. Long press to copy.`
@@ -1044,10 +1081,10 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
         }
         accessibilityState={canExpand ? { expanded } : undefined}
         onPress={() => {
-          if (notifiedSubagentThreadId !== undefined) {
+          if (notifiedTarget !== null) {
             openLinkedThread({
-              environmentId: String(props.environmentId),
-              threadId: String(notifiedSubagentThreadId),
+              environmentId: String(notifiedTarget.environmentId),
+              threadId: String(notifiedTarget.threadId),
             });
             return;
           }

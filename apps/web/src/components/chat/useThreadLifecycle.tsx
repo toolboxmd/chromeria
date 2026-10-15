@@ -60,6 +60,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { backgroundWorkNowItem, childInputNowItem, goalNowItem } from "./ThreadActivityBanners";
 import type { useLocalDispatchState } from "./useLocalDispatchState";
+import { useEnvironmentProviders } from "../../state/environments";
 const RELATED_THREAD_SHELL_WAIT_MS = 1_000;
 
 type PendingThreadRequests = ReturnType<typeof usePendingThreadRequests>;
@@ -397,8 +398,16 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
   };
   const handleStopBackgroundWorkStable = useStableCallback(handleStopBackgroundWork);
   const openRelatedThreadGenerationRef = useRef(0);
-  const onOpenRelatedThread = async (threadId: ThreadId) => {
+  const onOpenRelatedThread = async (threadId: ThreadId, targetEnvironmentId?: EnvironmentId) => {
     const generation = ++openRelatedThreadGenerationRef.current;
+    if (targetEnvironmentId !== undefined && targetEnvironmentId !== environmentId) {
+      // A remote delegated child lives in its own environment; its route loads it there.
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(scopeThreadRef(targetEnvironmentId, threadId)),
+      });
+      return;
+    }
     const threadRef = scopeThreadRef(environmentId, threadId);
     const isEnvironmentLive = () =>
       appAtomRegistry.get(environmentShell.stateValueAtom(environmentId)).status === "live";
@@ -428,6 +437,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     });
   };
   const onOpenRelatedThreadStable = useStableCallback(onOpenRelatedThread);
+  const environmentProviders = useEnvironmentProviders();
   const childThreadInputs = useChildThreadInputs(activeThreadRef);
   const childInputNow = childInputNowItem({
     childThreadInputs,
@@ -518,6 +528,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
         stopping: isStoppingBackgroundWork,
         onStop: handleStopBackgroundWorkStable,
         onOpenThread: onOpenRelatedThreadStable,
+        reachableEnvironments: environmentProviders,
       })
     : null;
   // The relative times read the clock; nowMinute re-renders them on the minute.

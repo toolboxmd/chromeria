@@ -1,4 +1,5 @@
 import {
+  EnvironmentId,
   TurnItemId,
   NodeId,
   MessageId,
@@ -19,6 +20,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { v2Projection } from "./orchestrationV2TestFixtures.ts";
 import {
+  notificationSubagentId,
   deriveReportedModelSelection,
   deriveLatestThreadRun,
   deriveProviderSubagentStatus,
@@ -348,6 +350,28 @@ describe("deriveProviderSubagentStatus", () => {
   });
 });
 
+  it("carries a remote subagent's environment through to its item", () => {
+    const childThreadId = ThreadId.make("thread:remote");
+    const childEnvironmentId = EnvironmentId.make("environment:cavallo");
+    const presentation = presentPendingBackgroundWork([
+      {
+        taskId: "remote",
+        kind: "subagent",
+        description: "Remote roast",
+        childThreadId,
+        childEnvironmentId,
+      },
+    ]);
+
+    expect(presentation?.items[0]).toEqual({
+      taskId: "remote",
+      kind: "subagent",
+      label: "Remote roast",
+      childThreadId,
+      childEnvironmentId,
+    });
+  });
+
 describe("provider-reported model selection", () => {
   const selected = v2Projection.thread.modelSelection;
   const reported = { ...selected, options: [{ id: "reasoningEffort", value: "default" }] };
@@ -391,5 +415,19 @@ describe("provider-reported model selection", () => {
         ],
       }),
     ).toBeNull();
+  });
+});
+
+describe("notificationSubagentId", () => {
+  it("names the one delegated task a notification reports", () => {
+    const taskId = NodeId.make("task-remote");
+    expect(notificationSubagentId({ kind: "delegated_task", taskIds: [taskId] })).toBe(taskId);
+    expect(
+      notificationSubagentId({
+        kind: "delegated_task",
+        taskIds: [taskId, NodeId.make("task-other")],
+      }),
+    ).toBeUndefined();
+    expect(notificationSubagentId({ kind: "command" })).toBeUndefined();
   });
 });

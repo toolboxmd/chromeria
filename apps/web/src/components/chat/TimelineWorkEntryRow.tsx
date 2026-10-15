@@ -13,7 +13,10 @@ import {
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { Link } from "@tanstack/react-router";
-import { notificationChildThreadId } from "@t3tools/client-runtime/state/thread-execution";
+import {
+  notificationChildThreadId,
+  notificationSubagentId,
+} from "@t3tools/client-runtime/state/thread-execution";
 import {
   resolveViewedImageAsset,
   toolGroupAction,
@@ -46,7 +49,7 @@ import {
 import { cn } from "~/lib/utils";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
 import { FetchedToolOutput, V2ItemInspector } from "./V2ItemInspector";
-import { SubagentNotificationLink } from "./V2LifecycleRow";
+import { NotificationSubagentOpenButton, SubagentNotificationLink } from "./V2LifecycleRow";
 import {
   TimelineRowCtx,
   TimelineRowActivityCtx,
@@ -153,10 +156,12 @@ export const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: WorkEn
   const item = props.workEntry.projectedItem?.item;
   const childThreadId =
     item?.type === "notification" ? notificationChildThreadId(item.source) : undefined;
+  const subagentId =
+    item?.type === "notification" ? notificationSubagentId(item.source) : undefined;
   // Fork: a child notice with text renders its text, not just the link (toolboxmd/chromeria#304).
   if (
     item?.type !== "notification" ||
-    childThreadId === undefined ||
+    (childThreadId === undefined && subagentId === undefined) ||
     (item.outcome === "updated" && Boolean(item.detail?.trim()))
   ) {
     return <WorkEntryLogRow {...props} />;
@@ -165,6 +170,7 @@ export const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: WorkEn
     <SubagentNotificationLink
       parentRef={scopeThreadRef(ctx.activeThreadEnvironmentId, item.threadId)}
       childThreadId={childThreadId}
+      subagentId={subagentId}
       outcome={item.outcome}
       createdAt={props.workEntry.createdAt}
       timestampFormat={ctx.timestampFormat}
@@ -187,6 +193,10 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
   const notifiedSubagentThreadId =
     workEntry.projectedItem?.item.type === "notification"
       ? notificationChildThreadId(workEntry.projectedItem.item.source)
+      : undefined;
+  const notifiedSubagentId =
+    workEntry.projectedItem?.item.type === "notification"
+      ? notificationSubagentId(workEntry.projectedItem.item.source)
       : undefined;
   const groupView = use(WorkGroupViewCtx);
   const [expanded, setExpanded] = useState(
@@ -486,6 +496,16 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
             >
               Open subagent
             </InlineButton>
+          ) : notifiedSubagentId && workEntry.projectedItem?.item.type === "notification" ? (
+            <NotificationSubagentOpenButton
+              parentRef={scopeThreadRef(
+                ctx.activeThreadEnvironmentId,
+                workEntry.projectedItem.item.threadId,
+              )}
+              subagentId={notifiedSubagentId}
+              onOpenThread={ctx.onOpenThread}
+              onKeyDown={stopRowToggle}
+            />
           ) : null}
           {showFailedIndicator &&
           !showDestructiveRowStyle &&
