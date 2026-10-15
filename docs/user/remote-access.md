@@ -376,6 +376,13 @@ configuration. It is not a live reachability check. If the environment appears
 offline, run `t3 service status` and read the displayed log. If it disappears
 when SSH closes, see [background-service troubleshooting](./background-service.md#troubleshooting).
 
+If `t3 connect status` says the environment was removed from T3 Connect, run
+`t3 connect link` on that machine, then restart T3 Code there. The command keeps
+your sign-in and preferences while discarding the rejected link. If the stored
+sign-in cannot refresh, complete the new authorization prompt first; on a machine
+without a browser, use `t3 connect link --headless` and approve its code in a
+browser on another device.
+
 | Error                                                     | Recovery                                                                                                                                    |
 | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `environment_link_limit_exceeded` or managed tunnel limit | Deregister an unused environment, then restart T3 Code on the host.                                                                         |
