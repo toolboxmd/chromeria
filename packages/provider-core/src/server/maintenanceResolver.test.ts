@@ -618,6 +618,37 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
       }),
   );
 
+  for (const { targetPath, allowed } of [
+    { targetPath: ["custom", "claude"], allowed: false },
+    { targetPath: [".local", "share", "pnpm", "claude"], allowed: false },
+    { targetPath: [".volta", "bin", "volta-shim"], allowed: false },
+    { targetPath: [".local", "share", "claude", "versions", "2.1.300"], allowed: true },
+  ]) {
+    it.effect.skipIf(!symlinksSupported || windowsHost)(
+      `requires a native resolved target for busy Claude updates (${targetPath.join("/")})`,
+      () =>
+        Effect.gen(function* () {
+          const tempDir = yield* makeTempDir("t3-claude-busy-link");
+          const target = NodePath.join(tempDir, ...targetPath);
+          writeExecutable(target);
+          const link = NodePath.join(tempDir, ".local", "bin", "claude");
+          NodeFS.mkdirSync(NodePath.dirname(link), { recursive: true });
+          NodeFS.symlinkSync(target, link);
+          const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
+            claudeNativeUpdate,
+            { binaryPath: link, env: { PATH: "" } },
+          ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn));
+          expect(capabilities.update?.canRunWhileBusy === true).toBe(allowed);
+          // Preserve the existing idle updater choice independently of busy safety.
+          expect(capabilities.update).toMatchObject({
+            executable: link,
+            args: ["update"],
+            lockKey: "claudeAgent-native",
+          });
+        }),
+    );
+  }
+
   it.effect.skipIf(!symlinksSupported || windowsHost)(
     "keeps a real native Claude install on claude update",
     () =>
