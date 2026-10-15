@@ -1940,6 +1940,40 @@ sources and reasons.
 }
 ```
 
+## no-project-sidebar
+
+```json
+{
+  "id": "no-project-sidebar",
+  "purpose": "Keep temporary projectless threads in a collapsed sidebar section across web, desktop and native mobile.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/356"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/357"],
+  "newFiles": [],
+  "upstreamFiles": [
+    "apps/mobile/src/features/home/HomeScreen.tsx",
+    "apps/mobile/src/features/home/useThreadListActions.ts",
+    "apps/mobile/src/features/home/useThreadListActions.test.ts",
+    "apps/mobile/src/features/threads/ThreadArrangementSheet.tsx",
+    "apps/mobile/src/features/threads/ThreadNavigationSidebar.tsx",
+    "apps/mobile/src/features/threads/thread-list-v2-items.tsx",
+    "apps/mobile/src/features/threads/threadListV2.test.ts",
+    "apps/mobile/src/features/threads/threadListV2.ts",
+    "apps/mobile/src/features/threads/threadOrder.ts",
+    "apps/mobile/src/features/threads/use-thread-list-v2-shelf-preferences.ts",
+    "apps/mobile/src/lib/storage.test.ts",
+    "apps/mobile/src/persistence/mobile-preferences.ts",
+    "apps/mobile/src/state/thread-order.ts",
+    "apps/mobile/src/state/thread-order.test.ts",
+    "apps/web/src/components/Sidebar.drag.test.ts",
+    "apps/web/src/components/Sidebar.drag.ts",
+    "apps/web/src/components/Sidebar.logic.test.ts",
+    "apps/web/src/components/Sidebar.logic.ts"
+  ],
+  "sharedFiles": ["apps/web/src/components/Sidebar.tsx"],
+  "keywords": ["noProjectShelfExpanded", "no-project-header", "No project"]
+}
+```
+
 ## rejected-connect-link
 
 ```json

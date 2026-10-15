@@ -45,6 +45,8 @@ function observeInbox(
  */
 export function useThreadListV2(input: {
   readonly threads: LayoutInput["threads"];
+  /** Scratch projects group their threads in the No project shelf. */
+  readonly projects: LayoutInput["projects"];
   readonly pendingTasks: ReadonlyArray<PendingNewTask>;
   readonly environmentId: EnvironmentId | null;
   readonly projectRefs: LayoutInput["projectRefs"];
@@ -62,6 +64,7 @@ export function useThreadListV2(input: {
   readonly shelfPreferencesLoaded: boolean;
   readonly workingShelfEnabled: boolean;
   readonly workingShelfExpanded: boolean;
+  readonly noProjectShelfExpanded: boolean;
   readonly snoozedShelfExpanded: boolean;
   readonly settledShelfExpanded: boolean;
   readonly selectedThreadKey: string | null;
@@ -86,6 +89,7 @@ export function useThreadListV2(input: {
       computeThreadMoveAvailability({
         allThreads: threads,
         section,
+        projects: input.projects,
         pendingOrder: input.pendingOrder,
         reorderableEnvironmentIds:
           section === "pinned" ? input.pinReorderEnvironmentIds : input.activeReorderEnvironmentIds,
@@ -105,6 +109,8 @@ export function useThreadListV2(input: {
     ]);
   }, [
     threads,
+    input.projects,
+    input.noProjectShelfExpanded,
     input.pendingOrder,
     input.pinReorderEnvironmentIds,
     input.activeReorderEnvironmentIds,
@@ -135,6 +141,8 @@ export function useThreadListV2(input: {
     () =>
       buildThreadListV2Items({
         pendingOrder: input.pendingOrder,
+        projects: input.projects,
+        noProjectShelfExpanded: input.noProjectShelfExpanded,
         threads: threads.filter((thread) => thread.archivedAt === null),
         environmentId: input.environmentId,
         projectRefs: input.projectRefs,
@@ -166,7 +174,9 @@ export function useThreadListV2(input: {
         ),
       }),
     [
-      input.pendingOrder,
+      input.projects,
+    input.noProjectShelfExpanded,
+    input.pendingOrder,
       threads,
       input.environmentId,
       input.projectRefs,
@@ -178,6 +188,8 @@ export function useThreadListV2(input: {
       input.settledLimit,
       layoutTime,
       workingShelfEnabled,
+      input.noProjectShelfExpanded,
+      input.searchQuery,
       input.workingShelfExpanded,
       inbox.returnedAt,
       inbox.isWorking,
@@ -213,6 +225,9 @@ export function useThreadListV2(input: {
     () =>
       buildThreadListV2ListItems({
         items: layout.items,
+        noProjectCount: layout.noProjectCount,
+        noProjectShelfExpanded: input.noProjectShelfExpanded || input.searchQuery.trim().length > 0,
+        noProjectShelfHeaderIndex: layout.noProjectShelfHeaderIndex,
         pendingTasks,
         workingCount: layout.workingCount,
         workingShelfExpanded: input.workingShelfExpanded,
@@ -232,6 +247,8 @@ export function useThreadListV2(input: {
     [
       layout,
       pendingTasks,
+      input.noProjectShelfExpanded,
+      input.searchQuery,
       input.workingShelfExpanded,
       input.snoozedShelfExpanded,
       input.settledShelfExpanded,
