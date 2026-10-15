@@ -39,7 +39,7 @@ flowchart TD
     RS["Resume after restart"]
     %% RS: #264 PR #301 PR #291 PR #329
     SN["Child notices"]
-    %% SN: #269 PR #279
+    %% SN: #269 PR #279 PR #342 #341
     CK["Command keys"]
     %% CK: #232 PR #243
     SP["Shown proof"]
