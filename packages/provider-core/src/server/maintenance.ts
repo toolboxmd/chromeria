@@ -18,6 +18,8 @@ export interface ProviderMaintenanceCommandAction {
   readonly executable: string;
   readonly args: ReadonlyArray<string>;
   readonly lockKey: string;
+  /** Positive proof for this resolved install/updater on the current platform. */
+  readonly canRunWhileBusy?: true;
   /**
    * A native updater finds its install through the same variables the
    * provider runs with (e.g. `CODEX_HOME`), so an instance with a custom home
