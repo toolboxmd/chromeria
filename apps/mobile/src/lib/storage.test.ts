@@ -238,12 +238,14 @@ describe("mobile connection storage", () => {
         threadListSettledShelfExpanded: false,
         threadListSnoozedShelfExpanded: true,
         threadListWorkingShelfExpanded: true,
+        threadListNoProjectShelfExpanded: true,
         workingShelfEnabled: true,
       }),
     ).resolves.toEqual({
       threadListSettledShelfExpanded: false,
       threadListSnoozedShelfExpanded: true,
       threadListWorkingShelfExpanded: true,
+      threadListNoProjectShelfExpanded: true,
       workingShelfEnabled: true,
     });
 
@@ -251,13 +253,27 @@ describe("mobile connection storage", () => {
       threadListSettledShelfExpanded: false,
       threadListSnoozedShelfExpanded: true,
       threadListWorkingShelfExpanded: true,
+      threadListNoProjectShelfExpanded: true,
       workingShelfEnabled: true,
     });
     expect(JSON.parse(mocks.getPreferencesJson() ?? "")).toEqual({
       threadListSettledShelfExpanded: false,
       threadListSnoozedShelfExpanded: true,
       threadListWorkingShelfExpanded: true,
+      threadListNoProjectShelfExpanded: true,
       workingShelfEnabled: true,
+    });
+  });
+
+  it("keeps No project expansion independent and persists collapse", async () => {
+    await savePreferencesPatch({
+      threadListNoProjectShelfExpanded: true,
+      threadListSnoozedShelfExpanded: true,
+    });
+    await savePreferencesPatch({ threadListNoProjectShelfExpanded: false });
+    await expect(loadPreferences()).resolves.toEqual({
+      threadListNoProjectShelfExpanded: false,
+      threadListSnoozedShelfExpanded: true,
     });
   });
 
@@ -269,6 +285,7 @@ describe("mobile connection storage", () => {
         threadListV2SnoozedShelfExpanded: true,
         threadListSettledShelfExpanded: "false",
         threadListSnoozedShelfExpanded: 1,
+        threadListNoProjectShelfExpanded: "true",
       }),
       10,
     );
