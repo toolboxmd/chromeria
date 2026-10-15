@@ -307,7 +307,7 @@ it.effect.each(["running", "completed", "replaced", "sibling", "deep"] as const)
       }
       expect(notices).toEqual([]);
 
-      // Once descendant work ends, the coordinator gets a fresh silence allowance.
+      // Once descendant work ends, the parent can become silent again.
       yield* clock.endAttempt(grandchildId, grandchildRun.id, attemptId);
       yield* monitor.sweep;
       expect((yield* orchestrator.getThreadProjection(parentId)).messages).toEqual(parent.messages);

@@ -116,7 +116,7 @@ const make = Effect.gen(function* () {
           detector.pause(live, now);
           return;
         }
-        // A coordinator can be quiet while its descendants work. Keep their
+        // A parent can be quiet while its descendants work. Keep their
         // activity out of provider timing samples, but renew its silence allowance.
         if (yield* hasActiveDescendant(child.thread, lives)) {
           detector.pause(live, now);
