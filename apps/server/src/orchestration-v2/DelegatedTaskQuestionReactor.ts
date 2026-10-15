@@ -11,9 +11,8 @@ import * as Layer from "effect/Layer";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
-import { reportLabel } from "@t3tools/provider-core/server/notification";
-
 import { forkParked } from "../serverActivation.ts";
+import { reconcileDelegatedTaskQuestion } from "./DelegatedTaskQuestions.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
@@ -33,29 +32,9 @@ const make = Effect.gen(function* () {
     task: OrchestrationV2Subagent,
     request: OrchestrationV2RuntimeRequest,
   ) {
-    if (task.childThreadId === null) return;
-    const key = `${task.threadId}:${request.id}`;
-    const label = reportLabel(task.title?.trim() || task.prompt);
-    const situation =
-      request.responseCapability.type === "message"
-        ? `Delegated task ${task.id} asked a question and is still working.`
-        : `Delegated task ${task.id} is blocked on a question and cannot continue until it is answered.`;
-    yield* engine.dispatch({
-      type: "message.dispatch",
-      commandId: CommandId.make(`server:delegated-task-question:${key}`),
-      threadId: task.threadId,
-      messageId: MessageId.make(`message:delegated-task-question:${key}`),
-      text: `${situation} Read it with t3_pending_request action read, threadId ${task.childThreadId}, and requestId ${request.id}. Answer it with action respond when the answer follows from the task or the user's instructions; otherwise ask the user, then answer it. If it is no longer pending, it was answered or dismissed.`,
-      notification: {
-        source: { kind: "delegated_task", taskIds: [task.id], childThreadId: task.childThreadId },
-        outcome: "updated",
-        summary: `Delegated task${label === undefined ? "" : ` "${label}"`} has a question`,
-      },
-      attachments: [],
-      dispatchMode: { type: "queue_after_active" },
-      createdBy: "agent",
-      creationSource: "server",
-    });
+    yield* reconcileDelegatedTaskQuestion(task, request, engine.dispatch).pipe(
+      Effect.provideService(ProjectionStore.ProjectionStoreV2, projections),
+    );
   });
 
   // Runs for every domain event; most events return before any work is needed.
@@ -139,18 +118,6 @@ const make = Effect.gen(function* () {
         task === undefined ||
         parent.thread.archivedAt !== null ||
         parent.thread.deletedAt !== null
-      ) {
-        return;
-      }
-      // A blocking delegate_task wait delivers the question itself.
-      if (
-        task.completionWake === "settled_only" &&
-        event.payload.responseCapability.type === "live" &&
-        parent.runs.some(
-          (run) =>
-            run.id === task.runId &&
-            (run.status === "preparing" || run.status === "starting" || run.status === "running"),
-        )
       ) {
         return;
       }
