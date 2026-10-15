@@ -161,6 +161,165 @@ const advanceSilence = (epoch: number) =>
     }
   });
 
+it.effect.each(["running", "completed", "replaced", "sibling", "deep"] as const)(
+  "an idle parent's stale notice respects a streaming grandchild's %s state and ancestry",
+  (scenario) =>
+    Effect.gen(function* () {
+      const epoch = yield* Clock.currentTimeMillis;
+      const { orchestrator, childId, run } = yield* setup;
+      yield* orchestrator.dispatch({
+        type: "delegated_task.request",
+        commandId: CommandId.make("silence:delegate-grandchild"),
+        parentThreadId: childId,
+        parentRunId: run.id,
+        parentNodeId: run.rootNodeId!,
+        task: "Nested work",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        completionWake: "always",
+        createdBy: "agent",
+        creationSource: "mcp",
+      });
+      const grandchildId = (yield* orchestrator.getThreadProjection(childId)).subagents[0]!
+        .childThreadId!;
+      const grandchild = yield* orchestrator.getThreadProjection(grandchildId);
+      const grandchildRun = grandchild.runs[0]!;
+      const attemptId = RunAttemptId.make("silence:grandchild-attempt");
+      const parent = yield* orchestrator.getThreadProjection(parentId);
+      const now = yield* DateTime.now;
+      yield* (yield* EventSink.EventSinkV2).write({
+        events: [
+          {
+            id: EventId.make("silence:idle-parent"),
+            type: "run.updated",
+            threadId: parentId,
+            occurredAt: now,
+            payload: { ...parent.runs[0]!, status: "completed", completedAt: now },
+          },
+          {
+            id: EventId.make("silence:grandchild-running"),
+            type: "run.updated",
+            threadId: grandchildId,
+            occurredAt: now,
+            payload: {
+              ...grandchildRun,
+              status: scenario === "completed" ? "completed" : "running",
+              activeAttemptId:
+                scenario === "replaced" ? RunAttemptId.make("silence:replacement") : attemptId,
+            },
+          },
+        ],
+      });
+      if (scenario === "sibling" || scenario === "deep") {
+        const middleId = ThreadId.make("silence:middle");
+        const sink = yield* EventSink.EventSinkV2;
+        if (scenario === "deep") {
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make("silence:middle-created"),
+                type: "thread.created",
+                threadId: middleId,
+                occurredAt: now,
+                payload: {
+                  ...grandchild.thread,
+                  id: middleId,
+                  deletedAt: now,
+                  lineage: {
+                    parentThreadId: childId,
+                    relationshipToParent: "subagent",
+                    rootThreadId: parentId,
+                  },
+                },
+              },
+            ],
+          });
+        }
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("silence:grandchild-lineage"),
+              type: "thread.metadata-updated",
+              threadId: grandchildId,
+              occurredAt: now,
+              payload: {
+                ...grandchild.thread,
+                lineage: {
+                  parentThreadId: scenario === "sibling" ? parentId : middleId,
+                  relationshipToParent: "subagent",
+                  rootThreadId: parentId,
+                },
+              },
+            },
+          ],
+        });
+      }
+      const clock = yield* StreamClock.StreamClock;
+      yield* clock.beginAttempt({
+        threadId: grandchildId,
+        runId: grandchildRun.id,
+        runOrdinal: grandchildRun.ordinal,
+        attemptId,
+        attemptOrdinal: 1,
+        providerThreadId: ProviderThreadId.make("silence:grandchild-native"),
+        provider: adapter.driver,
+        model: modelSelection.model,
+      });
+      const monitor = yield* Monitor.StaleTurnMonitor;
+      for (let second = 0; second <= 160; second += 1) {
+        yield* TestClock.setTime(epoch + second * 1_000);
+        yield* clock.observe(
+          {
+            threadId: grandchildId,
+            runId: grandchildRun.id,
+            providerSessionId: ProviderSessionId.make("silence:grandchild-session"),
+            providerInstanceId: instanceId,
+            event: {
+              type: "message.updated",
+              driver: adapter.driver,
+              message: {
+                id: MessageId.make("silence:grandchild-output"),
+                threadId: grandchildId,
+                runId: grandchildRun.id,
+                nodeId: grandchildRun.rootNodeId!,
+                role: "assistant",
+                text: `Working ${second}`,
+                attachments: [],
+                streaming: true,
+                createdAt: now,
+                updatedAt: yield* DateTime.now,
+                createdBy: "agent",
+                creationSource: "provider",
+              },
+            },
+          },
+          attemptId,
+        );
+        yield* monitor.sweep;
+      }
+      const notices = (yield* orchestrator.getThreadProjection(parentId)).messages.filter(
+        (message) => message.senderThreadId === childId,
+      );
+      if (scenario !== "running" && scenario !== "deep") {
+        expect(notices).toHaveLength(1);
+        return;
+      }
+      expect(notices).toEqual([]);
+
+      // Once descendant work ends, the parent can become silent again.
+      yield* clock.endAttempt(grandchildId, grandchildRun.id, attemptId);
+      yield* monitor.sweep;
+      expect((yield* orchestrator.getThreadProjection(parentId)).messages).toEqual(parent.messages);
+      yield* advanceSilence(epoch + 160_000);
+      expect(
+        (yield* orchestrator.getThreadProjection(parentId)).messages.filter(
+          (message) => message.senderThreadId === childId,
+        ),
+      ).toHaveLength(1);
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect("queues one parent notice with stored effort and leaves the silent child running", () =>
   Effect.gen(function* () {
     const epoch = yield* Clock.currentTimeMillis;
