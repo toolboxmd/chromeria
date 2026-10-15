@@ -246,7 +246,8 @@ export function makeGrokAcpAdapterFlavor(
     runtimeHarness: "Grok",
     capabilities: GrokProviderCapabilitiesV2,
     interruptPromptOnCancel: false,
-    // User Stop restarts the process group; steering cancels softly to preserve background work.
+    // Stop and explicit cut-ins (requestRuntimeRestart) restart the process group so background
+    // tasks end too; routine steering cancels softly to preserve background work.
     restartRuntimeAfterInterrupt: true,
     terminateRuntimeProcessGroupOnInterrupt: true,
     // Settled Grok sessions accept concurrent prompts; skip cancel to preserve background subagents.

@@ -767,6 +767,13 @@ export const OrchestrationV2RunAttempt = Schema.Struct({
   providerThreadId: ProviderThreadId,
   providerTurnId: Schema.NullOr(ProviderTurnId),
   reason: Schema.Literals(["initial", "steering_restart", "retry", "provider_recovery"]),
+  /** Who requested this steering restart, separately from the message's author. Absent on older rows. */
+  requestedBy: Schema.optional(
+    Schema.Struct({
+      ...OrchestrationV2CreationFields,
+      senderThreadId: Schema.optional(ThreadId),
+    }),
+  ),
   status: Schema.Literals([
     "pending",
     "running",
@@ -3320,6 +3327,9 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("queued-message.promote-to-steer"),
+    createdBy: Schema.optional(OrchestrationV2Actor),
+    creationSource: Schema.optional(OrchestrationV2CreationSource),
+    senderThreadId: Schema.optional(ThreadId),
     commandId: CommandId,
     threadId: ThreadId,
     queuedRunId: RunId,

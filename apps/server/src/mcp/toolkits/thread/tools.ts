@@ -1,8 +1,5 @@
-<<<<<<< HEAD
-=======
 import { ThreadBare } from "@t3tools/contracts";
 import * as McpRouting from "../../McpRouting.ts";
->>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
 import {
   OrchestratorMcpEnvironmentTarget,
   ScheduledTaskId,
@@ -173,29 +170,13 @@ const PendingRequestTool = Tool.make("t3_pending_request", {
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);
 
-<<<<<<< HEAD
 const threadConfiguration = Schema.Struct({
+  bare: Schema.optional(ThreadBare),
   threadId: ThreadId,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
 });
-=======
-const ThreadConfigurationTool = Tool.make("t3_thread_configuration", {
-  ...commandTool,
-  description: "Read a thread's provider, model, and modes. Omit `threadId` for this thread.",
-  parameters: McpRouting.parameters(Schema.Struct({ threadId: Schema.optional(ThreadId) })),
-  success: Schema.Struct({
-    bare: Schema.optional(ThreadBare),
-    threadId: ThreadId,
-    modelSelection: ModelSelection,
-    runtimeMode: RuntimeMode,
-    interactionMode: ProviderInteractionMode,
-  }),
-})
-  .annotate(Tool.Readonly, true)
-  .annotate(Tool.Destructive, false);
->>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
 const ThreadConfigureTool = Tool.make("t3_thread_configure", {
   ...commandTool,
   description:

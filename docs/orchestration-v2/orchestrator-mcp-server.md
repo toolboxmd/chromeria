@@ -436,16 +436,45 @@ are separate; settling can cancel a queued notice before it runs.
 
 For other sends:
 
-- `auto` starts an idle thread. On a fully active turn it steers when that
-  provider can take the message without cancelling running tools, and queues
-  when a steer would cancel those tools and the provider would report the
-  cancel as a user refusal;
+- `auto` starts an idle thread, steers a running Codex or OpenCode turn natively,
+  queues on Claude, and restarts on restart-only harnesses such as Grok and Cursor;
 - `queue` creates a separate follow-up run after active work;
-- `steer` requires a steerable active provider turn. When a steer would cancel
-  running tools and the provider would report that as a user refusal, the
-  message queues instead and the send reports delivery `queued`; and
-- `restart` requires an active provider turn and uses the orchestrator's
-  interrupt-and-restart path.
+- `steer` follows the same harness rules as `auto`, but requires a running turn;
+- `restart` is for an urgent course change that must interrupt running work. It
+  requires a running turn on a harness supporting interrupt and restart, and uses
+  its native Stop cancellation, including background work within that scope. The
+  replacement prompt names the requester and explains that stopped calls were
+  interrupted rather than refused. On a bare thread the prompt is the message
+  alone, with no T3 note, and a leading `/` is allowed. For other threads, queue
+  native slash commands or express the urgent instruction in plain text.
+
+Claude closes its query: the turn, its background commands and the native agents
+that process ran end, including agents an earlier run started in it. Codex
+interrupts the turn and its active native descendants and terminates retained
+background terminals on the same thread, including ones earlier turns left; it
+does not reach every child an earlier turn launched. If Codex rejects or does not
+answer a cancellation, cannot pause an active goal, or cannot terminate a
+background terminal, the turn stays open and the message is not delivered.
+OpenCode 1 aborts the session
+and its descendant sessions and keeps the turn open until their final output
+arrives, within its cleanup bounds. OpenCode 2 interrupts the turn first, then its
+native background subagents; if one cannot be stopped, the turn stays open and
+the message is not delivered. Grok tears down and respawns its runtime, ending its
+native tasks, monitors and subagents; the message waits for the respawn, and a
+failed teardown leaves the session unusable. Other ACP agents and Antigravity
+receive their native cancel, and whether their background work stops is up to the
+agent. Cursor cancels the run. Pi and Muse reject restart. If cancellation still
+fails after retries, the replacement is not started and its run is marked failed
+with the reason; Stop ends what can still be stopped. A tool shown interrupted may
+have partly run and its process may not have exited yet. Separately delegated T3
+tasks keep running; cancel those explicitly. Routine `auto` and `steer` restarts
+on Grok and Cursor keep their softer interrupt. A thread only waiting on
+background work rejects restart; use `t3_thread_interrupt`. No interruption undoes
+completed effects. The `restarted` response acknowledges dispatch, not completed
+cancellation or delivery.
+
+An agent's queue-row promotion into Claude remains rejected with the message
+still queued. Use an explicit `t3_thread_send` restart for an urgent interruption.
 
 The target runtime and interaction modes may not be broader than the caller's.
 Stable command and message IDs are derived from `clientRequestId` for

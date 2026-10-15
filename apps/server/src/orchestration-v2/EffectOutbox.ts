@@ -47,6 +47,7 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("provider-turn.interrupt"),
     providerSessionId: ProviderSessionId,
+    replacementProviderSessionId: Schema.optional(ProviderSessionId),
     providerThreadId: ProviderThreadId,
     providerTurnId: ProviderTurnId,
     subagent: Schema.optional(Schema.Struct({ id: NodeId, nativeTaskId: Schema.String })),
@@ -65,6 +66,7 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     providerTurnId: ProviderTurnId,
     interruptedAttemptId: RunAttemptId,
     runId: RunId,
+    interruption: Schema.optional(Schema.Literal("stop")),
     sessionTransition: Schema.optional(
       Schema.Union([
         Schema.Struct({

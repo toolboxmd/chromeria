@@ -147,12 +147,9 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
   suffix: string,
   nativeSessionId: string,
   client: object,
-<<<<<<< HEAD
-  host: Partial<ProviderHost.ProviderHost["Service"]> = {},
-=======
   bareRoot?: string,
   initialAgent?: string,
->>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
+  host: Partial<ProviderHost.ProviderHost["Service"]> = {},
 ) {
   const instanceId = ProviderInstanceId.make(`opencode-${suffix}`);
   const threadId = ThreadId.make(`thread-opencode-${suffix}`);
@@ -200,11 +197,7 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
   const startTurn = (
     text = "hello",
     startProviderThread: OrchestrationV2ProviderThread = providerThread,
-<<<<<<< HEAD
-    turnPolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy = policy,
-=======
-    override: Partial<ProviderAdapter.ProviderAdapterV2TurnInput> = {},
->>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
+    turnPolicyOrOverride: ProviderAdapter.ProviderAdapterV2RuntimePolicy | Partial<ProviderAdapter.ProviderAdapterV2TurnInput> = policy,
   ) =>
     runtime.startTurn({
       appThread: {
@@ -245,12 +238,8 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
         attachments: [],
       },
       modelSelection,
-<<<<<<< HEAD
-      runtimePolicy: turnPolicy,
-=======
-      runtimePolicy: policy,
-      ...override,
->>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
+      runtimePolicy: "runtimeMode" in turnPolicyOrOverride ? turnPolicyOrOverride : policy,
+      ...("runtimeMode" in turnPolicyOrOverride ? {} : turnPolicyOrOverride),
     });
   return {
     nativeSessionId,
@@ -265,7 +254,6 @@ const makeOpenCodeRuntimeHarness = Effect.fn("makeOpenCodeRuntimeHarness")(funct
 });
 
 describe("OpenCodeAdapterV2", () => {
-<<<<<<< HEAD
   it.effect("classifies APIError 429 as a usage limit", () =>
     Effect.gen(function* () {
       const nativeEvents = asyncEventStream();
@@ -473,7 +461,6 @@ describe("OpenCodeAdapterV2", () => {
     ),
   );
 
-=======
   it.effect.each([
     { name: "default build", interactionMode: "default", agent: undefined },
     { name: "inherited plan after build resume", interactionMode: "plan", agent: undefined },
@@ -557,7 +544,6 @@ describe("OpenCodeAdapterV2", () => {
       ),
     ),
   );
->>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
   it.effect.each(["completed", "failed", "unavailable"] as const)(
     "normalizes OpenCode step usage for %s turns",
     (ending) =>
@@ -1035,6 +1021,553 @@ describe("OpenCodeAdapterV2", () => {
       ),
       Effect.scoped,
     ),
+  );
+
+  it.effect.each([
+    ["native-tail", "active-turn", "interrupt"],
+    ["timeout", "active-turn", "interrupt"],
+    ["native-tail", "attached-busy", "interrupt"],
+    ["stale-idle-tail", "attached-busy", "interrupt"],
+    ["timeout", "attached-busy", "interrupt"],
+    ["native-tail", "related-busy", "interrupt"],
+    ["abort-failure", "attached-busy", "cut-in-retry"],
+    ["enumeration-failure", "attached-busy", "cut-in-retry"],
+    ["enumeration-failure", "unobserved-child", "cut-in-retry"],
+    ["sweep-timeout", "attached-busy", "cut-in-retry"],
+    ["native-tail", "settled-root", "stop"],
+    ["abort-failure", "attached-busy", "stop"],
+    ["abort-failure", "attached-busy", "stop-tail"],
+    ["enumeration-failure", "attached-busy", "stop"],
+    ["sweep-timeout", "attached-busy", "stop"],
+    ["abort-failure", "attached-busy", "interrupt"],
+    ["abort-failure", "attached-busy", "cut-in-end"],
+    ["enumeration-failure", "attached-busy", "cut-in-end"],
+    ["sweep-timeout", "attached-busy", "cut-in-end"],
+    ["abort-failure", "settled-root", "cut-in-retry"],
+    ["abort-failure", "settled-root", "cut-in-end"],
+    ["abort-failure", "attached-busy", "cut-in-stop"],
+    ["enumeration-failure", "attached-busy", "cut-in-stop"],
+  ] as const)(
+    "keeps an interrupted root behind its aborted descendant (%s, %s, %s)",
+    ([ending, admission, action]) =>
+      Effect.gen(function* () {
+        const nativeEvents = asyncEventStream();
+        const push = (event: unknown) => Effect.promise(() => nativeEvents.push(event));
+        let childAbortCalled = promiseGate<void>();
+        const cleanupFailed = promiseGate<void>();
+        const releaseChild = promiseGate<void>();
+        const returned = yield* Deferred.make<void>();
+        const rootRunning = yield* Deferred.make<ProviderTurnId>();
+        const childRunning = yield* Deferred.make<void>();
+        const rootTerminal = yield* Deferred.make<void>();
+        const childTerminal = yield* Deferred.make<void>();
+        const drained = yield* Deferred.make<void>();
+        const events: ProviderAdapter.ProviderAdapterV2Event[] = [];
+        const root = "ses_interrupt_root";
+        const child = "ses_interrupt_child";
+        let promptId = "";
+        let finished = false;
+        let childStarted = false;
+        let childOutputSent = false;
+        let draining = false;
+        let enumerations = 0;
+        let rootAborts = 0;
+        let childAborts = 0;
+        let childAbortSignal: AbortSignal | undefined;
+        const cleanupFails =
+          ending === "abort-failure" ||
+          ending === "enumeration-failure" ||
+          ending === "sweep-timeout";
+        const cutIn = action.startsWith("cut-in");
+        const failureAttempts = action === "cut-in-end" ? 5 : 1;
+        const childStatus = cleanupFails && action !== "cut-in-retry" ? "completed" : "interrupted";
+        const status = (sessionID: string, type: "busy" | "idle") => ({
+          type: "session.status",
+          properties: { sessionID, status: { type } },
+        });
+        const childTool = (toolStatus: "running" | "completed") => ({
+          type: "message.part.updated",
+          properties: {
+            sessionID: child,
+            part: {
+              id: "prt_child_command",
+              sessionID: child,
+              messageID: "msg_child_assistant",
+              type: "tool",
+              tool: "bash",
+              callID: "call_child_command",
+              state: {
+                status: toolStatus,
+                input: { command: "sleep 20" },
+                title: "Held child command",
+                time: { start: 3, ...(toolStatus === "completed" ? { end: 4 } : {}) },
+                ...(toolStatus === "completed" ? { output: "CHILD_PARTIAL" } : {}),
+              },
+            },
+          },
+        });
+        const task = (attached: boolean) => ({
+          type: "message.part.updated",
+          properties: {
+            sessionID: root,
+            part: {
+              id: "prt_task",
+              sessionID: root,
+              messageID: "msg_root_assistant",
+              type: "tool",
+              tool: "task",
+              callID: "call_task",
+              state: {
+                status: "running",
+                input: { description: "Held child", prompt: "sleep", subagent_type: "general" },
+                title: "Held child",
+                metadata: attached ? { parentSessionId: root, sessionId: child } : {},
+                time: { start: 2 },
+              },
+            },
+          },
+        });
+        const admitChild = async () => {
+          if (childStarted) return;
+          await nativeEvents.push({
+            type: "message.updated",
+            properties: {
+              sessionID: child,
+              info: { id: "msg_child_user", sessionID: child, role: "user", time: { created: 2 } },
+            },
+          });
+          await nativeEvents.push({
+            type: "message.updated",
+            properties: {
+              sessionID: child,
+              info: {
+                id: "msg_child_assistant",
+                parentID: "msg_child_user",
+                sessionID: child,
+                role: "assistant",
+                time: { created: 3 },
+              },
+            },
+          });
+          await nativeEvents.push(childTool("running"));
+          childStarted = true;
+        };
+        const completeChildTool = async () => {
+          if (childOutputSent) return;
+          await nativeEvents.push(childTool("completed"));
+          childOutputSent = true;
+        };
+        const harness = yield* makeOpenCodeRuntimeHarness(
+          `${ending}-${admission}-${action}`,
+          root,
+          {
+            event: { subscribe: async () => ({ stream: nativeEvents.stream }) },
+            session: {
+              create: async () => ({ data: { id: root, time: { created: 1, updated: 1 } } }),
+              get: async () => ({
+                data: {
+                  id: child,
+                  parentID: root,
+                  permission: [],
+                  time: { created: 2, updated: 2 },
+                },
+              }),
+              update: async () => ({ data: { id: child, parentID: root } }),
+              messages: async () => ({ data: [] }),
+              children: async ({ sessionID }: { sessionID: string }) => {
+                if (sessionID !== root || finished) return { data: [] };
+                enumerations += 1;
+                if (
+                  ending === "enumeration-failure" &&
+                  (enumerations <= failureAttempts || action === "cut-in-stop")
+                ) {
+                  cleanupFailed.resolve();
+                  throw new Error("cannot enumerate descendants");
+                }
+                // Cleanup retry must still reach a previously attempted session
+                // even if the next listing no longer returns it.
+                if (ending === "abort-failure" && enumerations > 1) return { data: [] };
+                if (admission === "related-busy" || admission === "unobserved-child") {
+                  await nativeEvents.push(task(true));
+                }
+                return { data: [{ id: child }] };
+              },
+              promptAsync: async (input: { messageID: string }) => {
+                promptId = input.messageID;
+                return { data: true };
+              },
+              abort: async (
+                { sessionID }: { sessionID: string },
+                options: { signal: AbortSignal },
+              ) => {
+                if (finished) return { data: true };
+                if (sessionID === root) {
+                  rootAborts += 1;
+                  await nativeEvents.push(status(root, "idle"));
+                } else {
+                  childAborts += 1;
+                  childAbortSignal = options.signal;
+                  childAbortCalled.resolve();
+                  if (
+                    ending === "abort-failure" &&
+                    (childAborts <= failureAttempts || action === "cut-in-stop")
+                  ) {
+                    cleanupFailed.resolve();
+                    throw { status: 500 };
+                  }
+                  if (ending === "sweep-timeout" && childAborts <= failureAttempts)
+                    return new Promise(() => {});
+                  if (ending !== "timeout" && ending !== "stale-idle-tail") {
+                    await releaseChild.promise;
+                    if (!finished) {
+                      await admitChild();
+                      await completeChildTool();
+                      await nativeEvents.push(status(child, "idle"));
+                    }
+                  }
+                }
+                return { data: true };
+              },
+            },
+          },
+        );
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            finished = true;
+            releaseChild.resolve();
+            nativeEvents.close();
+          }),
+        );
+        yield* harness.runtime.events.pipe(
+          Stream.runForEach((event) =>
+            Effect.gen(function* () {
+              events.push(event);
+              if (
+                draining &&
+                event.type === "provider_thread.updated" &&
+                event.providerThread.id === harness.providerThread.id
+              )
+                yield* Deferred.succeed(drained, undefined);
+              if (event.type === "turn.terminal") yield* Deferred.succeed(rootTerminal, undefined);
+              if (
+                event.type === "provider_turn.updated" &&
+                event.providerTurn.runAttemptId !== null &&
+                event.providerTurn.status === "running"
+              )
+                yield* Deferred.succeed(rootRunning, event.providerTurn.id);
+              if (
+                event.type === "provider_turn.updated" &&
+                event.providerTurn.runAttemptId === null &&
+                event.providerTurn.status === "running"
+              )
+                yield* Deferred.succeed(childRunning, undefined);
+              if (
+                event.type === "provider_turn.updated" &&
+                event.providerTurn.runAttemptId === null &&
+                event.providerTurn.status !== "running"
+              )
+                yield* Deferred.succeed(childTerminal, undefined);
+            }),
+          ),
+          Effect.forkScoped,
+        );
+        yield* harness.startTurn();
+        yield* push({
+          type: "message.updated",
+          properties: {
+            sessionID: root,
+            info: { id: promptId, sessionID: root, role: "user", time: { created: 1 } },
+          },
+        });
+        yield* push(status(root, "busy"));
+        if (admission !== "unobserved-child") yield* push(task(admission !== "related-busy"));
+        if (admission === "related-busy")
+          yield* push({
+            type: "session.created",
+            properties: { info: { id: child, parentID: root } },
+          });
+        if (admission !== "unobserved-child") {
+          yield* push(status(child, ending === "stale-idle-tail" ? "idle" : "busy"));
+        }
+        if (admission === "active-turn") {
+          yield* Effect.promise(admitChild);
+          yield* Deferred.await(childRunning);
+        }
+        if (admission === "settled-root") {
+          yield* push(status(root, "idle"));
+          yield* Deferred.await(rootTerminal);
+        }
+        const providerTurnId = yield* Deferred.await(rootRunning);
+        const interruptInput = {
+          providerThread: harness.providerThread,
+          providerTurnId,
+          ...(action !== "interrupt" ? { requestRuntimeRestart: true } : {}),
+          ...(cutIn ? { replacementFollows: true as const } : {}),
+        };
+        const rootIsHeld = () =>
+          Effect.gen(function* () {
+            const held = yield* harness.runtime.readThreadSnapshot({
+              providerThread: harness.providerThread,
+            });
+            assert.equal(
+              held.providerTurns.at(-1)?.status,
+              admission === "settled-root" ? "completed" : "running",
+              "cleanup failure must not end the captured root",
+            );
+            if (admission !== "settled-root") assert.isFalse(yield* Deferred.isDone(rootTerminal));
+            assert.isTrue(yield* harness.runtime.hasPendingBackgroundWork!);
+            assert.isTrue(
+              Exit.isFailure(yield* Effect.exit(harness.startTurn("must wait for cleanup"))),
+              "an interruption blocks start even when its root already completed",
+            );
+          });
+        const failedCleanup = (replacementFollows: true | undefined) =>
+          Effect.gen(function* () {
+            childAbortCalled = promiseGate<void>();
+            const failedReturned = yield* Deferred.make<void>();
+            const failedStop = yield* harness.runtime
+              .interruptTurn({
+                providerThread: harness.providerThread,
+                providerTurnId,
+                ...(action !== "interrupt" ? { requestRuntimeRestart: true } : {}),
+                ...(replacementFollows ? { replacementFollows } : {}),
+              })
+              .pipe(
+                Effect.result,
+                Effect.tap(() => Deferred.succeed(failedReturned, undefined)),
+                Effect.forkScoped,
+              );
+            if (ending === "sweep-timeout") {
+              yield* Effect.promise(() => childAbortCalled.promise);
+              yield* TestClock.adjust("15 seconds");
+            } else yield* Effect.promise(() => cleanupFailed.promise);
+            if (replacementFollows === undefined) {
+              yield* TestClock.adjust("9999 millis");
+              assert.isFalse(
+                yield* Deferred.isDone(failedReturned),
+                "ordinary Stop waits for the bounded native tail before reporting cleanup failure",
+              );
+              yield* rootIsHeld();
+              if (action === "stop-tail") {
+                yield* Effect.promise(admitChild);
+                yield* Deferred.await(childRunning);
+                yield* Effect.promise(completeChildTool);
+                yield* push(status(child, "idle"));
+                yield* Deferred.await(childTerminal);
+              } else yield* TestClock.adjust("1 millis");
+            }
+            const failure = yield* Fiber.join(failedStop);
+            assert.equal(failure._tag, "Failure");
+            if (failure._tag === "Failure")
+              assert.equal(failure.failure._tag, "ProviderAdapterInterruptError");
+            if (ending === "sweep-timeout") assert.isTrue(childAbortSignal?.aborted);
+          });
+        if (cleanupFails) {
+          for (let attempt = 0; attempt < failureAttempts; attempt += 1) {
+            yield* failedCleanup(cutIn ? true : undefined);
+            if (cutIn) yield* rootIsHeld();
+          }
+          if (admission === "unobserved-child") {
+            yield* push(task(true));
+            yield* push(status(child, "busy"));
+          }
+          yield* Effect.promise(admitChild);
+          yield* Deferred.await(childRunning);
+          yield* Effect.promise(completeChildTool);
+          yield* push(status(root, "idle"));
+          if (cutIn) yield* rootIsHeld();
+          if (action === "cut-in-stop") yield* failedCleanup(undefined);
+          if (action !== "cut-in-retry") {
+            if (action !== "cut-in-end") {
+              const stopped = yield* harness.runtime.readThreadSnapshot({
+                providerThread: harness.providerThread,
+              });
+              assert.equal(
+                stopped.providerTurns.at(-1)?.status,
+                "interrupted",
+                "Stop releases the root on cleanup failure",
+              );
+              if (action !== "stop-tail") {
+                assert.isTrue(
+                  yield* harness.runtime.hasPendingBackgroundWork!,
+                  "unconfirmed busy work stays pending after Stop",
+                );
+                assert.isFalse(
+                  yield* Deferred.isDone(childTerminal),
+                  "Stop does not invent an end for an unreached child",
+                );
+              }
+            }
+            yield* push(status(child, "idle"));
+            yield* Deferred.await(childTerminal);
+            if (
+              action === "cut-in-end" &&
+              (ending === "enumeration-failure" || ending === "sweep-timeout")
+            ) {
+              // A known child's end cannot confirm an unread part of the native
+              // session tree. A later Stop retries discovery before release.
+              yield* rootIsHeld();
+              yield* Effect.sync(() => releaseChild.resolve());
+              yield* harness.runtime.interruptTurn({
+                providerThread: harness.providerThread,
+                providerTurnId,
+                requestRuntimeRestart: true,
+              });
+            }
+            const released = yield* harness.runtime.readThreadSnapshot({
+              providerThread: harness.providerThread,
+            });
+            assert.equal(
+              released.providerTurns.at(-1)?.status,
+              admission === "settled-root" ? "completed" : "interrupted",
+              "the native child end releases the retained root without another interrupt call",
+            );
+            assert.isFalse(
+              yield* harness.runtime.hasPendingBackgroundWork!,
+              "native completion releases the retry hold after the final failure",
+            );
+          }
+        }
+        if (!cleanupFails || action === "cut-in-retry") {
+          const interrupt = yield* harness.runtime.interruptTurn(interruptInput).pipe(
+            Effect.tap(() => Deferred.succeed(returned, undefined)),
+            Effect.forkScoped,
+          );
+          yield* Effect.promise(() => childAbortCalled.promise);
+          if (admission !== "settled-root") {
+            const held = yield* harness.runtime.readThreadSnapshot({
+              providerThread: harness.providerThread,
+            });
+            assert.equal(
+              held.providerTurns.at(-1)?.status,
+              "running",
+              "root idle must wait for the aborted native id",
+            );
+          }
+          if (ending === "stale-idle-tail") {
+            // The HTTP abort acknowledges before SSE delivers this child's
+            // current turn. Its earlier idle is not an acknowledgement for it.
+            yield* TestClock.adjust("9999 millis");
+            assert.isFalse(yield* Deferred.isDone(returned), "old idle cannot release a new abort");
+            yield* Effect.promise(admitChild);
+            yield* Effect.promise(completeChildTool);
+            yield* push(status(child, "idle"));
+          } else if (ending !== "timeout") yield* Effect.sync(() => releaseChild.resolve());
+          else {
+            yield* TestClock.adjust("9999 millis");
+            assert.isFalse(yield* Deferred.isDone(returned), "the child wait has not elapsed");
+            yield* TestClock.adjust("1 millis");
+          }
+          yield* Fiber.join(interrupt);
+        }
+        if (ending === "timeout" && admission === "attached-busy") {
+          // There was no child turn to settle locally, but the actual aborted id
+          // must still hold the root until the bound.
+          assert.isFalse(yield* Deferred.isDone(childRunning));
+        } else yield* Deferred.await(childTerminal);
+        yield* Deferred.await(rootTerminal);
+        yield* push({ type: "session.idle", properties: { sessionID: root } });
+        draining = true;
+        yield* push(status(root, "busy"));
+        yield* Deferred.await(drained);
+        const terminalIndex = events.findIndex((event) => event.type === "turn.terminal");
+        const childTurns = events.filter(
+          (event) =>
+            event.type === "provider_turn.updated" &&
+            event.providerTurn.runAttemptId === null &&
+            event.providerTurn.status !== "running",
+        );
+        assert.equal(
+          rootAborts,
+          admission === "settled-root" ? 0 : 1,
+          "a retained retry must not re-abort the root",
+        );
+        assert.equal(
+          childAborts,
+          ending === "enumeration-failure"
+            ? action === "cut-in-retry" || action === "cut-in-end"
+              ? 1
+              : 0
+            : cleanupFails
+              ? action === "cut-in-end"
+                ? failureAttempts + (ending === "sweep-timeout" ? 1 : 0)
+                : action === "cut-in-retry" || action === "cut-in-stop"
+                  ? 2
+                  : 1
+              : 1,
+        );
+        assert.lengthOf(childTurns, ending === "timeout" && admission === "attached-busy" ? 0 : 1);
+        if (childTurns.length > 0) {
+          const childEndIndex = events.findIndex((event) => event === childTurns[0]);
+          if (
+            admission !== "settled-root" &&
+            (!cleanupFails ||
+              action === "cut-in-retry" ||
+              action === "cut-in-end" ||
+              action === "stop-tail")
+          )
+            assert.isBelow(childEndIndex, terminalIndex);
+          assert.equal(
+            childTurns[0]?.type === "provider_turn.updated" && childTurns[0].providerTurn.status,
+            childStatus,
+          );
+        }
+        if (action === "cut-in-retry" || action === "cut-in-end") {
+          const taskEnds = events.filter(
+            (event) =>
+              event.type === "subagent.updated" &&
+              event.subagent.nativeTaskRef?.nativeId === "prt_task" &&
+              event.subagent.status === childStatus,
+          );
+          assert.lengthOf(taskEnds, 1, "a stopped cohort must release its original task row once");
+          if (admission !== "settled-root")
+            assert.isBelow(events.indexOf(taskEnds[0]!), terminalIndex);
+        }
+        if (ending !== "timeout") {
+          const toolEndIndex = events.findIndex(
+            (event) =>
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "command_execution" &&
+              event.turnItem.output === "CHILD_PARTIAL" &&
+              event.turnItem.status === "completed",
+          );
+          assert.isAtLeast(toolEndIndex, 0);
+          const childNodeEndIndex = events.findIndex(
+            (event) =>
+              event.type === "node.updated" &&
+              event.node.kind === "root_turn" &&
+              event.node.status === childStatus,
+          );
+          assert.isBelow(toolEndIndex, childNodeEndIndex);
+          if (
+            admission !== "settled-root" &&
+            (!cleanupFails ||
+              action === "cut-in-retry" ||
+              action === "cut-in-end" ||
+              action === "stop-tail")
+          )
+            assert.isBelow(childNodeEndIndex, terminalIndex);
+          assert.lengthOf(
+            events.filter(
+              (event) =>
+                event.type === "turn_item.updated" &&
+                event.turnItem.type === "command_execution" &&
+                event.turnItem.output === "CHILD_PARTIAL",
+            ),
+            1,
+          );
+        }
+        assert.lengthOf(
+          events.filter((event) => event.type === "turn.terminal"),
+          1,
+        );
+        if (cleanupFails) yield* harness.startTurn("cleanup succeeded; accept the next turn");
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),
+        ),
+        Effect.scoped,
+      ),
   );
 
   it.effect("projects OpenCode read output and search titles from native tool calls", () =>

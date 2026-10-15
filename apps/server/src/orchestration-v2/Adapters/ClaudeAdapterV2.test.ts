@@ -73,6 +73,7 @@ import { formatClaudeResumeCompactionQuestion } from "@t3tools/shared/claudeComp
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
+import { expect } from "vite-plus/test";
 
 import * as PortScanner from "../../preview/PortScanner.ts";
 import { attachmentRelativePath } from "../../attachmentStore.ts";
@@ -2750,8 +2751,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     });
 
   const makeWakeHarnessWithOptions = (options?: {
-    readonly close?: (sdkMessages: Queue.Queue<SDKMessage>) => Effect.Effect<void>;
-    readonly interrupt?: Effect.Effect<void>;
+    readonly close?: (
+      sdkMessages: Queue.Queue<SDKMessage>,
+    ) => Effect.Effect<void, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>;
+    readonly interrupt?: Effect.Effect<void, ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError>;
     readonly setPermissionMode?: ClaudeAdapterV2.ClaudeAgentSdkQuerySession["setPermissionMode"];
     readonly stopTask?: (
       taskId: string,
@@ -2778,17 +2781,46 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       });
       const sdkMessages = yield* Queue.unbounded<SDKMessage>();
       const processQueues: Array<Queue.Queue<SDKMessage>> = [];
+      const processExits: Array<Deferred.Deferred<void>> = [];
       const processedMessages = new WeakMap<SDKMessage, Deferred.Deferred<void>>();
       const offerAndWait = Effect.fnUntraced(function* (
         message: SDKMessage,
         offered?: Deferred.Deferred<void>,
+        messages = sdkMessages,
       ) {
         const processed = yield* Deferred.make<void>();
         processedMessages.set(message, processed);
-        yield* Queue.offer(processQueues.at(-1) ?? sdkMessages, message);
+        yield* Queue.offer(
+          messages === sdkMessages ? (processQueues.at(-1) ?? sdkMessages) : messages,
+          message,
+        );
         if (offered !== undefined) yield* Deferred.succeed(offered, undefined);
         yield* Deferred.await(processed);
+        // Drain the event collector scheduled by this frame before observing it.
+        yield* Effect.yieldNow;
       });
+      const messagesWithReceipts = (
+        messages: Queue.Queue<SDKMessage>,
+        exited: Deferred.Deferred<void>,
+      ) =>
+        Stream.fromQueue(messages).pipe(
+          Stream.flatMap((message) =>
+            Stream.make(message).pipe(
+              // The next pull happens after runForEach finishes handling this frame.
+              Stream.concat(
+                Stream.fromEffect(
+                  Effect.suspend(() => {
+                    const processed = processedMessages.get(message);
+                    return processed === undefined
+                      ? Effect.void
+                      : Deferred.succeed(processed, undefined);
+                  }),
+                ).pipe(Stream.drain),
+              ),
+            ),
+          ),
+          Stream.ensuring(Deferred.succeed(exited, undefined)),
+        );
       const changes = yield* makeChangeSignal;
       const offeredMessages: Array<SDKUserMessage> = [];
       const permissionModeChanges: Array<string> = [];
@@ -2805,6 +2837,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* Queue.unbounded<
           Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "subagent.updated" }>
         >();
+      const runningReceipts = yield* Queue.unbounded<ProviderTurnId>();
       const systemNoticeReceipts =
         yield* Queue.unbounded<
           Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "turn_item.updated" }>
@@ -2851,22 +2884,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 options?.freshQueueOnReopen === true && processQueues.length > 0
                   ? yield* Queue.unbounded<SDKMessage>()
                   : sdkMessages;
-              const messages = Stream.fromQueue(processMessages).pipe(
-                Stream.flatMap((message) =>
-                  Stream.make(message).pipe(
-                    Stream.concat(
-                      Stream.fromEffect(
-                        Effect.suspend(() => {
-                          const processed = processedMessages.get(message);
-                          return processed === undefined
-                            ? Effect.void
-                            : Deferred.succeed(processed, undefined);
-                        }),
-                      ).pipe(Stream.drain),
-                    ),
-                  ),
-                ),
-              );
+              const exited = yield* Deferred.make<void>();
+              processExits.push(exited);
+              const messages = messagesWithReceipts(processMessages, exited);
               if (options?.freshQueueOnReopen === true && processQueues.length > 0) {
                 processQueues.push(processMessages);
                 return {
@@ -2940,6 +2960,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             if (event.type === "subagent.updated") {
               yield* Queue.offer(subagentReceipts, event);
             }
+            if (event.type === "provider_turn.updated" && event.providerTurn.status === "running") {
+              yield* Queue.offer(runningReceipts, event.providerTurn.id);
+            }
             if (event.type === "turn.terminal") {
               yield* Queue.offer(terminalReceipts, event);
             }
@@ -2978,6 +3001,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         threadId,
         sdkMessages,
         processQueues,
+        processExits,
         offerAndWait,
         offeredMessages,
         promptUuid: (index: number) => {
@@ -2992,6 +3016,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         events,
         terminalReceipts,
         subagentReceipts,
+        runningReceipts,
         systemNoticeReceipts,
         runtimeRequestReceipts,
         planReceipts,
@@ -4357,6 +4382,80 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
         ),
       ),
+  );
+
+  it.effect.each([
+    "restart",
+    "Stop",
+    "rejected interrupt",
+    "unacknowledged interrupt",
+    "failed close",
+  ] as const)("closes the captured Claude query for %s", (operation) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let closes = 0;
+        let interrupts = 0;
+        const interruptStarted = yield* Deferred.make<void>();
+        const harness = yield* makeWakeHarnessWithOptions({
+          interrupt: Effect.gen(function* () {
+            interrupts++;
+            yield* Deferred.succeed(interruptStarted, undefined);
+            if (operation === "rejected interrupt")
+              return yield* new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                method: "interrupt",
+                cause: "rejected",
+              });
+            if (operation === "unacknowledged interrupt") return yield* Effect.never;
+          }),
+          close: (messages) =>
+            Effect.gen(function* () {
+              closes++;
+              if (operation === "failed close" && closes === 1)
+                return yield* new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                  method: "close",
+                  cause: "not closed",
+                });
+              yield* Queue.shutdown(messages);
+            }),
+        });
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("urgent-interrupt"),
+            text: "Hold the command",
+            attachments: [],
+          }),
+        );
+        const providerTurnId = yield* Queue.take(harness.runningReceipts);
+        const interrupt = harness.runtime.interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId,
+          ...(operation === "Stop" ? { requestRuntimeRestart: true } : {}),
+        });
+        if (operation === "failed close") {
+          const error = yield* interrupt.pipe(Effect.flip);
+          assert.equal(error._tag, "ProviderAdapterInterruptError");
+          assert.equal(harness.offeredMessages.length, 1);
+        } else {
+          const fiber = yield* interrupt.pipe(Effect.forkChild);
+          yield* Deferred.await(interruptStarted);
+          if (operation === "unacknowledged interrupt") yield* TestClock.adjust("10 seconds");
+          yield* Fiber.join(fiber);
+          const terminal = yield* Queue.take(harness.terminalReceipts);
+          assert.equal(terminal.status, "interrupted");
+          assert.equal(terminal.backgroundWork, "ended");
+          assert.equal(harness.terminalEvents().length, 1);
+        }
+        assert.equal(interrupts, 1);
+        assert.equal(closes, 1);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
   );
 
   it.effect.each([
@@ -9706,12 +9805,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               attachments: [],
             }),
           );
-          yield* harness.runtime
+          const interrupt = yield* harness.runtime
             .interruptTurn({ providerThread: harness.providerThread, providerTurnId })
-            .pipe(Effect.forkScoped);
+            .pipe(Effect.forkChild);
           yield* Deferred.await(interruptStarted);
-          yield* Queue.offer(
-            harness.sdkMessages,
+          yield* harness.offerAndWait(
             makeResultFrame({
               uuid: "00000000-0000-4000-8000-000000000115",
               result: "Late result after interrupt.",
@@ -9719,9 +9817,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               origin: { kind: "task-notification" },
             }),
           );
-          const terminalized = Exit.isSuccess(yield* harness.awaitTerminal(1).pipe(Effect.exit));
+          expect.soft(harness.terminalEvents(), "close is still held").toEqual([]);
           yield* Deferred.succeed(closeGate, undefined);
-          assert.isTrue(terminalized);
+          yield* Fiber.join(interrupt);
+          const terminal = yield* Queue.take(harness.terminalReceipts);
+          assert.equal(terminal.backgroundWork, "ended");
           assert.equal(harness.terminalEvents()[0]?.status, "interrupted");
           assert.lengthOf(harness.terminalEvents(), 1);
         }).pipe(
@@ -10470,6 +10570,634 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         ),
       ),
     ),
+  );
+
+  it.effect(
+    "keeps native background work running after an aborted result until close retry succeeds",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const toolUseId = "toolu-close-retry-agent";
+          const bashId = "toolu-close-retry-bash";
+          const requested = yield* Deferred.make<void>();
+          const acknowledge = yield* Deferred.make<void>();
+          const retryCloseRequested = yield* Deferred.make<void>();
+          const releaseRetryClose = yield* Deferred.make<void>();
+          let interrupts = 0;
+          let closes = 0;
+          const harness = yield* makeWakeHarnessWithOptions({
+            interrupt: Effect.gen(function* () {
+              interrupts++;
+              yield* Deferred.succeed(requested, undefined);
+              yield* Deferred.await(acknowledge);
+            }),
+            close: (messages) =>
+              Effect.gen(function* () {
+                closes++;
+                // Fault injection at the runner's error-capable close contract.
+                if (closes === 1)
+                  return yield* new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                    method: "close",
+                    cause: "query is still attached",
+                  });
+                yield* Deferred.succeed(retryCloseRequested, undefined);
+                yield* Deferred.await(releaseRetryClose);
+                yield* Queue.shutdown(messages);
+              }),
+          });
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("attempt-claude-earlier-close-retry"),
+              text: "Start an earlier background audit.",
+              attachments: [],
+            }),
+          );
+          yield* Queue.take(harness.runningReceipts);
+          yield* harness.offerAndWait(
+            makeSubagentTaskStartedFrame({
+              taskId: "task-earlier-close-retry",
+              toolUseId: "toolu-earlier-close-retry",
+              uuid: "earlier-close-retry-started",
+            }),
+          );
+          yield* harness.offerAndWait(
+            makeResultFrame({ uuid: "earlier-close-retry-completed", result: "Audit continues." }),
+          );
+          assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+          const earlierStatuses = () =>
+            harness.events.flatMap((event) =>
+              event.type === "subagent.updated" &&
+              event.subagent.nativeTaskRef?.nativeId === "task-earlier-close-retry"
+                ? [event.subagent.status]
+                : [],
+            );
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("attempt-claude-close-retry"),
+              providerTurnOrdinal: 2,
+              text: "Audit in the background.",
+              attachments: [],
+            }),
+          );
+          const providerTurnId = yield* Queue.take(harness.runningReceipts);
+          const interruptTerminals = () =>
+            harness.terminalEvents().filter((event) => event.providerTurnId === providerTurnId);
+          for (const message of [
+            makeSubagentTaskStartedFrame({
+              taskId: "task-close-retry",
+              toolUseId,
+              uuid: "close-retry-agent-started",
+            }),
+            ...makeSubagentAssistantFrames({
+              parentToolUseId: toolUseId,
+              uuid: "close-retry-agent-bash",
+              bashToolUseId: bashId,
+            }),
+            wakeTaskStarted,
+          ])
+            yield* harness.offerAndWait(message);
+          const bashStatuses = () =>
+            harness.events.flatMap((event) =>
+              event.type === "turn_item.updated" &&
+              event.turnItem.nativeItemRef?.nativeId === bashId
+                ? [`${event.turnItem.type}:${event.turnItem.status}`]
+                : [],
+            );
+          assert.deepEqual(bashStatuses(), ["command_execution:running"]);
+          assert.isTrue(yield* harness.hasPendingBackgroundWork);
+          const beforeInterrupt = harness.events.length;
+          const clearedRosters = () =>
+            providerThreadRosterEvents(harness.events.slice(beforeInterrupt)).filter(
+              (event) =>
+                event.providerThread.status === "idle" &&
+                event.providerThread.pendingBackgroundTasks?.length === 0,
+            );
+          const interrupt = harness.runtime.interruptTurn({
+            providerThread: harness.providerThread,
+            providerTurnId,
+          });
+          const first = yield* interrupt.pipe(Effect.flip, Effect.forkChild);
+          yield* Deferred.await(requested);
+          // The stream handles a native result independently of the held SDK ACK.
+          yield* harness.offerAndWait(
+            makeResultFrame({
+              uuid: "close-retry-aborted",
+              result: "",
+              terminalReason: "aborted_tools",
+            }),
+          );
+          assert.equal(closes, 0);
+          yield* Deferred.succeed(acknowledge, undefined);
+          const error = yield* Fiber.join(first);
+          assert.equal(error._tag, "ProviderAdapterInterruptError");
+          assert.equal(closes, 1);
+          expect.soft(interruptTerminals(), "failed close cannot end the turn").toEqual([]);
+          expect
+            .soft(earlierStatuses(), "failed close cannot settle the earlier run")
+            .toEqual(["running"]);
+          expect
+            .soft(bashStatuses(), "failed close cannot settle the native tool")
+            .toEqual(["command_execution:running"]);
+          expect.soft(clearedRosters(), "failed close cannot clear the roster").toEqual([]);
+
+          const retry = yield* interrupt.pipe(Effect.exit, Effect.forkChild);
+          const retryReachedClose = yield* Effect.raceFirst(
+            Deferred.await(retryCloseRequested).pipe(Effect.as(true)),
+            Fiber.await(retry).pipe(Effect.as(false)),
+          );
+          expect.soft(retryReachedClose, "retry must re-enter close").toBe(true);
+          expect.soft(interruptTerminals(), "retry close is still held").toEqual([]);
+          expect
+            .soft(earlierStatuses(), "held close cannot settle the earlier run")
+            .toEqual(["running"]);
+          expect
+            .soft(bashStatuses(), "retry close cannot settle the native tool early")
+            .toEqual(["command_execution:running"]);
+          expect.soft(clearedRosters(), "retry close cannot clear the roster early").toEqual([]);
+          yield* Deferred.succeed(releaseRetryClose, undefined);
+          const retried = yield* Fiber.join(retry);
+          expect
+            .soft(retried, "close retry must still reach the active turn")
+            .toEqual(Exit.succeed(undefined));
+          if (Exit.isSuccess(retried)) yield* Queue.take(harness.terminalReceipts);
+          assert.lengthOf(interruptTerminals(), 1);
+          assert.equal(interruptTerminals()[0]?.status, "interrupted");
+          assert.equal(interruptTerminals()[0]?.backgroundWork, "ended");
+          expect.soft(earlierStatuses()).toEqual(["running", "interrupted"]);
+          expect.soft(yield* harness.hasPendingBackgroundWork).toBe(false);
+          assert.deepEqual(bashStatuses(), [
+            "command_execution:running",
+            "command_execution:interrupted",
+          ]);
+          assert.lengthOf(clearedRosters(), 1);
+          const interruptedTurn = harness.events.find(
+            (event) =>
+              event.type === "provider_turn.updated" &&
+              event.providerTurn.id === providerTurnId &&
+              event.providerTurn.status === "interrupted",
+          );
+          assert.equal(
+            interruptedTurn?.type === "provider_turn.updated" &&
+              interruptedTurn.providerTurn.turnTokenUsage?.usageStatus,
+            "partial",
+          );
+          expect.soft(closes).toBe(2);
+          expect.soft(interrupts).toBe(1);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
+
+  it.effect(
+    "bounds successful close without EOF at 10 seconds and fences the old query's result",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const requested = yield* Deferred.make<void>();
+          const acknowledge = yield* Deferred.make<void>();
+          const closeRequested = yield* Deferred.make<void>();
+          const harness = yield* makeWakeHarnessWithOptions({
+            freshQueueOnReopen: true,
+            interrupt: Deferred.succeed(requested, undefined).pipe(
+              Effect.andThen(Deferred.await(acknowledge)),
+            ),
+            // A successful close request does not promise EOF or OS-process exit.
+            close: () => Deferred.succeed(closeRequested, undefined),
+          });
+          const taskId = "task-close-no-eof-earlier";
+          const toolUseId = "toolu-close-no-eof-earlier";
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("attempt-claude-earlier-close-no-eof"),
+              text: "Audit in the background.",
+              attachments: [],
+            }),
+          );
+          yield* Queue.take(harness.runningReceipts);
+          yield* harness.offerAndWait(
+            makeSubagentTaskStartedFrame({
+              taskId,
+              toolUseId,
+              uuid: "earlier-close-no-eof-started",
+            }),
+          );
+          yield* harness.offerAndWait(
+            makeResultFrame({ uuid: "earlier-close-no-eof-completed", result: "Audit continues." }),
+          );
+          assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+          const taskStatuses = () =>
+            harness.events.flatMap((event) =>
+              event.type === "subagent.updated" && event.subagent.nativeTaskRef?.nativeId === taskId
+                ? [event.subagent.status]
+                : [],
+            );
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("attempt-claude-close-no-eof"),
+              providerTurnOrdinal: 2,
+              text: "Hold the command.",
+              attachments: [],
+            }),
+          );
+          const providerTurnId = yield* Queue.take(harness.runningReceipts);
+          const interruptTerminals = () =>
+            harness.terminalEvents().filter((event) => event.providerTurnId === providerTurnId);
+          const interrupt = yield* harness.runtime
+            .interruptTurn({
+              providerThread: harness.providerThread,
+              providerTurnId,
+            })
+            .pipe(Effect.forkChild);
+          yield* Deferred.await(requested);
+          yield* harness.offerAndWait(
+            makeResultFrame({
+              uuid: "close-no-eof-aborted",
+              result: "",
+              terminalReason: "aborted_tools",
+            }),
+          );
+          yield* Deferred.succeed(acknowledge, undefined);
+          yield* Deferred.await(closeRequested);
+          expect
+            .soft(interruptTerminals(), "query remains attached until the EOF bound")
+            .toEqual([]);
+          yield* TestClock.adjust("9999 millis");
+          expect.soft(interruptTerminals(), "the EOF bound has not elapsed").toEqual([]);
+          expect
+            .soft(taskStatuses(), "the earlier agent still belongs to the attached query")
+            .toEqual(["running"]);
+          yield* TestClock.adjust("1 millis");
+          yield* Fiber.join(interrupt);
+          const terminal = yield* Queue.take(harness.terminalReceipts);
+          assert.equal(terminal.status, "interrupted");
+          assert.equal(terminal.backgroundWork, "ended");
+          assert.lengthOf(interruptTerminals(), 1);
+          expect.soft(taskStatuses()).toEqual(["running", "interrupted"]);
+          expect.soft(yield* harness.hasPendingBackgroundWork).toBe(false);
+          const interruptedTurn = harness.events.find(
+            (event) =>
+              event.type === "provider_turn.updated" &&
+              event.providerTurn.id === providerTurnId &&
+              event.providerTurn.status === "interrupted",
+          );
+          assert.equal(
+            interruptedTurn?.type === "provider_turn.updated" &&
+              interruptedTurn.providerTurn.turnTokenUsage?.usageStatus,
+            "partial",
+          );
+
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("attempt-claude-after-close-no-eof"),
+              providerTurnOrdinal: 3,
+              text: "Change direction.",
+              attachments: [],
+            }),
+          );
+          const nextTurnId = yield* Queue.take(harness.runningReceipts);
+          assert.notEqual(nextTurnId, providerTurnId);
+          assert.lengthOf(harness.processQueues, 2);
+          yield* harness.offerAndWait(
+            makeSubagentTaskStartedFrame({ taskId, toolUseId, uuid: "new-query-resumes-agent" }),
+            undefined,
+            harness.processQueues[1]!,
+          );
+          yield* harness.offerAndWait(
+            makeResultFrame({ uuid: "late-old-query-result", result: "Old process output." }),
+          );
+          assert.lengthOf(harness.terminalEvents(), 2);
+          assert.isFalse(
+            harness.events.some(
+              (event) =>
+                event.type === "message.updated" && event.message.text === "Old process output.",
+            ),
+          );
+          const nextTurn = harness.events.findLast(
+            (event) =>
+              event.type === "provider_turn.updated" && event.providerTurn.id === nextTurnId,
+          );
+          assert.equal(
+            nextTurn?.type === "provider_turn.updated" && nextTurn.providerTurn.status,
+            "running",
+          );
+          yield* Queue.shutdown(harness.sdkMessages);
+          yield* Deferred.await(harness.processExits[0]!);
+          yield* harness.offerAndWait(
+            makeSubagentAssistantFrames({
+              parentToolUseId: toolUseId,
+              uuid: "new-query-agent-text",
+              text: "New native work.",
+            })[0]!,
+            undefined,
+            harness.processQueues[1]!,
+          );
+          assert.equal(
+            taskStatuses().at(-1),
+            "running",
+            "old EOF cannot end a resumed task on the replacement query",
+          );
+          assert.isTrue(yield* harness.hasPendingBackgroundWork);
+          yield* harness.offerAndWait(
+            makeSubagentNotificationFrame({
+              taskId,
+              toolUseId,
+              uuid: "new-query-agent-completed",
+              summary: "Done.",
+            }),
+            undefined,
+            harness.processQueues[1]!,
+          );
+          yield* harness.offerAndWait(
+            makeResultFrame({ uuid: "new-query-result", result: "New process output." }),
+            undefined,
+            harness.processQueues[1]!,
+          );
+          const completed = yield* Queue.take(harness.terminalReceipts);
+          assert.equal(completed.providerTurnId, nextTurnId);
+          assert.equal(completed.status, "completed");
+          assert.lengthOf(harness.terminalEvents(), 3);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
+
+  it.effect.each(["restart", "Stop"] as const)(
+    "defers the aborted-result terminal until query detach for %s",
+    (operation) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const requested = yield* Deferred.make<void>();
+          const acknowledge = yield* Deferred.make<void>();
+          let closes = 0;
+          const harness = yield* makeWakeHarnessWithOptions({
+            interrupt: Deferred.succeed(requested, undefined).pipe(
+              Effect.andThen(Deferred.await(acknowledge)),
+            ),
+            close: (messages) =>
+              Effect.gen(function* () {
+                closes++;
+                yield* Queue.shutdown(messages);
+              }),
+          });
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make(`attempt-claude-detach-${operation}`),
+              text: "Hold the command.",
+              attachments: [],
+            }),
+          );
+          const providerTurnId = yield* Queue.take(harness.runningReceipts);
+          const interrupt = yield* harness.runtime
+            .interruptTurn({
+              providerThread: harness.providerThread,
+              providerTurnId,
+              ...(operation === "Stop" ? { requestRuntimeRestart: true } : {}),
+            })
+            .pipe(Effect.forkChild);
+          yield* Deferred.await(requested);
+          yield* harness.offerAndWait(
+            makeResultFrame({
+              uuid: `detach-${operation}-aborted`,
+              result: "",
+              terminalReason: "aborted_tools",
+            }),
+          );
+          assert.equal(closes, 0);
+          expect
+            .soft(harness.terminalEvents(), "native result is not the SDK ACK or detach")
+            .toEqual([]);
+          yield* Deferred.succeed(acknowledge, undefined);
+          yield* Fiber.join(interrupt);
+          const terminal = yield* Queue.take(harness.terminalReceipts);
+          assert.equal(terminal.status, "interrupted");
+          assert.equal(terminal.backgroundWork, "ended");
+          assert.lengthOf(harness.terminalEvents(), 1);
+          assert.equal(closes, 1);
+          const interruptedTurn = harness.events.find(
+            (event) =>
+              event.type === "provider_turn.updated" &&
+              event.providerTurn.id === providerTurnId &&
+              event.providerTurn.status === "interrupted",
+          );
+          assert.equal(
+            interruptedTurn?.type === "provider_turn.updated" &&
+              interruptedTurn.providerTurn.turnTokenUsage?.usageStatus,
+            "partial",
+          );
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
+
+  it.effect.each(["EOF", "restart", "Stop", "settled Stop", "settled Stop failed close"] as const)(
+    "ends an earlier run's native agent with its own identity when the same query detaches on %s",
+    (operation) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const taskId = "task-earlier-run-detach";
+          const toolUseId = "toolu-earlier-run-detach";
+          const bashId = "toolu-earlier-run-detach-bash";
+          const closeRequested = yield* Deferred.make<void>();
+          let closes = 0;
+          const harness = yield* makeWakeHarnessWithOptions({
+            close: (messages) =>
+              Effect.gen(function* () {
+                closes++;
+                yield* Deferred.succeed(closeRequested, undefined);
+                if (operation === "settled Stop failed close" && closes === 1)
+                  return yield* new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                    method: "close",
+                    cause: "query remains attached",
+                  });
+                yield* Queue.shutdown(messages);
+              }),
+          });
+          const firstInput = makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-claude-earlier-run-detach"),
+            text: "Audit in the background.",
+            attachments: [],
+          });
+          yield* harness.runtime.startTurn(firstInput);
+          const firstTurnId = yield* Queue.take(harness.runningReceipts);
+          for (const message of [
+            makeSubagentTaskStartedFrame({ taskId, toolUseId, uuid: "earlier-run-started" }),
+            ...makeSubagentAssistantFrames({
+              parentToolUseId: toolUseId,
+              uuid: "earlier-run-bash",
+              bashToolUseId: bashId,
+            }),
+            makeResultFrame({ uuid: "earlier-run-completed", result: "Audit continues." }),
+          ])
+            yield* harness.offerAndWait(message);
+          assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+          const runningAgent = harness.events.find(
+            (event) => event.type === "subagent.updated" && event.subagent.status === "running",
+          );
+          assert.equal(runningAgent?.type, "subagent.updated");
+          if (runningAgent?.type !== "subagent.updated") return;
+          const agent = runningAgent.subagent;
+          const ownedNodeIds = harness.events.flatMap((event) =>
+            event.type === "node.updated" &&
+            (event.node.id === agent.id || event.node.threadId === agent.childThreadId)
+              ? [event.node.id]
+              : [],
+          );
+          assert.equal(new Set(ownedNodeIds).size, 3);
+          assert.isTrue(yield* harness.hasPendingBackgroundWork);
+
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("attempt-claude-later-run-detach"),
+              providerTurnOrdinal: 2,
+              text: "Start another run in the same process.",
+              attachments: [],
+            }),
+          );
+          const secondTurnId = yield* Queue.take(harness.runningReceipts);
+          assert.notEqual(secondTurnId, firstTurnId);
+          assert.lengthOf(harness.processQueues, 1);
+          if (operation === "EOF") {
+            yield* Queue.shutdown(harness.sdkMessages);
+            assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "failed");
+          } else {
+            if (operation.startsWith("settled Stop")) {
+              yield* harness.offerAndWait(
+                makeResultFrame({ uuid: "later-run-completed", result: "Done." }),
+              );
+              assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+            }
+            if (operation === "settled Stop failed close") {
+              const failedClose = yield* harness.runtime
+                .interruptTurn({
+                  providerThread: harness.providerThread,
+                  providerTurnId: secondTurnId,
+                  requestRuntimeRestart: true,
+                })
+                .pipe(Effect.exit, Effect.forkChild);
+              yield* Deferred.await(closeRequested);
+              // The existing close wait must never turn a failed close into detachment.
+              yield* TestClock.adjust("10 seconds");
+              expect
+                .soft(
+                  Exit.isFailure(yield* Fiber.join(failedClose)),
+                  "settled Stop must propagate close failure",
+                )
+                .toBe(true);
+              expect
+                .soft(
+                  harness.events
+                    .filter(
+                      (event) =>
+                        event.type === "turn_item.updated" &&
+                        event.turnItem.nativeItemRef?.nativeId === bashId,
+                    )
+                    .map((event) => event.type === "turn_item.updated" && event.turnItem.status),
+                  "failed close leaves the native tool running",
+                )
+                .toEqual(["running"]);
+              assert.isTrue(yield* harness.hasPendingBackgroundWork);
+            }
+            yield* harness.runtime.interruptTurn({
+              providerThread: harness.providerThread,
+              providerTurnId: secondTurnId,
+              ...(operation === "restart" ? {} : { requestRuntimeRestart: true }),
+            });
+          }
+          yield* Effect.yieldNow;
+          const status = operation === "EOF" ? "failed" : "interrupted";
+          const endedAgents = harness.events.filter(
+            (event) =>
+              event.type === "subagent.updated" &&
+              event.subagent.id === agent.id &&
+              event.subagent.status === status,
+          );
+          expect
+            .soft(endedAgents, "the old subscriber needs its native agent's end")
+            .toHaveLength(1);
+          expect
+            .soft(yield* harness.hasPendingBackgroundWork, "detached work cannot pin idle")
+            .toBe(false);
+          for (const nodeId of new Set(ownedNodeIds)) {
+            expect
+              .soft(
+                harness.events.filter(
+                  (event) =>
+                    event.type === "node.updated" &&
+                    event.node.id === nodeId &&
+                    event.node.status === status,
+                ),
+                `native node ${nodeId} ends once`,
+              )
+              .toHaveLength(1);
+          }
+          const endedItems = harness.events.filter(
+            (event) =>
+              event.type === "turn_item.updated" &&
+              (event.turnItem.nodeId === agent.id ||
+                event.turnItem.nativeItemRef?.nativeId === bashId) &&
+              event.turnItem.status === status,
+          );
+          expect.soft(endedItems).toHaveLength(2);
+          for (const event of endedItems) {
+            if (event.type !== "turn_item.updated" || event.turnItem.nodeId !== agent.id) continue;
+            assert.equal(event.turnItem.runId, firstInput.runId);
+            assert.equal(event.turnItem.providerTurnId, firstTurnId);
+            assert.equal(event.turnItem.providerThreadId, firstInput.providerThread.id);
+          }
+          for (const event of endedAgents) {
+            if (event.type !== "subagent.updated") continue;
+            assert.equal(event.subagent.runId, firstInput.runId);
+            assert.equal(event.subagent.threadId, firstInput.threadId);
+            assert.equal(event.subagent.parentNodeId, firstInput.rootNodeId);
+            assert.equal(event.subagent.childThreadId, agent.childThreadId);
+          }
+          const firstTurn = harness.events.findLast(
+            (event) =>
+              event.type === "provider_turn.updated" && event.providerTurn.id === firstTurnId,
+          );
+          assert.equal(
+            firstTurn?.type === "provider_turn.updated" && firstTurn.providerTurn.status,
+            "completed",
+          );
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
   );
 
   it.effect.each(["exit", "Stop"] as const)(
@@ -12179,21 +12907,32 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.isAbove(reopenedIndex, firstCompleted);
         assert.isNull(subagentEvents()[reopenedIndex]?.subagent.result);
         assert.equal(subagentEvents()[reopenedIndex]?.subagent.runId, "run-attempt-claude-wake-9c");
-        const nodeStatuses = harness.events
-          .filter(
-            (
-              event,
-            ): event is Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "node.updated" }> =>
-              event.type === "node.updated" &&
-              event.node.kind === "subagent" &&
-              event.node.nativeItemRef?.nativeId === SUBAGENT_TASK_ID,
-          )
-          .map((event) => event.node.status);
+        assert.equal(
+          subagentEvents()[reopenedIndex]?.subagent.parentNodeId,
+          "node-attempt-claude-wake-9c",
+        );
+        // The execution node re-opens too, even though the registry entry was
+        // already pre-opened by the wake buffer before the drain replay.
+        const subagentNodes = harness.events.filter(
+          (
+            event,
+          ): event is Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "node.updated" }> =>
+            event.type === "node.updated" &&
+            event.node.kind === "subagent" &&
+            event.node.nativeItemRef?.nativeId === SUBAGENT_TASK_ID,
+        );
+        const nodeStatuses = subagentNodes.map((event) => event.node.status);
         assert.isAbove(nodeStatuses.lastIndexOf("running"), nodeStatuses.indexOf("completed"));
         const finalSubagent = subagentEvents().at(-1)?.subagent;
         assert.equal(finalSubagent?.status, "completed");
         assert.equal(finalSubagent?.result, SECOND_SUMMARY);
         assert.equal(finalSubagent?.runId, "run-attempt-claude-wake-9c");
+        assert.equal(finalSubagent?.parentNodeId, "node-attempt-claude-wake-9c");
+        const finalNode = subagentNodes.at(-1)?.node;
+        assert.equal(finalNode?.rootNodeId, "node-attempt-claude-wake-9c");
+        assert.equal(finalNode?.parentNodeId, "node-attempt-claude-wake-9c");
+        assert.equal(finalNode?.providerTurnId, harness.terminalEvents().at(-1)?.providerTurnId);
+        // Its work is projected once, by the drain that re-opens it.
         const reopenIndex = harness.events.findIndex(
           (event) =>
             event.type === "subagent.updated" &&

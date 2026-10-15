@@ -111,14 +111,9 @@ const layerTestProviderInstanceRegistry = Layer.succeed(
 );
 
 const layerTest = Layer.mergeAll(
-<<<<<<< HEAD
-  RuntimeLayer.layer,
-  RuntimeLayer.layerEventSink,
-  ThreadCommandExecutor.layer,
-=======
   RuntimeLayer.layer.pipe(Layer.provide(Layer.mock(BareProviders.ProviderRegistry)({}))),
   RuntimeLayer.layerEventSink,
->>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
+  ThreadCommandExecutor.layer,
 ).pipe(
   Layer.provideMerge(RuntimeLayer.layerProjectService),
   Layer.provide(

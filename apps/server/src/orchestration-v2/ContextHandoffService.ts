@@ -302,53 +302,6 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
       },
     );
 
-<<<<<<< HEAD
-=======
-    const prepare = Effect.fn("orchestrationV2.contextHandoff.prepare")(function* (input: {
-      readonly threadId: ThreadId;
-      readonly targetRunId: RunId;
-      readonly fromProviderThreadIds: ReadonlyArray<ProviderThreadId>;
-      readonly toProviderThreadId: ProviderThreadId;
-    }) {
-      yield* assertHistoryAllowed(input);
-      const now = yield* DateTime.now;
-      const handoffId = yield* idAllocator.allocate
-        .contextHandoff({
-          threadId: input.threadId,
-          fromProviderInstanceId: ProviderInstanceId.make("manual"),
-          toProviderInstanceId: ProviderInstanceId.make("manual"),
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new ContextHandoffPrepareError({
-                threadId: input.threadId,
-                targetRunId: input.targetRunId,
-                fromProviderThreadIds: Array.from(input.fromProviderThreadIds),
-                toProviderThreadId: input.toProviderThreadId,
-                cause,
-              }),
-          ),
-        );
-      return {
-        id: handoffId,
-        transferId: null,
-        threadId: input.threadId,
-        targetRunId: input.targetRunId,
-        fromProviderThreadIds: Array.from(input.fromProviderThreadIds),
-        toProviderThreadId: input.toProviderThreadId,
-        coveredRunOrdinals: { from: 1, to: 1 },
-        strategy: "manual_context",
-        status: "ready",
-        summaryMessageId: null,
-        summaryText: "Manual context handoff.",
-        createdByProviderInstanceId: null,
-        createdAt: now,
-        updatedAt: now,
-      } satisfies OrchestrationV2ContextHandoff;
-    });
-
->>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
     const prepareForkDelta = Effect.fn("orchestrationV2.contextHandoff.prepareForkDelta")(
       function* (input: {
         readonly sourceThreadId: ThreadId;

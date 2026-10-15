@@ -3776,7 +3776,6 @@ it.effect(
     }),
 );
 
-<<<<<<< HEAD
 // Device instructions reach delegated children only because their own sessions hold `device`.
 it.effect("ProviderSessionManagerV2 gives a delegated child its project's device access", () =>
   Effect.gen(function* () {
@@ -3787,7 +3786,9 @@ it.effect("ProviderSessionManagerV2 gives a delegated child its project's device
       delegatedBy: ThreadId.make("thread-provider-session-manager-parent"),
     });
     assert.isTrue(child?.capabilities?.has("device"));
-=======
+  }),
+);
+
 it.effect.each([false, true])(
   "bare sessions issue T3 MCP credentials only when named (named=%s)",
   (named) =>
@@ -3878,6 +3879,5 @@ it.effect("bare session opens recheck support and refuse cached process sharing"
       assert.equal((yield* Ref.get(state)).openCount, 1);
       yield* manager.close(providerSessionId);
     }).pipe(Effect.provide(layerTest({ state, bareSupport, idleTimeoutMs: 60_000 })));
->>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
   }),
 );

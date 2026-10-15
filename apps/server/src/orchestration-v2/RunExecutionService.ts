@@ -59,8 +59,13 @@ import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 
 export interface ProviderEventRoutingState {
   readonly ownedThreadIds: ReadonlySet<ThreadId>;
+  readonly ownedNodeIds: ReadonlySet<NodeId>;
   // After root settlement, new children belong to the live run unless their coordinator still holds this run open.
   readonly rootTurnEnded: boolean;
+  // A native end can precede turn.terminal while descendants drain. Close
+  // root output then, but keep admitting children until the actual terminal.
+  readonly rootOutputEnded: boolean;
+  /** Member thread id to the coordinator child thread that spawned it. */
   readonly workflowMemberParents: ReadonlyMap<ThreadId, ThreadId>;
   readonly ownedProviderThreadIds: ReadonlySet<ProviderThreadId>;
   readonly ownedProviderTurns: ReadonlyMap<ProviderTurnId, ProviderThreadId>;
@@ -73,6 +78,7 @@ export interface ProviderEventRouteIdentity {
   readonly runId: OrchestrationV2Run["id"];
   readonly attemptId: RunAttemptId;
   readonly providerThreadId: ProviderThreadId;
+  readonly rootNodeId: NodeId;
 }
 
 export interface InheritedBackgroundTurnItemRoute {
@@ -336,7 +342,9 @@ export function makeProviderEventRoutingState(input: {
 }): ProviderEventRoutingState {
   return {
     ownedThreadIds: new Set([input.identity.threadId, ...(input.relatedThreadIds ?? [])]),
+    ownedNodeIds: new Set([input.identity.rootNodeId]),
     rootTurnEnded: false,
+    rootOutputEnded: false,
     workflowMemberParents: new Map(),
     ownedProviderThreadIds: new Set([
       input.identity.providerThreadId,
@@ -415,19 +423,39 @@ export function routeProviderEvent(
           state.ownedProviderThreadIds.has(event.providerTurn.providerThreadId)) ||
         state.ownedProviderTurns.has(event.providerTurn.id) ||
         (event.threadId !== undefined && ownsChildThread(event.threadId));
-      return belongs
-        ? [
-            true,
-            addProviderTurn(event.providerTurn.id, event.providerTurn.providerThreadId, isRoot),
-          ]
-        : [false, state];
+      if (!belongs) return [false, state];
+      const next = addProviderTurn(
+        event.providerTurn.id,
+        event.providerTurn.providerThreadId,
+        isRoot,
+      );
+      return [
+        true,
+        isRoot
+          ? { ...next, rootOutputEnded: isTerminalProviderTurnStatus(event.providerTurn.status) }
+          : next,
+      ];
     }
     case "node.updated": {
-      const belongs = ownsRun(event.node.runId) || ownsChildThread(event.node.threadId);
-      if (!belongs || event.node.providerThreadId === null) {
-        return [belongs, state];
-      }
-      return [true, addProviderThread(event.node.providerThreadId)];
+      // A completed attempt can still drain its own background work while the
+      // replacement writes the same run. Run identity alone is no longer enough.
+      const belongs =
+        (ownsRun(event.node.runId) &&
+          (!(state.rootTurnEnded || state.rootOutputEnded) ||
+            event.node.threadId !== input.threadId ||
+            event.node.rootNodeId === input.rootNodeId)) ||
+        ownsChildThread(event.node.threadId);
+      if (!belongs) return [false, state];
+      const next =
+        event.node.providerThreadId === null
+          ? state
+          : addProviderThread(event.node.providerThreadId);
+      return [
+        true,
+        event.node.rootNodeId === input.rootNodeId
+          ? { ...next, ownedNodeIds: new Set([...next.ownedNodeIds, event.node.id]) }
+          : next,
+      ];
     }
     case "subagent.updated": {
       const moved = event.subagent;
@@ -449,7 +477,12 @@ export function routeProviderEvent(
         }
         return [false, { ...state, ownedThreadIds, ownedProviderThreadIds, ownedProviderTurns }];
       }
-      const belongs = ownsRun(event.subagent.runId) || ownsChildThread(event.subagent.threadId);
+      const belongs =
+        (ownsRun(event.subagent.runId) &&
+          (!(state.rootTurnEnded || state.rootOutputEnded) ||
+            event.subagent.threadId !== input.threadId ||
+            state.ownedNodeIds.has(event.subagent.parentNodeId))) ||
+        ownsChildThread(event.subagent.threadId);
       const coordinator = event.subagent;
       // Resumes reattribute child threads to the live run, which may not have observed their creation.
       const adopted =
@@ -465,6 +498,7 @@ export function routeProviderEvent(
             }
           : state;
       if (
+        !belongs ||
         !ownsRun(coordinator.runId) ||
         coordinator.workflow === undefined ||
         coordinator.childThreadId === null
@@ -480,9 +514,24 @@ export function routeProviderEvent(
       return [true, { ...adopted, workflowMemberParents }];
     }
     case "message.updated":
-      return [ownsRun(event.message.runId) || ownsChildThread(event.message.threadId), state];
+      return [
+        (ownsRun(event.message.runId) &&
+          (!(state.rootTurnEnded || state.rootOutputEnded) ||
+            event.message.threadId !== input.threadId ||
+            (event.message.nodeId !== null && state.ownedNodeIds.has(event.message.nodeId)))) ||
+          ownsChildThread(event.message.threadId),
+        state,
+      ];
     case "turn_item.updated": {
-      if (ownsRun(event.turnItem.runId) || ownsChildThread(event.turnItem.threadId)) {
+      if (
+        (ownsRun(event.turnItem.runId) &&
+          (!(state.rootTurnEnded || state.rootOutputEnded) ||
+            event.turnItem.threadId !== input.threadId ||
+            (event.turnItem.providerTurnId === null
+              ? event.turnItem.nodeId !== null && state.ownedNodeIds.has(event.turnItem.nodeId)
+              : state.ownedProviderTurnIds.has(event.turnItem.providerTurnId)))) ||
+        ownsChildThread(event.turnItem.threadId)
+      ) {
         return [true, state];
       }
       const inheritedRunId = state.inheritedBackgroundTurnItems.get(event.turnItem.id);
@@ -502,7 +551,14 @@ export function routeProviderEvent(
       return [true, { ...state, inheritedBackgroundTurnItems }];
     }
     case "plan.updated":
-      return [ownsRun(event.plan.runId) || ownsChildThread(event.plan.threadId), state];
+      return [
+        (ownsRun(event.plan.runId) &&
+          (!(state.rootTurnEnded || state.rootOutputEnded) ||
+            event.plan.threadId !== input.threadId ||
+            state.ownedNodeIds.has(event.plan.nodeId))) ||
+          ownsChildThread(event.plan.threadId),
+        state,
+      ];
     case "runtime_request.updated":
       return [
         (event.threadId !== undefined && ownsChildThread(event.threadId)) ||
@@ -647,6 +703,22 @@ export const layer: Layer.Layer<
         const shouldFinalizeRun =
           input.shouldFinalizeRun === undefined ? true : yield* input.shouldFinalizeRun();
         if (!shouldFinalizeRun) {
+          if (
+            input.terminal.backgroundWork === "ended" &&
+            isRunOwnedSubagentTerminalStatus(input.terminal.status)
+          ) {
+            const events = yield* cascadeTerminalizeRunOwnedSubagents({
+              run: input.run,
+              open: input.openRunOwnedSubagents ?? emptyOpenRunOwnedSubagentProjection(),
+              status: input.terminal.status,
+              completedAt,
+              allocateEventId: () => idAllocator.allocate.event({ threadId: input.run.threadId }),
+            });
+            if (events.length > 0) yield* eventSink.writeWithEffects({ effects: [], events });
+          }
+          // Superseded attempt (steer / selection restart). Emit
+          // run_interrupt_result only when hard Stop left an unpaired request
+          // for this run; plain steers and already-paired stops emit nothing.
           if (input.terminal.status === "interrupted") {
             const hasUnpairedRequest =
               input.hasUnpairedRunInterruptRequest === undefined
@@ -997,6 +1069,7 @@ export const layer: Layer.Layer<
           runId: input.run.id,
           attemptId: input.attempt.id,
           providerThreadId: input.providerThread.id,
+          rootNodeId: input.rootNode.id,
         };
         const eventSubscription =
           input.session.subscribeEvents === undefined

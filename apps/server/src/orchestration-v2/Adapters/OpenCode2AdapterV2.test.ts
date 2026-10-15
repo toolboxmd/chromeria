@@ -35,6 +35,8 @@ import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as Exit from "effect/Exit";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import { TestClock } from "effect/testing";
 
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -48,6 +50,10 @@ import {
   t3McpServerName,
 } from "@t3tools/provider-opencode/testing";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import * as OpenCode2Client from "@t3tools/provider-opencode/server/v2/OpenCode2Client";
+import * as OpenCode2Server from "@t3tools/provider-opencode/server/v2/OpenCode2Server";
+import * as OpenCode2AdapterV2 from "@t3tools/provider-opencode/server/v2/adapter";
+import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import { openCode2ReplayRuntime } from "./OpenCode2AdapterV2.testkit.ts";
 import {
   makeProviderReplayGate,
@@ -81,6 +87,28 @@ const event = (
   ...(label === undefined ? {} : { label }),
 });
 const durable = { durable: { aggregateID: SESSION, seq: 1, version: 1 } };
+/** Reject invalid fixtures through the native client's strict event decoder. */
+const decodeCutInFrame = (frame: unknown) =>
+  Effect.gen(function* () {
+    const native = yield* OpenCode2Client.make.pipe(
+      Effect.provideService(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              new Response(`data: ${JSON.stringify(frame)}\n\n`, {
+                headers: { "content-type": "text/event-stream" },
+              }),
+            ),
+          ),
+        ),
+      ),
+    );
+    const api = yield* native.connect({ baseUrl: "http://opencode2.cutin", password: "replay" });
+    const decoded = yield* api.client.event.subscribe().pipe(Stream.take(1), Stream.runCollect);
+    assert.lengthOf(decoded, 1);
+  });
 
 const mcpRules = [
   { action: "t3-code-*", resource: "*", effect: "deny" },
@@ -849,6 +877,1002 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
       assert.isFalse(yield* runtime.hasPendingBackgroundWork!);
     }).pipe(Effect.scoped),
   );
+
+  describe("cut-in outcome", () => {
+    /** Real client encoding/decoding and SSE routing, with faults only at HTTP. */
+    const cutInHarness = Effect.gen(function* () {
+      const collected: Array<ProviderAdapter.ProviderAdapterV2Event> = [];
+      const interrupts: Array<string> = [];
+      const prompts: Array<string> = [];
+      let changed = yield* Deferred.make<void>();
+      const signal = () =>
+        Effect.gen(function* () {
+          const previous = changed;
+          changed = yield* Deferred.make<void>();
+          yield* Deferred.succeed(previous, undefined);
+        });
+      const until = (check: () => boolean): Effect.Effect<void> =>
+        Effect.suspend(() => {
+          if (check()) return Effect.void;
+          return Effect.gen(function* () {
+            const next = changed;
+            if (check()) return;
+            yield* Deferred.await(next);
+            yield* until(check);
+          });
+        });
+      let streamController: ReadableStreamDefaultController<Uint8Array>;
+      const encoder = new TextEncoder();
+      const streams = { count: 0 };
+      let sequence = 0;
+      const send = (type: string, data: Record<string, unknown>) =>
+        Effect.gen(function* () {
+          sequence += 1;
+          const frame = {
+            id: `evt_cutin${sequence}`,
+            created: 1,
+            type,
+            data: type === "session.execution.interrupted" ? { reason: "user", ...data } : data,
+            durable: {
+              ...durable.durable,
+              seq: sequence,
+              version: type === "session.tool.success" ? 2 : 1,
+            },
+          };
+          yield* decodeCutInFrame(frame).pipe(Effect.orDie);
+          streamController.enqueue(encoder.encode(`data: ${JSON.stringify(frame)}\n\n`));
+        });
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { "content-type": "application/json" },
+        });
+      const transport = {
+        interrupt: (sessionID: string): Effect.Effect<Response> =>
+          send("session.execution.interrupted", { sessionID }).pipe(
+            Effect.as(json({ interrupted: true })),
+          ),
+      };
+      const http = HttpClient.make((request, url) =>
+        Effect.gen(function* () {
+          const path = url.pathname;
+          if (path === "/api/event") {
+            const stream = new ReadableStream<Uint8Array>({
+              start(controller) {
+                streamController = controller;
+              },
+            });
+            streams.count += 1;
+            yield* signal();
+            return HttpClientResponse.fromWeb(
+              request,
+              new Response(stream, { headers: { "content-type": "text/event-stream" } }),
+            );
+          }
+          let response: Response;
+          const session = /^\/api\/session\/([^/]+)(.*)$/.exec(path);
+          if (session?.[2] === "/interrupt") {
+            const sessionID = session[1]!;
+            interrupts.push(sessionID);
+            yield* signal();
+            response = yield* transport.interrupt(sessionID);
+          } else if (session?.[2] === "/prompt") {
+            prompts.push(session[1]!);
+            response = json({
+              data: {
+                ...sessionInfo(),
+                id: PROMPT_ID,
+                sessionID: SESSION,
+                type: "user",
+                payload: { text: "hi" },
+                delivery: "steer",
+              },
+            });
+          } else if (path === "/api/model") {
+            response = json(modelCatalog);
+          } else if (path === "/api/session/active") {
+            response = json({ data: {} });
+          } else if (session?.[2] === "/message") {
+            response = json({ data: [], cursor: {} });
+          } else if (session?.[2] === "") {
+            response = json({ data: sessionInfo() });
+          } else if (session?.[2] === "/permission" || session?.[2] === "/form") {
+            response = json({ data: [] });
+          } else if (path.includes("/instructions/entries/") || path.endsWith("/reply")) {
+            response = new Response(null, { status: 204 });
+          } else {
+            return yield* Effect.die(
+              new Error(`Unexpected cut-in HTTP request: ${request.method} ${path}`),
+            );
+          }
+          return HttpClientResponse.fromWeb(request, response);
+        }),
+      );
+      const native = yield* OpenCode2Client.make.pipe(
+        Effect.provideService(HttpClient.HttpClient, http),
+      );
+      const connection = {
+        ...(yield* native.connect({ baseUrl: "http://opencode2.cutin", password: "replay" })),
+        url: "http://opencode2.cutin",
+        version: "2.0.18",
+        external: false,
+      };
+      const adapter = yield* OpenCode2AdapterV2.make(instanceId).pipe(
+        Effect.provideService(OpenCode2Server.OpenCode2Server, {
+          withConnection: (use) => use(connection),
+        }),
+      );
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("provider-session:opencode2-adapter"),
+        modelSelection: bigPickle,
+        runtimePolicy: policy(),
+      });
+      yield* runtime.events.pipe(
+        Stream.runForEach((event) =>
+          Effect.gen(function* () {
+            collected.push(event);
+            yield* signal();
+          }),
+        ),
+        Effect.forkScoped,
+      );
+      const thread = yield* runtime.resumeThread({
+        providerThread: providerThread(yield* DateTime.now),
+        threadId,
+        modelSelection: bigPickle,
+        runtimePolicy: policy(),
+      });
+      yield* runtime.startTurn(withLineage(thread));
+      yield* send("session.execution.started", { sessionID: SESSION });
+      const launch = (parent: string, child: string, id: string, attach = true) =>
+        Effect.gen(function* () {
+          const tool = { sessionID: parent, assistantMessageID: `msg_${parent}`, id };
+          yield* send("session.tool.input.started", { ...tool, name: "subagent" });
+          yield* send("session.tool.called", {
+            ...tool,
+            name: "subagent",
+            input: { prompt: "sleep", description: id, background: true },
+            executed: false,
+          });
+          yield* send("session.created", { ...childCreated(child), parentID: parent });
+          if (attach) {
+            yield* send("session.tool.progress", {
+              ...tool,
+              metadata: { sessionID: child, status: "running" },
+            });
+            yield* send("session.execution.started", { sessionID: child });
+          }
+          // A visible frame after the launch is an ordered-stream milestone.
+          yield* send("session.text.ended", {
+            sessionID: parent,
+            assistantMessageID: `msg_${id}`,
+            ordinal: 0,
+            text: id,
+          });
+          yield* until(() =>
+            collected.some(
+              (event) => event.type === "message.updated" && event.message.text === id,
+            ),
+          );
+        });
+      const cutIn = () =>
+        runtime.interruptTurn({
+          providerThread: thread,
+          providerTurnId: yieldProviderTurnId,
+          requestRuntimeRestart: true,
+          replacementFollows: true,
+        });
+      const yieldProviderTurnId = yield* providerTurnId;
+      const terminals = () => collected.filter((event) => event.type === "turn.terminal");
+      const report = (parent: string, child: string, state = "completed") =>
+        send("session.inbox.enqueued", {
+          sessionID: parent,
+          inboxID: `msg_report_${child}`,
+          item: {
+            type: "synthetic",
+            delivery: "steer",
+            payload: {
+              text: "NATURAL_RESULT",
+              metadata: { source: "subagent", childID: child, state },
+            },
+          },
+        });
+      return {
+        runtime,
+        thread,
+        collected,
+        interrupts,
+        prompts,
+        transport,
+        json,
+        send,
+        until,
+        launch,
+        cutIn,
+        terminals,
+        report,
+        streams,
+        disconnect: Effect.sync(() => streamController.close()),
+      };
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer)),
+          IdAllocator.layer,
+          NodeServices.layer,
+        ),
+      ),
+    );
+
+    it.effect(
+      "retains a failed child's tail and answerable question, then retries without a second root interrupt",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* cutInHarness;
+          yield* h.launch(SESSION, CHILD, "child-a");
+          h.transport.interrupt = (id) =>
+            id === CHILD
+              ? Effect.succeed(h.json({ _tag: "UnknownError", message: "interrupt failed" }, 500))
+              : h
+                  .send("session.execution.interrupted", { sessionID: id })
+                  .pipe(Effect.as(h.json({ interrupted: true })));
+          const first = yield* h.cutIn().pipe(Effect.exit);
+          assert.isTrue(
+            Exit.isFailure(first),
+            "unconfirmed child cancellation must fail the cut-in",
+          );
+          assert.lengthOf(h.terminals(), 0);
+          assert.isTrue(yield* h.runtime.hasPendingBackgroundWork!);
+          const refused = yield* h.runtime
+            .startTurn({
+              ...withLineage(h.thread),
+              attemptId: RunAttemptId.make("attempt:replacement"),
+            })
+            .pipe(Effect.exit);
+          assert.isTrue(Exit.isFailure(refused), "a retained hold must refuse replacement");
+          assert.lengthOf(h.prompts, 1);
+          yield* h.send("session.tool.input.started", {
+            sessionID: CHILD,
+            assistantMessageID: "msg_tail",
+            id: "child-tool",
+            name: "shell",
+          });
+          yield* h.send("session.tool.success", {
+            sessionID: CHILD,
+            assistantMessageID: "msg_tail",
+            id: "child-tool",
+            content: [{ type: "text", text: "CHILD_PARTIAL" }],
+            metadata: {},
+            executed: false,
+          });
+          yield* h.send("form.created", { form: { ...colorForm, sessionID: CHILD } });
+          yield* h.until(() =>
+            h.collected.some(
+              (event) =>
+                event.type === "runtime_request.updated" &&
+                event.runtimeRequest.status === "pending",
+            ),
+          );
+          assert.equal(
+            h.collected.filter(
+              (event) =>
+                event.type === "turn_item.updated" &&
+                event.turnItem.type === "command_execution" &&
+                event.turnItem.output === "CHILD_PARTIAL",
+            ).length,
+            1,
+          );
+          const question = h.collected.find(
+            (event) =>
+              event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending",
+          );
+          assert.equal(question?.type, "runtime_request.updated");
+          if (question?.type !== "runtime_request.updated") return;
+          yield* h.runtime.respondToRuntimeRequest({
+            requestId: question.runtimeRequest.id,
+            answers: { q0: ["Red"] },
+          });
+          h.transport.interrupt = (id) =>
+            h
+              .send("session.execution.interrupted", { sessionID: id })
+              .pipe(Effect.as(h.json({ interrupted: true })));
+          yield* h.cutIn();
+          yield* h.until(() => h.terminals().length === 1);
+          assert.deepEqual(h.interrupts, [SESSION, CHILD, CHILD]);
+          assert.isFalse(yield* h.runtime.hasPendingBackgroundWork!);
+          const terminalAt = h.collected.findIndex((event) => event.type === "turn.terminal");
+          const ends = h.collected.flatMap((event, index) =>
+            event.type === "subagent.updated" && event.subagent.status === "interrupted"
+              ? [index]
+              : [],
+          );
+          assert.lengthOf(ends, 1);
+          assert.isBelow(ends[0]!, terminalAt);
+        }).pipe(Effect.scoped),
+    );
+
+    it.effect(
+      "treats a child request timeout as unconfirmed and releases naturally after the failed attempt",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* cutInHarness;
+          yield* h.launch(SESSION, CHILD, "child-a");
+          h.transport.interrupt = (id) =>
+            id === CHILD
+              ? Effect.never
+              : h
+                  .send("session.execution.interrupted", { sessionID: id })
+                  .pipe(Effect.as(h.json({ interrupted: true })));
+          const attempt = yield* h.cutIn().pipe(Effect.exit, Effect.forkScoped);
+          yield* h.until(() => h.interrupts.includes(CHILD));
+          yield* TestClock.adjust("11 seconds");
+          assert.isTrue(Exit.isFailure(yield* Fiber.join(attempt)));
+          assert.lengthOf(h.terminals(), 0);
+          yield* h.send("session.execution.succeeded", { sessionID: CHILD });
+          yield* h.report(SESSION, CHILD);
+          yield* h.until(() => h.terminals().length === 1);
+          assert.deepEqual(h.interrupts, [SESSION, CHILD]);
+          yield* h.send("session.execution.succeeded", { sessionID: CHILD });
+          yield* h.send("session.model.selected", {
+            sessionID: SESSION,
+            model: { providerID: "opencode", id: "big-pickle", variant: "done" },
+          });
+          yield* h.until(() =>
+            h.collected.some(
+              (event) =>
+                event.type === "provider_thread.updated" &&
+                event.providerThread.nativeMetadata?.modelSelection?.options?.[0]?.value === "done",
+            ),
+          );
+          assert.lengthOf(h.terminals(), 1);
+        }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+    );
+
+    it.effect(
+      "a normal Stop releases a retained cut-in even when its child is still unreachable",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* cutInHarness;
+          yield* h.launch(SESSION, CHILD, "child-a");
+          h.transport.interrupt = (id) =>
+            id === CHILD
+              ? Effect.succeed(h.json({ _tag: "UnknownError", message: "interrupt failed" }, 500))
+              : h
+                  .send("session.execution.interrupted", { sessionID: id })
+                  .pipe(Effect.as(h.json({ interrupted: true })));
+          assert.isTrue(Exit.isFailure(yield* h.cutIn().pipe(Effect.exit)));
+          yield* h.runtime.interruptTurn({
+            providerThread: h.thread,
+            providerTurnId: yield* providerTurnId,
+            requestRuntimeRestart: true,
+          });
+          yield* h.until(() => h.terminals().length === 1);
+          assert.isTrue(yield* h.runtime.hasPendingBackgroundWork!);
+          assert.deepEqual(h.interrupts, [SESSION, CHILD, CHILD]);
+        }).pipe(Effect.scoped),
+    );
+
+    it.effect("keeps a child whose no-op cancellation reply does not confirm its end", () =>
+      Effect.gen(function* () {
+        const h = yield* cutInHarness;
+        yield* h.launch(SESSION, CHILD, "child-a");
+        h.transport.interrupt = (id) =>
+          id === CHILD
+            ? Effect.succeed(h.json({ interrupted: false }))
+            : h
+                .send("session.execution.interrupted", { sessionID: id })
+                .pipe(Effect.as(h.json({ interrupted: true })));
+        assert.isTrue(
+          Exit.isFailure(yield* h.cutIn().pipe(Effect.exit)),
+          "a no-op reply must not confirm cancellation of a live native child",
+        );
+        assert.lengthOf(h.terminals(), 0);
+        assert.isTrue(yield* h.runtime.hasPendingBackgroundWork!);
+        yield* h.send("session.execution.succeeded", { sessionID: CHILD });
+        yield* h.until(() => h.terminals().length === 1);
+        assert.deepEqual(h.interrupts, [SESSION, CHILD]);
+        const child = h.collected.findLast(
+          (event) => event.type === "subagent.updated" && event.subagent.title === "child-a",
+        );
+        assert.equal(child?.type === "subagent.updated" && child.subagent.status, "completed");
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect(
+      "releases after five failed cancellations from a factual parent report even if the child's execution end was lost",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* cutInHarness;
+          yield* h.launch(SESSION, CHILD, "child-a");
+          h.transport.interrupt = (id) =>
+            id === CHILD
+              ? Effect.succeed(h.json({ _tag: "UnknownError", message: "interrupt failed" }, 500))
+              : h
+                  .send("session.execution.interrupted", { sessionID: id })
+                  .pipe(Effect.as(h.json({ interrupted: true })));
+          for (let attempt = 0; attempt < 5; attempt += 1) {
+            assert.isTrue(Exit.isFailure(yield* h.cutIn().pipe(Effect.exit)));
+            assert.lengthOf(h.terminals(), 0);
+          }
+          yield* h.report(SESSION, CHILD);
+          yield* h.send("session.model.selected", {
+            sessionID: SESSION,
+            model: { providerID: "opencode", id: "big-pickle", variant: "reported" },
+          });
+          yield* h.until(() =>
+            h.collected.some(
+              (event) =>
+                event.type === "provider_thread.updated" &&
+                event.providerThread.nativeMetadata?.modelSelection?.options?.[0]?.value ===
+                  "reported",
+            ),
+          );
+          assert.lengthOf(
+            h.terminals(),
+            1,
+            "a factual report must release the retained owner without another retry",
+          );
+          assert.deepEqual(h.interrupts, [SESSION, CHILD, CHILD, CHILD, CHILD, CHILD]);
+          assert.isFalse(yield* h.runtime.hasPendingBackgroundWork!);
+          assert.equal(
+            h.collected.filter(
+              (event) =>
+                event.type === "provider_turn.updated" &&
+                event.providerTurn.nativeTurnRef?.nativeId === `${CHILD}:turn:1` &&
+                event.providerTurn.status === "completed",
+            ).length,
+            1,
+          );
+        }).pipe(Effect.scoped),
+    );
+
+    it.effect.each(["cut-in", "Stop"] as const)(
+      "retries an unacknowledged root timeout through %s instead of admitting replacement",
+      (retry) =>
+        Effect.gen(function* () {
+          const h = yield* cutInHarness;
+          h.transport.interrupt = () => Effect.never;
+          const first = yield* h.cutIn().pipe(Effect.exit, Effect.forkScoped);
+          yield* h.until(() => h.interrupts.length === 1);
+          yield* TestClock.adjust("11 seconds");
+          assert.isTrue(Exit.isFailure(yield* Fiber.join(first)));
+          assert.lengthOf(h.terminals(), 0);
+          assert.isTrue(yield* h.runtime.hasPendingBackgroundWork!);
+          h.transport.interrupt = (id) =>
+            h
+              .send("session.execution.interrupted", { sessionID: id })
+              .pipe(Effect.as(h.json({ interrupted: true })));
+          if (retry === "cut-in") yield* h.cutIn();
+          else
+            yield* h.runtime.interruptTurn({
+              providerThread: h.thread,
+              providerTurnId: yield* providerTurnId,
+              requestRuntimeRestart: true,
+            });
+          yield* h.until(() => h.terminals().length === 1);
+          assert.deepEqual(h.interrupts, [SESSION, SESSION]);
+        }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+    );
+
+    it.effect(
+      "keeps an acknowledged root's missing terminal held through failed cleanup and absorbs its late end once",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* cutInHarness;
+          yield* h.launch(SESSION, CHILD, "child-a");
+          h.transport.interrupt = (id) =>
+            Effect.succeed(
+              id === CHILD
+                ? h.json({ _tag: "UnknownError", message: "interrupt failed" }, 500)
+                : h.json({ interrupted: true }),
+            );
+          const first = yield* h.cutIn().pipe(Effect.exit, Effect.forkScoped);
+          yield* h.until(() => h.interrupts.includes(SESSION));
+          yield* TestClock.adjust("11 seconds");
+          assert.isTrue(Exit.isFailure(yield* Fiber.join(first)));
+          assert.lengthOf(h.terminals(), 0);
+          h.transport.interrupt = () => Effect.succeed(h.json({ interrupted: true }));
+          yield* h.cutIn();
+          yield* h.until(() => h.terminals().length === 1);
+          assert.deepEqual(h.interrupts, [SESSION, CHILD, CHILD]);
+          yield* h.send("session.execution.interrupted", { sessionID: SESSION });
+          yield* h.send("session.execution.interrupted", { sessionID: CHILD });
+          yield* h.send("session.model.selected", {
+            sessionID: SESSION,
+            model: { providerID: "opencode", id: "big-pickle", variant: "late-end" },
+          });
+          yield* h.until(() =>
+            h.collected.some(
+              (event) =>
+                event.type === "provider_thread.updated" &&
+                event.providerThread.nativeMetadata?.modelSelection?.options?.[0]?.value ===
+                  "late-end",
+            ),
+          );
+          assert.lengthOf(h.terminals(), 1);
+          assert.equal(
+            h.collected.filter(
+              (event) =>
+                event.type === "subagent.updated" && event.subagent.status === "interrupted",
+            ).length,
+            1,
+          );
+        }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+    );
+
+    it.effect("keeps an unreached nested child observable beneath its reached parent", () =>
+      Effect.gen(function* () {
+        const h = yield* cutInHarness;
+        const nested = "ses_nested000000000000000";
+        yield* h.launch(SESSION, CHILD, "child-a");
+        yield* h.launch(CHILD, nested, "nested-b");
+        h.transport.interrupt = (id) =>
+          id === nested
+            ? Effect.succeed(h.json({ _tag: "UnknownError", message: "interrupt failed" }, 500))
+            : h
+                .send("session.execution.interrupted", { sessionID: id })
+                .pipe(Effect.as(h.json({ interrupted: true })));
+        assert.isTrue(Exit.isFailure(yield* h.cutIn().pipe(Effect.exit)));
+        assert.lengthOf(h.terminals(), 0);
+        for (const title of ["child-a", "nested-b"]) {
+          const row = h.collected.findLast(
+            (event) => event.type === "subagent.updated" && event.subagent.title === title,
+          );
+          assert.equal(
+            row?.type === "subagent.updated" ? row.subagent.status : undefined,
+            "running",
+          );
+        }
+        yield* h.send("form.created", { form: { ...colorForm, sessionID: nested } });
+        yield* h.until(() =>
+          h.collected.some(
+            (event) =>
+              event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending",
+          ),
+        );
+        const question = h.collected.find(
+          (event) =>
+            event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending",
+        );
+        assert.equal(question?.type, "runtime_request.updated");
+        if (question?.type !== "runtime_request.updated") return;
+        yield* h.runtime.respondToRuntimeRequest({
+          requestId: question.runtimeRequest.id,
+          answers: { q0: ["Red"] },
+        });
+        yield* h.send("session.execution.succeeded", { sessionID: nested });
+        yield* h.until(() => h.terminals().length === 1);
+        assert.deepEqual(h.interrupts, [SESSION, CHILD, nested]);
+        const ends = h.collected.filter(
+          (event) => event.type === "subagent.updated" && event.subagent.status !== "running",
+        );
+        assert.equal(
+          ends.filter(
+            (event) =>
+              event.type === "subagent.updated" &&
+              event.subagent.title === "child-a" &&
+              event.subagent.status === "interrupted",
+          ).length,
+          1,
+        );
+        assert.equal(
+          ends.filter(
+            (event) =>
+              event.type === "subagent.updated" &&
+              event.subagent.title === "nested-b" &&
+              event.subagent.status === "completed",
+          ).length,
+          1,
+        );
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect(
+      "locally ends an acknowledged busy child follow-up before the held root terminal",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* cutInHarness;
+          yield* h.launch(SESSION, CHILD, "child-a");
+          yield* h.send("session.execution.succeeded", { sessionID: CHILD });
+          yield* h.report(SESSION, CHILD);
+          yield* h.send("session.execution.started", { sessionID: CHILD });
+          yield* h.send("session.tool.input.started", {
+            sessionID: CHILD,
+            assistantMessageID: "msg_followup",
+            id: "follow-up-tool",
+            name: "shell",
+          });
+          yield* h.until(() =>
+            h.collected.some(
+              (event) =>
+                event.type === "turn_item.updated" &&
+                event.turnItem.nativeItemRef?.nativeId === `${CHILD}:follow-up-tool`,
+            ),
+          );
+          h.transport.interrupt = (id) =>
+            id === CHILD
+              ? Effect.succeed(h.json({ interrupted: true }))
+              : h
+                  .send("session.execution.interrupted", { sessionID: id })
+                  .pipe(Effect.as(h.json({ interrupted: true })));
+          yield* h.cutIn();
+          yield* h.until(() => h.terminals().length === 1);
+          assert.deepEqual(h.interrupts, [SESSION, CHILD]);
+          const rootAt = h.collected.findIndex((event) => event.type === "turn.terminal");
+          const childEnds = h.collected.flatMap((event, index) =>
+            event.type === "provider_turn.updated" &&
+            event.providerTurn.nativeTurnRef?.nativeId === `${CHILD}:turn:2` &&
+            event.providerTurn.status === "interrupted"
+              ? [index]
+              : [],
+          );
+          assert.lengthOf(childEnds, 1);
+          assert.isBelow(childEnds[0]!, rootAt);
+          assert.equal(
+            h.collected.filter(
+              (event) =>
+                event.type === "turn_item.updated" &&
+                event.turnItem.nativeItemRef?.nativeId === `${CHILD}:follow-up-tool` &&
+                event.turnItem.status === "interrupted",
+            ).length,
+            1,
+          );
+          assert.isFalse(yield* h.runtime.hasPendingBackgroundWork!);
+        }).pipe(Effect.scoped),
+    );
+
+    it.effect("reconciles a held cut-in whose child ended while the event stream was down", () =>
+      Effect.gen(function* () {
+        const h = yield* cutInHarness;
+        yield* h.launch(SESSION, CHILD, "child-a");
+        h.transport.interrupt = (id) =>
+          id === CHILD
+            ? Effect.succeed(h.json({ _tag: "UnknownError", message: "interrupt failed" }, 500))
+            : h
+                .send("session.execution.interrupted", { sessionID: id })
+                .pipe(Effect.as(h.json({ interrupted: true })));
+        assert.isTrue(Exit.isFailure(yield* h.cutIn().pipe(Effect.exit)));
+        yield* h.disconnect;
+        yield* h.until(() => h.streams.count === 2);
+        yield* h.send("session.model.selected", {
+          sessionID: SESSION,
+          model: { providerID: "opencode", id: "big-pickle", variant: "reconnected" },
+        });
+        yield* h.until(() =>
+          h.collected.some(
+            (event) =>
+              event.type === "provider_thread.updated" &&
+              event.providerThread.nativeMetadata?.modelSelection?.options?.[0]?.value ===
+                "reconnected",
+          ),
+        );
+        assert.lengthOf(
+          h.terminals(),
+          1,
+          "reconciliation must release the held turn when the native session is gone",
+        );
+        assert.isFalse(yield* h.runtime.hasPendingBackgroundWork!);
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect("retains a busy root follow-up whose cancellation was not confirmed", () =>
+      Effect.gen(function* () {
+        const h = yield* cutInHarness;
+        yield* h.launch(SESSION, CHILD, "child-a");
+        let rootRequests = 0;
+        h.transport.interrupt = (id) =>
+          Effect.gen(function* () {
+            if (id === SESSION) {
+              rootRequests += 1;
+              if (rootRequests > 1)
+                return h.json({ _tag: "UnknownError", message: "follow-up interrupt failed" }, 500);
+              yield* h.send("session.execution.interrupted", { sessionID: SESSION });
+            } else {
+              yield* h.send("session.execution.interrupted", { sessionID: CHILD });
+              yield* h.report(SESSION, CHILD);
+              yield* h.send("session.execution.started", { sessionID: SESSION });
+              yield* h.send("session.model.selected", {
+                sessionID: CHILD,
+                model: { providerID: "opencode", id: "big-pickle", variant: "wake-ready" },
+              });
+              yield* h.until(() =>
+                h.collected.some(
+                  (event) =>
+                    event.type === "provider_thread.updated" &&
+                    event.providerThread.nativeMetadata?.modelSelection?.options?.[0]?.value ===
+                      "wake-ready",
+                ),
+              );
+            }
+            return h.json({ interrupted: true });
+          });
+        assert.isTrue(
+          Exit.isFailure(yield* h.cutIn().pipe(Effect.exit)),
+          "a live follow-up must participate in the same cancellation barrier",
+        );
+        assert.lengthOf(h.terminals(), 0);
+        assert.deepEqual(h.interrupts, [SESSION, CHILD, SESSION]);
+        yield* h.send("session.execution.succeeded", { sessionID: SESSION });
+        yield* h.until(() => h.terminals().length === 1);
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect(
+      "keeps an unreached child follow-up's question answerable after its original call ended",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* cutInHarness;
+          yield* h.launch(SESSION, CHILD, "child-a");
+          yield* h.send("session.execution.succeeded", { sessionID: CHILD });
+          yield* h.report(SESSION, CHILD);
+          yield* h.send("session.execution.started", { sessionID: CHILD });
+          yield* h.send("session.model.selected", {
+            sessionID: CHILD,
+            model: { providerID: "opencode", id: "big-pickle", variant: "follow-up" },
+          });
+          yield* h.until(() =>
+            h.collected.some(
+              (event) =>
+                event.type === "provider_thread.updated" &&
+                event.providerThread.nativeMetadata?.modelSelection?.options?.[0]?.value ===
+                  "follow-up",
+            ),
+          );
+          h.transport.interrupt = (id) =>
+            id === CHILD
+              ? Effect.succeed(h.json({ _tag: "UnknownError", message: "interrupt failed" }, 500))
+              : h
+                  .send("session.execution.interrupted", { sessionID: id })
+                  .pipe(Effect.as(h.json({ interrupted: true })));
+          assert.isTrue(Exit.isFailure(yield* h.cutIn().pipe(Effect.exit)));
+          yield* h.send("form.created", { form: { ...colorForm, sessionID: CHILD } });
+          yield* h.send("session.model.selected", {
+            sessionID: CHILD,
+            model: { providerID: "opencode", id: "big-pickle", variant: "asked" },
+          });
+          yield* h.until(() =>
+            h.collected.some(
+              (event) =>
+                event.type === "provider_thread.updated" &&
+                event.providerThread.nativeMetadata?.modelSelection?.options?.[0]?.value ===
+                  "asked",
+            ),
+          );
+          const question = h.collected.find(
+            (event) =>
+              event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending",
+          );
+          assert.equal(
+            question?.type,
+            "runtime_request.updated",
+            "the held owner must still expose the follow-up's question",
+          );
+          if (question?.type !== "runtime_request.updated") return;
+          yield* h.runtime.respondToRuntimeRequest({
+            requestId: question.runtimeRequest.id,
+            answers: { q0: ["Red"] },
+          });
+          yield* h.send("session.execution.succeeded", { sessionID: CHILD });
+          yield* h.until(() => h.terminals().length === 1);
+          assert.deepEqual(h.interrupts, [SESSION, CHILD]);
+        }).pipe(Effect.scoped),
+    );
+
+    it.effect("does not treat a no-op root reply as cancellation of an already sent prompt", () =>
+      Effect.gen(function* () {
+        const h = yield* cutInHarness;
+        h.transport.interrupt = () => Effect.succeed(h.json({ interrupted: false }));
+        const cutIn = yield* h.cutIn().pipe(Effect.exit, Effect.forkScoped);
+        yield* h.until(() => h.interrupts.length === 1);
+        yield* TestClock.adjust("11 seconds");
+        assert.isTrue(
+          Exit.isFailure(yield* Fiber.join(cutIn)),
+          "nothing running is not an acknowledgement that a sent prompt was stopped",
+        );
+        assert.lengthOf(h.terminals(), 0);
+        yield* h.send("session.execution.succeeded", { sessionID: SESSION });
+        yield* h.until(() => h.terminals().length === 1);
+        assert.equal(h.terminals()[0]?.status, "completed");
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+    );
+
+    it.effect(
+      "interrupts the root before a parallel fixed-point cohort with late nested and announced children",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* cutInHarness;
+          const sibling = "ses_sibling00000000000000";
+          const nested = "ses_nested000000000000000";
+          yield* h.launch(SESSION, CHILD, "child-a");
+          const release = yield* Deferred.make<void>();
+          h.transport.interrupt = (id) =>
+            Effect.gen(function* () {
+              if (id === SESSION) {
+                // Native work admitted after the stop request but before execution end.
+                yield* h.launch(SESSION, sibling, "child-b");
+              }
+              if (id === CHILD) {
+                yield* h.launch(CHILD, nested, "nested-c", false);
+                yield* Deferred.await(release);
+              }
+              if (id === sibling) yield* Deferred.succeed(release, undefined);
+              yield* h.send("session.execution.interrupted", { sessionID: id });
+              return h.json({ interrupted: true });
+            });
+          const cutting = yield* h.cutIn().pipe(Effect.forkScoped);
+          yield* h.until(() => h.interrupts.includes(CHILD));
+          assert.equal(
+            h.interrupts[0],
+            SESSION,
+            "foreground cancellation must precede the blocked child request",
+          );
+          yield* Fiber.join(cutting);
+          yield* h.until(() => h.terminals().length === 1);
+          assert.deepEqual(h.interrupts, [SESSION, CHILD, sibling, nested]);
+          assert.isFalse(yield* h.runtime.hasPendingBackgroundWork!);
+          assert.equal(
+            h.collected.filter(
+              (event) =>
+                event.type === "subagent.updated" && event.subagent.status === "interrupted",
+            ).length,
+            3,
+          );
+        }).pipe(Effect.scoped),
+    );
+
+    it.effect("keeps one factual report for every joined call during a retained cut-in", () =>
+      Effect.gen(function* () {
+        const h = yield* cutInHarness;
+        yield* h.launch(SESSION, CHILD, "joined-a");
+        yield* h.launch(SESSION, CHILD, "joined-b");
+        h.transport.interrupt = (id) =>
+          id === CHILD
+            ? Effect.succeed(h.json({ _tag: "UnknownError", message: "interrupt failed" }, 500))
+            : h
+                .send("session.execution.interrupted", { sessionID: id })
+                .pipe(Effect.as(h.json({ interrupted: true })));
+        assert.isTrue(Exit.isFailure(yield* h.cutIn().pipe(Effect.exit)));
+        assert.lengthOf(h.terminals(), 0);
+        yield* h.report(SESSION, CHILD);
+        yield* h.until(() => h.terminals().length === 1);
+        const terminalAt = h.collected.findIndex((event) => event.type === "turn.terminal");
+        for (const title of ["joined-a", "joined-b"]) {
+          const ends = h.collected.filter(
+            (event) =>
+              event.type === "subagent.updated" &&
+              event.subagent.title === title &&
+              event.subagent.status === "completed",
+          );
+          assert.lengthOf(ends, 1);
+          assert.equal(
+            ends[0]?.type === "subagent.updated" && ends[0].subagent.result,
+            "NATURAL_RESULT",
+          );
+          assert.isBelow(h.collected.indexOf(ends[0]!), terminalAt);
+        }
+        assert.deepEqual(h.interrupts, [SESSION, CHILD]);
+        assert.isFalse(yield* h.runtime.hasPendingBackgroundWork!);
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect.each(["acknowledged", "natural", "report", "unknown-report"] as const)(
+      "keeps native wake cleanup's unreached child in the cut-in cohort until %s completion",
+      (ending) =>
+        Effect.gen(function* () {
+          const h = yield* cutInHarness;
+          yield* h.send("session.execution.succeeded", { sessionID: SESSION });
+          yield* h.until(() => h.terminals().length === 1);
+          // This execution has no T3 turn. Its child belongs to its buffered wake.
+          yield* h.send("session.execution.started", { sessionID: SESSION });
+          yield* h.send("session.created", childCreated(CHILD));
+          yield* h.send("session.execution.started", { sessionID: CHILD });
+          yield* h.send("session.execution.succeeded", { sessionID: SESSION });
+          yield* h.send("session.model.selected", {
+            sessionID: SESSION,
+            model: { providerID: "opencode", id: "big-pickle", variant: "wake-held" },
+          });
+          yield* h.until(() =>
+            h.collected.some(
+              (event) =>
+                event.type === "provider_thread.updated" &&
+                event.providerThread.nativeMetadata?.modelSelection?.options?.[0]?.value ===
+                  "wake-held",
+            ),
+          );
+          h.transport.interrupt = () =>
+            Effect.succeed(h.json({ _tag: "UnknownError", message: "interrupt failed" }, 500));
+          yield* h.runtime.interruptTurn({
+            providerThread: h.thread,
+            providerTurnId: yield* providerTurnId,
+            requestRuntimeRestart: true,
+          });
+          assert.deepEqual(h.interrupts, [CHILD]);
+          assert.isTrue(
+            Exit.isFailure(yield* h.cutIn().pipe(Effect.exit)),
+            "a child the native wake cleanup could not stop must block the cut-in",
+          );
+          assert.isTrue(yield* h.runtime.hasPendingBackgroundWork!);
+          if (ending === "unknown-report") {
+            yield* h.report(SESSION, CHILD, "running");
+            yield* h.send("session.model.selected", {
+              sessionID: SESSION,
+              model: { providerID: "opencode", id: "big-pickle", variant: "wake-unknown" },
+            });
+            yield* h.until(() =>
+              h.collected.some(
+                (event) =>
+                  event.type === "provider_thread.updated" &&
+                  event.providerThread.nativeMetadata?.modelSelection?.options?.[0]?.value ===
+                    "wake-unknown",
+              ),
+            );
+            assert.isTrue(yield* h.runtime.hasPendingBackgroundWork!);
+          }
+          if (ending === "acknowledged" || ending === "unknown-report") {
+            h.transport.interrupt = () => Effect.succeed(h.json({ interrupted: true }));
+            yield* h.cutIn();
+          } else {
+            if (ending === "natural") {
+              yield* h.send("session.execution.succeeded", { sessionID: CHILD });
+            } else {
+              yield* h.report(SESSION, CHILD);
+            }
+            yield* h.send("session.model.selected", {
+              sessionID: SESSION,
+              model: { providerID: "opencode", id: "big-pickle", variant: "wake-ended" },
+            });
+            yield* h.until(() =>
+              h.collected.some(
+                (event) =>
+                  event.type === "provider_thread.updated" &&
+                  event.providerThread.nativeMetadata?.modelSelection?.options?.[0]?.value ===
+                    "wake-ended",
+              ),
+            );
+          }
+          assert.isFalse(yield* h.runtime.hasPendingBackgroundWork!);
+          const requests = [...h.interrupts];
+          yield* h.cutIn();
+          assert.deepEqual(
+            h.interrupts,
+            requests,
+            "reached wake children must not be rediscovered",
+          );
+          assert.deepEqual(
+            requests,
+            ending === "acknowledged" || ending === "unknown-report"
+              ? [CHILD, CHILD, CHILD]
+              : [CHILD, CHILD],
+          );
+          assert.lengthOf(h.terminals(), 1);
+          assert.equal(h.terminals()[0]?.status, "completed");
+        }).pipe(Effect.scoped),
+    );
+
+    it.effect(
+      "stops a captured completed target's background without rewriting the completed root",
+      () =>
+        Effect.gen(function* () {
+          const h = yield* cutInHarness;
+          yield* h.launch(SESSION, CHILD, "child-a");
+          yield* h.send("session.execution.succeeded", { sessionID: SESSION });
+          yield* h.until(() => h.terminals().length === 1);
+          assert.equal(h.terminals()[0]?.status, "completed");
+          yield* h.cutIn();
+          yield* h.until(() =>
+            h.collected.some(
+              (event) =>
+                event.type === "subagent.updated" && event.subagent.status === "interrupted",
+            ),
+          );
+          assert.deepEqual(h.interrupts, [CHILD]);
+          assert.lengthOf(h.terminals(), 1);
+          assert.equal(h.terminals()[0]?.status, "completed");
+          assert.isFalse(yield* h.runtime.hasPendingBackgroundWork!);
+        }).pipe(Effect.scoped),
+    );
+  });
 
   it.effect("gives a background subagent the rules of a mode changed while it runs", () =>
     Effect.gen(function* () {

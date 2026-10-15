@@ -87,12 +87,14 @@ it.effect("routes shared-runtime events only to their owning root run", () =>
       runId: RunId.make("run:shared-runtime:first"),
       attemptId: RunAttemptId.make("attempt:shared-runtime:first"),
       providerThreadId: ProviderThreadId.make("provider-thread:shared-runtime:first"),
+      rootNodeId: NodeId.make("node:shared-runtime:first"),
     };
     const second: RunExecutionService.ProviderEventRouteIdentity = {
       threadId: ThreadId.make("thread:shared-runtime:second"),
       runId: RunId.make("run:shared-runtime:second"),
       attemptId: RunAttemptId.make("attempt:shared-runtime:second"),
       providerThreadId: ProviderThreadId.make("provider-thread:shared-runtime:second"),
+      rootNodeId: NodeId.make("node:shared-runtime:second"),
     };
     const firstTurnId = ProviderTurnId.make("provider-turn:shared-runtime:first");
     const turnEvent: ProviderAdapter.ProviderAdapterV2Event = {
@@ -180,6 +182,7 @@ it("routes only enrolled workflow members after the root turn ends", () => {
     runId: RunId.make("run:late-child"),
     attemptId: RunAttemptId.make("attempt:late-child"),
     providerThreadId: ProviderThreadId.make("provider-thread:late-child"),
+    rootNodeId: NodeId.make("node:late-child"),
   };
   const childCreated = (
     childThreadId: ThreadId,
@@ -210,6 +213,29 @@ it("routes only enrolled workflow members after the root turn ends", () => {
     initial,
   );
   assert.isTrue(earlyAccepted);
+  const [, nativeEnded] = RunExecutionService.routeProviderEvent(
+    {
+      type: "provider_turn.updated",
+      driver,
+      providerTurn: {
+        id: rootProviderTurnId,
+        providerThreadId: identity.providerThreadId,
+        nodeId: identity.rootNodeId,
+        runAttemptId: identity.attemptId,
+        nativeTurnRef: null,
+        ordinal: 1,
+        status: "failed",
+        startedAt: null,
+        completedAt: null,
+      },
+    },
+    identity,
+    live,
+  );
+  assert.isTrue(
+    RunExecutionService.routeProviderEvent(childCreated(lateChild), identity, nativeEnded)[0],
+    "a native root end closes root output but admits descendants until turn.terminal",
+  );
   const existingDescendant = ThreadId.make("thread:late-child:existing-descendant");
   const [descendantAccepted, withDescendant] = RunExecutionService.routeProviderEvent(
     childCreated(existingDescendant, earlyChild),
@@ -471,10 +497,12 @@ it("does not route a superseded attempt through a reused provider thread", () =>
     runId: RunId.make("run:shared-runtime:restart"),
     attemptId: RunAttemptId.make("attempt:shared-runtime:restart:old"),
     providerThreadId,
+    rootNodeId: NodeId.make("node:shared-runtime:restart:old"),
   };
   const newAttempt: RunExecutionService.ProviderEventRouteIdentity = {
     ...oldAttempt,
     attemptId: RunAttemptId.make("attempt:shared-runtime:restart:new"),
+    rootNodeId: NodeId.make("node:shared-runtime:restart:new"),
   };
   const oldTurnEvent: ProviderAdapter.ProviderAdapterV2Event = {
     type: "provider_turn.updated",
@@ -500,6 +528,191 @@ it("does not route a superseded attempt through a reused provider thread", () =>
   assert.isFalse(RunExecutionService.routeProviderEvent(oldTurnEvent, newAttempt, newState)[0]);
 });
 
+it.effect.each(["terminal", "failed", "completed", "interrupted"] as const)(
+  "routes replacement root artifacts once after root %s while the old attempt keeps its child tail",
+  (end) =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:completed-restart-overlap");
+      const childThreadId = ThreadId.make("thread:completed-restart-overlap:child");
+      const oldAttempt = {
+        threadId,
+        runId: RunId.make("run:completed-restart-overlap"),
+        attemptId: RunAttemptId.make("attempt:completed-restart-overlap:old"),
+        providerThreadId: ProviderThreadId.make("provider-thread:completed-restart-overlap"),
+        rootNodeId: NodeId.make("node:completed-restart-overlap:old"),
+      };
+      const nextAttempt = {
+        ...oldAttempt,
+        attemptId: RunAttemptId.make("attempt:completed-restart-overlap:next"),
+        rootNodeId: NodeId.make("node:completed-restart-overlap:next"),
+      };
+      let oldState = RunExecutionService.makeProviderEventRoutingState({
+        identity: oldAttempt,
+        providerTurnId: ProviderTurnId.make("turn:completed-restart-overlap:old"),
+        relatedThreadIds: [childThreadId],
+      });
+      let nextState = RunExecutionService.makeProviderEventRoutingState({
+        identity: nextAttempt,
+        providerTurnId: ProviderTurnId.make("turn:completed-restart-overlap:next"),
+      });
+      const message = (thread: ThreadId, nodeId: NodeId) =>
+        ({
+          type: "message.updated",
+          driver,
+          message: {
+            id: MessageId.make(`message:${nodeId}`),
+            threadId: thread,
+            runId: thread === threadId ? oldAttempt.runId : null,
+            nodeId,
+            role: "assistant",
+            text: thread === threadId ? "NEW_ROOT_ONCE" : "OLD_CHILD_TAIL",
+            attachments: [],
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+            createdBy: "agent",
+            creationSource: "provider",
+          },
+        }) satisfies ProviderAdapter.ProviderAdapterV2Event;
+      const replacementMessage = message(threadId, nextAttempt.rootNodeId);
+      const replacementNode = {
+        type: "node.updated",
+        driver,
+        node: {
+          id: nextAttempt.rootNodeId,
+          rootNodeId: nextAttempt.rootNodeId,
+          threadId,
+          runId: nextAttempt.runId,
+          parentNodeId: null,
+          kind: "root_turn",
+          status: "running",
+          countsForRun: true,
+          providerThreadId: nextAttempt.providerThreadId,
+          providerTurnId: nextState.rootProviderTurnId,
+          nativeItemRef: null,
+          runtimeRequestId: null,
+          checkpointScopeId: null,
+          startedAt: now,
+          completedAt: null,
+        },
+      } satisfies ProviderAdapter.ProviderAdapterV2Event;
+      const replacementTool = {
+        ...backgroundTurnItemEvent(
+          {
+            ...backgroundScenarioIds("completed-restart-overlap"),
+            threadId,
+            runId: nextAttempt.runId,
+            rootProviderTurnId: nextState.rootProviderTurnId!,
+          },
+          "command_execution",
+          "running",
+          1,
+        ),
+      };
+      if (replacementTool.type !== "turn_item.updated") throw new Error("Expected a tool item");
+      const replacementItem = {
+        ...replacementTool,
+        turnItem: { ...replacementTool.turnItem, nodeId: nextAttempt.rootNodeId },
+      } satisfies ProviderAdapter.ProviderAdapterV2Event;
+      const terminal = {
+        type: "turn.terminal",
+        driver,
+        providerThreadId: oldAttempt.providerThreadId,
+        providerTurnId: oldState.rootProviderTurnId!,
+        runOrdinal: 1,
+        status: "completed",
+        failure: null,
+        threadDisposition: "reusable",
+      } satisfies ProviderAdapter.ProviderAdapterV2Event;
+      const oldNodeId = NodeId.make("node:completed-restart-overlap:old-tool");
+      [, oldState] = RunExecutionService.routeProviderEvent(
+        {
+          ...replacementNode,
+          node: {
+            ...replacementNode.node,
+            id: oldNodeId,
+            rootNodeId: oldAttempt.rootNodeId,
+            providerThreadId: null,
+          },
+        },
+        oldAttempt,
+        oldState,
+      );
+      const rootEnd =
+        end === "terminal"
+          ? terminal
+          : ({
+              type: "provider_turn.updated",
+              driver,
+              providerTurn: {
+                id: oldState.rootProviderTurnId!,
+                providerThreadId: oldAttempt.providerThreadId,
+                nodeId: oldAttempt.rootNodeId,
+                runAttemptId: oldAttempt.attemptId,
+                nativeTurnRef: null,
+                ordinal: 1,
+                status: end,
+                startedAt: now,
+                completedAt: now,
+              },
+            } satisfies ProviderAdapter.ProviderAdapterV2Event);
+      [, oldState] = RunExecutionService.routeProviderEvent(rootEnd, oldAttempt, oldState);
+      for (const event of [replacementMessage, replacementNode, replacementItem]) {
+        const [oldAccepts, oldNext] = RunExecutionService.routeProviderEvent(
+          event,
+          oldAttempt,
+          oldState,
+        );
+        const [nextAccepts, nextNext] = RunExecutionService.routeProviderEvent(
+          event,
+          nextAttempt,
+          nextState,
+        );
+        oldState = oldNext;
+        nextState = nextNext;
+        assert.isFalse(oldAccepts, `${event.type} must have one root writer`);
+        assert.isTrue(nextAccepts, `${event.type} must reach its replacement attempt`);
+      }
+      const childTail = message(childThreadId, NodeId.make("node:completed-restart-overlap:child"));
+      assert.isTrue(RunExecutionService.routeProviderEvent(childTail, oldAttempt, oldState)[0]);
+      assert.isFalse(RunExecutionService.routeProviderEvent(childTail, nextAttempt, nextState)[0]);
+      assert.isTrue(
+        RunExecutionService.routeProviderEvent(
+          message(threadId, oldNodeId),
+          oldAttempt,
+          oldState,
+        )[0],
+        "the original attempt still records its own late root-thread output",
+      );
+      if (rootEnd.type === "provider_turn.updated") {
+        // A goal may start another native turn in the same attempt. It owns
+        // ordinary root output again, even though its previous turn ended.
+        [, oldState] = RunExecutionService.routeProviderEvent(
+          {
+            ...rootEnd,
+            providerTurn: {
+              ...rootEnd.providerTurn,
+              id: ProviderTurnId.make("turn:completed-restart-overlap:goal-continuation"),
+              status: "running",
+              completedAt: null,
+            },
+          },
+          oldAttempt,
+          oldState,
+        );
+        assert.isTrue(
+          RunExecutionService.routeProviderEvent(
+            { ...replacementMessage, message: { ...replacementMessage.message, nodeId: null } },
+            oldAttempt,
+            oldState,
+          )[0],
+          "a factual goal continuation reopens root output for its own attempt",
+        );
+      }
+    }),
+);
+
 it("routes only exact same-thread background items inherited from settled runs", () => {
   const threadId = ThreadId.make("thread:inherited-background-routing");
   const otherThreadId = ThreadId.make("thread:inherited-background-routing:other");
@@ -511,6 +724,7 @@ it("routes only exact same-thread background items inherited from settled runs",
     runId: currentRunId,
     attemptId: RunAttemptId.make("attempt:inherited-background-routing:current"),
     providerThreadId: ProviderThreadId.make("provider-thread:inherited-background-routing:current"),
+    rootNodeId: NodeId.make("node:inherited-background-routing:current"),
   };
   const initial = RunExecutionService.makeProviderEventRoutingState({
     identity,
@@ -715,6 +929,7 @@ it("does not carry interrupted or still-running child ownership into later attem
     runId: RunId.make("run:related-child:next-attempt"),
     attemptId: RunAttemptId.make("attempt:related-child:next-attempt"),
     providerThreadId: ProviderThreadId.make("provider-thread:related-child:next-attempt"),
+    rootNodeId: NodeId.make("node:related-child:next-attempt"),
   };
   const state = RunExecutionService.makeProviderEventRoutingState({
     identity,
@@ -2449,6 +2664,24 @@ it.effect("omits interrupt results and subagent cascade for a superseded attempt
   }),
 );
 
+it.effect("settles a superseded attempt's native subagents when its runtime ended", () =>
+  Effect.gen(function* () {
+    const { events, written, observed } = yield* captureRootRunTermination({
+      key: "closed-runtime-supersede",
+      shouldFinalizeRun: () => Effect.succeed(false),
+      seedOpenSubagent: true,
+      terminalBackgroundEnded: true,
+    });
+    const subagent = events.find((event) => event.type === "subagent.updated");
+    assert.equal(subagent?.type === "subagent.updated" && subagent.payload.status, "interrupted");
+    const node = events.find((event) => event.type === "node.updated");
+    assert.equal(node?.type === "node.updated" && node.payload.status, "interrupted");
+    assert.equal(written.find((item) => item.type === "subagent")?.status, "interrupted");
+    assert.isFalse(written.some((item) => item.type === "run_interrupt_result"));
+    assert.deepEqual(observed, []);
+  }),
+);
+
 it.effect("emits run_interrupt_result when superseded attempt still has a hard-stop request", () =>
   Effect.gen(function* () {
     const { written, observed } = yield* captureRootRunTermination({
@@ -2978,6 +3211,7 @@ function captureRootRunTermination(input: {
   readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
   readonly hasPendingBackgroundWorkForThread?: ProviderAdapter.ProviderAdapterV2SessionRuntime["hasPendingBackgroundWorkForThread"];
   readonly seedOpenSubagent?: boolean;
+  readonly terminalBackgroundEnded?: boolean;
   readonly events?: (
     ids: BackgroundScenarioIds,
   ) => Stream.Stream<
@@ -3123,7 +3357,10 @@ function captureRootRunTermination(input: {
                       } as const,
                     ]
                   : []),
-                rootTerminalEvent(ids, "interrupted"),
+                {
+                  ...rootTerminalEvent(ids, "interrupted"),
+                  ...(input.terminalBackgroundEnded ? { backgroundWork: "ended" as const } : {}),
+                },
               ] satisfies ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>),
             close: Deferred.succeed(ingestionDone, undefined).pipe(
               Effect.andThen(input.onSubscriptionClose ?? Effect.void),
@@ -3201,6 +3438,7 @@ function captureRootRunTermination(input: {
       previewActivityEnded,
       written: yield* Ref.get(writtenItems),
       finalEvents: yield* Ref.get(finalEvents),
+      events: yield* Ref.get(finalEvents),
       observed: yield* Ref.get(observed),
       submittedEffects: yield* Ref.get(submittedEffects),
       committedEffects: yield* Ref.get(committedEffects),
@@ -3320,6 +3558,7 @@ function subagentEvent(
       id: ids.subagentNodeId,
       threadId: ids.threadId,
       runId: ids.runId,
+      parentNodeId: ids.rootNodeId,
       status,
     },
   } as ProviderAdapter.ProviderAdapterV2Event;

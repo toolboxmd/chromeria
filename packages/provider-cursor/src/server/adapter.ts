@@ -989,18 +989,13 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CursorAgentSdk.CURSOR_PROVIDER,
-<<<<<<< HEAD
+    bareSupport: Effect.succeed({ supported: true }),
     getCapabilities: Effect.fn("CursorAdapter.getCapabilities")(function () {
       return Effect.succeed(CursorProviderCapabilitiesV2);
     }),
     planSelectionTransition: Effect.fn("CursorAdapter.planSelectionTransition")(function () {
       return Effect.succeed(turnScopedSelectionTransition());
     }),
-=======
-    bareSupport: Effect.succeed({ supported: true }),
-    getCapabilities: () => Effect.succeed(CursorProviderCapabilitiesV2),
-    planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
->>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
     openSession: Effect.fn("CursorAdapterV2.openSession")(
       function* (input: ProviderAdapter.ProviderAdapterV2OpenSessionInput) {
         const sessionScope = yield* Effect.scope;
@@ -2332,15 +2327,11 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               resolveAttachmentPath: host.resolveAttachmentPath,
               resolveExtractedTextPath: host.resolveExtractedTextPath,
             }),
-<<<<<<< HEAD
-            hasT3Mcp: mcpServers !== undefined,
+            runOrdinal: turnInput.runOrdinal,
+            hasT3Mcp: turnInput.runtimePolicy.bare === undefined && mcpServers !== undefined,
             hasDeviceTools,
             orchestrationDelivered: delivered.orchestration,
             deviceInstructionsDelivered: delivered.device,
-=======
-            runOrdinal: turnInput.runOrdinal,
-            hasT3Mcp: turnInput.runtimePolicy.bare === undefined && mcpServers !== undefined,
->>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
           });
           const images = yield* Effect.forEach(
             turnInput.message.attachments.filter(isProviderNativeImageAttachment),

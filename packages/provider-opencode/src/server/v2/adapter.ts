@@ -274,6 +274,9 @@ interface ThreadState {
   providerThread: OrchestrationV2ProviderThread;
   readonly providerTurns: Map<string, OrchestrationV2ProviderTurn>;
   active: ActiveTurn | undefined;
+  /** A cut-in keeps its event owner until every native stop is accounted for. */
+  cutIn: CutIn | undefined;
+  /** What the native session runs now, so a changed selection is switched before prompting. */
   model: ModelRef | undefined;
   /** Locally ended but possibly live; consume its next execution end without settling a new turn. */
   unsettled: boolean;
@@ -316,6 +319,19 @@ interface ThreadState {
 type TurnTerminal =
   | { readonly status: "completed" | "interrupted" }
   | { readonly status: "failed"; readonly failure: ReturnType<typeof makeProviderFailure> };
+
+interface CutIn {
+  readonly providerTurnId: OrchestrationV2ProviderTurn["id"];
+  /** Absent when the captured target already completed. Its terminal stays completed. */
+  readonly turn: ActiveTurn | undefined;
+  terminal: TurnTerminal | undefined;
+  readonly ended: Deferred.Deferred<void>;
+  rootAcknowledged: boolean;
+  phase: "stopping" | "retry";
+  /** Native ends retain their actual outcome; a successful cancel can settle locally. */
+  readonly reached: Map<string, "completed" | "interrupted" | "failed">;
+  readonly unreached: Set<string>;
+}
 
 type Rule = Permission.Rule;
 type RulesPolicy = Pick<
@@ -738,6 +754,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       providerThread,
       providerTurns: new Map(),
       active: undefined,
+      cutIn: undefined,
       model: undefined,
       unsettled: false,
       unsettledStarted: false,
@@ -796,19 +813,47 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       return calls;
     };
 
+    /** Only this session's ancestors can hold its events, not every loaded thread. */
+    const cutInsAbove = (sessionId: string) => {
+      const held: Array<{ readonly state: ThreadState; readonly hold: CutIn }> = [];
+      let state = threads.get(sessionId) ?? ownerOf(sessionId) ?? strays.get(sessionId);
+      while (state !== undefined) {
+        if (state.cutIn !== undefined) held.push({ state, hold: state.cutIn });
+        state = state.subagent?.call.state;
+      }
+      return held;
+    };
+
+    /**
+     * The turn a request from `sessionId` is shown under. A background
+     * subagent's goes to the turn that started it, whose run waits on the
+     * subagent; anything else goes to the thread's running turn.
+     */
     const requestTurn = (sessionId: string) => {
       const state = ownerOf(sessionId);
       if (state === undefined) return undefined;
-      const background = callsAbove(sessionId).findLast((call) => call.background);
+      const held = cutInsAbove(sessionId)[0];
+      const background = callsAbove(sessionId).findLast(
+        (call) =>
+          call.background && (held === undefined || isOrchestrationV2WorkActive(call.status)),
+      );
       if (background !== undefined) {
         return isOrchestrationV2WorkActive(background.status)
           ? { state, turn: background.turn }
           : undefined;
       }
+      if (held !== undefined) {
+        const own = threads.get(sessionId);
+        if (own?.active !== undefined) return { state: own, turn: own.active };
+        // An announced child can ask before its call's progress binds its thread.
+        if (own === undefined && held.hold.turn !== undefined)
+          return { state: held.state, turn: held.hold.turn };
+      }
       return state.active === undefined ? undefined : { state, turn: state.active };
     };
 
     const owesWork = (state: ThreadState) =>
+      state.cutIn !== undefined ||
       state.wakes.length > 0 ||
       state.reports.size > 0 ||
       (state.subagent !== undefined && busy.has(state.sessionId)) ||
@@ -1514,6 +1559,12 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     ) {
       const turn = state.active;
       if (turn === undefined) return;
+      if (state.cutIn?.turn === turn) {
+        state.cutIn.terminal ??= terminal;
+        state.active = undefined;
+        yield* Deferred.succeed(state.cutIn.ended, undefined);
+        return;
+      }
       state.active = undefined;
       for (const inboxID of turn.steers) state.strandedSteers.add(inboxID);
       for (const entry of pending.values()) {
@@ -2150,14 +2201,16 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       const stopped =
         delivered.length > 0 &&
         delivered.every((entry) => state.stoppedChildren.has(entry.childId));
+      const cutIn = cutInsAbove(state.sessionId).length > 0;
       for (const entry of delivered) state.stoppedChildren.delete(entry.childId);
-      if (stopped) {
+      if (stopped && !cutIn) {
         markUnsettled(state);
         yield* client.session
           .interrupt({ sessionID: Session.ID.make(state.sessionId) })
           .pipe(Effect.timeout(INTERRUPT_TIMEOUT), Effect.ignore({ log: true }));
       }
-      return { delivered, stopped };
+      // A cut-in must confirm a newly started follow-up through its cohort too.
+      return { delivered, stopped: stopped && !cutIn };
     });
 
     const onWake = Effect.fnUntraced(function* (state: ThreadState) {
@@ -2182,7 +2235,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       yield* Effect.logInfo("OpenCode started a turn on its own; asking for a continuation.", {
         providerThreadId: state.providerThread.id,
       });
-      yield* offerWake(state, wake);
+      if (state.cutIn === undefined) yield* offerWake(state, wake);
     });
 
     const onReport = Effect.fnUntraced(function* (
@@ -2195,14 +2248,16 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     ) {
       const childId = stringField(payload.metadata, "childID");
       if (stringField(payload.metadata, "source") !== "subagent" || childId === undefined) return;
-      strays.delete(childId);
+      const outcome = reportOutcome(stringField(payload.metadata, "state"));
+      const hold = state.cutIn ?? rootOf(state).cutIn;
+      // A factual report ends a stray too; an unknown cut-in outcome stays retryable.
+      if (hold === undefined || outcome !== "unknown") strays.delete(childId);
       const call = [...state.calls.values()].find(
         (candidate) => candidate.child?.sessionId === childId,
       );
       const calls = [...state.calls.values()].filter(
         (candidate) => candidate === call || (call !== undefined && candidate.joined === call),
       );
-      const outcome = reportOutcome(stringField(payload.metadata, "state"));
       state.reports.set(inboxId, {
         inboxId,
         childId,
@@ -2214,6 +2269,20 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           outcome,
         },
       });
+      if (hold !== undefined) {
+        // A native report is an outcome even when the child's terminal frame was
+        // lost. Keep an ancestor's call until its nested cohort is accounted for.
+        if (outcome === "unknown") return;
+        hold.unreached.delete(childId);
+        if (!hold.reached.has(childId)) {
+          hold.reached.set(
+            childId,
+            outcome === "failed" ? "failed" : outcome === "cancelled" ? "interrupted" : "completed",
+          );
+        }
+        for (const each of calls) each.result = subagentOutput(payload.text);
+        return;
+      }
       const status = state.stoppedChildren.has(childId)
         ? "interrupted"
         : outcome === "failed"
@@ -2278,8 +2347,26 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
             else state.unsettledStarted = true;
           }
           busy.add(sessionId);
+          // A follow-up is a new execution, even if its previous one was reached.
+          for (const { hold } of cutInsAbove(sessionId)) hold.reached.delete(sessionId);
         } else if (event.type === "unreadable.execution.ended" || executionEnd(event.type)) {
           busy.delete(sessionId);
+          for (const { hold } of cutInsAbove(sessionId)) {
+            if (!hold.unreached.has(sessionId) && !hold.reached.has(sessionId)) continue;
+            hold.unreached.delete(sessionId);
+            hold.reached.set(
+              sessionId,
+              event.type.endsWith("succeeded") ||
+                (event.type === "unreadable.execution.ended" &&
+                  event.executionType.endsWith("succeeded"))
+                ? "completed"
+                : event.type.endsWith("failed") ||
+                    (event.type === "unreadable.execution.ended" &&
+                      event.executionType.endsWith("failed"))
+                  ? "failed"
+                  : "interrupted",
+            );
+          }
         }
       }
       if (event.type === "session.created" && event.data.parentID !== undefined) {
@@ -2435,7 +2522,295 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       return yield* onTurnEvent(state, turn, event);
     });
 
-    // Terminal events are volatile; reconnects lose events and restarted servers cannot end lost executions.
+    /** Publishes the held root last. Claiming the hold first makes release idempotent. */
+    const releaseCutIn: (state: ThreadState, hold: CutIn) => Effect.Effect<void> =
+      Effect.fnUntraced(function* (state, hold) {
+        if (state.cutIn !== hold) return;
+        state.cutIn = undefined;
+        if (hold.turn === undefined) return;
+        if (hold.terminal === undefined) markUnsettled(state);
+        state.active = hold.turn;
+        hold.turn.interrupted = true;
+        yield* finishTurn(state, hold.terminal ?? { status: "interrupted" });
+      });
+
+    /** The live native cohort, including children announced before a call names them. */
+    const cutInCohort = (state: ThreadState) => {
+      const callers = sessionsOf(state);
+      const members = new Map<string, ThreadState>();
+      const under = new Set(callers.map((caller) => caller.sessionId));
+      let added = true;
+      while (added) {
+        added = false;
+        for (const info of announced.values()) {
+          if (info.parentID === undefined || !under.has(info.parentID) || under.has(info.sessionID))
+            continue;
+          under.add(info.sessionID);
+          members.set(info.sessionID, threads.get(info.parentID) ?? state);
+          added = true;
+        }
+      }
+      for (const call of runningCalls(state)) {
+        if (call.background && call.child !== undefined)
+          members.set(call.child.sessionId, call.state);
+      }
+      for (const caller of callers) {
+        if (
+          (caller.subagent !== undefined &&
+            busy.has(caller.sessionId) &&
+            !isOrchestrationV2WorkActive(caller.subagent.call.status)) ||
+          caller.wakes.some((wake) => wake.running)
+        ) {
+          members.set(caller.sessionId, caller.subagent?.call.state ?? caller);
+        }
+      }
+      for (const [childId, caller] of strays) {
+        if (rootOf(caller) === state) members.set(childId, caller);
+      }
+      return { callers, members };
+    };
+
+    const below = (sessionId: string, ancestor: string) => {
+      const seen = new Set<string>();
+      let current: string | undefined = sessionId;
+      while (current !== undefined && !seen.has(current)) {
+        if (current === ancestor) return true;
+        seen.add(current);
+        current =
+          threads.get(current)?.subagent?.call.state.sessionId ?? announced.get(current)?.parentID;
+      }
+      return false;
+    };
+
+    /** Only reached work ends locally. Unreached nested work keeps its whole request owner. */
+    const settleCutInCohort = Effect.fnUntraced(function* (state: ThreadState, hold: CutIn) {
+      if (state.cutIn !== hold) return;
+      const { callers, members } = cutInCohort(state);
+      for (const [id, caller] of members) {
+        if (!hold.reached.has(id)) continue;
+        caller.stoppedChildren.add(id);
+        const child = threads.get(id);
+        if (child !== undefined && child !== state && child.active !== undefined) {
+          // An acknowledged request permits the same bounded local settle as Stop.
+          if (busy.has(id)) {
+            markUnsettled(child);
+            busy.delete(id);
+          }
+          const outcome = hold.reached.get(id);
+          yield* finishTurn(
+            child,
+            outcome === "completed"
+              ? { status: "completed" }
+              : outcome === "failed"
+                ? {
+                    status: "failed",
+                    failure: makeProviderFailure({
+                      message: "OpenCode ended the subagent with an error.",
+                      class: "provider_error",
+                    }),
+                  }
+                : { status: "interrupted" },
+          );
+        }
+      }
+      for (const call of runningCalls(state).toReversed()) {
+        if (!call.background) continue;
+        const children =
+          call.child === undefined
+            ? [...announced.values()]
+                .filter((info) => info.parentID === call.state.sessionId)
+                .map((info) => info.sessionID)
+            : [call.child.sessionId];
+        const firstChild = children[0];
+        const outcome = firstChild === undefined ? undefined : hold.reached.get(firstChild);
+        if (outcome === undefined || children.some((id) => !hold.reached.has(id))) continue;
+        // Ending an ancestor too soon would hide its surviving child's questions.
+        if (
+          [...members.keys()].some(
+            (id) => children.some((child) => below(id, child)) && !hold.reached.has(id),
+          )
+        )
+          continue;
+        yield* settleCall(call, outcome);
+      }
+      for (const caller of callers) {
+        for (const [inboxId, report] of caller.reports) {
+          if (!hold.reached.has(report.childId)) continue;
+          caller.stoppedChildren.add(report.childId);
+          caller.reports.delete(inboxId);
+        }
+        if (!caller.wakes.some((wake) => wake.running) || hold.reached.has(caller.sessionId)) {
+          discardWakes(caller, caller.wakes.splice(0));
+        }
+        if (hold.reached.has(caller.sessionId)) busy.delete(caller.sessionId);
+      }
+      for (const [childId, caller] of strays) {
+        if (rootOf(caller) === state && hold.reached.has(childId)) strays.delete(childId);
+      }
+    });
+
+    const cutInPending = (state: ThreadState, hold: CutIn) =>
+      hold.unreached.size > 0 ||
+      runningCalls(state).some((call) => call.background) ||
+      [...cutInCohort(state).members.keys()].some((id) => !hold.reached.has(id));
+
+    // Run after an entire event, so recursive call settlement publishes every child
+    // artifact before it can release the root. No effect retry is needed to wake it.
+    const releaseSettledCutIns = (sessionId: string) =>
+      Effect.gen(function* () {
+        for (const { state, hold } of cutInsAbove(sessionId)) {
+          if (hold.phase !== "retry" || (hold.turn !== undefined && hold.terminal === undefined))
+            continue;
+          yield* settleCutInCohort(state, hold);
+          if (!cutInPending(state, hold)) yield* releaseCutIn(state, hold);
+        }
+      });
+
+    const interruptForReplacement = Effect.fnUntraced(function* (
+      state: ThreadState,
+      interruptInput: ProviderAdapter.ProviderAdapterV2InterruptInput,
+    ) {
+      const current = state.active;
+      if (
+        (current !== undefined && current.providerTurn.id !== interruptInput.providerTurnId) ||
+        (state.cutIn !== undefined && state.cutIn.providerTurnId !== interruptInput.providerTurnId)
+      )
+        return;
+      const hold: CutIn = state.cutIn ?? {
+        providerTurnId: interruptInput.providerTurnId,
+        turn: current,
+        terminal: undefined,
+        ended: yield* Deferred.make<void>(),
+        rootAcknowledged: current === undefined,
+        phase: "stopping",
+        reached: new Map(),
+        unreached: new Set(),
+      };
+      state.cutIn = hold;
+      hold.phase = "stopping";
+      const incomplete = () =>
+        new ProviderAdapter.ProviderAdapterInterruptError({
+          driver,
+          providerThreadId: interruptInput.providerThread.id,
+          providerTurnId: interruptInput.providerTurnId,
+          cause: new Error(
+            "OpenCode did not confirm the stop of the running work; the turn stays open.",
+          ),
+        });
+      yield* Effect.gen(function* () {
+        const turn = hold.turn;
+        if (turn !== undefined && hold.terminal === undefined && !hold.rootAcknowledged) {
+          turn.interrupted = true;
+          const reply = yield* client.session
+            .interrupt({ sessionID: Session.ID.make(state.sessionId) })
+            .pipe(
+              Effect.timeoutOption(INTERRUPT_TIMEOUT),
+              Effect.tapError(() =>
+                Effect.sync(() => {
+                  // A stream end racing a failed HTTP reply is still a factual change.
+                  if (hold.terminal === undefined && state.cutIn === hold) {
+                    state.cutIn = undefined;
+                    turn.interrupted = false;
+                  }
+                }),
+              ),
+            );
+          if (reply._tag === "None") return yield* incomplete();
+          if (
+            !reply.value.interrupted &&
+            state.active === turn &&
+            turn.heldEnd === undefined &&
+            !turn.unsent
+          ) {
+            state.cutIn = undefined;
+            turn.interrupted = false;
+            return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+              driver,
+              detail: `OpenCode session ${state.sessionId} had nothing running to stop`,
+            });
+          }
+          hold.rootAcknowledged = true;
+          if (
+            !reply.value.interrupted &&
+            state.active === turn &&
+            (turn.heldEnd !== undefined || turn.unsent)
+          ) {
+            if (turn.heldEnd !== undefined) markUnsettled(state);
+            yield* lock.withPermit(finishTurn(state, { status: "interrupted" }));
+          }
+        }
+        if (hold.turn !== undefined && hold.terminal === undefined) {
+          const ended = yield* Deferred.await(hold.ended).pipe(
+            Effect.timeoutOption(INTERRUPT_TIMEOUT),
+          );
+          if (ended._tag === "None") {
+            // A reply acknowledged cancellation; the execution end can arrive late.
+            markUnsettled(state);
+            yield* lock.withPermit(finishTurn(state, { status: "interrupted" }));
+          }
+        }
+        const attempted = new Set<string>();
+        yield* Effect.gen(function* () {
+          while (state.cutIn === hold) {
+            const targets = yield* lock.withPermit(
+              Effect.sync(() =>
+                [...cutInCohort(state).members.keys()].filter(
+                  (id) => !hold.reached.has(id) && !attempted.has(id),
+                ),
+              ),
+            );
+            if (targets.length === 0) break;
+            for (const id of targets) {
+              attempted.add(id);
+              hold.unreached.add(id);
+            }
+            yield* Effect.forEach(
+              targets,
+              (id) =>
+                client.session.interrupt({ sessionID: Session.ID.make(id) }).pipe(
+                  Effect.catchTags({ SessionNotFoundError: () => Effect.void }),
+                  Effect.tap((reply) =>
+                    // A no-op is not cancellation evidence for a live or not-yet
+                    // admitted child. Its native end or report can still settle it.
+                    reply?.interrupted === false
+                      ? Effect.void
+                      : Effect.sync(() => {
+                          hold.unreached.delete(id);
+                          if (!hold.reached.has(id)) hold.reached.set(id, "interrupted");
+                        }),
+                  ),
+                  Effect.ignore({ log: true }),
+                ),
+              { concurrency: "unbounded", discard: true },
+            );
+            yield* lock.withPermit(settleCutInCohort(state, hold));
+          }
+        }).pipe(Effect.timeoutOption(INTERRUPT_TIMEOUT));
+        yield* lock.withPermit(
+          Effect.gen(function* () {
+            yield* settleCutInCohort(state, hold);
+            if (state.cutIn !== hold) return;
+            if (cutInPending(state, hold)) return yield* incomplete();
+            yield* releaseCutIn(state, hold);
+          }),
+        );
+        yield* cancelStrandedSteers(state);
+      }).pipe(
+        Effect.onError(() =>
+          lock.withPermit(
+            Effect.gen(function* () {
+              if (state.cutIn !== hold) return;
+              hold.phase = "retry";
+              yield* releaseSettledCutIns(state.sessionId);
+            }),
+          ),
+        ),
+      );
+    });
+
+    // The stream is the only terminal signal, and it is volatile: events sent
+    // while it is down are gone, and a restarted server never ends the
+    // execution it lost.
     let streamFailure: string | undefined;
     let reconnected = yield* Deferred.make<void>();
     const failAll = Effect.fnUntraced(function* (message: string) {
@@ -2449,6 +2824,20 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         for (const call of runningCalls(state)) yield* settleCall(call, "failed");
         for (const wake of state.wakes.splice(0)) wake.dropped = true;
         state.reports.clear();
+      }
+      // A broken stream cannot keep an event owner alive. Fail its held turn
+      // after the failed children, just as an ordinary active turn fails above.
+      for (const state of threads.values()) {
+        const hold = state.cutIn;
+        if (hold === undefined) continue;
+        state.cutIn = undefined;
+        if (hold.turn === undefined) continue;
+        state.active = hold.turn;
+        yield* finishTurn(
+          state,
+          { status: "failed", failure: makeProviderFailure({ message, class: "transport_error" }) },
+          "broken",
+        );
       }
       yield* setSessionStatus("error", message);
       yield* Queue.end(events);
@@ -2575,6 +2964,26 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         );
       }
       for (const state of background) {
+        const hold = state.cutIn;
+        if (hold !== undefined) {
+          for (const id of cutInCohort(state).members.keys()) {
+            if (id in active) continue;
+            hold.unreached.delete(id);
+            const lastTurn = [...(threads.get(id)?.providerTurns.values() ?? [])].at(-1);
+            if (!hold.reached.has(id))
+              hold.reached.set(
+                id,
+                lastTurn?.status === "completed"
+                  ? "completed"
+                  : lastTurn?.status === "failed"
+                    ? "failed"
+                    : "interrupted",
+              );
+          }
+          yield* settleCutInCohort(state, hold);
+          continue;
+        }
+        // A subagent still running keeps its call; its end arrives on the new stream.
         for (const call of runningCalls(state)) {
           const child = call.child?.sessionId;
           if (child === undefined || !(child in active)) {
@@ -2612,6 +3021,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           yield* settleRequest(entry, "cancelled");
         }
       }
+      for (const state of background) yield* releaseSettledCutIns(state.sessionId);
     });
 
     const reconnect = Effect.gen(function* () {
@@ -2640,7 +3050,17 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       stream: Stream.Stream<OpenCode2Client.OpenCode2StreamEvent, unknown>,
     ): Effect.Effect<void> =>
       stream.pipe(
-        Stream.runForEach((event) => lock.withPermit(handleEvent(event))),
+        Stream.runForEach((event) =>
+          lock.withPermit(
+            handleEvent(event).pipe(
+              Effect.andThen(() => {
+                const sessionId =
+                  event.type === "form.created" ? event.data.form.sessionID : sessionOfEvent(event);
+                return sessionId === undefined ? Effect.void : releaseSettledCutIns(sessionId);
+              }),
+            ),
+          ),
+        ),
         Effect.exit,
         Effect.flatMap(() =>
           Effect.gen(function* () {
@@ -3497,6 +3917,12 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
                   detail: `OpenCode session ${sessionId} is not registered`,
                 });
               }
+              if (state.cutIn !== undefined) {
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver,
+                  detail: OPENCODE_2_STILL_STOPPING,
+                });
+              }
               if (state.active !== undefined) {
                 return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                   driver: OPENCODE_PROVIDER,
@@ -3723,8 +4149,32 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           const sessionId = yield* sessionIdOf(interruptInput.providerThread);
           const state = threads.get(sessionId);
           if (state === undefined) return;
+          if (
+            interruptInput.requestRuntimeRestart === true &&
+            interruptInput.replacementFollows === true
+          ) {
+            return yield* interruptForReplacement(state, interruptInput);
+          }
+          // Stop retains its original outcomes, including releasing an incomplete cut-in.
+          if (interruptInput.requestRuntimeRestart === true && state.cutIn !== undefined) {
+            const hold = state.cutIn;
+            yield* stopBackground(state);
+            if (hold.turn !== undefined && hold.terminal === undefined && !hold.rootAcknowledged) {
+              return yield* client.session
+                .interrupt({ sessionID: Session.ID.make(sessionId) })
+                .pipe(
+                  Effect.timeoutOption(INTERRUPT_TIMEOUT),
+                  Effect.asVoid,
+                  Effect.ensuring(lock.withPermit(releaseCutIn(state, hold))),
+                );
+            }
+            return yield* lock.withPermit(releaseCutIn(state, hold));
+          }
           const turn = state.active;
-          // User Stop must end background children and their report execution; steering leaves them running.
+          // OpenCode stops a foreground subagent with its parent, but not a
+          // background one: a user Stop (`requestRuntimeRestart`) stops those
+          // too, and the execution OpenCode starts to report them. A turn
+          // restarted without that flag leaves them running.
           if (interruptInput.requestRuntimeRestart === true) yield* stopBackground(state);
           if (turn === undefined || turn.providerTurn.id !== interruptInput.providerTurnId) {
             return;

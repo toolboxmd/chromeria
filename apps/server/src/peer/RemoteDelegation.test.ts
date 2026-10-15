@@ -1,6 +1,4 @@
-<<<<<<< HEAD
 import * as DocumentText from "../provider/DocumentText.ts";
-=======
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -13,7 +11,6 @@ import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { layerLaunchCatalog } from "./PeerLinks.testkit.ts";
 import * as Settings from "../serverSettings.ts";
->>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -658,19 +655,10 @@ const makeLaptop = (
             Layer.mock(ProjectService.ProjectService)({
               // A cold enrichment cache: the project itself reports no identity yet.
               getById: () =>
-<<<<<<< HEAD
                 Effect.succeedSome({
                   workspaceRoot: "/home/me/app",
                   repositoryIdentity: null,
                 } as never),
-=======
-                Effect.succeed(
-                  Option.some({
-                    workspaceRoot: "/home/me/app",
-                    repositoryIdentity: null,
-                  } as never),
-                ),
->>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
             }),
           ),
           Layer.provide(

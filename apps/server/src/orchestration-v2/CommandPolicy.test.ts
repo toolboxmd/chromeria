@@ -7,6 +7,7 @@ import {
   ProviderInstanceId,
   ProviderSessionId,
   ProviderThreadId,
+  ProviderTurnId,
   RunAttemptId,
   RunId,
   ThreadId,
@@ -64,6 +65,92 @@ function dispatchProjection(
   } as unknown as OrchestrationV2ThreadProjection;
 }
 
+it.each([
+  ["Claude", ClaudeProviderCapabilitiesV2],
+  ["Codex", CodexProviderCapabilitiesV2],
+  ["Grok", GrokProviderCapabilitiesV2],
+  ["Cursor", CursorProviderCapabilitiesV2],
+] as const)(
+  "human Steer interrupts a running %s turn, including existing mobile clients",
+  (_provider, caps) => {
+    for (const [source, intent] of [
+      ["web", "steer"],
+      ["mobile", "steer"],
+      ["mobile", "auto"],
+    ] as const) {
+      assert.deepEqual(
+        CommandPolicy.resolveMessageDispatchIntent(
+          dispatchProjection(caps),
+          { type: "steer_active", targetRunId: activeRunId },
+          intent,
+          { createdBy: "user", creationSource: source },
+        ),
+        { type: "restart_active", targetRunId: activeRunId },
+      );
+    }
+  },
+);
+
+it.each(["preparing", "starting", "waiting"] as const)(
+  "retains human Claude Steer while the run is %s",
+  (status) => {
+    const projection = dispatchProjection(ClaudeProviderCapabilitiesV2);
+    assert.deepEqual(
+      CommandPolicy.resolveMessageDispatchIntent(
+        { ...projection, runs: projection.runs.map((run) => ({ ...run, status })) },
+        { type: "start_immediately" },
+        "steer",
+        { createdBy: "user", creationSource: "web" },
+      ),
+      { type: "queue_after_active" },
+    );
+  },
+);
+
+it("keeps routine agent and server updates queued on Claude", () => {
+  for (const requester of [
+    { createdBy: "agent", creationSource: "mcp" },
+    { createdBy: "user", creationSource: "server" },
+    { createdBy: "system", creationSource: "server" },
+  ] as const) {
+    for (const intent of ["auto", "steer"] as const) {
+      assert.deepEqual(
+        CommandPolicy.resolveMessageDispatchIntent(
+          dispatchProjection(ClaudeProviderCapabilitiesV2),
+          { type: "start_immediately" },
+          intent,
+          requester,
+        ),
+        { type: "queue_after_active" },
+      );
+    }
+  }
+  assert.deepEqual(
+    CommandPolicy.resolveMessageDispatchIntent(
+      dispatchProjection(ClaudeProviderCapabilitiesV2),
+      { type: "start_immediately" },
+      "auto",
+      { createdBy: "user", creationSource: "web" },
+    ),
+    { type: "queue_after_active" },
+  );
+});
+
+it.effect("rejects unsafe native Claude steering even when a caller bypasses queue admission", () =>
+  Effect.gen(function* () {
+    const policy = yield* CommandPolicy.CommandPolicyV2;
+    const error = yield* policy
+      .decideSteeringExecution({
+        commandId,
+        threadId,
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        capabilities: ClaudeProviderCapabilitiesV2,
+      })
+      .pipe(Effect.flip);
+    assert.equal(error._tag, "CommandPolicyCapabilityUnsupportedError");
+  }).pipe(Effect.provide(CommandPolicy.layer)),
+);
+
 it("resolves automatic message delivery from authoritative provider capabilities", () => {
   assert.deepEqual(
     CommandPolicy.resolveMessageDispatchIntent(
@@ -114,8 +201,10 @@ it("resolves automatic message delivery from authoritative provider capabilities
       ),
       { type: "start_immediately" },
       "auto",
+      { createdBy: "system", creationSource: "server" },
     ),
-    { type: "restart_active", targetRunId: activeRunId },
+    // A routine wake may use a soft restart, but cannot become an explicit Stop.
+    { type: "steer_active", targetRunId: activeRunId },
   );
 });
 
@@ -227,6 +316,26 @@ it.each(["/compact", " /LOGOUT "])("queues a steer sent while %s runs", (text) =
 const layer = it.layer(CommandPolicy.layer);
 
 layer("CommandPolicyV2", (it) => {
+  it.effect.each([
+    { provider: "claudeAgent", capabilities: ClaudeProviderCapabilitiesV2 },
+    { provider: "codex", capabilities: CodexProviderCapabilitiesV2 },
+    { provider: "grok", capabilities: GrokProviderCapabilitiesV2 },
+  ])("allows an explicit urgent restart for $provider", ({ provider, capabilities }) =>
+    Effect.gen(function* () {
+      const policy = yield* CommandPolicy.CommandPolicyV2;
+      assert.equal(
+        yield* policy.decideSteeringExecution({
+          commandId,
+          threadId,
+          providerInstanceId: ProviderInstanceId.make(provider),
+          capabilities,
+          forceRestart: true,
+        }),
+        "interrupt_restart",
+      );
+    }),
+  );
+
   it.effect("falls back to portable context when Cursor cannot fork natively", () =>
     Effect.gen(function* () {
       const policy = yield* CommandPolicy.CommandPolicyV2;

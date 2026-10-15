@@ -263,239 +263,32 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           .pipe(Effect.mapError(dispatchFailure));
         return { sequence: result.sequence };
       }),
-<<<<<<< HEAD
     ),
-=======
-  ),
-  t3_thread_transfers: McpToolAccess.reads((input) =>
-    Effect.gen(function* () {
-      const { projection } = yield* readThread(input.threadId, ["contextTransfers"]);
-      return {
-        transfers: projection.contextTransfers.map(
-          ({ id, sourceThreadId, targetThreadId, status }) => ({
-            id,
-            sourceThreadId,
-            targetThreadId,
-            status,
-          }),
-        ),
-      };
-    }),
-  ),
-  t3_thread_configuration: McpToolAccess.reads((input) =>
-    Effect.gen(function* () {
-      const {
-        projection: { thread },
-      } = yield* readThread(input.threadId);
-      return {
-        ...(thread.bare === undefined ? {} : { bare: thread.bare }),
-        threadId: thread.id,
-        modelSelection: thread.modelSelection,
-        runtimeMode: thread.runtimeMode,
-        interactionMode: thread.interactionMode,
-      };
-    }),
-  ),
-  t3_thread_configure: writesThread((input) =>
-    Effect.gen(function* () {
-      const {
-        threads,
-        projection: { thread },
-      } = yield* readThread(input.threadId);
-      const type = modelSelectionCommandType(thread.providerInstanceId, input.modelSelection);
-      const result = yield* threads
-        .dispatch({
-          type,
-          threadId: thread.id,
-          commandId: yield* newCommandId(),
-          modelSelection: input.modelSelection,
-        })
-        .pipe(Effect.mapError(dispatchFailure));
-      return { sequence: result.sequence };
-    }),
-  ),
-  t3_pending_request_list: McpToolAccess.reads((input) =>
-    Effect.gen(function* () {
-      const context = yield* readThread(input.threadId, ["runtimeRequests"]);
-      const { projection } = context;
-      const descendant = yield* isCallerAncestor(context, projection.thread.id);
-      return {
-        requestIds: projection.runtimeRequests
-          .filter(
-            (request) =>
-              request.status === "pending" &&
-              (request.kind === "user_input" ||
-                (descendant &&
-                  request.kind !== "dynamic_tool_call" &&
-                  request.kind !== "auth_refresh")),
-          )
-          .map((request) => request.id),
-      };
-    }),
-  ),
-  t3_pending_request_read: McpToolAccess.reads((input) =>
-    Effect.gen(function* () {
-      const { item } = yield* readPendingRequest(input);
-      return item.type === "user_input_request"
-        ? { requestId: input.requestId, kind: "user-input" as const, questions: item.questions }
-        : {
-            requestId: input.requestId,
-            kind: "approval" as const,
-            requestKind: item.requestKind,
-            prompt: item.prompt,
-            appName: item.appName,
-            options: item.options,
-          };
-    }),
-  ),
-  t3_pending_request_respond: writesThread((input) =>
-    Effect.gen(function* () {
-      const context = yield* readPendingRequest(input);
-      const { threads, projection, item } = context;
-      if (
-        context.caller !== undefined &&
-        context.caller.id !== projection.thread.id &&
-        !(yield* isCallerAncestor(context, projection.thread.id))
-      )
-        return yield* new OrchestratorMcpFailure({
-          code: "capability_denied",
-          message: "Only an ancestor thread may answer a descendant request.",
-        });
-      if (
-        (item.type === "approval_request" && input.decision === undefined) ||
-        (item.type === "user_input_request" && input.answers === undefined)
-      )
-        return yield* new OrchestratorMcpFailure({
-          code: "invalid_request",
-          message: "Pass decision for an approval or answers for a question.",
-        });
-      const result = yield* threads
-        .dispatch({
-          type: "runtime-request.respond",
-          threadId: projection.thread.id,
-          commandId: yield* newCommandId(),
-          requestId: input.requestId,
-          answers: item.type === "user_input_request" ? input.answers : undefined,
-          decision: item.type === "approval_request" ? input.decision : undefined,
-        })
-        .pipe(Effect.mapError(dispatchFailure));
-      return { sequence: result.sequence };
-    }),
-  ),
-  t3_queue_list: McpToolAccess.reads((input) =>
-    Effect.gen(function* () {
-      const { projection } = yield* readThread(input.threadId, ["runs", "messages"]);
-      const runs = queuedRunsInDeliveryOrder(projection);
-      const cursor = input.cursor ?? 0;
-      const end = cursor + (input.limit ?? 20);
-      return {
-        items: runs.slice(cursor, end).flatMap((run) => {
-          const entry = queueEntry(projection, run.id, 1000);
-          return entry === undefined ? [] : [entry];
-        }),
-        nextCursor: end < runs.length ? end : null,
-      };
-    }),
-  ),
-  t3_queue_read: McpToolAccess.reads((input) =>
-    Effect.gen(function* () {
-      const { projection } = yield* readThread(input.threadId, ["runs", "messages"]);
-      const entry = queueEntry(projection, input.queuedRunId, 16000);
-      return (
-        entry ??
-        (yield* new OrchestratorMcpFailure({
-          code: "invalid_request",
-          message: "The queued message was not found.",
-        }))
-      );
-    }),
-  ),
-  t3_queue_edit: writesThread((input) =>
-    dispatch(input.threadId, (common) => ({
-      ...common,
-      type: "queued-run.edit",
-      runId: input.queuedRunId,
-      text: input.text,
-    })),
-  ),
-  t3_queue_cancel: writesThread((input) =>
-    dispatch(input.threadId, (common) => ({
-      ...common,
-      type: "queued-run.cancel",
-      runId: input.queuedRunId,
-    })),
->>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
   ),
   t3_queue_resume: writesThread((input) =>
     dispatch(input.threadId, (common) => ({ ...common, type: "queue.resume" })),
   ),
-  t3_queue: McpToolAccess.either(
-    (input) => input.action === "list" || input.action === "read",
-    McpToolAccess.reads((input) =>
-      Effect.gen(function* () {
-        const { projection } = yield* readThread(input.threadId, ["runs", "messages"]);
-        if (input.action === "list") {
-          const runs = queuedRunsInDeliveryOrder(projection);
-          const cursor = input.cursor ?? 0;
-          const end = cursor + (input.limit ?? 20);
-          return {
-            items: runs.slice(cursor, end).flatMap((run) => {
-              const entry = queueEntry(projection, run.id, 1000);
-              return entry === undefined ? [] : [entry];
-            }),
-            nextCursor: end < runs.length ? end : null,
-          };
-        }
-        const queuedRunId = yield* required(input.queuedRunId, "queuedRunId");
-        return (
-          queueEntry(projection, queuedRunId, 16000) ??
-          (yield* new OrchestratorMcpFailure({
-            code: "invalid_request",
-            message: "The queued message was not found.",
-          }))
-        );
-      }),
-    ),
-    writesThread((input) =>
-      Effect.gen(function* () {
-        const runId = yield* required(input.queuedRunId, "queuedRunId");
-        switch (input.action) {
-          case "edit": {
-            const text = yield* required(input.text, "text");
-            return yield* dispatch(input.threadId, (common) => ({
-              ...common,
-              type: "queued-run.edit",
-              runId,
-              text,
-            }));
-          }
-          case "reorder": {
-            const beforeRunId = yield* required(input.beforeRunId, "beforeRunId");
-            return yield* dispatch(input.threadId, (common) => ({
-              ...common,
-              type: "queued-run.reorder",
-              runId,
-              beforeRunId,
-            }));
-          }
-          case "promote_to_steer": {
-            const targetRunId = yield* required(input.targetRunId, "targetRunId");
-            return yield* dispatch(input.threadId, (common) => ({
-              ...common,
-              type: "queued-message.promote-to-steer",
-              queuedRunId: runId,
-              targetRunId,
-            }));
-          }
-          default:
-            return yield* dispatch(input.threadId, (common) => ({
-              ...common,
-              type: "queued-run.cancel",
-              runId,
-            }));
-        }
-      }),
-    ),
+  t3_queue_reorder: writesThread((input) =>
+    dispatch(input.threadId, (common) => ({
+      ...common,
+      type: "queued-run.reorder",
+      runId: input.queuedRunId,
+      beforeRunId: input.beforeRunId,
+    })),
+  ),
+  t3_queue_promote_to_steer: writesThread((input) =>
+    Effect.gen(function* () {
+      const { caller } = yield* readCaller();
+      return yield* dispatch(input.threadId, (common) => ({
+        ...common,
+        type: "queued-message.promote-to-steer",
+        queuedRunId: input.queuedRunId,
+        targetRunId: input.targetRunId,
+        createdBy: "agent",
+        creationSource: "mcp",
+        ...(caller === undefined ? {} : { senderThreadId: caller.id }),
+      }));
+    }),
   ),
   t3_thread_organize: writesThread((input) =>
     Effect.gen(function* () {
