@@ -123,6 +123,29 @@ describe("fork-check", () => {
     expect(allowed.output).toContain("modified (allowlisted): upstream-owned.txt");
   });
 
+  it("accepts early matching paths in a long allowlist", () => {
+    const root = makeFixture();
+    const base = baseOf(root);
+    const paths = [
+      "docs/fork-features.md",
+      "scripts/fork-upstream-edits.txt",
+      "upstream-owned.txt",
+      ...Array.from({ length: 4096 }, (_, index) => `known-upstream-file-${index}.txt`),
+    ];
+    NodeFS.writeFileSync(NodePath.join(root, "upstream-owned.txt"), "forked\n");
+    NodeFS.writeFileSync(
+      NodePath.join(root, "scripts/fork-upstream-edits.txt"),
+      paths.join("\n") + "\n",
+    );
+    writeMap(root, paths);
+    git(root, "add", "-A");
+    git(root, "commit", "-qm", "fork: retain a large upstream-edit inventory");
+
+    const result = runCheck(root, "--base", base);
+    expect(result.status).toBe(0);
+    expect(result.output).toContain("modified (allowlisted): upstream-owned.txt");
+  });
+
   it("requires the removed upstream path to be allowlisted for a rename", () => {
     const root = makeFixture();
     const base = baseOf(root);
