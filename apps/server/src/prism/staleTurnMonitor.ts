@@ -1,4 +1,4 @@
-import { CommandId, MessageId } from "@t3tools/contracts";
+import { CommandId, MessageId, type OrchestrationV2AppThread } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -46,6 +46,36 @@ const make = Effect.gen(function* () {
   const monotonic = yield* StaleTurnMonotonicClock;
   const permit = yield* Semaphore.make(1);
   const detector = makeStaleTurnDetectorState();
+  const hasActiveDescendant = Effect.fnUntraced(function* (
+    child: OrchestrationV2AppThread,
+    lives: ReadonlyArray<StreamClock.ThreadLiveness>,
+  ) {
+    for (const live of lives) {
+      if (live.threadId === child.id) continue;
+      const candidate = yield* projections.getThreadRecords(live.threadId, ["runs"], {
+        runIds: [live.runId],
+      });
+      const run = candidate.runs.find((run) => run.id === live.runId);
+      if (
+        run?.status !== "running" ||
+        run.activeAttemptId !== live.attemptId ||
+        candidate.thread.archivedAt !== null ||
+        candidate.thread.deletedAt !== null ||
+        candidate.thread.lineage.rootThreadId !== child.lineage.rootThreadId
+      )
+        continue;
+      let current = candidate.thread;
+      const seen = new Set([current.id]);
+      while (current.lineage.parentThreadId !== null) {
+        const parentId = current.lineage.parentThreadId;
+        if (parentId === child.id) return true;
+        if (seen.has(parentId)) break;
+        seen.add(parentId);
+        current = yield* projections.getThread(parentId);
+      }
+    }
+    return false;
+  });
   const sweep = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     const lives = yield* clock.liveness;
@@ -83,6 +113,12 @@ const make = Effect.gen(function* () {
         }
         const parent = yield* projections.getThread(parentId);
         if (parent.archivedAt !== null || parent.deletedAt !== null) {
+          detector.pause(live, now);
+          return;
+        }
+        // A parent can be quiet while its descendants work. Keep their
+        // activity out of provider timing samples, but renew its silence allowance.
+        if (yield* hasActiveDescendant(child.thread, lives)) {
           detector.pause(live, now);
           return;
         }
