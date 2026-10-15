@@ -49,7 +49,7 @@ flowchart TD
     TF["Test Server 6 flake"]
     %% TF: #259 PR #278
     XM["Cross-machine control"]
-    %% XM: #164 PR #291 PR #290 PR #303 #302 PR #304
+    %% XM: #164 PR #368 PR #291 PR #290 PR #303 #302 PR #304
     NR["Network routes"]
     %% NR: #292 PR #359 #358 PR #364 PR #366
     PRN["Paired session renewal"]
