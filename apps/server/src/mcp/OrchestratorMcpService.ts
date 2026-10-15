@@ -1798,36 +1798,45 @@ const make = Effect.gen(function* () {
               "orchestration_error",
               `Unable to acknowledge delegated task ${task.id}: ${errorMessage(error)}`,
             ),
-          ),
-        );
-    }
-    return {
-      taskId: task.id,
-      childThreadId: null,
-      ...(task.remoteChild === undefined
-        ? {}
-        : { remoteChild: task.remoteChild, link: formatThreadLink(task.remoteChild) }),
-      childRunId: null,
-      childNodeId: task.id,
-      status,
-      workState: terminal ? "result_available" : "working",
-      hasPendingChildRuns: false,
-      providerInstanceId: task.providerInstanceId,
-      model: task.model,
-      summary: task.result,
-      resultContextTransferId: null,
-      latestTerminalRunId: null,
-      latestTerminalStatus: terminal
-        ? (status as OrchestratorMcpDelegateTaskResult["latestTerminalStatus"])
-        : null,
-      latestTerminalSummary: terminal ? task.result : null,
-      latestTerminalResultContextTransferId: null,
-      // Its questions and approvals are answered in the environment it runs in.
-      hasPendingQuestion: false,
-      pendingApproval: null,
-      waitTimedOut,
-    } satisfies OrchestratorMcpDelegateTaskResult;
-  });
+          );
+      }
+      return {
+        taskId: task.id,
+        childThreadId: null,
+        ...(task.remoteChild === undefined
+          ? {}
+          : {
+              remoteChild: {
+                environmentId: task.remoteChild.environmentId,
+                label: task.remoteChild.label,
+                ...(task.remoteChild.launchError === undefined
+                  ? {}
+                  : { launchError: task.remoteChild.launchError }),
+                ...(task.remoteChild.threadId === undefined
+                  ? {}
+                  : { threadId: task.remoteChild.threadId }),
+              },
+            }),
+        childRunId: null,
+        childNodeId: task.id,
+        status,
+        workState: terminal ? "result_available" : "working",
+        hasPendingChildRuns: false,
+        // Remote task rows mirror terminal results, not destination runtime requests.
+        hasPendingQuestion: false,
+        providerInstanceId: task.providerInstanceId,
+        model: task.model,
+        summary: task.result,
+        resultContextTransferId: null,
+        latestTerminalRunId: null,
+        latestTerminalStatus: isTerminalTaskStatus(status) ? status : null,
+        latestTerminalSummary: terminal ? task.result : null,
+        latestTerminalResultContextTransferId: null,
+        pendingApproval: null,
+        ...(task.remoteChild?.threadId === undefined ? {} : { link: formatThreadLink({ environmentId: task.remoteChild.environmentId, threadId: task.remoteChild.threadId }) }),
+        waitTimedOut,
+      } satisfies OrchestratorMcpDelegateTaskResult;
+    });
 
   const waitForTask = Effect.fn("OrchestratorMcpService.waitForTask")(
     function* (scope: McpThreadInvocationScope, taskId: NodeId, _timeoutMs: number) {

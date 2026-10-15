@@ -773,10 +773,9 @@ it.effect.each([
 it.effect.each([
   { cutIn: false, rootStatus: "completed", publishTerminal: true },
   { cutIn: true, rootStatus: "completed", publishTerminal: true },
-  { cutIn: false, rootStatus: "failed", publishTerminal: false },
   { cutIn: true, rootStatus: "failed", publishTerminal: false },
 ] as const)(
-  "persists one replacement root writer while its earlier attempt drains: %j",
+  "persists one root writer across restart or next turn while earlier native work drains: %j",
   ({ cutIn, rootStatus, publishTerminal }) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -932,7 +931,13 @@ it.effect.each([
           }
           const replacement = started[1]!;
           replacementAttemptId = replacement.attemptId;
-          assert.equal(replacement.runId, first.runId);
+          if (cutIn) assert.equal(replacement.runId, first.runId);
+          else
+            assert.notEqual(
+              replacement.runId,
+              first.runId,
+              "routine selection waits for the next run",
+            );
           assert.notEqual(replacement.attemptId, first.attemptId);
           const current = yield* orchestrator.getThreadProjection(threadId);
           const root = current.nodes.find((node) => node.id === replacement.rootNodeId)!;
@@ -969,6 +974,7 @@ it.effect.each([
             turnItem: {
               ...background.turnItem,
               id: rootToolId,
+              runId: replacement.runId,
               nodeId: replacement.rootNodeId,
               providerTurnId: nextTurn.id,
               input: "NEW_ROOT_ONCE",

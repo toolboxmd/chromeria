@@ -212,7 +212,6 @@ packages/provider-acp/src/server/adapter.ts
 apps/server/src/orchestration-v2/testkit/fixtures/index.ts
 packages/provider-grok/src/server/xaiAcpExtension.test.ts
 packages/provider-grok/src/server/xaiAcpExtension.ts
-apps/server/src/orchestration-v2/testkit/fixtures/message_steering/claude_output.ts
 apps/server/src/orchestration-v2/testkit/fixtures/shared.ts
 apps/server/src/orchestration-v2/Adapters/GrokAdapterV2.test.ts
 packages/provider-grok/src/server/adapter.ts
@@ -377,14 +376,8 @@ apps/web/src/components/Sidebar.logic.test.ts
 apps/web/src/components/Sidebar.logic.ts
 
 # Rejected Connect link (#358).
-apps/server/src/cli/connect.ts
-apps/server/src/cloud/CliState.test.ts
-apps/server/src/cloud/CliState.ts
 apps/server/src/cloud/CloudLink.lifecycle.test.ts
 apps/server/src/cloud/CloudLink.ts
-apps/server/src/cloud/config.ts
-apps/server/src/cloud/managedTunnelStartup.test.ts
-apps/server/src/cloud/managedTunnelStartup.ts
 
 # Automatic account relay routes (#292).
 packages/client-runtime/src/connection/layer.ts

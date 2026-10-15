@@ -1352,7 +1352,6 @@ effectIt.effect("starts another provider in the same checkout while a turn is pe
     yield* Deferred.succeed(releaseTurn, undefined);
     yield* Fiber.join(pending);
   }),
-
 );
 
 effectIt.effect.each([undefined, "bind", "attach"] as const)(
