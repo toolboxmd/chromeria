@@ -366,7 +366,9 @@ export function orderWebThreadLineageRows(input: {
 }): ReadonlyArray<ThreadRelationshipWalkRow> {
   const pinRank = (row: ThreadRelationshipWalkRow): number => {
     if (isParentThreadRelationship(row.edge, input.currentThreadId)) return 0;
-    if (row.threadId === input.mergeTargetThreadId) return 1;
+    // The merge target is a local thread; a same-id child in a linked
+    // environment must not inherit its pin.
+    if (row.threadId === input.mergeTargetThreadId && row.environmentId === null) return 1;
     return 2;
   };
 

@@ -670,6 +670,51 @@ describe("web thread lineage ordering", () => {
     ).toEqual([parent, mergeTarget, newestFork]);
   });
 
+  it("does not pin a same-id remote child as the merge-back target", () => {
+    const parent = ThreadId.make("thread-parent");
+    const newestFork = ThreadId.make("thread-newest-fork");
+    const cavallo = EnvironmentId.make("environment-cavallo");
+    const graph = deriveThreadRelationshipGraph({
+      threads: [
+        forkShell({ id: parent, parentThreadId: null, createdAt: "2026-06-01T00:00:00.000Z" }),
+        forkShell({ id: current, parentThreadId: parent, createdAt: "2026-06-02T00:00:00.000Z" }),
+        forkShell({
+          id: newestFork,
+          parentThreadId: current,
+          createdAt: "2026-06-09T00:00:00.000Z",
+        }),
+        {
+          shell: forkShell({
+            id: parent,
+            parentThreadId: null,
+            createdAt: "2026-06-03T00:00:00.000Z",
+          }),
+          environmentId: cavallo,
+        },
+      ] as never,
+      projection: {
+        thread: { id: current },
+        subagents: [
+          {
+            childThreadId: null,
+            remoteChild: { environmentId: cavallo, threadId: parent, label: "cavallo" },
+            status: "running",
+          },
+        ],
+        contextTransfers: [],
+      } as never,
+    });
+
+    const ordered = orderWebThreadLineageRows({
+      graph,
+      rows: immediateThreadRelationships(graph, current),
+      currentThreadId: current,
+      mergeTargetThreadId: parent,
+    }).map((row) => `${row.environmentId ?? "local"}:${row.threadId}`);
+
+    expect(ordered).toEqual([`local:${parent}`, `local:${newestFork}`, `${cavallo}:${parent}`]);
+  });
+
   it("sinks missing nodes and shells without a decoded createdAt", () => {
     const missingTransfer = ThreadId.make("thread-missing-transfer");
     const undated = ThreadId.make("thread-undated-fork");

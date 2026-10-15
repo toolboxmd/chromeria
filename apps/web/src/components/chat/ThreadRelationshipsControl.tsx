@@ -474,7 +474,9 @@ export function ThreadRelationshipsPanel(props: {
             visibleRows.map(({ threadId, environmentId: rowEnvironment, edge }) => {
               const node = getThreadRelationshipNode(graph, threadId, rowEnvironment);
               const isSubagent = edge.kind === "subagent";
-              const isMergeTarget = threadId === mergeTargetThreadId;
+              // The merge target is a local thread; a same-id child in a
+              // linked environment must not inherit its merge control.
+              const isMergeTarget = threadId === mergeTargetThreadId && rowEnvironment === null;
               const isParent = isParentThreadRelationship(edge, props.threadId);
               const rowStatus = threadRelationshipRowStatus(graph, {
                 threadId,
@@ -645,6 +647,7 @@ export function ThreadRelationshipsPanel(props: {
                       openThread(memberThreadId as ThreadId, rowEnvironmentId)
                     }
                     isThreadAvailable={(memberThreadId) =>
+                      !remoteUnreachable &&
                       getThreadRelationshipNode(graph, memberThreadId as ThreadId, rowEnvironment)
                         ?.missing === false
                     }
