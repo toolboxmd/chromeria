@@ -30,6 +30,7 @@ import {
 } from "../orchestration-v2/CommandReceiptStore.ts";
 import * as Option from "effect/Option";
 import { EventSinkV2 } from "../orchestration-v2/EventSink.ts";
+import { reconcileDelegatedTaskQuestion } from "../orchestration-v2/DelegatedTaskQuestions.ts";
 import { OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
 import type { ProviderAdapterV2 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Registry from "../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -580,4 +581,278 @@ it.effect(
         }).pipe(Effect.provide(runtime())),
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect.each([
+  "legacy-notice",
+  "missing-native-wake",
+  "failed-native-dispatch",
+  "native-committed-before-legacy-cancel",
+] as const)("startup recovers a completed app-owned child's durable question after $0", (window) =>
+  Effect.gen(function* () {
+    const directory = NodeFS.mkdtempSync(
+      NodePath.join(NodeOS.tmpdir(), "chromeria-delegated-question-restart-"),
+    );
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
+    );
+    const filename = NodePath.join(directory, "chromeria-v2.sqlite");
+    const runtime = () =>
+      Harness.layerWithRegistry(
+        { name: `delegated-question-${window}` },
+        Registry.layerFromAdapters([adapter]),
+        {
+          databaseLayer: SqlitePersistence.layerFromPath(filename).pipe(
+            Layer.provide(NodeServices.layer),
+          ),
+          runEffectWorker: false,
+        },
+      );
+    const root = ThreadId.make("restart-delegated-parent");
+    const requestId = RuntimeRequestId.make("restart-delegated-question");
+    const now = yield* DateTime.now;
+    const { task, childRun } = yield* Effect.gen(function* () {
+      const orchestrator = yield* OrchestratorV2;
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("create-delegated-parent"),
+        threadId: root,
+        projectId: ProjectId.make("project:delegated-question-restart"),
+        title: "Parent",
+        modelSelection: { instanceId, model: "gpt-5.1-codex" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("start-delegated-parent"),
+        threadId: root,
+        messageId: MessageId.make("message:delegated-parent"),
+        text: "Delegate the research",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const parentRun = (yield* orchestrator.getThreadProjection(root)).runs[0]!;
+      yield* orchestrator.dispatch({
+        type: "delegated_task.request",
+        commandId: CommandId.make("delegate-restart-question"),
+        parentThreadId: root,
+        parentRunId: parentRun.id,
+        parentNodeId: parentRun.rootNodeId!,
+        task: "Research the sources",
+        completionWake: "settled_only",
+        modelSelection: { instanceId, model: "gpt-5.1-codex" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdBy: "agent",
+        creationSource: "mcp",
+      });
+      const task = (yield* orchestrator.getThreadProjection(root)).subagents[0]!;
+      const childRun = (yield* orchestrator.getThreadProjection(task.childThreadId!)).runs[0]!;
+      return { task, childRun };
+    }).pipe(Effect.provide(runtime()));
+
+    // Commit without live listeners: the child can finish while its message-answerable
+    // question remains pending, or the process can die before the native wake commits.
+    yield* Effect.gen(function* () {
+      const sink = yield* EventSinkV2;
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("offline-delegated-question"),
+            type: "runtime-request.updated",
+            threadId: task.childThreadId!,
+            runId: childRun.id,
+            occurredAt: now,
+            payload: {
+              id: requestId,
+              nodeId: childRun.rootNodeId!,
+              providerTurnId: null,
+              nativeRequestRef: null,
+              kind: "user_input",
+              status: "pending",
+              responseCapability: { type: "message" },
+              createdAt: now,
+              resolvedAt: null,
+            },
+          },
+          {
+            id: EventId.make("offline-delegated-completed-run"),
+            type: "run.updated",
+            threadId: task.childThreadId!,
+            runId: childRun.id,
+            occurredAt: now,
+            payload: { ...childRun, status: "completed", completedAt: now },
+          },
+          {
+            id: EventId.make("offline-delegated-completed-task"),
+            type: "subagent.updated",
+            threadId: root,
+            occurredAt: now,
+            payload: { ...task, status: "completed", completedAt: now },
+          },
+        ],
+      });
+    }).pipe(Effect.provide(forkV1SnapshotLayer(filename)));
+
+    const legacyMessageId = MessageId.make(
+      `child-request:${task.childThreadId}:${requestId}:${root}`,
+    );
+    if (window !== "missing-native-wake") {
+      // The persisted pre-upgrade notice is queued behind the parent's active run.
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* OrchestratorV2;
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`command:${legacyMessageId}:0`),
+          threadId: root,
+          messageId: legacyMessageId,
+          text: `Descendant ${task.childThreadId} needs an answer to ${requestId}. Read it with t3_pending_request_read and respond with t3_pending_request_respond.`,
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "system",
+          creationSource: "server",
+        });
+        const parent = yield* orchestrator.getThreadProjection(root);
+        assert.equal(
+          parent.runs.find((run) => run.userMessageId === legacyMessageId)?.status,
+          "queued",
+        );
+      }).pipe(Effect.provide(runtime()));
+    }
+
+    if (window === "failed-native-dispatch" || window === "native-committed-before-legacy-cancel") {
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* OrchestratorV2;
+        const child = yield* orchestrator.getThreadProjection(task.childThreadId!);
+        const request = child.runtimeRequests.find((request) => request.id === requestId)!;
+        const result = yield* reconcileDelegatedTaskQuestion(task, request, (command) =>
+          Effect.gen(function* () {
+            if (
+              (window === "failed-native-dispatch" && command.type === "message.dispatch") ||
+              (window === "native-committed-before-legacy-cancel" &&
+                command.type === "queued-run.cancel")
+            )
+              return yield* Effect.fail("simulated process loss during notice handoff");
+            return yield* orchestrator.dispatch(command);
+          }),
+        ).pipe(Effect.result);
+        assert.equal(result._tag, "Failure");
+        const parent = yield* orchestrator.getThreadProjection(root);
+        assert.equal(
+          parent.runs.find((run) => run.userMessageId === legacyMessageId)?.status,
+          "queued",
+        );
+        assert.equal(
+          parent.messages.filter(
+            (message) => message.notification?.source.kind === "delegated_task",
+          ).length,
+          window === "failed-native-dispatch" ? 0 : 1,
+        );
+      }).pipe(Effect.provide(runtime()));
+    }
+
+    for (const boot of ["first", "repeated"] as const) {
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* OrchestratorV2;
+        // The production persisted startup seam runs before the effect worker.
+        yield* orchestrator.recoverDelegatedTasks;
+        yield* orchestrator.recoverDelegatedTasks;
+        const parent = yield* orchestrator.getThreadProjection(root);
+        const actionable = parent.messages.filter(
+          (message) =>
+            message.text.includes(requestId) &&
+            parent.runs.some((run) => run.userMessageId === message.id && run.status === "queued"),
+        );
+        assert.lengthOf(
+          actionable,
+          1,
+          `${window}: ${boot} startup must retain one actionable notice`,
+        );
+        assert.include(actionable[0]!.text, "t3_pending_request_read");
+        assert.include(actionable[0]!.text, "t3_pending_request_respond");
+        assert.deepStrictEqual(actionable[0]!.notification?.source, {
+          kind: "delegated_task",
+          taskIds: [task.id],
+          childThreadId: task.childThreadId!,
+        });
+        assert.isFalse(
+          parent.runs.some(
+            (run) => run.userMessageId === legacyMessageId && run.status === "queued",
+          ),
+        );
+        const child = yield* orchestrator.getThreadProjection(task.childThreadId!);
+        assert.equal(
+          child.runtimeRequests.find((request) => request.id === requestId)?.status,
+          "pending",
+        );
+        assert.equal(child.runs.find((run) => run.id === childRun.id)?.status, "completed");
+      }).pipe(Effect.provide(runtime()));
+    }
+
+    // Lifecycle changes are committed without listeners, too: the next startup
+    // must discard the stale native notice instead of recovering it again.
+    yield* Effect.gen(function* () {
+      const sink = yield* EventSinkV2;
+      const orchestrator = yield* OrchestratorV2;
+      const child = yield* orchestrator.getThreadProjection(task.childThreadId!);
+      const request = child.runtimeRequests.find((request) => request.id === requestId)!;
+      yield* sink.write({
+        events: [
+          window === "legacy-notice"
+            ? {
+                id: EventId.make("answered-delegated-question"),
+                type: "runtime-request.updated",
+                threadId: task.childThreadId!,
+                runId: childRun.id,
+                occurredAt: now,
+                payload: { ...request, status: "resolved", resolvedAt: now },
+              }
+            : window === "native-committed-before-legacy-cancel"
+              ? {
+                  id: EventId.make("disposed-delegated-question"),
+                  type: "subagent.updated",
+                  threadId: root,
+                  occurredAt: now,
+                  payload: {
+                    ...task,
+                    completionDelivery: { state: "disposed", observedByRunId: null },
+                  },
+                }
+              : {
+                  id: EventId.make("retired-delegated-question"),
+                  type: "thread.metadata-updated",
+                  threadId: task.childThreadId!,
+                  occurredAt: now,
+                  payload:
+                    window === "missing-native-wake"
+                      ? { ...child.thread, archivedAt: now }
+                      : {
+                          ...child.thread,
+                          forkRetirement: { token: CommandId.make("retired-question") },
+                        },
+                },
+        ],
+      });
+    }).pipe(Effect.provide(runtime()));
+    yield* Effect.gen(function* () {
+      const orchestrator = yield* OrchestratorV2;
+      yield* orchestrator.recoverDelegatedTasks;
+      yield* orchestrator.recoverDelegatedTasks;
+      const parent = yield* orchestrator.getThreadProjection(root);
+      assert.isFalse(
+        parent.messages.some(
+          (message) =>
+            message.text.includes(requestId) &&
+            parent.runs.some((run) => run.userMessageId === message.id && run.status === "queued"),
+        ),
+      );
+    }).pipe(Effect.provide(runtime()));
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

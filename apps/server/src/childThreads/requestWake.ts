@@ -7,6 +7,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { CommandReceiptStoreV2 } from "../orchestration-v2/CommandReceiptStore.ts";
+import { reconcileDelegatedTaskQuestion } from "../orchestration-v2/DelegatedTaskQuestions.ts";
 
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import { ThreadCommandExecutor } from "../orchestration-v2/ThreadCommandExecutor.ts";
@@ -49,20 +50,25 @@ export const reconcileChildRequests = Effect.fn("childThreads.reconcileRequests"
           const retirement = yield* readRetirementState(childId);
           const parent = yield* projections.getThreadRecords(parentId, ["runs", "subagents"]);
           const parentRetirement = yield* readRetirementState(parentId);
-          const nativeQuestions = parent.subagents.some(
+          const nativeTask = parent.subagents.find(
             (task) => task.origin === "app_owned" && task.childThreadId === childId,
           );
           for (const request of current.runtimeRequests) {
             if (isUndeliveredKind(request)) continue;
+            if (nativeTask !== undefined && request.kind === "user_input") {
+              yield* reconcileDelegatedTaskQuestion(nativeTask, request, dispatch);
+              continue;
+            }
             const identity = `child-request:${childId}:${request.id}:${parentId}`;
             const messageId = MessageId.make(identity);
             const pending =
               request.status === "pending" &&
+              current.thread.archivedAt === null &&
+              current.thread.deletedAt === null &&
+              parent.thread.archivedAt === null &&
+              parent.thread.deletedAt === null &&
               retirement.complete &&
-              !retirement.retired &&
-              // Native delegated-task questions have their own wake and blocking-wait policy.
-              // Let the cancellation path remove any older fork notice for the same question.
-              !(nativeQuestions && request.kind === "user_input");
+              !retirement.retired;
             if (!pending || parentRetirement.retired || !parentRetirement.complete) {
               for (const run of parent.runs) {
                 if (run.userMessageId === messageId && run.status === "queued") {
@@ -118,7 +124,7 @@ export const reconcilePendingChildRequests = Effect.fn("childThreads.reconcilePe
   function* <E>(dispatch: (command: OrchestrationV2ServerCommand) => Effect.Effect<unknown, E>) {
     const projections = yield* ProjectionStoreV2;
     const snapshot = yield* projections.getShellSnapshot();
-    for (const thread of snapshot.threads) {
+    for (const thread of [...snapshot.threads, ...snapshot.archivedThreads]) {
       if (thread.lineage.relationshipToParent === "subagent")
         yield* reconcileChildRequests(thread.id, dispatch);
     }
