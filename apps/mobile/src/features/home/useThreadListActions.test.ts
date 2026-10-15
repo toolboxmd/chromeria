@@ -1,4 +1,5 @@
 import { makeThreadShellFixture } from "../../test-fixtures";
+import type { EnvironmentProject } from "@t3tools/client-runtime/state/models";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   AuthOrchestrationOperateScope,
@@ -16,6 +17,7 @@ const state = vi.hoisted(() => ({
   dropBusy: false,
   scopes: new Map<string, Set<string>>(),
   shells: [] as EnvironmentThreadShell[],
+  projects: [] as EnvironmentProject[],
   requests: [] as {
     action: string;
     environmentId: string;
@@ -53,6 +55,9 @@ vi.mock("../../state/session", () => ({
   readEnvironmentScope: (environmentId: string, scope: string) =>
     state.scopes.get(environmentId)?.has(scope) === true,
 }));
+vi.mock("../../state/projects", () => ({
+  environmentProjects: { projectsAtom: "projects" },
+}));
 vi.mock("../../state/server", () => ({
   environmentServerConfigsAtom: "server-configs",
 }));
@@ -66,24 +71,27 @@ vi.mock("../../state/atom-registry", () => ({
         ? state.dropBusy
         : atom === "thread-shells"
           ? state.shells
-          : atom === "queued-thread-keys"
-            ? new Set<string>()
-            : new Map(
-                [...state.scopes.keys()].map((environmentId) => [
-                  environmentId,
-                  {
-                    environment: {
-                      capabilities: {
-                        threadSettlement: true,
-                        threadSnooze: true,
-                        threadPinning: true,
-                        threadPinReorder: true,
-                        threadTitleRegeneration: true,
+          : atom === "projects"
+            ? state.projects
+            : atom === "queued-thread-keys"
+              ? new Set<string>()
+              : new Map(
+                  [...state.scopes.keys()].map((environmentId) => [
+                    environmentId,
+                    {
+                      environment: {
+                        capabilities: {
+                          threadSettlement: true,
+                          threadSnooze: true,
+                          threadPinning: true,
+                          threadPinReorder: true,
+                          threadActiveReorder: true,
+                          threadTitleRegeneration: true,
+                        },
                       },
                     },
-                  },
-                ]),
-              ),
+                  ]),
+                ),
   },
 }));
 vi.mock("../../state/use-atom-command", () => ({
@@ -123,6 +131,7 @@ vi.mock("../../state/threads", () => ({
       "pin",
       "unpin",
       "reorderPin",
+      "reorderActive",
       "updateMetadata",
     ].map((action) => [
       action,
@@ -157,6 +166,21 @@ function makeThread(input: Partial<EnvironmentThreadShell> = {}): EnvironmentThr
   });
 }
 
+function makeProject(input: Partial<EnvironmentProject> = {}): EnvironmentProject {
+  return {
+    id: ProjectId.make("project"),
+    environmentId: primaryEnvironmentId,
+    title: "Project",
+    workspaceRoot: "/workspaces/project",
+    repositoryIdentity: null,
+    defaultModelSelection: null,
+    scripts: [],
+    createdAt: "2026-06-01T00:00:00.000Z",
+    updatedAt: "2026-06-01T00:00:00.000Z",
+    ...input,
+  };
+}
+
 const mutationCases = [
   ["archiveThread", "archive"],
   ["settleThread", "settle"],
@@ -177,6 +201,7 @@ beforeEach(() => {
   ]);
   state.requests = [];
   state.shells = [];
+  state.projects = [];
   state.dialogs = [];
   state.alerts = [];
   state.afterRequest = undefined;
@@ -322,5 +347,72 @@ describe("pinned thread operation permissions", () => {
 
     expect(await useThreadListActions().moveThread(moved, "up")).toBe(false);
     expect(state.requests).toHaveLength(1);
+  });
+});
+
+describe("No project arrangement actions", () => {
+  it.each([
+    { state: { pinnedAt: "2026-09-02T00:00:00.000Z" }, action: "unpin" },
+    { state: { settledOverride: "settled" as const }, action: "unsettle" },
+    { state: { snoozedUntil: "2099-01-01T00:00:00.000Z" }, action: "unsnooze" },
+  ])(
+    "returns a scratch thread with $action without writing positional keys",
+    async ({ state: parked, action }) => {
+      const moved = makeThread(parked);
+      state.projects = [makeProject({ isScratch: true })];
+      state.shells = [
+        moved,
+        makeThread({ id: ThreadId.make("active"), projectId: ProjectId.make("regular") }),
+      ];
+
+      expect(
+        await useThreadListActions().moveThread(moved, {
+          section: "active",
+          targetId: null,
+          placement: "before",
+        }),
+      ).toBe(true);
+      expect(state.requests).toEqual([
+        {
+          action,
+          environmentId: primaryEnvironmentId,
+          input: {
+            threadId: moved.id,
+            ...(action === "unpin" ? {} : { reason: "user" }),
+          },
+        },
+      ]);
+      expect(state.dropBusy).toBe(false);
+      expect(state.pendingOrder).toBeNull();
+    },
+  );
+
+  it("preserves Active ordering when only another environment marks the same project ID scratch", async () => {
+    const moved = makeThread({ pinnedAt: "2026-09-02T00:00:00.000Z" });
+    state.projects = [
+      makeProject(),
+      makeProject({ environmentId: otherEnvironmentId, isScratch: true }),
+    ];
+    state.shells = [moved, makeThread({ id: ThreadId.make("active"), activeOrderKey: "m" })];
+
+    expect(
+      await useThreadListActions().moveThread(moved, {
+        section: "active",
+        targetId: null,
+        placement: "before",
+      }),
+    ).toBe(true);
+    expect(state.requests).toEqual([
+      { action: "unpin", environmentId: primaryEnvironmentId, input: { threadId: moved.id } },
+      {
+        action: "reorderActive",
+        environmentId: primaryEnvironmentId,
+        input: {
+          threadId: moved.id,
+          orderKey: expect.any(String),
+        },
+      },
+    ]);
+    expect(state.dropBusy).toBe(false);
   });
 });
