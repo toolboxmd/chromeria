@@ -16,12 +16,16 @@ import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subage
 import { deriveProviderSubagentStatus } from "@t3tools/client-runtime/state/thread-execution";
 import {
   deriveThreadRelationshipGraph,
+  getThreadRelationshipNode,
   immediateThreadRelationships,
   isParentThreadRelationship,
+  subagentChildTarget,
+  threadRelationshipNodeKey,
   threadRelationshipRowStatus,
   orderWebThreadLineageRows,
   resolveMergeBackTargetThreadId,
   type ThreadRelationshipEdge,
+  type ThreadRelationshipShellInput,
   type ThreadRelationshipWalkRow,
 } from "@t3tools/client-runtime/state/thread-relationships";
 import {
@@ -443,29 +447,19 @@ export function ThreadRelationshipsPanel(props: {
   const projected = projection?.subagents ?? [];
   const runtimeSubagents = projectedSubagentsToRuntime(projected);
   const byId = new Map(runtimeSubagents.map((agent) => [agent.id, agent]));
-  const subagentsByThreadId = new Map(
-    projected
-      .filter((subagent) => subagent.childThreadId !== null)
-      .map((subagent) => [
-        subagent.childThreadId,
-        {
-          ...byId.get(subagent.id)!,
-          id: subagent.id,
-          threadId: subagent.threadId,
-          runId: subagent.runId,
-          nativeTaskRef: subagent.nativeTaskRef,
-          nativeStatus: subagent.status,
-          driver: subagent.driver,
-          providerInstanceId: subagent.providerInstanceId,
-          origin: subagent.origin,
-          modelSelection: subagent.modelSelection,
-        },
-      ]),
-  );
+  const subagentsByThreadId = new Map(projected.flatMap((subagent) => {
+    const target = subagentChildTarget(subagent);
+    return target === null ? [] : [[threadRelationshipNodeKey(target.threadId, target.environmentId), {
+      ...byId.get(subagent.id)!, id: subagent.id, threadId: subagent.threadId, runId: subagent.runId,
+      nativeTaskRef: subagent.nativeTaskRef, nativeStatus: subagent.status, driver: subagent.driver,
+      providerInstanceId: subagent.providerInstanceId, origin: subagent.origin,
+      modelSelection: subagent.modelSelection, remoteChild: subagent.remoteChild,
+    }] as const];
+  }));
   const workflowGroupsById = new Map(
     deriveWorkflowGroups(runtimeSubagents).map((group) => [group.workflow.id, group]),
   );
-  const shells: ReadonlyArray<OrchestrationV2ThreadShell> = [
+  const shells: ReadonlyArray<ThreadRelationshipShellInput> = [
     ...relationshipShells,
     ...(archivedShells ?? []),
   ];
@@ -555,7 +549,7 @@ export function ThreadRelationshipsPanel(props: {
   );
   const runningCount =
     (projection?.subagents.filter(
-      (agent) => agent.childThreadId === null && agent.status === "running",
+      (agent) => subagentChildTarget(agent) === null && agent.status === "running",
     ).length ?? 0) + active.filter(({ edge }) => edge.status === "running").length;
 
   // A linked environment's agent may have delegated this thread from there.
@@ -579,11 +573,11 @@ export function ThreadRelationshipsPanel(props: {
   }
 
   // Idle children can be omitted from the shell; opening one loads its own detail.
-  const openThread = (threadId: ThreadId) => {
-    if (openSideChatTab(ref, graph.nodes.get(threadId)?.thread ?? null)) return;
+  const openThread = (threadId: ThreadId, environmentId: EnvironmentId = props.environmentId) => {
+    if (environmentId === props.environmentId && openSideChatTab(ref, graph.nodes.get(threadId)?.thread ?? null)) return;
     void navigate({
       to: "/$environmentId/$threadId",
-      params: buildThreadRouteParams(scopeThreadRef(props.environmentId, threadId)),
+      params: buildThreadRouteParams(scopeThreadRef(environmentId, threadId)),
     });
   };
 

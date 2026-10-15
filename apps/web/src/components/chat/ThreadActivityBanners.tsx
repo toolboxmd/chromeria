@@ -161,7 +161,9 @@ export function backgroundWorkNowItem(input: {
   readonly stopDisabled: boolean;
   readonly stopping: boolean;
   readonly onStop: () => Promise<void>;
-  readonly onOpenThread: (threadId: ThreadId) => void;
+  readonly onOpenThread: (threadId: ThreadId, environmentId?: EnvironmentId) => void;
+  /** Environments this client is connected to; a remote child elsewhere cannot open. */
+  readonly reachableEnvironments: { readonly has: (environmentId: EnvironmentId) => boolean };
 }): ThreadNowItem | null {
   const { onOpenThread } = input;
   const presentation = presentPendingBackgroundWork(input.tasks);

@@ -349,4 +349,23 @@ describe("resolveSubagentStopTarget", () => {
       }),
     ).toBeNull();
   });
+  it("offers the thread of a child delegated to a linked environment once attached", () => {
+    const remote = {
+      ...base,
+      childThreadId: null,
+      remoteChild: {
+        environmentId: "environment-cavallo" as never,
+        threadId: "thread-remote" as never,
+        label: "cavallo",
+      },
+    };
+    expect(resolveSubagentRowPresentation(remote).canOpenThread).toBe(true);
+    expect(
+      resolveSubagentRowPresentation({
+        ...remote,
+        remoteChild: { environmentId: "environment-cavallo" as never, label: "cavallo" },
+      }).canOpenThread,
+    ).toBe(false);
+  });
+
 });
