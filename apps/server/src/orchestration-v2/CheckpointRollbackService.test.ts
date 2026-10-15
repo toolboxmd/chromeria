@@ -589,7 +589,15 @@ it.effect.each([
   { restoreFiles: false, shared: "none", grok: true, bare: true },
 ])(
   "rewinds safely with %s",
-  ({ restoreFiles, shared, targetOrdinal = 0, multipleTurns = false, grok = false, failBind = false, bare = false }) => {
+  ({
+    restoreFiles,
+    shared,
+    targetOrdinal = 0,
+    multipleTurns = false,
+    grok = false,
+    failBind = false,
+    bare = false,
+  }) => {
     const threadId = ThreadId.make("rewind-files");
     const providerThreadId = ProviderThreadId.make("rewind-provider");
     const providerSessionId = ProviderSessionId.make("rewind-session");
@@ -658,6 +666,7 @@ it.effect.each([
       Layer.provide(
         Layer.mergeAll(
           NodeServices.layer,
+          Layer.mock(GitWorkflow.GitWorkflowService)({}),
           Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeed(unrelatedProject) }),
           Layer.mock(ContextmdServing.ContextmdServing)({
             currentInstructions: () =>
@@ -737,7 +746,11 @@ it.effect.each([
                   ? {
                       driver: "grok",
                       createdSessions: () => [
-                        { nativeSessionId: "replacement", text: "rules A", site: "rollback" as const },
+                        {
+                          nativeSessionId: "replacement",
+                          text: "rules A",
+                          site: "rollback" as const,
+                        },
                       ],
                     }
                   : {}),
@@ -779,7 +792,9 @@ it.effect.each([
         calls,
         grok && !bare
           ? ["instructions", "provider", "bind", "projection"]
-          : restoreFiles ? ["provider", "files", "projection"] : ["provider", "projection"],
+          : restoreFiles
+            ? ["provider", "files", "projection"]
+            : ["provider", "projection"],
       );
     }).pipe(Effect.provide(layerTest));
   },
