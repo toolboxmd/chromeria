@@ -1,3 +1,480 @@
+import * as DocumentText from "../provider/DocumentText.ts";
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
+import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as WorktreeSetupTracker from "../project/WorktreeSetupTracker.ts";
+import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
+import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
+import * as TerminalManager from "../terminal/Manager.ts";
+import * as GitWorkflow from "../git/GitWorkflowService.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import { layerLaunchCatalog } from "./PeerLinks.testkit.ts";
+import * as Settings from "../serverSettings.ts";
+import { NodeHttpServer } from "@effect/platform-node";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import {
+  CommandId,
+  EventId,
+  MessageId,
+  NodeId,
+  type OrchestrationV2Run,
+  ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderThreadId,
+  type Project,
+  type RepositoryIdentity,
+  RunId,
+  ThreadId,
+  TurnItemId,
+} from "@t3tools/contracts";
+import { expect, it } from "@effect/vitest";
+import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
+import * as Schedule from "effect/Schedule";
+import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
+import type * as SqlClient from "effect/sql/SqlClient";
+import { McpSchema, McpServer } from "effect/ai";
+
+import * as ServerConfig from "../config.ts";
+import * as McpHttpServer from "../mcp/McpHttpServer.ts";
+import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
+import { idleThreadProjection, liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
+import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
+import * as ProjectService from "../project/ProjectService.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import { restartCutView } from "@t3tools/shared/restartCut";
+import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
+import * as SourceControlRepositoryService from "../sourceControl/SourceControlRepositoryService.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as PeerForwarding from "./PeerForwarding.ts";
+import * as PeerLinks from "./PeerLinks.ts";
+import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
+import * as RemoteDelegation from "./RemoteDelegation.ts";
+import * as PeerLinkRequests from "./PeerLinkRequests.ts";
+
+// The laptop's agent delegates a task to the box through a link. The box is
+// its real /mcp behind real OAuth, with one thread the test finishes; the
+// laptop is its real orchestrator and toolkits. The parent here wakes as it
+// would for a local child.
+
+const laptop = descriptorOf("environment-laptop", "Laptop");
+const box = descriptorOf("environment-box", "Box");
+const boxProject = ProjectId.make("project:box");
+const instanceId = ProviderInstanceId.make("codex");
+const driver = ProviderDriverKind.make("codex");
+const modelSelection = { instanceId, model: "gpt-5.4" };
+
+type LaunchedWith = Pick<
+  ThreadLaunch.ThreadLaunchInput,
+  "modelSelection" | "runtimeMode" | "interactionMode"
+>;
+
+/** The thread the box launches for the task, which the test finishes. */
+interface BoxThread {
+  readonly launched: Ref.Ref<ThreadId | null>;
+  /** The link session that launched it, as the box stamps it. */
+  readonly linkOrigin: Ref.Ref<{ readonly sessionId: string; readonly label: string } | null>;
+  /** The parent the launch names, so the thread there can link back to it. */
+  readonly delegatedFrom: Ref.Ref<ThreadLaunch.ThreadLaunchInput["delegatedFrom"] | null>;
+  /** The model and modes it was launched with. */
+  readonly launchedWith: Ref.Ref<LaunchedWith | null>;
+  /** The first message the thread there was launched with. */
+  readonly message: Ref.Ref<string | null>;
+  readonly status: Ref.Ref<OrchestrationV2Run["status"]>;
+  readonly reply: Ref.Ref<string | null>;
+  readonly error: Ref.Ref<string | null>;
+  readonly laterError: Ref.Ref<string | null>;
+  /** A later run's reply, after the task's own, as a follow-up message would leave. */
+  readonly laterReply: Ref.Ref<string | null>;
+  /** The run each wait asked for, in order. */
+  readonly waitedFor: Ref.Ref<ReadonlyArray<RunId | undefined>>;
+  /** The thread's run ends with a task of its own still running, whose result wakes it again. */
+  readonly nested: Ref.Ref<boolean>;
+  /** Completed once a wait there blocks on that task. */
+  readonly nestedWaiting: Deferred.Deferred<void>;
+  /** That task settled and the run it woke answered, with `laterReply`. */
+  readonly nestedSettled: Deferred.Deferred<void>;
+  /** Waiting there fails with this, as a thread deleted there does. */
+  readonly gone: Ref.Ref<boolean>;
+  readonly interrupted: Ref.Ref<number>;
+  /** What each interrupt or stop there did, once per command id. */
+  readonly stops: Ref.Ref<ReadonlyArray<"interrupt" | "thread.stop" | "delegated-tasks">>;
+  /** The launch starts no run, as one recorded before its run was kept. */
+  readonly runless: Ref.Ref<boolean>;
+  /** Completed on the first interrupt there. */
+  readonly interruptedOnce: Deferred.Deferred<void>;
+  readonly finished: Deferred.Deferred<void>;
+  /** While set, reading the thread there waits: completed once a read starts, released by `releaseRead`. */
+  readonly holdRead: Ref.Ref<boolean>;
+  readonly readStarted: Deferred.Deferred<void>;
+  readonly releaseRead: Deferred.Deferred<void>;
+  readonly holdFirstStop: Ref.Ref<boolean>;
+  readonly stopStarted: Deferred.Deferred<void>;
+  readonly releaseStop: Deferred.Deferred<void>;
+  /** Messages sent to the thread there after its launch, each starting a later run. */
+  readonly sent: Ref.Ref<ReadonlyArray<string>>;
+  /** Runs as the launch there is answered, before the laptop hears back. */
+  readonly afterLaunch: Ref.Ref<Effect.Effect<void>>;
+}
+
+const makeBoxThread = Effect.gen(function* () {
+  return {
+    launched: yield* Ref.make<ThreadId | null>(null),
+    linkOrigin: yield* Ref.make<{ readonly sessionId: string; readonly label: string } | null>(
+      null,
+    ),
+    delegatedFrom: yield* Ref.make<ThreadLaunch.ThreadLaunchInput["delegatedFrom"] | null>(null),
+    launchedWith: yield* Ref.make<LaunchedWith | null>(null),
+    message: yield* Ref.make<string | null>(null),
+    status: yield* Ref.make<OrchestrationV2Run["status"]>("running"),
+    reply: yield* Ref.make<string | null>("Working…"),
+    error: yield* Ref.make<string | null>(null),
+    laterError: yield* Ref.make<string | null>(null),
+    laterReply: yield* Ref.make<string | null>(null),
+    waitedFor: yield* Ref.make<ReadonlyArray<RunId | undefined>>([]),
+    nested: yield* Ref.make(false),
+    nestedWaiting: yield* Deferred.make<void>(),
+    nestedSettled: yield* Deferred.make<void>(),
+    gone: yield* Ref.make(false),
+    interrupted: yield* Ref.make(0),
+    stops: yield* Ref.make<ReadonlyArray<"interrupt" | "thread.stop" | "delegated-tasks">>([]),
+    runless: yield* Ref.make(false),
+    interruptedOnce: yield* Deferred.make<void>(),
+    finished: yield* Deferred.make<void>(),
+    holdRead: yield* Ref.make(false),
+    readStarted: yield* Deferred.make<void>(),
+    releaseRead: yield* Deferred.make<void>(),
+    holdFirstStop: yield* Ref.make(false),
+    stopStarted: yield* Deferred.make<void>(),
+    releaseStop: yield* Deferred.make<void>(),
+    sent: yield* Ref.make<ReadonlyArray<string>>([]),
+    afterLaunch: yield* Ref.make<Effect.Effect<void>>(Effect.void),
+  } satisfies BoxThread;
+});
+
+/** The box's projects: more than a page, with this repository's last. */
+const boxProjects: ReadonlyArray<Project> = [
+  ...Array.from({ length: 120 }, (_, index) => ({
+    id: ProjectId.make(`project:box-other-${index}`),
+    title: `other ${index}`,
+    workspaceRoot: `/srv/other-${index}`,
+    repositoryIdentity: null,
+    defaultModelSelection: null,
+    scripts: [],
+    createdAt: "2026-10-01T00:00:00.000Z",
+    updatedAt: "2026-10-01T00:00:00.000Z",
+    deletedAt: null,
+  })),
+  {
+    id: boxProject,
+    title: "app",
+    workspaceRoot: "/srv/app",
+    repositoryIdentity: {
+      canonicalKey: "github.com/acme/app",
+      locator: {
+        source: "git-remote",
+        remoteName: "origin",
+        remoteUrl: "git@github.com:acme/app.git",
+      },
+    },
+    defaultModelSelection: null,
+    scripts: [],
+    createdAt: "2026-10-01T00:00:00.000Z",
+    updatedAt: "2026-10-01T00:00:00.000Z",
+    deletedAt: null,
+  },
+];
+
+const serveBox = (thread: BoxThread) => {
+  return servePeer(box, boxToolkitLayer(thread));
+};
+
+const boxRunId = RunId.make("run:box");
+const boxLaterRunId = RunId.make("run:box-later");
+
+const boxToolkitLayer = (thread: BoxThread) => {
+  const runId = boxRunId;
+  const interrupts = new Set<string>();
+  const shellOf = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      if ((yield* Ref.get(thread.launched)) !== threadId) return null;
+      const linkOrigin = yield* Ref.get(thread.linkOrigin);
+      return {
+        ...liveThreadShell(threadId, { runtimeMode: "full-access" }),
+        projectId: boxProject,
+        ...(linkOrigin === null ? {} : { linkOrigin }),
+      };
+    });
+  const runOf = (status: OrchestrationV2Run["status"]) =>
+    ({
+      id: runId,
+      threadId: ThreadId.make("thread:box"),
+      ordinal: 1,
+      status,
+      modelSelection,
+      requestedAt: DateTime.makeUnsafe(0),
+      startedAt: DateTime.makeUnsafe(0),
+      completedAt: null,
+    }) as unknown as OrchestrationV2Run;
+  const projectionOf = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const shell = yield* shellOf(threadId);
+      const status = yield* Ref.get(thread.status);
+      const runless = yield* Ref.get(thread.runless);
+      return shell === null
+        ? (null as never)
+        : { ...idleThreadProjection(shell), runs: runless ? [] : [runOf(status)] };
+    });
+  // One record per command id, as its receipt replays a repeat.
+  const recordStop = (commandId: string, kind: "interrupt" | "thread.stop" | "delegated-tasks") =>
+    Effect.gen(function* () {
+      if (interrupts.has(`${kind}:${commandId}`)) return;
+      interrupts.add(`${kind}:${commandId}`);
+      yield* Ref.update(thread.stops, (seen) => [...seen, kind]);
+      if (kind !== "delegated-tasks") {
+        yield* Ref.update(thread.interrupted, (count) => count + 1);
+        yield* Deferred.succeed(thread.interruptedOnce, undefined);
+      }
+    });
+  const layerBoxThreads = Layer.mock(ThreadManagement.ThreadManagementService)({
+    readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
+    getThreadShell: shellOf,
+    getProjectThreadRecords: (input) => projectionOf(input.threadId),
+    getThreadRecords: (threadId) => projectionOf(threadId),
+    waitForThread: (input) =>
+      Effect.gen(function* () {
+        yield* Ref.update(thread.waitedFor, (seen) => [...seen, input.runId]);
+        // A thread with no run has nothing to wait for.
+        if (yield* Ref.get(thread.runless)) {
+          return { threadId: input.threadId, run: null, timedOut: false };
+        }
+        if (yield* Ref.get(thread.gone)) {
+          return yield* new ThreadManagement.ThreadManagementThreadNotFoundError({
+            projectId: boxProject,
+            threadId: input.threadId,
+          });
+        }
+        const done = yield* Deferred.await(thread.finished).pipe(
+          Effect.timeoutOption(input.timeoutMs),
+        );
+        // Only a waiter that asks waits past the run for the thread's own task.
+        if (
+          Option.isSome(done) &&
+          input.untilDelegatedWorkSettled === true &&
+          (yield* Ref.get(thread.nested))
+        ) {
+          yield* Deferred.succeed(thread.nestedWaiting, undefined);
+          const settled = yield* Deferred.await(thread.nestedSettled).pipe(
+            Effect.timeoutOption(input.timeoutMs),
+          );
+          return {
+            threadId: input.threadId,
+            run: { id: runId, status: yield* Ref.get(thread.status) } as OrchestrationV2Run,
+            timedOut: Option.isNone(settled),
+            ...(Option.isSome(settled)
+              ? { resultRun: { id: boxLaterRunId, status: "completed" } as OrchestrationV2Run }
+              : {}),
+          };
+        }
+        // Unpinned, a wait reports the latest run: a later one once there is one.
+        const later = input.runId === undefined && (yield* Ref.get(thread.laterReply)) !== null;
+        return {
+          threadId: input.threadId,
+          run: {
+            id: later ? boxLaterRunId : runId,
+            status: later ? "completed" : yield* Ref.get(thread.status),
+          } as OrchestrationV2Run,
+          timedOut: Option.isNone(done),
+        };
+      }),
+    getTimelinePage: (threadId, options) =>
+      Effect.gen(function* () {
+        if (yield* Ref.get(thread.holdRead)) {
+          yield* Deferred.succeed(thread.readStarted, undefined);
+          yield* Deferred.await(thread.releaseRead);
+        }
+        const reply = yield* Ref.get(thread.reply);
+        const later = yield* Ref.get(thread.laterReply);
+        const error = yield* Ref.get(thread.error);
+        const laterError = yield* Ref.get(thread.laterError);
+        // One item per page, with errors available only in the activity view.
+        const replies = [
+          ...(reply === null
+            ? []
+            : [
+                {
+                  id: TurnItemId.make("item:reply"),
+                  runId,
+                  text: reply,
+                  type: "assistant_message",
+                },
+              ]),
+          ...(error === null
+            ? []
+            : [{ id: TurnItemId.make("item:error"), runId, text: error, type: "error" }]),
+          ...(later === null
+            ? []
+            : [
+                {
+                  id: TurnItemId.make("item:later-reply"),
+                  runId: boxLaterRunId,
+                  text: later,
+                  type: "assistant_message",
+                },
+              ]),
+          ...(laterError === null
+            ? []
+            : [
+                {
+                  id: TurnItemId.make("item:later-error"),
+                  runId: boxLaterRunId,
+                  text: laterError,
+                  type: "error",
+                },
+              ]),
+        ].map((entry, position) => ({ ...entry, position }));
+        const visible =
+          options.itemId === undefined
+            ? replies.filter(
+                (entry) => options.view === "activity" || entry.type === "assistant_message",
+              )
+            : replies.filter((entry) => entry.id === options.itemId);
+        const matching = visible
+          .filter((entry) => entry.position > (options.afterPosition ?? -1))
+          .slice(0, 1);
+        return {
+          items: matching.map(({ id, runId: itemRunId, text, position, type }) => ({
+            position,
+            visibility: "local" as const,
+            sourceThreadId: threadId,
+            sourceItemId: id,
+            item: {
+              id,
+              threadId,
+              runId: itemRunId,
+              nodeId: null,
+              providerThreadId: null,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 1,
+              status: "completed" as const,
+              title: null,
+              startedAt: DateTime.makeUnsafe(0),
+              completedAt: DateTime.makeUnsafe(0),
+              updatedAt: DateTime.makeUnsafe(0),
+              ...(type === "error"
+                ? { type, failure: { message: text } }
+                : {
+                    type: "assistant_message" as const,
+                    messageId: MessageId.make(`message:${id}`),
+                    text,
+                    streaming: false,
+                  }),
+            } as never,
+          })),
+          totalItems: replies.length,
+          hasMore:
+            options.itemId === undefined &&
+            matching.length > 0 &&
+            visible.some((entry) => entry.position > matching.at(-1)!.position),
+        };
+      }),
+    interruptThread: (input) =>
+      recordStop(input.commandId, "interrupt").pipe(
+        Effect.as({ type: "interrupt_requested", run: runOf("running") } as never),
+      ),
+    dispatch: (command) =>
+      command.type === "thread.stop"
+        ? recordStop(command.commandId, "thread.stop").pipe(
+            Effect.tap(() =>
+              Effect.gen(function* () {
+                if (!(yield* Ref.getAndSet(thread.holdFirstStop, false))) return;
+                yield* Deferred.succeed(thread.stopStarted, undefined);
+                yield* Deferred.await(thread.releaseStop);
+              }),
+            ),
+            Effect.as({ sequence: 0, storedEvents: [] } as never),
+          )
+        : Effect.die(`The box does not expect ${command.type}`),
+    stopDelegatedTasks: (input) => recordStop(input.commandId, "delegated-tasks"),
+    sendToThread: (input) =>
+      Ref.update(thread.sent, (seen) => [...seen, input.text]).pipe(
+        Effect.as({
+          run: { id: boxLaterRunId, status: "running" },
+          delivery: "started",
+        } as never),
+      ),
+  });
+  const layerBoxLaunches = Layer.mock(ThreadLaunch.ThreadLaunchService)({
+    launch: (input) =>
+      Ref.get(thread.runless).pipe(
+        Effect.flatMap((runless) =>
+          Ref.set(thread.launched, input.threadId!).pipe(
+            Effect.andThen(Ref.set(thread.linkOrigin, input.linkOrigin ?? null)),
+            Effect.andThen(Ref.set(thread.delegatedFrom, input.delegatedFrom ?? null)),
+            Effect.andThen(Ref.set(thread.message, input.initialMessage?.text ?? null)),
+            Effect.andThen(
+              Ref.set(thread.launchedWith, {
+                modelSelection: input.modelSelection,
+                runtimeMode: input.runtimeMode,
+                interactionMode: input.interactionMode,
+              }),
+            ),
+            Effect.andThen(Effect.flatten(Ref.get(thread.afterLaunch))),
+            Effect.as({
+              threadId: input.threadId,
+              projection: {
+                thread: {
+                  id: input.threadId,
+                  projectId: input.projectId,
+                  title: input.title,
+                  modelSelection: input.modelSelection,
+                },
+                runs:
+                  input.initialMessage?.messageId && !runless
+                    ? [
+                        {
+                          id: runId,
+                          status: "running",
+                          userMessageId: input.initialMessage.messageId,
+                        },
+                      ]
+                    : [],
+              },
+              resumed: false,
+            } as unknown as ThreadLaunch.ThreadLaunchResult),
+          ),
+        ),
+      ),
+  });
+  return Layer.merge(
+    McpHttpServer.layerOrchestratorToolkit.pipe(
       Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
 import * as DocumentText from "../provider/DocumentText.ts";
       Layer.provideMerge(
@@ -7,19 +484,10 @@ import * as DocumentText from "../provider/DocumentText.ts";
             Layer.mock(ProjectService.ProjectService)({
               // A cold enrichment cache: the project itself reports no identity yet.
               getById: () =>
-<<<<<<< HEAD
                 Effect.succeedSome({
                   workspaceRoot: "/home/me/app",
                   repositoryIdentity: null,
                 } as never),
-=======
-                Effect.succeed(
-                  Option.some({
-                    workspaceRoot: "/home/me/app",
-                    repositoryIdentity: null,
-                  } as never),
-                ),
->>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
             }),
           ),
           Layer.provide(

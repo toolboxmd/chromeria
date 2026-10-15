@@ -65,16 +65,12 @@ export const layer: Layer.Layer<
         function* ({ projection, targetModelSelection }) {
           const current = projection.thread.modelSelection;
           const instanceChanged = current.instanceId !== targetModelSelection.instanceId;
-<<<<<<< HEAD
-=======
-          const modelChanged = current.model !== targetModelSelection.model;
           if (projection.thread.bare !== undefined && instanceChanged)
             return yield* new ProviderSwitchPlanError({
               threadId: projection.thread.id,
               targetProviderInstanceId: targetModelSelection.instanceId,
               cause: "bare history transfer unsupported",
             });
->>>>>>> a90a9aad3b (feat(server): add bare launch with native receipts (#335))
           const getMetadata = (instanceId: typeof current.instanceId) =>
             adapters.getMetadata !== undefined
               ? adapters.getMetadata(instanceId)

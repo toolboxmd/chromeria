@@ -47,6 +47,7 @@ function harness(
     fork?: "before-carrier" | "after-carrier";
     driver?: "codex" | "grok";
     bare?: boolean;
+    steeringSender?: ThreadId;
   } = {},
 ) {
   const now = DateTime.makeUnsafe("2026-10-14T00:00:00Z");
@@ -128,7 +129,17 @@ function harness(
     providerInstanceId: instanceId,
     providerThreadId,
     providerTurnId: null,
-    reason: "initial" as const,
+    reason:
+      options.steeringSender === undefined ? ("initial" as const) : ("steering_restart" as const),
+    ...(options.steeringSender === undefined
+      ? {}
+      : {
+          requestedBy: {
+            createdBy: "agent" as const,
+            creationSource: "mcp" as const,
+            senderThreadId: options.steeringSender,
+          },
+        }),
     status: "pending" as const,
     startedAt: null,
     completedAt: null,
@@ -475,6 +486,29 @@ function harness(
     }).pipe(Effect.provide(layer)),
   };
 }
+
+it.effect.each([true, false])(
+  "urgent restart preserves the selected bare contract, bare=%s",
+  (bare) =>
+    Effect.gen(function* () {
+      const h = harness({ bare, steeringSender: ThreadId.make("sender:urgent-bare-control") });
+      yield* h.start;
+      expect(h.delivered).toHaveLength(1);
+      const text = h.delivered[0]!.message.text;
+      if (bare) {
+        expect(text).toBe("NAMED_BODY\n\nRun the task.");
+        for (const effect of Object.values(h.contextmd)) expect(effect).not.toHaveBeenCalled();
+      } else {
+        expect(text).toContain(
+          "the agent in T3 thread sender:urgent-bare-control interrupted your previous turn",
+        );
+        expect(text).toContain("were interrupted, not refused");
+        expect(text.endsWith("\n\nRun the task.")).toBe(true);
+        expect(h.additions).not.toHaveBeenCalled();
+      }
+      expect(h.projection().messages[0]?.text).toBe("Run the task.");
+    }),
+);
 
 it.effect.each([
   { accepted: false, rolledBack: false, text: "NAMED_BODY\n\nRun the task." },

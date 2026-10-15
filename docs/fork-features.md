@@ -277,7 +277,7 @@ are evidence for review, not proof that a feature has been adopted upstream.
 ```json
 {
   "id": "claude-steer-queue",
-  "purpose": "Queue a steer into Claude instead of cancelling running tools and reporting that as a user refusal.",
+  "purpose": "Queue routine agent steers into Claude instead of cancelling running tools and reporting that as a user refusal.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/280"],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/282"],
   "newFiles": [
@@ -300,6 +300,73 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "packages/client-runtime/src/operations/commands.ts"
   ],
   "keywords": ["activeSteeringInterruptsTools", "steeringCancelsRunningTools", "queue_after_active"]
+}
+```
+
+## urgent-steering-interruption
+
+```json
+{
+  "id": "urgent-steering-interruption",
+  "purpose": "Use Stop's native scope for urgent agent restart or human Steer, while routine Claude updates queue and interruption context names the requester.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/285"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/300"],
+  "newFiles": [
+    "apps/server/src/orchestration-v2/SteeringInterruption.ts",
+    "apps/server/src/orchestration-v2/SteeringInterruption.test.ts",
+    "apps/server/src/orchestration-v2/UrgentRestart.integration.test.ts"
+  ],
+  "upstreamFiles": [
+    "apps/server/src/orchestration-v2/ProviderTurnControlService.ts",
+    "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+    "apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts",
+    "docs/user/composer.md",
+    "packages/provider-opencode/src/server/v2/adapter.ts",
+    "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts",
+    "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
+    "apps/server/src/orchestration-v2/testkit/OrchestratorReplayRestartBackgroundNote.integration.test.ts"
+  ],
+  "sharedFiles": [
+    "packages/provider-opencode/src/server/adapter.test.ts",
+    "packages/provider-opencode/src/server/adapter.ts",
+    "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+    "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+    "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
+    "packages/provider-grok/src/testing.ts",
+    "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+    "apps/server/src/mcp/toolkits/thread/handlers.ts",
+    "apps/server/src/mcp/toolkits/thread/tools.ts",
+    "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
+    "packages/provider-acp/src/server/adapter.ts",
+    "packages/provider-grok/src/server/adapter.ts",
+    "apps/server/src/orchestration-v2/ClaudeAutomaticDelivery.integration.test.ts",
+    "apps/server/src/orchestration-v2/CommandPolicy.test.ts",
+    "apps/server/src/orchestration-v2/CommandPolicy.ts",
+    "apps/server/src/orchestration-v2/EffectOutbox.ts",
+    "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+    "apps/server/src/orchestration-v2/EffectWorker.ts",
+    "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "apps/server/src/orchestration-v2/RunExecutionService.ts",
+    "apps/server/src/orchestration-v2/ThreadManagementService.test.ts",
+    "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+    "packages/provider-core/src/server/orchestrationInstructions.ts",
+    "apps/server/src/ws.ts",
+    "docs/orchestration-v2/orchestrator-mcp-server.md",
+    "docs/map.md",
+    "packages/contracts/src/orchestrationV2.ts",
+    "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
+    "packages/provider-core/src/server/ProviderAdapter.ts",
+    "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+    "apps/server/src/orchestration-v2/ProviderTurnStartService.bare.test.ts"
+  ],
+  "keywords": [
+    "SteeringInterruption",
+    "requestedBy",
+    "interruption",
+    "backgroundWork",
+    "restart_active",
+    "replacementFollows"
+  ]
 }
 ```
 
@@ -1618,7 +1685,7 @@ sources and reasons.
     "apps/server/src/orchestration-v2/runtimeLayer.ts",
     "apps/server/src/prism/RecoveryCoordinator.ts",
     "apps/server/src/prism/RecoveryHistory.ts",
-    "apps/server/src/provider/T3OrchestrationInstructions.ts",
+    "packages/provider-core/src/server/orchestrationInstructions.ts",
     "apps/server/src/relay/AgentAwarenessRelay.test.ts",
     "apps/server/src/server.ts",
     "apps/server/src/spectrum/mcpScopes.test.ts",

@@ -162,6 +162,8 @@ export const ProviderAdapterV2Event = Schema.Union([
     providerTurnId: ProviderTurnId,
     runOrdinal: PositiveInt,
     status: Schema.Literals(["completed", "interrupted", "cancelled"]),
+    /** The runtime was closed, so work it owned cannot report further results. */
+    backgroundWork: Schema.optional(Schema.Literal("ended")),
     failure: Schema.Null,
     reason: Schema.optional(Schema.String),
     threadDisposition: Schema.Literals(["reusable", "broken"]),
@@ -174,6 +176,7 @@ export const ProviderAdapterV2Event = Schema.Union([
     runOrdinal: PositiveInt,
     failureItemOrdinal: PositiveInt,
     status: Schema.Literal("failed"),
+    backgroundWork: Schema.optional(Schema.Literal("ended")),
     failure: OrchestrationV2ProviderFailure,
     retry: Schema.optional(OrchestrationV2ProviderRetry),
     retryStartedAt: Schema.optional(Schema.DateTimeUtc),
@@ -507,7 +510,18 @@ export interface ProviderAdapterV2SteerInput {
 export interface ProviderAdapterV2InterruptInput {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly providerTurnId: ProviderTurnId;
+  /**
+   * Use Stop's native cancellation scope, including background work the harness
+   * can stop. Set by Stop and explicit cut-ins; the next start may respawn the runtime.
+   */
   readonly requestRuntimeRestart?: boolean;
+  /**
+   * Set with requestRuntimeRestart for an explicit cut-in. Publish stopped work's
+   * ends before the turn terminal. If cancellation is unconfirmed, keep the turn
+   * open and fail so its run still observes that work and no replacement starts.
+   * Stop leaves this unset and keeps the harness's existing stop behavior.
+   */
+  readonly replacementFollows?: true;
 }
 
 export interface ProviderAdapterV2RuntimeRequestResponseInput {
@@ -631,6 +645,12 @@ export interface ProviderAdapterV2SessionRuntime {
     providerThread: OrchestrationV2ProviderThread,
     options?: { readonly includeSubagents?: boolean },
   ) => Effect.Effect<boolean>;
+  /** Factual ownership of an ended root's stop: an explicit cut-in, or a
+   * terminal still deferred for live descendants. Omitted when nothing is kept. */
+  readonly endedTurnHold?: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    readonly providerTurnId: ProviderTurnId;
+  }) => Effect.Effect<"cut-in" | "descendants" | undefined>;
   /** Set only if all session background tasks end with its process; otherwise threads must keep Waiting. */
   readonly backgroundTasksEndWithProcess?: true;
   readonly getModelContextWindow?: (

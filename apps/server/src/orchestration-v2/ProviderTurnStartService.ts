@@ -60,6 +60,7 @@ import {
 } from "@t3tools/provider-core/server/failure";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import { steeringRestartNote } from "./SteeringInterruption.ts";
 import {
   isRestartNoteContinuation,
   pendingRestartCancelledBackgroundWork,
@@ -119,6 +120,18 @@ const refusedBeforePrompt = (error: unknown): boolean =>
   (Predicate.hasProperty(error, "cause") && refusedBeforePrompt(error.cause));
 
 export interface ProviderTurnStartServiceV2Shape {
+  /** Fails only the current starting attempt after cancellation exhausted retries. */
+  readonly settleUnstartedRun: (input: {
+    readonly threadId: ThreadId;
+    readonly runId: RunId;
+    readonly cause: unknown;
+  }) => Effect.Effect<void, ProviderTurnStartError>;
+
+  /**
+   * Starts the run's provider turn. When `willRetry` is true, a session open
+   * failure is returned so the caller can retry. Otherwise the run is settled
+   * as failed.
+   */
   readonly start: (input: {
     readonly threadId: ThreadId;
     readonly runId: RunId;
@@ -342,6 +355,105 @@ export const layer: Layer.Layer<
               compactThread: (input: Parameters<typeof session.startTurn>[0]) => start(input, true),
             }),
       };
+    };
+
+    const makeStartingRunSettlement = ({
+      threadId,
+      run,
+      attempt,
+      rootNode,
+      turnItems,
+    }: {
+      readonly threadId: ThreadId;
+      readonly run: OrchestrationV2Run;
+      readonly attempt: OrchestrationV2RunAttempt;
+      readonly rootNode: OrchestrationV2ExecutionNode;
+      readonly turnItems: ReadonlyArray<OrchestrationV2TurnItem>;
+    }) => {
+      const runId = run.id;
+      // Settles a run that never reached the provider: one signal turn item plus
+      // terminal run, attempt and root node, written only while the run is still
+      // the current starting attempt.
+      return Effect.fn("orchestrationV2.providerTurnStart.settleBeforeStart")(function* (input: {
+        readonly signal: string;
+        readonly status: "completed" | "failed";
+        readonly now: DateTime.Utc;
+        /** Omitted when the run never started, so `startedAt` stays as projected. */
+        readonly startedAt?: DateTime.Utc;
+        readonly providerInstanceId: OrchestrationV2Run["providerInstanceId"];
+        readonly itemProviderThreadId: OrchestrationV2ProviderThread["id"];
+        readonly item:
+          | Pick<Extract<OrchestrationV2TurnItem, { type: "error" }>, "type" | "title" | "failure">
+          | Pick<
+              Extract<OrchestrationV2TurnItem, { type: "command_execution" }>,
+              "type" | "title" | "input" | "output" | "exitCode"
+            >;
+        /** Emitted after the run events when the provider thread should go idle. */
+        readonly providerThreadUpdate?: OrchestrationV2ProviderThread;
+      }) {
+        const { now, status } = input;
+        const started = input.startedAt === undefined ? {} : { startedAt: input.startedAt };
+        const item: OrchestrationV2TurnItem = {
+          id: idAllocator.derive.runSignalTurnItem({ runId, signal: input.signal }),
+          threadId,
+          runId,
+          nodeId: rootNode.id,
+          providerThreadId: input.itemProviderThreadId,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal:
+            Math.max(
+              0,
+              ...turnItems.filter((item) => item.runId === runId).map((item) => item.ordinal),
+            ) + 1,
+          status,
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          ...input.item,
+        };
+        const eventPayloads = [
+          { type: "turn-item.updated", payload: item },
+          { type: "run.updated", payload: { ...run, status, ...started, completedAt: now } },
+          {
+            type: "run-attempt.updated",
+            payload: { ...attempt, status, ...started, completedAt: now },
+          },
+          {
+            type: "node.updated",
+            payload: { ...rootNode, status, ...started, completedAt: now },
+          },
+          ...(input.providerThreadUpdate === undefined
+            ? []
+            : [
+                {
+                  type: "provider-thread.updated" as const,
+                  payload: input.providerThreadUpdate,
+                },
+              ]),
+        ] as const;
+        const events = yield* Effect.forEach(eventPayloads, (event) =>
+          Effect.gen(function* () {
+            return {
+              ...event,
+              id: yield* idAllocator.allocate.event({ threadId }),
+              threadId,
+              runId,
+              nodeId: rootNode.id,
+              providerInstanceId: input.providerInstanceId,
+              occurredAt: now,
+            } satisfies OrchestrationV2DomainEvent;
+          }),
+        );
+        yield* eventSink.writeIfRunCurrent({
+          threadId,
+          runId,
+          activeAttemptId: attempt.id,
+          expectedStatus: "starting",
+          events,
+        });
+      });
     };
 
     const start = Effect.fn("orchestrationV2.providerTurnStart.start")(function* (
@@ -918,7 +1030,7 @@ export const layer: Layer.Layer<
       }
       let effectiveHandoffs = handoffs;
       let resumeFellBack = false;
-      const userText = projectComposerContextForProvider({
+      const messageText = projection.thread.bare !== undefined ? message.text : projectComposerContextForProvider({
         text: message.text,
         records: message.context?.records ?? [],
       });
@@ -926,6 +1038,8 @@ export const layer: Layer.Layer<
       const goalDriver = session.driver === "codex" || session.driver === "claudeAgent";
       const goalCommand = goalDriver && parseGoalCommand(message) !== null;
       // The provider turn marks cancellation work delivered; restart continuations use their own text or resume natively.
+      const interruptionNote = attempt.reason === "steering_restart" ? steeringRestartNote({ requester: attempt.requestedBy ?? message, author: message, driver: session.driver, bare: projection.thread.bare }) : "";
+      const userText = interruptionNote === "" ? messageText : `${interruptionNote}\n\n${messageText}`;
       const noteContinuation = isRestartNoteContinuation(
         run,
         projection.runs,
@@ -948,7 +1062,7 @@ export const layer: Layer.Layer<
         attempts: projection.attempts,
       });
       const restartNote =
-        restartCancelledWork.length === 0
+        projection.thread.bare !== undefined || restartCancelledWork.length === 0
           ? ""
           : restartCancelledBackgroundWorkNote(restartCancelledWork);
       const tokenCap = yield* handoffTokenCapConfig.pipe(
@@ -1422,6 +1536,36 @@ export const layer: Layer.Layer<
           return yield* loadFromProvider(Effect.fail(resumed.failure));
         }
 
+
+        if (
+          projection.thread.bare !== undefined &&
+          (inheritedBareCarrier ||
+            projection.providerTurns.some(
+              (turn) =>
+                turn.providerThreadId === providerThread.id &&
+                projection.attempts.some(
+                  (attempt) =>
+                    attempt.id === turn.runAttemptId &&
+                    projection.runs.some(
+                      (run) => run.id === attempt.runId && run.status !== "rolled_back",
+                    ),
+                ),
+            ))
+        )
+          return yield* loadFromProvider(
+            Effect.fail(
+              new ProviderAdapter.ProviderAdapterTurnStartError({
+                driver: session.driver,
+                threadId: projection.thread.id,
+                providerThreadId: providerThread.id,
+                runId,
+                cause: new BareLaunchError({
+                  reason:
+                    "The bare thread's native session could not be resumed; Chromeria will not substitute a summary.",
+                }),
+              }),
+            ),
+          );
         yield* Effect.logWarning("Recovering provider context in a fresh native session", {
       const startWithHandoffs = Effect.fn("ProviderTurnStartService.startWithHandoffs")(
         function* (turnInput: Parameters<typeof session.startTurn>[0], compact = false) {
@@ -1628,6 +1772,54 @@ export const layer: Layer.Layer<
     });
 
     return ProviderTurnStartServiceV2.of({
+      settleUnstartedRun: (input) =>
+        Effect.gen(function* () {
+          const projection = yield* projectionStore.getTurnStartContext(
+            input.threadId,
+            input.runId,
+          );
+          const run = projection.runs.find((candidate) => candidate.id === input.runId);
+          if (run?.status !== "starting") return;
+          const attempt = projection.attempts.find(
+            (candidate) => candidate.id === run.activeAttemptId,
+          );
+          const rootNode = projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
+          if (attempt === undefined || rootNode === undefined || run.providerThreadId === null) {
+            return yield* new ProviderTurnStartError({
+              runId: input.runId,
+              cause: "The unstarted run's execution state is missing.",
+            });
+          }
+          yield* makeStartingRunSettlement({
+            threadId: input.threadId,
+            run,
+            attempt,
+            rootNode,
+            turnItems: projection.turnItems,
+          })({
+            signal: "cut-in-cancellation-failure",
+            status: "failed",
+            now: yield* DateTime.now,
+            providerInstanceId: run.providerInstanceId,
+            itemProviderThreadId: run.providerThreadId,
+            item: {
+              type: "error",
+              title: "Message not delivered",
+              failure: makeProviderFailure({
+                cause: input.cause,
+                message:
+                  "T3 Code could not stop the running work, so this message was not delivered. Stop ends what can still be stopped.",
+                class: "provider_error",
+              }),
+            },
+          });
+        }).pipe(
+          Effect.mapError((cause) =>
+            isProviderTurnStartError(cause)
+              ? cause
+              : new ProviderTurnStartError({ runId: input.runId, cause }),
+          ),
+        ),
       start: Effect.fn("ProviderTurnStartService.start")(
         function* (input) {
           // This reservation belongs to one start attempt, including every early return and failure.

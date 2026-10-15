@@ -551,6 +551,12 @@ export interface AcpAdapterV2Flavor {
   readonly restartRuntimeAfterInterrupt?: boolean;
   /** Prompt failures after which the agent process keeps failing until replaced. */
   readonly restartRuntimeAfterPromptError?: (error: unknown) => boolean;
+  /**
+   * When true, every interrupt restarts the runtime, not just those carrying
+   * `requestRuntimeRestart` (Stop or an explicit cut-in). Leave unset to keep
+   * routine steering restarts soft: `session/cancel` plus session
+   * reuse in the same process.
+   */
   readonly restartRuntimeOnEveryInterrupt?: boolean;
   readonly terminateRuntimeProcessGroupOnInterrupt?: boolean;
   readonly preserveRuntimeOnSettledInterrupt?: boolean;
