@@ -11,6 +11,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { normalizeError, type EntryKeys } from "./Matcher.ts";
 
 export const MAX_ENTRY_BYTES = 1800;
+const FILE_CONCURRENCY = 8;
 const MAX_ID_CHARS = 120;
 const KEY_FIELDS = ["command", "path", "error"];
 const FIELDS = ["id", ...KEY_FIELDS, "must-know-before", "name", "applies", "target"];
@@ -413,14 +414,18 @@ export const load = Effect.fn("contextmd.loadStore")(function* (
   const fs = yield* FileSystem.FileSystem,
     path = yield* Path.Path,
     crypto = yield* Crypto.Crypto;
-  const normalized = yield* Effect.forEach(sources, (s) => {
-    const source = typeof s === "string" ? { directory: s, registered: true } : s;
-    const lexical = path.resolve(expandHomePath(source.directory, home));
-    return fs.realPath(lexical).pipe(
-      Effect.orElseSucceed(() => lexical),
-      Effect.map((directory) => ({ ...source, directory })),
-    );
-  });
+  const normalized = yield* Effect.forEach(
+    sources,
+    (s) => {
+      const source = typeof s === "string" ? { directory: s, registered: true } : s;
+      const lexical = path.resolve(expandHomePath(source.directory, home));
+      return fs.realPath(lexical).pipe(
+        Effect.orElseSucceed(() => lexical),
+        Effect.map((directory) => ({ ...source, directory })),
+      );
+    },
+    { concurrency: FILE_CONCURRENCY },
+  );
   const registered = new Set(normalized.filter((s) => s.registered).map((s) => s.directory));
   const entries: Entry[] = [],
     cue: CueEntry[] = [],
@@ -430,17 +435,34 @@ export const load = Effect.fn("contextmd.loadStore")(function* (
   const roots = new Set<string>(),
     exactIds = new Map<string, string>(),
     cueIds = new Map<string, string>();
-  for (const source of normalized) {
+  const unique = normalized.filter((source) => {
+    if (roots.has(source.directory)) return false;
+    roots.add(source.directory);
+    return true;
+  });
+  const directories = yield* Effect.forEach(
+    unique,
+    Effect.fnUntraced(function* (source) {
+      const root = source.directory;
+      const info = yield* fs.stat(root).pipe(Effect.option);
+      if (Option.isNone(info) || info.value.type !== "Directory") {
+        return { type: "missing" as const, source };
+      }
+      const owner = yield* headCommit(root);
+      const listed = yield* fs.readDirectory(root).pipe(Effect.option);
+      return { type: "directory" as const, source, owner, listed };
+    }),
+    { concurrency: FILE_CONCURRENCY },
+  );
+  for (const directory of directories) {
+    const { source } = directory;
     const root = source.directory;
-    if (roots.has(root)) continue;
-    roots.add(root);
-    const info = yield* fs.stat(root).pipe(Effect.option);
-    if (Option.isNone(info) || info.value.type !== "Directory") {
+    if (directory.type === "missing") {
       if (source.registered) errors.push(`${root}: not a directory`);
       continue;
     }
-    owners[root] = yield* headCommit(root);
-    const listed = yield* fs.readDirectory(root).pipe(Effect.option);
+    owners[root] = directory.owner;
+    const listed = directory.listed;
     if (Option.isNone(listed)) {
       errors.push(`${root}: unreadable directory`);
       continue;
@@ -448,61 +470,85 @@ export const load = Effect.fn("contextmd.loadStore")(function* (
     const names = listed.value
       .filter((n) => n.endsWith(".md") && n.toLowerCase() !== "readme.md")
       .sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
-    for (const name of names) {
-      const file = path.join(root, name),
-        stat = yield* fs.stat(file).pipe(Effect.option);
-      if (Option.isNone(stat)) {
-        errors.push(`${file}: unreadable`);
-        continue;
-      }
-      if (stat.value.type !== "File") continue;
-      const self = yield* fs.realPath(file).pipe(Effect.orElseSucceed(() => file));
-      const stamp = `${Option.match(stat.value.mtime, { onNone: () => 0, onSome: (d) => d.getTime() })}:${stat.value.size}:${self}`;
-      let hit = cache.get(file);
-      if (hit === undefined || hit.stamp !== stamp) {
-        hit = { stamp };
-        cache.set(file, hit);
-      }
-      const mode = registered.has(root) ? "tolerant" : "strict";
-      let result = hit[mode];
-      if (result === undefined) {
-        const raw = yield* fs.readFile(file).pipe(Effect.option);
-        if (Option.isNone(raw)) {
-          errors.push(`${file}: unreadable`);
-          continue;
+    // Process independent files together so a busy event loop does not serialize every callback.
+    // Keep results in name order: completion order must never decide which duplicate id wins.
+    const loaded = yield* Effect.forEach(
+      names,
+      Effect.fnUntraced(function* (name) {
+        const file = path.join(root, name),
+          stat = yield* fs.stat(file).pipe(Effect.option);
+        if (Option.isNone(stat)) {
+          return { type: "error" as const, file, reason: "unreadable" };
         }
-        const version = Hex.encode(yield* crypto.digest("SHA-256", raw.value)).slice(0, 12);
-        result = parseBytes(name, raw.value, version, mode === "tolerant");
-        hit[mode] = result;
+        if (stat.value.type !== "File") return null;
+        const self = yield* fs.realPath(file).pipe(Effect.orElseSucceed(() => file));
+        const stamp = `${Option.match(stat.value.mtime, { onNone: () => 0, onSome: (d) => d.getTime() })}:${stat.value.size}:${self}`;
+        let hit = cache.get(file);
+        if (hit === undefined || hit.stamp !== stamp) {
+          hit = { stamp };
+          cache.set(file, hit);
+        }
+        const mode = registered.has(root) ? "tolerant" : "strict";
+        let result = hit[mode];
+        if (result === undefined) {
+          const raw = yield* fs.readFile(file).pipe(Effect.option);
+          if (Option.isNone(raw)) {
+            return { type: "error" as const, file, reason: "unreadable" };
+          }
+          const version = Hex.encode(yield* crypto.digest("SHA-256", raw.value)).slice(0, 12);
+          result = parseBytes(name, raw.value, version, mode === "tolerant");
+          hit[mode] = result;
+        }
+        if (result instanceof EntryError) {
+          return { type: "error" as const, file, reason: result.message };
+        }
+        return { type: "entry" as const, file, self, result };
+      }),
+      { concurrency: FILE_CONCURRENCY },
+    );
+    const accepted = loaded.flatMap((item) => {
+      if (item === null) return [];
+      if (item.type === "error") {
+        errors.push(`${item.file}: ${item.reason}`);
+        return [];
       }
-      if (result instanceof EntryError) {
-        errors.push(`${file}: ${result.message}`);
-        continue;
-      }
+      const { file, result } = item;
       const prior =
         (result.exact ? exactIds.get(result.id) : undefined) ??
         (result.name !== null ? cueIds.get(result.id) : undefined);
       if (prior !== undefined) {
         errors.push(`${file}: id '${result.id}' already used by ${prior}`);
-        continue;
+        return [];
       }
-      let target: string | null = null;
-      if (result.target !== null) {
-        const lexical = path.resolve(path.dirname(file), expandHomePath(result.target, home));
-        target = yield* fs.realPath(lexical).pipe(Effect.orElseSucceed(() => lexical));
-      }
-      const common = {
-        id: result.id,
-        version: result.version,
-        text: result.body,
-        file,
-        self,
-        target,
-        long: result.long,
-        legacy: result.legacy,
-      };
+      if (result.exact) exactIds.set(result.id, file);
+      if (result.name !== null) cueIds.set(result.id, file);
+      return [item];
+    });
+    // Resolve only accepted targets, with the same fresh identity checks as entry files.
+    const resolved = yield* Effect.forEach(
+      accepted,
+      Effect.fnUntraced(function* ({ file, self, result }) {
+        let target: string | null = null;
+        if (result.target !== null) {
+          const lexical = path.resolve(path.dirname(file), expandHomePath(result.target, home));
+          target = yield* fs.realPath(lexical).pipe(Effect.orElseSucceed(() => lexical));
+        }
+        const common = {
+          id: result.id,
+          version: result.version,
+          text: result.body,
+          file,
+          self,
+          target,
+          long: result.long,
+          legacy: result.legacy,
+        };
+        return { result, common };
+      }),
+      { concurrency: FILE_CONCURRENCY },
+    );
+    for (const { result, common } of resolved) {
       if (result.exact) {
-        exactIds.set(result.id, file);
         entries.push({
           ...common,
           commands: result.commands,
@@ -512,10 +558,9 @@ export const load = Effect.fn("contextmd.loadStore")(function* (
         });
       }
       if (result.name !== null && result.applies !== null) {
-        cueIds.set(result.id, file);
         cue.push({ ...common, name: result.name, applies: result.applies });
       }
-      if (result.legacy !== null) legacy.push(`${file}: ${result.legacy}`);
+      if (result.legacy !== null) legacy.push(`${common.file}: ${result.legacy}`);
     }
   }
   return { entries, cue, owners, errors, legacy } satisfies Library;
