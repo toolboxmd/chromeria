@@ -15,6 +15,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as RpcHttp from "../rpc/http.ts";
 import * as ClientCapabilities from "../platform/capabilities.ts";
 import * as Persistence from "../platform/persistence.ts";
+import * as RelayEnvironmentDiscovery from "../relay/discovery.ts";
 import { fetchRemoteSessionState } from "../authorization/remote.ts";
 import {
   BearerConnectionCredential,
@@ -181,6 +182,16 @@ function layerPairingOnboarding(
       put: () => Effect.void,
     }),
     Layer.mock(ClientCapabilities.SshEnvironmentGateway)({}),
+    Layer.succeed(ClientCapabilities.CloudSession, {
+      identity: Effect.succeedNone,
+      clerkToken: Effect.die("Pairing does not read the cloud token"),
+    }),
+    Layer.effect(
+      RelayEnvironmentDiscovery.RelayEnvironmentDiscovery,
+      SubscriptionRef.make(RelayEnvironmentDiscovery.EMPTY_RELAY_ENVIRONMENT_DISCOVERY_STATE).pipe(
+        Effect.map((state) => ({ state, refresh: Effect.void })),
+      ),
+    ),
     Layer.succeed(
       Connectivity.Connectivity,
       Connectivity.Connectivity.of({ status: Effect.succeed("online"), changes: Stream.never }),

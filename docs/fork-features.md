@@ -2034,6 +2034,7 @@ sources and reasons.
   "upstreamFiles": [
     "apps/web/src/components/cloud/CloudEnvironmentConnectList.test.tsx",
     "packages/client-runtime/src/connection/layer.ts",
+    "packages/client-runtime/src/connection/onboarding.test.ts",
     "packages/client-runtime/src/connection/registry.test.ts",
     "packages/client-runtime/src/connection/registry.ts",
     "packages/client-runtime/src/relay/discovery.test.ts",
