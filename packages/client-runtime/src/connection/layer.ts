@@ -71,11 +71,34 @@ export const watchDiscoveredCompatibility = Effect.fn("connection.watchDiscovere
   },
 );
 
+export const watchAccountRelayRoutes = Effect.fn("connection.watchAccountRelayRoutes")(
+  function* () {
+    const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+    const discovery = yield* RelayEnvironmentDiscovery.RelayEnvironmentDiscovery;
+    // Cover an account that was already active before wakeup subscription.
+    yield* discovery.refresh.pipe(Effect.forkScoped);
+    yield* Stream.merge(
+      SubscriptionRef.changes(discovery.state),
+      SubscriptionRef.changes(registry.entries),
+    ).pipe(
+      Stream.runForEach(() =>
+        registry.reconcileRelayRoutes.pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Could not reconcile account relay routes.", { error }),
+          ),
+        ),
+      ),
+    );
+  },
+);
+
 export function layerWithOptions(options: RpcSession.RpcSessionOptions) {
   const layerDriver = ConnectionDriver.layer.pipe(
     Layer.provide(Layer.mergeAll(ConnectionResolver.layer, RpcSession.layer(options))),
   );
-  const layerRegistry = EnvironmentRegistry.layer.pipe(Layer.provide(layerDriver));
+  const layerRegistry = EnvironmentRegistry.layer.pipe(
+    Layer.provide(Layer.mergeAll(layerDriver, RelayEnvironmentDiscovery.layer)),
+  );
   const layerOnboarding = ConnectionOnboarding.layer.pipe(Layer.provide(layerRegistry));
   const layerConnectionServices = Layer.mergeAll(
     layerRegistry,
@@ -88,6 +111,7 @@ export function layerWithOptions(options: RpcSession.RpcSessionOptions) {
       const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
       const platformSource = yield* PlatformConnectionSource.PlatformConnectionSource;
       yield* watchDiscoveredCompatibility().pipe(Effect.forkScoped);
+      yield* watchAccountRelayRoutes().pipe(Effect.forkScoped);
       yield* registry.start;
       yield* platformSource.registrations.pipe(
         Stream.runForEach(registry.reconcilePlatform),
