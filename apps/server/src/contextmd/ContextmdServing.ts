@@ -23,6 +23,8 @@
  * @module ContextmdServing
  */
 import * as NodeSqlite from "node:sqlite";
+
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import type { OrchestrationV2ProviderThread } from "@t3tools/contracts";
 
 import * as Clock from "effect/Clock";
@@ -1084,6 +1086,9 @@ const make = Effect.gen(function* () {
         startedAt,
       });
     }).pipe(
+      // Authentication, run joins and Cue windows only read the main database. Use its existing
+      // WAL reader so a writer's transaction cannot spend the hook's deadline before selection.
+      NodeSqliteClient.readOnly,
       Effect.catchCause((cause) =>
         Effect.logWarning("ContextMD moment failed", { cause }).pipe(
           Effect.as({ status: 204 } as const),
