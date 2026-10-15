@@ -722,7 +722,7 @@ describe("AcpAdapterV2", () => {
         );
         assert.equal(turns.at(-1)?.status, "completed");
         assert.deepEqual(turns.at(-1)?.nativeTurnRef, {
-          driver: "grok",
+          driver: ProviderDriverKind.make("grok"),
           nativeId: "prompt:0",
           strength: "strong",
         });
