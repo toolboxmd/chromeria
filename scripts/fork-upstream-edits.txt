@@ -407,3 +407,8 @@ packages/client-runtime/src/state/threadExecution.test.ts
 packages/client-runtime/src/state/threadExecution.ts
 packages/client-runtime/src/state/threadRelationships.test.ts
 packages/client-runtime/src/state/threadRelationships.ts
+apps/mobile/src/features/threads/thread-work-log.tsx
+packages/client-runtime/src/work-log/itemDetail.test.ts
+packages/client-runtime/src/work-log/itemDetail.ts
+packages/shared/src/orchestrationV2PendingBackgroundWork.test.ts
+packages/shared/src/orchestrationV2PendingBackgroundWork.ts

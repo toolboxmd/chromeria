@@ -1619,7 +1619,8 @@ sources and reasons.
     "packages/contracts/src/peerLink.ts",
     "apps/server/src/mcp/McpRouting.ts",
     "apps/server/src/persistence/forkScheduledTaskOriginsSchema.ts",
-    "apps/server/src/persistence/forkScheduledTaskOriginsSchema.test.ts"
+    "apps/server/src/persistence/forkScheduledTaskOriginsSchema.test.ts",
+    "apps/web/src/components/chat/V2LifecycleRow.remote.test.tsx"
   ],
   "upstreamFiles": [
     "apps/server/src/auth/McpOAuth.ts",
@@ -1672,7 +1673,12 @@ sources and reasons.
     "packages/client-runtime/src/state/threadExecution.test.ts",
     "packages/client-runtime/src/state/threadExecution.ts",
     "packages/client-runtime/src/state/threadRelationships.test.ts",
-    "packages/client-runtime/src/state/threadRelationships.ts"
+    "packages/client-runtime/src/state/threadRelationships.ts",
+    "apps/mobile/src/features/threads/thread-work-log.tsx",
+    "packages/client-runtime/src/work-log/itemDetail.test.ts",
+    "packages/client-runtime/src/work-log/itemDetail.ts",
+    "packages/shared/src/orchestrationV2PendingBackgroundWork.test.ts",
+    "packages/shared/src/orchestrationV2PendingBackgroundWork.ts"
   ],
   "sharedFiles": [
     "apps/server/src/mcp/toolkits/orchestrator/tools.test.ts",
