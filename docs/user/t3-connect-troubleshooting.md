@@ -115,6 +115,11 @@ T3 Connect does not have an active link between your account and the host.
   use from your T3 account's T3 Connect page, or
   [link a paid T3 Chat account](./remote-access.md#more-machines-with-t3-chat)
   for a higher limit. Then restart T3 Code on the host.
+- **The environment was removed from T3 Connect.** `t3 connect status` says so.
+  On that machine, run `t3 connect link`, then restart T3 Code there. It keeps
+  your sign-in and preferences and discards the rejected link. If the stored
+  sign-in cannot refresh, complete the new authorization prompt first; without a
+  browser, use `t3 connect link --headless` and approve its code on another device.
 
 ## The clock is off
 

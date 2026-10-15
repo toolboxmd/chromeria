@@ -354,3 +354,11 @@ packages/provider-opencode/src/server/v2/adapter.ts
 apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts
 apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts
 apps/server/src/orchestration-v2/testkit/OrchestratorReplayRestartBackgroundNote.integration.test.ts
+apps/server/src/cli/connect.ts
+apps/server/src/cloud/CliState.test.ts
+apps/server/src/cloud/CliState.ts
+apps/server/src/cloud/CloudLink.lifecycle.test.ts
+apps/server/src/cloud/CloudLink.ts
+apps/server/src/cloud/config.ts
+apps/server/src/cloud/managedTunnelStartup.test.ts
+apps/server/src/cloud/managedTunnelStartup.ts
