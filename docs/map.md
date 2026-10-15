@@ -31,7 +31,7 @@ flowchart TD
     OB["OpenBot: Bots, Channels, Computer"]
     %% OB: context
     UA["Upstream absorption"]
-    %% UA: #166 PR #291
+    %% UA: #370 PR #371 #166 PR #291
     BR["Bounded event reads"]
     %% BR: #256 PR #267
     PU["Provider updates"]
