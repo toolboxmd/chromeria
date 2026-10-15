@@ -384,3 +384,12 @@ apps/server/src/cloud/CloudLink.ts
 apps/server/src/cloud/config.ts
 apps/server/src/cloud/managedTunnelStartup.test.ts
 apps/server/src/cloud/managedTunnelStartup.ts
+
+# Automatic account relay routes (#292).
+packages/client-runtime/src/connection/layer.ts
+packages/client-runtime/src/connection/registry.test.ts
+packages/client-runtime/src/connection/registry.ts
+packages/client-runtime/src/relay/discovery.test.ts
+packages/client-runtime/src/relay/discovery.ts
+packages/client-runtime/src/state/threads-atoms.test.ts
+apps/web/src/components/cloud/CloudEnvironmentConnectList.test.tsx

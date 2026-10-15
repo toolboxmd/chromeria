@@ -2000,3 +2000,26 @@ sources and reasons.
   "keywords": ["cloud-link-revoked", "dropRevokedCloudLink", "linkRevoked"]
 }
 ```
+
+## network-routes
+
+```json
+{
+  "id": "network-routes",
+  "purpose": "Learn usable T3 Connect fallback routes from the signed-in account while preserving direct routes and sign-out cleanup.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/292"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/364"],
+  "newFiles": [],
+  "upstreamFiles": [
+    "apps/web/src/components/cloud/CloudEnvironmentConnectList.test.tsx",
+    "packages/client-runtime/src/connection/layer.ts",
+    "packages/client-runtime/src/connection/registry.test.ts",
+    "packages/client-runtime/src/connection/registry.ts",
+    "packages/client-runtime/src/relay/discovery.test.ts",
+    "packages/client-runtime/src/relay/discovery.ts",
+    "packages/client-runtime/src/state/threads-atoms.test.ts"
+  ],
+  "sharedFiles": ["docs/user/remote-access.md"],
+  "keywords": ["listedSession", "reconcileRelayRoutes", "watchAccountRelayRoutes"]
+}
+```
