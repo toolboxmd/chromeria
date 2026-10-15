@@ -15,6 +15,8 @@ import {
   pinOrderKeyBetween,
   resolveProjectStatusIndicator,
   resolveSidebarSweepKeys,
+  resolveSidebarThreadSection,
+  visibleSidebarShelfThreads,
   resolveSidebarThreadStatus,
   resolveThreadStatusPill,
   resolveWorkingStartedAt,
@@ -54,6 +56,74 @@ import {
 } from "./sidebar/routeReveal";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
+
+describe("No project shelf", () => {
+  it.each([
+    [{ snoozed: false, settled: false, pinned: false }, "no-project"],
+    [{ snoozed: false, settled: false, pinned: true }, "pinned"],
+    [{ snoozed: false, settled: true, pinned: true }, "settled"],
+    [{ snoozed: true, settled: true, pinned: true }, "snoozed"],
+  ] as const)(
+    "preserves explicit lifecycle placement for scratch threads: %j",
+    (state, expected) => {
+      expect(resolveSidebarThreadSection({ ...state, noProject: true })).toBe(expected);
+    },
+  );
+
+  it("keeps regular projects and unknown scratch identity in the active list", () => {
+    expect(resolveSidebarThreadSection({ snoozed: false, settled: false, pinned: false })).toBe(
+      "active",
+    );
+    expect(
+      resolveSidebarThreadSection({
+        snoozed: false,
+        settled: false,
+        pinned: false,
+        noProject: false,
+      }),
+    ).toBe("active");
+  });
+
+  const threads = [
+    { environmentId: "local", id: "same-id", title: "Local confirmation" },
+    { environmentId: "remote", id: "same-id", title: "Remote test" },
+  ];
+  it("excludes collapsed rows from navigation while retaining only the selected environment's row", () => {
+    expect(visibleSidebarShelfThreads(threads, false, null)).toEqual([]);
+    expect(visibleSidebarShelfThreads(threads, false, "remote:same-id")).toEqual([threads[1]]);
+    expect(visibleSidebarShelfThreads(threads, false, "other:same-id")).toEqual([]);
+    expect(visibleSidebarShelfThreads(threads, true, null)).toEqual(threads);
+  });
+
+  it("can search every projectless thread even when no shelf rows are rendered", () => {
+    const searchable = threads.map((thread) => ({
+      ...thread,
+      environmentId: EnvironmentId.make(thread.environmentId),
+      id: ThreadId.make(thread.id),
+    }));
+    expect(visibleSidebarShelfThreads(searchable, false, null)).toEqual([]);
+    expect(searchSidebarThreads(searchable, "Remote test")).toEqual([searchable[1]]);
+  });
+
+  it("does not treat the shelf as a lifecycle drop destination or include its rows in active ordering", () => {
+    const items: SidebarListItem[] = [
+      { kind: "marker", marker: "pinned-header" },
+      { kind: "thread", key: "pin", section: "pinned" },
+      { kind: "marker", marker: "pinned-divider" },
+      { kind: "thread", key: "active", section: "active" },
+      { kind: "marker", marker: "no-project-header" },
+      { kind: "thread", key: "scratch", section: "no-project" },
+      { kind: "marker", marker: "settled-header" },
+    ];
+    expect(resolveSidebarDropTarget(items, "active", "scratch")).toBeNull();
+    expect(resolveSidebarDropVerb("active", "no-project")).toBeNull();
+    expect(resolveSidebarDropTarget(items, "pin", "active")).toEqual({
+      section: "active",
+      pinnedOrder: [],
+      activeOrder: ["active", "pin"],
+    });
+  });
+});
 
 describe("deleteSelectedThreadEntries", () => {
   const entries = [{ threadKey: "one" }, { threadKey: "two" }, { threadKey: "three" }] as const;

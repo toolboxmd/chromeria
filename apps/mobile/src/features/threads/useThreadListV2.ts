@@ -34,6 +34,8 @@ type LayoutInput = Parameters<typeof buildThreadListV2Items>[0];
  */
 export function useThreadListV2(input: {
   readonly threads: LayoutInput["threads"];
+  /** Scratch projects group their threads in the No project shelf. */
+  readonly projects: LayoutInput["projects"];
   readonly pendingTasks: ReadonlyArray<PendingNewTask>;
   readonly environmentId: EnvironmentId | null;
   readonly projectRefs: LayoutInput["projectRefs"];
@@ -51,6 +53,7 @@ export function useThreadListV2(input: {
   readonly shelfPreferencesLoaded: boolean;
   readonly workingShelfEnabled: boolean;
   readonly workingShelfExpanded: boolean;
+  readonly noProjectShelfExpanded: boolean;
   readonly snoozedShelfExpanded: boolean;
   readonly settledShelfExpanded: boolean;
   readonly selectedThreadKey: string | null;
@@ -79,6 +82,7 @@ export function useThreadListV2(input: {
       ordered: getThreadListV2OrderedSection({
         threads,
         section,
+        projects: input.projects,
         pendingOrder: input.pendingOrder,
         now: input.now,
         settlementEnvironmentIds: input.settlementEnvironmentIds,
@@ -100,6 +104,7 @@ export function useThreadListV2(input: {
   });
   const layout = buildThreadListV2Items({
     pendingOrder: input.pendingOrder,
+    projects: input.projects,
     threads: threads.filter((thread) => thread.archivedAt === null),
     environmentId: input.environmentId,
     projectRefs: input.projectRefs,
@@ -112,6 +117,7 @@ export function useThreadListV2(input: {
     now: input.now,
     workingShelfEnabled,
     workingShelfExpanded: input.workingShelfExpanded,
+    noProjectShelfExpanded: input.noProjectShelfExpanded,
     inboxReturnAt: inbox.returnedAt,
     isWorking: inbox.isWorking,
     snoozedShelfExpanded: input.snoozedShelfExpanded,
@@ -149,6 +155,9 @@ export function useThreadListV2(input: {
   const items = buildThreadListV2ListItems({
     items: layout.items,
     pendingTasks,
+    noProjectCount: layout.noProjectCount,
+    noProjectShelfExpanded: input.noProjectShelfExpanded || searchQuery.length > 0,
+    noProjectShelfHeaderIndex: layout.noProjectShelfHeaderIndex,
     workingCount: layout.workingCount,
     workingShelfExpanded: input.workingShelfExpanded,
     workingShelfHeaderIndex: layout.workingShelfHeaderIndex,

@@ -152,6 +152,18 @@ describe("mobile connection storage", () => {
     expect(fallback.updatedAt).toEqual(expect.any(Number));
   });
 
+  it("keeps No project expansion independent and persists collapse", async () => {
+    await savePreferencesPatch({
+      threadListNoProjectShelfExpanded: true,
+      threadListSnoozedShelfExpanded: true,
+    });
+    await savePreferencesPatch({ threadListNoProjectShelfExpanded: false });
+    await expect(loadPreferences()).resolves.toEqual({
+      threadListNoProjectShelfExpanded: false,
+      threadListSnoozedShelfExpanded: true,
+    });
+  });
+
   it("reconciles fallback preferences after SQLite recovers", async () => {
     mocks.setPreferencesJson(JSON.stringify({ baseFontSize: 15 }), 10);
     await mocks.setItemAsync(

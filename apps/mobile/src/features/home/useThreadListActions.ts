@@ -1,3 +1,4 @@
+import { environmentProjects } from "../../state/projects";
 import type { ThreadMoveDestination } from "../threads/threadOrder";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import * as ThreadUndo from "@t3tools/client-runtime/state/thread-undo";
@@ -598,7 +599,9 @@ export function useThreadListActions(): {
       );
       return false;
     }
+    const projects = appAtomRegistry.get(environmentProjects.projectsAtom);
     const ordered = getThreadListV2OrderedSection({
+      projects,
       threads: shells,
       section,
       now: new Date().toISOString(),
@@ -607,6 +610,7 @@ export function useThreadListActions(): {
       snoozeEnvironmentIds: new Set(configs.keys()),
     });
     const assignments = createThreadMovePlanner({
+      projects,
       allThreads: shells,
       ordered,
       section,
