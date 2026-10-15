@@ -89,6 +89,26 @@ const TRANSCRIPT_USERS = 6;
 const TRANSCRIPT_REPLIES = 100;
 const TRANSCRIPT_SINCE = 100;
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
+type MomentPhase =
+  | "authorization"
+  | "off_flag"
+  | "request"
+  | "body"
+  | "identity"
+  | "config"
+  | "run_join"
+  | "project_directory"
+  | "satrapy_discovery"
+  | "library_load"
+  | "selection"
+  | "pointer_configured"
+  | "pointer_prepare"
+  | "deny_checks"
+  | "read_checks"
+  | "cue_window"
+  | "cue_wait";
 
 export interface MomentRequest {
   /** Whether the hook's credential may read; checked inside the moment's budget. */
@@ -842,6 +862,7 @@ const make = Effect.gen(function* () {
     config: Select.ServingConfig,
     library: Store.Library,
     waitUntil: number,
+    enterPhase: (phase: "cue_window" | "cue_wait") => void,
   ) =>
     Effect.gen(function* () {
       const m = selection.moment;
@@ -852,7 +873,10 @@ const make = Effect.gen(function* () {
       const client = cueClient(config.cueUrl);
       const key = `${harness}\0${m.session}\0${m.tool_use_id ?? ""}`;
       const request = (kind: string) =>
-        transcript(threadId).pipe(
+        Effect.suspend(() => {
+          enterPhase("cue_window");
+          return transcript(threadId);
+        }).pipe(
           Effect.map((items) => ({
             items,
             moment: {
@@ -870,6 +894,7 @@ const make = Effect.gen(function* () {
       let reply: CueReply;
       if (m.kind === "tool_result") {
         const wait = Math.min(COLLECT_MS, yield* left);
+        enterPhase("cue_wait");
         reply = yield* Effect.promise(() => client.collect(key, wait));
       } else {
         if (m.kind === "tool_failure") client.drop(key);
@@ -878,9 +903,11 @@ const make = Effect.gen(function* () {
           // Nothing to score: the thread has no user message (a session started outside Chromeria).
           reply = { status: "no_window", ms: null, waitMs: 0 };
         } else if (m.kind === "pre_tool") {
+          enterPhase("cue_wait");
           reply = client.start(key, req);
         } else {
           const wait = yield* left;
+          enterPhase("cue_wait");
           reply = yield* Effect.promise(() => client.score(req, wait));
         }
       }
@@ -908,6 +935,24 @@ const make = Effect.gen(function* () {
   const moment: ContextmdServing["Service"]["moment"] = (request) =>
     Effect.gen(function* () {
       const startedAt = yield* nowSeconds;
+      const phaseClock = yield* Clock.Clock;
+      let phase: MomentPhase = "authorization";
+      let phaseStarted = phaseClock.monotonicTimeNanosUnsafe();
+      const completed: Partial<Record<MomentPhase, number>> = {};
+      // Phase intervals include scheduling and local work until the next operation starts. The
+      // timeout reason reports the pending operation, not whether its delay was I/O or queueing.
+      const enterPhase = (next: MomentPhase) => {
+        if (next === phase) return;
+        const now = phaseClock.monotonicTimeNanosUnsafe();
+        completed[phase] = (completed[phase] ?? 0) + Number(now - phaseStarted) / 1_000_000;
+        phase = next;
+        phaseStarted = now;
+      };
+      const during = <A, E, R>(next: MomentPhase, effect: Effect.Effect<A, E, R>) =>
+        Effect.suspend(() => {
+          enterPhase(next);
+          return effect;
+        });
       const unserved = (status: Unserved["status"], extra: Partial<Unserved> = {}) =>
         nowSeconds.pipe(
           Effect.map((now) => {
@@ -928,7 +973,7 @@ const make = Effect.gen(function* () {
       // What the moment knew of itself when it was cut, so its log row reads like any other.
       let known: Partial<Unserved> = {};
       const prepared = yield* Effect.gen(function* () {
-        if (!(yield* request.authorized)) {
+        if (!(yield* during("authorization", request.authorized))) {
           yield* unserved("unauthorized");
           return { reply: { status: 401 } as const };
         }
@@ -941,8 +986,9 @@ const make = Effect.gen(function* () {
           yield* unserved("bad_request");
           return { reply: { status: 400 } as const };
         }
-        if (yield* fileSystem.exists(path.join(dir, "off")))
+        if (yield* during("off_flag", fileSystem.exists(path.join(dir, "off"))))
           return { reply: { status: 204 } as const };
+        enterPhase("request");
         if (request.contentLength !== undefined && request.contentLength > MAX_BODY_BYTES) {
           yield* unserved("oversize");
           return { reply: { status: 204 } as const };
@@ -954,7 +1000,7 @@ const make = Effect.gen(function* () {
           yield* unserved("unmapped");
           return { reply: { status: 204 } as const };
         }
-        const body = yield* request.body;
+        const body = yield* during("body", request.body);
         if (body === null || Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
           yield* unserved("oversize");
           return { reply: { status: 204 } as const };
@@ -965,25 +1011,37 @@ const make = Effect.gen(function* () {
           return { reply: { status: 204 } as const };
         }
         // Known before any file is read; an event it rejects is reported by selection below.
-        const identity = yield* Effect.option(Select.identify(harness, raw.value));
+        const identity = yield* during(
+          "identity",
+          Effect.option(Select.identify(harness, raw.value)),
+        );
         if (Option.isSome(identity)) {
           const { kind, session, toolUseId } = identity.value;
           known = { kind, session, toolUseId };
         }
-        const selected = yield* Select.loadConfig(servingConfig).pipe(
+        const selected = yield* during("config", Select.loadConfig(servingConfig)).pipe(
           Effect.flatMap((config) =>
             Effect.gen(function* () {
               const identity = yield* Select.identify(harness, raw.value);
-              const join = yield* resolveRun(identity.session);
-              const directory = join.type === "run" ? yield* threadDirectory(join.threadId) : null;
-              const project = directory === null ? null : yield* Store.libraryDir(directory);
+              const join = yield* during("run_join", resolveRun(identity.session));
+              const directory =
+                join.type === "run"
+                  ? yield* during("project_directory", threadDirectory(join.threadId))
+                  : null;
+              const project =
+                directory === null
+                  ? null
+                  : yield* during("satrapy_discovery", Store.libraryDir(directory));
               const sources = [
                 ...(project === null ? [] : [{ directory: project, registered: false }]),
                 ...config.exactKeys.map((directory) => ({ directory, registered: true })),
                 ...config.cue.map((directory) => ({ directory, registered: true })),
               ];
-              const library = yield* Store.load(sources, parsed);
-              const selection = yield* Select.select(harness, raw.value, config, library);
+              const library = yield* during("library_load", Store.load(sources, parsed));
+              const selection = yield* during(
+                "selection",
+                Select.select(harness, raw.value, config, library),
+              );
               return { selection, config, library, join };
             }),
           ),
@@ -1003,7 +1061,10 @@ const make = Effect.gen(function* () {
         }
         let selection: Selection = selected.selection;
         const join = selected.join;
-        const configured = yield* withFiles(Select.configuredGreatLibrary(selected.config));
+        const configured = yield* during(
+          "pointer_configured",
+          withFiles(Select.configuredGreatLibrary(selected.config)),
+        );
         if (configured !== null) {
           const m = selection.moment;
           const epoch = state.epochAfter(harness, selection);
@@ -1020,7 +1081,10 @@ const make = Effect.gen(function* () {
             eligible &&
             state.greatLibraryOwed(harness, m.session, epoch)
           ) {
-            candidate = yield* withFiles(Select.prepareGreatLibrary(selected.config));
+            candidate = yield* during(
+              "pointer_prepare",
+              withFiles(Select.prepareGreatLibrary(selected.config)),
+            );
             if (candidate === null)
               selection = {
                 ...selection,
@@ -1044,8 +1108,14 @@ const make = Effect.gen(function* () {
         let readChecks: ReadonlyArray<ReadCheck> = [];
         let cue: CueMoment | null = null;
         if (join.type === "run") {
-          yield* checkDenies(harness, selection.moment.session, join.threadId);
-          readChecks = yield* checkReads(harness, selection.moment.session, join.threadId);
+          yield* during(
+            "deny_checks",
+            checkDenies(harness, selection.moment.session, join.threadId),
+          );
+          readChecks = yield* during(
+            "read_checks",
+            checkReads(harness, selection.moment.session, join.threadId),
+          );
           const asked = yield* askCue(
             harness,
             selection,
@@ -1053,6 +1123,7 @@ const make = Effect.gen(function* () {
             selected.config,
             selected.library,
             workBy - CUE_MARGIN_MS / 1000,
+            enterPhase,
           ).pipe(
             Effect.provideService(FileSystem.FileSystem, fileSystem),
             Effect.provideService(Path.Path, path),
@@ -1066,7 +1137,18 @@ const make = Effect.gen(function* () {
         return { work: { delivery, harness, selection, join, readChecks, cue } };
       }).pipe(Effect.timeoutOption(Duration.millis(workLeft)));
       if (Option.isNone(prepared)) {
-        yield* unserved("over_budget", known);
+        yield* unserved("over_budget", {
+          ...known,
+          reason: encodeJson({
+            phase,
+            active_ms: Math.round(
+              Number(phaseClock.monotonicTimeNanosUnsafe() - phaseStarted) / 1_000_000,
+            ),
+            completed_ms: Object.fromEntries(
+              Object.entries(completed).map(([name, ms]) => [name, Math.round(ms)]),
+            ),
+          }),
+        });
         return { status: 204 } as const;
       }
       if ("reply" in prepared.value) return prepared.value.reply;
