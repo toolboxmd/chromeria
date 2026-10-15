@@ -72,6 +72,18 @@ running the send button shows which action it will take. Long-press it to use th
 other action for a single message, or hold `Cmd` while sending from a hardware
 keyboard. The button only offers Steer when the running agent supports it.
 
+Steer stops what the agent is running, using the agent's own Stop cancellation,
+including its background work where the agent can stop it, then sends your message
+as its next prompt. If that work cannot be stopped, the message is not sent and
+the thread shows why; Stop ends what can still be ended. An interrupted tool may
+have partly run, and its process may not have exited yet. When only background work remains,
+use Stop to end it before sending another message.
+Tasks delegated to other T3 threads keep running; Stop ends those too. Pi and Muse
+take the message mid-turn without stopping their tools. Queue lets the current
+work finish first. A Steer queued on mobile while offline is sent when you
+reconnect; it interrupts the turn running then, if any. Stopping does not undo
+finished actions.
+
 ## Queue messages offline on mobile
 
 Mobile keeps local copies of draft attachments, so you can preview them and queue
@@ -190,12 +202,6 @@ Transcription runs on your device. T3 Code deletes the temporary audio after
 transcription or cancellation; only the message text is sent when you submit.
 
 ## Queued messages
-
-On web and desktop, the composer shows **Interrupt** while the agent is working and the draft is
-empty. Adding text or attachments replaces it with a steer arrow. Click it to send a message into
-the active turn, or press `Enter` on desktop. Hold `Cmd` on macOS or `Ctrl` on Windows and Linux to
-switch the button to a queue icon. Click while holding that key, or press `Cmd+Enter` or
-`Ctrl+Enter` on desktop, to queue the message for after the active turn.
 
 Queued messages appear above the composer. Rows show a thumbnail of any attached image alongside
 the text. Drag a row by its handle to reorder it, use the handle's arrow keys, promote the message

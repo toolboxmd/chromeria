@@ -120,6 +120,12 @@ import {
   type RestartCutReason,
 } from "@t3tools/shared/restartCut";
 import {
+  canInterruptSteer,
+  isPersonSteering,
+  steeringRestartNote,
+  type SteeringRequester,
+} from "./SteeringInterruption.ts";
+import {
   explicitMessage,
   humanMessage,
   propagatedStopAdmission,
@@ -888,6 +894,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const prismRecovery = yield* PrismRecovery.RecoveryHooks;
   const wightAdmission = yield* WightAdmission.AdmissionHooks;
   const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
+  const providerTurnRestartEffectId = (attemptId: OrchestrationV2RunAttempt["id"]) =>
+    `effect:provider-turn.restart:${attemptId}`;
   const retirement = (threadId: ThreadId) =>
     readRetirementState(threadId).pipe(Effect.provideService(ProjectionStoreV2, projectionStore));
   const nextTurnItemOrdinal = (
@@ -4028,6 +4036,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly senderThreadId?: OrchestrationV2ConversationMessage["senderThreadId"];
     readonly delegatedCompletion?: OrchestrationV2ConversationMessage["delegatedCompletion"];
     readonly forceRestart: boolean;
+    readonly requestedBy: SteeringRequester;
   }) =>
     Effect.gen(function* () {
       const targetRun = input.projection.runs.find(
@@ -4264,6 +4273,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               turnCapabilities.supportsSteeringByInterruptRestart),
         }),
       );
+
+      if (
+        steeringPolicy === "interrupt_restart" &&
+        input.text.trimStart().startsWith("/") &&
+        steeringRestartNote({
+          requester: input.requestedBy,
+          author: input,
+          driver: session.providerSession.driver,
+          bare: input.projection.thread.bare,
+        }) !== ""
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: input.command.commandId,
+          commandType: input.command.type,
+          cause:
+            "An interruption needs a note explaining who requested it, but a slash command must start its message. Send the instruction as text, or queue the command.",
+        });
+      }
 
       if (steeringPolicy === "active_steering") {
         // The steer's selection becomes the saved next-turn choice, even when it
@@ -4569,6 +4596,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         status: "starting",
         contextHandoffId: restartHandoff?.id ?? targetRun.contextHandoffId,
       };
+      // Explicit cut-ins use Stop's native scope; routine and selection-only
+      // restarts retain the provider's ordinary interrupt behavior.
+      const interruption = input.forceRestart ? ({ interruption: "stop" } as const) : {};
       const nextAttempt: OrchestrationV2RunAttempt = {
         id: nextAttemptId,
         runId: targetRun.id,
@@ -4578,6 +4608,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerThreadId: restartProviderThread.id,
         providerTurnId: null,
         reason: "steering_restart",
+        requestedBy: {
+          createdBy: input.requestedBy.createdBy,
+          creationSource: input.requestedBy.creationSource,
+          ...(input.requestedBy.senderThreadId === undefined
+            ? {}
+            : { senderThreadId: input.requestedBy.senderThreadId }),
+        },
         status: "pending",
         startedAt: null,
         completedAt: null,
@@ -4721,7 +4758,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       yield* Ref.update(input.effects, (existing) => [
         ...existing,
         {
-          id: `effect:${input.command.commandId}:provider-turn.restart:${providerTurn.id}`,
+          id: providerTurnRestartEffectId(interruptedAttemptId),
           commandId: input.command.commandId,
           threadId: input.command.threadId,
           request: {
@@ -4731,6 +4768,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             providerTurnId: providerTurn.id,
             interruptedAttemptId,
             runId: targetRun.id,
+            ...interruption,
             ...(restartSessionTransition === null
               ? {}
               : { sessionTransition: restartSessionTransition }),
@@ -4993,6 +5031,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         projection,
         command.dispatchMode,
         command.deliveryIntent,
+        command,
       );
       if (dispatchMode.type === "steer_active") {
         const targetRunId = dispatchMode.targetRunId;
@@ -5189,6 +5228,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ? {}
             : { senderThreadId: command.senderThreadId }),
           forceRestart: dispatchMode.type === "restart_active",
+          requestedBy: command,
         });
         return;
       }
@@ -8375,12 +8415,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: "Automatic completion deliveries cannot be promoted to Steer.",
         });
       }
-      if (steeringCancelsRunningTools(projection, command.targetRunId)) {
+      const requestedBy = {
+        createdBy: command.createdBy ?? "system",
+        creationSource: command.creationSource ?? "server",
+        ...(command.senderThreadId === undefined ? {} : { senderThreadId: command.senderThreadId }),
+      } satisfies SteeringRequester;
+      if (
+        !isPersonSteering(requestedBy) &&
+        steeringCancelsRunningTools(projection, command.targetRunId)
+      ) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
           cause:
-            "Steering this provider cancels running tools and reports that as a user refusal. The message stays queued.",
+            "An agent's steer would stop this harness's running tools, so the message stays queued. Use t3_thread_send with mode 'restart' for an urgent interruption.",
         });
       }
 
@@ -8446,7 +8494,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(queuedMessage.senderThreadId === undefined
           ? {}
           : { senderThreadId: queuedMessage.senderThreadId }),
-        forceRestart: false,
+        forceRestart:
+          isPersonSteering(requestedBy) && canInterruptSteer(projection, command.targetRunId),
+        requestedBy,
       });
     });
 
@@ -9883,6 +9933,88 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return;
     });
 
+  // A restart commits its new binding before its old runtime confirms the
+  // stop. Read that durable capture instead of guessing from the new binding.
+  const restartStopTarget = Effect.fnUntraced(function* (input: {
+    readonly command: Extract<OrchestrationV2Command, { readonly type: "run.interrupt" }>;
+    readonly projection: Pick<
+      OrchestrationV2ThreadProjection,
+      "attempts" | "providerThreads" | "providerTurns"
+    >;
+    readonly run: OrchestrationV2Run;
+  }) {
+    const earlier = input.projection.attempts
+      .filter(
+        (attempt) => attempt.runId === input.run.id && attempt.id !== input.run.activeAttemptId,
+      )
+      .toSorted((a, b) => b.attemptOrdinal - a.attemptOrdinal);
+    for (const attempt of earlier) {
+      const effect = Option.getOrUndefined(
+        yield* effectOutbox.get(providerTurnRestartEffectId(attempt.id)),
+      );
+      if (
+        effect === undefined ||
+        effect.threadId !== input.run.threadId ||
+        effect.status === "succeeded" ||
+        effect.request.type !== "provider-turn.restart" ||
+        effect.request.runId !== input.run.id ||
+        effect.request.interruptedAttemptId !== attempt.id ||
+        effect.request.providerThreadId !== attempt.providerThreadId
+      )
+        continue;
+      const captured = effect.request;
+      const turn = input.projection.providerTurns.find(
+        (turn) =>
+          turn.id === captured.providerTurnId &&
+          turn.runAttemptId === attempt.id &&
+          turn.providerThreadId === captured.providerThreadId,
+      );
+      const providerThread = input.projection.providerThreads.find(
+        (thread) => thread.id === captured.providerThreadId,
+      );
+      if (turn === undefined || providerThread === undefined) continue;
+      const runtime = yield* providerSessions.get(captured.providerSessionId);
+      if (Option.isNone(runtime)) continue;
+      if (
+        turn.status !== "running" &&
+        (runtime.value.endedTurnHold === undefined ||
+          (yield* runtime.value.endedTurnHold({
+            providerThread: { ...providerThread, providerSessionId: captured.providerSessionId },
+            providerTurnId: turn.id,
+          })) !== "cut-in")
+      )
+        continue;
+      const replacementProviderSessionId =
+        captured.sessionTransition?.type === "replace"
+          ? captured.sessionTransition.replacementProviderSessionId
+          : undefined;
+      if (
+        (providerThread.providerSessionId !== captured.providerSessionId &&
+          providerThread.providerSessionId !== replacementProviderSessionId) ||
+        input.projection.providerTurns.some(
+          (other) =>
+            other.providerThreadId === providerThread.id &&
+            other.status === "running" &&
+            other.ordinal > turn.ordinal &&
+            other.runAttemptId !== attempt.id,
+        )
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: input.command.commandId,
+          commandType: input.command.type,
+          cause: "The captured restart target changed before Stop.",
+        });
+      }
+      return {
+        turn,
+        providerThread,
+        providerSessionId: captured.providerSessionId,
+        ...(replacementProviderSessionId === undefined ? {} : { replacementProviderSessionId }),
+      };
+    }
+    return undefined;
+  });
+
   const dispatchRunInterrupt = (
     command: Extract<OrchestrationV2Command, { readonly type: "run.interrupt" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -9935,6 +10067,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }).length > 0;
       // A failed start has no provider turn. Background work still belongs
       // to the provider thread, so Stop reaches its latest accepted turn.
+      const heldTurn = projection.providerTurns.findLast(
+        (turn) =>
+          turn.status === "running" &&
+          turn.providerThreadId === run?.providerThreadId &&
+          projection.attempts.some(
+            (attempt) =>
+              attempt.id === turn.runAttemptId &&
+              attempt.runId === run?.id &&
+              attempt.id !== run?.activeAttemptId,
+          ),
+      );
       const providerTurn =
         projection.providerTurns.findLast(
           (candidate) =>
@@ -9945,7 +10088,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? projection.providerTurns.findLast(
               (candidate) => candidate.providerThreadId === run?.providerThreadId,
             )
-          : undefined);
+          : undefined) ??
+        heldTurn;
       if (run === undefined || rootNode === undefined || providerThread === undefined) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
@@ -9953,6 +10097,31 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Run ${command.runId} is not interruptible.`,
         });
       }
+      const capturedTarget =
+        providerTurn === undefined || providerTurn.runAttemptId !== run.activeAttemptId
+          ? yield* restartStopTarget({ command, projection, run }).pipe(mapDispatchError(command))
+          : undefined;
+      const interruptEffect = (target: {
+        readonly turn: OrchestrationV2ProviderTurn;
+        readonly providerThread: OrchestrationV2ProviderThread;
+        readonly providerSessionId: ProviderSessionId;
+        readonly replacementProviderSessionId?: ProviderSessionId;
+      }): PendingOrchestrationEffectV2 => ({
+        id: `effect:${command.commandId}:provider-turn.interrupt:${target.turn.id}`,
+        commandId: command.commandId,
+        threadId: command.threadId,
+        request: {
+          type: "provider-turn.interrupt",
+          providerSessionId: target.providerSessionId,
+          providerThreadId: target.providerThread.id,
+          providerTurnId: target.turn.id,
+          ...(target.replacementProviderSessionId === undefined
+            ? {}
+            : {
+                replacementProviderSessionId: target.replacementProviderSessionId,
+              }),
+        },
+      });
       const now = yield* DateTime.now;
       const completionMessage = projection.messages.find(
         (candidate) => candidate.id === run.userMessageId,
@@ -10062,9 +10231,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
 
       if (
-        providerTurn === undefined &&
+        (providerTurn === undefined ||
+          providerTurn.id === heldTurn?.id ||
+          providerTurn.id === capturedTarget?.turn.id) &&
         (run.status === "preparing" || run.status === "starting" || run.status === "running")
       ) {
+        const stopTarget =
+          capturedTarget ??
+          (heldTurn !== undefined && providerThread.providerSessionId !== null
+            ? {
+                turn: heldTurn,
+                providerThread,
+                providerSessionId: providerThread.providerSessionId,
+              }
+            : undefined);
         const attempt = projection.attempts.find(
           (candidate) => candidate.id === run.activeAttemptId,
         );
@@ -10169,6 +10349,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         if (
           providerThread.status === "active" &&
           providerThread.lastRunOrdinal === run.ordinal &&
+          stopTarget?.providerThread.id !== providerThread.id &&
           (providerThread.pendingBackgroundTasks?.length ?? 0) === 0 &&
           !providerHasBackgroundWork
         ) {
@@ -10201,7 +10382,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           payload: { ...run, status: "interrupted", completedAt: now },
         });
         yield* stopRemainingWork();
-        yield* Ref.update(effects, (existing) => [...existing, ...otherProviderInterrupts]);
+        const stopEffect = stopTarget === undefined ? undefined : interruptEffect(stopTarget);
+        yield* Ref.update(effects, (existing) => [
+          ...existing,
+          ...(stopEffect === undefined ? [] : [stopEffect]),
+          ...otherProviderInterrupts.filter((effect) => effect.id !== stopEffect?.id),
+        ]);
         return {
           effectTypes: ["provider-turn.start", "provider-turn.restart"],
           reason: `Run ${run.id} was interrupted before its provider turn started.`,
@@ -10211,7 +10397,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         };
       }
 
-      if (providerTurn === undefined) {
+      const retainedTarget =
+        capturedTarget !== undefined &&
+        (providerTurn === undefined || providerTurn.id === capturedTarget.turn.id)
+          ? capturedTarget
+          : undefined;
+      const stopTurn = retainedTarget?.turn ?? providerTurn;
+      const stopThread = retainedTarget?.providerThread ?? providerThread;
+      const stopSessionId = retainedTarget?.providerSessionId ?? stopThread.providerSessionId;
+      if (stopTurn === undefined) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
@@ -10221,9 +10415,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // A dead session cannot report a terminal event for either a running
       // turn or a settled turn's background work. Stop ends both locally.
       const sessionOption =
-        providerThread.providerSessionId === null
+        stopSessionId === null
           ? Option.none()
-          : yield* providerSessions.get(providerThread.providerSessionId).pipe(
+          : yield* providerSessions.get(stopSessionId).pipe(
               Effect.mapError(
                 (cause) =>
                   new OrchestratorProviderAdapterError({
@@ -10244,26 +10438,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           payload: interruptRequestItem,
         });
         yield* stopRemainingWork();
-        yield* settleInterruptedRun({ command, projection, providerTurn, events, effects, now });
+        yield* settleInterruptedRun({
+          command,
+          projection,
+          providerTurn: stopTurn,
+          events,
+          effects,
+          now,
+        });
         yield* settleBackgroundWork({
           command,
           events,
           projection,
-          stoppedProviderThreadId: providerThread.id,
+          stoppedProviderThreadId: stopThread.id,
           throughRunOrdinal: run.ordinal,
           now,
         });
         yield* Ref.update(effects, (existing) => [...existing, ...otherProviderInterrupts]);
         return undefined;
       }
-      if (providerThread.providerSessionId === null) {
+      if (stopSessionId === null) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
-          cause: `Provider thread ${providerThread.id} has no active provider session.`,
+          cause: `Provider thread ${stopThread.id} has no active provider session.`,
         });
       }
-      const providerSessionId = providerThread.providerSessionId;
       yield* enforceCommandPolicy(command)(
         commandPolicy.ensureInterrupt({
           commandId: command.commandId,
@@ -10284,20 +10484,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         payload: interruptRequestItem,
       });
       yield* stopRemainingWork();
+      const stopEffect = interruptEffect({
+        turn: stopTurn,
+        providerThread: stopThread,
+        providerSessionId: stopSessionId,
+        ...(retainedTarget?.replacementProviderSessionId === undefined
+          ? {}
+          : {
+              replacementProviderSessionId: retainedTarget.replacementProviderSessionId,
+            }),
+      });
       yield* Ref.update(effects, (existing) => [
         ...existing,
-        {
-          id: `effect:${command.commandId}:provider-turn.interrupt:${providerTurn.id}`,
-          commandId: command.commandId,
-          threadId: command.threadId,
-          request: {
-            type: "provider-turn.interrupt",
-            providerSessionId,
-            providerThreadId: providerThread.id,
-            providerTurnId: providerTurn.id,
-          },
-        } satisfies PendingOrchestrationEffectV2,
-        ...otherProviderInterrupts,
+        stopEffect,
+        ...otherProviderInterrupts.filter((effect) => effect.id !== stopEffect.id),
       ]);
       return undefined;
     });
