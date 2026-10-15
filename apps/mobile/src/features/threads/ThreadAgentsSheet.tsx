@@ -19,6 +19,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AndroidSheetHeader } from "../../components/AndroidScreenHeader";
 import { AppText as Text } from "../../components/AppText";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
+import { useServerConfigs } from "../../state/entities";
 import { environmentThreadDetails } from "../../state/threads";
 import { NativeStackScreenOptions, nativeHeaderScrollEdgeEffects } from "../../native/StackHeader";
 import { SubagentRow } from "./SubagentRow";
@@ -134,6 +135,9 @@ function AgentRow(props: {
 }) {
   const { subagent } = props;
   const target = subagentChildTarget(subagent);
+  const serverConfigs = useServerConfigs();
+  // A child on a machine this device is not connected to has nowhere to open.
+  const unreachable = target?.environmentId != null && !serverConfigs.has(target.environmentId);
 
   const row = (
     <View className="border-b border-border py-3.5">
@@ -145,14 +149,16 @@ function AgentRow(props: {
     </View>
   );
 
-  if (target === null) {
+  if (target === null || unreachable) {
     return (
       <View
         accessible
         accessibilityHint={
-          subagent.remoteChild
-            ? `Running on ${subagent.remoteChild.label}. Its thread opens once the launch there is attached.`
-            : "Provider-managed agent. Its work appears in the transcript."
+          unreachable
+            ? `Runs on ${subagent.remoteChild?.label ?? "another machine"}, which this device is not connected to.`
+            : subagent.remoteChild
+              ? `Running on ${subagent.remoteChild.label}. Its thread opens once the launch there is attached.`
+              : "Provider-managed agent. Its work appears in the transcript."
         }
       >
         {row}

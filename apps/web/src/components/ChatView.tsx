@@ -440,6 +440,7 @@ import {
   useThreadShell,
   useChildThreadInputs,
   useThreadRefs,
+  useServerConfigs,
   useThreadVisibleTurnItems,
   waitForThreadShell,
 } from "../state/entities";
@@ -7653,6 +7654,7 @@ export default function ChatView(props: ChatViewProps) {
     };
   }, [activeGoal, activeThread, isWorking, sendStandaloneCommand]);
 
+  const serverConfigsForBackgroundWork = useServerConfigs();
   const backgroundWorkBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
     const presentation = presentPendingBackgroundWork(activeBackgroundTasks);
     if (presentation === null || !activeThread) {
@@ -7680,16 +7682,22 @@ export default function ChatView(props: ChatViewProps) {
           ? undefined
           : presentation.items.map((item, index) => {
               const childThreadId = item.childThreadId;
+              const childEnvironmentId = item.childEnvironmentId;
+              // A remote child on a machine this client is not connected to
+              // has nowhere to open; name it without a link.
+              const unreachable =
+                childEnvironmentId !== undefined &&
+                !serverConfigsForBackgroundWork.has(childEnvironmentId);
               return (
                 <Fragment key={item.taskId}>
                   {index > 0 ? ", " : null}
-                  {childThreadId === undefined ? (
+                  {childThreadId === undefined || unreachable ? (
                     item.label
                   ) : (
                     <InlineButton
                       tone="muted"
                       aria-label={`Open subagent ${item.label}`}
-                      onClick={() => onOpenRelatedThread(childThreadId)}
+                      onClick={() => onOpenRelatedThread(childThreadId, childEnvironmentId)}
                     >
                       {item.label}
                     </InlineButton>
@@ -7715,6 +7723,7 @@ export default function ChatView(props: ChatViewProps) {
     handleStopBackgroundWork,
     isStoppingBackgroundWork,
     onOpenRelatedThread,
+    serverConfigsForBackgroundWork,
   ]);
   // Settled, snoozed, and woke are thread state, not composer actions: each
   // gets one quiet line after the last message instead of a banner. A woken

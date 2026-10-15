@@ -4,6 +4,7 @@ import * as DateTime from "effect/DateTime";
 
 import {
   deriveThreadRelationshipGraph,
+  getThreadRelationshipNode,
   immediateThreadRelationships,
   orderWebThreadLineageRows,
   relatedThreadIds,
@@ -259,9 +260,113 @@ describe("thread relationships", () => {
         targetEnvironmentId: remoteEnvironment,
       }),
     ]);
-    expect(graph.nodes.get(child)?.environmentId).toBe(remoteEnvironment);
+    expect(getThreadRelationshipNode(graph, child, remoteEnvironment)?.environmentId).toBe(
+      remoteEnvironment,
+    );
+    expect(getThreadRelationshipNode(graph, child)).toBeUndefined();
     const row = immediateThreadRelationships(graph, parent)[0]!;
+    expect(row.environmentId).toBe(remoteEnvironment);
     expect(threadRelationshipRowStatus(graph, row)).toBe("running");
+  });
+
+  it.each([
+    ["running", "running"],
+    ["rolled_back", "interrupted"],
+  ])(
+    "shows a remote child shell activity %s as %s after its delegated task settled",
+    (childActivity, expected) => {
+      const parent = ThreadId.make("thread-parent");
+      const child = ThreadId.make("thread-remote-child");
+      const remoteEnvironment = EnvironmentId.make("environment-cavallo");
+      const graph = deriveThreadRelationshipGraph({
+        threads: [
+          { id: parent, status: "running", forkedFrom: null, lineage: { parentThreadId: null } },
+          {
+            shell: {
+              id: child,
+              title: "Remote child",
+              status: "completed",
+              activityRunStatus: childActivity,
+              forkedFrom: null,
+              lineage: { parentThreadId: null, relationshipToParent: null },
+            },
+            environmentId: remoteEnvironment,
+          },
+        ] as never,
+        projection: {
+          thread: { id: parent },
+          subagents: [
+            {
+              childThreadId: null,
+              remoteChild: {
+                environmentId: remoteEnvironment,
+                threadId: child,
+                label: "cavallo",
+              },
+              status: "completed",
+            },
+          ],
+          contextTransfers: [],
+        } as never,
+      });
+
+      const row = immediateThreadRelationships(graph, parent)[0]!;
+      expect(threadRelationshipRowStatus(graph, row)).toBe(expected);
+      expect(getThreadRelationshipNode(graph, child, remoteEnvironment)?.thread?.title).toBe(
+        "Remote child",
+      );
+    },
+  );
+
+  it("keeps same-id threads in different environments as separate rows", () => {
+    const parent = ThreadId.make("thread-parent");
+    const shared = ThreadId.make("thread-shared");
+    const cavallo = EnvironmentId.make("environment-cavallo");
+    const bestia = EnvironmentId.make("environment-bestia");
+    const remoteShell = (environmentId: EnvironmentId, title: string, status: string) => ({
+      shell: {
+        id: shared,
+        title,
+        status,
+        activityRunStatus: status,
+        forkedFrom: null,
+        lineage: { parentThreadId: null, relationshipToParent: null },
+      },
+      environmentId,
+    });
+    const graph = deriveThreadRelationshipGraph({
+      threads: [
+        { id: parent, status: "running", forkedFrom: null, lineage: { parentThreadId: null } },
+        remoteShell(cavallo, "Cavallo child", "running"),
+        remoteShell(bestia, "Bestia child", "completed"),
+      ] as never,
+      projection: {
+        thread: { id: parent },
+        subagents: [
+          {
+            childThreadId: null,
+            remoteChild: { environmentId: cavallo, threadId: shared, label: "cavallo" },
+            status: "running",
+          },
+          {
+            childThreadId: null,
+            remoteChild: { environmentId: bestia, threadId: shared, label: "bestia" },
+            status: "completed",
+          },
+        ],
+        contextTransfers: [],
+      } as never,
+    });
+
+    const rows = immediateThreadRelationships(graph, parent);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.environmentId)).toEqual([cavallo, bestia]);
+    expect(getThreadRelationshipNode(graph, shared, cavallo)?.thread?.title).toBe("Cavallo child");
+    expect(getThreadRelationshipNode(graph, shared, bestia)?.thread?.title).toBe("Bestia child");
+    expect(rows.map((row) => threadRelationshipRowStatus(graph, row))).toEqual([
+      "running",
+      "completed",
+    ]);
   });
 
   it("keeps an unattached remote launch rowless until its thread is known", () => {

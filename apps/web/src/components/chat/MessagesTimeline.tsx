@@ -301,6 +301,7 @@ import { useV2ItemSupport } from "../../state/v2ItemSupport";
 import { Collapsible, CollapsibleTrigger, CollapsiblePanel } from "../ui/collapsible";
 import {
   isV2LifecycleItem,
+  NotificationSubagentOpenButton,
   SubagentAvatar,
   SubagentElapsed,
   SubagentNotificationLink,
@@ -5566,6 +5567,10 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
     workEntry.projectedItem?.item.type === "notification"
       ? notificationChildThreadId(workEntry.projectedItem.item.source)
       : undefined;
+  const notifiedSubagentId =
+    workEntry.projectedItem?.item.type === "notification"
+      ? notificationSubagentId(workEntry.projectedItem.item.source)
+      : undefined;
   const groupView = use(WorkGroupViewCtx);
   const [expanded, setExpanded] = useState(
     () => groupView?.state.expandedEntries.has(workEntry.id) ?? false,
@@ -5867,6 +5872,16 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
             >
               Open subagent
             </InlineButton>
+          ) : notifiedSubagentId && workEntry.projectedItem?.item.type === "notification" ? (
+            <NotificationSubagentOpenButton
+              parentRef={scopeThreadRef(
+                ctx.activeThreadEnvironmentId,
+                workEntry.projectedItem.item.threadId,
+              )}
+              subagentId={notifiedSubagentId}
+              onOpenThread={ctx.onOpenThread}
+              onKeyDown={stopRowToggle}
+            />
           ) : null}
           {showFailedIndicator &&
           !showDestructiveRowStyle &&

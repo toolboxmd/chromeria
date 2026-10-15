@@ -1,8 +1,8 @@
 import { ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { AgentElapsed } from "./AgentElapsed";
 import { projectedSubagentsToRuntime } from "@t3tools/client-runtime/state/subagentRuntime";
-import type { ReactNode } from "react";
-import { useThreadShell, useProject } from "../../state/entities";
+import type { KeyboardEventHandler, ReactNode } from "react";
+import { useServerConfigs, useThreadShell, useProject } from "../../state/entities";
 import { SubagentTooltipContent } from "./SubagentTooltipContent";
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef, scopeProjectRef } from "@t3tools/client-runtime/environment";
@@ -385,6 +385,43 @@ export function SubagentNotificationLink(props: {
   );
 }
 
+/**
+ * The trailing "Open subagent" action for a notification work-log row whose
+ * source names only the delegated task (a remote task has no local
+ * childThreadId for the source to carry).
+ */
+export function NotificationSubagentOpenButton(props: {
+  readonly parentRef: ScopedThreadRef;
+  readonly subagentId: NodeId;
+  readonly onOpenThread: (threadId: ThreadId, environmentId?: EnvironmentId) => void;
+  readonly onKeyDown?: KeyboardEventHandler<HTMLButtonElement> | undefined;
+}) {
+  const agent = useAtomValue(
+    environmentThreadDetails.threadAtom(props.parentRef),
+    (thread) => thread?.projection.subagents.find((agent) => agent.id === props.subagentId) ?? null,
+  );
+  const serverConfigs = useServerConfigs();
+  const target = agent === null ? null : subagentChildTarget(agent);
+  if (
+    target === null ||
+    (target.environmentId !== null && !serverConfigs.has(target.environmentId))
+  ) {
+    return null;
+  }
+  return (
+    <InlineButton
+      aria-label="Open subagent thread"
+      onClick={(event) => {
+        event.stopPropagation();
+        props.onOpenThread(target.threadId, target.environmentId ?? undefined);
+      }}
+      onKeyDown={props.onKeyDown}
+    >
+      Open subagent
+    </InlineButton>
+  );
+}
+
 function SubagentTimelineLink(props: {
   readonly parentRef: ScopedThreadRef;
   readonly subagentId: NodeId;
@@ -417,8 +454,16 @@ function SubagentTimelineLink(props: {
   // The live record outranks the turn item: a remote launch attaches its
   // thread there after the item was first projected.
   const liveTarget = agent === null ? null : subagentChildTarget(agent);
-  const threadId = props.threadId ?? liveTarget?.threadId ?? null;
-  const childEnvironmentId = props.childEnvironmentId ?? liveTarget?.environmentId ?? undefined;
+  const targetThreadId = agent === null ? props.threadId : (liveTarget?.threadId ?? null);
+  const childEnvironmentId =
+    liveTarget !== null ? (liveTarget.environmentId ?? undefined) : props.childEnvironmentId;
+  // A child on a machine this client is not connected to has nowhere to
+  // open: render the card without a link, like the Lineage panel does.
+  const serverConfigs = useServerConfigs();
+  const threadId =
+    childEnvironmentId !== undefined && !serverConfigs.has(childEnvironmentId)
+      ? null
+      : targetThreadId;
   const liveStatus = agent?.status ?? props.status;
   const status = props.event ? props.event.status : liveStatus;
   const statusLabel = props.event?.label ?? subagentStatusVisual(liveStatus).label;
@@ -518,6 +563,8 @@ function SubagentTimelineLink(props: {
       <ThreadHoverCardPopup>
         <SubagentTimelineTooltip
           {...props}
+          threadId={targetThreadId}
+          childEnvironmentId={childEnvironmentId}
           elapsed={agent ? <AgentElapsed agent={projectedSubagentsToRuntime([agent])[0]!} /> : null}
           model={agent?.model ?? null}
           modelSelection={agent?.modelSelection}

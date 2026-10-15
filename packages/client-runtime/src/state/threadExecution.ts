@@ -15,6 +15,7 @@ import {
   type OrchestrationV2ExecutionNode,
   type OrchestrationV2ThreadProjection,
   orchestrationV2RunWorkStartedAt,
+  type EnvironmentId,
   type NodeId,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -308,6 +309,8 @@ export interface PendingBackgroundWorkItem {
   readonly label: string;
   /** A subagent's own thread, when it has one. */
   readonly childThreadId: ThreadId | undefined;
+  /** The linked environment that thread runs in, for a remote delegated task. */
+  readonly childEnvironmentId: EnvironmentId | undefined;
 }
 
 export interface PendingBackgroundWorkPresentation {
@@ -350,6 +353,7 @@ export function presentPendingBackgroundWork(
             ? BACKGROUND_WORK_KINDS[task.kind].singular
             : label,
         childThreadId: task.kind === "subagent" ? task.childThreadId : undefined,
+        childEnvironmentId: task.kind === "subagent" ? task.childEnvironmentId : undefined,
       };
     })
     // `map` returned a new array; Hermes has no `toSorted`.

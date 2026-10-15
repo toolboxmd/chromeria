@@ -1,4 +1,5 @@
 import {
+  EnvironmentId,
   TurnItemId,
   NodeId,
   MessageId,
@@ -523,6 +524,28 @@ describe("presentPendingBackgroundWork", () => {
       title: "Waiting on subagent Luna Window Properties",
       items: [{ taskId: "luna", kind: "subagent", label: "Luna Window Properties", childThreadId }],
       waiting: true,
+    });
+  });
+
+  it("carries a remote subagent's environment through to its item", () => {
+    const childThreadId = ThreadId.make("thread:remote");
+    const childEnvironmentId = EnvironmentId.make("environment:cavallo");
+    const presentation = presentPendingBackgroundWork([
+      {
+        taskId: "remote",
+        kind: "subagent",
+        description: "Remote roast",
+        childThreadId,
+        childEnvironmentId,
+      },
+    ]);
+
+    expect(presentation?.items[0]).toEqual({
+      taskId: "remote",
+      kind: "subagent",
+      label: "Remote roast",
+      childThreadId,
+      childEnvironmentId,
     });
   });
 
