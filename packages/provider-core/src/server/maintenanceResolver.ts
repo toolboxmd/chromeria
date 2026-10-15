@@ -467,6 +467,23 @@ export const resolvePackageManagedProviderMaintenance = Effect.fn(
     !isMiseKeg(homebrewOwnershipFromCommandPath(context.realCommandPath)) &&
     !(yield* isMiseWrapperScript(context))
   ) {
+    // Only these native updater kinds have completed mid-turn update proof
+    // on Linux and macOS (#276). A native-looking link is not enough: its
+    // resolved target must also belong to the native installer.
+    if (
+      native.update &&
+      nativeUpdate.isCommandPath(context.realCommandPath) &&
+      !commandPaths.some((commandPath) =>
+        normalizeCommandPath(commandPath).includes("/node_modules/"),
+      ) &&
+      !homebrewOwnershipFromCommandPath(context.realCommandPath) &&
+      (context.platform === "linux" || context.platform === "darwin") &&
+      (definition.provider === "claudeAgent" ||
+        definition.provider === "codex" ||
+        definition.provider === "opencode")
+    ) {
+      return { ...native, update: { ...native.update, canRunWhileBusy: true as const } };
+    }
     return native;
   }
   // A `node_modules` path not proven below belongs to another package or a

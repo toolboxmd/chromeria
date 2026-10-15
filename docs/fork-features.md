@@ -418,7 +418,8 @@ are evidence for review, not proof that a feature has been adopted upstream.
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/159",
     "https://github.com/toolboxmd/chromeria/issues/266",
-    "https://github.com/toolboxmd/chromeria/issues/263"
+    "https://github.com/toolboxmd/chromeria/issues/263",
+    "https://github.com/toolboxmd/chromeria/issues/276"
   ],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/160"],
   "newFiles": [
@@ -438,6 +439,7 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
     "packages/provider-grok/src/server/driver.test.ts",
     "packages/provider-grok/src/server/driver.ts",
+    "packages/provider-core/src/server/maintenance.ts",
     "packages/provider-core/src/server/maintenanceResolver.test.ts",
     "packages/provider-core/src/server/maintenanceResolver.ts",
     "apps/server/src/provider/providerMaintenanceRunner.test.ts",

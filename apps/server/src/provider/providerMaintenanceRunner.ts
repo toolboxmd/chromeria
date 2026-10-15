@@ -433,7 +433,11 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
               provider,
               { fresh: true },
             );
-            if (!fresh.update || fresh.update.lockKey !== update.lockKey) {
+            if (
+              !fresh.update ||
+              fresh.update.lockKey !== update.lockKey ||
+              fresh.update.canRunWhileBusy !== update.canRunWhileBusy
+            ) {
               return yield* finish(
                 makeUpdateState({
                   status: "failed",
@@ -588,7 +592,14 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
             installKey: `${provider}:${update.lockKey}`,
             isBusy: readBusyProviderDrivers.pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
-              Effect.map((drivers) => drivers.has(provider)),
+              Effect.flatMap((drivers) => {
+                if (!drivers.has(provider)) return Effect.succeed(false);
+                return providerRegistry
+                  .getProviderMaintenanceCapabilitiesForInstance(instanceId, provider, {
+                    fresh: true,
+                  })
+                  .pipe(Effect.map((fresh) => !fresh.update?.canRunWhileBusy));
+              }),
               Effect.mapError(
                 () =>
                   new ServerProviderUpdateError({

@@ -104,9 +104,11 @@ nothing to update on the host: stop the server and relaunch it as
 default on web and desktop. Turn it on to let an environment install newer
 supported provider CLI versions without clicking the update notice. It needs
 **Provider update checks** in that same Advanced section. The phone app has no
-automatic-update switch. Updates
-wait until that provider's active work ends, and new starts wait while its CLI
-installation is being updated. Installs without a supported update command are
+automatic-update switch. On Linux and macOS, native Claude, standalone Codex,
+native Grok and native OpenCode can update while their sessions are active.
+Other installs wait until that provider's active work ends, with the reason
+shown in provider settings. New starts wait while the CLI installation is being
+updated. Installs without a supported update command are
 skipped. Each version is attempted once per server start; a failed update remains
 in the provider notice for manual attention or a server restart.
 

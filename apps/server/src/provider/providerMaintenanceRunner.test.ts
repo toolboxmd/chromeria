@@ -295,6 +295,68 @@ describe("providerMaintenanceRunner", () => {
     );
   });
 
+  it.effect.each([
+    { name: "allows a proven native updater", cachedSafe: true, freshSafe: true, installs: 1 },
+    { name: "defers an unproved updater", cachedSafe: false, freshSafe: false, installs: 0 },
+    {
+      name: "rechecks ownership before bypassing busy deferral",
+      cachedSafe: true,
+      freshSafe: false,
+      installs: 0,
+    },
+  ])("$name while the driver has active sessions", ({ cachedSafe, freshSafe, installs }) => {
+    let installCalls = 0;
+    return Effect.gen(function* () {
+      const { registry } = yield* makeRegistry();
+      const capabilities = makeProviderMaintenanceCapabilities({
+        provider: CODEX_DRIVER,
+        packageName: "@openai/codex",
+        updateExecutable: "codex",
+        updateArgs: ["update"],
+        updateLockKey: "codex-native",
+      });
+      const context = yield* makeTestContext({
+        ...registry,
+        getProviderMaintenanceCapabilitiesForInstance: (_instanceId, _provider, options) =>
+          Effect.succeed({
+            ...capabilities,
+            update: {
+              ...capabilities.update!,
+              ...((options?.fresh ? freshSafe : cachedSafe)
+                ? { canRunWhileBusy: true as const }
+                : {}),
+            },
+          }),
+      });
+      const sql = Context.get(context, SqlClient.SqlClient);
+      yield* sql`INSERT INTO orchestration_v2_projection_provider_sessions
+        (provider_session_id, provider, status, updated_at, payload_json)
+        VALUES ('busy', 'codex', 'running', '2026-10-15', '{}')`;
+      const updater = Context.get(context, ProviderMaintenanceRunner.ProviderMaintenanceRunner);
+      const result = yield* updater.updateProvider(CODEX_DRIVER).pipe(Effect.result);
+      assert.equal(installCalls, installs);
+      if (installs === 1) {
+        assert.isTrue(result._tag === "Success");
+      } else {
+        assert.isTrue(result._tag === "Failure");
+        if (result._tag === "Failure") {
+          assert.equal(result.failure.reason, "Provider work is active; the update is deferred.");
+        }
+      }
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          layerNonWindowsPlatform,
+          layerLatestVersionHttpClient("0.0.0"),
+          layerMockSpawner(() => {
+            installCalls++;
+            return { stdout: "updated" };
+          }),
+        ),
+      ),
+    );
+  });
+
   it.effect(
     "keeps a successful update when the binary is present but its version is unreadable",
     () => {

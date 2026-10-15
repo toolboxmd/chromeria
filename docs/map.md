@@ -35,7 +35,7 @@ flowchart TD
     BR["Bounded event reads"]
     %% BR: #256 PR #267
     PU["Provider updates"]
-    %% PU: #263 PR #272
+    %% PU: #263 PR #272 PR #365
     RS["Resume after restart"]
     %% RS: #264 PR #301 PR #291 PR #329
     SN["Child notices"]

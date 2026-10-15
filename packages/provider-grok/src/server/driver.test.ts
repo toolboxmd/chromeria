@@ -172,6 +172,44 @@ it.layer(layerTest)("GrokDriver", (it) => {
     });
   }
 
+  for (const { suffix, native, home } of [
+    { suffix: ".grok/downloads/grok-1.0.52-linux-x86_64", native: true, home: undefined },
+    { suffix: ".grok/bin/grok-1.0.52", native: true, home: undefined },
+    { suffix: "custom/downloads/grok-macos-aarch64", native: true, home: "custom" },
+    { suffix: "lib/node_modules/@xai-official/grok/bin/grok", native: false, home: undefined },
+    { suffix: "unknown/grok", native: false, home: undefined },
+  ]) {
+    it.effect.skipIf(windowsHost)(
+      `allows active-session updates only for native Grok (${suffix})`,
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-grok-busy-" });
+          const binaryPath = path.join(tempDir, suffix);
+          yield* fs.makeDirectory(path.dirname(binaryPath), { recursive: true });
+          yield* fs.writeFileString(binaryPath, "#!/bin/sh\n");
+          yield* fs.chmod(binaryPath, 0o755);
+          const instance = yield* GrokDriver.create({
+            instanceId: ProviderInstanceId.make("grok-native-busy"),
+            displayName: "Grok test",
+            enabled: false,
+            environment: home
+              ? [{ name: "GROK_HOME", value: path.join(tempDir, home), sensitive: false }]
+              : [],
+            config: { ...GrokDriver.defaultConfig(), binaryPath },
+          });
+          const capabilities = yield* instance.snapshot.resolveMaintenance();
+          expect(capabilities.update?.canRunWhileBusy === true).toBe(native);
+          expect(capabilities.update?.args).toEqual(["update"]);
+        }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawner),
+          Effect.provideService(HostProcess.Platform, "linux"),
+          Effect.scoped,
+        ),
+    );
+  }
+
   it.effect.skipIf(windowsHost)("upgrades a Homebrew grok-build cask through brew", () => {
     const spawned: Array<ReadonlyArray<string>> = [];
     let prefix = "";
