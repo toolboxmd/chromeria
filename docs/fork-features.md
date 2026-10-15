@@ -1974,7 +1974,7 @@ sources and reasons.
   "id": "network-routes",
   "purpose": "Learn usable T3 Connect fallback routes from the signed-in account while preserving direct routes and sign-out cleanup.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/292"],
-  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...fix/292-learn-relay-route"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/364"],
   "newFiles": [],
   "upstreamFiles": [
     "apps/web/src/components/cloud/CloudEnvironmentConnectList.test.tsx",
