@@ -888,7 +888,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
     "apps/server/src/orchestration-v2/RestartContinuation.ts",
     "apps/server/src/orchestration-v2/SubagentProjection.test.ts",
-    "packages/client-runtime/src/work-log/presentation.ts"
+    "packages/client-runtime/src/work-log/presentation.ts",
+    "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts"
   ],
   "sharedFiles": [
     "apps/server/src/persistence/forkV1Backfills.ts",

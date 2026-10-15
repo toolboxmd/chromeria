@@ -1706,7 +1706,11 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
       assert.isNull(projection.runs.find((row) => row.id === runId)?.delegatedCompletion?.delivery);
       assert.lengthOf(
         statements.filter((statement) =>
-          statement.includes("FROM orchestration_v2_projection_messages AS message"),
+          statement
+            .trimStart()
+            .startsWith(
+              "SELECT message.payload_json FROM orchestration_v2_projection_messages AS message",
+            ),
         ),
         1,
       );
