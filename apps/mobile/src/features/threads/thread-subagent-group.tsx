@@ -3,6 +3,7 @@ import { StackActions, useIsFocused, useNavigation } from "@react-navigation/nat
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { summarizeSubagentStatuses } from "@t3tools/client-runtime/state/subagent-display";
 import { isActiveSubagentStatus } from "@t3tools/client-runtime/state/subagentRuntime";
+import { subagentChildTarget } from "@t3tools/client-runtime/state/thread-relationships";
 import type {
   EnvironmentId,
   OrchestrationV2Subagent,
@@ -16,6 +17,7 @@ import { SymbolView } from "../../components/AppSymbol";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { cn } from "../../lib/cn";
 import type { ThreadFeedActivity } from "../../lib/threadActivity";
+import { useServerConfigs } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
 import { environmentThreadDetails } from "../../state/threads";
 import { subagentCardElapsed } from "./subagent-card-presentation";
@@ -70,6 +72,7 @@ export function ThreadSubagentGroup(props: {
   readonly onToggleRow: (rowId: string, anchorKey: string) => void;
 }) {
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
+  const serverConfigs = useServerConfigs();
   const navigation = useNavigation();
   const members = props.activities.flatMap(({ projectedItem }) =>
     projectedItem.item.type === "subagent" ? [projectedItem.item] : [],
@@ -89,6 +92,10 @@ export function ThreadSubagentGroup(props: {
       result: live?.result ?? item.result,
       progress: live?.progress ?? item.progress,
       model: live?.model ?? null,
+      // A remote launch attaches its thread on the live record after the
+      // turn item was first projected.
+      childThreadId: live?.childThreadId ?? item.childThreadId,
+      remoteChild: live?.remoteChild ?? item.remoteChild,
     };
   });
   const grouped = agents.length > 1;
@@ -147,24 +154,36 @@ export function ThreadSubagentGroup(props: {
       {!grouped || expanded ? (
         <View className="mb-1 gap-px rounded-xl border border-border bg-card/30 p-1">
           {agents.map((agent) => {
-            const threadId = agent.childThreadId;
+            const resolvedTarget = subagentChildTarget(agent);
+            // A child on a machine this device is not connected to has
+            // nowhere to open.
+            const unreachable =
+              resolvedTarget?.environmentId != null &&
+              !serverConfigs.has(resolvedTarget.environmentId);
+            const target = unreachable ? null : resolvedTarget;
             return (
               <Pressable
                 key={agent.item.id}
                 accessible
-                accessibilityRole={threadId === null ? undefined : "link"}
+                accessibilityRole={target === null ? undefined : "link"}
                 accessibilityHint={
-                  threadId === null ? "Provider-managed agent" : "Opens this agent's thread"
+                  unreachable
+                    ? `Runs on ${agent.remoteChild?.label ?? "another machine"}, which this device is not connected to`
+                    : target === null
+                      ? agent.remoteChild
+                        ? `Running on ${agent.remoteChild.label}. Its thread opens once the launch there is attached`
+                        : "Provider-managed agent"
+                      : "Opens this agent's thread"
                 }
-                disabled={threadId === null}
+                disabled={target === null}
                 onPress={() => {
                   // Push, not navigate: navigate reuses this Thread route, so back
                   // would skip the parent thread.
-                  if (threadId !== null)
+                  if (target !== null)
                     navigation.dispatch(
                       StackActions.push("Thread", {
-                        environmentId: String(props.environmentId),
-                        threadId: String(threadId),
+                        environmentId: String(target.environmentId ?? props.environmentId),
+                        threadId: String(target.threadId),
                       }),
                     );
                 }}

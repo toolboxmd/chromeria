@@ -445,6 +445,7 @@ import {
   useThreadShell,
   useChildThreadInputs,
   useThreadRefs,
+  useServerConfigs,
   useThreadVisibleTurnItems,
   waitForThreadShell,
 } from "../state/entities";
@@ -7312,10 +7313,10 @@ export default function ChatView(props: ChatViewProps) {
     }
   };
   const handleStopBackgroundWorkStable = useStableCallback(handleStopBackgroundWork);
-  const onOpenRelatedThread = (threadId: ThreadId) => {
+  const onOpenRelatedThread = (threadId: ThreadId, targetEnvironmentId?: EnvironmentId) => {
     void navigate({
       to: "/$environmentId/$threadId",
-      params: buildThreadRouteParams(scopeThreadRef(environmentId, threadId)),
+      params: buildThreadRouteParams(scopeThreadRef(targetEnvironmentId ?? environmentId, threadId)),
     });
   };
   const onOpenRelatedThreadStable = useStableCallback(onOpenRelatedThread);
@@ -7465,6 +7466,7 @@ export default function ChatView(props: ChatViewProps) {
     };
   }, [activeGoal, activeThread, isWorking, sendStandaloneCommandStable]);
 
+  const serverConfigsForBackgroundWork = useServerConfigs();
   const backgroundWorkBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
     const presentation = presentPendingBackgroundWork(activeBackgroundTasks);
     if (presentation === null || !activeThread) {
@@ -7492,11 +7494,16 @@ export default function ChatView(props: ChatViewProps) {
           ? undefined
           : presentation.items.map((item, index) => {
               const childThreadId = item.childThreadId;
+              const childEnvironmentId = item.childEnvironmentId;
+              // A remote child requires a connected destination to open.
+              const unreachable =
+                childEnvironmentId !== undefined &&
+                !serverConfigsForBackgroundWork.has(childEnvironmentId);
               const separator = index < presentation.items.length - 1 ? "," : null;
               return (
                 <Fragment key={item.taskId}>
                   {index > 0 ? " " : null}
-                  {childThreadId === undefined ? (
+                  {childThreadId === undefined || unreachable ? (
                     <>
                       {item.label}
                       {separator}
@@ -7506,7 +7513,7 @@ export default function ChatView(props: ChatViewProps) {
                       <InlineButton
                         tone="muted"
                         aria-label={`Open subagent ${item.label}`}
-                        onClick={() => onOpenRelatedThreadStable(childThreadId)}
+                        onClick={() => onOpenRelatedThreadStable(childThreadId, childEnvironmentId)}
                       >
                         {item.label}
                       </InlineButton>
@@ -7534,6 +7541,7 @@ export default function ChatView(props: ChatViewProps) {
     handleStopBackgroundWorkStable,
     isStoppingBackgroundWork,
     onOpenRelatedThreadStable,
+    serverConfigsForBackgroundWork,
   ]);
   // Settled, snoozed, and woke are thread state, not composer actions: each
   // gets one quiet line after the last message instead of a banner. A woken
