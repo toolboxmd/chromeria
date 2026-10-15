@@ -1939,3 +1939,30 @@ sources and reasons.
   ]
 }
 ```
+
+## rejected-connect-link
+
+```json
+{
+  "id": "rejected-connect-link",
+  "purpose": "Carry upstream's rejected-link state and explicit CLI relink until upstream PR #19379 is absorbed.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/358"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/359",
+    "https://github.com/pingdotgg/t3code/pull/19379"
+  ],
+  "newFiles": [],
+  "upstreamFiles": [
+    "apps/server/src/cli/connect.ts",
+    "apps/server/src/cloud/CliState.test.ts",
+    "apps/server/src/cloud/CliState.ts",
+    "apps/server/src/cloud/CloudLink.lifecycle.test.ts",
+    "apps/server/src/cloud/CloudLink.ts",
+    "apps/server/src/cloud/config.ts",
+    "apps/server/src/cloud/managedTunnelStartup.test.ts",
+    "apps/server/src/cloud/managedTunnelStartup.ts"
+  ],
+  "sharedFiles": ["packages/contracts/src/environmentHttp.ts"],
+  "keywords": ["cloud-link-revoked", "dropRevokedCloudLink", "linkRevoked"]
+}
+```
