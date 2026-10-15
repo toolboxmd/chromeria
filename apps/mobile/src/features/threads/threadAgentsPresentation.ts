@@ -3,6 +3,7 @@ import {
   subagentDetailPreview,
 } from "@t3tools/client-runtime/state/subagent-display";
 import { isActiveSubagentStatus } from "@t3tools/client-runtime/state/subagentRuntime";
+import { subagentChildTarget } from "@t3tools/client-runtime/state/thread-relationships";
 import type { OrchestrationV2Subagent } from "@t3tools/contracts";
 
 const PROMPT_TITLE_LIMIT = 80;
@@ -58,7 +59,7 @@ function rowStatusLabel(status: OrchestrationV2Subagent["status"]): string {
 export function resolveSubagentRowPresentation(
   subagent: Pick<
     OrchestrationV2Subagent,
-    "title" | "prompt" | "status" | "progress" | "result" | "childThreadId"
+    "title" | "prompt" | "status" | "progress" | "result" | "childThreadId" | "remoteChild"
   >,
 ): SubagentRowPresentation {
   const live = isActiveSubagentStatus(subagent.status);
@@ -68,6 +69,6 @@ export function resolveSubagentRowPresentation(
     statusLabel: rowStatusLabel(subagent.status),
     tone: rowTone(subagent.status),
     live,
-    canOpenThread: subagent.childThreadId !== null,
+    canOpenThread: subagentChildTarget(subagent) !== null,
   };
 }

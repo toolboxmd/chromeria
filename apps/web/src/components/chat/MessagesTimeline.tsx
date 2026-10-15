@@ -50,7 +50,10 @@ import { environmentThreadDetails } from "../../state/threads";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
 import { Link } from "@tanstack/react-router";
 import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
-import { notificationChildThreadId } from "@t3tools/client-runtime/state/thread-execution";
+import {
+  notificationChildThreadId,
+  notificationSubagentId,
+} from "@t3tools/client-runtime/state/thread-execution";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import {
   liveThoughtLine,
@@ -298,6 +301,7 @@ import { Collapsible, CollapsibleTrigger, CollapsiblePanel } from "../ui/collaps
 import {
   isV2LifecycleItem,
   EnvironmentSubagentAvatar,
+  NotificationSubagentOpenButton,
   SubagentElapsed,
   SubagentNotificationLink,
   V2LifecycleRow,
@@ -338,7 +342,10 @@ interface TimelineRowSharedState {
   onImageExpand: (preview: ExpandedImagePreview) => void;
   displayThreadKey?: string;
   onOpenTurnDiff: (runId: RunId, filePath?: string) => void;
-  onOpenThread: (threadId: OrchestrationV2TurnItem["threadId"]) => void;
+  onOpenThread: (
+    threadId: OrchestrationV2TurnItem["threadId"],
+    environmentId?: EnvironmentId,
+  ) => void;
   onForkFromRun: (input: {
     readonly sourceThreadId: ThreadId;
     readonly runId: RunId;
@@ -481,7 +488,10 @@ interface MessagesTimelineProps {
   displayThreadKey?: string;
   paintOnly?: boolean;
   onOpenTurnDiff: (runId: RunId, filePath?: string) => void;
-  onOpenThread: (threadId: OrchestrationV2TurnItem["threadId"]) => void;
+  onOpenThread: (
+    threadId: OrchestrationV2TurnItem["threadId"],
+    environmentId?: EnvironmentId,
+  ) => void;
   parentThreadLink?: {
     readonly threadId: ThreadId;
     readonly title: string;
@@ -5221,9 +5231,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: WorkEntryRowP
   const item = props.workEntry.projectedItem?.item;
   const childThreadId =
     item?.type === "notification" ? notificationChildThreadId(item.source) : undefined;
+  const subagentId =
+    item?.type === "notification" ? notificationSubagentId(item.source) : undefined;
   if (
     item?.type !== "notification" ||
-    childThreadId === undefined ||
+    (childThreadId === undefined && subagentId === undefined) ||
     (item.outcome === "updated" && Boolean(item.detail?.trim()))
   ) {
     return <WorkEntryLogRow {...props} />;
@@ -5232,6 +5244,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: WorkEntryRowP
     <SubagentNotificationLink
       parentRef={scopeThreadRef(ctx.activeThreadEnvironmentId, item.threadId)}
       childThreadId={childThreadId}
+      subagentId={subagentId}
       outcome={item.outcome}
       createdAt={props.workEntry.createdAt}
       timestampFormat={ctx.timestampFormat}
@@ -5254,6 +5267,10 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
   const notifiedSubagentThreadId =
     workEntry.projectedItem?.item.type === "notification"
       ? notificationChildThreadId(workEntry.projectedItem.item.source)
+      : undefined;
+  const notifiedSubagentId =
+    workEntry.projectedItem?.item.type === "notification"
+      ? notificationSubagentId(workEntry.projectedItem.item.source)
       : undefined;
   const groupView = use(WorkGroupViewCtx);
   const [expanded, setExpanded] = useState(
@@ -5547,6 +5564,16 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
             >
               Open subagent
             </InlineButton>
+          ) : notifiedSubagentId && workEntry.projectedItem?.item.type === "notification" ? (
+            <NotificationSubagentOpenButton
+              parentRef={scopeThreadRef(
+                ctx.activeThreadEnvironmentId,
+                workEntry.projectedItem.item.threadId,
+              )}
+              subagentId={notifiedSubagentId}
+              onOpenThread={ctx.onOpenThread}
+              onKeyDown={stopRowToggle}
+            />
           ) : null}
           {showFailedIndicator &&
           !showDestructiveRowStyle &&

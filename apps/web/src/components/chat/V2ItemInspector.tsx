@@ -12,7 +12,10 @@ import {
   turnItemOutputText,
 } from "@t3tools/client-runtime/work-log/item-detail";
 import { formatDiffCount } from "@t3tools/client-runtime/diff-count";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { subagentChildTarget } from "@t3tools/client-runtime/state/thread-relationships";
 import { isJavaScriptReplTool } from "@t3tools/shared/toolActivity";
+import { useAtomValue } from "@effect/atom-react";
 import { ExternalLinkIcon, GitBranchIcon, RotateCcwIcon } from "lucide-react";
 import { memo, type ReactNode, Suspense, use } from "react";
 
@@ -20,7 +23,9 @@ import { useTheme } from "../../hooks/useTheme";
 import { cn } from "../../lib/utils";
 import { resolveDiffThemeName } from "../../lib/diffRendering";
 import { getSyntaxHighlighterPromise } from "../../lib/syntaxHighlighting";
+import { useServerConfigs } from "../../state/entities";
 import { useTurnItemDetail } from "../../state/queries";
+import { environmentThreadDetails } from "../../state/threads";
 import { useV2ItemSupport } from "../../state/v2ItemSupport";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import { Button } from "../ui/button";
@@ -36,7 +41,7 @@ interface V2ItemInspectorProps {
   readonly environmentId: EnvironmentId;
   readonly cwd?: string | undefined;
   readonly workspaceRoot?: string | undefined;
-  readonly onOpenThread: (threadId: ThreadId) => void;
+  readonly onOpenThread: (threadId: ThreadId, environmentId?: EnvironmentId) => void;
   readonly onOpenTurnDiff: (runId: RunId, filePath?: string) => void;
   readonly onRollbackCheckpoint?: (input: {
     readonly checkpointId: string;
@@ -230,6 +235,39 @@ function ToolCallBody(
         <div className="text-destructive">exit {props.exitCode}</div>
       ) : null}
     </div>
+  );
+}
+
+/** Opens a subagent item's thread, following the live record over the projected item. */
+function SubagentOpenButton(props: {
+  readonly environmentId: EnvironmentId;
+  readonly parentThreadId: ThreadId;
+  readonly item: Extract<OrchestrationV2ProjectedTurnItem["item"], { type: "subagent" }>;
+  readonly onOpenThread: V2ItemInspectorProps["onOpenThread"];
+}) {
+  const agent = useAtomValue(
+    environmentThreadDetails.threadAtom(scopeThreadRef(props.environmentId, props.parentThreadId)),
+    (thread) =>
+      thread?.projection.subagents.find((agent) => agent.id === props.item.subagentId) ?? null,
+  );
+  const serverConfigs = useServerConfigs();
+  // The live record outranks the projected item: a remote launch attaches
+  // its thread there after the item was first projected.
+  const target = agent === null ? subagentChildTarget(props.item) : subagentChildTarget(agent);
+  if (
+    target === null ||
+    (target.environmentId !== null && !serverConfigs.has(target.environmentId))
+  ) {
+    return null;
+  }
+  return (
+    <Button
+      size="xs"
+      variant="outline"
+      onClick={() => props.onOpenThread(target.threadId, target.environmentId ?? undefined)}
+    >
+      Open subagent thread
+    </Button>
   );
 }
 
@@ -429,10 +467,13 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
         </Button>
       ) : null}
 
-      {item.type === "subagent" && item.childThreadId !== null ? (
-        <Button size="xs" variant="outline" onClick={() => props.onOpenThread(item.childThreadId!)}>
-          Open subagent thread
-        </Button>
+      {item.type === "subagent" ? (
+        <SubagentOpenButton
+          environmentId={props.environmentId}
+          parentThreadId={props.projectedItem.sourceThreadId}
+          item={item}
+          onOpenThread={props.onOpenThread}
+        />
       ) : null}
 
       {item.type === "handoff" ? (
