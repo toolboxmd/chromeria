@@ -953,6 +953,7 @@ it.effect(
         yield* writeCheckState(null, checkState(id));
         const service = yield* ScheduledTaskService.ScheduledTaskService;
         const input = {
+          purposeIntent: { version: 1, intent: { type: "unscoped" } } as const,
           id,
           title: "Checked work",
           prompt: "Do the scheduled work",

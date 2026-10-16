@@ -371,6 +371,7 @@ it.effect.each(
             )
           : null;
       const { task } = yield* tasks.upsert({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         id: ScheduledTaskId.make("scheduled-task:attribution"),
         title: "Daily audit",
         prompt: "Audit performance and crashes.",
@@ -3465,6 +3466,7 @@ it.effect(
       };
       const tools = yield* OrchestratorMcp.OrchestratorMcpService;
       const created = yield* tools.scheduleTask(scope, {
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         projectId,
         prompt: "Do linked work",
         enabled: false,
@@ -3479,6 +3481,7 @@ it.effect(
       assert.deepStrictEqual(stored.linkOrigin, origin);
       const { linkOrigin: _origin, ...form } = stored;
       const edited = yield* tasks.upsert({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         ...form,
         requireExisting: true,
         title: "UI edit without ownership fields",

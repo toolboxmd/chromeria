@@ -1,3 +1,5 @@
+import { ExecutionPurposePicker } from "./ExecutionPurposePicker";
+import { savedPurposeIntentForScope, type ExecutionPurposeScope } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
@@ -338,6 +340,17 @@ export function NewTaskDraftScreen(props: {
       ? { type: "single", reference: intent.reference }
       : { type: "unscoped", reason: "deliberate" };
   });
+  const pendingPurposeId = flow.editingPendingTask?.messageId ?? null;
+  const [purposeDraftSourceId, setPurposeDraftSourceId] = useState(pendingPurposeId);
+  if (purposeDraftSourceId !== pendingPurposeId) {
+    setPurposeDraftSourceId(pendingPurposeId);
+    const intent = flow.editingPendingTask?.purposeIntent?.intent;
+    setPurposeScope(
+      intent?.type === "reference"
+        ? { type: "single", reference: intent.reference }
+        : { type: "unscoped", reason: "deliberate" },
+    );
+  }
   const [previewVideo, setPreviewVideo] = useState<VideoPreviewSource | null>(null);
   const [previewFile, setPreviewFile] = useState<FilePreviewSource | null>(null);
   const wasFocusedBeforePreviewRef = useRef(false);
@@ -1944,5 +1957,3 @@ export function NewTaskDraftScreen(props: {
     </View>
   );
 }
-import { ExecutionPurposePicker } from "./ExecutionPurposePicker";
-import { savedPurposeIntentForScope, type ExecutionPurposeScope } from "@t3tools/contracts";

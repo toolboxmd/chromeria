@@ -1285,6 +1285,11 @@ export const layer = Layer.effect(
       Effect.gen(function* () {
         const existing = yield* loadTask(input.id);
         if (existing.enabled === input.enabled) return { task: existing };
+        if (input.enabled && existing.purposeIntent === undefined)
+          return yield* taskError(
+            "Choose an Issue, PR or deliberately unscoped purpose before enabling this legacy schedule.",
+            { taskId: input.id },
+          );
         const now = yield* localNow;
         const next = nextRunAt({ enabled: input.enabled, schedule: existing.schedule }, now);
         // RETURNING so a task deleted between the load and this UPDATE is a

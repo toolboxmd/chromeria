@@ -8,6 +8,9 @@ import {
 } from "./executionPurpose.ts";
 import { OrchestrationV2Command } from "./orchestrationV2.ts";
 
+const decodeCommand = Schema.decodeUnknownExit(OrchestrationV2Command);
+const isPurposeIntent = Schema.is(PurposeIntent);
+
 const reference = {
   host: "github.com",
   repository: "example/repo",
@@ -52,9 +55,9 @@ describe("purpose request boundary", () => {
       creationSource: "web",
       dispatchMode: { type: "start_immediately" },
     };
-    expect(Schema.decodeUnknownExit(OrchestrationV2Command)(command)._tag === "Success").toBe(true);
+    expect(decodeCommand(command)._tag === "Success").toBe(true);
     expect(
-      Schema.decodeUnknownExit(OrchestrationV2Command)({
+      decodeCommand({
         ...command,
         purposeIntent: { version: 1, intent: { type: "reference", reference } },
       })._tag === "Success",
@@ -66,13 +69,10 @@ describe("purpose request boundary", () => {
       { version: 1, intent: { type: "target", reference } },
       { version: 1, intent: { type: "reference", reference: { ...reference, number: -1 } } },
     ]) {
-      expect(
-        Schema.decodeUnknownExit(OrchestrationV2Command)({ ...command, purposeIntent })._tag ===
-          "Success",
-      ).toBe(false);
+      expect(decodeCommand({ ...command, purposeIntent })._tag === "Success").toBe(false);
     }
     expect(
-      Schema.is(PurposeIntent)({ version: 1, intent: { type: "selection", expectedRevision: -1 } }),
+      isPurposeIntent({ version: 1, intent: { type: "selection", expectedRevision: -1 } }),
     ).toBe(false);
   });
 });

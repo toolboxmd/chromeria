@@ -1,3 +1,4 @@
+import { purposeSelectionOf } from "@t3tools/contracts";
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import { readEnvironmentScope } from "./session";
 import type { ComposerTextPaste } from "../native/T3ComposerEditor.types";
@@ -1131,4 +1132,3 @@ export function useThreadComposerState() {
     onUpdateInteractionMode,
   };
 }
-import { purposeSelectionOf } from "@t3tools/contracts";

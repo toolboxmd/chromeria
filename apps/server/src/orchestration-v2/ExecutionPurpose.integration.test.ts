@@ -1,3 +1,4 @@
+import { ProviderThreadId, type NativeExecutionSegment } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as EventSink from "./EventSink.ts";
 import { EventId, NodeId, type OrchestrationV2Run } from "@t3tools/contracts";
@@ -370,9 +371,160 @@ it.effect(
           creationSource: "mcp",
           senderThreadId: parentId,
         },
-        "user",
-        "web",
+        { createdBy: "user", creationSource: "web" },
       );
       assert.equal((yield* Effect.exit(orchestrator.dispatch(forged)))._tag, "Failure");
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
+  "memory replay and SQL projection reject a forged purpose change without committing it",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make("thread:purpose-immutable");
+      yield* createThread(threadId);
+      yield* orchestrator.dispatch(
+        message(threadId, "immutable-a", {
+          version: 1,
+          intent: { type: "reference", reference: referenceA },
+        }),
+      );
+      const original = yield* orchestrator.getThreadProjection(threadId);
+      const run = original.runs[0]!;
+      const event = {
+        id: EventId.make("event:forged-purpose"),
+        type: "run.updated" as const,
+        threadId,
+        occurredAt: yield* DateTime.now,
+        payload: {
+          ...run,
+          purpose: {
+            version: 1 as const,
+            scope: scopedB,
+            provenance: { type: "declared" as const },
+          },
+        },
+      };
+      assert.throws(() => ProjectionStore.applyToProjection(original, event));
+      assert.equal(
+        (yield* Effect.exit(
+          sink.write({ commandId: CommandId.make("forged-purpose"), events: [event] }),
+        ))._tag,
+        "Failure",
+      );
+      assert.deepEqual(
+        (yield* orchestrator.getThreadProjection(threadId)).runs[0]?.purpose,
+        run.purpose,
+      );
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
+  "retains native participation and serializes its timestamp after roster removal and stale updates",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const sql = yield* SqlClient.SqlClient;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:native-inventory");
+      yield* createThread(threadId);
+      yield* orchestrator.dispatch(
+        message(threadId, "native-inventory-a", {
+          version: 1,
+          intent: { type: "reference", reference: referenceA },
+        }),
+      );
+      const original = yield* orchestrator.getThreadProjection(threadId);
+      const run = original.runs[0]!;
+      const operation: NativeExecutionSegment = {
+        version: 1,
+        id: "native-session:command-1",
+        nativeSessionId: "native-session",
+        nativeOperationId: "command-1",
+        kind: "background",
+        source: { type: "app_run", threadId, runId: run.id },
+        purpose: run.purpose!,
+        boundary: { state: "unresolved", reason: "native_usage_absent" },
+        status: "ended",
+        usageFinality: "unreconciled",
+        noticeIds: ["native-notice-1"],
+        wakeDispositions: ["consumed_in_active"],
+        observedAt: DateTime.formatIso(now),
+      };
+      const providerThread = {
+        id: ProviderThreadId.make("provider:native-inventory"),
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: instanceId,
+        providerSessionId: null,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        nativeThreadRef: {
+          driver: ProviderDriverKind.make("codex"),
+          nativeId: "native-session",
+          strength: "strong" as const,
+        },
+        nativeConversationHeadRef: null,
+        status: "idle" as const,
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        pendingBackgroundTasks: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      const first = {
+        id: EventId.make("event:native-inventory"),
+        type: "provider-thread.updated" as const,
+        threadId,
+        occurredAt: now,
+        payload: { ...providerThread, nativeOperations: [operation] },
+      };
+      const stale = {
+        ...first,
+        id: EventId.make("event:native-inventory-stale"),
+        payload: providerThread,
+      };
+      const memory = ProjectionStore.applyToProjection(
+        ProjectionStore.applyToProjection(original, first),
+        stale,
+      );
+      assert.deepEqual(
+        memory.providerThreads.find((thread) => thread.id === providerThread.id)?.nativeOperations,
+        [operation],
+      );
+      yield* sink.write({ commandId: CommandId.make("native-inventory"), events: [first, stale] });
+      const stored = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(
+        stored.providerThreads.find((thread) => thread.id === providerThread.id)?.nativeOperations,
+        [operation],
+      );
+      const rows = yield* sql<{
+        observed: string;
+      }>`SELECT json_extract(payload_json, '$.nativeOperations[0].observedAt') AS observed FROM orchestration_v2_projection_provider_threads WHERE provider_thread_id = ${providerThread.id}`;
+      assert.equal(rows[0]?.observed, "1970-01-01T00:00:00.000Z");
+      const forged = {
+        ...first,
+        id: EventId.make("event:native-inventory-forged"),
+        payload: {
+          ...providerThread,
+          nativeOperations: [{ ...operation, purpose: { ...operation.purpose, scope: scopedB } }],
+        },
+      };
+      assert.equal(
+        (yield* Effect.exit(
+          sink.write({ commandId: CommandId.make("native-inventory-forged"), events: [forged] }),
+        ))._tag,
+        "Failure",
+      );
+      assert.deepEqual(
+        (yield* orchestrator.getThreadProjection(threadId)).providerThreads.find(
+          (thread) => thread.id === providerThread.id,
+        )?.nativeOperations,
+        [operation],
+      );
     }).pipe(Effect.provide(layerTest)),
 );

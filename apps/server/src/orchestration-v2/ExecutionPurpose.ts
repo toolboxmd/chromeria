@@ -1,7 +1,11 @@
+import { ProjectionStoreV2 } from "./ProjectionStore.ts";
 import {
   type ExecutionPurpose,
   type ExecutionPurposeScope,
+  type OrchestrationV2RuntimeRequest,
+  type ThreadId,
   LEGACY_EXECUTION_PURPOSE,
+  executionPurposeOf,
   normalizeTrackingReference,
   type PurposeIntent,
   PurposeSelection,
@@ -143,3 +147,21 @@ export function purposeFromCauses(
     provenance: { type, operationIds },
   };
 }
+
+/** A question wake follows its exact request node, including human follow-ups in a delegated job. */
+export const purposeForRuntimeRequest = Effect.fnUntraced(function* (
+  threadId: ThreadId,
+  request: OrchestrationV2RuntimeRequest,
+) {
+  const projections = yield* ProjectionStoreV2;
+  const records = yield* projections.getThreadRecords(threadId, ["nodes", "runs"]);
+  const node = records.nodes.find((node) => node.id === request.nodeId);
+  const run = records.runs.find((run) => run.id === node?.runId);
+  return run === undefined
+    ? purposeFromCauses([undefined], [request.id])
+    : {
+        version: 1 as const,
+        scope: executionPurposeOf(run).scope,
+        provenance: { type: "source_run" as const, threadId, runId: run.id },
+      };
+});

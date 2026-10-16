@@ -1,3 +1,4 @@
+import { executionPurposeOf } from "@t3tools/contracts";
 import { CommandId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -293,6 +294,15 @@ export const layerExecutor: Layer.Layer<
                     // retry cannot append a duplicate message or start a second follow-up.
                     yield* threads
                       .dispatch({
+                        purposeSource: {
+                          version: 1,
+                          scope: executionPurposeOf(run).scope,
+                          provenance: {
+                            type: "source_run",
+                            threadId: effect.threadId,
+                            runId: run.id,
+                          },
+                        },
                         type: "message.dispatch",
                         commandId: CommandId.make(`command:steer-follow-up:${effect.id}`),
                         threadId: effect.threadId,
@@ -300,9 +310,8 @@ export const layerExecutor: Layer.Layer<
                         text: message.text,
                         ...(message.context ? { context: message.context } : {}),
                         attachments: message.attachments,
-                        // A user's follow-up starts on the thread's saved selection,
-                        // which already holds the steer's choice. A delegated
-                        // completion stays pinned to the run it reports to.
+                        // A late steering fallback retains the admitted target purpose.
+                        // Delegated completions also keep the original model.
                         ...(message.delegatedCompletion === undefined
                           ? {}
                           : { modelSelection: run.modelSelection }),

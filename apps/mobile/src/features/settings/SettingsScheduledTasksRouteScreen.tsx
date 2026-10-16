@@ -1,3 +1,5 @@
+import { ExecutionPurposePicker } from "../threads/ExecutionPurposePicker";
+import { savedPurposeIntentForScope } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import {
   AuthOrchestrationOperateScope,
@@ -662,6 +664,16 @@ function TaskForm({
       Alert.alert("Project unavailable", "Choose a project in this environment.");
       return;
     }
+    if (
+      draft.purposeScope?.type === "unscoped" &&
+      draft.purposeScope.reason === "legacy_no_intent"
+    ) {
+      Alert.alert(
+        "Choose this task's purpose",
+        "Select an Issue or PR, or clear the purpose to choose unscoped work.",
+      );
+      return;
+    }
     const input: ScheduledTaskUpsertInput = {
       purposeIntent: savedPurposeIntentForScope(
         draft.purposeScope ?? { type: "unscoped", reason: "deliberate" },
@@ -1303,5 +1315,3 @@ function EnvironmentTasks({
     </SettingsSection>
   );
 }
-import { ExecutionPurposePicker } from "../threads/ExecutionPurposePicker";
-import { savedPurposeIntentForScope } from "@t3tools/contracts";

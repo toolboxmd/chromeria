@@ -1,3 +1,4 @@
+import { purposeScopeOfSavedIntent, type ExecutionPurposeScope } from "@t3tools/contracts";
 import {
   EnvironmentId,
   isForkScheduledTaskSchedule,
@@ -217,4 +218,3 @@ export function scheduledTaskDefaultModel(
   const fallback = models.find(({ model }) => model.isDefault) ?? models[0];
   return fallback ? { instanceId: fallback.instanceId, model: fallback.model.slug } : null;
 }
-import { purposeScopeOfSavedIntent, type ExecutionPurposeScope } from "@t3tools/contracts";

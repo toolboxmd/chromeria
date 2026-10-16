@@ -1790,7 +1790,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 usageFinality: "unreconciled",
                 noticeIds: [],
                 wakeDispositions: [],
-                observedAt: now,
+                observedAt: DateTime.formatIso(now),
               },
             ];
             context.childSessionId = childSessionId;

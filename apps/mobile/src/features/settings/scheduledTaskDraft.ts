@@ -1,3 +1,4 @@
+import { purposeScopeOfSavedIntent, type ExecutionPurposeScope } from "@t3tools/contracts";
 import type {
   ModelSelection,
   ServerConfig,
@@ -235,4 +236,3 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
     runtimeMode: task.runtimeMode,
   };
 }
-import { purposeScopeOfSavedIntent, type ExecutionPurposeScope } from "@t3tools/contracts";

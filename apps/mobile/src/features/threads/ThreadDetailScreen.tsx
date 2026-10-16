@@ -1,3 +1,4 @@
+import { ThreadExecutionPurposeControl } from "./ThreadExecutionPurposeControl";
 import { useAtomValue } from "@effect/atom-react";
 import { useChildThreadInputs, useThreadReportedModelSelection } from "../../state/entities";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
@@ -1501,4 +1502,3 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     </View>
   );
 });
-import { ThreadExecutionPurposeControl } from "./ThreadExecutionPurposeControl";

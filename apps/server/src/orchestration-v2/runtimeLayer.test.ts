@@ -2252,6 +2252,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         threadId,
         ...key,
         watching: true,
+        purposeIntent: { version: 1, intent: { type: "unscoped" } } as const,
         link: { url, source: "agent" },
       });
       assert.equal(
@@ -2342,6 +2343,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           ...key,
           number,
           watching: true,
+          purposeIntent: { version: 1, intent: { type: "unscoped" } } as const,
           link: { url: `https://github.com/pingdotgg/t3code/pull/${number}`, source: "agent" },
         });
       }
@@ -2393,6 +2395,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         ...key,
         number: 7,
         watching: true,
+        purposeIntent: { version: 1, intent: { type: "unscoped" } } as const,
       };
       const blocked = yield* orchestrator
         .dispatch({
@@ -2441,6 +2444,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         repository: "pingdotgg/t3code",
         number: 7,
         watching: true,
+        purposeIntent: { version: 1, intent: { type: "unscoped" } } as const,
         link: { url: "https://github.com/pingdotgg/t3code/pull/7", source: "agent" as const },
       };
       const watched = Effect.map(
@@ -2507,6 +2511,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         repository: "pingdotgg/t3code",
         number: 8,
         watching: true,
+        purposeIntent: { version: 1, intent: { type: "unscoped" } } as const,
         link: { url: "https://github.com/pingdotgg/t3code/pull/8", source: "agent" },
       });
       const reactor = yield* PullRequestWatchReactor.make.pipe(
@@ -2572,6 +2577,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
               repository: "pingdotgg/t3code",
               number: 9,
               watching: true,
+              purposeIntent: { version: 1, intent: { type: "unscoped" } } as const,
               link: { url: "https://github.com/pingdotgg/t3code/pull/9", source: "agent" },
             });
           });
@@ -2811,6 +2817,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         repository: "pingdotgg/t3code",
         number: 11,
         watching: true,
+        purposeIntent: { version: 1, intent: { type: "unscoped" } } as const,
         link: { url: "https://github.com/pingdotgg/t3code/pull/11", source: "agent" },
       });
 
@@ -2999,6 +3006,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         threadId,
         ...key,
         watching: true,
+        purposeIntent: { version: 1, intent: { type: "unscoped" } } as const,
       });
 
       const at = "2026-10-02T12:00:00.000Z";

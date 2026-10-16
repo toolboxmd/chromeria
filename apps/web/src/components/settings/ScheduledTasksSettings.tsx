@@ -1,3 +1,5 @@
+import { savedPurposeIntentForScope } from "@t3tools/contracts";
+import { ExecutionPurposeControl } from "../chat/ExecutionPurposeControl";
 import { useAtomValue } from "@effect/atom-react";
 import {
   Clock3Icon,
@@ -877,6 +879,16 @@ function ScheduledTaskEditorDialog({
       tasksQuery.data === null
     )
       return;
+    if (
+      draft.purposeScope?.type === "unscoped" &&
+      draft.purposeScope.reason === "legacy_no_intent"
+    ) {
+      reportFailure(
+        "Choose this task's purpose",
+        "Select an Issue or PR, or clear the purpose to choose unscoped work.",
+      );
+      return;
+    }
     const selection = activeSelection;
     if (
       !draft.title.trim() ||
@@ -1405,5 +1417,3 @@ function ScheduledTaskEditorDialog({
     </Dialog>
   );
 }
-import { savedPurposeIntentForScope } from "@t3tools/contracts";
-import { ExecutionPurposeControl } from "../chat/ExecutionPurposeControl";

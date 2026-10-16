@@ -342,6 +342,7 @@ const watch = (threadId: ThreadId, number: number) =>
       threadId,
       ...pullRequest(number),
       watching: true,
+      purposeIntent: { version: 1, intent: { type: "unscoped" } } as const,
       link: { url: `https://github.com/pingdotgg/t3code/pull/${number}`, source: "agent" },
     });
   });

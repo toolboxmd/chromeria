@@ -22,6 +22,7 @@ export const TrackingReference = Schema.Struct({
   number: PositiveInt.check(Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)),
 });
 export type TrackingReference = typeof TrackingReference.Type;
+const isTrackingReference = Schema.is(TrackingReference);
 
 export const ExecutionPurposeScope = Schema.Union([
   Schema.Struct({ type: Schema.Literal("single"), reference: TrackingReference }),
@@ -241,7 +242,7 @@ export function parseTrackingReferenceUrl(url: string): TrackingReference | null
   const issue = parseIssueUrl(url);
   if (issue !== null) {
     const candidate = { ...issue, kind: "issue" };
-    return Schema.is(TrackingReference)(candidate) ? normalizeTrackingReference(candidate) : null;
+    return isTrackingReference(candidate) ? normalizeTrackingReference(candidate) : null;
   }
   try {
     const parsed = new URL(url.trim());
@@ -249,7 +250,7 @@ export function parseTrackingReferenceUrl(url: string): TrackingReference | null
     parsed.pathname = parsed.pathname.replace("/pull/", "/issues/");
     const pr = parseIssueUrl(parsed.href);
     const candidate = pr === null ? null : { ...pr, kind: "pr" };
-    return Schema.is(TrackingReference)(candidate) ? normalizeTrackingReference(candidate) : null;
+    return isTrackingReference(candidate) ? normalizeTrackingReference(candidate) : null;
   } catch {
     return null;
   }

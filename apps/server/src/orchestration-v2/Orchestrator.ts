@@ -328,6 +328,8 @@ export const OrchestratorV2Error = Schema.Union([
 ]);
 export type OrchestratorV2Error = typeof OrchestratorV2Error.Type;
 
+const isMissingProjectionThread = Schema.is(ProjectionStoreThreadNotFoundError);
+
 export interface OrchestratorV2DispatchResult {
   readonly sequence: number;
   readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>;
@@ -1127,7 +1129,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const stored = yield* readCommandProjection(threadId).pipe(
         Effect.map(Option.some),
         Effect.catchIf(
-          (error) => Schema.is(ProjectionStoreThreadNotFoundError)(error.cause),
+          (error) => isMissingProjectionThread(error.cause),
           () => Effect.succeed(Option.none()),
         ),
       );
@@ -5123,7 +5125,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         command.restartContinuationOfRunId ??
         command.usageLimitContinuationOfRunId ??
         command.manualContinuationOfRunId ??
-        command.forkPrismRetryOfRunId;
+        command.forkPrismRetryOfRunId ??
+        command.wightAdmission?.latestRunId ??
+        undefined;
       const purposeSourceRun = projection.runs.find((run) => run.id === purposeSourceRunId);
       let inheritedPurpose: ResolvedExecutionPurpose | undefined =
         command.purposeSource ??
@@ -5187,14 +5191,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             : { version: 1, intent: { type: "inherit" } }),
         selection: projection.thread.purposeSelection,
         inherited: inheritedPurpose,
-        ...(target === undefined
+        ...(target === undefined && inheritedPurpose === undefined
           ? {}
           : {
-              target: {
-                version: 1,
-                scope: executionPurposeOf(target).scope,
-                provenance: { type: "target_run", threadId: command.threadId, runId: target.id },
-              } satisfies ResolvedExecutionPurpose,
+              target:
+                target === undefined
+                  ? inheritedPurpose
+                  : ({
+                      version: 1,
+                      scope: executionPurposeOf(target).scope,
+                      provenance: {
+                        type: "target_run",
+                        threadId: command.threadId,
+                        runId: target.id,
+                      },
+                    } satisfies ResolvedExecutionPurpose),
             }),
       }).pipe(mapDispatchError(command));
       const selection = purposeSelectionOf(projection.thread);
@@ -7563,7 +7574,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       Effect.catchTags({
         OrchestratorProjectionError: (error) =>
           command.createdBy === "user" &&
-          (error.cause === undefined || Schema.is(ProjectionStoreThreadNotFoundError)(error.cause))
+          (error.cause === undefined || isMissingProjectionThread(error.cause))
             ? Effect.succeed(undefined)
             : Effect.fail(error),
       }),

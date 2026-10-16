@@ -94,7 +94,7 @@ export function ExecutionPurposeControl(props: {
               {props.runs.map((run) => {
                 const purpose = executionPurposeOf(run);
                 return (
-                  <li key={run.id} title={`Purpose source: ${purpose.provenance.type}`}>
+                  <li key={run.id}>
                     Run {run.ordinal}:{" "}
                     {purpose.scope.type === "single" ? (
                       <a

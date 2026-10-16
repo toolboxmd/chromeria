@@ -5001,7 +5001,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 usageFinality: "unreconciled",
                 noticeIds: [],
                 wakeDispositions: [],
-                observedAt: now,
+                observedAt: DateTime.formatIso(now),
               },
             ];
             const task = {
@@ -5358,7 +5358,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             usageFinality: "unreconciled",
             noticeIds: [],
             wakeDispositions: [],
-            observedAt: now,
+            observedAt: DateTime.formatIso(now),
           };
           const nativeSegments = (
             startsSegment ? [...previousSegments, segment] : previousSegments
@@ -7022,7 +7022,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   usageFinality: "unreconciled",
                   noticeIds: [],
                   wakeDispositions: [],
-                  observedAt: now,
+                  observedAt: DateTime.formatIso(now),
                 },
               ];
             }
@@ -7085,7 +7085,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       usageFinality: "unreconciled",
                       noticeIds: [],
                       wakeDispositions: [],
-                      observedAt: now,
+                      observedAt: DateTime.formatIso(now),
                     },
                   ];
             }

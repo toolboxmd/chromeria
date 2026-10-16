@@ -1,3 +1,8 @@
+import {
+  executionPurposeOf,
+  executionPurposesEqual,
+  type ExecutionPurpose,
+} from "@t3tools/contracts";
 import { executionPurposeWarnings } from "@t3tools/contracts";
 import type { BareReadGrant } from "../orchestration-v2/bareReadGrant.ts";
 import * as BareRuntime from "@t3tools/provider-core/server/bareLaunch";
@@ -3299,8 +3304,3 @@ export const layer: Layer.Layer<
   | ServerSettings.ServerSettingsService
   | RemoteDelegation.RemoteDelegation
 > = Layer.effect(OrchestratorMcpService, make).pipe(Layer.provide(Prism.layer));
-import {
-  executionPurposeOf,
-  executionPurposesEqual,
-  type ExecutionPurpose,
-} from "@t3tools/contracts";

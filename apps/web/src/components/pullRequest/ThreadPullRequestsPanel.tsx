@@ -1,3 +1,4 @@
+import { purposeSelectionOf, savedPurposeIntentForScope } from "@t3tools/contracts";
 import type { ProjectId, ScopedThreadRef, ThreadPullRequestLink } from "@t3tools/contracts";
 import {
   sourceControlClients,
@@ -509,4 +510,3 @@ function EnabledThreadPullRequestsPanel({
     </div>
   );
 }
-import { purposeSelectionOf, savedPurposeIntentForScope } from "@t3tools/contracts";

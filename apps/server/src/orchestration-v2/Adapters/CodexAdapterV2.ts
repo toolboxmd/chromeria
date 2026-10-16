@@ -3030,7 +3030,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           usageFinality: "unreconciled",
           noticeIds: [],
           wakeDispositions: [],
-          observedAt: now,
+          observedAt: DateTime.formatIso(now),
         });
 
         const recordCodexBackgroundOperation = Effect.fnUntraced(function* (
@@ -5040,11 +5040,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }
 
             if (payload.item.type === "commandExecution") {
-              yield* recordCodexBackgroundOperation(
-                context,
-                payload.item.id,
-                codexItemStatus(payload.item.status).completed,
-              );
               if (!codexItemStatus(payload.item.status).completed) {
                 yield* trackRunningCommandItem(payload.turnId, {
                   id: payload.item.id,
@@ -6523,6 +6518,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 input.status === "completed" &&
                 (yield* turnHasRetainedBackgroundWork(input.nativeTurnId));
               if (retainSettledContext) {
+                for (const item of (yield* Ref.get(runningCommandItemsByTurn))
+                  .get(input.nativeTurnId)
+                  ?.values() ?? []) {
+                  yield* recordCodexBackgroundOperation(input.context, item.id, false);
+                }
                 yield* Ref.update(settledTurns, (current) => {
                   const updated = new Map(current);
                   updated.set(input.nativeTurnId, input.context);

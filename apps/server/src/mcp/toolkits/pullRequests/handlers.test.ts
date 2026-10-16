@@ -282,6 +282,7 @@ describe("pull request toolkit handlers", () => {
           type: "thread.pull-request.watch",
           number: 9,
           watching: true,
+          purposeIntent: { version: 1, intent: { type: "unscoped" } } as const,
           link: { url: "https://github.com/t3tools/t3code/pull/9", source: "agent" },
         },
       ]);
@@ -332,7 +333,12 @@ describe("pull request toolkit handlers", () => {
       });
       yield* harness.call("watch_pull_request", { repository: "t3tools/t3code", number: 1 });
       expect(yield* Ref.get(harness.commands)).toMatchObject([
-        { type: "thread.pull-request.watch", number: 1, watching: true },
+        {
+          type: "thread.pull-request.watch",
+          number: 1,
+          watching: true,
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
+        },
       ]);
     }),
   );

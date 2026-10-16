@@ -1,3 +1,4 @@
+import { purposeForRuntimeRequest } from "../orchestration-v2/ExecutionPurpose.ts";
 import {
   CommandId,
   MessageId,
@@ -103,6 +104,7 @@ export const reconcileChildRequests = Effect.fn("childThreads.reconcileRequests"
             }
             if (accepted) continue;
             yield* dispatch({
+              purposeSource: yield* purposeForRuntimeRequest(childId, request),
               type: "message.dispatch",
               commandId: CommandId.make(`${prefix}${attempt}`),
               threadId: parentId,

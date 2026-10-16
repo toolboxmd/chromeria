@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 
-import { NodeId, RunId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { IsoDateTime, NodeId, RunId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ExecutionPurpose } from "./executionPurpose.ts";
 
 /** Native evidence is separate from display cursors and inferred turn references. */
@@ -57,6 +57,6 @@ export const NativeExecutionSegment = Schema.Struct({
       "duplicate",
     ]),
   ),
-  observedAt: Schema.DateTimeUtc,
+  observedAt: IsoDateTime,
 });
 export type NativeExecutionSegment = typeof NativeExecutionSegment.Type;
