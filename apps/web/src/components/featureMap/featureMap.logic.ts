@@ -336,7 +336,7 @@ export const MAP_SCALE_MIN = 0.1;
 export const MAP_SCALE_MAX = 4;
 /** A press that travels farther than this is a pan, not a click that opens a part. */
 export const MAP_DRAG_THRESHOLD_PX = 4;
-export const MAP_ZOOM_STEP = 1.25;
+const MAP_ZOOM_STEP = 1.25;
 /** Inset kept around the diagram when it is fitted to the viewport. */
 export const MAP_FIT_PADDING_PX = 24;
 /**
