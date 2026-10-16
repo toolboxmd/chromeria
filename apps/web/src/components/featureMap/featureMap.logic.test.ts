@@ -12,13 +12,26 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { IssueRowThread } from "../issues/issueStatus.logic";
 import {
+  clampMapScale,
   featureMapClassOf,
-  isChromeriaFeatureMapPart,
   featureMapDiagramSource,
   featureMapGaps,
   featureMapPartIdOf,
   featureMapShown,
+  fitMapViewport,
   foldFeatureMap,
+  iconAnchorInLayer,
+  isChromeriaFeatureMapPart,
+  MAP_DRAG_THRESHOLD_PX,
+  MAP_FIT_PADDING_PX,
+  MAP_SCALE_MAX,
+  MAP_SCALE_MIN,
+  MAP_WHEEL_SENSITIVITY,
+  panMapViewport,
+  pointerMovedPastDragThreshold,
+  scaleAfterWheel,
+  stepMapScale,
+  zoomMapViewport,
 } from "./featureMap.logic";
 
 type MapSnapshot = Extract<FeatureMapSnapshot, { _tag: "Map" }>;
@@ -434,6 +447,124 @@ describe("featureMapPartIdOf", () => {
   it("ignores ids that are not parts", () => {
     expect(featureMapPartIdOf("mermaid-diagram-12-flowchart-GHOST-3", ids)).toBeNull();
     expect(featureMapPartIdOf("L_C_SR_0", ids)).toBeNull();
+  });
+});
+
+describe("expanded map viewport", () => {
+  const viewport = { scale: 2, x: 10, y: -20 };
+
+  it("keeps the content point under the cursor when zooming", () => {
+    // Content point at the anchor before the zoom, checked against the result independently.
+    const anchor = { x: 30, y: 40 };
+    const contentX = (anchor.x - viewport.x) / viewport.scale;
+    const contentY = (anchor.y - viewport.y) / viewport.scale;
+    const zoomed = zoomMapViewport(viewport, anchor, 4);
+    expect(zoomed).toEqual({ scale: 4, x: -10, y: -80 });
+    expect(zoomed.x + contentX * zoomed.scale).toBeCloseTo(anchor.x);
+    expect(zoomed.y + contentY * zoomed.scale).toBeCloseTo(anchor.y);
+  });
+
+  it("does not drift when the next scale is already at the limit", () => {
+    const limited = { scale: MAP_SCALE_MAX, x: 5, y: 6 };
+    expect(zoomMapViewport(limited, { x: 12, y: 12 }, 100)).toEqual(limited);
+    expect(zoomMapViewport({ scale: MAP_SCALE_MIN, x: 5, y: 6 }, { x: 1, y: 1 }, 0)).toEqual({
+      scale: MAP_SCALE_MIN,
+      x: 5,
+      y: 6,
+    });
+  });
+
+  it("clamps scale and ignores a scale that is not a number", () => {
+    expect(clampMapScale(0.02)).toBe(MAP_SCALE_MIN);
+    expect(clampMapScale(9)).toBe(MAP_SCALE_MAX);
+    expect(clampMapScale(Number.NaN)).toBe(1);
+    expect(clampMapScale(1.5)).toBe(1.5);
+  });
+
+  it("pans in viewport pixels without changing scale", () => {
+    expect(panMapViewport(viewport, { x: 4, y: -3 })).toEqual({ scale: 2, x: 14, y: -23 });
+    expect(panMapViewport(viewport, { x: Number.NaN, y: 1 })).toBe(viewport);
+  });
+
+  it("steps toward the cursor's side of the range and stops at the ends", () => {
+    expect(stepMapScale(1, "in")).toBe(1.25);
+    expect(stepMapScale(1, "out")).toBe(0.8);
+    expect(stepMapScale(MAP_SCALE_MAX, "in")).toBe(MAP_SCALE_MAX);
+    expect(stepMapScale(MAP_SCALE_MIN, "out")).toBe(MAP_SCALE_MIN);
+  });
+
+  it("zooms out on a positive wheel delta and in on a negative one, in pixels or lines", () => {
+    const notch = scaleAfterWheel(1, 100, 0);
+    expect(notch).toBeCloseTo(Math.exp(-100 * MAP_WHEEL_SENSITIVITY));
+    expect(notch).toBeLessThan(1);
+    expect(scaleAfterWheel(1, -100, 0)).toBeGreaterThan(1);
+    expect(scaleAfterWheel(1, 1, 1)).toBeCloseTo(Math.exp(-16 * MAP_WHEEL_SENSITIVITY));
+    expect(scaleAfterWheel(MAP_SCALE_MIN, 500, 0)).toBe(MAP_SCALE_MIN);
+    expect(scaleAfterWheel(1, 0, 0)).toBe(1);
+  });
+
+  it("fits the diagram inside the viewport with padding, and centers it when scale hits a limit", () => {
+    const padding = MAP_FIT_PADDING_PX;
+    const fitted = fitMapViewport({
+      contentWidth: 200,
+      contentHeight: 100,
+      viewWidth: 400,
+      viewHeight: 400,
+    });
+    const scale = Math.min((400 - padding * 2) / 200, (400 - padding * 2) / 100);
+    expect(fitted).toEqual({
+      scale,
+      x: (400 - 200 * scale) / 2,
+      y: (400 - 100 * scale) / 2,
+    });
+    // The whole drawing is inside the padded viewport.
+    expect(fitted!.x).toBeGreaterThanOrEqual(padding - 0.001);
+    expect(fitted!.y).toBeGreaterThanOrEqual(padding - 0.001);
+    expect(fitted!.x + 200 * scale).toBeLessThanOrEqual(400 - padding + 0.001);
+
+    const shrunk = fitMapViewport({
+      contentWidth: 10_000,
+      contentHeight: 10_000,
+      viewWidth: 400,
+      viewHeight: 400,
+    });
+    expect(shrunk?.scale).toBe(MAP_SCALE_MIN);
+    expect(shrunk).toEqual({
+      scale: MAP_SCALE_MIN,
+      x: (400 - 10_000 * MAP_SCALE_MIN) / 2,
+      y: (400 - 10_000 * MAP_SCALE_MIN) / 2,
+    });
+    expect(
+      fitMapViewport({ contentWidth: 0, contentHeight: 10, viewWidth: 10, viewHeight: 10 }),
+    ).toBeNull();
+  });
+
+  it("treats a movement past 4px as a drag and a shorter one as a click", () => {
+    const start = { x: 0, y: 0 };
+    expect(pointerMovedPastDragThreshold(start, { x: MAP_DRAG_THRESHOLD_PX, y: 0 })).toBe(false);
+    expect(pointerMovedPastDragThreshold(start, { x: 3, y: 3 })).toBe(true);
+    expect(pointerMovedPastDragThreshold(start, { x: 2, y: 2 })).toBe(false);
+  });
+
+  it("converts a node's screen top-right into the scaled layer", () => {
+    expect(
+      iconAnchorInLayer({
+        node: { right: 110, top: 40 },
+        layer: { left: 10, top: 20 },
+        scale: 2,
+      }),
+    ).toEqual({ left: 50, top: 10 });
+    // The same layer-local corner, after the layer is translated and scaled, converts back.
+    const local = { left: 80, top: 16 };
+    const scale = 2.5;
+    const layer = { left: 12, top: -4 };
+    expect(
+      iconAnchorInLayer({
+        node: { right: layer.left + local.left * scale, top: layer.top + local.top * scale },
+        layer,
+        scale,
+      }),
+    ).toEqual(local);
   });
 });
 
