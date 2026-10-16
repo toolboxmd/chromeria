@@ -1,4 +1,4 @@
-import { OrchestratorMcpCapabilitiesResult } from "@t3tools/contracts";
+import { OrchestratorMcpCapabilitiesResult, PurposeIntent } from "@t3tools/contracts";
 import * as Predicate from "effect/Predicate";
 import {
   type EnvironmentId,
@@ -35,6 +35,7 @@ import * as PeerMcpClient from "./PeerMcpClient.ts";
 export const FORWARDED_WAIT_CHUNK_MS = 50_000;
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
+const isPurposeIntent = Schema.is(PurposeIntent);
 
 type Scope = McpInvocationContext.McpInvocationScope;
 
@@ -160,7 +161,9 @@ const make = Effect.gen(function* () {
         }
         if (
           scope.thread !== undefined &&
-          args.purposeIntent === undefined &&
+          (args.purposeIntent === undefined ||
+            (isPurposeIntent(args.purposeIntent) &&
+              args.purposeIntent.intent.type === "inherit")) &&
           (args.mode === undefined || args.mode === "auto" || args.mode === "queue")
         ) {
           const parent = yield* threads

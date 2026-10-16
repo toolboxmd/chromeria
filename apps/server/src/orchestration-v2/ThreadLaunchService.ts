@@ -5,6 +5,7 @@ import {
   type ExecutionPurpose,
   executionPurposeOf,
   purposeIntentsEqual,
+  purposeScopesEqual,
 } from "@t3tools/contracts";
 import * as ExecutionPurposeAdmission from "./ExecutionPurpose.ts";
 import type { BareReadGrant } from "./bareReadGrant.ts";
@@ -160,6 +161,8 @@ type ThreadLaunchReplayInput = Pick<
   | "linkOrigin"
   | "bare"
   | "purposeIntent"
+  | "purposeSource"
+  | "purposeParentRun"
   | "delegatedFrom"
 > & { readonly messageId?: MessageId };
 
@@ -366,6 +369,31 @@ const make = Effect.gen(function* () {
           threadId,
         )(new ExecutionPurposeAdmission.PurposeAdmissionError({ reason: "intent_reused" }));
       }
+      let source = input.purposeSource;
+      if (input.purposeIntent?.intent.type === "inherit" && input.purposeParentRun !== undefined) {
+        const parent = yield* threads
+          .getThreadRecords(input.purposeParentRun.threadId, ["runs"])
+          .pipe(Effect.mapError(mapError(input, "read-receipt", threadId)));
+        const parentRun = parent.runs.find(
+          (candidate) => candidate.id === input.purposeParentRun?.runId,
+        );
+        if (parentRun === undefined)
+          return yield* mapError(
+            input,
+            "read-receipt",
+            threadId,
+          )(new ExecutionPurposeAdmission.PurposeAdmissionError({ reason: "intent_reused" }));
+        source = executionPurposeOf(parentRun);
+      }
+      if (
+        source !== undefined &&
+        (run === undefined || !purposeScopesEqual(source.scope, executionPurposeOf(run).scope))
+      )
+        return yield* mapError(
+          input,
+          "read-receipt",
+          threadId,
+        )(new ExecutionPurposeAdmission.PurposeAdmissionError({ reason: "intent_reused" }));
       if (
         messageReceipt.value.status !== "accepted" ||
         messageReceipt.value.commandType !== "message.dispatch" ||

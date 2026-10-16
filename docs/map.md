@@ -76,7 +76,7 @@ flowchart TD
     NR["Network routes"]
     %% NR: #292 #358
     EP["Execution purpose"]
-    %% EP: #377
+    %% EP: #377 PR #388
     PRN["Paired session renewal"]
     %% PRN: #323
 

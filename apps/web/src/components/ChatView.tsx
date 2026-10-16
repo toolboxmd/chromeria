@@ -3114,15 +3114,16 @@ export default function ChatView(props: ChatViewProps) {
     : (primaryEnvironment?.serverConfig ?? null);
   const supportsExecutionPurpose =
     serverConfig?.environment.capabilities.executionPurposeVersions?.includes(1) === true;
-  const [draftPurposeScope, setDraftPurposeScope] = useState<ExecutionPurposeScope>({
-    type: "unscoped",
-    reason: "deliberate",
-  });
-  useEffect(() => {
-    setDraftPurposeScope({ type: "unscoped", reason: "deliberate" });
-  }, [routeThreadKey]);
+  const [draftPurpose, setDraftPurpose] = useState<{
+    readonly routeThreadKey: typeof routeThreadKey;
+    readonly scope: ExecutionPurposeScope;
+  } | null>(null);
   const currentPurposeSelection = purposeSelectionOf(activeThread ?? {});
-  const selectedPurposeScope = isServerThread ? currentPurposeSelection.scope : draftPurposeScope;
+  const selectedPurposeScope = isServerThread
+    ? currentPurposeSelection.scope
+    : draftPurpose?.routeThreadKey === routeThreadKey
+      ? draftPurpose.scope
+      : purposeSelectionOf({}).scope;
   const startThreadTurn = useStableCallback((request: Parameters<typeof dispatchThreadTurn>[0]) => {
     const supportsPurpose =
       appAtomRegistry
@@ -3148,7 +3149,7 @@ export default function ChatView(props: ChatViewProps) {
   });
   const changePurposeScope = async (scope: ExecutionPurposeScope): Promise<boolean> => {
     if (!isServerThread || activeThread === undefined || activeThread === null) {
-      setDraftPurposeScope(scope);
+      setDraftPurpose({ routeThreadKey, scope });
       return true;
     }
     const result = await updateThreadMetadata({

@@ -357,6 +357,7 @@ const makeEngine = Effect.gen(function* () {
               : threadLaunch.replayOrLaunch(
                   {
                     commandId: send.commandId,
+                    purposeSource: payload.purposeSource,
                     threadId,
                     projectId: launch.projectId,
                     ...(launch.bare === undefined ? {} : { bare: launch.bare }),

@@ -174,8 +174,9 @@ give it several turns; each try is a run attempt (`RunAttempt`).
 _Avoid_: turn, pass
 
 **Native execution segment**:
-One native child start or resume and its initiating execution. Assigning its
-responses also requires a proved native input or turn boundary.
+One native child start, resume, workflow member attempt or background operation
+and its initiating execution. Assigning its responses also requires a proved
+native input or turn boundary.
 
 **Queue**:
 Runs waiting on a thread (`t3_queue_*`).

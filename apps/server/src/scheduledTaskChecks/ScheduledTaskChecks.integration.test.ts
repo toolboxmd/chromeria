@@ -1575,6 +1575,7 @@ it.effect(
             service.upsert,
           )({
             title: "Nightly backup",
+            purposeIntent: { version: 1, intent: { type: "unscoped" } },
             prompt: "Nightly backup",
             enabled: false,
             projectId,
@@ -1641,6 +1642,7 @@ it.effect(
             service.upsert,
           )({
             title: "Nightly work",
+            purposeIntent: { version: 1, intent: { type: "unscoped" } },
             prompt,
             enabled: false,
             projectId,

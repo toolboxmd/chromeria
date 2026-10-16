@@ -61,13 +61,13 @@ export function ExecutionPurposeControl(props: {
               value={url}
               onChange={(event) => setUrl(event.target.value)}
               placeholder="https://github.com/owner/repo/issues/123"
-              disabled={saving}
+              disabled={props.disabled || saving}
             />
           </label>
           <div className="flex gap-2">
             <Button
               size="sm"
-              disabled={saving}
+              disabled={props.disabled || saving}
               onClick={() => {
                 const reference = parseTrackingReferenceUrl(url);
                 if (reference === null) {
@@ -82,7 +82,7 @@ export function ExecutionPurposeControl(props: {
             <Button
               variant="outline"
               size="sm"
-              disabled={saving}
+              disabled={props.disabled || saving}
               onClick={() => void save({ type: "unscoped", reason: "deliberate" })}
             >
               Clear purpose

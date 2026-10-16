@@ -274,6 +274,7 @@ describe("pull request toolkit handlers", () => {
       const harness = yield* makeHarness();
       const result = yield* harness.call("watch_pull_request", {
         url: "https://github.com/t3tools/t3code/pull/9",
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
       });
       // The harness thread never changes, so the result reports what it still holds.
       expect(result).toMatchObject({ number: 9, watching: false, wasWatching: false });
@@ -331,7 +332,11 @@ describe("pull request toolkit handlers", () => {
           { ...closed, snapshot: closed.snapshot && { ...closed.snapshot, state: "closed" } },
         ]),
       });
-      yield* harness.call("watch_pull_request", { repository: "t3tools/t3code", number: 1 });
+      yield* harness.call("watch_pull_request", {
+        repository: "t3tools/t3code",
+        number: 1,
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
+      });
       expect(yield* Ref.get(harness.commands)).toMatchObject([
         {
           type: "thread.pull-request.watch",

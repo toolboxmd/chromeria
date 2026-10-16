@@ -145,6 +145,9 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               interactionMode,
               createdBy: "agent",
               purposeIntent: input.purposeIntent,
+              ...(caller?.activeRunId == null
+                ? {}
+                : { purposeParentRun: { threadId: caller.id, runId: caller.activeRunId } }),
               ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),
               ...(input.bare === undefined ? {} : { bare: input.bare }),
               ...(linkOrigin === undefined ? {} : { linkOrigin }),

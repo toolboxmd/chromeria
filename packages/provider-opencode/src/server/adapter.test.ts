@@ -885,7 +885,32 @@ describe("OpenCodeAdapterV2", () => {
       if (hasPendingBackgroundWork === undefined) {
         return yield* Effect.die("OpenCode runtime must expose hasPendingBackgroundWork.");
       }
-      yield* harness.startTurn();
+      const purpose = {
+        version: 1,
+        scope: {
+          type: "single",
+          reference: { host: "github.com", repository: "example/repo", kind: "issue", number: 11 },
+        },
+        provenance: { type: "declared" },
+      } as const;
+      const captured: ProviderAdapter.ProviderAdapterV2Event[] = [];
+      const childInputSeen = yield* Deferred.make<void>();
+      yield* harness.runtime.events.pipe(
+        Stream.runForEach((event) =>
+          Effect.gen(function* () {
+            captured.push(event);
+            if (
+              event.type === "provider_turn.updated" &&
+              event.providerTurn.nativeInputs?.some(
+                (input) => input.nativeId === "msg_child_initial",
+              )
+            )
+              yield* Deferred.succeed(childInputSeen, undefined);
+          }),
+        ),
+        Effect.forkScoped,
+      );
+      yield* harness.startTurn("hello", harness.providerThread, { purpose });
       const terminal = yield* harness.runtime.events.pipe(
         Stream.filter((event) => event.type === "turn.terminal"),
         Stream.runHead,
@@ -938,6 +963,14 @@ describe("OpenCodeAdapterV2", () => {
           info: { id: child, parentID: root, time: { created: 2, updated: 2 } },
         },
       });
+      yield* push({
+        type: "message.updated",
+        properties: {
+          sessionID: child,
+          info: { id: "msg_child_initial", sessionID: child, role: "user", time: { created: 2 } },
+        },
+      });
+      yield* Deferred.await(childInputSeen);
       yield* push(status(child, "busy"));
       yield* push(taskPart("completed"));
       yield* push(status(root, "idle"));
@@ -947,6 +980,30 @@ describe("OpenCodeAdapterV2", () => {
       yield* push(status(child, "idle"));
       yield* push({ type: "session.idle", properties: { sessionID: child } });
       assert.isFalse(yield* hasPendingBackgroundWork, "an idle child must not pin idle release");
+      const nativeChild = captured.findLast((event) => event.type === "subagent.updated");
+      assert.equal(nativeChild?.type, "subagent.updated");
+      if (nativeChild?.type !== "subagent.updated") return;
+      assert.deepEqual(nativeChild.subagent.nativeSegments?.[0]?.source, {
+        type: "app_run",
+        threadId: harness.threadId,
+        runId: harness.runId,
+      });
+      assert.deepEqual(nativeChild.subagent.nativeSegments?.[0]?.purpose, purpose);
+      assert.deepEqual(nativeChild.subagent.nativeSegments?.[0]?.boundary, {
+        state: "native_input",
+        nativeInputId: "msg_child_initial",
+      });
+      assert.equal(nativeChild.subagent.nativeSegments?.[0]?.usageFinality, "unreconciled");
+      assert.isTrue(
+        captured.some(
+          (event) =>
+            event.type === "provider_turn.updated" &&
+            event.providerTurn.nativeInputs?.some(
+              (input) =>
+                input.nativeId === promptId && input.validation === "opencode_admitted_message",
+            ),
+        ),
+      );
     }).pipe(
       Effect.provide(
         Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, FileSystem.layerNoop({})),

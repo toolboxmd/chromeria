@@ -6951,11 +6951,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       : segment,
                   ),
                 };
-                yield* emitProviderEvent({
-                  type: "subagent.updated",
-                  driver: CLAUDE_PROVIDER,
-                  subagent: subagent.task,
-                });
+                // The notification's lifecycle update carries the initial offer
+                // evidence. Emitting its old running snapshot first would put a
+                // stale lifecycle receipt ahead of the confirmed native outcome.
+                if (disposition !== "offered")
+                  yield* emitProviderEvent({
+                    type: "subagent.updated",
+                    driver: CLAUDE_PROVIDER,
+                    subagent: subagent.task,
+                  });
               }
               const providerThread = (yield* Ref.get(lastProviderThreadByNativeThread)).get(
                 wakeInput.nativeThreadId,
@@ -8492,9 +8496,23 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           if (
             context?.promptUuid != null &&
             liveQuery?.query === input.query &&
+            !context.nativeInputEchoConfirmed &&
             claudeEchoedPromptUuids(message).includes(context.promptUuid)
-          )
+          ) {
             context.nativeInputEchoConfirmed = true;
+            // Persist the validated input while its response is still active.
+            // Result-only echoes are carried by the terminal update below.
+            if (message.type !== "result")
+              yield* emitProviderEvent({
+                type: "provider_turn.updated",
+                driver: CLAUDE_PROVIDER,
+                providerTurn: providerTurnPayload({
+                  context,
+                  status: "running",
+                  completedAt: null,
+                }),
+              });
+          }
           if (
             context === null ||
             context.promptUuid === null ||
@@ -8505,7 +8523,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             return;
           }
           if (claudeEchoedPromptUuids(message).includes(context.promptUuid)) {
-            context.nativeInputEchoConfirmed = true;
             if (
               liveQuery.promptEchoMode === "unknown" ||
               liveQuery.promptEchoMode === "acknowledged"

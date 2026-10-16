@@ -17,6 +17,13 @@ import {
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as ScheduledTasks from "../scheduledTasks/ScheduledTaskService.ts";
+import * as Scheduler from "../scheduling/Scheduler.ts";
+import * as BareLaunch from "./BareLaunch.ts";
+import * as ThreadLaunch from "./ThreadLaunchService.ts";
+import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -223,7 +230,258 @@ it.effect("legacy omission stays warned unscoped; a replay cannot change declare
       reason: "legacy_no_intent",
     });
     assert.deepEqual(projection.thread.purposeSelection, { revision: 1, scope: scopedA });
+    const idle = ThreadId.make("thread:legacy-mobile-idle");
+    yield* createThread(idle);
+    const legacyMobile = yield* orchestrator.dispatch({
+      ...message(idle, "legacy-mobile-auto"),
+      creationSource: "mobile",
+      deliveryIntent: "auto",
+    });
+    assert.deepEqual(legacyMobile.admittedRun?.purpose.scope, {
+      type: "unscoped",
+      reason: "legacy_no_intent",
+    });
+    const empty = ThreadId.make("thread:new-mobile-targetless");
+    yield* createThread(empty);
+    assert.equal(
+      (yield* Effect.exit(
+        orchestrator.dispatch({
+          ...message(empty, "new-mobile-targetless", { version: 1, intent: { type: "target" } }),
+          creationSource: "mobile",
+          deliveryIntent: "steer",
+        }),
+      ))._tag,
+      "Failure",
+    );
+    assert.isEmpty((yield* orchestrator.getThreadProjection(empty)).runs);
   }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
+  "a causal command replay retains its admitted source and refuses a changed source purpose",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread:causal-purpose-replay");
+      yield* createThread(threadId);
+      const sourceA = { version: 1, scope: scopedA, provenance: { type: "declared" } } as const;
+      const first = {
+        ...message(threadId, "causal-purpose-replay", { version: 1, intent: { type: "inherit" } }),
+        createdBy: "system" as const,
+        creationSource: "server" as const,
+        purposeSource: sourceA,
+      };
+      const original = yield* orchestrator.dispatch(first);
+      const before = yield* sql<{
+        count: number;
+      }>`SELECT count(*) AS count FROM orchestration_v2_effect_outbox`;
+      assert.deepEqual((yield* orchestrator.dispatch(first)).admittedRun, original.admittedRun);
+      const changed = yield* Effect.exit(
+        orchestrator.dispatch({
+          ...first,
+          purposeSource: { ...sourceA, scope: scopedB },
+        }),
+      );
+      assert.equal(changed._tag, "Failure");
+      const after = yield* sql<{
+        count: number;
+      }>`SELECT count(*) AS count FROM orchestration_v2_effect_outbox`;
+      assert.deepEqual(after, before);
+      assert.deepEqual(
+        (yield* orchestrator.getThreadProjection(threadId)).runs.map((run) => run.purpose?.scope),
+        [scopedA],
+      );
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
+  "saved A schedules ignore the B chip; old configurations fire legacy and new saves require intent",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const schedules = yield* ScheduledTasks.ScheduledTaskService;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread:schedule-purpose");
+      yield* createThread(threadId);
+      yield* orchestrator.dispatch(
+        message(threadId, "schedule-active-a", {
+          version: 1,
+          intent: { type: "reference", reference: referenceA },
+        }),
+      );
+      yield* orchestrator.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make("schedule-select-b"),
+        threadId,
+        purposeSelection: { expectedRevision: 1, scope: scopedB },
+      });
+      const input = {
+        title: "Isolated purpose schedule",
+        prompt: "Scheduled fixture",
+        enabled: true,
+        schedule: { type: "interval", everyMs: 60_000 } as const,
+        projectId: ProjectId.make("project:purpose"),
+        threadId,
+        workspaceStrategy: { type: "root" } as const,
+        modelSelection,
+        runtimeMode: "full-access" as const,
+        interactionMode: "default" as const,
+      };
+      assert.equal((yield* Effect.exit(schedules.upsert(input)))._tag, "Failure");
+      assert.isEmpty((yield* schedules.list()).tasks);
+      const { task } = yield* schedules.upsert({
+        ...input,
+        purposeIntent: { version: 1, intent: { type: "reference", reference: referenceA } },
+      });
+      const fired = yield* schedules.runNow({ id: task.id });
+      assert.equal(fired.task.lastRunStatus, "succeeded");
+      const first = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(first.runs[1]?.purpose, {
+        version: 1,
+        scope: scopedA,
+        provenance: { type: "schedule", scheduledTaskId: task.id },
+      });
+      assert.deepEqual(first.thread.purposeSelection, { revision: 2, scope: scopedB });
+      // A nullable column is the pre-contract persisted configuration, not a new save.
+      yield* sql`UPDATE scheduled_tasks SET purpose_intent_json = NULL WHERE task_id = ${task.id}`;
+      yield* TestClock.adjust(1);
+      yield* schedules.runNow({ id: task.id });
+      const legacy = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(legacy.runs[2]?.purpose?.scope, {
+        type: "unscoped",
+        reason: "legacy_no_intent",
+      });
+      yield* schedules.setEnabled({ id: task.id, enabled: false });
+      assert.equal(
+        (yield* Effect.exit(schedules.setEnabled({ id: task.id, enabled: true })))._tag,
+        "Failure",
+      );
+      assert.equal(legacy.runs.length, 3);
+    }).pipe(
+      Effect.provide(
+        ScheduledTasks.layer.pipe(
+          Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+          Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),
+          Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+          Layer.provide(Scheduler.layer),
+          Layer.provide(NodeCrypto.layer),
+          Layer.provideMerge(layerTest),
+        ),
+      ),
+    ),
+);
+
+it.effect(
+  "watch wakes retain saved purpose, legacy watches stay unscoped and purpose edits invalidate old reads",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      for (const legacy of [false, true]) {
+        const threadId = ThreadId.make(`thread:watch-purpose-${legacy}`);
+        yield* createThread(threadId);
+        const watchCommand = {
+          type: "thread.pull-request.watch",
+          threadId,
+          host: "github.com",
+          repository: "example/repo",
+          number: 350,
+          watching: true,
+          link: { url: "https://github.com/example/repo/pull/350", source: "agent" },
+        } as const;
+        assert.equal(
+          (yield* Effect.exit(
+            orchestrator.dispatch({
+              ...watchCommand,
+              commandId: CommandId.make(`watch-no-intent-${legacy}`),
+            }),
+          ))._tag,
+          "Failure",
+        );
+        yield* orchestrator.dispatch({
+          ...watchCommand,
+          commandId: CommandId.make(`watch-save-a-${legacy}`),
+          purposeIntent: { version: 1, intent: { type: "reference", reference: referenceA } },
+        });
+        let projection = yield* orchestrator.getThreadProjection(threadId);
+        if (legacy) {
+          const links = projection.thread.pullRequests!.map((link) => {
+            const { purposeIntent: _intent, ...oldWatch } = link.watch!;
+            return { ...link, watch: oldWatch };
+          });
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make("legacy-watch-fixture"),
+                type: "thread.metadata-updated",
+                threadId,
+                occurredAt: yield* DateTime.now,
+                payload: { ...projection.thread, pullRequests: links },
+              },
+            ],
+          });
+          projection = yield* orchestrator.getThreadProjection(threadId);
+        }
+        const saved = projection.thread.pullRequests![0]!.watch!;
+        const { purposeIntent: _savedIntent, ...progress } = saved;
+        yield* orchestrator.dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make(`watch-chip-b-${legacy}`),
+          threadId,
+          purposeSelection: { expectedRevision: 0, scope: scopedB },
+        });
+        const sync = {
+          type: "thread.pull-request-watch.sync",
+          threadId,
+          host: "github.com",
+          repository: "example/repo",
+          number: 350,
+          startedAt: saved.startedAt,
+          watch: { ...progress, wakes: 1 },
+          wake: {
+            messageId: MessageId.make(`watch-wake-${legacy}`),
+            text: "Watch fixture",
+            notification: {
+              source: { kind: "monitor" },
+              outcome: "updated",
+              summary: "Isolated watch",
+            },
+          },
+        } as const;
+        yield* orchestrator.dispatch({
+          ...sync,
+          commandId: CommandId.make(`watch-fire-${legacy}`),
+        });
+        const fired = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepEqual(
+          fired.runs[0]?.purpose?.scope,
+          legacy ? { type: "unscoped", reason: "legacy_no_intent" } : scopedA,
+        );
+        assert.deepEqual(fired.thread.purposeSelection, { revision: 1, scope: scopedB });
+        assert.deepEqual(fired.thread.pullRequests![0]?.watch?.purposeIntent, saved.purposeIntent);
+        if (!legacy) {
+          yield* orchestrator.dispatch({
+            ...watchCommand,
+            commandId: CommandId.make("watch-save-b"),
+            purposeIntent: { version: 1, intent: { type: "reference", reference: referenceB } },
+          });
+          const edited = yield* orchestrator.getThreadProjection(threadId);
+          assert.notEqual(edited.thread.pullRequests![0]?.watch?.startedAt, saved.startedAt);
+          assert.equal(
+            (yield* Effect.exit(
+              orchestrator.dispatch({
+                ...sync,
+                commandId: CommandId.make("watch-stale-read"),
+                wake: { ...sync.wake, messageId: MessageId.make("watch-stale-message") },
+              }),
+            ))._tag,
+            "Failure",
+          );
+          assert.equal((yield* orchestrator.getThreadProjection(threadId)).runs.length, 1);
+        }
+      }
+    }).pipe(Effect.provide(layerTest)),
 );
 
 it.effect(

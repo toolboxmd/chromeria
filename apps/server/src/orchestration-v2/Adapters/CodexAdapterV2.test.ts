@@ -8215,88 +8215,147 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
-  it.effect("rejects duplicate child starts across parent runs", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const firstDone = yield* Deferred.make<void>();
-        const resumed = yield* Deferred.make<void>();
-        const secondTurn = "native-parent-resume-turn";
-        const secondPrompt = "Resume the child.";
-        const entries = [...resumeSubagentTranscript.entries];
-        const resumeIndex = entries.findIndex(
-          (e) => e.type === "emit_inbound" && e.label === `turn/started/${RESUME_CHILD_TURN_2}`,
-        );
-        const suffix = entries.splice(resumeIndex);
-        for (const entry of codexReplayPreamble({
-          nativeThreadId: RESUME_NATIVE_THREAD,
-          nativeTurnId: secondTurn,
-          prompt: secondPrompt,
-        }).slice(-3)) {
-          entries.push(
-            entry.type === "expect_outbound" || entry.type === "emit_inbound"
-              ? {
-                  ...entry,
-                  frame:
-                    Predicate.isObject(entry.frame) && "id" in entry.frame
-                      ? { ...entry.frame, id: 4 }
-                      : entry.frame,
-                }
-              : entry,
+  it.effect.each([false, true])(
+    "rejects duplicate child starts across A/B parent runs and requires an exact resume call (observed=$0)",
+    (observedResume) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const firstDone = yield* Deferred.make<void>();
+          const resumed = yield* Deferred.make<void>();
+          const secondTurn = "native-parent-resume-turn";
+          const secondPrompt = "Resume the child.";
+          const purposeA = {
+            version: 1,
+            scope: {
+              type: "single",
+              reference: {
+                host: "github.com",
+                repository: "example/repo",
+                kind: "issue",
+                number: 11,
+              },
+            },
+            provenance: { type: "declared" },
+          } as const;
+          const purposeB = {
+            ...purposeA,
+            scope: { ...purposeA.scope, reference: { ...purposeA.scope.reference, number: 12 } },
+          } as const;
+          const entries = [...resumeSubagentTranscript.entries];
+          const resumeIndex = entries.findIndex(
+            (e) => e.type === "emit_inbound" && e.label === `turn/started/${RESUME_CHILD_TURN_2}`,
           );
-        }
-        entries.push(childTurnStarted(RESUME_CHILD_TURN_1));
-        entries.push(...suffix);
-        const harness = yield* makeCodexReplayHarness(
-          makeCodexReplayTranscript({
-            scenario: "codex-cross-run-resume",
-            entries,
-          }),
-          (event) =>
-            event.type === "turn.terminal"
-              ? Deferred.succeed(firstDone, undefined)
-              : event.type === "subagent.updated" && event.subagent.runId === "run-cross-run-second"
-                ? Deferred.succeed(resumed, undefined)
-                : Effect.void,
-        );
-        const now = yield* DateTime.now;
-        yield* harness.runtime.startTurn(
-          makeCodexTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now,
-            attemptId: RunAttemptId.make("cross-run-first"),
-            text: RESUME_PROMPT,
-          }),
-        );
-        yield* TestClock.adjust("100 millis");
-        yield* Deferred.await(firstDone);
-        yield* harness.runtime.startTurn({
-          ...makeCodexTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now,
-            attemptId: RunAttemptId.make("cross-run-second"),
-            text: secondPrompt,
-          }),
-          runOrdinal: 2,
-          providerTurnOrdinal: 2,
-        });
-        yield* TestClock.adjust("30 seconds");
-        yield* Deferred.await(resumed);
-        const row = harness
-          .subagentUpdates()
-          .find((e) => e.subagent.runId === "run-cross-run-second")?.subagent;
-        assert.equal(row?.status, "running");
-        assert.equal(row?.parentNodeId, "node-cross-run-second");
-        assert.isNull(row?.completedAt);
-        assert.isNotNull(row?.startedAt);
-        assert.equal(DateTime.toEpochMillis(row!.startedAt!), 1782622470000);
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          const suffix = entries.splice(resumeIndex);
+          for (const entry of codexReplayPreamble({
+            nativeThreadId: RESUME_NATIVE_THREAD,
+            nativeTurnId: secondTurn,
+            prompt: secondPrompt,
+          }).slice(-3)) {
+            entries.push(
+              entry.type === "expect_outbound" || entry.type === "emit_inbound"
+                ? {
+                    ...entry,
+                    frame:
+                      Predicate.isObject(entry.frame) && "id" in entry.frame
+                        ? { ...entry.frame, id: 4 }
+                        : entry.frame,
+                  }
+                : entry,
+            );
+          }
+          if (observedResume)
+            entries.push({
+              type: "emit_inbound",
+              label: "exact-resume-call-b",
+              frame: {
+                method: "item/completed",
+                params: {
+                  threadId: RESUME_NATIVE_THREAD,
+                  turnId: secondTurn,
+                  item: {
+                    type: "collabAgentToolCall",
+                    id: "native-resume-call-b",
+                    tool: "sendInput",
+                    status: "completed",
+                    senderThreadId: RESUME_NATIVE_THREAD,
+                    receiverThreadIds: [RESUME_CHILD_THREAD],
+                    agentsStates: { [RESUME_CHILD_THREAD]: { status: "running", message: null } },
+                  },
+                },
+              },
+            });
+          entries.push(childTurnStarted(RESUME_CHILD_TURN_1));
+          entries.push(...suffix);
+          const harness = yield* makeCodexReplayHarness(
+            makeCodexReplayTranscript({
+              scenario: "codex-cross-run-resume",
+              entries,
+            }),
+            (event) =>
+              event.type === "turn.terminal"
+                ? Deferred.succeed(firstDone, undefined)
+                : event.type === "subagent.updated" &&
+                    event.subagent.runId === "run-cross-run-second"
+                  ? Deferred.succeed(resumed, undefined)
+                  : Effect.void,
+          );
+          const now = yield* DateTime.now;
+          yield* harness.runtime.startTurn({
+            ...makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("cross-run-first"),
+              text: RESUME_PROMPT,
+            }),
+            purpose: purposeA,
+          });
+          yield* TestClock.adjust("100 millis");
+          yield* Deferred.await(firstDone);
+          yield* harness.runtime.startTurn({
+            ...makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("cross-run-second"),
+              text: secondPrompt,
+            }),
+            runOrdinal: 2,
+            providerTurnOrdinal: 2,
+            purpose: purposeB,
+          });
+          yield* TestClock.adjust("30 seconds");
+          yield* Deferred.await(resumed);
+          const row = harness
+            .subagentUpdates()
+            .find((e) => e.subagent.runId === "run-cross-run-second")?.subagent;
+          assert.equal(row?.status, "running");
+          assert.equal(row?.parentNodeId, "node-cross-run-second");
+          assert.isNull(row?.completedAt);
+          assert.isNotNull(row?.startedAt);
+          assert.equal(DateTime.toEpochMillis(row!.startedAt!), 1782622470000);
+          assert.deepEqual(row?.nativeSegments?.[0]?.purpose.scope, purposeA.scope);
+          assert.deepEqual(row?.nativeSegments?.[0]?.boundary, {
+            state: "native_turns",
+            nativeTurnIds: [RESUME_CHILD_TURN_1],
+          });
+          assert.equal(row?.nativeSegments?.length, observedResume ? 2 : 1);
+          if (observedResume) {
+            assert.deepEqual(row?.nativeSegments?.[1]?.purpose.scope, purposeB.scope);
+            assert.deepEqual(row?.nativeSegments?.[1]?.source, {
+              type: "app_run",
+              threadId: harness.threadId,
+              runId: RunId.make("run-cross-run-second"),
+            });
+            assert.equal(row?.nativeSegments?.[1]?.boundary.state, "unresolved");
+            assert.equal(row?.nativeSegments?.[1]?.usageFinality, "unreconciled");
+          }
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
         ),
       ),
-    ),
   );
 
   it.effect.each([

@@ -20,6 +20,7 @@ export const NativeExecutionSegment = Schema.Struct({
   version: Schema.Literal(1),
   /** Native session, child and initiating call identify a segment, never just a reusable task id. */
   id: TrimmedNonEmptyString,
+  /** Session carrying the initiating call; nativeChildId names a distinct child session/task. */
   nativeSessionId: TrimmedNonEmptyString,
   nativeOperationId: TrimmedNonEmptyString,
   nativeChildId: Schema.optional(TrimmedNonEmptyString),

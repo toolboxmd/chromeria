@@ -1049,7 +1049,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             prior?.type === "run.created" || prior?.type === "run.updated"
               ? prior.payload
               : (yield* projectionStore
-                  .getThreadRecords(domainEvent.threadId, ["runs"])
+                  .getThreadRecords(domainEvent.threadId, ["runs"], {
+                    runIds: [domainEvent.payload.id],
+                  })
                   .pipe(mapDispatchError(command))).runs.find(
                   (run) => run.id === domainEvent.payload.id,
                 );
@@ -2599,7 +2601,30 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: "The pull request watch ended or its thread settled while it was read.",
         });
       }
-      yield* dispatchThreadMutation(command, events, effects);
+      if (
+        command.watch !== null &&
+        command.watch.purposeIntent !== undefined &&
+        !purposeIntentsEqual(link?.watch?.purposeIntent, command.watch.purposeIntent)
+      )
+        return yield* mapDispatchError(command)(
+          Effect.fail(new ExecutionPurpose.PurposeAdmissionError({ reason: "intent_reused" })),
+        );
+      yield* dispatchThreadMutation(
+        {
+          ...command,
+          watch:
+            command.watch === null
+              ? null
+              : {
+                  ...command.watch,
+                  ...(link?.watch?.purposeIntent === undefined
+                    ? {}
+                    : { purposeIntent: link.watch.purposeIntent }),
+                },
+        },
+        events,
+        effects,
+      );
       if (command.wake === undefined) return;
       const watchPurpose = yield* ExecutionPurpose.resolvePurposeIntent({
         intent: link?.watch?.purposeIntent,
@@ -3445,6 +3470,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               : linked;
           const existing = links.find(visible);
           if (existing === undefined) return thread;
+          const changedWatch =
+            command.type === "thread.pull-request.watch" &&
+            command.watching &&
+            existing.watch !== undefined &&
+            !purposeIntentsEqual(existing.watch.purposeIntent, command.purposeIntent)
+              ? existing.watch
+              : undefined;
+          // A saved purpose edit starts a new watch generation. Its existing
+          // timestamp identity also fences host reads taken before the edit.
+          const watchStartedAt =
+            changedWatch !== undefined
+              ? DateTime.formatIso(
+                  DateTime.makeUnsafe(
+                    Math.max(DateTime.toEpochMillis(now), Date.parse(changedWatch.startedAt) + 1),
+                  ),
+                )
+              : startedAt;
           const watch =
             command.type === "thread.pull-request-watch.sync"
               ? // Progress read before a stop or restart must not bring the old watch back.
@@ -3454,8 +3496,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               : !command.watching
                 ? undefined
                 : {
-                    ...(existing.watch ?? {
-                      startedAt,
+                    ...((changedWatch === undefined ? existing.watch : undefined) ?? {
+                      startedAt: watchStartedAt,
                       headSha: null,
                       failedChecks: [],
                       passed: false,
@@ -5099,7 +5141,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
       const activePurposeTarget = projection.runs.findLast(isBlockingRun);
       const isTargetOperation =
-        (command.purposeIntent === undefined && isMobileSteer(command, command.deliveryIntent)) ||
+        (activePurposeTarget !== undefined &&
+          command.purposeIntent === undefined &&
+          isMobileSteer(command, command.deliveryIntent)) ||
         command.deliveryIntent === "steer" ||
         command.deliveryIntent === "restart" ||
         command.purposeIntent?.intent.type === "target" ||
@@ -5121,13 +5165,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           Effect.fail(new ExecutionPurpose.PurposeAdmissionError({ reason: "target_missing" })),
         );
       }
-      const purposeSourceRunId =
-        command.restartContinuationOfRunId ??
-        command.usageLimitContinuationOfRunId ??
-        command.manualContinuationOfRunId ??
-        command.forkPrismRetryOfRunId ??
-        command.wightAdmission?.latestRunId ??
-        undefined;
+      const purposeSourceRunId = continuationPurposeRunId(command);
       const purposeSourceRun = projection.runs.find((run) => run.id === purposeSourceRunId);
       let inheritedPurpose: ResolvedExecutionPurpose | undefined =
         command.purposeSource ??
@@ -5211,7 +5249,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const selection = purposeSelectionOf(projection.thread);
       const selectedScope =
         resolvedPurpose.select ??
-        (projection.runs.length === 0 && inheritedPurpose !== undefined
+        (projection.runs.length === 0 &&
+        projection.thread.purposeSelection === undefined &&
+        inheritedPurpose !== undefined
           ? resolvedPurpose.purpose.scope
           : undefined);
       if (
@@ -12602,10 +12642,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       runEvent?.type === "run.created" || runEvent?.type === "run.updated"
         ? runEvent.payload
         : (yield* projectionStore
-            .getThreadRecords(command.threadId, ["runs"])
+            .getThreadRecords(command.threadId, ["runs"], { runIds: [runId] })
             .pipe(mapDispatchError(command))).runs.find((run) => run.id === runId);
     return run === undefined ? {} : { admittedRun: { runId, purpose: executionPurposeOf(run) } };
   });
+
+  const continuationPurposeRunId = (
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "message.dispatch" }>,
+  ) =>
+    command.restartContinuationOfRunId ??
+    command.usageLimitContinuationOfRunId ??
+    command.manualContinuationOfRunId ??
+    command.forkPrismRetryOfRunId ??
+    command.wightAdmission?.latestRunId ??
+    undefined;
 
   const dispatchWithReceiptEffect = Effect.fn("orchestrationV2.dispatch.withReceipt")(function* (
     command: OrchestrationV2ServerCommand,
@@ -12683,10 +12733,33 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (command.type === "queue.resume") {
         yield* mapDispatchError(command)(startNextQueuedRun(command.threadId));
       }
+      const admitted = yield* admissionResult(command, storedEvents);
+      if (command.type === "message.dispatch") {
+        const sourceRunId = continuationPurposeRunId(command);
+        const sourceRun =
+          sourceRunId === undefined
+            ? undefined
+            : (yield* projectionStore
+                .getThreadRecords(command.threadId, ["runs"], { runIds: [sourceRunId] })
+                .pipe(mapDispatchError(command))).runs.find((run) => run.id === sourceRunId);
+        const source =
+          command.purposeSource ??
+          (sourceRun === undefined ? undefined : executionPurposeOf(sourceRun));
+        if (
+          admitted.admittedRun !== undefined &&
+          ((sourceRunId !== undefined && sourceRun === undefined) ||
+            (source !== undefined &&
+              !purposeScopesEqual(source.scope, admitted.admittedRun.purpose.scope)))
+        ) {
+          return yield* mapDispatchError(command)(
+            Effect.fail(new ExecutionPurpose.PurposeAdmissionError({ reason: "intent_reused" })),
+          );
+        }
+      }
       return {
         sequence: receipt.resultSequence,
         storedEvents,
-        ...(yield* admissionResult(command, storedEvents)),
+        ...admitted,
       } satisfies OrchestratorV2DispatchResult;
     }
 

@@ -284,7 +284,7 @@ function scheduledTaskWorkspaceStrategy(
  */
 function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): OrchestratorMcpScheduledTask {
   return {
-    purposeIntent: task.purposeIntent,
+    ...(task.purposeIntent === undefined ? {} : { purposeIntent: task.purposeIntent }),
     ...(task.bare === undefined ? {} : { bare: task.bare }),
     scheduledTaskId: task.id,
     title: task.title,
@@ -714,7 +714,9 @@ function threadDetail(
   const latest = ThreadManagementService.latestRun(projection);
   const active = ThreadManagementService.latestActiveRun(projection);
   return {
-    purposeSelection: projection.thread.purposeSelection,
+    ...(projection.thread.purposeSelection === undefined
+      ? {}
+      : { purposeSelection: projection.thread.purposeSelection }),
     threadId: projection.thread.id,
     projectId: projection.thread.projectId,
     title: projection.thread.title,
@@ -1933,6 +1935,20 @@ const make = Effect.gen(function* () {
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
         yield* assertSameLink({ scope, caller: parent?.thread }, existing);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
+        const { scheduledTaskId: _id, enabled, ...definition } = input;
+        if (
+          enabled !== undefined &&
+          Object.values(definition).every((value) => value === undefined)
+        ) {
+          const { task } = yield* scheduledTasks
+            .setEnabled({ id: existing.id, enabled })
+            .pipe(
+              Effect.mapError((error) =>
+                failure("orchestration_error", `Could not update scheduled task: ${error.message}`),
+              ),
+            );
+          return yield* summarizeScheduledTask(scope, { parent, limits }, task);
+        }
         if (
           input.bindToCurrentThread === true &&
           (parent === undefined || parent.thread.projectId !== existing.projectId)
@@ -3099,7 +3115,10 @@ const make = Effect.gen(function* () {
           };
         } else if (
           input.purposeIntent?.intent.type === "inherit" &&
-          target.thread.lineage.parentThreadId !== parent?.thread.id
+          !(
+            target.thread.lineage.parentThreadId === parent?.thread.id &&
+            target.thread.lineage.relationshipToParent === "subagent"
+          )
         ) {
           const source =
             parent === undefined ? undefined : ThreadManagementService.latestActiveRun(parent);

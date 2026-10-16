@@ -628,6 +628,7 @@ it.effect("a run Stop reached cannot delegate or start a watch, even after it en
       yield* orchestrator.dispatch({
         type: "thread.pull-request.watch",
         commandId: CommandId.make(`manual-watch:${watching}`),
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         threadId,
         ...pullRequest(4),
         watching,
