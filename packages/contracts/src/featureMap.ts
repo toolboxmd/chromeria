@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 
@@ -23,11 +24,13 @@ export const FeatureMapRef = Schema.Struct({
 });
 export type FeatureMapRef = typeof FeatureMapRef.Type;
 
-/** A declared part. The first ref is the primary ref; a context part is drawn but not tracked. */
+/** A declared part: tracked by its primary ref, asserted live, or other-project context. */
 export const FeatureMapPart = Schema.Struct({
   id: TrimmedNonEmptyString,
   name: Schema.String,
   context: Schema.Boolean,
+  /** An existing capability asserted by the map author; absent in older snapshots. */
+  live: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** The first token of its ref line could not be read, so no ref may stand in as primary. */
   primaryUnreadable: Schema.Boolean,
   refs: Schema.Array(FeatureMapRef),

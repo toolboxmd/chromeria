@@ -220,18 +220,22 @@ A child that reviews a candidate and returns a verdict.
 _Avoid_: approver
 
 **Feature map**:
-A project's `docs/map.md`: one Mermaid flowchart of its parts, each bound to
-its Issues and PRs, which Chromeria's Map tab colours from GitHub.
+A project's `docs/map.md`: one Mermaid flowchart of its parts. The Map tab shows
+author-asserted live capabilities and other-project context, and colours tracked
+parts from GitHub.
 _Avoid_: status map, roadmap, architecture diagram
 
 **Part**:
-One node of a feature map: a piece of the project that is planned, working,
-broken or done.
+One node of a feature map: a piece of the mapped project or its context.
 _Avoid_: feature, component, node (for the tracked piece)
 
 **Primary ref**:
 The first Issue or PR on a part's ref line; it alone decides planned, working
 or done.
+
+**Live part**:
+An existing capability in the mapped project, asserted by the map author rather
+than inferred from tracked work.
 
 **Context part**:
 A part a feature map draws but does not track, because another project owns
