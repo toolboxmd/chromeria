@@ -12,6 +12,8 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { IssueRowThread } from "../issues/issueStatus.logic";
 import {
+  featureMapClassOf,
+  isChromeriaFeatureMapPart,
   featureMapDiagramSource,
   featureMapGaps,
   featureMapPartIdOf,
@@ -38,6 +40,7 @@ const part = (id: string, refs: ReadonlyArray<FeatureMapRef>, context = false): 
   id,
   name: `Part ${id}`,
   context,
+  live: false,
   primaryUnreadable: false,
   refs,
 });
@@ -466,4 +469,74 @@ describe("featureMapShown", () => {
       }),
     ).toEqual({ kind: "error", message: "No GitHub repository." });
   });
+});
+
+describe("live parts and Chromeria marks", () => {
+  it("keeps Live distinct from Done and Context, with no untracked gap or ref link", () => {
+    const map = snapshot(
+      [{ ...part("L", []), live: true }, part("C", [], true), part("D", [issue(1)]), part("U", [])],
+      [issueFact(1, { state: "done" })],
+    );
+    const views = foldFeatureMap(map, noThreads);
+    expect(views.map(({ state, note }) => [state, note])).toEqual([
+      [null, "live"],
+      [null, "context"],
+      ["done", null],
+      [null, "untracked"],
+    ]);
+    expect(views[0]).toMatchObject({ url: null, threads: [] });
+    expect(featureMapClassOf(views[0]!).name).toBe("fmLive");
+    expect(featureMapDiagramSource('flowchart TD\nL["Live"]', views)).toContain("class L fmLive");
+    expect(featureMapGaps(map).untrackedParts.map((p) => p.id)).toEqual(["U"]);
+  });
+
+  it("scopes marks to the snapshot repository and excludes live, context and untracked parts", () => {
+    const tracked = part("A", [issue(1)]);
+    const chromeria = { host: "GitHub.COM", repository: "ToolboxMD/Chromeria" };
+    expect(isChromeriaFeatureMapPart(chromeria, tracked)).toBe(true);
+    expect(isChromeriaFeatureMapPart({ ...chromeria, repository: REPO }, tracked)).toBe(false);
+    expect(isChromeriaFeatureMapPart({ ...chromeria, host: "github.example.com" }, tracked)).toBe(
+      false,
+    );
+    expect(isChromeriaFeatureMapPart(chromeria, { ...tracked, live: true })).toBe(false);
+    expect(isChromeriaFeatureMapPart(chromeria, { ...tracked, context: true })).toBe(false);
+    expect(isChromeriaFeatureMapPart(chromeria, part("U", []))).toBe(false);
+  });
+
+  it.each([
+    ["planned", issueFact(1)],
+    [
+      "working",
+      issueFact(1, {
+        openClosingPullRequests: [
+          { repository: REPO, number: 2, url: "u2", isDraft: false, checks: null },
+        ],
+      }),
+    ],
+    ["broken", issueFact(1, { labels: ["bug"] })],
+    ["done", issueFact(1, { state: "done" })],
+    [null, issueFact(1, { state: "not-planned" })],
+    [null, issueFact(1, { complete: false })],
+    [null, { repository: REPO, number: 1, fact: null }],
+  ] as const)("marks tracked work with state %s", (state, fact) => {
+    const map = snapshot([part("A", [issue(1)])], [fact], { repository: "toolboxmd/chromeria" });
+    const view = foldFeatureMap(map, noThreads)[0]!;
+    expect(view.state).toBe(state);
+    expect(isChromeriaFeatureMapPart(map, view.part)).toBe(true);
+  });
+});
+
+it("keeps an invalid live/context binding unknown rather than Live or Context", () => {
+  const invalid = { ...part("A", []), primaryUnreadable: true };
+  expect(foldFeatureMap(snapshot([invalid], []), noThreads)[0]).toMatchObject({
+    state: null,
+    note: "unknown",
+  });
+});
+
+it("marks tracked work whose GitHub facts have not arrived", () => {
+  const map = snapshot([part("A", [issue(1)])], [], { repository: "toolboxmd/chromeria" });
+  const view = foldFeatureMap(map, noThreads)[0]!;
+  expect(view.note).toBe("unknown");
+  expect(isChromeriaFeatureMapPart(map, view.part)).toBe(true);
 });

@@ -96,8 +96,8 @@ function readRefs(text: string, at: { readonly host: string; readonly repository
 
 /**
  * The first fenced `mermaid` block of `docs/map.md`: each `ID["Name"]` line declares a part, and
- * each `%% ID: refs` line binds it (first ref primary) or marks it `context`. Edges and other lines
- * stay plain Mermaid. Null when the file holds no such block.
+ * each `%% ID: refs` line binds it (first ref primary) or marks it `live` or `context`.
+ * Edges and other lines stay plain Mermaid. Null when the file holds no such block.
  */
 export function parseFeatureMapFile(
   markdown: string,
@@ -118,7 +118,13 @@ export function parseFeatureMapFile(
   }
   const bound = new Map<
     string,
-    { context: boolean; primaryUnreadable: boolean; refs: Array<FeatureMapRef> }
+    {
+      context: boolean;
+      live: boolean;
+      hasRefLine: boolean;
+      primaryUnreadable: boolean;
+      refs: Array<FeatureMapRef>;
+    }
   >();
   const undeclaredRefLines: Array<FeatureMapRefLineProblem> = [];
   const unreadableRefs: Array<FeatureMapRefLineProblem> = [];
@@ -127,10 +133,17 @@ export function parseFeatureMapFile(
       undeclaredRefLines.push({ id, text });
       continue;
     }
-    const binding = bound.get(id) ?? { context: false, primaryUnreadable: false, refs: [] };
-    if (text === "context") {
-      binding.context = true;
+    const binding = bound.get(id) ?? {
+      context: false,
+      live: false,
+      hasRefLine: false,
+      primaryUnreadable: false,
+      refs: [],
+    };
+    if (text === "context" || text === "live") {
+      binding[text] = true;
     } else {
+      binding.hasRefLine = true;
       const { refs, unreadable, firstUnreadable } = readRefs(text, at);
       // The first token is the primary ref; a later ref must not take its place.
       if (binding.refs.length === 0 && firstUnreadable) binding.primaryUnreadable = true;
@@ -139,12 +152,24 @@ export function parseFeatureMapFile(
     }
     bound.set(id, binding);
   }
+  for (const [id, binding] of bound) {
+    if (
+      (binding.live && binding.context) ||
+      ((binding.live || binding.context) && binding.hasRefLine)
+    ) {
+      unreadableRefs.push({ id, text: "live, context and refs are mutually exclusive" });
+      binding.live = false;
+      binding.context = false;
+      binding.primaryUnreadable = true;
+    }
+  }
   return {
     source,
     parts: [...parts].map(([id, { name }]) => ({
       id,
       name,
       context: bound.get(id)?.context ?? false,
+      live: bound.get(id)?.live ?? false,
       primaryUnreadable: bound.get(id)?.primaryUnreadable ?? false,
       refs: bound.get(id)?.refs ?? [],
     })),
