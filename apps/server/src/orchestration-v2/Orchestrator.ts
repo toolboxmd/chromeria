@@ -12665,7 +12665,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   // worker. Queue recovery instead holds unstarted runs until an explicit
   // queue.resume command arrives.
   const recoverDelegatedTasks = Effect.gen(function* () {
-    yield* requestWake();
     yield* projectionStore.getRecoveryThreadIds("subagent-results").pipe(
       // Candidate counts let a startup trace show whether recovery scales
       // with pending work or with history.
@@ -12698,6 +12697,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }),
       ),
     );
+    // Finalization dismisses cancelled/interrupted child questions unless a
+    // continuation still owns them. Do that before an idle parent can start a wake.
+    yield* requestWake();
     yield* projectionStore.getRecoveryThreadIds("delegated-completions").pipe(
       Effect.tap((threadIds) =>
         Effect.annotateCurrentSpan("recovery.delegatedCompletionThreads", threadIds.length),
