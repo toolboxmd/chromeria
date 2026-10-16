@@ -332,6 +332,12 @@ export function NewTaskDraftScreen(props: {
   const promptInputRef = useRef<ComposerEditorHandle>(null);
   const loadedBranchesProjectKeyRef = useRef<string | null>(null);
   const [isComposerFocused, setIsComposerFocused] = useState(false);
+  const [purposeScope, setPurposeScope] = useState<ExecutionPurposeScope>(() => {
+    const intent = flow.editingPendingTask?.purposeIntent?.intent;
+    return intent?.type === "reference"
+      ? { type: "single", reference: intent.reference }
+      : { type: "unscoped", reason: "deliberate" };
+  });
   const [previewVideo, setPreviewVideo] = useState<VideoPreviewSource | null>(null);
   const [previewFile, setPreviewFile] = useState<FilePreviewSource | null>(null);
   const wasFocusedBeforePreviewRef = useRef(false);
@@ -1357,7 +1363,16 @@ export function NewTaskDraftScreen(props: {
     // for the local outbox write; server and worktree setup run on the thread.
     flow.setSubmitting(true);
     try {
-      await enqueueThreadOutboxMessage(message);
+      await enqueueThreadOutboxMessage({
+        ...message,
+        ...(selectedEnvironmentServerConfig?.environment.capabilities.executionPurposeVersions?.includes(
+          1,
+        ) !== true
+          ? {}
+          : {
+              purposeIntent: savedPurposeIntentForScope(purposeScope),
+            }),
+      });
     } catch (error) {
       Alert.alert(
         "Could not queue task",
@@ -1717,6 +1732,15 @@ export function NewTaskDraftScreen(props: {
           paddingTop: 14,
         }}
       >
+        {selectedEnvironmentServerConfig?.environment.capabilities.executionPurposeVersions?.includes(
+          1,
+        ) === true ? (
+          <ExecutionPurposePicker
+            scope={purposeScope}
+            onChange={setPurposeScope}
+            disabled={isComposerInteractionLocked}
+          />
+        ) : null}
         {stripAttachments.length > 0 ? (
           <View className="px-[14px] pb-2.5">
             <ComposerAttachmentStrip
@@ -1920,3 +1944,5 @@ export function NewTaskDraftScreen(props: {
     </View>
   );
 }
+import { ExecutionPurposePicker } from "./ExecutionPurposePicker";
+import { savedPurposeIntentForScope, type ExecutionPurposeScope } from "@t3tools/contracts";

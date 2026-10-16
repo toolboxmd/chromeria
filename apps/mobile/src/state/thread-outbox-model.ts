@@ -12,6 +12,7 @@ import {
   ModelSelection,
   OrchestrationMessageContext,
   ProjectId,
+  PurposeIntent,
   ProviderInteractionMode,
   RuntimeMode,
   ThreadId,
@@ -47,6 +48,7 @@ const QueuedThreadCreationSchema = Schema.Struct({
 });
 
 export const QueuedThreadMessageSchema = Schema.Struct({
+  purposeIntent: Schema.optional(PurposeIntent),
   schemaVersion: Schema.Literals([1, 2, THREAD_OUTBOX_SCHEMA_VERSION, 4]),
   environmentId: EnvironmentId,
   threadId: ThreadId,
@@ -80,6 +82,7 @@ export interface QueuedThreadCreation {
 }
 
 export interface QueuedThreadMessage {
+  readonly purposeIntent?: import("@t3tools/contracts").PurposeIntent | undefined;
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly messageId: MessageId;

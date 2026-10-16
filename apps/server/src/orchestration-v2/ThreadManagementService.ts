@@ -78,7 +78,16 @@ export function withCreationProvenance(
       const { linkOrigin: _linkOrigin, delegatedFrom: _delegatedFrom, ...rest } = command;
       return { ...rest, ...provenance };
     }
-    case "message.dispatch":
+    case "message.dispatch": {
+      const {
+        senderThreadId: _sender,
+        scheduledTaskId: _schedule,
+        notification: _notification,
+        delegatedCompletion: _completion,
+        ...message
+      } = command;
+      return { ...message, ...provenance };
+    }
     case "thread.fork":
     case "thread.merge_back":
     case "delegated_task.request":
@@ -132,6 +141,8 @@ export type ThreadManagementTerminalRunStatus = Extract<
 >;
 
 export interface ThreadManagementSendInput {
+  readonly purposeIntent?: import("@t3tools/contracts").PurposeIntent | undefined;
+  readonly purposeSource?: import("@t3tools/contracts").ExecutionPurpose | undefined;
   readonly projectId: ProjectId;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
@@ -964,6 +975,9 @@ const make = Effect.gen(function* () {
 
       const dispatched = yield* dispatch({
         type: "message.dispatch",
+        ...(input.purposeIntent === undefined ? {} : { purposeIntent: input.purposeIntent }),
+        ...(input.purposeSource === undefined ? {} : { purposeSource: input.purposeSource }),
+        ...(input.mode === "queue" ? {} : { deliveryIntent: input.mode }),
         commandId: input.commandId,
         threadId: input.threadId,
         messageId: input.messageId,

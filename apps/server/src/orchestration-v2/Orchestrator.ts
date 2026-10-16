@@ -1,4 +1,14 @@
+import { ProjectionStoreThreadNotFoundError } from "./ProjectionStore.ts";
 import { ForkCommandInterceptor } from "../fork/ForkCommandInterceptor.ts";
+import * as ExecutionPurpose from "./ExecutionPurpose.ts";
+import {
+  executionPurposeOf,
+  executionPurposesEqual,
+  purposeScopesEqual,
+  purposeSelectionOf,
+  purposeIntentsEqual,
+  type ExecutionPurpose as ResolvedExecutionPurpose,
+} from "@t3tools/contracts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as WightAdmission from "../wight/AdmissionHooks.ts";
 import { wightAdmissionPlan } from "../wight/admission.ts";
@@ -122,6 +132,7 @@ import {
 } from "@t3tools/shared/restartCut";
 import {
   canInterruptSteer,
+  isMobileSteer,
   isPersonSteering,
   steeringRestartNote,
   type SteeringRequester,
@@ -320,6 +331,7 @@ export type OrchestratorV2Error = typeof OrchestratorV2Error.Type;
 export interface OrchestratorV2DispatchResult {
   readonly sequence: number;
   readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>;
+  readonly admittedRun?: { readonly runId: RunId; readonly purpose: ResolvedExecutionPurpose };
 }
 
 export interface OrchestratorV2Shape {
@@ -1016,6 +1028,40 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     <Event extends OrchestrationV2DomainEvent>(event: Omit<Event, "id">) =>
       Effect.gen(function* () {
         const withId = yield* makeEvent(command, event);
+        const domainEvent: OrchestrationV2DomainEvent = withId;
+        if (domainEvent.type === "run.created" && domainEvent.payload.purpose === undefined) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "New runs require a resolved execution purpose before admission.",
+          });
+        }
+        if (domainEvent.type === "run.updated") {
+          const pending = yield* Ref.get(events);
+          const prior = pending.findLast(
+            (entry) =>
+              (entry.type === "run.created" || entry.type === "run.updated") &&
+              entry.payload.id === domainEvent.payload.id,
+          );
+          const current =
+            prior?.type === "run.created" || prior?.type === "run.updated"
+              ? prior.payload
+              : (yield* projectionStore
+                  .getThreadRecords(domainEvent.threadId, ["runs"])
+                  .pipe(mapDispatchError(command))).runs.find(
+                  (run) => run.id === domainEvent.payload.id,
+                );
+          if (
+            current !== undefined &&
+            !executionPurposesEqual(current.purpose, domainEvent.payload.purpose)
+          ) {
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "An admitted run's execution purpose is immutable.",
+            });
+          }
+        }
         yield* Ref.update(events, (existing) => [...existing, withId]);
         return withId;
       });
@@ -1078,7 +1124,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   ) =>
     Effect.gen(function* () {
       const pending = (yield* Ref.get(events)).filter((event) => event.threadId === threadId);
-      const stored = yield* Effect.option(readCommandProjection(threadId));
+      const stored = yield* readCommandProjection(threadId).pipe(
+        Effect.map(Option.some),
+        Effect.catchIf(
+          (error) => Schema.is(ProjectionStoreThreadNotFoundError)(error.cause),
+          () => Effect.succeed(Option.none()),
+        ),
+      );
       let projection: OrchestrationV2ThreadProjection;
       if (Option.isSome(stored)) {
         projection = stored.value;
@@ -2203,6 +2255,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : {
               ...delivery,
               taskIds: remainingTaskIds,
+              ...(delivery.purposeCauses === undefined
+                ? {}
+                : {
+                    purposeCauses: delivery.purposeCauses.filter((cause) =>
+                      remainingTaskIds.includes(cause.taskId),
+                    ),
+                  }),
             },
       };
       yield* emitEvent({
@@ -2540,9 +2599,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       yield* dispatchThreadMutation(command, events, effects);
       if (command.wake === undefined) return;
+      const watchPurpose = yield* ExecutionPurpose.resolvePurposeIntent({
+        intent: link?.watch?.purposeIntent,
+      }).pipe(mapDispatchError(command));
       yield* dispatchMessage(
         {
           type: "message.dispatch",
+          purposeSource:
+            link?.watch?.purposeIntent === undefined
+              ? watchPurpose.purpose
+              : {
+                  version: 1,
+                  scope: watchPurpose.purpose.scope,
+                  provenance: {
+                    type: "pull_request_watch",
+                    reference: { ...key, kind: "pr" },
+                    startedAt: command.startedAt,
+                  },
+                },
           commandId: command.commandId,
           threadId: command.threadId,
           messageId: command.wake.messageId,
@@ -3008,6 +3082,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       markUnreadVisitedAt = DateTime.subtract(latestRunCompletedAt, { milliseconds: 1 });
     }
+    if (
+      command.type === "thread.metadata.update" &&
+      command.purposeSelection !== undefined &&
+      command.purposeSelection.expectedRevision !== purposeSelectionOf(thread).revision
+    ) {
+      return yield* mapDispatchError(command)(
+        Effect.fail(
+          new ExecutionPurpose.PurposeAdmissionError({
+            reason: "selection_changed",
+            currentSelection: purposeSelectionOf(thread),
+          }),
+        ),
+      );
+    }
+    if (
+      command.type === "thread.pull-request.watch" &&
+      command.watching &&
+      command.purposeIntent === undefined
+    ) {
+      return yield* mapDispatchError(command)(
+        Effect.fail(new ExecutionPurpose.PurposeAdmissionError({ reason: "saved_intent_missing" })),
+      );
+    }
     const updatedThread: OrchestrationV2AppThread = (() => {
       switch (command.type) {
         case "thread.archive":
@@ -3161,6 +3258,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   };
           return {
             ...thread,
+            ...(command.purposeSelection === undefined
+              ? {}
+              : {
+                  purposeSelection: {
+                    revision: purposeSelectionOf(thread).revision + 1,
+                    scope: ExecutionPurpose.normalizePurposeScope(command.purposeSelection.scope),
+                  },
+                }),
             ...(command.title === undefined ? {} : { title: command.title }),
             ...(command.limitRecovery === undefined ? {} : { limitRecovery }),
             ...(command.limitRecovery !== undefined &&
@@ -3346,17 +3451,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 : existing.watch
               : !command.watching
                 ? undefined
-                : (existing.watch ?? {
-                    startedAt,
-                    headSha: null,
-                    failedChecks: [],
-                    passed: false,
-                    passedChecks: [],
-                    remarksThrough: startedAt,
-                    remarkIds: [],
-                    conflicting: false,
-                    wakes: 0,
-                  });
+                : {
+                    ...(existing.watch ?? {
+                      startedAt,
+                      headSha: null,
+                      failedChecks: [],
+                      passed: false,
+                      passedChecks: [],
+                      remarksThrough: startedAt,
+                      remarkIds: [],
+                      conflicting: false,
+                      wakes: 0,
+                    }),
+                    ...(command.purposeIntent === undefined
+                      ? {}
+                      : { purposeIntent: command.purposeIntent }),
+                  };
           if (watch === existing.watch && links === linked) return thread;
           return {
             ...thread,
@@ -4194,6 +4304,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }) =>
         Effect.gen(function* () {
           const message: OrchestrationV2ConversationMessage = {
+            ...(input.command.type !== "message.dispatch" ||
+            input.command.purposeIntent === undefined
+              ? {}
+              : { purposeIntent: input.command.purposeIntent }),
             createdBy: input.createdBy,
             creationSource: input.creationSource,
             ...(input.delegatedCompletion === undefined
@@ -4815,8 +4929,36 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     return delegatedCompletionWakeDetail(taskIds, restartCuts);
   });
 
+  const completionPurposeCauses = (
+    tasks: ReadonlyArray<OrchestrationV2Subagent>,
+    taskIds: ReadonlyArray<NodeId>,
+  ) =>
+    taskIds.flatMap((taskId) => {
+      const source = tasks.find((task) => task.id === taskId)?.completionSource;
+      return source === undefined ? [] : [{ taskId, ...source }];
+    });
+
+  const deliveryPurpose = (delivery: OrchestrationV2DelegatedCompletionDelivery) =>
+    ExecutionPurpose.purposeFromCauses(
+      delivery.taskIds.map(
+        (id) => delivery.purposeCauses?.find((cause) => cause.taskId === id)?.purpose,
+      ),
+      delivery.taskIds.map((id) => {
+        const cause = delivery.purposeCauses?.find((cause) => cause.taskId === id);
+        return cause === undefined ? id : `${id}:${cause.runId}`;
+      }),
+      "delegated_completion",
+    );
+
+  const deliveryOwnsLatestCompletion = (
+    delivery: OrchestrationV2DelegatedCompletionDelivery,
+    task: OrchestrationV2Subagent,
+  ) =>
+    delivery.purposeCauses?.find((cause) => cause.taskId === task.id)?.runId ===
+    task.completionSource?.runId;
+
   const dispatchMessage = (
-    command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
+    command: Extract<OrchestrationV2ServerCommand, { readonly type: "message.dispatch" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
     restartCutDecline?: Ref.Ref<
@@ -4953,6 +5095,138 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (run) => run.id === command.restartContinuationOfRunId,
       )?.delegatedTaskId;
 
+      const activePurposeTarget = projection.runs.findLast(isBlockingRun);
+      const isTargetOperation =
+        (command.purposeIntent === undefined && isMobileSteer(command, command.deliveryIntent)) ||
+        command.deliveryIntent === "steer" ||
+        command.deliveryIntent === "restart" ||
+        command.purposeIntent?.intent.type === "target" ||
+        (command.deliveryIntent === undefined &&
+          (command.dispatchMode.type === "steer_active" ||
+            command.dispatchMode.type === "restart_active"));
+      const requestedPurposeTargetId =
+        command.dispatchMode.type === "steer_active" ||
+        command.dispatchMode.type === "restart_active"
+          ? command.dispatchMode.targetRunId
+          : undefined;
+      const target = !isTargetOperation
+        ? undefined
+        : requestedPurposeTargetId !== undefined
+          ? projection.runs.find((run) => run.id === requestedPurposeTargetId)
+          : activePurposeTarget;
+      if (isTargetOperation && (target === undefined || !isBlockingRun(target))) {
+        return yield* mapDispatchError(command)(
+          Effect.fail(new ExecutionPurpose.PurposeAdmissionError({ reason: "target_missing" })),
+        );
+      }
+      const purposeSourceRunId =
+        command.restartContinuationOfRunId ??
+        command.usageLimitContinuationOfRunId ??
+        command.manualContinuationOfRunId ??
+        command.forkPrismRetryOfRunId;
+      const purposeSourceRun = projection.runs.find((run) => run.id === purposeSourceRunId);
+      let inheritedPurpose: ResolvedExecutionPurpose | undefined =
+        command.purposeSource ??
+        (purposeSourceRun === undefined
+          ? undefined
+          : {
+              version: 1,
+              scope: executionPurposeOf(purposeSourceRun).scope,
+              provenance: {
+                type: "source_run",
+                threadId: command.threadId,
+                runId: purposeSourceRun.id,
+              },
+            });
+      const followup = yield* resolveSubagentFollowup(command, projection, events);
+      if (
+        !isTargetOperation &&
+        inheritedPurpose === undefined &&
+        command.createdBy === "agent" &&
+        command.creationSource === "mcp" &&
+        (command.purposeIntent === undefined || command.purposeIntent.intent.type === "inherit") &&
+        followup !== undefined
+      ) {
+        const originalRun = projection.runs.find(
+          (run) =>
+            run.ordinal === 1 &&
+            (run.delegatedTaskId === undefined || run.delegatedTaskId === followup.task.id),
+        );
+        if (originalRun === undefined) {
+          return yield* mapDispatchError(command)(
+            Effect.fail(
+              new ExecutionPurpose.PurposeAdmissionError({ reason: "delegated_launch_missing" }),
+            ),
+          );
+        }
+        inheritedPurpose = {
+          version: 1,
+          scope: executionPurposeOf(originalRun).scope,
+          provenance: {
+            type: "delegated_launch",
+            threadId: command.threadId,
+            runId: originalRun.id,
+            taskId: followup.task.id,
+          },
+        };
+      }
+      if (command.delegatedCompletion !== undefined) {
+        const delivery = projection.runs.find(
+          (run) => run.id === command.delegatedCompletion?.parentRunId,
+        )?.delegatedCompletion?.delivery;
+        inheritedPurpose =
+          delivery == null
+            ? ExecutionPurpose.purposeFromCauses([], [], "delegated_completion")
+            : deliveryPurpose(delivery);
+      }
+      const resolvedPurpose = yield* ExecutionPurpose.resolvePurposeIntent({
+        intent:
+          command.purposeIntent ??
+          (inheritedPurpose === undefined
+            ? undefined
+            : { version: 1, intent: { type: "inherit" } }),
+        selection: projection.thread.purposeSelection,
+        inherited: inheritedPurpose,
+        ...(target === undefined
+          ? {}
+          : {
+              target: {
+                version: 1,
+                scope: executionPurposeOf(target).scope,
+                provenance: { type: "target_run", threadId: command.threadId, runId: target.id },
+              } satisfies ResolvedExecutionPurpose,
+            }),
+      }).pipe(mapDispatchError(command));
+      const selection = purposeSelectionOf(projection.thread);
+      const selectedScope =
+        resolvedPurpose.select ??
+        (projection.runs.length === 0 && inheritedPurpose !== undefined
+          ? resolvedPurpose.purpose.scope
+          : undefined);
+      if (
+        selectedScope !== undefined &&
+        (projection.thread.purposeSelection === undefined ||
+          !purposeScopesEqual(selection.scope, selectedScope))
+      ) {
+        const now = yield* DateTime.now;
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId: command.threadId,
+          occurredAt: now,
+          payload: {
+            ...projection.thread,
+            purposeSelection: { revision: selection.revision + 1, scope: selectedScope },
+            updatedAt: now,
+          },
+        });
+        projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+      }
+      const purposeDelegatedTaskId =
+        command.purposeDelegatedTaskId ?? followup?.task.id ?? continuedTaskId;
+
       if (projection.thread.settledOverride !== null) {
         const now = yield* DateTime.now;
         const thread: OrchestrationV2AppThread = {
@@ -5040,7 +5314,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         command.dispatchMode,
         command.deliveryIntent,
         command,
+        command.purposeIntent,
       );
+      if (
+        !isTargetOperation &&
+        activePurposeTarget !== undefined &&
+        !purposeScopesEqual(
+          executionPurposeOf(activePurposeTarget).scope,
+          resolvedPurpose.purpose.scope,
+        )
+      ) {
+        dispatchMode = { type: "queue_after_active" };
+      }
       if (dispatchMode.type === "steer_active") {
         const targetRunId = dispatchMode.targetRunId;
         const target = projection.runs.find((run) => run.id === targetRunId);
@@ -5148,6 +5433,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             .pipe(Effect.orElseSucceed(() => Option.none()));
           if (
             Option.isSome(session) &&
+            purposeScopesEqual(executionPurposeOf(active).scope, resolvedPurpose.purpose.scope) &&
             session.value.providerSession.capabilities.turns.supportsActiveSteering &&
             session.value.providerSession.capabilities.turns.activeSteeringInterruptsTools !== true
           ) {
@@ -5362,6 +5648,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 ),
               );
         const run: OrchestrationV2Run = {
+          purpose: resolvedPurpose.purpose,
           id: runId,
           threadId: command.threadId,
           ordinal,
@@ -5395,7 +5682,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ...(command.restartContinuationOfRunId === undefined
             ? {}
             : { restartContinuationOfRunId: command.restartContinuationOfRunId }),
-          ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
+          ...(purposeDelegatedTaskId === undefined
+            ? {}
+            : { delegatedTaskId: purposeDelegatedTaskId }),
         };
         const attempt: OrchestrationV2RunAttempt = {
           id: attemptId,
@@ -5428,6 +5717,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           completedAt: null,
         };
         const message: OrchestrationV2ConversationMessage = {
+          ...(command.purposeIntent === undefined ? {} : { purposeIntent: command.purposeIntent }),
           createdBy: command.createdBy,
           creationSource: command.creationSource,
           ...(command.scheduledTaskId === undefined
@@ -5716,6 +6006,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   mapDispatchError(command),
                 );
         const run: OrchestrationV2Run = {
+          purpose: resolvedPurpose.purpose,
           id: runId,
           threadId: command.threadId,
           ordinal,
@@ -5740,7 +6031,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ...(dispatchMode.type === "defer_start" && dispatchMode.workspaceStrategy !== undefined
             ? { workspacePreparation: dispatchMode.workspaceStrategy }
             : {}),
-          ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
+          ...(purposeDelegatedTaskId === undefined
+            ? {}
+            : { delegatedTaskId: purposeDelegatedTaskId }),
           ...wakeWorkStartedAt(projection.runs, command),
         };
         const attempt: OrchestrationV2RunAttempt = {
@@ -5774,6 +6067,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           completedAt: null,
         };
         const message: OrchestrationV2ConversationMessage = {
+          ...(command.purposeIntent === undefined ? {} : { purposeIntent: command.purposeIntent }),
           createdBy: command.createdBy,
           creationSource: command.creationSource,
           ...(command.scheduledTaskId === undefined
@@ -6416,6 +6710,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ),
         );
       const run: OrchestrationV2Run = {
+        purpose: resolvedPurpose.purpose,
         id: runId,
         threadId: command.threadId,
         ordinal,
@@ -6442,7 +6737,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.restartContinuationOfRunId === undefined
           ? {}
           : { restartContinuationOfRunId: command.restartContinuationOfRunId }),
-        ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
+        ...(purposeDelegatedTaskId === undefined
+          ? {}
+          : { delegatedTaskId: purposeDelegatedTaskId }),
         ...wakeWorkStartedAt(projection.runs, command),
       };
       const attempt: OrchestrationV2RunAttempt = {
@@ -6476,6 +6773,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         completedAt: null,
       };
       const message: OrchestrationV2ConversationMessage = {
+        ...(command.purposeIntent === undefined ? {} : { purposeIntent: command.purposeIntent }),
         createdBy: command.createdBy,
         creationSource: command.creationSource,
         ...(command.scheduledTaskId === undefined
@@ -6963,6 +7261,30 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
 
+      const parentPurpose = executionPurposeOf(parentRun);
+      if (
+        command.purposeIntent?.intent.type === "inherit" &&
+        parentPurpose.scope.type !== "single"
+      ) {
+        return yield* mapDispatchError(command)(
+          Effect.fail(
+            new ExecutionPurpose.PurposeAdmissionError({ reason: "inherit_source_missing" }),
+          ),
+        );
+      }
+      const delegatedPurpose = yield* ExecutionPurpose.resolvePurposeIntent({
+        intent: command.purposeIntent,
+        selection: parentProjection.thread.purposeSelection,
+        inherited: {
+          version: 1,
+          scope: parentPurpose.scope,
+          provenance: {
+            type: "parent_run",
+            threadId: command.parentThreadId,
+            runId: parentRun.id,
+          },
+        },
+      }).pipe(mapDispatchError(command));
       const now = command.createdAt ?? (yield* DateTime.now);
       const taskNodeId = idAllocator.derive.delegatedTaskNode({
         commandId: command.commandId,
@@ -7019,6 +7341,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
       const childThread: OrchestrationV2AppThread = {
         ...childTemplate,
+        purposeSelection: { revision: 1, scope: delegatedPurpose.purpose.scope },
         ...(command.bare === undefined
           ? {}
           : { bare: { ...command.bare, nativeHomeOwnerThreadId: childThreadId } }),
@@ -7036,6 +7359,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         interactionMode: command.interactionMode,
       };
       const task: OrchestrationV2Subagent = {
+        purpose: delegatedPurpose.purpose,
+        ...(command.purposeIntent === undefined ? {} : { purposeIntent: command.purposeIntent }),
         id: taskNodeId,
         threadId: command.parentThreadId,
         runId: parentRun.id,
@@ -7141,6 +7466,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
 
       const childMessageCommand = {
+        purposeSource: delegatedPurpose.purpose,
+        purposeDelegatedTaskId: task.id,
         type: "message.dispatch",
         createdBy: command.createdBy,
         creationSource: command.creationSource,
@@ -7155,7 +7482,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           workspaceStrategy === undefined
             ? { type: "start_immediately" }
             : { type: "defer_start", workspaceStrategy },
-      } satisfies Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>;
+      } satisfies Extract<OrchestrationV2ServerCommand, { readonly type: "message.dispatch" }>;
       yield* dispatchMessage(childMessageCommand, events, effects);
 
       const childProjection = yield* getProjectionWithPendingEvents(childThreadId, events);
@@ -7214,6 +7541,51 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     },
   );
 
+  // The original handoff owns job binding; a human's purpose remains independently selected.
+  const resolveSubagentFollowup = Effect.fnUntraced(function* (
+    command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
+    projection: Pick<OrchestrationV2ThreadProjection, "thread">,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const child = projection.thread;
+    const parentThreadId = child.lineage.parentThreadId;
+    if (
+      command.scheduledTaskId !== undefined ||
+      command.notification !== undefined ||
+      command.restartContinuationOfRunId !== undefined ||
+      (command.createdBy !== "user" && command.creationSource !== "mcp") ||
+      child.lineage.relationshipToParent !== "subagent" ||
+      parentThreadId === null ||
+      (command.createdBy !== "user" && command.senderThreadId !== parentThreadId)
+    )
+      return undefined;
+    const parent = yield* getProjectionWithPendingEvents(parentThreadId, events).pipe(
+      Effect.catchTags({
+        OrchestratorProjectionError: (error) =>
+          command.createdBy === "user" &&
+          (error.cause === undefined || Schema.is(ProjectionStoreThreadNotFoundError)(error.cause))
+            ? Effect.succeed(undefined)
+            : Effect.fail(error),
+      }),
+      mapDispatchError(command),
+    );
+    if (parent === undefined) return undefined;
+    const task = parent.subagents.find(
+      (candidate) =>
+        candidate.origin === "app_owned" &&
+        candidate.childThreadId === child.id &&
+        candidate.id === (child.forkedFrom?.type === "node" ? child.forkedFrom.nodeId : undefined),
+    );
+    if (task === undefined && command.createdBy !== "user") {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: new ExecutionPurpose.PurposeAdmissionError({ reason: "delegated_launch_missing" }),
+      });
+    }
+    return task === undefined ? undefined : { task, parent, child };
+  });
+
   // Fork (#213): bind later requested runs to the existing delegated task.
   const recordSubagentFollowup = Effect.fnUntraced(function* (
     command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
@@ -7235,14 +7607,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       )
       .at(-1);
     if (message?.runId == null) return;
-    const child = yield* projectionStore.getThread(command.threadId);
-    const parentThreadId = child.lineage.parentThreadId;
-    if (
-      child.lineage.relationshipToParent !== "subagent" ||
-      parentThreadId === null ||
-      (command.createdBy !== "user" && command.senderThreadId !== parentThreadId)
-    )
-      return;
+    const projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+    const followup = yield* resolveSubagentFollowup(command, projection, events);
+    if (followup === undefined) return;
+    const { child, parent, task: original } = followup;
+    const parentThreadId = parent.thread.id;
     const run =
       pending
         .flatMap((event) =>
@@ -7255,27 +7624,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       (yield* projectionStore.getThreadRecords(command.threadId, ["runs"])).runs.find(
         (row) => row.id === message.runId,
       );
-    if (run === undefined || run.delegatedTaskId !== undefined) return;
-    const parent = yield* projectionStore
-      .getThreadRecords(parentThreadId, ["runs", "subagents", "providerTurns", "attempts"])
-      .pipe(
-        Effect.catchTags({
-          ProjectionStoreThreadNotFoundError: (error) =>
-            command.createdBy === "user" ? Effect.succeed(undefined) : Effect.fail(error),
-        }),
-        mapDispatchError(command),
-      );
-    // A human may override incomplete ancestry; no missing parent owns a task binding.
-    if (parent === undefined) return;
-    const original = parent.subagents.find(
-      (task) =>
-        task.origin === "app_owned" &&
-        task.childThreadId === child.id &&
-        task.id === (child.forkedFrom?.type === "node" ? child.forkedFrom.nodeId : undefined),
-    );
-    // Fork (#213): requested follow-ups keep the original task identity. Its
-    // result remains stable; latestTerminal fields and new result transfers own later turns.
-    if (original === undefined) return;
+    if (run === undefined) return;
     const emitEvent = emit(events, command);
     yield* emitEvent({
       type: "run.updated",
@@ -7360,6 +7709,34 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Parent run ${command.parentRunId} is stopping.`,
       });
     }
+    const resolvedRemotePurpose = yield* ExecutionPurpose.resolvePurposeIntent({
+      intent: command.purposeIntent,
+      selection: parentProjection.thread.purposeSelection,
+      inherited: {
+        version: 1,
+        scope: executionPurposeOf(parentRun).scope,
+        provenance: {
+          type: "parent_run",
+          threadId: command.parentThreadId,
+          runId: parentRun.id,
+        },
+      },
+    }).pipe(mapDispatchError(command));
+    const remotePurposeLaunch = command.remoteChild.launch?.delegatedFrom.purposeLaunch;
+    if (
+      command.purposeIntent !== undefined &&
+      (remotePurposeLaunch === undefined ||
+        remotePurposeLaunch.threadId !== command.parentThreadId ||
+        remotePurposeLaunch.runId !== parentRun.id ||
+        remotePurposeLaunch.launchId !== command.commandId ||
+        !executionPurposesEqual(remotePurposeLaunch.purpose, resolvedRemotePurpose.purpose))
+    ) {
+      return yield* mapDispatchError(command)(
+        Effect.fail(
+          new ExecutionPurpose.PurposeAdmissionError({ reason: "remote_launch_mismatch" }),
+        ),
+      );
+    }
     const now = yield* DateTime.now;
     const taskNodeId = idAllocator.derive.delegatedTaskNode({ commandId: command.commandId });
     const taskTurnItemId = idAllocator.derive.delegatedTaskTurnItem({
@@ -7405,6 +7782,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ...common,
       type: "subagent.updated",
       payload: {
+        purpose: resolvedRemotePurpose.purpose,
+        ...(command.purposeIntent === undefined ? {} : { purposeIntent: command.purposeIntent }),
         id: taskNodeId,
         threadId: command.parentThreadId,
         runId: parentRun.id,
@@ -7678,6 +8057,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const updatedTask: OrchestrationV2Subagent = {
       ...task,
       remoteChild,
+      ...(task.remoteChild?.runId === undefined || task.purpose === undefined
+        ? {}
+        : {
+            completionSource: { runId: task.remoteChild.runId, purpose: task.purpose },
+          }),
       status: command.status,
       result: command.result,
       completedAt: now,
@@ -8390,6 +8774,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           commandType: command.type,
           cause: `Queued run ${command.queuedRunId} is not queued.`,
         });
+      }
+      const purposeTarget = projection.runs.find((run) => run.id === command.targetRunId);
+      if (
+        purposeTarget !== undefined &&
+        !purposeScopesEqual(
+          executionPurposeOf(queuedRun).scope,
+          executionPurposeOf(purposeTarget).scope,
+        )
+      ) {
+        return yield* mapDispatchError(command)(
+          Effect.fail(new ExecutionPurpose.PurposeAdmissionError({ reason: "target_mismatch" })),
+        );
       }
       const queuedRootNode =
         queuedRun.rootNodeId === null
@@ -10925,15 +11321,30 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // hold a later result behind a delivery the parent already consumed.
     const delivery = cohort?.delivery?.taskIds.length === 0 ? null : (cohort?.delivery ?? null);
     const deliveryRun = completionDeliveryRun(input.parentProjection, delivery);
+    const latestTasks = [
+      ...input.parentProjection.subagents.filter((task) => task.id !== input.task.id),
+      input.updatedTask,
+    ];
     if (delivery !== null) {
-      if (deliveryRun?.status === "queued" && deliveryRun.userMessageId === delivery?.messageId) {
-        const taskIds = Array.from(new Set([...delivery.taskIds, input.task.id]));
+      const taskIds = Array.from(new Set([...delivery.taskIds, input.task.id]));
+      const purposeCauses = completionPurposeCauses(latestTasks, taskIds);
+      const combined = { ...delivery, taskIds, purposeCauses };
+      const sameCompletion =
+        !delivery.taskIds.includes(input.task.id) ||
+        deliveryOwnsLatestCompletion(delivery, input.updatedTask);
+      if (
+        deliveryRun?.status === "queued" &&
+        deliveryRun.userMessageId === delivery.messageId &&
+        sameCompletion &&
+        purposeScopesEqual(executionPurposeOf(deliveryRun).scope, deliveryPurpose(combined).scope)
+      ) {
         const message = completionDeliveryMessage(input.parentProjection, delivery);
         const nextCohort = {
           ...cohort!,
           delivery: {
             ...delivery,
             taskIds,
+            purposeCauses,
           },
         };
         return {
@@ -10996,12 +11407,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           offer: false,
         };
       }
-      const taskIds = Array.from(new Set([...delivery.taskIds, input.task.id]));
       const nextCohort = {
         ...cohort!,
         delivery: {
           ...delivery,
           taskIds,
+          purposeCauses,
         },
       };
       return {
@@ -11038,6 +11449,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         generation,
         messageId,
         taskIds: [input.task.id],
+        purposeCauses: completionPurposeCauses([input.updatedTask], [input.task.id]),
       },
     };
     return {
@@ -11199,7 +11611,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // A follow-up keeps the task's first result (task_status reports the
       // later one as latestTerminal*) and reopens a wake the parent already
       // observed. A cancelled task (disposed) stays quiet.
-      const updatedTask: OrchestrationV2Subagent = followUp
+      const resultTask: OrchestrationV2Subagent = followUp
         ? !explicitlyStopped &&
           (observedDelivery?.state === "acknowledged" || observedDelivery?.state === "delivered")
           ? { ...unobservedTask, updatedAt: now }
@@ -11212,6 +11624,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             completedAt: now,
             updatedAt: now,
           };
+      const updatedTask: OrchestrationV2Subagent = {
+        ...resultTask,
+        completionSource: { runId: childRun.id, purpose: executionPurposeOf(childRun) },
+        updatedAt: now,
+      };
       // The parent sent the follow-up after the delegating turn, so no blocking
       // wait owns it and a stop of that turn does not cancel it.
       const completionPlan = explicitlyStopped
@@ -11619,6 +12036,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           task.origin !== "app_owned" ||
           task.runId !== parentRun.id ||
           !delivery.taskIds.includes(task.id) ||
+          !deliveryOwnsLatestCompletion(delivery, task) ||
           task.completionDelivery?.state !== "claimed"
         ) {
           continue;
@@ -11659,6 +12077,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               }),
             ),
             taskIds: pendingTaskIds,
+            purposeCauses: completionPurposeCauses(projection.subagents, pendingTaskIds),
           }
         : null;
       if (nextDelivery !== null) {
@@ -11774,13 +12193,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               }),
             ),
             taskIds: pendingTaskIds,
+            purposeCauses: completionPurposeCauses(projection.subagents, pendingTaskIds),
           };
     const acceptedIds = new Set(delivery.taskIds);
     const pendingIds = new Set(pendingTaskIds);
     for (const task of projection.subagents) {
       const state = pendingIds.has(task.id)
         ? "claimed"
-        : acceptedIds.has(task.id) && task.completionDelivery?.state === "claimed"
+        : acceptedIds.has(task.id) &&
+            deliveryOwnsLatestCompletion(delivery, task) &&
+            task.completionDelivery?.state === "claimed"
           ? "delivered"
           : undefined;
       if (state === undefined) continue;
@@ -12150,6 +12572,30 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     };
   });
 
+  const admissionResult = Effect.fnUntraced(function* (
+    command: OrchestrationV2ServerCommand,
+    stored: ReadonlyArray<OrchestrationV2StoredEvent>,
+  ) {
+    if (command.type !== "message.dispatch") return {};
+    const event = stored.findLast(
+      ({ event }) => event.type === "message.updated" && event.payload.id === command.messageId,
+    )?.event;
+    if (event?.type !== "message.updated" || event.payload.runId === null) return {};
+    const runId = event.payload.runId;
+    const runEvent = stored.findLast(
+      ({ event }) =>
+        (event.type === "run.created" || event.type === "run.updated") &&
+        event.payload.id === runId,
+    )?.event;
+    const run =
+      runEvent?.type === "run.created" || runEvent?.type === "run.updated"
+        ? runEvent.payload
+        : (yield* projectionStore
+            .getThreadRecords(command.threadId, ["runs"])
+            .pipe(mapDispatchError(command))).runs.find((run) => run.id === runId);
+    return run === undefined ? {} : { admittedRun: { runId, purpose: executionPurposeOf(run) } };
+  });
+
   const dispatchWithReceiptEffect = Effect.fn("orchestrationV2.dispatch.withReceipt")(function* (
     command: OrchestrationV2ServerCommand,
   ): Effect.fn.Return<OrchestratorV2DispatchResult, OrchestratorV2Error> {
@@ -12203,12 +12649,33 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             }),
         ),
       );
+      if (
+        command.type === "message.dispatch" ||
+        command.type === "delegated_task.request" ||
+        command.type === "delegated_task.remote.request"
+      ) {
+        const prior = storedEvents.find(({ event }) =>
+          command.type === "message.dispatch"
+            ? event.type === "message.updated" && event.payload.id === command.messageId
+            : event.type === "subagent.updated" && event.payload.origin === "app_owned",
+        );
+        const priorIntent =
+          prior?.event.type === "message.updated" || prior?.event.type === "subagent.updated"
+            ? prior.event.payload.purposeIntent
+            : undefined;
+        if (!purposeIntentsEqual(priorIntent, command.purposeIntent)) {
+          return yield* mapDispatchError(command)(
+            Effect.fail(new ExecutionPurpose.PurposeAdmissionError({ reason: "intent_reused" })),
+          );
+        }
+      }
       if (command.type === "queue.resume") {
         yield* mapDispatchError(command)(startNextQueuedRun(command.threadId));
       }
       return {
         sequence: receipt.resultSequence,
         storedEvents,
+        ...(yield* admissionResult(command, storedEvents)),
       } satisfies OrchestratorV2DispatchResult;
     }
 
@@ -12549,6 +13016,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     return {
       sequence: committed.receipt.resultSequence,
       storedEvents: committed.storedEvents,
+      ...(yield* admissionResult(command, committed.storedEvents)),
     } satisfies OrchestratorV2DispatchResult;
   });
 

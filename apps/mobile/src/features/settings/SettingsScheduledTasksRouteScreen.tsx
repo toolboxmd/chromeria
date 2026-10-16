@@ -663,6 +663,9 @@ function TaskForm({
       return;
     }
     const input: ScheduledTaskUpsertInput = {
+      purposeIntent: savedPurposeIntentForScope(
+        draft.purposeScope ?? { type: "unscoped", reason: "deliberate" },
+      ),
       ...(draft.task ? { id: draft.task.id, requireExisting: true } : {}),
       title: draft.title.trim(),
       prompt: draft.prompt.trim(),
@@ -749,6 +752,11 @@ function TaskForm({
           value={draft.title}
           placeholder="Check for issues"
           onChange={(title) => setDraft({ ...draft, title })}
+        />
+        <ExecutionPurposePicker
+          scope={draft.purposeScope ?? { type: "unscoped", reason: "deliberate" }}
+          disabled={saving || !canOperate}
+          onChange={(scope) => setDraft({ ...draft, purposeScope: scope })}
         />
         {promptField}
       </SettingsSection>
@@ -1295,3 +1303,5 @@ function EnvironmentTasks({
     </SettingsSection>
   );
 }
+import { ExecutionPurposePicker } from "../threads/ExecutionPurposePicker";
+import { savedPurposeIntentForScope } from "@t3tools/contracts";

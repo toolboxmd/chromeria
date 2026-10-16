@@ -335,6 +335,7 @@ const makeEngine = Effect.gen(function* () {
           });
         if (launch !== null && (launch.bare !== undefined || (yield* shellOf(threadId)) === null)) {
           const start = threadLaunch.launch({
+            purposeSource: payload.purposeSource,
             commandId: send.commandId,
             threadId,
             ...launch,
@@ -372,6 +373,7 @@ const makeEngine = Effect.gen(function* () {
         }
         yield* threads
           .sendToThread({
+            purposeSource: payload.purposeSource,
             projectId: payload.projectId,
             commandId: send.commandId,
             threadId,

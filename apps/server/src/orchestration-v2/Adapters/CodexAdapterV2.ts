@@ -1,3 +1,4 @@
+import { executionPurposeOf, type NativeExecutionSegment } from "@t3tools/contracts";
 import {
   bareHome,
   nativeHome,
@@ -244,6 +245,13 @@ const CODEX_CLIENT_CAPABILITIES = {
 } as const;
 
 export const CodexProviderCapabilitiesV2 = {
+  purposeEvidence: {
+    version: 1,
+    nativeInputs: "native_turn",
+    childSegments: "initial_turn_only",
+    backgroundInventory: "observed_causes",
+    nativeUsageFinality: "main_agent_only",
+  },
   sessions: {
     supportsMultipleProviderThreadsPerSession: true,
     supportsModelSwitchInSession: true,
@@ -2211,6 +2219,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   nativeId: input.nativeTurnId,
                   strength: "strong",
                 },
+                nativeInputs: [
+                  {
+                    version: 1,
+                    kind: "turn",
+                    nativeId: input.nativeTurnId,
+                    validation: "codex_turn_started",
+                  },
+                ],
                 ordinal: input.turnInput.providerTurnOrdinal,
                 status: "running",
                 startedAt: input.startedAt,
@@ -2795,6 +2811,22 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               updated.set(turn.nativeTurnId, activeContext);
               return updated;
             });
+            const initial = subagent.task.nativeSegments?.[0];
+            if (
+              providerTurnOrdinal === 1 &&
+              initial?.kind === "start" &&
+              subagent.task.nativeSegments?.length === 1
+            ) {
+              subagent.task = {
+                ...subagent.task,
+                nativeSegments: [
+                  {
+                    ...initial,
+                    boundary: { state: "native_turns", nativeTurnIds: [turn.nativeTurnId] },
+                  },
+                ],
+              };
+            }
             yield* emitSubagentTaskUpdate({
               subagent,
               status: "running",
@@ -2825,6 +2857,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   nativeId: turn.nativeTurnId,
                   strength: "strong",
                 },
+                nativeInputs: [
+                  {
+                    version: 1,
+                    kind: "turn",
+                    nativeId: turn.nativeTurnId,
+                    validation: "codex_turn_started",
+                  },
+                ],
                 ordinal: activeContext.providerTurnOrdinal,
                 status: "running",
                 startedAt: turn.startedAt,
@@ -2927,6 +2967,103 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           });
         });
 
+        const codexNativeCause = (
+          context: ActiveCodexTurnContext,
+        ): Pick<NativeExecutionSegment, "source" | "purpose"> => {
+          if (context.projectionRunId !== null)
+            return {
+              source: {
+                type: "app_run",
+                threadId: context.projectionThreadId,
+                runId: context.projectionRunId,
+              },
+              purpose: executionPurposeOf(context.input),
+            };
+          const segment = context.subagent?.task.nativeSegments?.find(
+            (segment) =>
+              segment.boundary.state === "native_turns" &&
+              segment.boundary.nativeTurnIds.includes(context.nativeTurnId),
+          );
+          return segment === undefined || context.subagent === null
+            ? {
+                source: { type: "unresolved", reason: "codex_owning_child_turn_unresolved" },
+                purpose: {
+                  version: 1,
+                  scope: { type: "unscoped", reason: "unknown_cause" },
+                  provenance: { type: "native_operation", operationIds: [context.nativeTurnId] },
+                },
+              }
+            : {
+                source: {
+                  type: "native_segment",
+                  threadId: context.subagent.task.threadId,
+                  subagentId: context.subagent.task.id,
+                  segmentId: segment.id,
+                },
+                purpose: segment.purpose,
+              };
+        };
+
+        const codexSegment = (
+          context: ActiveCodexTurnContext,
+          nativeOperationId: string,
+          nativeChildId: string,
+          kind: "start" | "resume" | "background",
+          now: DateTime.Utc,
+        ): NativeExecutionSegment => ({
+          version: 1,
+          id: `${context.providerThread.nativeThreadRef?.nativeId ?? context.providerThread.id}:${nativeChildId}:${nativeOperationId}`,
+          nativeSessionId:
+            context.providerThread.nativeThreadRef?.nativeId ?? String(context.providerThread.id),
+          nativeOperationId,
+          nativeChildId,
+          kind,
+          ...codexNativeCause(context),
+          boundary: {
+            state: "unresolved",
+            reason:
+              kind === "start"
+                ? "awaiting_initial_native_child_turn"
+                : "codex_resume_response_boundary_missing",
+          },
+          status: "running",
+          usageFinality: "unreconciled",
+          noticeIds: [],
+          wakeDispositions: [],
+          observedAt: now,
+        });
+
+        const recordCodexBackgroundOperation = Effect.fnUntraced(function* (
+          context: ActiveCodexTurnContext,
+          nativeOperationId: string,
+          ended: boolean,
+        ) {
+          const now = yield* DateTime.now;
+          const operation = codexSegment(
+            context,
+            nativeOperationId,
+            nativeOperationId,
+            "background",
+            now,
+          );
+          yield* emitProviderEvent({
+            type: "provider_thread.updated",
+            driver: CODEX_PROVIDER,
+            providerThread: {
+              ...context.providerThread,
+              nativeOperations: [
+                {
+                  ...operation,
+                  boundary: { state: "native_turns", nativeTurnIds: [context.nativeTurnId] },
+                  status: ended ? "ended" : "running",
+                },
+              ],
+              updatedAt: now,
+            },
+          });
+          return operation;
+        });
+
         const registerSubagentThread = (input: {
           readonly context: ActiveCodexTurnContext;
           readonly nativeThreadId: string;
@@ -2994,7 +3131,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               updatedAt: now,
             } satisfies OrchestrationV2ProviderThread;
             const reportedSelection = subagentSelections.get(input.nativeThreadId);
-            const task = {
+            const task: OrchestrationV2Subagent = {
+              nativeSegments: [
+                codexSegment(
+                  input.context,
+                  input.nativeToolCallId,
+                  input.nativeThreadId,
+                  "start",
+                  now,
+                ),
+              ],
               id: subagentNodeId,
               threadId: input.context.projectionThreadId,
               runId: input.context.projectionRunId,
@@ -4572,6 +4718,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   nativeId: payload.turnId,
                   strength: "strong",
                 },
+                nativeInputs: [
+                  {
+                    version: 1,
+                    kind: "turn",
+                    nativeId: payload.turnId,
+                    validation: "codex_turn_started",
+                  },
+                ],
                 ordinal: context.providerTurnOrdinal,
                 status: "running",
                 startedAt: context.startedAt,
@@ -4886,6 +5040,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }
 
             if (payload.item.type === "commandExecution") {
+              yield* recordCodexBackgroundOperation(
+                context,
+                payload.item.id,
+                codexItemStatus(payload.item.status).completed,
+              );
               if (!codexItemStatus(payload.item.status).completed) {
                 yield* trackRunningCommandItem(payload.turnId, {
                   id: payload.item.id,
@@ -4973,6 +5132,35 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return;
             }
             if (payload.item.type === "collabAgentToolCall" && payload.item.tool !== "spawnAgent") {
+              if (payload.item.tool === "resumeAgent" || payload.item.tool === "sendInput") {
+                const owner = yield* resolveItemEventContext(payload.turnId);
+                if (owner !== undefined) {
+                  const now = yield* DateTime.now;
+                  const subagents = yield* Ref.get(subagentThreads);
+                  for (const childId of payload.item.receiverThreadIds) {
+                    const child = subagents.get(childId);
+                    if (
+                      child === undefined ||
+                      child.task.nativeSegments?.some(
+                        (segment) => segment.nativeOperationId === payload.item.id,
+                      )
+                    )
+                      continue;
+                    child.task = {
+                      ...child.task,
+                      nativeSegments: [
+                        ...(child.task.nativeSegments ?? []),
+                        codexSegment(owner.context, payload.item.id, childId, "resume", now),
+                      ],
+                    };
+                    yield* emitProviderEvent({
+                      type: "subagent.updated",
+                      driver: CODEX_PROVIDER,
+                      subagent: child.task,
+                    });
+                  }
+                }
+              }
               yield* updateSubagentStates({ item: payload.item });
               return;
             }
@@ -4999,6 +5187,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }
 
             if (payload.item.type === "commandExecution") {
+              const operation = yield* recordCodexBackgroundOperation(
+                context,
+                payload.item.id,
+                true,
+              );
               const turnDrained = yield* clearRunningCommandItem(payload.turnId, payload.item.id);
               const artifacts = yield* buildCommandExecutionArtifacts(context, payload.item);
               yield* emitProviderEvent({
@@ -5038,6 +5231,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       providerThreadId: context.providerThread.id,
                       driver: CODEX_PROVIDER,
                       detail: codexBackgroundCommandDetail(payload.item),
+                      nativeCauses: [
+                        {
+                          operationId: operation.id,
+                          ...(operation.source.type === "unresolved"
+                            ? {}
+                            : { purpose: operation.purpose }),
+                        },
+                      ],
                       notification: {
                         ...backgroundWorkNotification([
                           {
@@ -6179,6 +6380,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   nativeId: input.nativeTurnId,
                   strength: "strong",
                 },
+                nativeInputs: [
+                  {
+                    version: 1,
+                    kind: "turn",
+                    nativeId: input.nativeTurnId,
+                    validation: "codex_turn_started",
+                  },
+                ],
                 ordinal: input.context.providerTurnOrdinal,
                 status: input.status,
                 startedAt: input.context.startedAt,
@@ -6252,6 +6461,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     completedAt: input.completedAt,
                   },
                 });
+                input.context.subagent.task = {
+                  ...input.context.subagent.task,
+                  nativeSegments: input.context.subagent.task.nativeSegments?.map((segment) =>
+                    segment.boundary.state === "native_turns" &&
+                    segment.boundary.nativeTurnIds.includes(input.nativeTurnId)
+                      ? { ...segment, status: "ended" as const }
+                      : segment,
+                  ),
+                };
                 yield* emitSubagentTaskUpdate({
                   subagent: input.context.subagent,
                   status: input.status,

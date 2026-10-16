@@ -267,7 +267,9 @@ const make = Effect.gen(function* () {
    * result reports the state the thread holds afterwards.
    */
   const setWatching = Effect.fn("PullRequestsToolkit.setWatching")(function* (
-    input: PullRequestTargetInput,
+    input: PullRequestTargetInput & {
+      readonly purposeIntent?: import("@t3tools/contracts").SavedPurposeIntent | undefined;
+    },
     watching: boolean,
   ) {
     const thread = yield* requireThread(PullRequestWatchFailedError, input.threadId);
@@ -289,6 +291,7 @@ const make = Effect.gen(function* () {
     yield* engine
       .dispatch({
         type: "thread.pull-request.watch",
+        ...(input.purposeIntent === undefined ? {} : { purposeIntent: input.purposeIntent }),
         commandId: yield* commandId("mcp-pr-watch", thread.id),
         threadId: thread.id,
         host: target.host,

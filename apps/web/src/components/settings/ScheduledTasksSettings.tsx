@@ -116,6 +116,7 @@ const WORKSPACE_MODE_LABELS: Record<WorkspaceMode, string> = {
 };
 
 const EMPTY_DRAFT: DraftState = {
+  purposeScope: { type: "unscoped", reason: "deliberate" },
   editingId: null,
   title: "",
   prompt: "",
@@ -934,6 +935,9 @@ function ScheduledTaskEditorDialog({
               startFromOrigin: draft.startFromOrigin,
             };
     const input: ScheduledTaskUpsertInput = {
+      purposeIntent: savedPurposeIntentForScope(
+        draft.purposeScope ?? { type: "unscoped", reason: "deliberate" },
+      ),
       ...(draft.editingId ? { id: draft.editingId as ScheduledTaskId, requireExisting: true } : {}),
       title: draft.title.trim(),
       prompt: draft.prompt.trim(),
@@ -1122,6 +1126,15 @@ function ScheduledTaskEditorDialog({
               </Field>
             ) : null}
 
+            <ExecutionPurposeControl
+              scope={draft.purposeScope ?? { type: "unscoped", reason: "deliberate" }}
+              runs={[]}
+              disabled={saving || !canOperate}
+              onChange={async (scope) => {
+                setDraft((current) => ({ ...current, purposeScope: scope }));
+                return true;
+              }}
+            />
             <Field label="Prompt" htmlFor="scheduled-task-prompt">
               <Textarea
                 id="scheduled-task-prompt"
@@ -1392,3 +1405,5 @@ function ScheduledTaskEditorDialog({
     </Dialog>
   );
 }
+import { savedPurposeIntentForScope } from "@t3tools/contracts";
+import { ExecutionPurposeControl } from "../chat/ExecutionPurposeControl";

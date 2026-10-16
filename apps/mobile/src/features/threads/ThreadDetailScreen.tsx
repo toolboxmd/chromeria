@@ -1423,6 +1423,15 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                     </View>
                   ) : (
                     <>
+                      {props.serverConfig?.environment.capabilities.executionPurposeVersions?.includes(
+                        1,
+                      ) === true ? (
+                        <ThreadExecutionPurposeControl
+                          thread={props.selectedThread}
+                          threadRef={props.selectedThreadDetailRef}
+                          disabled={!props.canOperateThread}
+                        />
+                      ) : null}
                       <ThreadComposer
                         canOperateThread={props.canOperateThread}
                         reportedModelSelection={reportedModelSelection}
@@ -1492,3 +1501,4 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     </View>
   );
 });
+import { ThreadExecutionPurposeControl } from "./ThreadExecutionPurposeControl";
