@@ -235,7 +235,8 @@ are evidence for review, not proof that a feature has been adopted upstream.
   "issues": [
     "https://github.com/toolboxmd/t3code/issues/6",
     "https://github.com/toolboxmd/t3code/issues/20",
-    "https://github.com/toolboxmd/chromeria/issues/308"
+    "https://github.com/toolboxmd/chromeria/issues/308",
+    "https://github.com/toolboxmd/chromeria/issues/370"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/9",
@@ -252,6 +253,7 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "scripts/fork-rebase.sh",
     "scripts/fork-upstream-edits.txt",
     "patches/vitest@5.0.1.patch",
+    "patches/expo-modules-jsi@58.0.7.patch",
     "scripts/lib/vitest-cache.test.ts",
     "apps/server/src/forkWsRpc.ts"
   ],
@@ -275,7 +277,9 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "blacksmith",
     "ELECTRON_RUN_AS_NODE",
     "TMPDIR",
-    "vitest"
+    "vitest",
+    "JavaScriptRepresentable",
+    "expo-modules-jsi"
   ]
 }
 ```
