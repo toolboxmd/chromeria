@@ -155,20 +155,25 @@ are evidence for review, not proof that a feature has been adopted upstream.
 ```json
 {
   "id": "branding",
-  "purpose": "Give desktop and web the Chromeria name, icons and independent desktop identity.",
+  "purpose": "Give desktop, web and the iOS app the Chromeria name, icons and independent identity.",
   "issues": [
     "https://github.com/toolboxmd/t3code/issues/12",
     "https://github.com/toolboxmd/t3code/issues/13",
-    "https://github.com/toolboxmd/t3code/issues/14"
+    "https://github.com/toolboxmd/t3code/issues/14",
+    "https://github.com/toolboxmd/chromeria/issues/205"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/12",
     "https://github.com/toolboxmd/t3code/pull/13",
-    "https://github.com/toolboxmd/t3code/pull/14"
+    "https://github.com/toolboxmd/t3code/pull/14",
+    "https://github.com/toolboxmd/chromeria/pull/209"
   ],
   "newFiles": [
+    "apps/mobile/chromeria.ts",
+    "apps/mobile/chromeria.test.ts",
     "apps/web/public/chromeria-mark.png",
     "assets/chromeria/chromeria-icon-1024.png",
+    "assets/chromeria/chromeria-ios-1024.png",
     "assets/chromeria/chromeria-web-apple-touch-180.png",
     "assets/chromeria/chromeria-web-favicon-16x16.png",
     "assets/chromeria/chromeria-web-favicon-32x32.png",
@@ -176,6 +181,7 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "assets/chromeria/chromeria-windows.ico"
   ],
   "upstreamFiles": [
+    "apps/mobile/app.config.ts",
     "apps/desktop/package.json",
     "apps/desktop/src/app/DesktopAppIdentity.test.ts",
     "apps/desktop/src/app/DesktopAppIdentity.ts",
@@ -213,7 +219,9 @@ are evidence for review, not proof that a feature has been adopted upstream.
     "wordmark",
     "favicon",
     "Chromeria",
-    "auto-update"
+    "auto-update",
+    "bundleIdentifier",
+    "appleTeamId"
   ]
 }
 ```

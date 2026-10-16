@@ -26,6 +26,8 @@ export const BRAND_ASSET_PATHS = {
   // Chromeria (toolboxmd fork) brand, used by stable desktop and web builds.
   // The 1024px source is the macOS rounded-square icon; the rest derive from it.
   chromeriaIconPng: "assets/chromeria/chromeria-icon-1024.png",
+  // Opaque, full-bleed iOS app icon: the source scaled 108% over its navy background.
+  chromeriaIosIconPng: "assets/chromeria/chromeria-ios-1024.png",
   chromeriaWindowsIconIco: "assets/chromeria/chromeria-windows.ico",
   chromeriaWebFaviconIco: "assets/chromeria/chromeria-web-favicon.ico",
   chromeriaWebFavicon16Png: "assets/chromeria/chromeria-web-favicon-16x16.png",
