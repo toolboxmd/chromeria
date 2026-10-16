@@ -1,13 +1,14 @@
 import {
   CommandId,
   MessageId,
+  type OrchestrationV2RuntimeRequest,
   type OrchestrationV2ServerCommand,
+  type OrchestrationV2Subagent,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { CommandReceiptStoreV2 } from "../orchestration-v2/CommandReceiptStore.ts";
-import { reconcileDelegatedTaskQuestion } from "../orchestration-v2/DelegatedTaskQuestions.ts";
 
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import { ThreadCommandExecutor } from "../orchestration-v2/ThreadCommandExecutor.ts";
@@ -21,6 +22,10 @@ const isUndeliveredKind = (request: { readonly kind: string }) =>
 export const reconcileChildRequests = Effect.fn("childThreads.reconcileRequests")(function* <E>(
   childId: ThreadId,
   dispatch: (command: OrchestrationV2ServerCommand) => Effect.Effect<unknown, E>,
+  reconcileNativeQuestion: (
+    task: OrchestrationV2Subagent,
+    request: OrchestrationV2RuntimeRequest,
+  ) => Effect.Effect<unknown, E>,
 ) {
   const projections = yield* ProjectionStoreV2;
   const serialization = yield* ThreadCommandExecutor;
@@ -56,7 +61,7 @@ export const reconcileChildRequests = Effect.fn("childThreads.reconcileRequests"
           for (const request of current.runtimeRequests) {
             if (isUndeliveredKind(request)) continue;
             if (nativeTask !== undefined && request.kind === "user_input") {
-              yield* reconcileDelegatedTaskQuestion(nativeTask, request, dispatch);
+              yield* reconcileNativeQuestion(nativeTask, request);
               continue;
             }
             const identity = `child-request:${childId}:${request.id}:${parentId}`;
@@ -121,12 +126,18 @@ export const reconcileChildRequests = Effect.fn("childThreads.reconcileRequests"
 });
 
 export const reconcilePendingChildRequests = Effect.fn("childThreads.reconcilePendingRequests")(
-  function* <E>(dispatch: (command: OrchestrationV2ServerCommand) => Effect.Effect<unknown, E>) {
+  function* <E>(
+    dispatch: (command: OrchestrationV2ServerCommand) => Effect.Effect<unknown, E>,
+    reconcileNativeQuestion: (
+      task: OrchestrationV2Subagent,
+      request: OrchestrationV2RuntimeRequest,
+    ) => Effect.Effect<unknown, E>,
+  ) {
     const projections = yield* ProjectionStoreV2;
     const snapshot = yield* projections.getShellSnapshot();
     for (const thread of [...snapshot.threads, ...snapshot.archivedThreads]) {
       if (thread.lineage.relationshipToParent === "subagent")
-        yield* reconcileChildRequests(thread.id, dispatch);
+        yield* reconcileChildRequests(thread.id, dispatch, reconcileNativeQuestion);
     }
   },
 );
