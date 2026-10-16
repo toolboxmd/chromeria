@@ -7,8 +7,26 @@ import type {
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { BotIcon, RefreshCwIcon } from "lucide-react";
-import { Suspense, useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import {
+  BotIcon,
+  Maximize2Icon,
+  RefreshCwIcon,
+  RotateCcwIcon,
+  XIcon,
+  ZoomInIcon,
+  ZoomOutIcon,
+} from "lucide-react";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
 
 import { useOpenLink } from "~/browser/useOpenLink";
 import { observeResize } from "~/lib/observeResize";
@@ -33,8 +51,16 @@ import {
   featureMapPartIdOf,
   type FeatureMapPartView,
   featureMapShown,
+  fitMapViewport,
   foldFeatureMap,
+  iconAnchorInLayer,
   isChromeriaFeatureMapPart,
+  type MapViewport,
+  panMapViewport,
+  pointerMovedPastDragThreshold,
+  scaleAfterWheel,
+  stepMapScale,
+  zoomMapViewport,
 } from "./featureMap.logic";
 
 /** How often a visible Map rereads GitHub. */
@@ -88,6 +114,12 @@ export function FeatureMapPanel({
 }) {
   const query = useFeatureMap(environmentId, supported ? projectId : null);
   const { refresh } = query;
+  const expandRef = useRef<HTMLButtonElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const closeExpanded = useCallback(() => {
+    setExpanded(false);
+    expandRef.current?.focus();
+  }, []);
   // The interval lives with the mounted tab, so it stops when the tab closes.
   useEffect(() => {
     if (!supported || projectId === null) return;
@@ -110,16 +142,32 @@ export function FeatureMapPanel({
     lastGood: query.data,
   });
 
+  const title =
+    shown.kind === "snapshot"
+      ? `Map from ${shown.snapshot.branch} at ${shown.snapshot.commit.slice(0, 7)}`
+      : "Map";
+  const titleSuffix =
+    shown.kind === "snapshot" && shown.stale !== null
+      ? ` · as of ${timeOf(shown.stale.since)}, GitHub unreachable`
+      : null;
+  const map = shown.kind === "snapshot" && shown.snapshot._tag === "Map" ? shown.snapshot : null;
+
   const header = (
     <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3 text-xs text-muted-foreground">
       <span className="min-w-0 flex-1 truncate">
-        {shown.kind === "snapshot"
-          ? `Map from ${shown.snapshot.branch} at ${shown.snapshot.commit.slice(0, 7)}`
-          : "Map"}
-        {shown.kind === "snapshot" && shown.stale !== null
-          ? ` · as of ${timeOf(shown.stale.since)}, GitHub unreachable`
-          : null}
+        {title}
+        {titleSuffix}
       </span>
+      <Button
+        ref={expandRef}
+        size="icon-xs"
+        variant="ghost"
+        aria-label="Expand map"
+        disabled={map === null}
+        onClick={() => setExpanded(true)}
+      >
+        <Maximize2Icon />
+      </Button>
       <Button
         size="icon-xs"
         variant="ghost"
@@ -154,7 +202,16 @@ export function FeatureMapPanel({
       </Message>
     );
   } else {
-    body = <FeatureMapBody map={shown.snapshot} threadRef={threadRef} theme={theme} />;
+    body = (
+      <FeatureMapBody
+        map={shown.snapshot}
+        threadRef={threadRef}
+        theme={theme}
+        title={`${title}${titleSuffix ?? ""}`}
+        expanded={expanded && map !== null}
+        onClose={closeExpanded}
+      />
+    );
   }
 
   return (
@@ -177,10 +234,16 @@ function FeatureMapBody({
   map,
   threadRef,
   theme,
+  title,
+  expanded,
+  onClose,
 }: {
   map: MapSnapshot;
   threadRef: ScopedThreadRef;
   theme: "light" | "dark";
+  title: string;
+  expanded: boolean;
+  onClose: () => void;
 }) {
   const navigate = useNavigate();
   const { environments } = useEnvironments();
@@ -241,6 +304,20 @@ function FeatureMapBody({
 
   return (
     <ScrollArea className="min-h-0 flex-1">
+      {expanded
+        ? createPortal(
+            <ExpandedMap
+              title={title}
+              onClose={onClose}
+              source={source}
+              theme={theme}
+              views={views}
+              onOpen={openUrl}
+              onOpenThread={openThread}
+            />,
+            document.body,
+          )
+        : null}
       <div className="flex flex-col gap-4 p-3">
         {threadsError !== null ? (
           <p className="m-0 text-xs text-muted-foreground">
@@ -281,9 +358,270 @@ interface IconPlacement {
   readonly top: number;
 }
 
+function samePlacements(current: ReadonlyArray<IconPlacement>, next: ReadonlyArray<IconPlacement>) {
+  return (
+    current.length === next.length &&
+    current.every(
+      (icon, index) =>
+        icon.id === next[index]?.id &&
+        icon.left === next[index]?.left &&
+        icon.top === next[index]?.top,
+    )
+  );
+}
+
+interface MapPointerDrag {
+  readonly id: number;
+  readonly startX: number;
+  readonly startY: number;
+  lastX: number;
+  lastY: number;
+  moved: boolean;
+}
+
+/**
+ * Full-window map. The diagram is the only content: the part list stays in the panel.
+ * Pan and zoom live here; closing does not reread the map.
+ */
+function ExpandedMap({
+  title,
+  onClose,
+  source,
+  theme,
+  views,
+  onOpen,
+  onOpenThread,
+}: {
+  title: string;
+  onClose: () => void;
+  source: string;
+  theme: "light" | "dark";
+  views: ReadonlyArray<FeatureMapPartView>;
+  onOpen: (url: string) => void;
+  onOpenThread: (thread: IssueRowThread) => void;
+}) {
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const fittedRef = useRef(false);
+  const pointerRef = useRef<MapPointerDrag | null>(null);
+  const suppressClickRef = useRef(false);
+  const [viewport, setViewport] = useState<MapViewport>({ scale: 1, x: 0, y: 0 });
+  const [panning, setPanning] = useState(false);
+
+  const fit = useCallback(() => {
+    const view = viewportRef.current;
+    const content = contentRef.current;
+    if (view === null || content === null) return false;
+    const next = fitMapViewport({
+      contentWidth: content.offsetWidth,
+      contentHeight: content.offsetHeight,
+      viewWidth: view.clientWidth,
+      viewHeight: view.clientHeight,
+    });
+    if (next === null) return false;
+    setViewport(next);
+    return true;
+  }, []);
+
+  const onContentReady = useCallback(() => {
+    if (fittedRef.current) return;
+    if (fit()) fittedRef.current = true;
+  }, [fit]);
+
+  useEffect(() => {
+    closeRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault();
+      onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  useEffect(() => {
+    const view = viewportRef.current;
+    if (view === null) return;
+    if (!fittedRef.current && fit()) fittedRef.current = true;
+    return observeResize(view, () => {
+      if (fittedRef.current) return;
+      if (fit()) fittedRef.current = true;
+    });
+  }, [fit]);
+
+  useEffect(() => {
+    const view = viewportRef.current;
+    if (view === null) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const rect = view.getBoundingClientRect();
+      const deltaMode = event.deltaMode === 1 || event.deltaMode === 2 ? event.deltaMode : 0;
+      const anchor = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      setViewport((current) =>
+        zoomMapViewport(current, anchor, scaleAfterWheel(current.scale, event.deltaY, deltaMode)),
+      );
+    };
+    const onClick = (event: MouseEvent) => {
+      if (!suppressClickRef.current) return;
+      suppressClickRef.current = false;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    view.addEventListener("wheel", onWheel, { passive: false });
+    view.addEventListener("click", onClick, true);
+    return () => {
+      view.removeEventListener("wheel", onWheel);
+      view.removeEventListener("click", onClick, true);
+    };
+  }, []);
+
+  const zoomAtCenter = (direction: "in" | "out") => {
+    const rect = viewportRef.current?.getBoundingClientRect();
+    const anchor = { x: (rect?.width ?? 0) / 2, y: (rect?.height ?? 0) / 2 };
+    setViewport((current) =>
+      zoomMapViewport(current, anchor, stepMapScale(current.scale, direction)),
+    );
+  };
+
+  const onPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target;
+    if (target instanceof Element && target.closest("button")) return;
+    pointerRef.current = {
+      id: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      lastX: event.clientX,
+      lastY: event.clientY,
+      moved: false,
+    };
+  };
+
+  const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = pointerRef.current;
+    if (drag === null || drag.id !== event.pointerId) return;
+    if (!drag.moved) {
+      if (
+        !pointerMovedPastDragThreshold(
+          { x: drag.startX, y: drag.startY },
+          { x: event.clientX, y: event.clientY },
+        )
+      ) {
+        return;
+      }
+      drag.moved = true;
+      suppressClickRef.current = true;
+      setPanning(true);
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+    const dx = event.clientX - drag.lastX;
+    const dy = event.clientY - drag.lastY;
+    drag.lastX = event.clientX;
+    drag.lastY = event.clientY;
+    setViewport((current) => panMapViewport(current, { x: dx, y: dy }));
+  };
+
+  const endDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = pointerRef.current;
+    if (drag === null || drag.id !== event.pointerId) return;
+    pointerRef.current = null;
+    setPanning(false);
+    if (!drag.moved) return;
+    suppressClickRef.current = true;
+    window.setTimeout(() => {
+      suppressClickRef.current = false;
+    }, 0);
+  };
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      className="fixed inset-0 z-50 flex flex-col bg-background [-webkit-app-region:no-drag]"
+    >
+      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3 text-xs text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate">{title}</span>
+        <div className="flex shrink-0 items-center gap-1">
+          <Button
+            size="icon-xs"
+            variant="ghost"
+            aria-label="Zoom out"
+            disabled={stepMapScale(viewport.scale, "out") === viewport.scale}
+            onClick={() => zoomAtCenter("out")}
+          >
+            <ZoomOutIcon />
+          </Button>
+          <Button
+            size="icon-xs"
+            variant="ghost"
+            aria-label="Zoom in"
+            disabled={stepMapScale(viewport.scale, "in") === viewport.scale}
+            onClick={() => zoomAtCenter("in")}
+          >
+            <ZoomInIcon />
+          </Button>
+          <Button
+            size="icon-xs"
+            variant="ghost"
+            aria-label="Fit map"
+            onClick={() => {
+              if (fit()) fittedRef.current = true;
+            }}
+          >
+            <RotateCcwIcon />
+          </Button>
+          <Button
+            ref={closeRef}
+            size="icon-xs"
+            variant="ghost"
+            aria-label="Close expanded map"
+            onClick={onClose}
+          >
+            <XIcon />
+          </Button>
+        </div>
+      </div>
+      <div
+        ref={viewportRef}
+        className={`relative min-h-0 flex-1 overflow-hidden touch-none ${panning ? "cursor-grabbing" : "cursor-grab"}`}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+      >
+        <Suspense
+          fallback={
+            <Message>
+              <Spinner aria-label="Drawing map" />
+            </Message>
+          }
+        >
+          <FeatureMapDiagram
+            source={source}
+            theme={theme}
+            views={views}
+            onOpen={onOpen}
+            onOpenThread={onOpenThread}
+            viewport={viewport}
+            contentRef={contentRef}
+            onContentReady={onContentReady}
+          />
+        </Suspense>
+      </div>
+    </div>
+  );
+}
+
 /**
  * The drawing itself. Parts open their primary ref on click; a part some thread is working on
  * carries an app-drawn icon at its top right, placed from the rendered node's box.
+ * In the expanded view the wrapper is translated and scaled, and icon positions are converted
+ * from screen space into that layer.
  */
 function FeatureMapDiagram({
   source,
@@ -291,17 +629,30 @@ function FeatureMapDiagram({
   views,
   onOpen,
   onOpenThread,
+  viewport = null,
+  contentRef,
+  onContentReady,
 }: {
   source: string;
   theme: "light" | "dark";
   views: ReadonlyArray<FeatureMapPartView>;
   onOpen: (url: string) => void;
   onOpenThread: (thread: IssueRowThread) => void;
+  viewport?: MapViewport | null;
+  contentRef?: React.RefObject<HTMLDivElement | null>;
+  onContentReady?: () => void;
 }) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [svg, setSvg] = useState<SVGSVGElement | null>(null);
   const [icons, setIcons] = useState<ReadonlyArray<IconPlacement>>([]);
   const byId = useMemo(() => new Map(views.map((view) => [view.part.id, view])), [views]);
+  const assignWrapper = useCallback(
+    (node: HTMLDivElement | null) => {
+      wrapperRef.current = node;
+      if (contentRef) contentRef.current = node;
+    },
+    [contentRef],
+  );
   // Node clicks read the newest views, so a refresh never needs the SVG rebound.
   const openNode = useEffectEvent((elementId: string) => {
     const id = featureMapPartIdOf(elementId, new Set(byId.keys()));
@@ -325,6 +676,18 @@ function FeatureMapDiagram({
     () => views.filter((view) => view.threads.length > 0).map((view) => view.part.id),
     [views],
   );
+  const scale = viewport?.scale ?? 1;
+  const expandedLayer = viewport !== null;
+  // The expanded drawing uses its viewBox size, so fit and zoom are not capped by the window.
+  const viewBox = expandedLayer && svg !== null ? svg.viewBox.baseVal : null;
+  const naturalSize =
+    viewBox !== null && viewBox.width > 0 && viewBox.height > 0
+      ? { width: viewBox.width, height: viewBox.height }
+      : null;
+  useLayoutEffect(() => {
+    if (!expandedLayer || svg === null) return;
+    onContentReady?.();
+  }, [expandedLayer, onContentReady, svg]);
   useEffect(() => {
     const wrapper = wrapperRef.current;
     if (svg === null || wrapper === null) return;
@@ -336,18 +699,42 @@ function FeatureMapDiagram({
         const id = featureMapPartIdOf(node.id, wanted);
         if (id === null) continue;
         const box = node.getBoundingClientRect();
-        placements.push({ id, left: box.right - origin.left, top: box.top - origin.top });
+        placements.push({
+          id,
+          ...iconAnchorInLayer({
+            node: { right: box.right, top: box.top },
+            layer: { left: origin.left, top: origin.top },
+            scale,
+          }),
+        });
       }
-      setIcons(placements);
+      setIcons((current) => (samePlacements(current, placements) ? current : placements));
     };
     place();
     return observeResize(wrapper, () => {
       place();
     });
-  }, [svg, workingIds]);
+  }, [scale, svg, workingIds]);
 
   return (
-    <div ref={wrapperRef} className="relative">
+    <div
+      ref={assignWrapper}
+      className={
+        viewport === null
+          ? "relative"
+          : "relative [&_svg]:h-full [&_svg]:w-full [&_svg]:max-w-none!"
+      }
+      style={
+        viewport === null
+          ? undefined
+          : {
+              transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`,
+              transformOrigin: "0 0",
+              width: naturalSize?.width,
+              height: naturalSize?.height,
+            }
+      }
+    >
       <MermaidDiagram source={source} onRendered={setSvg} />
       {icons.map((icon) => {
         const view = byId.get(icon.id);
