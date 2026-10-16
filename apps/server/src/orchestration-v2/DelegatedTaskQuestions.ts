@@ -7,9 +7,11 @@ import {
 } from "@t3tools/contracts";
 import { reportLabel } from "@t3tools/provider-core/server/notification";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 
 import { readRetirementState } from "../childThreads/retirement.ts";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
+import { CommandReceiptStoreV2 } from "./CommandReceiptStore.ts";
 
 /** Live delivery and persisted startup recovery share the native question identity and policy.
  * A serialized caller passes its dispatch path without acquiring the parent lock again. */
@@ -56,11 +58,23 @@ export const reconcileDelegatedTaskQuestion = Effect.fnUntraced(function* <E>(
       request.responseCapability.type === "message"
         ? `Delegated task ${task.id} asked a question and is still working.`
         : `Delegated task ${task.id} is blocked on a question and cannot continue until it is answered.`;
+    const receipts = yield* CommandReceiptStoreV2;
+    const commandPrefix = `server:delegated-task-question:${key}`;
+    let commandId = CommandId.make(commandPrefix);
+    let attempt = 0;
+    // Rejections are durable too: replaying one never plans again. Keep the
+    // original identity for accepted wakes; only a rejected attempt gets a new ID.
+    for (;;) {
+      const receipt = yield* receipts.getByCommandId(commandId);
+      if (Option.isNone(receipt) || receipt.value.status === "accepted") break;
+      attempt += 1;
+      commandId = CommandId.make(`server:delegated-task-question-retry:${attempt}:${key}`);
+    }
     // Success means the command and its stable receipt committed. If dispatch fails,
     // leave the old queued notice intact so a later recovery can retry the handoff.
     yield* dispatch({
       type: "message.dispatch",
-      commandId: CommandId.make(`server:delegated-task-question:${key}`),
+      commandId,
       threadId: task.threadId,
       messageId,
       text: `${situation} Read it with t3_pending_request_read using threadId ${task.childThreadId} and requestId ${request.id}. Answer it with t3_pending_request_respond when the answer follows from the task or the user's instructions; otherwise ask the user, then answer it. If it is no longer pending, it was answered or dismissed.`,

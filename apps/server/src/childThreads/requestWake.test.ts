@@ -588,6 +588,7 @@ it.effect.each([
   "missing-native-wake",
   "failed-native-dispatch",
   "native-committed-before-legacy-cancel",
+  "persisted-native-rejection",
 ] as const)("startup recovers a completed app-owned child's durable question after $0", (window) =>
   Effect.gen(function* () {
     const directory = NodeFS.mkdtempSync(
@@ -597,17 +598,19 @@ it.effect.each([
       Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
     );
     const filename = NodePath.join(directory, "chromeria-v2.sqlite");
-    const runtime = () =>
-      Harness.layerWithRegistry(
-        { name: `delegated-question-${window}` },
-        Registry.layerFromAdapters([adapter]),
-        {
-          databaseLayer: SqlitePersistence.layerFromPath(filename).pipe(
-            Layer.provide(NodeServices.layer),
-          ),
-          runEffectWorker: false,
-        },
+    const runtime = (providerAvailable = true) => {
+      const database = SqlitePersistence.layerFromPath(filename).pipe(
+        Layer.provide(NodeServices.layer),
       );
+      return Layer.mergeAll(
+        receiptLayer.pipe(Layer.provide(database)),
+        Harness.layerWithRegistry(
+          { name: `delegated-question-${window}` },
+          Registry.layerFromAdapters(providerAvailable ? [adapter] : []),
+          { databaseLayer: database, runEffectWorker: false },
+        ),
+      );
+    };
     const root = ThreadId.make("restart-delegated-parent");
     const requestId = RuntimeRequestId.make("restart-delegated-question");
     const now = yield* DateTime.now;
@@ -704,7 +707,7 @@ it.effect.each([
     const legacyMessageId = MessageId.make(
       `child-request:${task.childThreadId}:${requestId}:${root}`,
     );
-    if (window !== "missing-native-wake") {
+    if (window !== "missing-native-wake" && window !== "persisted-native-rejection") {
       // The persisted pre-upgrade notice is queued behind the parent's active run.
       yield* Effect.gen(function* () {
         const orchestrator = yield* OrchestratorV2;
@@ -758,6 +761,33 @@ it.effect.each([
       }).pipe(Effect.provide(runtime()));
     }
 
+    if (window === "persisted-native-rejection") {
+      // A real planning failure commits a rejected receipt. Restore the provider
+      // in the next runtime, rather than throwing before the dispatcher runs.
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* OrchestratorV2;
+        const receipts = yield* CommandReceiptStoreV2;
+        const child = yield* orchestrator.getThreadProjection(task.childThreadId!);
+        const request = child.runtimeRequests.find((request) => request.id === requestId)!;
+        const result = yield* reconcileDelegatedTaskQuestion(
+          task,
+          request,
+          orchestrator.dispatch,
+        ).pipe(Effect.result);
+        assert.equal(result._tag, "Failure");
+        const receipt = yield* receipts.getByCommandId(
+          CommandId.make(`server:delegated-task-question:${root}:${requestId}`),
+        );
+        assert.isTrue(Option.isSome(receipt));
+        if (Option.isSome(receipt)) assert.equal(receipt.value.status, "rejected");
+        assert.isFalse(
+          (yield* orchestrator.getThreadProjection(root)).messages.some((message) =>
+            message.text.includes(requestId),
+          ),
+        );
+      }).pipe(Effect.provide(runtime(false)));
+    }
+
     for (const boot of ["first", "repeated"] as const) {
       yield* Effect.gen(function* () {
         const orchestrator = yield* OrchestratorV2;
@@ -777,6 +807,22 @@ it.effect.each([
         );
         assert.include(actionable[0]!.text, "t3_pending_request_read");
         assert.include(actionable[0]!.text, "t3_pending_request_respond");
+        assert.equal(
+          actionable[0]!.id,
+          MessageId.make(`message:delegated-task-question:${root}:${requestId}`),
+        );
+        assert.lengthOf(
+          parent.runs.filter((run) => run.userMessageId === actionable[0]!.id),
+          1,
+        );
+        if (window === "persisted-native-rejection") {
+          const receipts = yield* CommandReceiptStoreV2;
+          const original = yield* receipts.getByCommandId(
+            CommandId.make(`server:delegated-task-question:${root}:${requestId}`),
+          );
+          assert.isTrue(Option.isSome(original));
+          if (Option.isSome(original)) assert.equal(original.value.status, "rejected");
+        }
         assert.deepStrictEqual(actionable[0]!.notification?.source, {
           kind: "delegated_task",
           taskIds: [task.id],
