@@ -1,9 +1,13 @@
-# Fork feature map
+# Fork carried-edit registry
 
 Only the carried features below and the V2 data foundation belong to this integration stack.
 Each JSON entry assigns actual carried edits one primary owner. Shared paths are
 watched by other carried features; deferred features are excluded. Keyword matches
 are evidence for review, not proof that a feature has been adopted upstream.
+
+The [fork maintenance guide](fork.md) explains absorption and proof. `prs` lists
+PRs that introduced the current carried file set, or compare URLs. Add a later PR
+only when that file set changes; this is not an exhaustive history of follow-ups.
 
 ## spectrum
 
@@ -1030,10 +1034,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "https://github.com/toolboxmd/chromeria/issues/169",
     "https://github.com/toolboxmd/chromeria/issues/210"
   ],
-  "prs": [
-    "https://github.com/toolboxmd/chromeria/pull/183",
-    "https://github.com/toolboxmd/chromeria/pull/211"
-  ],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/183"],
   "newFiles": [
     "apps/server/src/prism/PrismService.test.ts",
     "apps/server/src/prism/PrismService.ts",
@@ -1135,10 +1136,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "https://github.com/toolboxmd/chromeria/issues/169",
     "https://github.com/toolboxmd/chromeria/issues/203"
   ],
-  "prs": [
-    "https://github.com/toolboxmd/chromeria/pull/183",
-    "https://github.com/toolboxmd/chromeria/pull/204"
-  ],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/183"],
   "newFiles": [
     "apps/server/src/mcp/delegatedTaskContinuation.test.ts",
     "packages/shared/src/forkToolInstructions.ts",
@@ -1621,7 +1619,6 @@ sources and reasons.
     "https://github.com/pingdotgg/t3code/pull/16684",
     "https://github.com/pingdotgg/t3code/pull/16695",
     "https://github.com/pingdotgg/t3code/pull/16719",
-    "https://github.com/pingdotgg/t3code/pull/17051",
     "https://github.com/toolboxmd/chromeria/pull/304",
     "https://github.com/toolboxmd/chromeria/pull/368"
   ],
@@ -2024,11 +2021,7 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/issues/358",
     "https://github.com/toolboxmd/chromeria/issues/362"
   ],
-  "prs": [
-    "https://github.com/toolboxmd/chromeria/pull/359",
-    "https://github.com/toolboxmd/chromeria/pull/366",
-    "https://github.com/pingdotgg/t3code/pull/19379"
-  ],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/359"],
   "newFiles": [],
   "upstreamFiles": [
     "apps/server/src/cloud/CloudLink.lifecycle.test.ts",

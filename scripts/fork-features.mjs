@@ -40,6 +40,15 @@ function loadFeatures(root) {
       if (!Array.isArray(values) || values.some((v) => typeof v !== "string" || !v.trim())) {
         throw new Error(`${feature.id}: invalid ${field}`);
       }
+      if (
+        field === "prs" &&
+        values.some(
+          (value) =>
+            !/^https:\/\/[^/]+\/[^/]+\/[^/]+\/(?:pull\/[1-9]\d*|compare\/\S+)$/.test(value),
+        )
+      ) {
+        throw new Error(`${feature.id}: invalid prs URL (expected /pull/<n> or /compare/)`);
+      }
       if (new Set(values).size !== values.length) {
         throw new Error(`${feature.id}: duplicate ${field}`);
       }

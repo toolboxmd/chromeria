@@ -23,7 +23,7 @@ flowchart TD
     BL["Bare launch and receipts"]
     %% BL: #289, PR #335
     DR["Drafters in any project"]
-    %% DR: #114 PR #126
+    %% DR: #114
     SC["Spectrum council and free"]
     %% SC: #118
     JT["Spectrum judged tests"]
@@ -31,31 +31,31 @@ flowchart TD
     OB["OpenBot: Bots, Channels, Computer"]
     %% OB: context
     UA["Upstream absorption"]
-    %% UA: #370 PR #371 PR #373 #166 PR #291
+    %% UA: #370 #166
     MI["Mobile identity"]
-    %% MI: #205 PR #209
+    %% MI: #205
     BR["Bounded event reads"]
-    %% BR: #256 PR #267
+    %% BR: #256
     PU["Provider updates"]
-    %% PU: #263 PR #272 PR #365
+    %% PU: #263
     RS["Resume after restart"]
-    %% RS: #264 PR #301 PR #291 PR #329
+    %% RS: #264
     SN["Child notices"]
-    %% SN: #269 PR #279 PR #342 #341
+    %% SN: #269 #341
     ST["Urgent interruption"]
-    %% ST: #285 PR #300
+    %% ST: #285
     CK["Command keys"]
-    %% CK: #232 PR #243
+    %% CK: #232
     SP["Shown proof"]
-    %% SP: #245 PR #313
+    %% SP: #245
     TF["Test Server 6 flake"]
-    %% TF: #259 PR #278
+    %% TF: #259
     XM["Cross-machine control"]
-    %% XM: #164 PR #368 PR #291 PR #290 PR #303 #302 PR #304
+    %% XM: #164 #302
     NR["Network routes"]
-    %% NR: #292 PR #359 #358 PR #364 PR #366
+    %% NR: #292 #358
     PRN["Paired session renewal"]
-    %% PRN: #323 PR #334 PR #339
+    %% PRN: #323
 
     PZ --> PM --> WG
     PZ --> DR --> VT --> XM
