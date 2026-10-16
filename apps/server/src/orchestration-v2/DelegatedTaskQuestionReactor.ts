@@ -13,6 +13,7 @@ import * as Stream from "effect/Stream";
 
 import { forkParked } from "../serverActivation.ts";
 import { reconcileDelegatedTaskQuestion } from "./DelegatedTaskQuestions.ts";
+import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
@@ -27,6 +28,7 @@ export class DelegatedTaskQuestionReactor extends Context.Service<
 const make = Effect.gen(function* () {
   const engine = yield* Orchestrator.OrchestratorV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
 
   const wakeParent = Effect.fnUntraced(function* (
     task: OrchestrationV2Subagent,
@@ -34,6 +36,7 @@ const make = Effect.gen(function* () {
   ) {
     yield* reconcileDelegatedTaskQuestion(task, request, engine.dispatch).pipe(
       Effect.provideService(ProjectionStore.ProjectionStoreV2, projections),
+      Effect.provideService(CommandReceiptStore.CommandReceiptStoreV2, receipts),
     );
   });
 
