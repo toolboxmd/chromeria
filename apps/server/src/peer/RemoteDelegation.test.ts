@@ -988,6 +988,27 @@ it.effect.each([false, true])(
         const after = yield* actual.threads.getThreadProjection(childId);
         expect(after.runs).toEqual(beforeTamper.runs);
         expect(after.messages).toEqual(beforeTamper.messages);
+        if (!delayedAttach) {
+          const { purposeLaunch: _purposeLaunch, ...legacyOrigin } = after.thread.delegatedFrom!;
+          yield* actual.sink.write({
+            events: [
+              {
+                id: EventId.make("remote-purpose-legacy-launch"),
+                type: "thread.metadata-updated",
+                threadId: childId,
+                occurredAt: now,
+                payload: { ...after.thread, delegatedFrom: legacyOrigin },
+              },
+            ],
+          });
+          const missing = yield* a.call("t3_thread_send", {
+            ...send,
+            clientRequestId: "legacy-launch-has-no-purpose-proof",
+          });
+          expect(missing.isError).toBe(true);
+          expect(JSON.stringify(missing.content)).toContain("remote purpose launch");
+          expect((yield* actual.threads.getThreadProjection(childId)).runs).toEqual(after.runs);
+        }
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

@@ -1,6 +1,7 @@
 import { BareLaunchRequest, BareSupport } from "./bareLaunch.ts";
 import {
   ExecutionPurpose,
+  ExecutionPurposeDelivery,
   PurposeIntent,
   PurposeSelection,
   RemotePurposeContinuation,
@@ -427,6 +428,7 @@ export type OrchestratorMcpThreadReadInput = typeof OrchestratorMcpThreadReadInp
 
 export const OrchestratorMcpThreadDetail = Schema.Struct({
   purposeSelection: Schema.optional(PurposeSelection),
+  purposeDeliveries: Schema.optional(Schema.Array(ExecutionPurposeDelivery)),
   threadId: ThreadId,
   projectId: ProjectId,
   title: Schema.String,

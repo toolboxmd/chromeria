@@ -3036,7 +3036,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         const recordCodexBackgroundOperation = Effect.fnUntraced(function* (
           context: ActiveCodexTurnContext,
           nativeOperationId: string,
-          ended: boolean,
+          update: {
+            readonly status: "running" | "ended";
+            readonly wakeDisposition?: NativeExecutionSegment["wakeDispositions"][number];
+          },
         ) {
           const now = yield* DateTime.now;
           const operation = codexSegment(
@@ -3055,7 +3058,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 {
                   ...operation,
                   boundary: { state: "native_turns", nativeTurnIds: [context.nativeTurnId] },
-                  status: ended ? "ended" : "running",
+                  status: update.status,
+                  noticeIds: update.status === "ended" ? [nativeOperationId] : [],
+                  wakeDispositions:
+                    update.wakeDisposition === undefined ? [] : [update.wakeDisposition],
                 },
               ],
               updatedAt: now,
@@ -5182,11 +5188,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             }
 
             if (payload.item.type === "commandExecution") {
-              const operation = yield* recordCodexBackgroundOperation(
-                context,
-                payload.item.id,
-                true,
-              );
               const turnDrained = yield* clearRunningCommandItem(payload.turnId, payload.item.id);
               const artifacts = yield* buildCommandExecutionArtifacts(context, payload.item);
               yield* emitProviderEvent({
@@ -5200,6 +5201,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 turnItem: artifacts.turnItem,
               });
               if (settled) {
+                const operation = yield* recordCodexBackgroundOperation(context, payload.item.id, {
+                  status: "ended",
+                });
                 if (
                   context.subagent === null &&
                   continuationRequests !== undefined &&
@@ -5220,8 +5224,17 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       return [false, updated] as const;
                     },
                   );
+                  yield* recordCodexBackgroundOperation(context, payload.item.id, {
+                    status: "ended",
+                    wakeDisposition: alreadyOffered ? "duplicate" : "offered",
+                  });
                   if (!alreadyOffered) {
                     yield* continuationRequests.offer({
+                      recordDisposition: (wakeDisposition) =>
+                        recordCodexBackgroundOperation(context, payload.item.id, {
+                          status: "ended",
+                          wakeDisposition,
+                        }).pipe(Effect.asVoid),
                       threadId: context.projectionThreadId,
                       providerThreadId: context.providerThread.id,
                       driver: CODEX_PROVIDER,
@@ -6521,7 +6534,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 for (const item of (yield* Ref.get(runningCommandItemsByTurn))
                   .get(input.nativeTurnId)
                   ?.values() ?? []) {
-                  yield* recordCodexBackgroundOperation(input.context, item.id, false);
+                  yield* recordCodexBackgroundOperation(input.context, item.id, {
+                    status: "running",
+                  });
                 }
                 yield* Ref.update(settledTurns, (current) => {
                   const updated = new Map(current);

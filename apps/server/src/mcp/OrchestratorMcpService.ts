@@ -717,6 +717,9 @@ function threadDetail(
     ...(projection.thread.purposeSelection === undefined
       ? {}
       : { purposeSelection: projection.thread.purposeSelection }),
+    ...(projection.thread.purposeDeliveries === undefined
+      ? {}
+      : { purposeDeliveries: projection.thread.purposeDeliveries }),
     threadId: projection.thread.id,
     projectId: projection.thread.projectId,
     title: projection.thread.title,

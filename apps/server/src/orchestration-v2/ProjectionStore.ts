@@ -1717,6 +1717,7 @@ export function threadShellFromProjection(
     branch: projection.thread.branch,
     worktreePath: projection.thread.worktreePath,
     purposeSelection: projection.thread.purposeSelection,
+    purposeDeliveries: projection.thread.purposeDeliveries,
     pullRequests: threadPullRequestsOf(projection.thread),
     ...(projection.thread.linkedPullRequest === undefined
       ? {}
@@ -2001,6 +2002,7 @@ function shellFromState(input: {
     branch: input.state.thread.branch,
     worktreePath: input.state.thread.worktreePath,
     purposeSelection: input.state.thread.purposeSelection,
+    purposeDeliveries: input.state.thread.purposeDeliveries,
     pullRequests: threadPullRequestsOf(input.state.thread),
     ...(input.state.thread.linkedPullRequest === undefined
       ? {}

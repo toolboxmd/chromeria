@@ -4633,18 +4633,45 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     () =>
       Effect.scoped(
         Effect.gen(function* () {
-          const harness = yield* makeCodexReplayHarness(backgroundExecTranscript);
+          const backgroundEnded = yield* Deferred.make<void>();
+          const backgroundDropped = yield* Deferred.make<void>();
+          const harness = yield* makeCodexReplayHarness(backgroundExecTranscript, (event) =>
+            Effect.gen(function* () {
+              if (event.type !== "provider_thread.updated") return;
+              for (const operation of event.providerThread.nativeOperations ?? []) {
+                if (operation.nativeOperationId !== BG_COMMAND_ITEM) continue;
+                if (operation.status === "ended")
+                  yield* Deferred.succeed(backgroundEnded, undefined);
+                if (operation.wakeDispositions.includes("dropped_disabled"))
+                  yield* Deferred.succeed(backgroundDropped, undefined);
+              }
+            }),
+          );
           const now = yield* DateTime.now;
 
-          yield* harness.runtime.startTurn(
-            makeCodexTestTurnInput({
+          const turnInput: ProviderAdapter.ProviderAdapterV2TurnInput = {
+            ...makeCodexTestTurnInput({
               threadId: harness.threadId,
               providerThread: harness.providerThread,
               now,
               attemptId: RunAttemptId.make("attempt-codex-bg-wake"),
               text: BG_PROMPT,
             }),
-          );
+            purpose: {
+              version: 1,
+              scope: {
+                type: "single",
+                reference: {
+                  host: "github.com",
+                  repository: "acme/work",
+                  kind: "issue",
+                  number: 1,
+                },
+              },
+              provenance: { type: "declared" },
+            },
+          };
+          yield* harness.runtime.startTurn(turnInput);
           yield* awaitUntil(() => harness.terminalEvents().length === 1, "root turn terminal");
           assert.equal(harness.terminalEvents()[0]?.status, "completed");
           assert.isTrue(yield* harness.hasPendingBackgroundWork);
@@ -4659,7 +4686,52 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             () => harness.continuationRequests.length === 1,
             "continuation request",
           );
+          yield* Deferred.await(backgroundEnded);
           const request = harness.continuationRequests[0];
+          const operation = harness.events
+            .flatMap((event) =>
+              event.type === "provider_thread.updated"
+                ? (event.providerThread.nativeOperations ?? [])
+                : [],
+            )
+            .findLast(
+              (operation) =>
+                operation.nativeOperationId === BG_COMMAND_ITEM && operation.status === "ended",
+            );
+          if (operation === undefined) return yield* Effect.die("Missing ended native operation.");
+          assert.deepEqual(operation?.source, {
+            type: "app_run",
+            threadId: harness.threadId,
+            runId: turnInput.runId,
+          });
+          assert.deepEqual(operation?.purpose, turnInput.purpose);
+          assert.deepEqual(operation?.boundary, {
+            state: "native_turns",
+            nativeTurnIds: [BG_NATIVE_TURN],
+          });
+          assert.equal(operation?.status, "ended");
+          assert.equal(operation?.usageFinality, "unreconciled");
+          assert.deepEqual(operation.noticeIds, [BG_COMMAND_ITEM]);
+          assert.deepEqual(request?.nativeCauses, [
+            { operationId: operation.id, purpose: operation.purpose },
+          ]);
+          if (request?.recordDisposition === undefined)
+            return yield* Effect.die("Missing native continuation disposition recorder.");
+          yield* request.recordDisposition("dropped_disabled");
+          yield* Deferred.await(backgroundDropped);
+          assert.isTrue(
+            harness.events.some(
+              (event) =>
+                event.type === "provider_thread.updated" &&
+                event.providerThread.nativeOperations?.some(
+                  (record) =>
+                    record.id === operation.id &&
+                    record.wakeDispositions.includes("dropped_disabled") &&
+                    record.purpose.scope.type === "single" &&
+                    record.purpose.scope.reference.number === 1,
+                ),
+            ),
+          );
           assert.equal(request?.threadId, harness.threadId);
           assert.equal(request?.providerThreadId, harness.providerThread.id);
           assert.equal(request?.driver, CodexAdapterV2.CODEX_DRIVER_KIND);
@@ -5214,6 +5286,14 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         assert.lengthOf(harness.continuationRequests, 0);
         assert.isFalse(yield* harness.hasPendingBackgroundWork);
         assert.lengthOf(harness.terminalEvents(), 1);
+        assert.isFalse(
+          harness.events.some(
+            (event) =>
+              event.type === "provider_thread.updated" &&
+              (event.providerThread.nativeOperations?.length ?? 0) > 0,
+          ),
+          "a command completed during its native turn is not retained background work",
+        );
       }).pipe(
         Effect.provide(
           Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),

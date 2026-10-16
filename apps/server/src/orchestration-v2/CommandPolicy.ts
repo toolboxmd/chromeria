@@ -219,6 +219,14 @@ export function resolveMessageDispatchIntent(
   ) {
     return { type: "steer_active", targetRunId: activeRun.id };
   }
+  // Thread sends already request routine steering on restart-capable harnesses.
+  // Keep that delivery after purpose resolution, using the current locked target.
+  if (
+    requestedMode.type === "steer_active" &&
+    capabilities?.supportsSteeringByInterruptRestart === true
+  ) {
+    return { type: "steer_active", targetRunId: activeRun.id };
+  }
   if (
     capabilities?.activeSteeringInterruptsTools === true ||
     capabilities?.supportsQueuedMessages === true

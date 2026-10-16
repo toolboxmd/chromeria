@@ -79,13 +79,7 @@ export function withCreationProvenance(
       return { ...rest, ...provenance };
     }
     case "message.dispatch": {
-      const {
-        senderThreadId: _sender,
-        scheduledTaskId: _schedule,
-        notification: _notification,
-        delegatedCompletion: _completion,
-        ...message
-      } = command;
+      const { senderThreadId: _sender, scheduledTaskId: _schedule, ...message } = command;
       return { ...message, ...provenance };
     }
     case "thread.fork":
@@ -977,7 +971,7 @@ const make = Effect.gen(function* () {
         type: "message.dispatch",
         ...(input.purposeIntent === undefined ? {} : { purposeIntent: input.purposeIntent }),
         ...(input.purposeSource === undefined ? {} : { purposeSource: input.purposeSource }),
-        ...(input.mode === "queue" ? {} : { deliveryIntent: input.mode }),
+        ...(notice !== undefined || input.mode === "queue" ? {} : { deliveryIntent: input.mode }),
         commandId: input.commandId,
         threadId: input.threadId,
         messageId: input.messageId,

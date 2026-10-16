@@ -269,6 +269,32 @@ describe("pull request toolkit handlers", () => {
     }),
   );
 
+  it.effect("an already linked PR can declare a purpose without using the thread selection", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ thread: makeThread([makeLink(123)]) });
+      const purpose = {
+        host: "GitHub.com",
+        repository: "Other/Outcome",
+        kind: "issue" as const,
+        number: 11,
+      };
+      const result = yield* harness.call("link_pull_request", {
+        url: "https://github.com/t3tools/t3code/pull/123",
+        purposeDelivery: { version: 1, purpose },
+      });
+      expect(result).toMatchObject({
+        alreadyLinked: true,
+        purposeDelivery: {
+          version: 1,
+          purpose: { ...purpose, host: "github.com", repository: "other/outcome" },
+        },
+      });
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        { type: "thread.pull-request.link", purposeDelivery: { version: 1, purpose } },
+      ]);
+    }),
+  );
+
   it.effect("watching an unlinked pull request links it first", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();

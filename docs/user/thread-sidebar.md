@@ -57,8 +57,9 @@ already queued keeps the purpose admitted when it was sent.
 
 A parent's continuation of its original delegated work keeps that launch's
 purpose. Your own follow-up in the child follows its visible selection while
-the original parent still receives the result. Linking a delivery PR does not
-reassign earlier work. Legacy callers and saved schedules without a purpose
+the original parent still receives the result. When linking a PR, an agent can
+declare the outcome it delivers. Linking or unlinking a PR never reassigns
+runs. Legacy callers and saved schedules without a purpose
 remain visibly unscoped; choose a purpose before editing a legacy schedule.
 
 ## Keep a thread working with Wight mode

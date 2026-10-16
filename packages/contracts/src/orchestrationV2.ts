@@ -3,7 +3,9 @@ import { BareLaunchRequest, ThreadBare, BareReceipt } from "./bareLaunch.ts";
 import { PrismRole, PrismLane } from "./prism.ts";
 import {
   ExecutionPurpose,
+  ExecutionPurposeDelivery,
   ExecutionPurposeScope,
+  PurposeDeliveryIntent,
   PurposeIntent,
   PurposeSelection,
   RemotePurposeContinuation,
@@ -419,6 +421,7 @@ export type OrchestrationV2LimitRecoveryUpdate = typeof OrchestrationV2LimitReco
 
 export const OrchestrationV2AppThread = Schema.Struct({
   purposeSelection: Schema.optional(PurposeSelection),
+  purposeDeliveries: Schema.optional(Schema.Array(ExecutionPurposeDelivery)),
   bare: Schema.optional(ThreadBare),
   ...OrchestrationV2CreationFields,
   // Fork: thread people (toolboxmd/chromeria#170). Unset owner is the default person.
@@ -2124,6 +2127,7 @@ export type OrchestrationV2LatestVisibleMessageSummary =
 
 export const OrchestrationV2ThreadShell = Schema.Struct({
   purposeSelection: Schema.optional(PurposeSelection),
+  purposeDeliveries: Schema.optional(Schema.Array(ExecutionPurposeDelivery)),
   forkSpectrumRunning: Schema.optional(Schema.Boolean),
   ...OrchestrationV2CreationFields,
   // Fork: thread people (toolboxmd/chromeria#170). Unset owner is the default person.
@@ -3105,6 +3109,7 @@ export const OrchestrationV2Command = Schema.Union([
     ...ThreadPullRequestKey.fields,
     url: TrimmedNonEmptyString,
     source: ThreadPullRequestLinkSource,
+    purposeDelivery: Schema.optional(PurposeDeliveryIntent),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.pull-request.unlink"),

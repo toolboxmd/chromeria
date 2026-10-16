@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 
 import {
   EnvironmentId,
+  IsoDateTime,
   NodeId,
   NonNegativeInt,
   PositiveInt,
@@ -23,6 +24,20 @@ export const TrackingReference = Schema.Struct({
 });
 export type TrackingReference = typeof TrackingReference.Type;
 const isTrackingReference = Schema.is(TrackingReference);
+
+/** A delivery declaration is separate from navigation and execution ownership. */
+export const PurposeDeliveryIntent = Schema.Struct({
+  version: Schema.Literal(1),
+  purpose: TrackingReference,
+});
+export type PurposeDeliveryIntent = typeof PurposeDeliveryIntent.Type;
+
+export const ExecutionPurposeDelivery = Schema.Struct({
+  ...PurposeDeliveryIntent.fields,
+  pullRequest: Schema.Struct({ ...TrackingReference.fields, kind: Schema.Literal("pr") }),
+  declaredAt: IsoDateTime,
+});
+export type ExecutionPurposeDelivery = typeof ExecutionPurposeDelivery.Type;
 
 export const ExecutionPurposeScope = Schema.Union([
   Schema.Struct({ type: Schema.Literal("single"), reference: TrackingReference }),

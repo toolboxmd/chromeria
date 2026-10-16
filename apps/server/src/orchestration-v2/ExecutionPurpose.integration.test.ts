@@ -158,6 +158,75 @@ it.effect("pins A and B at admission; unnamed web/mobile Steer keeps A and the B
 );
 
 it.effect(
+  "explicit PR deliveries preserve outcome identity after linking, replay and unlinking",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = ThreadId.make("thread:purpose-delivery");
+      yield* createThread(threadId);
+      yield* orchestrator.dispatch(
+        message(threadId, "before-pr", {
+          version: 1,
+          intent: { type: "reference", reference: referenceA },
+        }),
+      );
+      const before = yield* projections.getThreadProjection(threadId);
+      const link = {
+        type: "thread.pull-request.link" as const,
+        commandId: CommandId.make("navigation-link"),
+        threadId,
+        host: "github.com",
+        repository: "delivery/repo",
+        number: 101,
+        url: "https://github.com/delivery/repo/pull/101",
+        source: "agent" as const,
+      };
+      yield* orchestrator.dispatch(link);
+      assert.isUndefined(
+        (yield* projections.getThreadProjection(threadId)).thread.purposeDeliveries,
+        "navigation alone does not declare delivery or ownership",
+      );
+      for (const [id, purpose] of [
+        ["deliver-a", referenceA],
+        ["deliver-a-again", referenceA],
+        ["deliver-b", referenceB],
+      ] as const) {
+        yield* orchestrator.dispatch({
+          ...link,
+          commandId: CommandId.make(id),
+          purposeDelivery: { version: 1 as const, purpose },
+        });
+      }
+      yield* orchestrator.dispatch({
+        type: "thread.pull-request.unlink",
+        commandId: CommandId.make("unlink-delivery-navigation"),
+        threadId,
+        host: link.host,
+        repository: link.repository,
+        number: link.number,
+      });
+      const after = yield* projections.getThreadProjection(threadId);
+      const declaredAt = DateTime.formatIso(yield* DateTime.now);
+      const expected = [referenceA, referenceB].map((purpose) => ({
+        version: 1 as const,
+        purpose,
+        pullRequest: {
+          host: "github.com",
+          repository: "delivery/repo",
+          kind: "pr" as const,
+          number: 101,
+        },
+        declaredAt,
+      }));
+      assert.deepEqual(after.thread.purposeDeliveries, expected);
+      assert.deepEqual(after.runs, before.runs);
+      assert.deepEqual(after.thread.purposeSelection, before.thread.purposeSelection);
+      assert.deepEqual(after.thread.pullRequests, []);
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect(
   "stale choice and incompatible target assertion commit no message, run or start effect",
   () =>
     Effect.gen(function* () {
@@ -746,15 +815,31 @@ it.effect(
         id: EventId.make("event:native-inventory-stale"),
         payload: providerThread,
       };
+      const staleRunning = {
+        ...stale,
+        id: EventId.make("event:native-inventory-stale-running"),
+        payload: {
+          ...providerThread,
+          nativeOperations: [
+            { ...operation, status: "running" as const, noticeIds: [], wakeDispositions: [] },
+          ],
+        },
+      };
       const memory = ProjectionStore.applyToProjection(
-        ProjectionStore.applyToProjection(original, first),
-        stale,
+        ProjectionStore.applyToProjection(
+          ProjectionStore.applyToProjection(original, first),
+          stale,
+        ),
+        staleRunning,
       );
       assert.deepEqual(
         memory.providerThreads.find((thread) => thread.id === providerThread.id)?.nativeOperations,
         [operation],
       );
-      yield* sink.write({ commandId: CommandId.make("native-inventory"), events: [first, stale] });
+      yield* sink.write({
+        commandId: CommandId.make("native-inventory"),
+        events: [first, stale, staleRunning],
+      });
       const stored = yield* orchestrator.getThreadProjection(threadId);
       assert.deepEqual(
         stored.providerThreads.find((thread) => thread.id === providerThread.id)?.nativeOperations,

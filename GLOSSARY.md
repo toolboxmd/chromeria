@@ -208,6 +208,10 @@ The task a run or native execution segment serves, or its explicit unscoped
 state. It is independent of delegated task binding and input authorship.
 _Avoid_: job ownership, thread ownership (for purpose)
 
+**Delivery relation**:
+An explicit declaration that a PR delivers a task's tracking reference. It
+neither aliases the references nor changes any execution purpose.
+
 **Delegated task**:
 One handoff from a parent to a child thread through `delegate_task` (`taskId`,
 `childThreadId`). Always say "delegated task", never "task" alone.

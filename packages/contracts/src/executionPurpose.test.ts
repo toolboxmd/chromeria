@@ -75,4 +75,28 @@ describe("purpose request boundary", () => {
       isPurposeIntent({ version: 1, intent: { type: "selection", expectedRevision: -1 } }),
     ).toBe(false);
   });
+
+  it("requires a valid versioned declaration to add an Issue-to-PR delivery", () => {
+    const link = {
+      type: "thread.pull-request.link",
+      commandId: "delivery-boundary",
+      threadId: "purpose-thread",
+      host: "github.com",
+      repository: "delivery/repo",
+      number: 42,
+      url: "https://github.com/delivery/repo/pull/42",
+      source: "agent",
+    };
+    expect(decodeCommand(link)._tag).toBe("Success");
+    expect(
+      decodeCommand({ ...link, purposeDelivery: { version: 1, purpose: reference } })._tag,
+    ).toBe("Success");
+    for (const purposeDelivery of [
+      { version: 1 },
+      { version: 2, purpose: reference },
+      { version: 1, purpose: { ...reference, kind: "task" } },
+    ]) {
+      expect(decodeCommand({ ...link, purposeDelivery })._tag).toBe("Failure");
+    }
+  });
 });

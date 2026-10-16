@@ -4,6 +4,8 @@ import * as ExecutionPurpose from "./ExecutionPurpose.ts";
 import {
   executionPurposeOf,
   executionPurposesEqual,
+  ExecutionPurposeDelivery,
+  normalizeTrackingReference,
   purposeScopesEqual,
   purposeSelectionOf,
   purposeIntentsEqual,
@@ -191,6 +193,8 @@ import { planThreadDeletion } from "./ThreadDeletion.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ServerSettings from "../serverSettings.ts";
 import { coOwnersAfterSharing, threadSharingRefusal } from "./ThreadPeople.ts";
+
+const isExecutionPurposeDelivery = Schema.is(ExecutionPurposeDelivery);
 
 export class OrchestratorDispatchError extends Schema.TaggedError<OrchestratorDispatchError>()(
   "OrchestratorDispatchError",
@@ -3132,6 +3136,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         Effect.fail(new ExecutionPurpose.PurposeAdmissionError({ reason: "saved_intent_missing" })),
       );
     }
+    const purposeDelivery =
+      command.type === "thread.pull-request.link" && command.purposeDelivery !== undefined
+        ? {
+            version: 1 as const,
+            purpose: normalizeTrackingReference(command.purposeDelivery.purpose),
+            pullRequest: { ...normalizeThreadPullRequestKey(command), kind: "pr" as const },
+            declaredAt: DateTime.formatIso(now),
+          }
+        : undefined;
+    if (purposeDelivery !== undefined && !isExecutionPurposeDelivery(purposeDelivery))
+      return yield* new OrchestratorCommandRejectedError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "The delivery requires a valid typed Issue/PR purpose and PR reference.",
+      });
     const updatedThread: OrchestrationV2AppThread = (() => {
       switch (command.type) {
         case "thread.archive":
@@ -3357,12 +3376,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           const links = threadPullRequestsOf(thread);
           const existing = links.find((link) => threadPullRequestKeysEqual(link, key));
           let pullRequests = links;
+          let purposeDeliveries = thread.purposeDeliveries;
           if (command.type === "thread.pull-request.link") {
+            if (purposeDelivery !== undefined) {
+              if (
+                !purposeDeliveries?.some(
+                  (existing) =>
+                    threadPullRequestKeysEqual(existing.pullRequest, key) &&
+                    purposeScopesEqual(
+                      { type: "single", reference: existing.purpose },
+                      { type: "single", reference: purposeDelivery.purpose },
+                    ),
+                )
+              )
+                purposeDeliveries = [...(purposeDeliveries ?? []), purposeDelivery];
+            }
             const undismisses =
               existing?.source === "stack-dismissed" &&
               command.source !== "stack" &&
               command.source !== "stack-dismissed";
-            if (existing && !undismisses) return thread;
+            if (existing && !undismisses)
+              return purposeDeliveries === thread.purposeDeliveries
+                ? thread
+                : { ...thread, purposeDeliveries, updatedAt: now };
             const link = existing
               ? { ...existing, source: command.source, url: command.url }
               : {
@@ -3428,6 +3464,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return {
             ...thread,
             pullRequests,
+            ...(purposeDeliveries === undefined ? {} : { purposeDeliveries }),
             linkedPullRequest:
               thread.linkedPullRequest &&
               pullRequests.some(
@@ -7627,7 +7664,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         candidate.childThreadId === child.id &&
         candidate.id === (child.forkedFrom?.type === "node" ? child.forkedFrom.nodeId : undefined),
     );
-    if (task === undefined && command.createdBy !== "user") {
+    if (
+      task === undefined &&
+      command.createdBy !== "user" &&
+      parent.subagents.some(
+        (candidate) => candidate.origin === "app_owned" && candidate.childThreadId === child.id,
+      )
+    ) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,

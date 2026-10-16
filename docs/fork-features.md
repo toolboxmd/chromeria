@@ -2110,6 +2110,7 @@ sources and reasons.
     "apps/server/src/childThreads/requestWake.ts",
     "apps/server/src/environment/ServerEnvironment.ts",
     "apps/server/src/mcp/OrchestratorMcpService.ts",
+    "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
     "apps/server/src/mcp/toolkits/core.test.ts",
     "apps/server/src/mcp/toolkits/project/handlers.ts",
     "apps/server/src/mcp/toolkits/project/tools.ts",
