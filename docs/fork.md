@@ -17,6 +17,9 @@ files carry only the hooks those modules need. [The carried-edit registry](fork-
 every carried upstream edit one primary owner; other carried features may list
 it as shared. `scripts/fork-upstream-edits.txt` contains only those carried edits.
 Features deferred to separate integration Issues do not belong in this inventory.
+When upstream fully absorbs a carried capability, prove equivalent behavior before
+removing its registry entry and carried edits. In that same PR, change its mapped
+part to `live` if it remains an existing capability, removing its tracked refs.
 
 ## Desktop and data isolation
 

@@ -1,17 +1,38 @@
 # Chromeria map
 
 The parts of Chromeria and how they connect. The Map tab colours each part from
-GitHub: planned, working, broken or done.
+GitHub: planned, working, broken or done. Live parts are existing capabilities
+asserted by this map; the crystal in the part list marks Chromeria-tracked work.
 
 Each part is declared once as `ID["Name"]`. The comment line `%% ID: refs` under it
 names the part's Issues and pull requests; the first ref is the primary ref, which
-decides planned, working or done. `%% ID: context` marks a part this project draws
-but does not track. GitHub ignores these comment lines.
+decides planned, working or done. `%% ID: live` marks an existing capability in this
+project; `%% ID: context` marks a part another project owns. Live, context and refs
+are mutually exclusive. GitHub ignores these comment lines.
 
 Change this map in the pull request that adds, splits, merges or removes a part.
 
 ```mermaid
 flowchart TD
+    subgraph T3["Live T3 base"]
+        T3C["Clients and settings"]
+        %% T3C: live
+        T3S["Server and orchestration"]
+        %% T3S: live
+        T3P["Provider adapters"]
+        %% T3P: live
+        T3T["Projects, threads, turns and checkpoints"]
+        %% T3T: live
+        T3R["Remote environments and T3 Connect"]
+        %% T3R: live
+        T3M["MCP tools and scheduled tasks"]
+        %% T3M: live
+        T3C --> T3S --> T3P
+        T3S --> T3T
+        T3S --> T3R
+        T3S --> T3M
+    end
+
     PZ["Prism routing"]
     %% PZ: #92
     VT["Visible T3 threads"]
@@ -56,6 +77,28 @@ flowchart TD
     %% NR: #292 #358
     PRN["Paired session renewal"]
     %% PRN: #323
+
+    T3P --- PZ
+    T3T --- VT
+    T3C --- PM
+    T3S --- WG
+    T3P --- BL
+    T3M --- DR
+    T3M --- SC
+    T3M --- JT
+    T3S --- UA
+    T3C --- MI
+    T3S --- BR
+    T3P --- PU
+    T3T --- RS
+    T3T --- SN
+    T3T --- ST
+    T3C --- CK
+    T3S --- SP
+    T3S --- TF
+    T3R --- XM
+    T3R --- NR
+    T3R --- PRN
 
     PZ --> PM --> WG
     PZ --> DR --> VT --> XM
