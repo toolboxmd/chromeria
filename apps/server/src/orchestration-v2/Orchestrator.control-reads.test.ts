@@ -25,7 +25,6 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as DelegatedTaskQuestionReactor from "./DelegatedTaskQuestionReactor.ts";
-import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -45,7 +44,6 @@ const adapter = {
 const layerDatabase = SqlitePersistence.layerMemory;
 const layerTest = Layer.mergeAll(
   layerDatabase,
-  CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase)),
   ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
   ProviderReplayHarness.layerWithRegistry(
     { name: "control-reads" },
@@ -713,7 +711,7 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
     const approval = requestEvent("event:approval", "request:approval", "message", "command");
     const eventSink = yield* EventSink.EventSinkV2;
     yield* eventSink.write({
-      events: [question, asyncQuestion, answered, approval],
+      events: [question],
     });
 
     yield* reactor.handle(question);
@@ -722,6 +720,9 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
         (message) => message.notification !== undefined,
       ),
     );
+    // The active request listener sweeps all durable requests. Introduce the
+    // independently actionable async question after proving the live wait is quiet.
+    yield* eventSink.write({ events: [asyncQuestion, answered, approval] });
     yield* reactor.handle(asyncQuestion);
     assert.equal(
       (yield* projections.getThreadProjection(parentThreadId)).messages.filter(

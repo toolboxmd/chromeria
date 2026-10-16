@@ -901,7 +901,6 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/ws.ts",
     "apps/server/src/orchestration-v2/ProjectionStore.ts",
     "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts",
-    "apps/server/src/server.ts",
     "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
     "apps/server/src/peer/RemoteDelegation.test.ts",
     "packages/client-runtime/src/t3ToolSummary.ts",

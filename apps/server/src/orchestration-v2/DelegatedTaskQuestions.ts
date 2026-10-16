@@ -13,8 +13,8 @@ import { readRetirementState } from "../childThreads/retirement.ts";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
 import { CommandReceiptStoreV2 } from "./CommandReceiptStore.ts";
 
-/** Live delivery and persisted startup recovery share the native question identity and policy.
- * A serialized caller passes its dispatch path without acquiring the parent lock again. */
+/** Deliver only after Orchestrator reconciles native question lifetime under the
+ * parent lock. The serialized dispatch path must not acquire that lock again. */
 export const reconcileDelegatedTaskQuestion = Effect.fnUntraced(function* <E>(
   task: OrchestrationV2Subagent,
   request: OrchestrationV2RuntimeRequest,
