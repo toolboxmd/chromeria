@@ -36,7 +36,11 @@ it.effect("a child with no deliverable requests never loads its ancestors", () =
       withLock: () => Effect.die("took a parent lock"),
     } as never;
 
-    yield* reconcileChildRequests(child, () => Effect.die("dispatched")).pipe(
+    yield* reconcileChildRequests(
+      child,
+      () => Effect.die("dispatched"),
+      () => Effect.die("reconciled native question"),
+    ).pipe(
       Effect.provideService(ProjectionStoreV2, projections),
       Effect.provideService(ThreadCommandExecutor, executor),
       Effect.provideService(CommandReceiptStoreV2, {} as never),

@@ -12,8 +12,6 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import { forkParked } from "../serverActivation.ts";
-import { reconcileDelegatedTaskQuestion } from "./DelegatedTaskQuestions.ts";
-import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
@@ -28,16 +26,12 @@ export class DelegatedTaskQuestionReactor extends Context.Service<
 const make = Effect.gen(function* () {
   const engine = yield* Orchestrator.OrchestratorV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
-  const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
 
   const wakeParent = Effect.fnUntraced(function* (
     task: OrchestrationV2Subagent,
     request: OrchestrationV2RuntimeRequest,
   ) {
-    yield* reconcileDelegatedTaskQuestion(task, request, engine.dispatch).pipe(
-      Effect.provideService(ProjectionStore.ProjectionStoreV2, projections),
-      Effect.provideService(CommandReceiptStore.CommandReceiptStoreV2, receipts),
-    );
+    yield* engine.reconcileDelegatedTaskQuestion(task.threadId, task.id, request.id);
   });
 
   // Runs for every domain event; most events return before any work is needed.

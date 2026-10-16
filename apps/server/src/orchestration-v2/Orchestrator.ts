@@ -82,6 +82,7 @@ import {
   resolveProjectProviderInstanceEnabled,
   type ProviderSessionId,
   RunId,
+  type RuntimeRequestId,
   RuntimeMode,
   ThreadLinkedPullRequest,
   ThreadId,
@@ -165,6 +166,7 @@ import { withCommandMetrics } from "../observability/Metrics.ts";
 import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
+import { reconcileDelegatedTaskQuestion as deliverDelegatedTaskQuestion } from "./DelegatedTaskQuestions.ts";
 import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimit.ts";
 import {
   applyToProjection,
@@ -357,6 +359,12 @@ export interface OrchestratorV2Shape {
   readonly resumeQueuedRuns: Effect.Effect<number, OrchestratorV2Error>;
   readonly recoverDelegatedTasks: Effect.Effect<void>;
   readonly recoverDelegatedTask: (threadId: ThreadId, sourceRunId: RunId) => Effect.Effect<void>;
+  /** Reconciles native question lifetime and delivery under the parent lock. */
+  readonly reconcileDelegatedTaskQuestion: (
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    requestId: RuntimeRequestId,
+  ) => Effect.Effect<void>;
   readonly recordRestartCutDecline: (
     threadId: ThreadId,
     sourceRunId: RunId,
@@ -12682,6 +12690,62 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     },
   );
 
+  /** Native question lifetime is independent of result transfer. Callers hold
+   * the parent lock; dismissal takes the child lock, as follow-up intake does. */
+  const dismissInvalidatedSubagentQuestions = (
+    childControls: ProjectionRecords<"runs" | "messages" | "subagents" | "providerThreads">,
+    settledContinuationOf?: RunId,
+  ) =>
+    Effect.gen(function* () {
+      const childThreadId = childControls.thread.id;
+      const progress = delegatedTaskProgress(childControls);
+      const { resultRun } = progress;
+      if (progress.state !== "result_available" || resultRun === undefined) return;
+      const status = delegatedTaskTerminalStatus(runOutcome(resultRun));
+      if (status !== "cancelled" && status !== "interrupted") return;
+      if (
+        yield* childAwaitsRestartContinuation(childControls.runs, resultRun, settledContinuationOf)
+      )
+        return;
+      // Cancelled or interrupted tasks must not leave async questions that resume the child.
+      const { runtimeRequests } = yield* projectionStore.getThreadRecords(childThreadId, [
+        "runtimeRequests",
+      ]);
+      const pendingQuestions = runtimeRequests.filter(
+        (request) =>
+          request.status === "pending" &&
+          request.kind === "user_input" &&
+          request.responseCapability.type === "message",
+      );
+      if (pendingQuestions.length === 0) return;
+      const { nodes } = yield* projectionStore.getThreadRecords(childThreadId, ["nodes"]);
+      const resultRunIds = new Set<RunId>();
+      let run: OrchestrationV2Run | undefined = resultRun;
+      while (run !== undefined && !resultRunIds.has(run.id)) {
+        resultRunIds.add(run.id);
+        const previousRunId: RunId | undefined = run.restartContinuationOfRunId;
+        run =
+          previousRunId === undefined
+            ? undefined
+            : childControls.runs.find((candidate) => candidate.id === previousRunId);
+      }
+      for (const request of pendingQuestions) {
+        if (
+          nodes.some(
+            (node) =>
+              node.id === request.nodeId && node.runId !== null && resultRunIds.has(node.runId),
+          )
+        ) {
+          yield* dispatchWithReceipt({
+            type: "thread.user-input.dismiss",
+            commandId: CommandId.make(`command:system:delegated-task-question:${request.id}`),
+            threadId: childThreadId,
+            requestId: request.id,
+          });
+        }
+      }
+    });
+
   const finalizeAppOwnedSubagent = Effect.fn("Orchestrator.finalizeAppOwnedSubagent")(function* (
     childThreadId: ThreadId,
     options?: { readonly settledContinuationOf?: RunId; readonly syncRunId?: RunId },
@@ -12759,62 +12823,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     }
 
-    const { resultRun } = progress;
-    if (progress.state !== "result_available" || resultRun === undefined) return;
-    const status = delegatedTaskTerminalStatus(runOutcome(resultRun));
-    if (status !== "cancelled" && status !== "interrupted") return;
-    if (
-      yield* childAwaitsRestartContinuation(
-        childControls.runs,
-        resultRun,
-        options?.settledContinuationOf,
-      )
-    )
-      return;
-    // Callers hold the parent lock; dismiss takes the child lock, as follow-up intake does.
-    const { runtimeRequests } = yield* projectionStore.getThreadRecords(childThreadId, [
-      "runtimeRequests",
-    ]);
-    const pendingQuestions = runtimeRequests.filter(
-      (request) =>
-        request.status === "pending" &&
-        request.kind === "user_input" &&
-        request.responseCapability.type === "message",
+    yield* dismissInvalidatedSubagentQuestions(childControls, options?.settledContinuationOf).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Failed to dismiss task questions", { childThreadId, cause }),
+      ),
     );
-    if (pendingQuestions.length === 0) return;
-    const { nodes } = yield* projectionStore.getThreadRecords(childThreadId, ["nodes"]);
-    const resultRunIds = new Set<RunId>();
-    let run: OrchestrationV2Run | undefined = resultRun;
-    while (run !== undefined && !resultRunIds.has(run.id)) {
-      resultRunIds.add(run.id);
-      const previousRunId: RunId | undefined = run.restartContinuationOfRunId;
-      run =
-        previousRunId === undefined
-          ? undefined
-          : childControls.runs.find((candidate) => candidate.id === previousRunId);
-    }
-    for (const request of pendingQuestions) {
-      if (
-        nodes.some(
-          (node) =>
-            node.id === request.nodeId && node.runId !== null && resultRunIds.has(node.runId),
-        )
-      ) {
-        yield* dispatchWithReceipt({
-          type: "thread.user-input.dismiss",
-          commandId: CommandId.make(`command:system:delegated-task-question:${request.id}`),
-          threadId: childThreadId,
-          requestId: request.id,
-        }).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Failed to dismiss task question", {
-              requestId: request.id,
-              cause,
-            }),
-          ),
-        );
-      }
-    }
   });
 
   const finalizeDelegatedCompletionDelivery = Effect.fn(
@@ -13890,10 +13903,74 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       : threadDispatch.withLock(parentThreadId, dispatch);
   });
 
+  const reconcileDelegatedTaskQuestionWithParentLockHeld = (
+    task: OrchestrationV2Subagent,
+    requestId: RuntimeRequestId,
+  ) =>
+    Effect.gen(function* () {
+      if (task.childThreadId === null) return;
+      let request = yield* projectionStore.getRuntimeRequest(task.childThreadId, requestId);
+      if (request === undefined || request.kind !== "user_input") return;
+      if (request.status === "pending" && request.responseCapability.type === "message") {
+        const child = yield* projectionStore.getThreadRecords(
+          task.childThreadId,
+          ["runs", "messages", "subagents", "providerThreads"],
+          { messageRoles: ["user"] },
+        );
+        if (
+          child.thread.lineage.relationshipToParent !== "subagent" ||
+          child.thread.lineage.parentThreadId !== task.threadId ||
+          child.thread.forkedFrom?.type !== "node"
+        )
+          return;
+        // Recovery listeners can run before the startup sweep, and result transfer
+        // may already have committed. Neither determines a question's lifetime.
+        yield* dismissInvalidatedSubagentQuestions(child);
+        request = yield* projectionStore.getRuntimeRequest(task.childThreadId, requestId);
+        if (request === undefined) return;
+      }
+      yield* deliverDelegatedTaskQuestion(task, request, dispatchWithReceiptEffect).pipe(
+        Effect.provideService(ProjectionStoreV2, projectionStore),
+        Effect.provideService(CommandReceiptStoreV2, commandReceipts),
+      );
+    });
+
+  const reconcileDelegatedTaskQuestion = (
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    requestId: RuntimeRequestId,
+  ) =>
+    threadDispatch
+      .withLock(
+        parentThreadId,
+        Effect.gen(function* () {
+          const parent = yield* projectionStore.getThreadRecords(parentThreadId, ["subagents"]);
+          const task = parent.subagents.find(
+            (task) => task.id === taskId && task.origin === "app_owned",
+          );
+          if (task !== undefined)
+            yield* reconcileDelegatedTaskQuestionWithParentLockHeld(task, requestId);
+        }),
+      )
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Failed to reconcile delegated task question", {
+            parentThreadId,
+            taskId,
+            requestId,
+            cause,
+          }),
+        ),
+      );
+
   const requestWake = (threadId?: ThreadId) =>
     (threadId === undefined
-      ? reconcilePendingChildRequests(dispatchWithReceiptEffect)
-      : reconcileChildRequests(threadId, dispatchWithReceiptEffect)
+      ? reconcilePendingChildRequests(dispatchWithReceiptEffect, (task, request) =>
+          reconcileDelegatedTaskQuestionWithParentLockHeld(task, request.id),
+        )
+      : reconcileChildRequests(threadId, dispatchWithReceiptEffect, (task, request) =>
+          reconcileDelegatedTaskQuestionWithParentLockHeld(task, request.id),
+        )
     ).pipe(
       Effect.provideService(ProjectionStoreV2, projectionStore),
       Effect.provideService(ThreadCommandExecutor.ThreadCommandExecutor, threadDispatch),
@@ -14265,6 +14342,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     resumeQueuedRuns,
     recoverDelegatedTasks,
     recoverDelegatedTask,
+    reconcileDelegatedTaskQuestion,
     recordRestartCutDecline,
     readRestartCutView,
     delegatedTaskResultPending,

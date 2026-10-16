@@ -8,7 +8,6 @@ import * as StorageCleanup from "./storageCleanup.ts";
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
 import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchReactor.ts";
 import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
-import * as CommandReceiptStore from "./orchestration-v2/CommandReceiptStore.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
 
@@ -627,11 +626,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
       const service = yield* DelegatedTaskQuestionReactor.DelegatedTaskQuestionReactor;
       yield* service.start();
     }),
-  ).pipe(
-    Layer.provide(DelegatedTaskQuestionReactor.layer),
-    Layer.provide(ProjectionStoreV2.layer),
-    Layer.provide(CommandReceiptStore.layerFromApplicationReceipts),
-  ),
+  ).pipe(Layer.provide(DelegatedTaskQuestionReactor.layer), Layer.provide(ProjectionStoreV2.layer)),
   // Subscribes to `account.rate-limits.updated` so usage bars track live
   // telemetry instead of waiting for the next status probe.
   ProviderUsageLimitsIngestion.layer,
