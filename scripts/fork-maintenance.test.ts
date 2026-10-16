@@ -384,3 +384,18 @@ describe("the real fork documentation", () => {
     expect(map).not.toMatch(/\]\(fork(?:-features)?\.md\)/);
   });
 });
+
+it("keeps the current live base in one subgraph, with every live part connected", () => {
+  const map = NodeFS.readFileSync(NodePath.join(scriptsDir, "../docs/map.md"), "utf8");
+  // Editable fixture for the agreed base, not a permanent inventory of all map parts.
+  const expectedLiveIds = ["T3C", "T3S", "T3P", "T3T", "T3R", "T3M"];
+  const liveIds = [...map.matchAll(/^\s*%% (\w+): live\s*$/gm)].map((match) => match[1]);
+  expect(liveIds.sort()).toEqual([...expectedLiveIds].sort());
+  const base = /subgraph T3\["Live T3 base"\]([\s\S]*?)\bend\b/.exec(map)?.[1];
+  expect(base).toBeDefined();
+  const edges = map.split("\n").filter((line) => /-->|---|-.->/.test(line));
+  for (const id of expectedLiveIds) {
+    expect(base).toContain(`%% ${id}: live`);
+    expect(edges.some((line) => new RegExp(`\\b${id}\\b`).test(line))).toBe(true);
+  }
+});

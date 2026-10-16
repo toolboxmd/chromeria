@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
+// @effect-diagnostics nodeBuiltinImport:off - Reads the real map as the renderer fixture.
 
+import * as NodeFS from "node:fs";
 import { act, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 
 import { MermaidDiagram } from "../chat/MermaidDiagram";
-import { featureMapPartIdOf } from "./featureMap.logic";
+import { featureMapPartIdOf, featureMapDiagramSource } from "./featureMap.logic";
 
 // The installed Mermaid, not a mock, renders here; jsdom lacks SVG layout, so sizes are stubbed.
 const prototype = window.SVGElement.prototype as SVGElement & {
@@ -73,4 +75,62 @@ describe("the feature map on the pinned Mermaid", () => {
       others.map(() => null),
     );
   });
+});
+
+it("renders subgraphs without turning clusters into clickable parts", async () => {
+  const svg = await renderedSvg(`flowchart TD
+    subgraph BASE["Existing capabilities"]
+      L["Live capability"]
+      C["Clients"]
+      L --> C
+    end
+    F["Fork work"]
+    C --> F
+    classDef fmLive fill:#cffafe
+    class L,C fmLive
+    classDef fmPlanned fill:#e0e7ff
+    class F fmPlanned`);
+  const parts = new Set(["L", "C", "F"]);
+  const nodes = [...svg.querySelectorAll<SVGGElement>("g.node")];
+  expect(nodes.map((node) => featureMapPartIdOf(node.id, parts)).sort()).toEqual(["C", "F", "L"]);
+  expect(nodes.filter((node) => node.classList.contains("fmLive"))).toHaveLength(2);
+  expect(nodes.filter((node) => node.classList.contains("fmPlanned"))).toHaveLength(1);
+  const clusters = [...svg.querySelectorAll("g.cluster")];
+  expect(clusters).toHaveLength(1);
+  expect(clusters.map((cluster) => featureMapPartIdOf(cluster.id, parts))).toEqual([null]);
+});
+
+it("renders the real holistic map, preserving every part and live class", async () => {
+  const markdown = NodeFS.readFileSync(`${import.meta.dirname}/../../../../../docs/map.md`, "utf8");
+  const source = /```mermaid\n([\s\S]*?)\n```/.exec(markdown)![1]!;
+  const parts = new Set(
+    [...source.matchAll(/^\s*(\w+)\["[^"\n]*"\]\s*$/gm)].map((match) => match[1]!),
+  );
+  const liveIds = [...source.matchAll(/^\s*%% (\w+): live\s*$/gm)].map((match) => match[1]!);
+  const views = [...parts].map((id) => ({
+    part: {
+      id,
+      name: id,
+      live: liveIds.includes(id),
+      context: false,
+      primaryUnreadable: false,
+      refs: [],
+    },
+    state: null,
+    note: liveIds.includes(id) ? ("live" as const) : ("unknown" as const),
+    url: null,
+    threads: [],
+  }));
+  const svg = await renderedSvg(featureMapDiagramSource(source, views));
+  const nodes = [...svg.querySelectorAll<SVGGElement>("g.node")];
+  expect(nodes.map((node) => featureMapPartIdOf(node.id, parts)).sort()).toEqual([...parts].sort());
+  expect(
+    nodes
+      .filter((node) => node.classList.contains("fmLive"))
+      .map((node) => featureMapPartIdOf(node.id, parts))
+      .sort(),
+  ).toEqual([...liveIds].sort());
+  expect(
+    [...svg.querySelectorAll("g.cluster")].map((cluster) => featureMapPartIdOf(cluster.id, parts)),
+  ).toEqual([null]);
 });

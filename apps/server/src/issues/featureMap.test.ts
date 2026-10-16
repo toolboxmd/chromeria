@@ -1,8 +1,11 @@
+// @effect-diagnostics nodeBuiltinImport:off - Reads the real map as a parser fixture.
+import * as NodeFS from "node:fs";
 import { describe, expect, it } from "@effect/vitest";
 
 import {
   featureMapFactsDocument,
   featureMapFactsOf,
+  featureMapRefsOf,
   FEATURE_MAP_OPEN_ISSUE_PAGE,
   parseFeatureMapFile,
 } from "./featureMap.ts";
@@ -12,6 +15,62 @@ const at = { host: "github.com", repository: "toolboxmd/contextmd" };
 const file = (body: string) => `# Map\n\nIntro.\n\n\`\`\`mermaid\n${body}\n\`\`\`\n`;
 
 describe("parseFeatureMapFile", () => {
+  it("reads exact live bindings inside subgraphs without requesting ref facts", () => {
+    const parsed = parseFeatureMapFile(
+      file(`flowchart TD
+    subgraph BASE["Existing capabilities"]
+      B["Base"]
+      %% B: live
+    end
+    C["Context"]
+    %% C: context
+    B --> C`),
+      at,
+    )!;
+    expect(parsed.parts.map((part) => [part.id, part.live, part.context])).toEqual([
+      ["B", true, false],
+      ["C", false, true],
+    ]);
+    const refs = featureMapRefsOf(parsed.parts);
+    expect(refs).toEqual([]);
+    expect(
+      featureMapFactsDocument({ refs, repository: at.repository, after: null }).query,
+    ).not.toContain("resource(");
+    expect(parsed.unreadableRefs).toEqual([]);
+  });
+
+  it.each([
+    "live\n%% A: context",
+    "context\n%% A: live",
+    "live\n%% A: #1",
+    "#1\n%% A: live",
+    "context\n%% A: #1",
+    "#1\n%% A: context",
+    "live #1",
+    "context #1",
+    "live context",
+    "lively",
+  ])("reports contradictory or nonexact bindings: %s", (binding) => {
+    const parsed = parseFeatureMapFile(file(`flowchart TD\nA["Alpha"]\n%% A: ${binding}`), at)!;
+    expect(parsed.parts[0]).toMatchObject({ live: false, context: false });
+    expect(parsed.unreadableRefs.length).toBeGreaterThan(0);
+  });
+
+  it("parses the real holistic map with live base parts and tracked fork parts", () => {
+    const markdown = NodeFS.readFileSync(`${import.meta.dirname}/../../../../docs/map.md`, "utf8");
+    const parsed = parseFeatureMapFile(markdown, {
+      host: "github.com",
+      repository: "toolboxmd/chromeria",
+    })!;
+    const live = parsed.parts.filter((part) => part.live);
+    expect(live.length).toBeGreaterThan(0);
+    expect(live.every((part) => !part.context && part.refs.length === 0)).toBe(true);
+    expect(parsed.parts.some((part) => part.context)).toBe(true);
+    expect(parsed.undeclaredRefLines).toEqual([]);
+    // Bare launch's pre-existing comma remains diagnostic after citation equivalence proof.
+    expect(parsed.unreadableRefs).toEqual([{ id: "BL", text: "#289," }]);
+  });
+
   it("reads parts, their refs in order, and context parts", () => {
     const parsed = parseFeatureMapFile(
       file(`%%{init: {"theme": "dark"}}%%
@@ -31,11 +90,19 @@ flowchart TD
     expect(parsed.source.startsWith("%%{init")).toBe(true);
     expect(parsed.source.endsWith('C -->|"next"| LJ')).toBe(true);
     expect(parsed.parts).toEqual([
-      { id: "S", name: "Session in Chromeria", context: true, primaryUnreadable: false, refs: [] },
+      {
+        id: "S",
+        name: "Session in Chromeria",
+        context: true,
+        live: false,
+        primaryUnreadable: false,
+        refs: [],
+      },
       {
         id: "C",
         name: "2 Capture: extract and judge",
         context: false,
+        live: false,
         primaryUnreadable: false,
         refs: [
           {
@@ -56,6 +123,7 @@ flowchart TD
         id: "MK",
         name: "Must-know rule before its action",
         context: false,
+        live: false,
         primaryUnreadable: false,
         refs: [
           {
@@ -76,6 +144,7 @@ flowchart TD
         id: "LJ",
         name: "6 Labeler judge runs",
         context: false,
+        live: false,
         primaryUnreadable: false,
         refs: [],
       },

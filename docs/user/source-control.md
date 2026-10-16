@@ -387,6 +387,8 @@ SR["Serve report"]
 %% SR: PR #38 #15
 S["Session"]
 %% S: context
+B["Existing base capability"]
+%% B: live
 ```
 
 A ref is `#7`, `PR #38`, `owner/repo#231` or `owner/repo PR #227`, on the project's GitHub host. The
@@ -405,7 +407,14 @@ GitHub does not return, because it is private or deleted, shows as unavailable. 
 has more labels or closing PRs than one GitHub page holds, a part they could break shows as
 incomplete instead of a state. A primary ref the map cannot read shows as unknown; the next ref
 never takes its place. `context` marks a part another project owns; it is drawn grey and never
-counted as missing.
+counted as missing. `live` marks an existing capability in the mapped project, asserted by the
+map author rather than inferred from GitHub. Live is distinct from Done and Context and is not
+counted as an untracked part. Live, context and refs cannot be combined; contradictory bindings
+appear under unreadable refs.
+
+On github.com, a map from `toolboxmd/chromeria` marks tracked parts with the Chromeria crystal
+in the accessible part list. This identifies Chromeria-tracked work, regardless of its status,
+rather than complete historical provenance. Live and context parts carry no crystal.
 
 A part that a thread is working on carries a thread icon; select it to open that thread. Select a
 part, or its row in the list under the drawing, to open its primary ref. The gaps list shows parts

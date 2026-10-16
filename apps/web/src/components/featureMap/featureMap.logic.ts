@@ -22,7 +22,8 @@ export type FeatureMapNote =
   | "unknown"
   | "incomplete"
   | "untracked"
-  | "context";
+  | "context"
+  | "live";
 
 export interface FeatureMapPartView {
   readonly part: FeatureMapPart;
@@ -145,9 +146,16 @@ export function foldFeatureMap(
     const fact = primary === undefined ? undefined : facts.get(refKey(primary));
     // An unreadable first token leaves no primary: the next ref must not decide or open it.
     const url = part.primaryUnreadable ? null : (fact?.url ?? primary?.url ?? null);
+    if (part.live) return { part, state: null, note: "live", url: null, threads: [] };
     if (part.context) return { part, state: null, note: "context", url, threads: working };
     if (primary === undefined)
-      return { part, state: null, note: "untracked", url, threads: working };
+      return {
+        part,
+        state: null,
+        note: part.primaryUnreadable ? "unknown" : "untracked",
+        url,
+        threads: working,
+      };
     const base = ((): { state: FeatureMapState | null; note: FeatureMapNote | null } => {
       if (part.primaryUnreadable || fact === undefined) return { state: null, note: "unknown" };
       if (fact === null) return { state: null, note: "unavailable" };
@@ -217,7 +225,9 @@ export function featureMapGaps(map: MapSnapshot): FeatureMapGaps {
     }
   }
   return {
-    untrackedParts: map.parts.filter((part) => !part.context && part.refs.length === 0),
+    untrackedParts: map.parts.filter(
+      (part) => !part.live && !part.context && part.refs.length === 0,
+    ),
     sharedIssues: [...issueParts.values()].filter((entry) => entry.partIds.length > 1),
     openIssuesOnNoPart: map.openIssues.filter(
       (openIssue) => !named.has(refKey({ repository: map.repository, number: openIssue.number })),
@@ -239,11 +249,13 @@ const FEATURE_MAP_CLASSES = {
     name: "fmMuted",
     style: "fill:#f3f4f6,stroke:#9ca3af,color:#4b5563,stroke-dasharray:4 3",
   },
+  live: { name: "fmLive", style: "fill:#cffafe,stroke:#0e7490,color:#164e63" },
   context: { name: "fmContext", style: "fill:#ffffff,stroke:#9ca3af,color:#4b5563" },
 } as const;
 
 export function featureMapClassOf(view: Pick<FeatureMapPartView, "state" | "note">) {
   if (view.state !== null) return FEATURE_MAP_CLASSES[view.state];
+  if (view.note === "live") return FEATURE_MAP_CLASSES.live;
   return view.note === "context" ? FEATURE_MAP_CLASSES.context : FEATURE_MAP_CLASSES.muted;
 }
 
@@ -317,4 +329,18 @@ export function featureMapShown(input: {
         snapshot: lastGood,
         stale: { since: lastGood.fetchedAt, message: latest.message },
       };
+}
+
+/** Chromeria-tracked work is identified by the snapshot, never the local checkout. */
+export function isChromeriaFeatureMapPart(
+  map: Pick<MapSnapshot, "host" | "repository">,
+  part: FeatureMapPart,
+) {
+  return (
+    map.host.toLowerCase() === "github.com" &&
+    map.repository.toLowerCase() === "toolboxmd/chromeria" &&
+    part.refs.length > 0 &&
+    !part.live &&
+    !part.context
+  );
 }

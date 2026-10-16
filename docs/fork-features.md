@@ -1529,9 +1529,15 @@ sources and reasons.
 ```json
 {
   "id": "feature-map",
-  "purpose": "Draw a project's docs/map.md in a right-panel Map tab, each part coloured planned, working, broken or done from GitHub, with working-thread icons and a gaps list.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/235"],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/247"],
+  "purpose": "Draw a project's docs/map.md in a right-panel Map tab, each part coloured planned, working, broken or done from GitHub, with live base parts, scoped Chromeria marks, working-thread icons and a gaps list.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/235",
+    "https://github.com/toolboxmd/chromeria/issues/374"
+  ],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/247",
+    "https://github.com/toolboxmd/chromeria/compare/feat/374-holistic-map...feat/374-holistic-map-live"
+  ],
   "newFiles": [
     "apps/server/src/issues/featureMap.test.ts",
     "apps/server/src/issues/featureMap.ts",
@@ -1540,6 +1546,7 @@ sources and reasons.
     "apps/web/src/components/featureMap/featureMap.logic.ts",
     "apps/web/src/components/featureMap/featureMap.mermaid.test.tsx",
     "apps/web/src/state/featureMap.ts",
+    "packages/contracts/src/featureMap.test.ts",
     "packages/contracts/src/featureMap.ts"
   ],
   "upstreamFiles": ["apps/web/src/components/chat/MermaidDiagram.tsx"],
