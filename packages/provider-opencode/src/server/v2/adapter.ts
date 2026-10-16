@@ -102,6 +102,13 @@ import { OPENCODE_PROVIDER, openCodePermissionRequestKind } from "../adapter.ts"
 import { openCodeToolTurnItem } from "../toolItems.ts";
 
 const OpenCode2ProviderCapabilities = {
+  purposeEvidence: {
+    version: 1,
+    nativeInputs: "unsupported",
+    childSegments: "unsupported",
+    backgroundInventory: "unsupported",
+    nativeUsageFinality: "main_agent_only",
+  },
   sessions: {
     // One server serves every location, so one session runtime owns them all.
     supportsMultipleProviderThreadsPerSession: true,

@@ -4,6 +4,7 @@ import {
 } from "@t3tools/shared/threadPullRequests";
 import {
   CommandId,
+  normalizeTrackingReference,
   pullRequestHostOf,
   type OrchestrationProjectShell,
   type OrchestrationV2ThreadShell,
@@ -144,10 +145,13 @@ function entryOf(
 
 /** What the tools report from a thread shell; exported so the shape is testable without a layer. */
 export function listThreadPullRequests(
-  thread: Pick<OrchestrationV2ThreadShell, "pullRequests">,
+  thread: Pick<OrchestrationV2ThreadShell, "pullRequests" | "purposeDeliveries">,
 ): ListThreadPullRequestsResult {
   const chains = resolveThreadPullRequestChains(thread.pullRequests ?? []);
   return {
+    ...(thread.purposeDeliveries === undefined
+      ? {}
+      : { purposeDeliveries: thread.purposeDeliveries }),
     pullRequests: visibleThreadPullRequests(thread.pullRequests ?? []).map((link) =>
       entryOf(link, chains),
     ),
@@ -267,7 +271,9 @@ const make = Effect.gen(function* () {
    * result reports the state the thread holds afterwards.
    */
   const setWatching = Effect.fn("PullRequestsToolkit.setWatching")(function* (
-    input: PullRequestTargetInput,
+    input: PullRequestTargetInput & {
+      readonly purposeIntent?: import("@t3tools/contracts").SavedPurposeIntent | undefined;
+    },
     watching: boolean,
   ) {
     const thread = yield* requireThread(PullRequestWatchFailedError, input.threadId);
@@ -289,6 +295,7 @@ const make = Effect.gen(function* () {
     yield* engine
       .dispatch({
         type: "thread.pull-request.watch",
+        ...(input.purposeIntent === undefined ? {} : { purposeIntent: input.purposeIntent }),
         commandId: yield* commandId("mcp-pr-watch", thread.id),
         threadId: thread.id,
         host: target.host,
@@ -373,7 +380,8 @@ const make = Effect.gen(function* () {
         const existing = threadPullRequestsOf(thread).find((link) =>
           threadPullRequestKeysEqual(link, target),
         );
-        if (existing && existing.source !== "stack-dismissed")
+        const wasLinked = existing !== undefined && existing.source !== "stack-dismissed";
+        if (wasLinked && input.purposeDelivery === undefined)
           return { ...target, alreadyLinked: true };
         const alreadyLinked = yield* engine
           .dispatch({
@@ -385,15 +393,26 @@ const make = Effect.gen(function* () {
             number: target.number,
             url: target.url,
             source: "agent",
+            ...(input.purposeDelivery === undefined
+              ? {}
+              : { purposeDelivery: input.purposeDelivery }),
           })
           .pipe(
-            Effect.as(false),
-            // The decider rejects a second link of the same PR; for the agent that is
-            // the outcome it asked for, not an error.
-
+            Effect.as(wasLinked),
             Effect.catchCause(dispatchFailure(PullRequestLinkFailedError)),
           );
-        return { ...target, alreadyLinked };
+        return {
+          ...target,
+          alreadyLinked,
+          ...(input.purposeDelivery === undefined
+            ? {}
+            : {
+                purposeDelivery: {
+                  version: 1 as const,
+                  purpose: normalizeTrackingReference(input.purposeDelivery.purpose),
+                },
+              }),
+        };
       }),
     ),
     unlink_pull_request: writesThread((input) =>

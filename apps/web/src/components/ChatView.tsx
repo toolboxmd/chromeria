@@ -1,3 +1,10 @@
+import { ExecutionPurposeControl } from "./chat/ExecutionPurposeControl";
+import {
+  purposeSelectionOf,
+  savedPurposeIntentForScope,
+  type ExecutionPurposeScope,
+  type PurposeIntent,
+} from "@t3tools/contracts";
 import { usePromachosInlineCardHost } from "./promachos/PromachosChat";
 import { usePromachosPresentation } from "./promachos/promachosMode";
 import { promachosPicksModel, withPromachosStart } from "./promachos/promachosStart";
@@ -1744,7 +1751,7 @@ export default function ChatView(props: ChatViewProps) {
   const setThreadInteractionMode = useOrchestrationCommand(threadEnvironment.setInteractionMode, {
     reportFailure: false,
   });
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
+  const dispatchThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
     reportFailure: false,
   });
   const resumeThreadQueue = useOrchestrationCommand(threadEnvironment.resumeThreadQueue, {
@@ -3105,6 +3112,55 @@ export default function ChatView(props: ChatViewProps) {
   const serverConfig = activeThread
     ? (activeEnvironment?.serverConfig ?? null)
     : (primaryEnvironment?.serverConfig ?? null);
+  const supportsExecutionPurpose =
+    serverConfig?.environment.capabilities.executionPurposeVersions?.includes(1) === true;
+  const [draftPurpose, setDraftPurpose] = useState<{
+    readonly routeThreadKey: typeof routeThreadKey;
+    readonly scope: ExecutionPurposeScope;
+  } | null>(null);
+  const currentPurposeSelection = purposeSelectionOf(activeThread ?? {});
+  const selectedPurposeScope = isServerThread
+    ? currentPurposeSelection.scope
+    : draftPurpose?.routeThreadKey === routeThreadKey
+      ? draftPurpose.scope
+      : purposeSelectionOf({}).scope;
+  const startThreadTurn = useStableCallback((request: Parameters<typeof dispatchThreadTurn>[0]) => {
+    const supportsPurpose =
+      appAtomRegistry
+        .get(environmentServerConfigsAtom)
+        .get(request.environmentId)
+        ?.environment.capabilities.executionPurposeVersions?.includes(1) === true;
+    if (!supportsPurpose || request.input.purposeIntent !== undefined)
+      return dispatchThreadTurn(request);
+    const purposeIntent: PurposeIntent =
+      request.input.manualContinuationOfRunId !== undefined
+        ? { version: 1, intent: { type: "inherit" } }
+        : request.input.dispatchMode === "steer" || request.input.dispatchMode === "restart"
+          ? { version: 1, intent: { type: "target" } }
+          : isServerThread &&
+              request.input.threadId === activeThread?.id &&
+              request.input.bootstrap?.createThread === undefined
+            ? {
+                version: 1,
+                intent: { type: "selection", expectedRevision: currentPurposeSelection.revision },
+              }
+            : savedPurposeIntentForScope(selectedPurposeScope);
+    return dispatchThreadTurn({ ...request, input: { ...request.input, purposeIntent } });
+  });
+  const changePurposeScope = async (scope: ExecutionPurposeScope): Promise<boolean> => {
+    if (!isServerThread || activeThread === undefined || activeThread === null) {
+      setDraftPurpose({ routeThreadKey, scope });
+      return true;
+    }
+    const result = await updateThreadMetadata({
+      environmentId: activeThread.environmentId,
+      input: {
+        threadId: activeThread.id,
+        purposeSelection: { expectedRevision: currentPurposeSelection.revision, scope },
+      },
+    });
+    return result._tag === "Success";
+  };
   const providerStatuses = serverConfig?.providers ?? EMPTY_PROVIDERS;
   const selectedProviderByThreadId = composerActiveProvider ?? null;
   const threadProvider =
@@ -11545,6 +11601,16 @@ export default function ChatView(props: ChatViewProps) {
                                   ? () => onOpenRelatedThread(parentThreadLink.threadId)
                                   : null
                               }
+                            />
+                          ) : null}
+                          {composerMounted &&
+                          supportsExecutionPurpose &&
+                          !showProviderSubagentBar ? (
+                            <ExecutionPurposeControl
+                              scope={selectedPurposeScope}
+                              runs={serverProjection?.runs ?? []}
+                              disabled={!canOperateThread}
+                              onChange={changePurposeScope}
                             />
                           ) : null}
                           {!composerMounted ? null : (

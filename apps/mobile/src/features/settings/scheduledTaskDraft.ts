@@ -1,3 +1,4 @@
+import { purposeScopeOfSavedIntent, type ExecutionPurposeScope } from "@t3tools/contracts";
 import type {
   ModelSelection,
   ServerConfig,
@@ -141,6 +142,7 @@ export function scheduleFromDraft(draft: ScheduleDraft): ScheduledTaskUpsertSche
 
 type Workspace = "worktree" | "root" | "existing_worktree";
 export type ScheduledTaskDraft = {
+  readonly purposeScope?: ExecutionPurposeScope;
   readonly task: ScheduledTask | null;
   readonly title: string;
   readonly prompt: string;
@@ -159,6 +161,7 @@ export type ScheduledTaskDraft = {
 function draftSignature(draft: ScheduledTaskDraft): string {
   return JSON.stringify([
     draft.title,
+    draft.purposeScope,
     draft.prompt,
     draft.projectId,
     draft.modelSelection?.instanceId,
@@ -192,6 +195,7 @@ export function createDraft(
   modelSelection: ModelSelection | null,
 ): ScheduledTaskDraft {
   return {
+    purposeScope: { type: "unscoped", reason: "deliberate" },
     task: null,
     title: "",
     prompt: "",
@@ -210,6 +214,7 @@ export function createDraft(
 
 export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
   return {
+    purposeScope: purposeScopeOfSavedIntent(task.purposeIntent),
     task,
     title: task.title,
     prompt: task.prompt,

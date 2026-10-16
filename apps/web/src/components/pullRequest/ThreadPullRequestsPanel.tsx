@@ -1,3 +1,4 @@
+import { purposeSelectionOf, savedPurposeIntentForScope } from "@t3tools/contracts";
 import type { ProjectId, ScopedThreadRef, ThreadPullRequestLink } from "@t3tools/contracts";
 import {
   sourceControlClients,
@@ -431,10 +432,13 @@ function EnabledThreadPullRequestsPanel({
           repository: link.repository,
           number: link.number,
           watching,
+          ...(watching && capabilities?.executionPurposeVersions?.includes(1) === true
+            ? { purposeIntent: savedPurposeIntentForScope(purposeSelectionOf(thread ?? {}).scope) }
+            : {}),
         },
       });
     },
-    [threadRef, watch],
+    [threadRef, watch, capabilities, thread],
   );
   const openCount = useMemo(
     () => links.filter((link) => link.snapshot === null || link.snapshot.state === "open").length,

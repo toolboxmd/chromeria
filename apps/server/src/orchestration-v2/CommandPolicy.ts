@@ -1,3 +1,4 @@
+import type { PurposeIntent } from "@t3tools/contracts";
 import {
   CommandId,
   ModelSelection,
@@ -153,6 +154,7 @@ export function resolveMessageDispatchIntent(
   requestedMode: MessageDispatchMode,
   deliveryIntent?: "auto" | "steer" | "restart",
   requester?: SteeringRequester,
+  purposeIntent?: PurposeIntent,
 ): MessageDispatchMode {
   if (deliveryIntent === undefined) {
     if (
@@ -175,7 +177,8 @@ export function resolveMessageDispatchIntent(
   if (
     requester !== undefined &&
     isPersonSteering(requester) &&
-    (deliveryIntent === "steer" || isMobileSteer(requester, deliveryIntent))
+    (deliveryIntent === "steer" ||
+      (purposeIntent === undefined && isMobileSteer(requester, deliveryIntent)))
   ) {
     const targetId =
       requestedMode.type === "steer_active" ? requestedMode.targetRunId : activeRun.id;
@@ -213,6 +216,14 @@ export function resolveMessageDispatchIntent(
   if (
     capabilities?.supportsActiveSteering === true &&
     capabilities.activeSteeringInterruptsTools !== true
+  ) {
+    return { type: "steer_active", targetRunId: activeRun.id };
+  }
+  // Thread sends already request routine steering on restart-capable harnesses.
+  // Keep that delivery after purpose resolution, using the current locked target.
+  if (
+    requestedMode.type === "steer_active" &&
+    capabilities?.supportsSteeringByInterruptRestart === true
   ) {
     return { type: "steer_active", targetRunId: activeRun.id };
   }

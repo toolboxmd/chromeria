@@ -1,3 +1,9 @@
+import {
+  executionPurposeOf,
+  executionPurposesEqual,
+  type ExecutionPurpose,
+} from "@t3tools/contracts";
+import { executionPurposeWarnings } from "@t3tools/contracts";
 import type { BareReadGrant } from "../orchestration-v2/bareReadGrant.ts";
 import * as BareRuntime from "@t3tools/provider-core/server/bareLaunch";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
@@ -278,6 +284,7 @@ function scheduledTaskWorkspaceStrategy(
  */
 function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): OrchestratorMcpScheduledTask {
   return {
+    ...(task.purposeIntent === undefined ? {} : { purposeIntent: task.purposeIntent }),
     ...(task.bare === undefined ? {} : { bare: task.bare }),
     scheduledTaskId: task.id,
     title: task.title,
@@ -707,6 +714,12 @@ function threadDetail(
   const latest = ThreadManagementService.latestRun(projection);
   const active = ThreadManagementService.latestActiveRun(projection);
   return {
+    ...(projection.thread.purposeSelection === undefined
+      ? {}
+      : { purposeSelection: projection.thread.purposeSelection }),
+    ...(projection.thread.purposeDeliveries === undefined
+      ? {}
+      : { purposeDeliveries: projection.thread.purposeDeliveries }),
     threadId: projection.thread.id,
     projectId: projection.thread.projectId,
     title: projection.thread.title,
@@ -751,6 +764,7 @@ function threadRun(
   cut: ReturnType<typeof restartCutView>,
 ): OrchestratorMcpThreadRun {
   return {
+    purpose: executionPurposeOf(run),
     runId: run.id,
     ordinal: run.ordinal,
     status: run.status,
@@ -1487,6 +1501,11 @@ const make = Effect.gen(function* () {
         taskId: task.id,
         childThreadId: task.childThreadId,
         childRunId: childRun?.id ?? null,
+        purpose: executionPurposeOf(task),
+        warnings: executionPurposeWarnings(executionPurposeOf(task)),
+        ...(terminalRun === undefined
+          ? {}
+          : { latestTerminalPurpose: executionPurposeOf(terminalRun) }),
         childNodeId: task.id,
         status,
         workState,
@@ -1652,6 +1671,11 @@ const make = Effect.gen(function* () {
               },
             }),
         childRunId: null,
+        purpose: executionPurposeOf(task),
+        warnings: executionPurposeWarnings(executionPurposeOf(task)),
+        ...(task.completionSource === undefined
+          ? {}
+          : { latestTerminalPurpose: task.completionSource.purpose }),
         childNodeId: task.id,
         status,
         workState: terminal ? "result_available" : "working",
@@ -1845,6 +1869,7 @@ const make = Effect.gen(function* () {
           input.title ?? (derivedTitle.length > 0 ? derivedTitle.slice(0, 80) : "Scheduled task");
         const linkOrigin = callerLinkOrigin({ scope, caller: parent?.thread });
         const upsertInput: ScheduledTaskUpsertInput = {
+          purposeIntent: input.purposeIntent,
           ...(input.bare === undefined ? {} : { bare: input.bare }),
           ...(linkOrigin === undefined ? {} : { linkOrigin }),
           title,
@@ -1913,6 +1938,20 @@ const make = Effect.gen(function* () {
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
         yield* assertSameLink({ scope, caller: parent?.thread }, existing);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
+        const { scheduledTaskId: _id, enabled, ...definition } = input;
+        if (
+          enabled !== undefined &&
+          Object.values(definition).every((value) => value === undefined)
+        ) {
+          const { task } = yield* scheduledTasks
+            .setEnabled({ id: existing.id, enabled })
+            .pipe(
+              Effect.mapError((error) =>
+                failure("orchestration_error", `Could not update scheduled task: ${error.message}`),
+              ),
+            );
+          return yield* summarizeScheduledTask(scope, { parent, limits }, task);
+        }
         if (
           input.bindToCurrentThread === true &&
           (parent === undefined || parent.thread.projectId !== existing.projectId)
@@ -1938,6 +1977,7 @@ const make = Effect.gen(function* () {
             ? existing.workspaceStrategy
             : scheduledTaskWorkspaceStrategy(input.bindToCurrentThread);
         const upsertInput: ScheduledTaskUpsertInput = {
+          purposeIntent: input.purposeIntent,
           id: existing.id,
           ...((input.bare ?? existing.bare) === undefined
             ? {}
@@ -2150,6 +2190,7 @@ const make = Effect.gen(function* () {
         );
         return {
           bareLaunch: true,
+          executionPurposeVersions: [1],
           parentThreadId: parent?.thread.id ?? null,
           inheritedProviderInstanceId: parent?.thread.modelSelection.instanceId ?? null,
           inheritedModel: parent?.thread.modelSelection.model ?? null,
@@ -2377,6 +2418,7 @@ const make = Effect.gen(function* () {
         const result = yield* threadManagement
           .dispatch({
             type: "delegated_task.request",
+            ...(input.purposeIntent === undefined ? {} : { purposeIntent: input.purposeIntent }),
             createdBy: "agent",
             creationSource: "mcp",
             commandId,
@@ -2795,6 +2837,22 @@ const make = Effect.gen(function* () {
                 yield* threadManagement
                   .dispatch({
                     type: "message.dispatch",
+                    ...(request.purposeIntent === undefined
+                      ? {}
+                      : { purposeIntent: request.purposeIntent }),
+                    ...(parentRun === undefined || request.purposeIntent?.intent.type !== "inherit"
+                      ? {}
+                      : {
+                          purposeSource: {
+                            version: 1,
+                            scope: executionPurposeOf(parentRun).scope,
+                            provenance: {
+                              type: "parent_run",
+                              threadId: parent.thread.id,
+                              runId: parentRun.id,
+                            },
+                          } satisfies ExecutionPurpose,
+                        }),
                     createdBy: "agent",
                     creationSource: "mcp",
                     commandId: stableCommandId({
@@ -3028,6 +3086,61 @@ const make = Effect.gen(function* () {
         yield* resolveInteractionMode(limits.interactionMode, target.thread.interactionMode);
 
         const mode = input.mode ?? "auto";
+        let purposeSource: ExecutionPurpose | undefined;
+        if (input.delegatedContinuation !== undefined) {
+          const evidence = input.delegatedContinuation;
+          const original = target.thread.delegatedFrom?.purposeLaunch;
+          if (
+            scope.client?.linked !== true ||
+            target.thread.linkOrigin?.sessionId !== scope.client.sessionId ||
+            original === undefined ||
+            original.environmentId !== evidence.environmentId ||
+            original.threadId !== evidence.threadId ||
+            original.runId !== evidence.runId ||
+            original.launchId !== evidence.launchId ||
+            !executionPurposesEqual(original.purpose, evidence.purpose)
+          ) {
+            return yield* failure(
+              "invalid_request",
+              "The continuation does not match the original remote purpose launch.",
+            );
+          }
+          purposeSource = {
+            version: 1,
+            scope: original.purpose.scope,
+            provenance: {
+              type: "remote_launch",
+              environmentId: original.environmentId,
+              threadId: original.threadId,
+              runId: original.runId,
+              launchId: original.launchId,
+            },
+          };
+        } else if (
+          input.purposeIntent?.intent.type === "inherit" &&
+          !(
+            target.thread.lineage.parentThreadId === parent?.thread.id &&
+            target.thread.lineage.relationshipToParent === "subagent"
+          )
+        ) {
+          const source =
+            parent === undefined ? undefined : ThreadManagementService.latestActiveRun(parent);
+          if (source === undefined || executionPurposeOf(source).scope.type !== "single") {
+            return yield* failure(
+              "invalid_request",
+              "Purpose inheritance requires the exact scoped caller run.",
+            );
+          }
+          purposeSource = {
+            version: 1,
+            scope: executionPurposeOf(source).scope,
+            provenance: {
+              type: "parent_run",
+              threadId: source.threadId,
+              runId: source.id,
+            },
+          };
+        }
         const key = yield* requestKey(input.clientRequestId);
         const messageId = stableOperationMessageId({
           scope,
@@ -3044,6 +3157,8 @@ const make = Effect.gen(function* () {
         if (transcript !== null) return transcript;
         const result = yield* threadManagement
           .sendToThread({
+            purposeIntent: input.purposeIntent,
+            purposeSource,
             projectId: target.thread.projectId,
             commandId: stableCommandId({
               scope,
@@ -3073,6 +3188,8 @@ const make = Effect.gen(function* () {
           threadId: input.threadId,
           messageId,
           runId: result.run.id,
+          purpose: executionPurposeOf(result.run),
+          warnings: executionPurposeWarnings(executionPurposeOf(result.run)),
           ...(result.run.delegatedTaskId === undefined
             ? {}
             : { taskId: result.run.delegatedTaskId }),

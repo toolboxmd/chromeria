@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { SavedPurposeIntent } from "./executionPurpose.ts";
 
 import {
   IsoDateTime,
@@ -100,6 +101,7 @@ export type ThreadPullRequestKey = typeof ThreadPullRequestKey.Type;
  * reported once.
  */
 export const ThreadPullRequestWatch = Schema.Struct({
+  purposeIntent: Schema.optional(SavedPurposeIntent),
   startedAt: IsoDateTime,
   /** Head commit at the last pass; null where the host does not report one. */
   headSha: Schema.NullOr(TrimmedNonEmptyString),

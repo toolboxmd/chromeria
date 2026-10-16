@@ -75,6 +75,8 @@ flowchart TD
     %% XM: #164 #302
     NR["Network routes"]
     %% NR: #292 #358
+    EP["Execution purpose"]
+    %% EP: #377 PR #388
     PRN["Paired session renewal"]
     %% PRN: #323
 
@@ -99,6 +101,9 @@ flowchart TD
     T3R --- XM
     T3R --- NR
     T3R --- PRN
+    T3S --- EP
+    EP --- DR
+    EP --- XM
 
     PZ --> PM --> WG
     PZ --> DR --> VT --> XM

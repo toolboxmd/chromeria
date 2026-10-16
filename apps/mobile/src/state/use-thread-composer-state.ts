@@ -1,3 +1,4 @@
+import { purposeSelectionOf } from "@t3tools/contracts";
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import { readEnvironmentScope } from "./session";
 import type { ComposerTextPaste } from "../native/T3ComposerEditor.types";
@@ -682,9 +683,8 @@ export function useThreadComposerState() {
 
       // Resolved here rather than at drain time: the outbox can deliver minutes
       // later, and the choice belongs to the moment the user pressed send.
-      // Steering travels as "auto" so a turn that ends in the meantime degrades
-      // to a queued run on the server instead of failing the delivery and
-      // bouncing the message back into the draft.
+      // A Steer is a target operation. If its run ended before delivery, the
+      // server rejects it instead of admitting work under a different purpose.
       const followUpAction = resolveComposerDispatchMode({
         running: activeThreadBusy && canSteerActiveTurn,
         alternateModifier: followUpOverride !== undefined && followUpOverride !== followUpBehavior,
@@ -703,7 +703,7 @@ export function useThreadComposerState() {
           ? null
           : followUpAction === "queue"
             ? "queue"
-            : "auto";
+            : "steer";
 
       const metadata = makeQueuedMessageMetadata();
       const messageId = MessageId.make(metadata.messageId);
@@ -715,6 +715,20 @@ export function useThreadComposerState() {
       // is rolled out of the queue and the content is merged back into the
       // draft, preserving anything typed since.
       const enqueuePromise = enqueueThreadOutboxMessage({
+        ...(serverConfig?.environment.capabilities.executionPurposeVersions?.includes(1) !== true
+          ? {}
+          : {
+              purposeIntent: {
+                version: 1,
+                intent:
+                  followUpAction === "steer"
+                    ? { type: "target" }
+                    : {
+                        type: "selection",
+                        expectedRevision: purposeSelectionOf(selectedThreadShell).revision,
+                      },
+              },
+            }),
         environmentId: selectedThreadShell.environmentId,
         threadId: selectedThreadShell.id,
         messageId,

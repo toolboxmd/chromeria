@@ -123,6 +123,7 @@ it.effect.each(["on time", "after restart"])(
       yield* Effect.gen(function* () {
         const tasks = yield* ScheduledTasks.ScheduledTaskService;
         const { task } = yield* tasks.upsert({
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
           title: "Scheduled work",
           prompt: "Run scheduled work",
           enabled: true,

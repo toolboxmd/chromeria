@@ -1,4 +1,6 @@
+import { NativeExecutionSegment } from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "@t3tools/shared/threadPullRequests";
+import { executionPurposesEqual } from "@t3tools/contracts";
 import { keepContinuationSource } from "../prism/continuationProjection.ts";
 import { mergeRestartCut, RESTART_CUT_REASONS } from "@t3tools/shared/restartCut";
 import { projectTurnItemForWire } from "./WireProjection.ts";
@@ -769,10 +771,86 @@ export function upsertProviderTurn(
   const current = turns.find((turn) => turn.id === next.id);
   return upsertById(turns, {
     ...next,
+    ...((next.nativeInputs ?? current?.nativeInputs) === undefined
+      ? {}
+      : {
+          nativeInputs: [
+            ...new Map(
+              [...(current?.nativeInputs ?? []), ...(next.nativeInputs ?? [])].map((input) => [
+                `${input.validation}:${input.nativeId}`,
+                input,
+              ]),
+            ).values(),
+          ],
+        }),
     ...((next.tokenUsage ?? current?.tokenUsage) === undefined
       ? {}
       : { tokenUsage: next.tokenUsage ?? current?.tokenUsage }),
   });
+}
+
+const encodeNativeSource = Schema.encodeSync(
+  Schema.fromJsonString(NativeExecutionSegment.fields.source),
+);
+
+/** Preserve native participation after roster removal, stale lifecycle updates and restart. */
+function preserveNativeSegments(
+  current: ReadonlyArray<NativeExecutionSegment> | undefined,
+  next: ReadonlyArray<NativeExecutionSegment> | undefined,
+): ReadonlyArray<NativeExecutionSegment> | undefined {
+  if (current === undefined) return next;
+  const merged = new Map(current.map((segment) => [segment.id, segment]));
+  for (const segment of next ?? []) {
+    const prior = merged.get(segment.id);
+    if (prior === undefined) {
+      merged.set(segment.id, segment);
+      continue;
+    }
+    if (
+      prior.nativeSessionId !== segment.nativeSessionId ||
+      prior.nativeOperationId !== segment.nativeOperationId ||
+      prior.nativeChildId !== segment.nativeChildId ||
+      prior.kind !== segment.kind ||
+      encodeNativeSource(prior.source) !== encodeNativeSource(segment.source) ||
+      !executionPurposesEqual(prior.purpose, segment.purpose)
+    ) {
+      throw new ProjectionStoreApplyEventError({ eventType: "native-execution-purpose-change" });
+    }
+    const priorBoundary = prior.boundary;
+    let boundary: NativeExecutionSegment["boundary"] =
+      priorBoundary.state === "unresolved" ? segment.boundary : priorBoundary;
+    if (priorBoundary.state === "native_turns" && segment.boundary.state === "native_turns") {
+      const first = priorBoundary.nativeTurnIds[0];
+      boundary = {
+        state: "native_turns",
+        nativeTurnIds: [
+          first,
+          ...new Set(
+            [...priorBoundary.nativeTurnIds.slice(1), ...segment.boundary.nativeTurnIds].filter(
+              (id) => id !== first,
+            ),
+          ),
+        ],
+      };
+    }
+    merged.set(segment.id, {
+      ...segment,
+      boundary,
+      status:
+        prior.status === "ended" || prior.status === "interrupted" ? prior.status : segment.status,
+      noticeIds: [...new Set([...prior.noticeIds, ...segment.noticeIds])],
+      wakeDispositions: [...new Set([...prior.wakeDispositions, ...segment.wakeDispositions])],
+    });
+  }
+  return [...merged.values()];
+}
+
+function preserveProviderThreadEvidence(
+  current: OrchestrationV2ProviderThread | undefined,
+  next: OrchestrationV2ProviderThread,
+): OrchestrationV2ProviderThread {
+  const nativeOperations = preserveNativeSegments(current?.nativeOperations, next.nativeOperations);
+  return { ...next, ...(nativeOperations === undefined ? {} : { nativeOperations }) };
 }
 
 /** A stale run snapshot must not erase fields that other events recorded on the run. */
@@ -781,6 +859,9 @@ function preserveRunRecordedFields(
   next: OrchestrationV2Run,
 ): OrchestrationV2Run {
   if (current === undefined) return next;
+  if (!executionPurposesEqual(current.purpose, next.purpose)) {
+    throw new ProjectionStoreApplyEventError({ eventType: "run.updated" });
+  }
   const restartCut = mergeRestartCut(current.restartCut, next.restartCut);
   return {
     ...next,
@@ -805,10 +886,17 @@ function preserveCompletionDelivery(
   current: OrchestrationV2Subagent | undefined,
   next: OrchestrationV2Subagent,
 ): OrchestrationV2Subagent {
-  if (next.completionDelivery !== undefined || current?.completionDelivery === undefined) {
-    return next;
-  }
-  return { ...next, completionDelivery: current.completionDelivery };
+  const nativeSegments = preserveNativeSegments(current?.nativeSegments, next.nativeSegments);
+  return {
+    ...next,
+    ...(nativeSegments === undefined ? {} : { nativeSegments }),
+    ...(next.completionSource === undefined && current?.completionSource !== undefined
+      ? { completionSource: current.completionSource }
+      : {}),
+    ...(next.completionDelivery === undefined && current?.completionDelivery !== undefined
+      ? { completionDelivery: current.completionDelivery }
+      : {}),
+  };
 }
 
 export function emptyProjection(
@@ -966,7 +1054,13 @@ export function applyToProjection(
                 activeProviderThreadId: event.payload.id,
               }
             : base.thread,
-        providerThreads: upsertById(base.providerThreads, event.payload),
+        providerThreads: upsertById(
+          base.providerThreads,
+          preserveProviderThreadEvidence(
+            base.providerThreads.find((thread) => thread.id === event.payload.id),
+            event.payload,
+          ),
+        ),
       };
     case "provider-turn.updated":
       return {
@@ -1622,6 +1716,8 @@ export function threadShellFromProjection(
     interactionMode: projection.thread.interactionMode,
     branch: projection.thread.branch,
     worktreePath: projection.thread.worktreePath,
+    purposeSelection: projection.thread.purposeSelection,
+    purposeDeliveries: projection.thread.purposeDeliveries,
     pullRequests: threadPullRequestsOf(projection.thread),
     ...(projection.thread.linkedPullRequest === undefined
       ? {}
@@ -1905,6 +2001,8 @@ function shellFromState(input: {
     interactionMode: input.state.thread.interactionMode,
     branch: input.state.thread.branch,
     worktreePath: input.state.thread.worktreePath,
+    purposeSelection: input.state.thread.purposeSelection,
+    purposeDeliveries: input.state.thread.purposeDeliveries,
     pullRequests: threadPullRequestsOf(input.state.thread),
     ...(input.state.thread.linkedPullRequest === undefined
       ? {}
@@ -2102,6 +2200,19 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           }
           case "run.created":
           case "run.updated": {
+            const currentRows = yield* sql<{ payload_json: string }>`
+              SELECT payload_json FROM orchestration_v2_projection_runs WHERE run_id = ${event.payload.id}
+            `;
+            const current =
+              currentRows[0] === undefined
+                ? undefined
+                : yield* decodeRunPayload(currentRows[0].payload_json);
+            if (
+              current !== undefined &&
+              !executionPurposesEqual(current.purpose, event.payload.purpose)
+            ) {
+              return yield* new ProjectionStoreApplyEventError({ eventType: event.type });
+            }
             const payloadJson = yield* encodeRunPayload(event.payload);
             const payload = parseEncodedPayload(payloadJson);
             yield* sql`
@@ -2267,7 +2378,16 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             break;
           }
           case "subagent.updated": {
-            const payloadJson = yield* encodeSubagentPayload(event.payload);
+            const existingRows =
+              yield* sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_subagents WHERE subagent_id = ${event.payload.id} LIMIT 1`;
+            const existing = existingRows[0];
+            const previous =
+              existing === undefined
+                ? undefined
+                : yield* decodeSubagentPayload(existing.payload_json);
+            const payloadJson = yield* encodeSubagentPayload(
+              preserveCompletionDelivery(previous, event.payload),
+            );
             const payload = parseEncodedPayload(payloadJson);
             yield* sql`
               INSERT INTO orchestration_v2_projection_subagents (
@@ -2393,7 +2513,16 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             break;
           }
           case "provider-thread.updated": {
-            const payloadJson = yield* encodeProviderThreadPayload(event.payload);
+            const existingRows =
+              yield* sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_provider_threads WHERE provider_thread_id = ${event.payload.id} LIMIT 1`;
+            const existing = existingRows[0];
+            const previous =
+              existing === undefined
+                ? undefined
+                : yield* decodeProviderThreadPayload(existing.payload_json);
+            const payloadJson = yield* encodeProviderThreadPayload(
+              preserveProviderThreadEvidence(previous, event.payload),
+            );
             const payload = parseEncodedPayload(payloadJson);
             yield* sql`
               INSERT INTO orchestration_v2_projection_provider_threads (
@@ -2470,15 +2599,12 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             break;
           }
           case "provider-turn.updated": {
-            const existingRows =
-              event.payload.tokenUsage === undefined
-                ? yield* sql<PayloadRow>`
+            const existingRows = yield* sql<PayloadRow>`
                     SELECT payload_json
                     FROM orchestration_v2_projection_provider_turns
                     WHERE provider_turn_id = ${event.payload.id}
                     LIMIT 1
-                  `
-                : [];
+                  `;
             const existing = existingRows[0];
             const providerTurn =
               existing === undefined

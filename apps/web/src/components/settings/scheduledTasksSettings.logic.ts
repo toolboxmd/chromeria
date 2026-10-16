@@ -1,3 +1,4 @@
+import { purposeScopeOfSavedIntent, type ExecutionPurposeScope } from "@t3tools/contracts";
 import {
   EnvironmentId,
   isForkScheduledTaskSchedule,
@@ -51,6 +52,7 @@ export type ScheduleMode = "fixed" | "interval" | "webhook" | "preserved";
 export type WorkspaceMode = "root" | "worktree" | "existing_worktree";
 
 export interface DraftState {
+  readonly purposeScope?: ExecutionPurposeScope;
   readonly editingId: string | null;
   readonly title: string;
   readonly prompt: string;
@@ -133,6 +135,7 @@ export function taskToDraft(task: ScheduledTask): DraftState {
       ? new Set(schedule.weekdays)
       : new Set([0, 1, 2, 3, 4, 5, 6]);
   return {
+    purposeScope: purposeScopeOfSavedIntent(task.purposeIntent),
     editingId: task.id,
     title: task.title,
     prompt: task.prompt,

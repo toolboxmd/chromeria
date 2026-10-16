@@ -1,3 +1,4 @@
+import { purposeSelectionOf } from "@t3tools/contracts";
 import type { EnvironmentId, ThreadId, TurnItemId } from "@t3tools/contracts";
 import {
   makeMcpAppHost,
@@ -31,7 +32,7 @@ import { mobileHtmlRenderTheme } from "../../lib/htmlRenderTheme";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { uuidv4 } from "../../lib/uuid";
 import { useAssetUrlState } from "../../state/assets";
-import { useThreadShell } from "../../state/entities";
+import { useServerConfigs, useThreadShell } from "../../state/entities";
 import { mcpAppEnvironment } from "../../state/mcpApps";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { useEnvironmentQuery } from "../../state/query";
@@ -246,9 +247,12 @@ export function ThreadMcpApp(props: {
   const conversation = useThreadShell(
     scopeThreadRef(props.environmentId, props.conversationThreadId),
   );
+  const serverConfigs = useServerConfigs();
   const awaitingUser =
     conversation?.hasPendingApprovals === true || conversation?.hasPendingUserInput === true;
   const live = {
+    conversation,
+    serverConfigs,
     awaitingUser,
     theme,
     props,
@@ -374,7 +378,22 @@ export function ThreadMcpApp(props: {
         }
         // Through the outbox like a typed message, so it survives a dropped
         // connection; the thread's own settings fill in when it sends.
+        const current = latest.current;
         await enqueueThreadOutboxMessage({
+          ...(current.conversation === null ||
+          current.serverConfigs
+            .get(current.props.environmentId)
+            ?.environment.capabilities.executionPurposeVersions?.includes(1) !== true
+            ? {}
+            : {
+                purposeIntent: {
+                  version: 1,
+                  intent: {
+                    type: "selection",
+                    expectedRevision: purposeSelectionOf(current.conversation).revision,
+                  },
+                },
+              }),
           environmentId: latest.current.props.environmentId,
           threadId: latest.current.props.conversationThreadId,
           messageId: MessageId.make(uuidv4()),
