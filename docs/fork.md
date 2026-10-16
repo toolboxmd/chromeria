@@ -13,7 +13,7 @@ target fixed while preparing the candidate. Before delivery, carry every fork
 topic merged into `main` since preparation began and record the complete range-diff.
 
 Keep a merge-free topic stack. Features live in fork-owned modules; upstream
-files carry only the hooks those modules need. [The feature map](fork-features.md) assigns
+files carry only the hooks those modules need. [The carried-edit registry](fork-features.md) assigns
 every carried upstream edit one primary owner; other carried features may list
 it as shared. `scripts/fork-upstream-edits.txt` contains only those carried edits.
 Features deferred to separate integration Issues do not belong in this inventory.

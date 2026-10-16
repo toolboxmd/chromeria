@@ -234,6 +234,14 @@ describe("fork-rebase safety rules", () => {
 });
 
 describe("fork feature ownership", () => {
+  it("rejects an Issue URL in prs instead of accepting any nonempty string", () => {
+    const root = makeFixture();
+    writeMap(root, undefined, { prs: ["https://github.com/toolboxmd/chromeria/issues/374"] });
+    const result = runCheck(root, "--base", baseOf(root));
+    expect(result.status).toBe(1);
+    expect(result.output).toContain("invalid prs URL");
+  });
+
   it("rejects an allowlisted path without an owner", () => {
     const root = makeFixture();
     writeMap(root, []);
@@ -361,5 +369,18 @@ describe("upstream overlap report", () => {
       report.indexOf("dry run; nothing changed"),
     );
     expect(baseOf(root)).toBe(base);
+  });
+});
+
+describe("the real fork documentation", () => {
+  it("names the registry and links both fork guides without joining the app map", () => {
+    const root = NodePath.join(scriptsDir, "..");
+    const registry = NodeFS.readFileSync(NodePath.join(root, "docs/fork-features.md"), "utf8");
+    const guide = NodeFS.readFileSync(NodePath.join(root, "docs/fork.md"), "utf8");
+    const map = NodeFS.readFileSync(NodePath.join(root, "docs/map.md"), "utf8");
+    expect(registry.startsWith("# Fork carried-edit registry\n")).toBe(true);
+    expect(registry).toMatch(/\[[^\]]+\]\(fork\.md\)/);
+    expect(guide).toMatch(/\[[^\]]+\]\(fork-features\.md\)/);
+    expect(map).not.toMatch(/\]\(fork(?:-features)?\.md\)/);
   });
 });

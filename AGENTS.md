@@ -173,7 +173,7 @@ Before fixing a bug or building a feature, search `pingdotgg/t3code` main, open 
 - UI changes need before/after images. Motion or timing needs a short video.
 - Upload PR evidence to GitHub. Never commit PR-only screenshots or assets such as `.github/pr-assets/`.
 - One request is one PR. Split it only when the maintainer asks. Outside contributions follow the stricter [one problem per PR](CONTRIBUTING.md#one-problem) rule.
-- A PR that adds, splits, merges or removes a part of [`docs/map.md`](docs/map.md), or that ships work for a part, updates the map in the same PR. A PR that ships a tracked part's work also adds `PR #N` after that part's primary ref; a PR that only edits the map, a `context` part and a removed part get no PR ref. The Map tab colours parts from GitHub, so closing an Issue needs no map edit.
+- A PR that adds, splits, merges or removes a part of [`docs/map.md`](docs/map.md), or that ships work for a part, updates the map in the same PR. Add a secondary `PR #N` ref only for an open PR that does not close the primary Issue, so failing checks can mark the part broken. The Map tab colours parts from GitHub, so closing an Issue needs no map edit.
 - When babysitting: call `watch_pull_request` and end your turn. T3 Code wakes you on checks, comments, or conflicts. Do not poll or sleep. Verify each bot finding against the source, fix real ones, dismiss false positives with a written reason. Stay quiet when nothing is new. Stop when the bots are green on the latest commit.
 
 ## Documentation
