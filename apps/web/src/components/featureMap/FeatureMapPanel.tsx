@@ -16,6 +16,7 @@ import { useOpenChangeRequestLink } from "~/lib/openPullRequestLink";
 import { useEnvironments } from "~/state/environments";
 import { useFeatureMap } from "~/state/featureMap";
 import { buildThreadRouteParams } from "~/threadRoutes";
+import { ChromeriaFeatureMark } from "../ChromeriaFeatureMark";
 import { MermaidDiagram } from "../chat/MermaidDiagram";
 import { environmentIdsWithCapability } from "../issues/issueList.logic";
 import type { IssueRowThread } from "../issues/issueStatus.logic";
@@ -33,6 +34,7 @@ import {
   type FeatureMapPartView,
   featureMapShown,
   foldFeatureMap,
+  isChromeriaFeatureMapPart,
 } from "./featureMap.logic";
 
 /** How often a visible Map rereads GitHub. */
@@ -51,6 +53,7 @@ const STATE_LABELS = {
   incomplete: "Incomplete",
   untracked: "Untracked",
   context: "Context",
+  live: "Live",
 } as const;
 
 const labelOf = (view: Pick<FeatureMapPartView, "state" | "note">) =>
@@ -260,6 +263,7 @@ function FeatureMapBody({
           />
         </Suspense>
         <PartList
+          host={map.host}
           views={views}
           repository={map.repository}
           onOpen={openUrl}
@@ -407,11 +411,13 @@ function ThreadIcon({
 
 /** Every part in words, with the same links as the drawing, reachable by keyboard. */
 function PartList({
+  host,
   views,
   repository,
   onOpen,
   onOpenThread,
 }: {
+  host: string;
   views: ReadonlyArray<FeatureMapPartView>;
   repository: string;
   onOpen: (url: string) => void;
@@ -420,12 +426,18 @@ function PartList({
   return (
     <section aria-label="Parts" className="flex flex-col gap-1">
       <h3 className="m-0 text-xs font-medium text-muted-foreground">Parts</h3>
+      <p className="m-0 text-xs text-muted-foreground">
+        Live: an existing capability asserted by the map author. Done: completed tracked work.
+      </p>
       <ul className="m-0 flex list-none flex-col gap-0.5 p-0">
         {views.map((view) => {
           const [primary, ...secondary] = view.part.refs;
           return (
             <li key={view.part.id} className="flex items-center gap-2 text-sm">
               <StateSwatch view={view} />
+              {isChromeriaFeatureMapPart({ host, repository }, view.part) ? (
+                <ChromeriaFeatureMark />
+              ) : null}
               {view.url === null || primary === undefined ? (
                 <span className="min-w-0 flex-1 truncate">{view.part.name}</span>
               ) : (
