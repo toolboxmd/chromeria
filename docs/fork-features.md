@@ -241,7 +241,8 @@ are evidence for review, not proof that a feature has been adopted upstream.
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/9",
     "https://github.com/toolboxmd/t3code/pull/24",
-    "https://github.com/toolboxmd/chromeria/pull/309"
+    "https://github.com/toolboxmd/chromeria/pull/309",
+    "https://github.com/toolboxmd/chromeria/pull/373"
   ],
   "newFiles": [
     ".github/workflows/fork.yml",
