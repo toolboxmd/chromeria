@@ -30,7 +30,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import type * as Tool from "effect/ai/Tool";
 
-import type * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
+import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
 import {
   resolveInteractionMode,
@@ -195,6 +195,10 @@ const make = Effect.gen(function* () {
         });
       }
       const parentNodeId = parentRun.rootNodeId;
+      const parentModes = McpInvocationContext.intersectModes(
+        parent.thread,
+        scope.authority?.ceiling,
+      );
       const { target } = input;
       const modelSelection =
         target.model === undefined
@@ -209,11 +213,11 @@ const make = Effect.gen(function* () {
       const runtimeMode =
         input.runtimeMode === undefined || input.runtimeMode === "inherit"
           ? undefined
-          : yield* resolveRuntimeMode(parent.thread.runtimeMode, input.runtimeMode);
+          : yield* resolveRuntimeMode(parentModes.runtimeMode, input.runtimeMode);
       const interactionMode =
         input.interactionMode === undefined || input.interactionMode === "inherit"
           ? undefined
-          : yield* resolveInteractionMode(parent.thread.interactionMode, input.interactionMode);
+          : yield* resolveInteractionMode(parentModes.interactionMode, input.interactionMode);
       const projectId = yield* resolveRemoteProject(
         scope,
         target.environmentId,
@@ -221,8 +225,8 @@ const make = Effect.gen(function* () {
         target.projectId,
       );
       // One key for the launch there and the record here, so a retry finds both.
-      // Both are scoped to the provider session, as every key a caller passes is:
-      // the forwarder scopes the launch's, and the record's names it.
+      // The parent and key survive provider credential rotation. The launch
+      // keeps its original link generation, checked on every recovery.
       const key = input.clientRequestId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie));
       const task = input.task;
       const link = yield* links.get(target.environmentId).pipe(
@@ -238,18 +242,40 @@ const make = Effect.gen(function* () {
           message: "The destination is no longer linked here.",
         });
       }
+      const existing = (yield* threads.getThreadRecords(scope.thread.threadId, ["subagents"]).pipe(
+        Effect.mapError(
+          () =>
+            new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "Unable to read the originating task identity.",
+            }),
+        ),
+      )).subagents.find(
+        (task) =>
+          task.remoteChild?.launch?.clientRequestId === `delegate:${scope.thread.threadId}:${key}`,
+      );
+      if (
+        existing?.remoteChild?.launch !== undefined &&
+        (existing.remoteChild.environmentId !== target.environmentId ||
+          existing.remoteChild.launch.linkIdentity !== link.launchIdentity)
+      )
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message:
+            "This task key belongs to its original destination and link generation; it cannot be replayed through a replacement grant.",
+        });
       // Keep the original inherited modes across recovery, even if the parent
       // is later raised. Forwarding still checks the current parent's limits.
       const linkRuntimeMode =
         link?.access === "read-only"
           ? "approval-required"
-          : (link?.access ?? parent.thread.runtimeMode);
+          : (link?.access ?? parentModes.runtimeMode);
       const inheritedRuntimeMode =
-        runtimeModeRank(linkRuntimeMode) < runtimeModeRank(parent.thread.runtimeMode)
+        runtimeModeRank(linkRuntimeMode) < runtimeModeRank(parentModes.runtimeMode)
           ? linkRuntimeMode
-          : parent.thread.runtimeMode;
+          : parentModes.runtimeMode;
       const commandId = CommandId.make(
-        `command:mcp:${encodeURIComponent(scope.requestNamespace)}:remote-delegate:${encodeURIComponent(key)}`,
+        `command:mcp:${encodeURIComponent(`thread:${hereId}:${scope.thread.threadId}`)}:remote-delegate:${encodeURIComponent(key)}`,
       );
       const prismRole =
         input.prismRole === undefined
@@ -281,9 +307,10 @@ const make = Effect.gen(function* () {
       );
       const launch = {
         ...(input.bare === undefined ? {} : { bare: input.bare }),
-        requestNamespace: scope.requestNamespace,
+        requestNamespace: `thread:${hereId}:${scope.thread.threadId}`,
         clientRequestId: `delegate:${scope.thread.threadId}:${key}`,
         linkIdentity: link.launchIdentity,
+        capabilities: [...scope.capabilities],
         projectId,
         title: input.title ?? parent.thread.title,
         ...(modelSelection === undefined ? {} : { modelSelection }),
@@ -293,7 +320,7 @@ const make = Effect.gen(function* () {
           ? {}
           : { workspaceStrategy: input.workspaceStrategy }),
         runtimeMode: runtimeMode ?? inheritedRuntimeMode,
-        interactionMode: interactionMode ?? parent.thread.interactionMode,
+        interactionMode: interactionMode ?? parentModes.interactionMode,
         delegatedFrom: {
           environmentId: hereId,
           threadId: parent.thread.id,
@@ -483,6 +510,7 @@ const make = Effect.gen(function* () {
           remote,
         ),
         requestNamespace: launch.requestNamespace,
+        capabilities: new Set(launch.capabilities ?? ["orchestration"]),
       };
       const launched = yield* forwarding
         .call(
@@ -514,7 +542,7 @@ const make = Effect.gen(function* () {
             message: task.prompt,
             clientRequestId: launch.clientRequestId,
           },
-          { expectedLinkIdentity: launch.linkIdentity },
+          { expectedLinkIdentity: launch.linkIdentity, pair: { parentThreadId, taskId } },
         )
         .pipe(
           Effect.catchTags({
