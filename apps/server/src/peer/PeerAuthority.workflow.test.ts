@@ -26,6 +26,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   CommandId,
+  EnvironmentId,
   OrchestratorMcpFailure,
   EventId,
   MessageId,
@@ -193,6 +194,9 @@ const makeNode = (
       Layer.fresh,
       Layer.build,
     );
+    const holdLaunchReply = yield* Ref.make(false);
+    const launchReplyHeld = yield* Deferred.make<void>();
+    const releaseLaunchReply = yield* Deferred.make<void>();
     const dropAckResponses = yield* Ref.make(0);
     const ackResponseLost = yield* Deferred.make<void>();
     const holdResultPage = yield* Ref.make(false);
@@ -202,8 +206,20 @@ const makeNode = (
       PeerMcpClient.PeerMcpClient,
       Effect.gen(function* () {
         const peers = yield* PeerMcpClient.PeerMcpClient;
+        const call: typeof peers.call = (input) =>
+          peers.call(input).pipe(
+            Effect.tap(() =>
+              Effect.gen(function* () {
+                if (input.tool === "t3_thread_launch" && (yield* Ref.get(holdLaunchReply))) {
+                  yield* Deferred.succeed(launchReplyHeld, undefined);
+                  yield* Deferred.await(releaseLaunchReply);
+                }
+              }),
+            ),
+          );
         return {
           ...peers,
+          call,
           taskLifecycle: (...args: Parameters<NonNullable<typeof peers.taskLifecycle>>) =>
             peers.taskLifecycle!(...args).pipe(
               Effect.flatMap((result) =>
@@ -347,6 +363,9 @@ const makeNode = (
     return {
       ...peer,
       noticeFailure,
+      holdLaunchReply,
+      launchReplyHeld,
+      releaseLaunchReply,
       dropAckResponses,
       ackResponseLost,
       holdResultPage,
@@ -4802,6 +4821,12 @@ it.live(
         });
         if (pending.type !== "observation") return yield* Effect.die("Expected observation");
         expect(pending.observation.result).toBeUndefined();
+        const originalGrant = (yield* b.authority.grants)[0];
+        expect(originalGrant).toBeDefined();
+        const beforeSessions = yield* b.linkedSessions;
+        expect(
+          beforeSessions.some((session) => session.sessionId === originalGrant?.sessionId),
+        ).toBe(true);
         // Reconstruct the destination reader on a separately opened connection to the same on-disk database.
         const reopened = yield* b.reopenDatabase;
         const restoredRuntime = yield* Runtime.layerWithRegistry(
@@ -4827,12 +4852,27 @@ it.live(
           Layer.fresh,
           Layer.build,
         );
-        const [session] = yield* b.linkedSessions;
+        const session = (yield* b.linkedSessions).find(
+          (session) => session.sessionId === originalGrant?.sessionId,
+        );
+        if (session === undefined)
+          return yield* Effect.die(
+            "Original authenticated peer session disappeared after reader reconstruction",
+          );
+        expect(yield* b.authority.grants).toContainEqual(originalGrant);
+        const persistedSession = yield* Context.get(reopened, SqlClient.SqlClient)<{
+          expires_at: string;
+          revoked_at: string | null;
+        }>`SELECT expires_at,revoked_at FROM auth_sessions WHERE session_id=${session.sessionId}`;
+        expect(persistedSession[0]).toEqual({
+          expires_at: "9999-12-31T23:59:59.999Z",
+          revoked_at: null,
+        });
         const peerScope = {
           ...caller(b, childId),
           thread: undefined,
           client: {
-            sessionId: session!.sessionId,
+            sessionId: session.sessionId,
             label: "A",
             access: "full-access" as const,
             linked: true,
@@ -5782,6 +5822,179 @@ it.live(
         });
 
         expect((yield* a.threads.getThreadShell(parentId))?.activeRunId).toBeNull();
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  30_000,
+);
+
+it.live(
+  "lifecycle381: same public cancellation replays after an in-flight launch attaches",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(
+          descriptorOf("review-attach-b", "B", { peerAuthority: 1 }),
+          "disk",
+        );
+        const a = yield* makeNode(
+          descriptorOf("review-attach-a", "A", { peerAuthority: 1 }),
+          "disk",
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parentId = ThreadId.make("review-attach-parent");
+        yield* seedParent(a, parentId);
+        yield* Ref.set(a.holdLaunchReply, true);
+        yield* nativeCall(a, parentId, "delegate_task", {
+          task: "Cancel an accepted launch with a delayed reply",
+          target: {
+            environmentId: b.environmentId,
+            projectId: b.project.id,
+            providerInstanceId: instanceId,
+            model: selection.model,
+          },
+          clientRequestId: "review-attach-launch",
+        }).pipe(Effect.forkScoped);
+        yield* Deferred.await(a.launchReplyHeld);
+        const before = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents[0]!;
+        expect(before.remoteChild?.threadId).toBeUndefined();
+        const stop = { taskId: before.id, clientRequestId: "review-attach-stop" };
+        const stopCredential = yield* a.registry.issue({
+          threadId: parentId,
+          providerInstanceId: instanceId,
+          capabilities: new Set(["orchestration"]),
+        });
+        const accepted = yield* nativeCall(
+          a,
+          parentId,
+          "task_cancel",
+          stop,
+          new Set(["orchestration"]),
+          stopCredential,
+        );
+        expect(accepted.isError, json(accepted.content)).not.toBe(true);
+        const sameBeforeAttach = yield* nativeCall(
+          a,
+          parentId,
+          "task_cancel",
+          stop,
+          new Set(["orchestration"]),
+          stopCredential,
+        );
+        expect(sameBeforeAttach.isError, json(sameBeforeAttach.content)).not.toBe(true);
+        const intent = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents[0]!
+          .remoteChild!.stop!;
+        yield* Ref.set(a.holdLaunchReply, false);
+        yield* Deferred.succeed(a.releaseLaunchReply, undefined);
+        const childId = yield* attachedChild(a, parentId, before.id);
+        const after = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents[0]!;
+        expect(after.remoteChild?.stop?.requestId).toBe(intent.requestId);
+        expect(after.remoteChild?.threadId).toBe(childId);
+        const history = yield* Context.get(
+          a.database,
+          SqlClient.SqlClient,
+        )`SELECT sequence,json_extract(payload_json,'$.remoteChild.threadId') AS target,json_extract(payload_json,'$.remoteChild.stop.requestId') AS request_id FROM orchestration_events WHERE stream_id=${parentId} AND event_type='subagent.updated' AND json_extract(payload_json,'$.remoteChild.stop.requestId')=${intent.requestId} ORDER BY sequence`;
+        expect(history.some((row) => row.target === null)).toBe(true);
+        expect(history.some((row) => row.target === childId)).toBe(true);
+        const replay = yield* nativeCall(
+          a,
+          parentId,
+          "task_cancel",
+          stop,
+          new Set(["orchestration"]),
+          stopCredential,
+        );
+
+        expect(replay.isError, json(replay.content)).not.toBe(true);
+        yield* a.stopConnections;
+        const restored = yield* a.reconnect();
+        const resumed = Context.get(restored.services, RemoteDelegation.RemoteDelegation);
+        const current = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+          (task) => task.id === before.id,
+        )!;
+        const destinationBefore = yield* b.threads.getThreadEventSequence(childId);
+        // A projection target alone cannot mint the original accepted attachment.
+        for (const changed of [
+          { ...current.remoteChild!, threadId: ThreadId.make("forged-other-child") },
+          {
+            ...current.remoteChild!,
+            environmentId: EnvironmentId.make("forged-other-environment"),
+          },
+          {
+            ...current.remoteChild!,
+            launch: { ...current.remoteChild!.launch!, linkIdentity: "replacement-generation" },
+          },
+          {
+            ...current.remoteChild!,
+            launch: { ...current.remoteChild!.launch!, clientRequestId: "replacement-launch" },
+          },
+        ]) {
+          const event = yield* a.orchestrator
+            .streamStoredEventsFrom({
+              threadId: parentId,
+              afterSequence: 0,
+              eventType: "subagent.updated",
+            })
+            .pipe(Stream.runHead, Effect.flatMap(Effect.fromOption));
+          if (event.event.type !== "subagent.updated")
+            return yield* Effect.die("Missing persisted task");
+          yield* a.sink.write({
+            events: [
+              {
+                ...event.event,
+                id: EventId.make(
+                  `forged-attachment:${changed.threadId}:${changed.environmentId}:${changed.launch!.linkIdentity}:${changed.launch!.clientRequestId}`,
+                ),
+                payload: { ...current, remoteChild: changed },
+              },
+            ],
+          });
+          expect(
+            (yield* resumed.requestStop(parentId, before.id, intent.requestId).pipe(Effect.result))
+              ._tag,
+          ).toBe("Failure");
+        }
+        const now = yield* DateTime.now;
+        yield* a.sink.write({
+          events: [
+            {
+              id: EventId.make("restore-original-attachment"),
+              type: "subagent.updated",
+              threadId: parentId,
+              occurredAt: now,
+              payload: current,
+            },
+          ],
+        });
+        expect(yield* b.threads.getThreadEventSequence(childId)).toBe(destinationBefore);
+        const afterRestart = yield* nativeCall(
+          a,
+          parentId,
+          "task_cancel",
+          stop,
+          new Set(["orchestration"]),
+          stopCredential,
+        );
+        expect(afterRestart.isError, json(afterRestart.content)).not.toBe(true);
+        yield* resumed.requestStop(
+          parentId,
+          before.id,
+          "client-stop:attachment-newer",
+          "later intent",
+        );
+        const oldRetry = yield* nativeCall(
+          a,
+          parentId,
+          "task_cancel",
+          stop,
+          new Set(["orchestration"]),
+          stopCredential,
+        );
+        expect(oldRetry.isError, json(oldRetry.content)).not.toBe(true);
+        expect(
+          (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+            (task) => task.id === before.id,
+          )?.remoteChild?.stop?.requestId,
+        ).toBe("client-stop:attachment-newer");
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   30_000,

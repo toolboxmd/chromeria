@@ -311,10 +311,12 @@ it.each(
     expect(buttons.length).toBe(local || connected ? 1 : 0);
     if (buttons[0]) {
       await act(async () => buttons[0]!.props.onClick({ stopPropagation: vi.fn() }));
-      expect(onOpenThread).toHaveBeenCalledWith(
-        local ? ThreadId.make("local-child") : ThreadId.make("remote-child"),
-        local ? undefined : EnvironmentId.make("cavallo"),
-      );
+      if (local) expect(onOpenThread).toHaveBeenCalledWith(ThreadId.make("local-child"));
+      else
+        expect(onOpenThread).toHaveBeenCalledWith(
+          ThreadId.make("remote-child"),
+          EnvironmentId.make("cavallo"),
+        );
     }
     expect(state.queries).toEqual([]);
   },

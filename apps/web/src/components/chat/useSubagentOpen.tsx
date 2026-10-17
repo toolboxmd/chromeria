@@ -31,8 +31,10 @@ export function useSubagentOpen(
     canOpen,
     open: () => {
       if (source) setViewing(true);
-      else if (canOpen && target !== null)
-        onOpenThread(target.threadId, target.environmentId ?? undefined);
+      else if (canOpen && target !== null) {
+        if (target.environmentId === null) onOpenThread(target.threadId);
+        else onOpenThread(target.threadId, target.environmentId);
+      }
     },
     viewer:
       viewing && source && agent !== null ? (

@@ -1733,6 +1733,7 @@ sources and reasons.
     "apps/server/src/auth/EnvironmentAuth.ts",
     "apps/server/src/auth/RpcAuthorization.ts",
     "apps/server/src/auth/SessionStore.ts",
+    "apps/server/src/auth/SessionStore.test.ts",
     "apps/server/src/environment/ServerEnvironment.ts",
     "apps/server/src/mcp/McpHttpServer.ts",
     "apps/server/src/mcp/OrchestratorMcpService.activity.test.ts",

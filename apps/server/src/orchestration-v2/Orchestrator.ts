@@ -7841,15 +7841,39 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         environment_id: string;
         thread_id: string | null;
         generation: string;
-      }>`SELECT json_extract(payload_json,'$.remoteChild.stop.reason') AS reason,json_extract(payload_json,'$.remoteChild.environmentId') AS environment_id,json_extract(payload_json,'$.remoteChild.threadId') AS thread_id,json_extract(payload_json,'$.remoteChild.launch.linkIdentity') AS generation FROM orchestration_events WHERE stream_id=${command.parentThreadId} AND event_type='subagent.updated' AND json_extract(payload_json,'$.id')=${task.id} AND json_extract(payload_json,'$.remoteChild.stop.requestId')=${command.stop.requestId} ORDER BY sequence LIMIT 1`.pipe(
+        namespace: string | null;
+        request_id: string | null;
+      }>`SELECT json_extract(payload_json,'$.remoteChild.stop.reason') AS reason,json_extract(payload_json,'$.remoteChild.environmentId') AS environment_id,json_extract(payload_json,'$.remoteChild.threadId') AS thread_id,json_extract(payload_json,'$.remoteChild.launch.linkIdentity') AS generation,json_extract(payload_json,'$.remoteChild.launch.requestNamespace') AS namespace,json_extract(payload_json,'$.remoteChild.launch.clientRequestId') AS request_id FROM orchestration_events WHERE stream_id=${command.parentThreadId} AND event_type='subagent.updated' AND json_extract(payload_json,'$.id')=${task.id} AND json_extract(payload_json,'$.remoteChild.stop.requestId')=${command.stop.requestId} ORDER BY sequence LIMIT 1`.pipe(
         mapDispatchError(command),
       );
       if (prior[0] !== undefined) {
+        let acceptedAttachment = false;
+        if (
+          prior[0].thread_id === null &&
+          remote.threadId !== undefined &&
+          remote.launchStarted === true
+        ) {
+          // Forwarding registers the authenticated original launch receipt's pair
+          // before attachment. A projection's new child id alone is not proof.
+          const tables =
+            yield* forkSql`SELECT name FROM sqlite_master WHERE type='table' AND name IN ('peer_return_pairs','peer_authority_records')`.pipe(
+              mapDispatchError(command),
+            );
+          if (tables.length === 2) {
+            const pair =
+              yield* forkSql`SELECT pair.task_id FROM peer_return_pairs AS pair JOIN peer_authority_records AS owner ON owner.id=pair.record_id WHERE pair.task_id=${task.id} AND json_extract(pair.pair_json,'$.parentThreadId')=${command.parentThreadId} AND json_extract(pair.pair_json,'$.parentEnvironmentId')=json_extract(owner.record_json,'$.envelope.environmentId') AND json_extract(pair.pair_json,'$.childEnvironmentId')=${remote.environmentId} AND json_extract(pair.pair_json,'$.childThreadId')=${remote.threadId} AND json_extract(owner.record_json,'$.sessionId') IS NULL AND json_extract(owner.record_json,'$.localThreadId')=${command.parentThreadId} AND json_extract(owner.record_json,'$.tool')='t3_thread_launch' AND json_extract(owner.record_json,'$.peer.environmentId')=${remote.environmentId} AND json_extract(owner.record_json,'$.peer.generation')=${prior[0].generation}`.pipe(
+                mapDispatchError(command),
+              );
+            acceptedAttachment = pair.length === 1;
+          }
+        }
         if (
           prior[0].reason !== (command.stop.reason ?? null) ||
           prior[0].environment_id !== remote.environmentId ||
-          prior[0].thread_id !== (remote.threadId ?? null) ||
-          prior[0].generation !== remote.launch?.linkIdentity
+          (prior[0].thread_id !== (remote.threadId ?? null) && !acceptedAttachment) ||
+          prior[0].generation !== remote.launch?.linkIdentity ||
+          prior[0].namespace !== (remote.launch?.requestNamespace ?? null) ||
+          prior[0].request_id !== (remote.launch?.clientRequestId ?? null)
         )
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
