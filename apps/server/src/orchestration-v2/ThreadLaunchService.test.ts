@@ -3737,7 +3737,7 @@ it.effect(
           providerSessionId: "scheduled-agent",
         },
       };
-      const context = { scope: childScope, caller: shell };
+      const context = { scope: childScope, caller: shell, limits: shell };
       assert.strictEqual(
         (yield* assertSameLink(context, { linkOrigin: undefined }).pipe(Effect.flip)).code,
         "capability_denied",

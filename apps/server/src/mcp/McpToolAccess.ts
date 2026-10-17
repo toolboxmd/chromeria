@@ -189,7 +189,7 @@ export const writesThreads = <P, A, E, R>(
       for (const threadId of McpRouting.isRemote(params, caller.scope)
         ? []
         : threads(params, caller.scope)) {
-        if (threadId === undefined || threadId === caller.scope.thread?.threadId) continue;
+        if (threadId === undefined) continue;
         const target = yield* caller.threads
           .getThreadShell(threadId)
           .pipe(Effect.mapError(unavailable));

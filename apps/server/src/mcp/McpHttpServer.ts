@@ -31,6 +31,8 @@ import * as HtmlRender from "../htmlRender/HtmlRender.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import { PeerAuthorityEnvelope } from "@t3tools/contracts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import { PreviewControlsToolkit } from "./toolkits/previewControls/tools.ts";
@@ -207,10 +209,25 @@ export const withPromachosThread = (
     client: { ...invocation.client, promachosThreadId: ThreadId.make(header) },
   };
 };
+const decodePeerSession = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(PeerAuthority.PeerSession),
+);
+const decodePeerEnvelope = Schema.decodeUnknownEffect(Schema.fromJsonString(PeerAuthorityEnvelope));
+const decodePeerExchange = Schema.decodeUnknownEffect(PeerAuthority.Exchange);
+const isPeerFailure = Schema.is(OrchestratorMcpFailure);
+const peerAuthorityFailure = (error: unknown) =>
+  HttpServerResponse.jsonUnsafe(
+    {
+      code: isPeerFailure(error) ? error.code : "invalid_request",
+      message: isPeerFailure(error) ? error.message : "Invalid peer authority envelope.",
+    },
+    { status: isPeerFailure(error) && error.code === "orchestration_error" ? 503 : 403 },
+  );
 
 const makeMcpAuthMiddleware = Effect.gen(function* () {
   const registry = yield* McpSessionRegistry.McpSessionRegistry;
   const clients = yield* Effect.serviceOption(McpClientAuthenticator);
+  const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
   return Effect.fn("McpHttpServer.authenticateRequest")(function* (httpEffect) {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const authorization = request.headers.authorization;
@@ -235,9 +252,55 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
     }
     const limited = withPromachosThread(withModeLimit(invocation, request), request.headers);
     if (limited === undefined) return invalidModeLimit;
+    const peerHeader = request.headers[PeerAuthority.LINK_HEADER];
+    const envelopeHeader = request.headers[PeerAuthority.AUTHORITY_HEADER];
+    let bound = limited;
+    if (limited.thread !== undefined && Option.isSome(authority)) {
+      const checked = yield* authority.value.forThread(limited.thread.threadId).pipe(Effect.result);
+      if (checked._tag === "Failure") return peerAuthorityFailure(checked.failure);
+      const frozen = checked.success;
+      if (frozen !== undefined)
+        bound = {
+          ...limited,
+          authority: frozen,
+          capabilities: new Set(
+            [...limited.capabilities].filter((capability) =>
+              frozen.ceiling.capabilities.includes(capability),
+            ),
+          ),
+        };
+    }
+    if (peerHeader !== undefined || envelopeHeader !== undefined) {
+      if (Option.isNone(authority))
+        return HttpServerResponse.jsonUnsafe(
+          { error: "unsupported_peer_authority" },
+          { status: 409 },
+        );
+      const verified = yield* Effect.gen(function* () {
+        if (peerHeader !== undefined) {
+          const peer = yield* decodePeerSession(peerHeader);
+          yield* authority.value.enroll(limited, peer);
+        }
+        if (envelopeHeader === undefined) return limited;
+        const envelope = yield* decodePeerEnvelope(envelopeHeader);
+        const record = yield* authority.value.accept(limited, envelope);
+        return {
+          ...limited,
+          authority: record,
+          capabilities: new Set(record.ceiling.capabilities),
+        };
+      }).pipe(Effect.result);
+      if (verified._tag === "Failure") return peerAuthorityFailure(verified.failure);
+      bound = verified.success;
+    }
     return yield* httpEffect.pipe(
-      Effect.provideService(McpInvocationContext.McpInvocationContext, limited),
+      Effect.provideService(McpInvocationContext.McpInvocationContext, bound),
       Effect.map(normalizeMcpHttpResponse),
+      Effect.map((response) =>
+        Option.isSome(authority)
+          ? HttpServerResponse.setHeader(response, PeerAuthority.AUTHORITY_HEADER, "1")
+          : response,
+      ),
     );
   }) satisfies McpAuthMiddleware;
 }).pipe(Effect.withSpan("McpHttpServer.makeAuthMiddleware"));
@@ -1019,13 +1082,71 @@ export const layerDeviceToolkit = Layer.mergeAll(
   layerDeviceScreenshotRegistration,
 );
 
-export const layerMcpTransport = McpServer.layerHttp({
-  name: "T3 Code",
-  version: packageJson.version,
-  path: "/mcp",
-  protocols: [McpProtocol.v2025_06_18],
-  allowSessionTermination: true,
-}).pipe(Layer.provide(layerMcpAuthMiddleware));
+const layerPeerControl = Layer.unwrap(
+  Effect.gen(function* () {
+    const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+    const post = HttpRouter.add(
+      "POST",
+      "/mcp/peer-control",
+      Effect.gen(function* () {
+        if (Option.isNone(authority)) return HttpServerResponse.empty({ status: 409 });
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const result = yield* Effect.gen(function* () {
+          const input = yield* decodePeerExchange(yield* request.json);
+          return yield* authority.value.exchange(scope, input);
+        }).pipe(Effect.result);
+        return result._tag === "Success"
+          ? HttpServerResponse.jsonUnsafe(result.success)
+          : HttpServerResponse.empty({ status: 403 });
+      }),
+    );
+    const streaming = HttpRouter.add(
+      "GET",
+      "/mcp/peer-control/stream",
+      Effect.gen(function* () {
+        if (Option.isNone(authority)) return HttpServerResponse.empty({ status: 409 });
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const peer = yield* decodePeerSession(request.headers[PeerAuthority.LINK_HEADER]);
+        yield* authority.value.enroll(scope, peer);
+        const encoder = new TextEncoder();
+        const updates = Stream.unfold(0, (cursor) =>
+          authority.value
+            .exchange(scope, { ...peer, answers: [], after: cursor })
+            .pipe(
+              Effect.map(
+                (batch) =>
+                  [encoder.encode(`data: ${encodeJsonText(batch)}\n\n`), batch.cursor] as const,
+              ),
+            ),
+        );
+        return HttpServerResponse.stream(
+          Stream.concat(Stream.make(encoder.encode(": peer-control\n\n")), updates),
+          {
+            headers: {
+              "content-type": "text/event-stream",
+              "cache-control": "no-store, no-transform",
+              "x-accel-buffering": "no",
+            },
+          },
+        );
+      }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 403 })))),
+    );
+    return Layer.merge(post, streaming);
+  }),
+);
+
+export const layerMcpTransport = Layer.merge(
+  McpServer.layerHttp({
+    name: "T3 Code",
+    version: packageJson.version,
+    path: "/mcp",
+    protocols: [McpProtocol.v2025_06_18],
+    allowSessionTermination: true,
+  }),
+  layerPeerControl,
+).pipe(Layer.provide(layerMcpAuthMiddleware));
 
 export const layer = Layer.mergeAll(
   layerPreviewToolkit,

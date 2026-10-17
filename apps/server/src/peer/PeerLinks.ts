@@ -1,3 +1,4 @@
+import * as PeerLinkEvents from "./PeerLinkEvents.ts";
 import {
   AuthMcpClientAccess,
   AuthMcpRegistrationError,
@@ -146,6 +147,7 @@ import { ensurePeerLinksSchema } from "../persistence/forkPeerLinksSchema.ts";
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const changes = yield* Effect.serviceOption(PeerLinkEvents.PeerLinkEvents);
   yield* ensurePeerLinksSchema;
   const secrets = yield* ServerSecretStore.ServerSecretStore;
   const crypto = yield* Crypto.Crypto;
@@ -392,6 +394,7 @@ const make = Effect.gen(function* () {
       if (Option.isSome(previous) && previous.value.secret_name !== secretName) {
         yield* secrets.remove(previous.value.secret_name).pipe(Effect.ignore);
       }
+      if (Option.isSome(changes)) yield* changes.value.changed(linked.environmentId);
       return linked;
     });
 
@@ -439,6 +442,7 @@ const make = Effect.gen(function* () {
       for (const row of deleted) {
         yield* secrets.remove(row.secret_name).pipe(Effect.catch(failStorage));
       }
+      if (Option.isSome(changes)) yield* changes.value.changed(environmentId);
       return deleted.length > 0;
     });
 

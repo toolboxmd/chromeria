@@ -1909,7 +1909,7 @@ it.effect("a task's result is its own run's whole last reply, not a later run's"
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect("the same key from another provider session is another task", () =>
+it.effect("credential rotation replays the same remote task for the same parent and key", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const thread = yield* makeBoxThread;
@@ -1937,9 +1937,9 @@ it.effect("the same key from another provider session is another task", () =>
         taskId: NodeId;
         remoteChild: { threadId: ThreadId };
       };
-      expect(second.taskId).not.toBe(first.taskId);
-      expect(second.remoteChild.threadId).not.toBe(first.remoteChild.threadId);
-      expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(2);
+      expect(second.taskId).toBe(first.taskId);
+      expect(second.remoteChild.threadId).toBe(first.remoteChild.threadId);
+      expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(1);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
