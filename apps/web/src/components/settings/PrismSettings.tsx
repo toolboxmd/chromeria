@@ -241,7 +241,7 @@ function ModelRow({
 }
 
 /** One ordered list, saved on every change like the Providers page. */
-function ModelList({
+export function ModelList({
   title,
   saved,
   choices,
@@ -271,6 +271,8 @@ function ModelList({
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
   const commit = (next: readonly DraftPreference[]) => {
+    // One write at a time: an edit while one is in flight is ignored, so this save owns the restore.
+    if (saving) return;
     setDraft(next);
     // The page shows the failure; the list returns to what is saved.
     save(savedPreferences(next)).catch(() => setDraft((current) => syncPrismDraft(current, saved)));

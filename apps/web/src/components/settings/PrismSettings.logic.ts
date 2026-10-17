@@ -57,7 +57,7 @@ export function syncPrismDraft(
   const unused = [...draft];
   let nextEntryId = nextPrismEntryId(draft);
   return saved.map((model) => {
-    const match = unused.findIndex((entry) => prismModelKey(entry) === prismModelKey(model));
+    const match = unused.findIndex((entry) => samePreference(entry, model));
     const entryId = match >= 0 ? unused.splice(match, 1)[0]!.entryId : nextEntryId++;
     return { ...model, entryId };
   });

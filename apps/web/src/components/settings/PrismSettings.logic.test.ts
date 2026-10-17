@@ -314,11 +314,28 @@ describe("syncPrismDraft", () => {
     ]);
   });
 
-  it("adopts a different saved list, reusing ids only for matching models", () => {
-    expect(syncPrismDraft(drafted, [third, { ...first, effort: "low" }])).toEqual([
+  it("adopts a different saved list, reusing ids only for matching preferences", () => {
+    expect(syncPrismDraft(drafted, [third, { ...first, effort: "low" }, second])).toEqual([
       { ...third, entryId: 2 },
-      { ...first, effort: "low", entryId: 0 },
+      { ...first, effort: "low", entryId: 3 },
+      { ...second, entryId: 1 },
     ]);
     expect(syncPrismDraft(drafted, [])).toEqual([]);
+  });
+
+  it("keeps each effort of one model on its own row id", () => {
+    const efforts = [
+      { ...first, effort: "low", entryId: 0 },
+      { ...first, effort: "high", entryId: 1 },
+    ];
+    expect(
+      syncPrismDraft(efforts, [
+        { ...first, effort: "high" },
+        { ...first, effort: "low" },
+      ]),
+    ).toEqual([
+      { ...first, effort: "high", entryId: 1 },
+      { ...first, effort: "low", entryId: 0 },
+    ]);
   });
 });
