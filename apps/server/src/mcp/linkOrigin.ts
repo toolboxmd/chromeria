@@ -5,16 +5,16 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
-import { clientModeCeiling } from "./McpInvocationContext.ts";
+import { clientModeCeiling, intersectModes } from "./McpInvocationContext.ts";
 import type { Caller } from "./threadAccess.ts";
 
 /**
  * Work a linked environment starts here stays within that link. An agent
  * reaches this environment through a link as one MCP client session, and
  * everything that session starts, and everything that work starts in turn,
- * carries the session in `linkOrigin`. Such a caller may change only work from
- * the same link: not the user's own threads, not projects or settings, and
- * not work from another link. Reads are not fenced.
+ * carries the session in `linkOrigin`. Created-work callers retain this fence;
+ * explicitly consented environment-resource callers may cross it within their
+ * modes and operation policy. Ordinary reads remain unfenced.
  *
  * This is a routing rule for T3's own tools. An agent the link starts still
  * runs as this environment's user.
@@ -45,7 +45,9 @@ export const assertSameLink = <T extends Pick<OrchestrationV2ThreadShell, "linkO
   target: T,
 ) => {
   const origin = callerLinkOrigin(caller);
-  return origin === undefined || target.linkOrigin?.sessionId === origin.sessionId
+  return origin === undefined ||
+    caller.scope.authority?.ceiling.resourceScope === "environment-resources" ||
+    target.linkOrigin?.sessionId === origin.sessionId
     ? Effect.void
     : Effect.fail(outsideLink(origin, `it may change only threads that link started.`));
 };
@@ -54,10 +56,14 @@ export const assertSameLink = <T extends Pick<OrchestrationV2ThreadShell, "linkO
  * Descendants retain their origin fence; narrowed/plan calls never qualify.
  */
 const directFullAccessPeer = (caller: Pick<Caller, "scope" | "caller">) => {
-  const ceiling = clientModeCeiling(caller.scope.client);
+  const ceiling = intersectModes(
+    clientModeCeiling(caller.scope.client),
+    caller.scope.authority?.ceiling,
+  );
   return (
     caller.caller === undefined &&
     caller.scope.client?.linked === true &&
+    caller.scope.authority?.envelope.descendant !== true &&
     ceiling.runtimeMode === "full-access" &&
     ceiling.interactionMode === "default"
   );
@@ -66,7 +72,11 @@ const directFullAccessPeer = (caller: Pick<Caller, "scope" | "caller">) => {
 /** Linked descendants cannot change the environment; direct full-access links can. */
 export const assertNotLinked = (caller: Pick<Caller, "scope" | "caller">, what: string) => {
   const origin = callerLinkOrigin(caller);
-  return origin === undefined || directFullAccessPeer(caller)
+  return origin === undefined ||
+    directFullAccessPeer(caller) ||
+    (caller.scope.authority?.ceiling.resourceScope === "environment-resources" &&
+      caller.scope.authority.ceiling.runtimeMode === "full-access" &&
+      caller.scope.authority.ceiling.interactionMode === "default")
     ? Effect.void
     : Effect.fail(outsideLink(origin, `it cannot ${what}.`));
 };

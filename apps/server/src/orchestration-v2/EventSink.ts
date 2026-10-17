@@ -1,3 +1,4 @@
+import { recordPeerEffectAuthority } from "../peer/peerEffectAuthority.ts";
 import { RESTART_CUT_REASONS } from "@t3tools/shared/restartCut";
 import {
   CommandId,
@@ -416,6 +417,9 @@ const layerBase: Layer.Layer<
             events: normalized,
           });
           yield* applyStoredEvents(committed);
+          yield* recordPeerEffectAuthority(input.effects).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
           yield* effectOutbox.enqueue(input.effects);
           return committed;
         }).pipe(
@@ -479,6 +483,9 @@ const layerBase: Layer.Layer<
               events: normalized,
             });
             yield* applyStoredEvents(storedEvents);
+            yield* recordPeerEffectAuthority(input.effects ?? []).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            );
             yield* effectOutbox.enqueue(input.effects ?? []);
             return { committed: true as const, storedEvents };
           }),
@@ -781,6 +788,9 @@ const layerBase: Layer.Layer<
             input,
             storedEvents,
             eventStore.latestSequence({ threadId: input.threadId }),
+          );
+          yield* recordPeerEffectAuthority(input.effects).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
           );
           yield* effectOutbox.enqueue(input.effects);
           const receipt: CommandReceiptStore.CommandReceiptV2 = {

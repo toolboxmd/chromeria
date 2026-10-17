@@ -1,3 +1,4 @@
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import type { BareReadGrant } from "../orchestration-v2/bareReadGrant.ts";
 import * as BareRuntime from "@t3tools/provider-core/server/bareLaunch";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
@@ -108,6 +109,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as ScheduledTaskChecks from "../scheduledTaskChecks/ScheduledTaskChecks.ts";
 import {
   clientModeCeiling,
+  intersectModes,
   type McpInvocationScope,
   type McpThreadInvocationScope,
   requireThreadScope,
@@ -875,6 +877,7 @@ function timelineItem(input: {
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
+  const peerAuthority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
   const bareLaunch = yield* BareLaunch.BareLaunch;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
@@ -1042,7 +1045,12 @@ const make = Effect.gen(function* () {
         yield* resolveRuntimeMode(ceiling.runtimeMode, parent.thread.runtimeMode);
         yield* resolveInteractionMode(ceiling.interactionMode, parent.thread.interactionMode);
       }
-      return { scope: threadScope, parent } as const;
+      const ceiling = scope.authority?.ceiling ?? scope.legacyPeerCeiling;
+      const bounded =
+        ceiling === undefined
+          ? parent
+          : { ...parent, thread: { ...parent.thread, ...intersectModes(parent.thread, ceiling) } };
+      return { scope: threadScope, parent: bounded } as const;
     });
 
   /** A target project: the one passed, else the calling thread's. */
@@ -2711,6 +2719,10 @@ const make = Effect.gen(function* () {
                 requestKey: key,
                 index,
               });
+              if (parent.thread.linkOrigin !== undefined && Option.isSome(peerAuthority)) {
+                const inherited = yield* peerAuthority.value.forThread(parent.thread.id);
+                if (inherited !== undefined) yield* peerAuthority.value.bind(inherited, threadId);
+              }
               yield* assertTargetEnabledForProject(
                 parent,
                 stableCommandId({ scope, requestKey: key, operation: "create-thread", index }),

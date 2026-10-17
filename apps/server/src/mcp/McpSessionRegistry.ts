@@ -1,3 +1,5 @@
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import * as Option from "effect/Option";
 import { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -21,6 +23,7 @@ export interface McpCredentialRequest {
    * token is honored (#7083). Defaults to full access.
    */
   readonly browserToolsAvailable?: boolean;
+  readonly authority?: PeerAuthority.Authority;
   readonly capabilities?: ReadonlySet<McpInvocationContext.McpCapability>;
 }
 
@@ -101,6 +104,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   options: McpSessionRegistryOptions = {},
 ) {
   const crypto = yield* Crypto.Crypto;
+  const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const environmentId = yield* environment.getEnvironmentId;
   const httpServer = yield* HttpServer.HttpServer;
@@ -132,7 +136,19 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       const rawToken = yield* crypto.randomBytes(32).pipe(Effect.map(tokenFromBytes), Effect.orDie);
       const tokenHash = yield* hashToken(rawToken);
       const browserToolsAvailable = request.browserToolsAvailable ?? true;
+      const frozen =
+        request.authority ??
+        (Option.isSome(authority)
+          ? yield* authority.value.forThread(request.threadId).pipe(Effect.orDie)
+          : undefined);
+      const legacyPeerCeiling =
+        frozen === undefined && Option.isSome(authority)
+          ? yield* authority.value.legacyCeiling(request.threadId).pipe(Effect.orDie)
+          : undefined;
+      const ceiling = frozen?.ceiling ?? legacyPeerCeiling;
       const scope: McpInvocationContext.McpThreadInvocationScope = {
+        ...(frozen === undefined ? {} : { authority: frozen }),
+        ...(legacyPeerCeiling === undefined ? {} : { legacyPeerCeiling }),
         environmentId,
         requestNamespace: providerSessionId,
         thread: {
@@ -149,9 +165,20 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         ]),
         issuedAt,
       };
+      const bounded =
+        ceiling === undefined
+          ? scope
+          : {
+              ...scope,
+              capabilities: new Set(
+                [...scope.capabilities].filter((capability) =>
+                  ceiling.capabilities.includes(capability),
+                ),
+              ),
+            };
       yield* SynchronizedRef.update(state, ({ records }) => {
         const next = new Map(pruneDead(records, issuedAt));
-        next.set(tokenHash, { tokenHash, scope, lastAliveAt: issuedAt });
+        next.set(tokenHash, { tokenHash, scope: bounded, lastAliveAt: issuedAt });
         return { records: next };
       });
       return {
@@ -162,8 +189,8 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           providerInstanceId: scope.thread.providerInstanceId,
           endpoint,
           authorizationHeader: `Bearer ${rawToken}`,
-          browserToolsAvailable: scope.capabilities.has("preview"),
-          capabilities: scope.capabilities,
+          browserToolsAvailable: bounded.capabilities.has("preview"),
+          capabilities: bounded.capabilities,
         },
       };
     },
