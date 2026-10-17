@@ -284,6 +284,10 @@ const layerAgentSessionImporterProvided = AgentSessionImporter.layer.pipe(
   ),
 );
 
+const layerRecoveryWaitProvided = RecoveryWait.layer.pipe(
+  Layer.provide(Layer.mergeAll(layerPrismRecoveryHooksProvided, RecoveryWaitSignals.layerSignals)),
+);
+
 const layerThreadManagementProvided = ThreadManagementService.layerWithLegacyImporter.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -291,11 +295,7 @@ const layerThreadManagementProvided = ThreadManagementService.layerWithLegacyImp
       layerLegacyV1ThreadImporterProvided,
       layerCommandReceiptStoreProvided,
       layerProviderSessionManagerProvided,
-      RecoveryWait.layer.pipe(
-        Layer.provide(
-          Layer.mergeAll(layerPrismRecoveryHooksProvided, RecoveryWaitSignals.layerSignals),
-        ),
-      ),
+      layerRecoveryWaitProvided,
     ),
   ),
 );
@@ -400,6 +400,9 @@ const layerMcpAppRequestsProvided = McpAppRequests.layer.pipe(
 
 export const layer = Layer.mergeAll(
   layerCommandOutputHubProvided,
+  // Transport lifecycle receipts and the worker share the same durable effect owner.
+  EffectOutbox.layer,
+  layerRecoveryWaitProvided,
   layerOrchestratorProvided,
   layerMcpAppRequestsProvided,
   layerThreadManagementProvided,

@@ -1,3 +1,17 @@
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as SourceProviders from "../sourceControl/SourceControlProviderRegistry.ts";
+import * as ProductionRuntime from "../orchestration-v2/runtimeLayer.ts";
+import * as Instances from "../provider/ProviderInstanceRegistry.ts";
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import * as NativeSessions from "../mcp/McpSessionRegistry.testkit.ts";
+import * as Checkpoints from "../checkpointing/CheckpointStore.ts";
+import * as ProviderCatalog from "../provider/ProviderRegistry.ts";
+import * as RecoveryStore from "../prism/RecoveryStore.ts";
+import * as PeerTaskLifecycle from "./PeerTaskLifecycle.ts";
+import { RecoveryWaitState } from "./recoveryWait.ts";
+import * as RecoveryHistory from "../prism/RecoveryHistory.ts";
+import * as RecoverySignals from "./recoveryWaitSignals.ts";
 import { PeerDispatchAuthority } from "./peerEffectAuthority.ts";
 import { vi } from "vite-plus/test";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
@@ -21,6 +35,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   CommandId,
+  EnvironmentId,
+  OrchestratorMcpFailure,
   EventId,
   MessageId,
   NodeId,
@@ -32,6 +48,7 @@ import {
   type Project,
   type OrchestrationV2LinkOrigin,
   type ExecutionEnvironmentDescriptor,
+  TurnItemId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -97,12 +114,20 @@ const adapter = {
   openSession: () => Effect.die("The isolated workflow never starts a provider process"),
 } as Adapter.ProviderAdapterV2["Service"];
 
+// A graph can dial a later-created server. Close all graph clients before any
+// server drains requests, including bounded lifecycle waits and reverse control streams.
+const graphConnections = new WeakMap<Scope.Scope, Set<Scope.Closeable>>();
+
 /** Real commands, projections, receipts and intake; provider execution remains an external fixture. */
 const makeNode = (
   descriptor: ExecutionEnvironmentDescriptor,
   storage: "memory" | "disk" = "memory",
+  productionKernel = false,
 ) =>
   Effect.gen(function* () {
+    const graphScope = yield* Scope.Scope;
+    const connectionScopes = graphConnections.get(graphScope) ?? new Set<Scope.Closeable>();
+    graphConnections.set(graphScope, connectionScopes);
     const databaseConfig = yield* Config.layerTest(process.cwd(), {
       prefix: `peer-authority-storage-${descriptor.label}-`,
     }).pipe(Layer.fresh, Layer.build);
@@ -113,6 +138,14 @@ const makeNode = (
     const database = yield* databaseLayer.pipe(Layer.fresh, Layer.build);
     const reopenDatabase = databaseLayer.pipe(Layer.fresh, Layer.build);
     const db = Layer.succeedContext(database);
+    yield* RecoveryStore.layer.pipe(Layer.provide(db), Layer.build);
+    const signalContext = yield* RecoverySignals.layerSignals.pipe(Layer.fresh, Layer.build);
+    const signals = Context.get(signalContext, RecoverySignals.RecoveryWaitSignals);
+    const lifecycleRecovery = {
+      subscribe: signals.subscribe,
+      read: (_threadId: ThreadId, runId: RunId) =>
+        RecoveryHistory.readRecoveryState(runId).pipe(Effect.provide(db)),
+    };
     const project: Project = {
       id: ProjectId.make(`project:${descriptor.environmentId}`),
       title: descriptor.label,
@@ -132,17 +165,84 @@ const makeNode = (
       getEnvironmentId: Effect.succeed(descriptor.environmentId),
       getDescriptor: Effect.succeed(descriptor),
     });
-    const runtime = yield* Runtime.layerWithRegistry(
-      { name: `peer-authority-${descriptor.label}` },
-      Adapters.layerFromAdapters([adapter]),
-      { databaseLayer: db, runEffectWorker: false },
-    ).pipe(Layer.fresh, Layer.build);
     const nodeConfig = Config.layerTest(process.cwd(), {
       prefix: `peer-authority-${descriptor.label}-`,
     });
     const settings = Settings.layerTest({
       providerInstances: { [instanceId]: { driver, enabled: true } },
     });
+    const testInstance = {
+      instanceId,
+      driverKind: driver,
+      displayName: "Deterministic native boundary",
+      enabled: true,
+      continuationIdentity: { driverKind: driver, continuationKey: "production-binding" },
+      snapshot: { getSnapshot: Effect.succeed({}) } as unknown as ProviderInstance["snapshot"],
+      textGeneration: {} as ProviderInstance["textGeneration"],
+      orchestrationAdapter: adapter,
+    } satisfies ProviderInstance;
+    // This branch builds the actual kernel exported by layerProduction, without
+    // supplying an outbox/store to the transport. Only external adapters are replaced.
+    const production = Layer.mergeAll(
+      ProductionRuntime.layer,
+      ProductionRuntime.layerEventSink,
+      ProjectionStore.layer,
+    ).pipe(
+      Layer.provide(
+        Layer.succeed(Instances.ProviderInstanceRegistry, {
+          getInstance: (id) => Effect.succeed(id === instanceId ? testInstance : undefined),
+          listInstances: Effect.succeed([testInstance]),
+          listUnavailable: Effect.succeed([]),
+          streamChanges: Stream.empty,
+          subscribeChanges: Effect.never,
+        }),
+      ),
+      Layer.provide(NativeSessions.layer),
+      Layer.provide(McpProviderSessions.layer),
+      Layer.provide(Layer.mock(Checkpoints.CheckpointStore)({})),
+      Layer.provide(Layer.mock(ProviderCatalog.ProviderRegistry)({})),
+      Layer.provide(Layer.mock(GitWorkflow.GitWorkflowService)({})),
+      Layer.provide(
+        Layer.mock(SourceProviders.SourceControlProviderRegistry)({
+          resolveLink: () => Effect.die("No external repository host in this fixture"),
+        }),
+      ),
+      Layer.provide(projectLayer),
+      Layer.provide(nodeConfig),
+      Layer.provide(settings),
+      Layer.provide(db),
+    );
+    const runtime = yield* productionKernel
+      ? production.pipe(Layer.fresh, Layer.build)
+      : Runtime.layerWithRegistry(
+          { name: `peer-authority-${descriptor.label}` },
+          Adapters.layerFromAdapters([adapter]),
+          { databaseLayer: db, runEffectWorker: false },
+        ).pipe(Layer.fresh, Layer.build);
+    if (productionKernel)
+      yield* Effect.flatMap(ProjectStore.ProjectStoreV2, (projects) =>
+        projects.apply({
+          sequence: 0,
+          eventId: EventId.make(`seed:${project.id}`),
+          aggregateKind: "project",
+          aggregateId: project.id,
+          occurredAt: project.createdAt,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "project.created",
+          payload: {
+            projectId: project.id,
+            title: project.title,
+            workspaceRoot: project.workspaceRoot,
+            defaultModelSelection: selection,
+            scripts: [],
+            createdAt: project.createdAt,
+            updatedAt: project.updatedAt,
+          },
+        }),
+      ).pipe(Effect.provide(ProjectStore.layer.pipe(Layer.provide(db))));
     const folders = Layer.mock(Folders.ManagedProjectFolders)({
       namedProjectsRoot: "/unused",
       folderForThread: () => Effect.succeed(Option.none()),
@@ -171,15 +271,75 @@ const makeNode = (
       Layer.fresh,
       Layer.build,
     );
+    const holdLaunchReply = yield* Ref.make(false);
+    const launchReplyHeld = yield* Deferred.make<void>();
+    const releaseLaunchReply = yield* Deferred.make<void>();
+    const dropAckResponses = yield* Ref.make(0);
+    const ackResponseLost = yield* Deferred.make<void>();
+    const holdResultPage = yield* Ref.make(false);
+    const resultPageStarted = yield* Deferred.make<void>();
+    const releaseResultPage = yield* Deferred.make<void>();
+    const faultablePeers = Layer.effect(
+      PeerMcpClient.PeerMcpClient,
+      Effect.gen(function* () {
+        const peers = yield* PeerMcpClient.PeerMcpClient;
+        const call: typeof peers.call = (input) =>
+          peers.call(input).pipe(
+            Effect.tap(() =>
+              Effect.gen(function* () {
+                if (input.tool === "t3_thread_launch" && (yield* Ref.get(holdLaunchReply))) {
+                  yield* Deferred.succeed(launchReplyHeld, undefined);
+                  yield* Deferred.await(releaseLaunchReply);
+                }
+              }),
+            ),
+          );
+        return {
+          ...peers,
+          call,
+          taskLifecycle: (...args: Parameters<NonNullable<typeof peers.taskLifecycle>>) =>
+            peers.taskLifecycle!(...args).pipe(
+              Effect.flatMap((result) =>
+                Effect.gen(function* () {
+                  if (args[2].operation.type === "resultText" && (yield* Ref.get(holdResultPage))) {
+                    yield* Deferred.succeed(resultPageStarted, undefined);
+                    yield* Deferred.await(releaseResultPage);
+                  }
+                  if (
+                    (args[2].operation.type === "acknowledge" ||
+                      args[2].operation.type === "stop") &&
+                    (yield* Ref.get(dropAckResponses)) > 0
+                  ) {
+                    yield* Ref.update(dropAckResponses, (count) => count - 1);
+                    yield* Deferred.succeed(ackResponseLost, undefined);
+                    return yield* new OrchestratorMcpFailure({
+                      code: "orchestration_error",
+                      message:
+                        "Fixture dropped the acknowledgement response after destination commit.",
+                    });
+                  }
+                  return result;
+                }),
+              ),
+            ),
+        };
+      }),
+    ).pipe(Layer.provide(PeerMcpClient.layer));
     const connect = () =>
       Effect.gen(function* () {
         const lifetime = yield* Scope.make();
-        yield* Effect.addFinalizer(() => Scope.close(lifetime, Exit.void));
+        connectionScopes.add(lifetime);
+        yield* Effect.addFinalizer(() =>
+          Scope.close(lifetime, Exit.void).pipe(
+            Effect.ensuring(Effect.sync(() => connectionScopes.delete(lifetime))),
+          ),
+        );
         const services = yield* RemoteDelegation.layer.pipe(
           Layer.provideMerge(PeerForwarding.layer),
-          Layer.provideMerge(PeerMcpClient.layer),
+          Layer.provideMerge(faultablePeers),
           Layer.provideMerge(Layer.succeedContext(baseServices)),
           Layer.provide(Layer.succeedContext(runtime)),
+          Layer.provide(db),
           Layer.provide(projectLayer),
           Layer.provide(Layer.mock(RepositoryIdentity.RepositoryIdentityResolver)({})),
           Layer.provide(environment),
@@ -260,19 +420,45 @@ const makeNode = (
         ),
         Effect.provide(Layer.merge(environment, Layer.succeedContext(serverContext))),
       );
+    const lifecycleContext = Context.mergeAll(
+      services,
+      runtime,
+      database,
+      productionKernel ? Context.empty() : Context.make(RecoveryWaitState, lifecycleRecovery),
+    );
+    const lifecycle = yield* PeerTaskLifecycle.layer.pipe(
+      Layer.provide(Layer.succeedContext(lifecycleContext)),
+      Layer.build,
+    );
     const peer = yield* servePeer(descriptor, tools, {
       database: db,
       registry,
       secretStore: Context.get(services, Secrets.ServerSecretStore),
-      authorityServices: services,
+      authorityServices: Context.merge(lifecycleContext, lifecycle),
     }).pipe(Effect.provide(Layer.succeedContext(serverContext)));
+    yield* Effect.addFinalizer(() =>
+      Effect.forEach([...connectionScopes], (lifetime) => Scope.close(lifetime, Exit.void), {
+        concurrency: "unbounded",
+        discard: true,
+      }),
+    );
     return {
       ...peer,
       noticeFailure,
+      holdLaunchReply,
+      launchReplyHeld,
+      releaseLaunchReply,
+      dropAckResponses,
+      ackResponseLost,
+      holdResultPage,
+      resultPageStarted,
+      releaseResultPage,
       reopenDatabase,
       environmentId: descriptor.environmentId,
       project,
       database,
+      lifecycleRecovery,
+      signals,
       runtime,
       services,
       registry,
@@ -291,6 +477,42 @@ const makeNode = (
     };
   });
 type Node = Effect.Success<ReturnType<typeof makeNode>>;
+
+/** Production claim/receipt worker, with provider I/O replaced only at its external boundary. */
+const drainStops = (node: Node) =>
+  EffectWorker.OrchestrationEffectWorkerV2.pipe(
+    Effect.flatMap((worker) => worker.drain()),
+    Effect.provide(
+      EffectWorker.layerWithOptions({ maxAttempts: 1 }).pipe(
+        Layer.provide(
+          Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
+            execute: (effect) =>
+              effect.request.type === "delegated-tasks.stop"
+                ? node.threads
+                    .stopDelegatedTasks({
+                      threadId: effect.threadId,
+                      commandId: effect.commandId,
+                      reason: effect.request.reason,
+                      forkRetirementStop: effect.request.forkRetirementStop,
+                    })
+                    .pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new EffectWorker.OrchestrationEffectExecutionError({
+                            effectId: effect.id,
+                            effectType: effect.request.type,
+                            cause,
+                          }),
+                      ),
+                    )
+                : Effect.void,
+          }),
+        ),
+        Layer.provide(Layer.succeed(PeerAuthority.PeerAuthority, node.authority)),
+        Layer.provide(Layer.succeedContext(node.runtime)),
+      ),
+    ),
+  );
 
 const restoreAuthority = (node: Node) =>
   Effect.gen(function* () {
@@ -4082,4 +4304,1905 @@ it.live(
         ).toBe("disposed");
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+const finishLifecycleRun = (
+  node: Node,
+  childId: ThreadId,
+  label: string,
+  status: "completed" | "failed" = "completed",
+  text = label,
+) =>
+  Effect.gen(function* () {
+    const runId = yield* activate(node, childId);
+    const projection = yield* node.threads.getThreadRecords(childId, ["runs", "messages"]);
+    const run = projection.runs.find((run) => run.id === runId)!;
+    const now = yield* DateTime.now;
+    yield* node.sink.write({
+      commandId: CommandId.make(`fixture:finish:${label}`),
+      events: [
+        {
+          id: EventId.make(`fixture:reply:${label}`),
+          type: "message.updated",
+          threadId: childId,
+          runId,
+          occurredAt: now,
+          payload: {
+            ...projection.messages[0]!,
+            id: MessageId.make(`message:${label}`),
+            runId,
+            role: "assistant",
+            text,
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        },
+        {
+          id: EventId.make(`fixture:item:${label}`),
+          type: "turn-item.updated",
+          threadId: childId,
+          runId,
+          occurredAt: now,
+          payload: {
+            id: TurnItemId.make(`item:${label}`),
+            type: "assistant_message",
+            threadId: childId,
+            runId,
+            nodeId: run.rootNodeId,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: run.ordinal * 100,
+            status: "completed",
+            title: null,
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            messageId: MessageId.make(`message:${label}`),
+            text,
+            streaming: false,
+          },
+        },
+        {
+          id: EventId.make(`fixture:terminal:${label}`),
+          type: "run.updated",
+          threadId: childId,
+          runId,
+          occurredAt: now,
+          payload: { ...run, status, completedAt: now },
+        },
+      ],
+    });
+    if (status === "failed")
+      yield* RecoveryHistory.writeRecoveryOutcome({
+        sourceRunId: runId,
+        threadId: childId,
+        status: "decided",
+        outcome: "not_retryable",
+        reason: "non_retryable",
+      }).pipe(
+        Effect.provide(Layer.succeedContext(node.database)),
+        Effect.provideService(RecoverySignals.RecoveryWaitSignals, node.signals),
+      );
+    return runId;
+  });
+
+it.live(
+  "lifecycle381: registered original plus two continuations retain exact results and replay after source restart",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(descriptorOf("lifecycle-b", "B", { peerAuthority: 1 }), "disk");
+        const a = yield* makeNode(descriptorOf("lifecycle-a", "A", { peerAuthority: 1 }), "disk");
+        yield* linkTo(a.links, b, "full-access");
+        const parentId = ThreadId.make("lifecycle-parent");
+        yield* seedParent(a, parentId);
+        const receipt = yield* nativeCall(a, parentId, "delegate_task", {
+          task: "First result and two follow-ups",
+          target: {
+            environmentId: b.environmentId,
+            projectId: b.project.id,
+            providerInstanceId: instanceId,
+            model: selection.model,
+          },
+          clientRequestId: "lifecycle381",
+        });
+        expect(receipt.isError, json(receipt.content)).not.toBe(true);
+        const { taskId } = yield* decodeTaskReceipt(receipt.structuredContent);
+        const childId = yield* attachedChild(a, parentId, taskId);
+        const negotiatedLaunch = (yield* a.threads.getThreadRecords(parentId, [
+          "subagents",
+        ])).subagents.find((task) => task.id === taskId)!.remoteChild!.launch!;
+        expect(negotiatedLaunch.lifecycleVersion).toBe(1);
+
+        const terminal = (label: string, status: "completed" | "failed" = "completed") =>
+          finishLifecycleRun(b, childId, label, status);
+        const observed = (label: string) =>
+          a.orchestrator
+            .streamStoredEventsFrom({
+              threadId: parentId,
+              afterSequence: 0,
+              eventType: "subagent.updated",
+            })
+            .pipe(
+              Stream.filter(
+                (stored) =>
+                  stored.event.type === "subagent.updated" &&
+                  stored.event.payload.id === taskId &&
+                  stored.event.payload.remoteChild?.latestResult?.text === label,
+              ),
+              Stream.runHead,
+              Effect.flatMap(Effect.fromOption),
+            );
+        const original = yield* terminal("original381");
+        yield* a.orchestrator
+          .streamStoredEventsFrom({
+            threadId: parentId,
+            afterSequence: 0,
+            eventType: "subagent.updated",
+          })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "subagent.updated" &&
+                stored.event.payload.id === taskId &&
+                stored.event.payload.result === "original381",
+            ),
+            Stream.runHead,
+            Effect.flatMap(Effect.fromOption),
+          );
+        const first = yield* nativeCall(a, parentId, "task_status", { taskId });
+        expect(first.structuredContent).toMatchObject({
+          childThreadId: null,
+          summary: "original381",
+          latestTerminalRunId: original,
+          latestTerminalSummary: "original381",
+        });
+        const send1 = yield* nativeCall(a, parentId, "t3_thread_send", {
+          environmentId: b.environmentId,
+          threadId: childId,
+          message: "Continue once",
+          clientRequestId: "continue381-1",
+        });
+        expect(send1.isError, json(send1.content)).not.toBe(true);
+        yield* Ref.set(a.dropAckResponses, 1);
+        const second = yield* terminal("second381");
+        yield* observed("second381");
+        const secondStatus = yield* nativeCall(a, parentId, "task_status", { taskId });
+        expect(secondStatus.structuredContent).toMatchObject({
+          summary: "original381",
+          latestTerminalRunId: second,
+          latestTerminalSummary: "second381",
+        });
+        const send2 = yield* nativeCall(a, parentId, "t3_thread_send", {
+          environmentId: b.environmentId,
+          threadId: childId,
+          message: "Continue twice",
+          clientRequestId: "continue381-2",
+        });
+        expect(send2.isError, json(send2.content)).not.toBe(true);
+        yield* Deferred.await(a.ackResponseLost);
+        yield* a.stopConnections;
+        const third = yield* terminal("third381", "failed");
+        const reconnected = yield* a.reconnect();
+        const resumed = Context.get(reconnected.services, RemoteDelegation.RemoteDelegation);
+        yield* resumed.start();
+        yield* observed("third381");
+        const status = yield* nativeCall(a, parentId, "task_status", { taskId });
+        expect(status.structuredContent).toMatchObject({
+          childThreadId: null,
+          summary: "original381",
+          latestTerminalRunId: third,
+          latestTerminalSummary: "third381",
+          latestTerminalStatus: "failed",
+          remoteObservation: { originalRunId: original, availability: "current" },
+        });
+        yield* b.threads.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("monitor-only381"),
+          threadId: childId,
+          messageId: MessageId.make("monitor-message381"),
+          text: "Monitor bookkeeping",
+          attachments: [],
+          notification: {
+            source: { kind: "monitor" },
+            outcome: "updated",
+            summary: "Monitor bookkeeping",
+          },
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "agent",
+          creationSource: "server",
+        });
+        const monitorRun = yield* finishLifecycleRun(b, childId, "monitor381");
+        const monitor = (yield* b.threads.getThreadRecords(childId, ["runs"])).runs.find(
+          (run) => run.id === monitorRun,
+        )!;
+        const monitorTime = yield* DateTime.now;
+        yield* b.sink.write({
+          events: [
+            {
+              id: EventId.make("monitor-checkpoint-rewrite381"),
+              type: "run.updated",
+              threadId: childId,
+              runId: monitorRun,
+              occurredAt: monitorTime,
+              payload: { ...monitor, completedAt: monitorTime },
+            },
+          ],
+        });
+        const throughMonitor = yield* b.threads.getThreadEventSequence(childId);
+        yield* a.orchestrator
+          .streamStoredEventsFrom({
+            threadId: parentId,
+            afterSequence: 0,
+            eventType: "subagent.updated",
+          })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "subagent.updated" &&
+                stored.event.payload.id === taskId &&
+                (stored.event.payload.remoteChild?.cursor ?? 0) >= throughMonitor,
+            ),
+            Stream.runHead,
+          );
+        const afterMonitor = (yield* a.threads.getThreadRecords(parentId, [
+          "subagents",
+        ])).subagents.find((task) => task.id === taskId)!;
+        expect(afterMonitor.remoteChild?.launch).toEqual(negotiatedLaunch);
+        expect(afterMonitor.remoteChild?.latestResult?.runId).toBe(third);
+        expect(afterMonitor.remoteChild?.latestResult?.status).toBe("failed");
+        expect(afterMonitor.remoteChild?.snapshot?.queuedRuns).toBe(0);
+        const view = yield* resumed.view(parentId, taskId, 0);
+        expect(view.environmentId).toBe(b.environmentId);
+        expect(
+          view.messages
+            .filter((message) => message.role === "assistant")
+            .map((message) => message.text),
+        ).toEqual(["original381", "second381", "third381", "monitor381"]);
+        expect(yield* a.orchestrator.getThreadShell(childId)).toBe(null);
+        const control = reconnected.peers.taskLifecycle!;
+        const pair = {
+          parentEnvironmentId: a.environmentId,
+          parentThreadId: parentId,
+          taskId,
+          childEnvironmentId: b.environmentId,
+          childThreadId: childId,
+          childRunId: null,
+        };
+        const generation = afterMonitor.remoteChild!.launch!.linkIdentity;
+        const beforeText = yield* control(b.environmentId, generation, {
+          pair,
+          operation: { type: "snapshot", after: 0, wait: false },
+        });
+        if (beforeText.type !== "snapshot") return yield* Effect.die("Expected lifecycle snapshot");
+        const originalMessage = (yield* b.threads.getThreadRecords(childId, ["messages"]))
+          .messages[0]!;
+        const textTime = yield* DateTime.now;
+        yield* b.sink.write({
+          events: [
+            {
+              id: EventId.make("text-only381"),
+              type: "message.updated",
+              threadId: childId,
+              occurredAt: textTime,
+              payload: {
+                ...originalMessage,
+                id: MessageId.make("text-only381"),
+                runId: null,
+                role: "system",
+                text: "Stream-only update",
+                createdAt: textTime,
+                updatedAt: textTime,
+              },
+            },
+          ],
+        });
+        const afterText = yield* control(b.environmentId, generation, {
+          pair,
+          operation: {
+            type: "observe",
+            after: afterMonitor.remoteChild!.cursor!,
+            afterSnapshot: beforeText.snapshot.sequence,
+            wait: false,
+          },
+        });
+        expect(afterText).toMatchObject({
+          type: "observation",
+          observation: {
+            cursor: afterMonitor.remoteChild!.cursor!,
+            snapshot: { sequence: beforeText.snapshot.sequence },
+          },
+        });
+        if (afterText.type !== "observation") return yield* Effect.die("Expected observation");
+        expect(afterText.observation.result).toBeUndefined();
+        const lateMessage = (yield* b.threads.getThreadRecords(childId, [
+          "messages",
+        ])).messages.find((message) => message.runId === original && message.role === "assistant")!;
+        const lateTime = yield* DateTime.now;
+        yield* b.sink.write({
+          events: [
+            {
+              id: EventId.make("late-original-message381"),
+              type: "message.updated",
+              threadId: childId,
+              runId: original,
+              occurredAt: lateTime,
+              payload: { ...lateMessage, text: "Late changed original text", updatedAt: lateTime },
+            },
+          ],
+        });
+        const originalIdentity = afterMonitor.remoteChild!.originalResult!;
+        const originalPage = yield* control(b.environmentId, generation, {
+          pair,
+          operation: {
+            type: "resultText",
+            runId: originalIdentity.runId,
+            eventId: originalIdentity.eventId,
+            sequence: originalIdentity.sequence,
+            textOffset: 0,
+          },
+        });
+        expect(originalPage).toEqual({
+          type: "resultText",
+          text: "original381",
+          nextTextOffset: null,
+        });
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  30_000,
+);
+
+it.live(
+  "lifecycle381: stop keeps the checked generation across relink and retains actual mode policy",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(descriptorOf("stop381-b", "B", { peerAuthority: 1 }));
+        const a = yield* makeNode(descriptorOf("stop381-a", "A", { peerAuthority: 1 }));
+        yield* linkTo(a.links, b, "full-access");
+        const source = ThreadId.make("stop381-source");
+        const target = ThreadId.make("stop381-existing-target");
+        yield* seedParent(a, source);
+        yield* seedParent(b, target);
+        yield* a.forwarding.readThread(caller(a, source), b.environmentId, {
+          threadId: target,
+          view: "messages",
+        });
+        const grant = (yield* b.authority.grants).find(
+          (grant) => grant.environmentId === a.environmentId,
+        )!;
+        yield* b.authority.setGrant({ ...grant, resourceScope: "environment-resources" });
+        const checked = yield* a.links.get(b.environmentId).pipe(Effect.flatMap(Effect.fromOption));
+        const priorGrants = new Set((yield* b.authority.grants).map((grant) => grant.sessionId));
+        // The local caller checked the old link. Replacement happens before forward resolves it.
+        yield* a.links.unlink(b.environmentId);
+        yield* linkTo(a.links, b, "full-access");
+        const replacement = yield* a.links
+          .get(b.environmentId)
+          .pipe(Effect.flatMap(Effect.fromOption));
+        expect(replacement.launchIdentity).not.toBe(checked.launchIdentity);
+        yield* a.forwarding.readThread(caller(a, source), b.environmentId, {
+          threadId: target,
+          view: "messages",
+        });
+        const nextGrant = (yield* b.authority.grants).find(
+          (grant) => !priorGrants.has(grant.sessionId),
+        )!;
+        yield* b.authority.setGrant({ ...nextGrant, resourceScope: "environment-resources" });
+        const before = yield* b.threads.getThreadRecords(target, ["runs"]);
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const beforeEffects = yield* sql<{
+          effect_id: string;
+        }>`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${target} ORDER BY effect_id`;
+        const denied = yield* a.forwarding
+          .interruptThread(
+            caller(a, source),
+            b.environmentId,
+            { threadId: target, stop: true, clientRequestId: "generation-bound-stop381" },
+            { expectedLinkIdentity: checked.launchIdentity },
+          )
+          .pipe(Effect.result);
+        expect(denied._tag).toBe("Failure");
+        const afterDenied = yield* b.threads.getThreadRecords(target, ["runs"]);
+        expect(afterDenied.runs).toEqual(before.runs);
+        expect(
+          yield* sql<{
+            effect_id: string;
+          }>`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${target} ORDER BY effect_id`,
+        ).toEqual(beforeEffects);
+        // Positive control: the same current grant and actual target can stop lawfully.
+        yield* a.forwarding.interruptThread(
+          caller(a, source),
+          b.environmentId,
+          { threadId: target, stop: true, clientRequestId: "generation-bound-stop381" },
+          { expectedLinkIdentity: replacement.launchIdentity },
+        );
+        expect(
+          (yield* b.threads.getThreadRecords(target, ["runs"])).runs.some(
+            (run) => run.status === "running",
+          ),
+        ).toBe(false);
+        const higher = ThreadId.make("stop381-higher-mode-target");
+        yield* seedParent(b, higher);
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("stop381-lower-source"),
+          threadId: source,
+          runtimeMode: "auto",
+        });
+        const modeDenied = yield* a.forwarding
+          .interruptThread(
+            caller(a, source),
+            b.environmentId,
+            { threadId: higher, stop: true, clientRequestId: "mode-stop381" },
+            { expectedLinkIdentity: replacement.launchIdentity },
+          )
+          .pipe(Effect.result);
+        expect(modeDenied._tag).toBe("Failure");
+        expect(
+          (yield* b.threads.getThreadRecords(higher, ["runs"])).runs.some(
+            (run) => run.status === "running",
+          ),
+        ).toBe(true);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  30_000,
+);
+
+it.live(
+  "lifecycle381: nested and queued work, persisted recovery and destination reader restart retain ordered truth",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(
+          descriptorOf("lifecycle-state-b", "B", { peerAuthority: 1 }),
+          "disk",
+        );
+        const a = yield* makeNode(
+          descriptorOf("lifecycle-state-a", "A", { peerAuthority: 1 }),
+          "disk",
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parentId = ThreadId.make("lifecycle-state-parent");
+        yield* seedParent(a, parentId);
+        const receipt = yield* nativeCall(a, parentId, "delegate_task", {
+          task: "Lifecycle state",
+          target: {
+            environmentId: b.environmentId,
+            projectId: b.project.id,
+            providerInstanceId: instanceId,
+            model: selection.model,
+          },
+          clientRequestId: "state381",
+        });
+        expect(receipt.isError, json(receipt.content)).not.toBe(true);
+        const { taskId } = yield* decodeTaskReceipt(receipt.structuredContent);
+        const childId = yield* attachedChild(a, parentId, taskId);
+        const firstRun = yield* finishLifecycleRun(b, childId, "state-first");
+        yield* a.orchestrator
+          .streamStoredEventsFrom({
+            threadId: parentId,
+            afterSequence: 0,
+            eventType: "subagent.updated",
+          })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "subagent.updated" &&
+                stored.event.payload.id === taskId &&
+                stored.event.payload.remoteChild?.latestResult?.runId === firstRun,
+            ),
+            Stream.runHead,
+          );
+        const original = (yield* a.threads.getThreadRecords(parentId, [
+          "subagents",
+        ])).subagents.find((task) => task.id === taskId)!;
+        yield* nativeCall(a, parentId, "task_status", { taskId });
+        yield* nativeCall(a, parentId, "t3_thread_send", {
+          environmentId: b.environmentId,
+          threadId: childId,
+          message: "Continue with nested work",
+          clientRequestId: "state-followup",
+        });
+        const continuation = yield* activate(b, childId);
+        const nestedReceipt = yield* nativeCall(b, childId, "delegate_task", {
+          task: "Nested work",
+          target: { providerInstanceId: instanceId, model: selection.model },
+          clientRequestId: "state-nested",
+        });
+        expect(nestedReceipt.isError, json(nestedReceipt.content)).not.toBe(true);
+        const { taskId: nestedTask } = yield* decodeTaskReceipt(nestedReceipt.structuredContent);
+        const nested = (yield* b.threads.getThreadRecords(childId, ["subagents"])).subagents.find(
+          (task) => task.id === nestedTask,
+        )!;
+        expect(nested.childThreadId).not.toBe(null);
+        yield* activate(b, nested.childThreadId!);
+        yield* nativeCall(a, parentId, "t3_thread_send", {
+          environmentId: b.environmentId,
+          threadId: childId,
+          message: "Queued continuation",
+          mode: "queue",
+          clientRequestId: "state-queued",
+        });
+        const liveView = yield* a.remote.view(parentId, taskId, 0);
+        expect(liveView.snapshot.pendingChildren).toBeGreaterThan(0);
+        expect(liveView.snapshot.queuedRuns).toBeGreaterThan(0);
+        expect(liveView.snapshot.executionSettled).toBe(false);
+        expect(liveView.children).toContainEqual(
+          expect.objectContaining({
+            taskId: nestedTask,
+            environmentId: b.environmentId,
+            threadId: nested.childThreadId,
+          }),
+        );
+        const nestedView = yield* a.remote.view(parentId, taskId, 0, undefined, {
+          environmentId: b.environmentId,
+          threadId: nested.childThreadId!,
+        });
+        expect(nestedView.threadId).toBe(nested.childThreadId);
+        expect(nestedView.messages.some((message) => message.text === "Nested work")).toBe(true);
+        const unrelated = ThreadId.make("unrelated-local-resource");
+        yield* seedParent(b, unrelated);
+        const refusedView = yield* a.remote
+          .view(parentId, taskId, 0, undefined, {
+            environmentId: b.environmentId,
+            threadId: unrelated,
+          })
+          .pipe(Effect.result);
+        expect(refusedView._tag).toBe("Failure");
+        expect(yield* a.orchestrator.getThreadShell(nested.childThreadId!)).toBe(null);
+        yield* a.stopConnections;
+        const reconnected = yield* a.reconnect();
+        const control = reconnected.peers.taskLifecycle!;
+        const pair = {
+          parentEnvironmentId: a.environmentId,
+          parentThreadId: parentId,
+          taskId,
+          childEnvironmentId: b.environmentId,
+          childThreadId: childId,
+          childRunId: null,
+        };
+        const generation = original.remoteChild!.launch!.linkIdentity;
+        const after = original.remoteChild!.cursor!;
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        yield* RecoveryHistory.writeRecoveryOutcome({
+          sourceRunId: continuation,
+          threadId: childId,
+          status: "pending",
+          reason: "decision",
+        }).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.provideService(RecoverySignals.RecoveryWaitSignals, b.signals),
+        );
+        // External provider completion uses the persisted run selected above, while another run remains queued.
+        const records = yield* b.threads.getThreadRecords(childId, ["runs"]);
+        const run = records.runs.find((run) => run.id === continuation)!;
+        const now = yield* DateTime.now;
+        yield* b.sink.write({
+          events: [
+            {
+              id: EventId.make("state-failure"),
+              type: "run.updated",
+              threadId: childId,
+              runId: continuation,
+              occurredAt: now,
+              payload: { ...run, status: "failed", completedAt: now },
+            },
+          ],
+        });
+        const pending = yield* control(b.environmentId, generation, {
+          pair,
+          operation: { type: "observe", after, wait: false },
+        });
+        expect(pending).toMatchObject({
+          type: "observation",
+          observation: { snapshot: { recoveryWaiting: true, executionSettled: false } },
+        });
+        if (pending.type !== "observation") return yield* Effect.die("Expected observation");
+        expect(pending.observation.result).toBeUndefined();
+        const originalGrant = (yield* b.authority.grants)[0];
+        expect(originalGrant).toBeDefined();
+        const beforeSessions = yield* b.linkedSessions;
+        expect(
+          beforeSessions.some((session) => session.sessionId === originalGrant?.sessionId),
+        ).toBe(true);
+        // Reconstruct the destination reader on a separately opened connection to the same on-disk database.
+        const reopened = yield* b.reopenDatabase;
+        const restoredRuntime = yield* Runtime.layerWithRegistry(
+          { name: "lifecycle-destination-restored" },
+          Adapters.layerFromAdapters([adapter]),
+          { databaseLayer: Layer.succeedContext(reopened), runEffectWorker: false },
+        ).pipe(Layer.fresh, Layer.build);
+        const reader = yield* PeerTaskLifecycle.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.succeedContext(b.services),
+              Layer.succeedContext(restoredRuntime),
+              Layer.succeedContext(reopened),
+              Layer.succeed(RecoveryWaitState, {
+                ...b.lifecycleRecovery,
+                read: (_threadId, runId) =>
+                  RecoveryHistory.readRecoveryState(runId).pipe(
+                    Effect.provide(Layer.succeedContext(reopened)),
+                  ),
+              }),
+            ),
+          ),
+          Layer.fresh,
+          Layer.build,
+        );
+        const session = (yield* b.linkedSessions).find(
+          (session) => session.sessionId === originalGrant?.sessionId,
+        );
+        if (session === undefined)
+          return yield* Effect.die(
+            "Original authenticated peer session disappeared after reader reconstruction",
+          );
+        expect(yield* b.authority.grants).toContainEqual(originalGrant);
+        const persistedSession = yield* Context.get(reopened, SqlClient.SqlClient)<{
+          expires_at: string;
+          revoked_at: string | null;
+        }>`SELECT expires_at,revoked_at FROM auth_sessions WHERE session_id=${session.sessionId}`;
+        expect(persistedSession[0]).toEqual({
+          expires_at: "9999-12-31T23:59:59.999Z",
+          revoked_at: null,
+        });
+        const peerScope = {
+          ...caller(b, childId),
+          thread: undefined,
+          client: {
+            sessionId: session.sessionId,
+            label: "A",
+            access: "full-access" as const,
+            linked: true,
+          },
+        };
+        const restored = Context.get(reader, PeerTaskLifecycle.PeerTaskLifecycle);
+        const request = {
+          environmentId: a.environmentId,
+          generation,
+          pair,
+          operation: { type: "observe" as const, after, wait: false },
+        };
+        const replayPending = yield* restored.execute(peerScope, request);
+        expect(replayPending).toMatchObject({
+          type: "observation",
+          observation: { snapshot: { recoveryWaiting: true } },
+        });
+        // A decision-only commit wakes readers without requiring another run event.
+        yield* RecoveryHistory.writeRecoveryOutcome({
+          sourceRunId: continuation,
+          threadId: childId,
+          status: "decided",
+          outcome: "not_retryable",
+          reason: "non_retryable",
+        }).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.provideService(RecoverySignals.RecoveryWaitSignals, b.signals),
+        );
+        const recovered = yield* restored.execute(peerScope, request);
+        expect(recovered).toMatchObject({
+          type: "observation",
+          observation: {
+            result: { runId: continuation, status: "failed" },
+            snapshot: { recoveryWaiting: false },
+          },
+        });
+        const replay = yield* restored.execute(peerScope, request);
+        if (replay.type !== "observation") return yield* Effect.die("Expected replay");
+        if (recovered.type !== "observation") return yield* Effect.die("Expected result");
+        expect(replay.observation.result).toEqual(recovered.observation.result);
+        expect(replay.observation.cursor).toBe(recovered.observation.cursor);
+        if (recovered.type !== "observation") return yield* Effect.die("Expected observation");
+        yield* restored.execute(peerScope, {
+          ...request,
+          operation: { type: "acknowledge", through: recovered.observation.cursor },
+        });
+        const ack = yield* sql<{
+          cursor: number;
+        }>`SELECT cursor FROM peer_task_observation_ack WHERE task_id=${taskId}`;
+        expect(ack[0]?.cursor).toBe(recovered.observation.cursor);
+        const forged = yield* control(b.environmentId, generation, {
+          pair: { ...pair, childThreadId: nested.childThreadId! },
+          operation: { type: "view", after: 0 },
+        }).pipe(Effect.result);
+        expect(forged._tag).toBe("Failure");
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  30_000,
+);
+
+it.live(
+  "lifecycle381: parent Stop after the original reaches later nested work and a late result cannot wake it",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(descriptorOf("lifecycle-stop-b", "B", { peerAuthority: 1 }));
+        const a = yield* makeNode(descriptorOf("lifecycle-stop-a", "A", { peerAuthority: 1 }));
+        yield* linkTo(a.links, b, "full-access");
+        const parentId = ThreadId.make("lifecycle-stop-parent");
+        yield* seedParent(a, parentId);
+        const receipt = yield* nativeCall(a, parentId, "delegate_task", {
+          task: "Original and later nested work",
+          target: {
+            environmentId: b.environmentId,
+            projectId: b.project.id,
+            providerInstanceId: instanceId,
+            model: selection.model,
+          },
+          clientRequestId: "stop-after-original381",
+        });
+        expect(receipt.isError, json(receipt.content)).not.toBe(true);
+        const { taskId } = yield* decodeTaskReceipt(receipt.structuredContent);
+        const childId = yield* attachedChild(a, parentId, taskId);
+        const original = yield* finishLifecycleRun(b, childId, "stop-original-result");
+        const observed = (
+          predicate: (task: import("@t3tools/contracts").OrchestrationV2Subagent) => boolean,
+        ) =>
+          a.orchestrator
+            .streamStoredEventsFrom({
+              threadId: parentId,
+              afterSequence: 0,
+              eventType: "subagent.updated",
+            })
+            .pipe(
+              Stream.filter(
+                (stored) =>
+                  stored.event.type === "subagent.updated" &&
+                  stored.event.payload.id === taskId &&
+                  predicate(stored.event.payload),
+              ),
+              Stream.runHead,
+              Effect.flatMap(Effect.fromOption),
+            );
+        yield* observed((task) => task.remoteChild?.latestResult?.runId === original);
+        yield* nativeCall(a, parentId, "task_status", { taskId });
+        const follow = yield* nativeCall(a, parentId, "t3_thread_send", {
+          environmentId: b.environmentId,
+          threadId: childId,
+          message: "Continue this job",
+          clientRequestId: "stop-followup381",
+        });
+        expect(follow.isError, json(follow.content)).not.toBe(true);
+        const laterRun = yield* activate(b, childId);
+        const nestedReceipt = yield* nativeCall(b, childId, "delegate_task", {
+          task: "Later nested work",
+          target: { providerInstanceId: instanceId, model: selection.model },
+          clientRequestId: "stop-nested381",
+        });
+        expect(nestedReceipt.isError, json(nestedReceipt.content)).not.toBe(true);
+        const { taskId: nestedId } = yield* decodeTaskReceipt(nestedReceipt.structuredContent);
+        const nested = (yield* b.threads.getThreadRecords(childId, ["subagents"])).subagents.find(
+          (task) => task.id === nestedId,
+        )!;
+        const nestedRun = yield* activate(b, nested.childThreadId!);
+        yield* a.threads.dispatch({
+          type: "thread.stop",
+          threadId: parentId,
+          commandId: CommandId.make("actual-parent-stop381"),
+        });
+        yield* a.threads.stopDelegatedTasks({
+          threadId: parentId,
+          commandId: CommandId.make("actual-parent-stop381"),
+        });
+        yield* observed((task) => task.remoteChild?.stop?.state === "acknowledged").pipe(
+          Effect.raceFirst(
+            observed((task) => task.remoteChild?.stop?.state === "unconfirmed").pipe(
+              Effect.flatMap(() =>
+                Effect.die(
+                  new Error(
+                    "The real parent Stop was denied after the parent run ended; the later destination run remains active.",
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+        yield* drainStops(b);
+        expect(
+          (yield* b.threads.getThreadRecords(childId, ["runs"])).runs.find(
+            (run) => run.id === laterRun,
+          )?.status,
+        ).toBe("interrupted");
+        expect(
+          (yield* b.threads.getThreadRecords(nested.childThreadId!, ["runs"])).runs.find(
+            (run) => run.id === nestedRun,
+          )?.status,
+        ).toBe("interrupted");
+        yield* observed((task) => task.remoteChild?.latestResult?.runId === laterRun);
+        const stopped = yield* a.threads.getThreadRecords(parentId, ["subagents", "messages"]);
+        expect(stopped.subagents.find((task) => task.id === taskId)).toMatchObject({
+          result: "stop-original-result",
+          remoteChild: { runId: original, stop: { state: "acknowledged" } },
+          completionDelivery: { state: "disposed" },
+        });
+        const notices = stopped.messages
+          .filter((message) => message.notification?.source.kind === "delegated_task")
+          .map((message) => message.id);
+        const run = (yield* b.threads.getThreadRecords(childId, ["runs"])).runs.find(
+          (run) => run.id === laterRun,
+        )!;
+        const now = yield* DateTime.now;
+        const eventId = EventId.make("late-real-terminal381");
+        yield* b.sink.write({
+          events: [
+            {
+              id: eventId,
+              type: "run.updated",
+              threadId: childId,
+              runId: laterRun,
+              occurredAt: now,
+              payload: { ...run, status: "completed", completedAt: now },
+            },
+          ],
+        });
+        yield* observed((task) => task.remoteChild?.latestResult?.eventId === eventId);
+        const late = yield* a.threads.getThreadRecords(parentId, ["subagents", "messages"]);
+        expect(late.subagents.find((task) => task.id === taskId)).toMatchObject({
+          result: "stop-original-result",
+          remoteChild: {
+            runId: original,
+            latestResult: { runId: laterRun, status: "completed", eventId },
+          },
+          completionDelivery: { state: "disposed" },
+        });
+        expect(
+          late.messages
+            .filter((message) => message.notification?.source.kind === "delegated_task")
+            .map((message) => message.id),
+        ).toEqual(notices);
+        expect(yield* a.orchestrator.getThreadShell(childId)).toBe(null);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  30_000,
+);
+
+it.live(
+  "lifecycle381: preserves a whole long original result across bounded result and client message pages",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(descriptorOf("lifecycle-long-b", "B", { peerAuthority: 1 }));
+        const a = yield* makeNode(descriptorOf("lifecycle-long-a", "A", { peerAuthority: 1 }));
+        yield* linkTo(a.links, b, "full-access");
+        const parentId = ThreadId.make("lifecycle-long-parent");
+        yield* seedParent(a, parentId);
+        const receipt = yield* nativeCall(a, parentId, "delegate_task", {
+          task: "Long result",
+          target: {
+            environmentId: b.environmentId,
+            projectId: b.project.id,
+            providerInstanceId: instanceId,
+            model: selection.model,
+          },
+          clientRequestId: "long381",
+        });
+        expect(receipt.isError, json(receipt.content)).not.toBe(true);
+        const { taskId } = yield* decodeTaskReceipt(receipt.structuredContent);
+        const childId = yield* attachedChild(a, parentId, taskId);
+        const text = "begin381\n" + "x".repeat(120000) + "\nend381";
+        const runId = yield* finishLifecycleRun(b, childId, "long381", "completed", text);
+        yield* a.orchestrator
+          .streamStoredEventsFrom({
+            threadId: parentId,
+            afterSequence: 0,
+            eventType: "subagent.updated",
+          })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "subagent.updated" &&
+                stored.event.payload.id === taskId &&
+                stored.event.payload.remoteChild?.latestResult?.runId === runId,
+            ),
+            Stream.runHead,
+          );
+        const task = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+          (task) => task.id === taskId,
+        )!;
+        expect(task.result === text).toBe(true);
+        expect(task.remoteChild?.latestResult?.text === text).toBe(true);
+        expect(task.remoteChild?.latestResult?.truncated).toBe(false);
+        let after = 0;
+        let offset = 0;
+        let combined = "";
+        for (let page = 0; page < 6; page++) {
+          const view = yield* a.remote.view(parentId, taskId, after, offset);
+          expect(
+            view.messages.reduce((count, message) => count + message.text.length, 0),
+          ).toBeLessThanOrEqual(50000);
+          combined += view.messages
+            .filter((message) => message.role === "assistant")
+            .map((message) => message.text)
+            .join("");
+          if (view.nextCursor === null) break;
+          after = view.nextCursor;
+          offset = view.nextTextOffset ?? 0;
+        }
+        expect(combined === text).toBe(true);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  30_000,
+);
+
+it.live(
+  "lifecycle381: cancellation interrupts a held result continuation without publishing its partial first result",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(descriptorOf("lifecycle-page-stop-b", "B", { peerAuthority: 1 }));
+        const a = yield* makeNode(descriptorOf("lifecycle-page-stop-a", "A", { peerAuthority: 1 }));
+        yield* linkTo(a.links, b, "full-access");
+        const parentId = ThreadId.make("lifecycle-page-stop-parent");
+        yield* seedParent(a, parentId);
+        const receipt = yield* nativeCall(a, parentId, "delegate_task", {
+          task: "Page cancellation",
+          target: {
+            environmentId: b.environmentId,
+            projectId: b.project.id,
+            providerInstanceId: instanceId,
+            model: selection.model,
+          },
+          clientRequestId: "page-stop381",
+        });
+        expect(receipt.isError, json(receipt.content)).not.toBe(true);
+        const { taskId } = yield* decodeTaskReceipt(receipt.structuredContent);
+        const childId = yield* attachedChild(a, parentId, taskId);
+        yield* Ref.set(a.holdResultPage, true);
+        const runId = yield* finishLifecycleRun(
+          b,
+          childId,
+          "page-stop381",
+          "completed",
+          "late381" + "x".repeat(60000),
+        );
+        yield* Deferred.await(a.resultPageStarted);
+        const cancelled = yield* nativeCall(a, parentId, "task_cancel", {
+          taskId,
+          clientRequestId: "cancel-page381",
+        });
+        expect(cancelled.isError, json(cancelled.content)).not.toBe(true);
+        expect(cancelled.structuredContent).toMatchObject({
+          taskId,
+          status: "cancel_requested",
+          stopState: "pending",
+        });
+        const event = yield* a.orchestrator
+          .streamStoredEventsFrom({
+            threadId: parentId,
+            afterSequence: 0,
+            eventType: "subagent.updated",
+          })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "subagent.updated" &&
+                stored.event.payload.id === taskId &&
+                stored.event.payload.remoteChild?.stop?.state === "acknowledged",
+            ),
+            Stream.runHead,
+            Effect.flatMap(Effect.fromOption),
+          );
+        expect(event.event.type === "subagent.updated" && event.event.payload.result).toBe(
+          "Cancelled.",
+        );
+        yield* Ref.set(a.holdResultPage, false);
+        yield* Deferred.succeed(a.releaseResultPage, undefined);
+        yield* a.orchestrator
+          .streamStoredEventsFrom({
+            threadId: parentId,
+            afterSequence: 0,
+            eventType: "subagent.updated",
+          })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "subagent.updated" &&
+                stored.event.payload.id === taskId &&
+                stored.event.payload.remoteChild?.latestResult?.runId === runId,
+            ),
+            Stream.runHead,
+          );
+        const task = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+          (task) => task.id === taskId,
+        )!;
+        expect(task.result).toBe("Cancelled.");
+        expect(task.completionDelivery?.state).toBe("disposed");
+        expect(task.remoteChild?.latestResult?.text.length).toBe(60007);
+        const drainWith = (failStop: boolean) =>
+          EffectWorker.OrchestrationEffectWorkerV2.pipe(
+            Effect.provide(
+              EffectWorker.layerWithOptions({ maxAttempts: 1 }).pipe(
+                Layer.provide(
+                  Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
+                    execute: (effect) =>
+                      failStop && effect.request.type === "delegated-tasks.stop"
+                        ? Effect.fail(
+                            new EffectWorker.OrchestrationEffectExecutionError({
+                              effectId: effect.id,
+                              effectType: effect.request.type,
+                              cause: "Fixture rejects native stop completion",
+                            }),
+                          )
+                        : Effect.void,
+                  }),
+                ),
+                Layer.provide(Layer.succeed(PeerAuthority.PeerAuthority, b.authority)),
+                Layer.provide(Layer.succeedContext(b.runtime)),
+              ),
+            ),
+          );
+        const stoppedObservation = (
+          predicate: (
+            remote: NonNullable<
+              import("@t3tools/contracts").OrchestrationV2Subagent["remoteChild"]
+            >,
+          ) => boolean,
+        ) =>
+          a.orchestrator
+            .streamStoredEventsFrom({
+              threadId: parentId,
+              afterSequence: 0,
+              eventType: "subagent.updated",
+            })
+            .pipe(
+              Stream.filter(
+                (stored) =>
+                  stored.event.type === "subagent.updated" &&
+                  stored.event.payload.id === taskId &&
+                  stored.event.payload.remoteChild !== undefined &&
+                  predicate(stored.event.payload.remoteChild),
+              ),
+              Stream.runHead,
+              Effect.flatMap(Effect.fromOption),
+            );
+        yield* (yield* drainWith(true)).drain();
+        const failed = yield* stoppedObservation(
+          (remote) =>
+            remote.stop?.state === "unconfirmed" &&
+            remote.snapshot?.stopExecution?.state === "failed",
+        );
+        expect(
+          failed.event.type === "subagent.updated" &&
+            failed.event.payload.remoteChild?.stoppedThere,
+        ).not.toBe(true);
+        const failedCommand =
+          failed.event.type === "subagent.updated"
+            ? failed.event.payload.remoteChild?.stop?.destinationCommandId
+            : undefined;
+        expect(failedCommand).toBeDefined();
+        const retried = yield* nativeCall(a, parentId, "task_cancel", {
+          taskId,
+          clientRequestId: "retry-native-stop381",
+        });
+        expect(retried.isError, json(retried.content)).not.toBe(true);
+        yield* stoppedObservation(
+          (remote) =>
+            remote.stop?.state === "acknowledged" &&
+            remote.stop.destinationCommandId !== undefined &&
+            remote.stop.destinationCommandId !== failedCommand,
+        );
+        yield* (yield* drainWith(false)).drain();
+        const confirmed = yield* stoppedObservation((remote) => remote.stop?.state === "confirmed");
+        expect(confirmed.event.type === "subagent.updated" && confirmed.event.payload.result).toBe(
+          "Cancelled.",
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  30_000,
+);
+
+it.live(
+  "lifecycle381: durable stopped-parent control denies forged intent and mode escalation and replays a lost Stop without stopping later work",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(
+          descriptorOf("stop-control-b", "B", { peerAuthority: 1 }),
+          "disk",
+        );
+        const a = yield* makeNode(
+          descriptorOf("stop-control-a", "A", { peerAuthority: 1 }),
+          "disk",
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parentId = ThreadId.make("stop-control-parent");
+        yield* seedParent(a, parentId);
+        const { taskId, childId } = yield* delegate(a, b, parentId, "stop-control-job");
+        yield* activate(b, childId);
+        yield* a.stopConnections;
+        yield* a.threads.dispatch({
+          type: "thread.stop",
+          threadId: parentId,
+          commandId: CommandId.make("stop-control-parent381"),
+        });
+        yield* a.threads.stopDelegatedTasks({
+          threadId: parentId,
+          commandId: CommandId.make("stop-control-parent381"),
+        });
+        yield* a.remote.requestStop(parentId, taskId, "client-stop:review-first381");
+        const task = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+          (t) => t.id === taskId,
+        )!;
+        const remote = task.remoteChild!;
+        const generation = remote.launch!.linkIdentity;
+        const pair = {
+          parentEnvironmentId: a.environmentId,
+          parentThreadId: parentId,
+          taskId,
+          childEnvironmentId: b.environmentId,
+          childThreadId: childId,
+          childRunId: null,
+        };
+        const operation = { type: "stop" as const, requestId: remote.stop!.requestId };
+        const sourceConflict = yield* a.remote
+          .requestStop(parentId, taskId, operation.requestId, "changed semantics")
+          .pipe(Effect.result);
+        expect(sourceConflict._tag).toBe("Failure");
+        expect(
+          (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+            (candidate) => candidate.id === taskId,
+          )?.remoteChild?.stop,
+        ).toEqual(remote.stop);
+        let connected = yield* a.reconnect();
+        const state = () => b.threads.getThreadEventSequence(childId);
+        const before = yield* state();
+        const initialOutbox = yield* Context.get(
+          b.database,
+          SqlClient.SqlClient,
+        )`SELECT effect_id FROM orchestration_v2_effect_outbox ORDER BY effect_id`;
+        const denied = (input: Parameters<NonNullable<typeof connected.peers.taskLifecycle>>[2]) =>
+          connected.peers.taskLifecycle!(b.environmentId, generation, input).pipe(
+            Effect.result,
+            Effect.tap((result) => Effect.sync(() => expect(result._tag).toBe("Failure"))),
+          );
+        yield* denied({ pair, operation: { ...operation, requestId: "never-accepted381" } });
+        yield* denied({ pair: { ...pair, taskId: NodeId.make("other-task381") }, operation });
+        yield* denied({ pair: { ...pair, childThreadId: parentId }, operation });
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          threadId: parentId,
+          commandId: CommandId.make("stop-control-auto"),
+          runtimeMode: "auto",
+        });
+        yield* denied({ pair, operation });
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          threadId: parentId,
+          commandId: CommandId.make("stop-control-full"),
+          runtimeMode: "full-access",
+        });
+        yield* a.threads.dispatch({
+          type: "thread.interaction-mode.set",
+          threadId: parentId,
+          commandId: CommandId.make("stop-control-plan"),
+          interactionMode: "plan",
+        });
+        yield* denied({ pair, operation });
+        yield* a.threads.dispatch({
+          type: "thread.interaction-mode.set",
+          threadId: parentId,
+          commandId: CommandId.make("stop-control-default"),
+          interactionMode: "default",
+        });
+        expect(yield* state()).toBe(before);
+        expect(
+          yield* Context.get(
+            b.database,
+            SqlClient.SqlClient,
+          )`SELECT effect_id FROM orchestration_v2_effect_outbox ORDER BY effect_id`,
+        ).toEqual(initialOutbox);
+        const currentGrant = (yield* b.authority.grants)[0]!;
+        const expiry = (yield* Context.get(b.database, SqlClient.SqlClient)<{
+          expires_at: string;
+        }>`SELECT expires_at FROM auth_sessions WHERE session_id=${currentGrant.sessionId}`)[0]!
+          .expires_at;
+        yield* Context.get(
+          b.database,
+          SqlClient.SqlClient,
+        )`UPDATE auth_sessions SET expires_at='2020-01-01T00:00:00.000Z' WHERE session_id=${currentGrant.sessionId}`;
+        yield* denied({ pair, operation });
+        yield* Context.get(
+          b.database,
+          SqlClient.SqlClient,
+        )`UPDATE auth_sessions SET expires_at=${expiry} WHERE session_id=${currentGrant.sessionId}`;
+        expect(yield* state()).toBe(before);
+        yield* b.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          threadId: childId,
+          commandId: CommandId.make("stop-positive-narrow-target381"),
+          runtimeMode: "auto",
+        });
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          threadId: parentId,
+          commandId: CommandId.make("stop-positive-narrow-source381"),
+          runtimeMode: "auto",
+        });
+        yield* Ref.set(a.dropAckResponses, 1);
+        const lost = yield* connected.peers.taskLifecycle!(b.environmentId, generation, {
+          pair,
+          operation,
+        }).pipe(Effect.result);
+        expect(lost._tag).toBe("Failure");
+        yield* Deferred.await(a.ackResponseLost);
+        const committed = yield* state();
+        expect(committed).toBeGreaterThan(before);
+        yield* connected.stop;
+        connected = yield* a.reconnect();
+        const replay = yield* connected.peers.taskLifecycle!(b.environmentId, generation, {
+          pair,
+          operation,
+        });
+        expect(replay.type).toBe("stop");
+        expect(yield* state()).toBe(committed);
+        yield* denied({ pair, operation: { ...operation, reason: "changed semantics" } });
+        const effects = yield* Context.get(b.database, SqlClient.SqlClient)<{
+          effect_id: string;
+          thread_id: string;
+        }>`SELECT effect_id,thread_id FROM orchestration_v2_effect_outbox WHERE command_id=${replay.type === "stop" ? replay.commandId : "missing"}`;
+        expect(effects.length).toBeGreaterThan(0);
+        for (const effect of effects)
+          yield* b.authority.checkEffect(effect.effect_id, ThreadId.make(effect.thread_id));
+        const stopOwners = yield* Context.get(b.database, SqlClient.SqlClient)<{
+          record_id: string;
+        }>`SELECT owner.record_id FROM peer_effect_authority AS owner JOIN orchestration_v2_effect_outbox AS effect ON effect.effect_id=owner.effect_id WHERE effect.command_id=${replay.type === "stop" ? replay.commandId : "missing"} LIMIT 1`;
+        expect(stopOwners).toHaveLength(1);
+        const illegal = yield* b.threads
+          .dispatch({
+            type: "message.dispatch",
+            threadId: childId,
+            commandId: CommandId.make("stop-cannot-start381"),
+            messageId: MessageId.make("stop-cannot-start381"),
+            text: "Must never start",
+            attachments: [],
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "agent",
+            creationSource: "mcp",
+          })
+          .pipe(
+            Effect.provideService(PeerDispatchAuthority, stopOwners[0]!.record_id),
+            Effect.exit,
+          );
+        expect(illegal._tag).toBe("Failure");
+        expect(yield* state()).toBe(committed);
+        yield* b.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          threadId: childId,
+          commandId: CommandId.make("raise-target-before-native-claim381"),
+          runtimeMode: "full-access",
+        });
+        yield* drainStops(b);
+        const deniedEffects = yield* Context.get(b.database, SqlClient.SqlClient)<{
+          status: string;
+        }>`SELECT status FROM orchestration_v2_effect_outbox WHERE command_id=${replay.type === "stop" ? replay.commandId : "missing"}`;
+        expect(deniedEffects.length).toBeGreaterThan(0);
+        expect(deniedEffects.every((effect) => effect.status === "failed")).toBe(true);
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          threadId: parentId,
+          commandId: CommandId.make("restore-stop-native-claim381"),
+          runtimeMode: "full-access",
+        });
+        // A fresh local input after the accepted Stop is independent later work.
+        yield* b.threads.dispatch({
+          type: "message.dispatch",
+          threadId: childId,
+          commandId: CommandId.make("independent-after-stop381"),
+          messageId: MessageId.make("independent-after-stop381"),
+          text: "Independent later work",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const later = yield* activate(b, childId);
+        const laterSequence = yield* state();
+        const same = yield* connected.peers.taskLifecycle!(b.environmentId, generation, {
+          pair,
+          operation,
+        });
+        expect(same).toEqual(replay);
+        expect(yield* state()).toBe(laterSequence);
+        expect(
+          (yield* b.threads.getThreadRecords(childId, ["runs"])).runs.find((r) => r.id === later)
+            ?.status,
+        ).toBe("running");
+        // An old lost reply cannot replace a newer deliberate obligation.
+        yield* Effect.all(
+          [
+            a.remote.requestStop(parentId, taskId, "client-stop:review-newer381", "later work"),
+            a.remote.requestStop(parentId, taskId, operation.requestId),
+            a.remote.requestStop(parentId, taskId, "client-stop:review-newer381", "later work"),
+          ],
+          { concurrency: "unbounded" },
+        );
+        const newer = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+          (candidate) => candidate.id === taskId,
+        )!.remoteChild!.stop;
+        yield* a.remote.requestStop(parentId, taskId, operation.requestId);
+        expect(
+          (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+            (candidate) => candidate.id === taskId,
+          )!.remoteChild!.stop,
+        ).toEqual(newer);
+        yield* a.threads.dispatch({
+          type: "delegated_task.remote.observe",
+          commandId: CommandId.make("serialized-old-replay381"),
+          parentThreadId: parentId,
+          taskId,
+          stop: { requestId: operation.requestId, state: "pending" },
+        });
+        expect(
+          (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+            (candidate) => candidate.id === taskId,
+          )!.remoteChild!.stop,
+        ).toEqual(newer);
+        const historicalConflict = yield* a.remote
+          .requestStop(parentId, taskId, operation.requestId, "changed historical reason")
+          .pipe(Effect.result);
+        expect(historicalConflict._tag).toBe("Failure");
+        yield* connected.stop;
+        connected = yield* a.reconnect();
+        yield* Context.get(connected.services, RemoteDelegation.RemoteDelegation).start();
+        const stopEvent = yield* a.orchestrator
+          .streamStoredEventsFrom({
+            threadId: parentId,
+            afterSequence: 0,
+            eventType: "subagent.updated",
+          })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "subagent.updated" &&
+                stored.event.payload.id === taskId &&
+                stored.event.payload.remoteChild?.stop?.requestId ===
+                  "client-stop:review-newer381" &&
+                stored.event.payload.remoteChild.stop.state === "acknowledged",
+            ),
+            Stream.runHead,
+            Effect.flatMap(Effect.fromOption),
+          );
+        expect(
+          stopEvent.event.type === "subagent.updated" &&
+            stopEvent.event.payload.remoteChild?.stop?.destinationCommandId,
+        ).not.toBe(replay.type === "stop" ? replay.commandId : undefined);
+        yield* drainStops(b);
+        expect(
+          (yield* b.threads.getThreadRecords(childId, ["runs"])).runs.find(
+            (run) => run.id === later,
+          )?.status,
+        ).toBe("interrupted");
+        yield* a.orchestrator
+          .streamStoredEventsFrom({
+            threadId: parentId,
+            afterSequence: 0,
+            eventType: "subagent.updated",
+          })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "subagent.updated" &&
+                stored.event.payload.id === taskId &&
+                stored.event.payload.remoteChild?.stop?.requestId ===
+                  "client-stop:review-newer381" &&
+                stored.event.payload.remoteChild.stop.state === "confirmed",
+            ),
+            Stream.runHead,
+            Effect.flatMap(Effect.fromOption),
+          );
+        const pendingRows = yield* Context.get(a.database, SqlClient.SqlClient)<{
+          count: number;
+        }>`SELECT COUNT(*) AS count FROM orchestration_events WHERE stream_id=${parentId} AND event_type='subagent.updated' AND json_extract(payload_json,'$.id')=${taskId} AND json_extract(payload_json,'$.remoteChild.stop.requestId')='client-stop:review-newer381' AND json_extract(payload_json,'$.remoteChild.stop.state')='pending'`;
+        expect(pendingRows[0]?.count).toBe(1);
+        yield* connected.stop;
+        yield* a.threads.dispatch({
+          type: "delegated_task.remote.observe",
+          commandId: CommandId.make("new-stop-obligation381"),
+          parentThreadId: parentId,
+          taskId,
+          stop: { requestId: "new-deliberate-stop381", state: "pending" },
+        });
+        const afterNewStopSequence = yield* state();
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.auth.revokeSession(grant.sessionId);
+        yield* denied({ pair, operation: { type: "stop", requestId: "new-deliberate-stop381" } });
+        expect(yield* state()).toBe(afterNewStopSequence);
+        yield* linkTo(a.links, b, "full-access");
+        yield* denied({ pair, operation: { type: "stop", requestId: "new-deliberate-stop381" } });
+        expect(yield* state()).toBe(afterNewStopSequence);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  30_000,
+);
+
+it.live(
+  "lifecycle381: native Stop recovery carries only each hop's accepted obligation from stopped A through B to C",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const c = yield* makeNode(descriptorOf("stop-chain-c", "C", { peerAuthority: 1 }), "disk");
+        const b = yield* makeNode(descriptorOf("stop-chain-b", "B", { peerAuthority: 1 }), "disk");
+        const a = yield* makeNode(descriptorOf("stop-chain-a", "A", { peerAuthority: 1 }), "disk");
+        yield* linkTo(a.links, b, "full-access");
+        yield* linkTo(b.links, c, "full-access");
+        const parentId = ThreadId.make("stop-chain-parent");
+        yield* seedParent(a, parentId);
+        yield* a.forwarding.call(
+          caller(a, parentId),
+          ProjectToolkit.tools.t3_project_list,
+          b.environmentId,
+          {},
+        );
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, onward: true });
+        const first = yield* delegate(a, b, parentId, "stop-chain-a-b");
+        const bRun = yield* activate(b, first.childId);
+        const second = yield* delegate(b, c, first.childId, "stop-chain-b-c");
+        const cRun = yield* activate(c, second.childId);
+        const observed = (
+          node: Node,
+          parent: ThreadId,
+          taskId: NodeId,
+          state: string,
+          requestId?: string,
+        ) =>
+          node.orchestrator
+            .streamStoredEventsFrom({
+              threadId: parent,
+              afterSequence: 0,
+              eventType: "subagent.updated",
+            })
+            .pipe(
+              Stream.filter(
+                (stored) =>
+                  stored.event.type === "subagent.updated" &&
+                  stored.event.payload.id === taskId &&
+                  stored.event.payload.remoteChild?.stop?.state === state &&
+                  (requestId === undefined ||
+                    stored.event.payload.remoteChild.stop.requestId === requestId),
+              ),
+              Stream.runHead,
+              Effect.flatMap(Effect.fromOption),
+            );
+        // A native caller on a raised B shell still retains A's live ceiling.
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          threadId: parentId,
+          commandId: CommandId.make("stop-chain-narrow-origin"),
+          runtimeMode: "auto",
+        });
+        const cBeforeNative = yield* c.threads.getThreadEventSequence(second.childId);
+        const nativeCancel = yield* nativeCall(b, first.childId, "task_cancel", {
+          taskId: second.taskId,
+          clientRequestId: "stop-chain-native-ceiling",
+        });
+        expect(nativeCancel.isError, json(nativeCancel.content)).not.toBe(true);
+        yield* observed(b, first.childId, second.taskId, "unconfirmed");
+        expect(yield* c.threads.getThreadEventSequence(second.childId)).toBe(cBeforeNative);
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          threadId: parentId,
+          commandId: CommandId.make("stop-chain-restore-origin"),
+          runtimeMode: "full-access",
+        });
+        yield* b.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          threadId: first.childId,
+          commandId: CommandId.make("stop-chain-lower-b"),
+          runtimeMode: "auto",
+        });
+        yield* a.threads.dispatch({
+          type: "thread.stop",
+          threadId: parentId,
+          commandId: CommandId.make("stop-chain-a-first"),
+        });
+        yield* a.threads.stopDelegatedTasks({
+          threadId: parentId,
+          commandId: CommandId.make("stop-chain-a-first"),
+        });
+        yield* observed(a, parentId, first.taskId, "acknowledged");
+        expect((yield* a.threads.getThreadShell(parentId))?.activeRunId).toBeNull();
+        expect(
+          (yield* b.threads.getThreadRecords(first.childId, ["runs"])).runs.find(
+            (run) => run.id === bRun,
+          )?.status,
+        ).toBe("interrupted");
+        // Before the native descendant effect executes, C is still running and A cannot confirm.
+        expect(
+          (yield* c.threads.getThreadRecords(second.childId, ["runs"])).runs.find(
+            (run) => run.id === cRun,
+          )?.status,
+        ).toBe("running");
+        yield* drainStops(b);
+        const currentStop = (yield* b.threads.getThreadRecords(first.childId, [
+          "subagents",
+        ])).subagents.find((task) => task.id === second.taskId)!.remoteChild!.stop!;
+        yield* observed(b, first.childId, second.taskId, "unconfirmed", currentStop.requestId);
+        const aTask = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+          (task) => task.id === first.taskId,
+        )!;
+        expect(aTask.remoteChild?.stop?.state).not.toBe("confirmed");
+        const cBefore = yield* c.threads.getThreadEventSequence(second.childId);
+        const cEffects = yield* Context.get(
+          c.database,
+          SqlClient.SqlClient,
+        )`SELECT effect_id FROM orchestration_v2_effect_outbox ORDER BY effect_id`;
+        expect(
+          (yield* c.threads.getThreadRecords(second.childId, ["runs"])).runs.find(
+            (run) => run.id === cRun,
+          )?.status,
+        ).toBe("running");
+        const obligation = (yield* b.threads.getThreadRecords(first.childId, [
+          "subagents",
+        ])).subagents.find((task) => task.id === second.taskId)!.remoteChild!.stop!;
+        const inherited = yield* Context.get(b.database, SqlClient.SqlClient)<{
+          record_id: string;
+        }>`SELECT record_id FROM peer_task_stop_authority WHERE task_id=${second.taskId} AND request_id=${obligation.requestId}`;
+        expect(inherited).toHaveLength(1);
+        // Restart the observer after the persisted denied intent, then restore its current modes.
+        yield* b.stopConnections;
+        yield* b.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          threadId: first.childId,
+          commandId: CommandId.make("stop-chain-restore-b"),
+          runtimeMode: "full-access",
+        });
+        const resumed = yield* b.reconnect();
+        yield* Context.get(resumed.services, RemoteDelegation.RemoteDelegation).start();
+        yield* observed(b, first.childId, second.taskId, "acknowledged", obligation.requestId);
+        expect(
+          (yield* c.threads.getThreadRecords(second.childId, ["runs"])).runs.find(
+            (run) => run.id === cRun,
+          )?.status,
+        ).toBe("interrupted");
+        expect(yield* c.threads.getThreadEventSequence(second.childId)).toBeGreaterThan(cBefore);
+        expect(
+          yield* Context.get(
+            c.database,
+            SqlClient.SqlClient,
+          )`SELECT effect_id FROM orchestration_v2_effect_outbox ORDER BY effect_id`,
+        ).not.toEqual(cEffects);
+        yield* drainStops(c);
+        yield* observed(b, first.childId, second.taskId, "confirmed", obligation.requestId);
+        yield* observed(a, parentId, first.taskId, "confirmed");
+        const bTask = (yield* b.threads.getThreadRecords(first.childId, [
+          "subagents",
+        ])).subagents.find((task) => task.id === second.taskId)!;
+        const finalA = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+          (task) => task.id === first.taskId,
+        )!;
+        expect(bTask.remoteChild?.stop?.requestId).toBe(obligation.requestId);
+        expect(bTask.remoteChild?.stop?.destinationCommandId).toBeDefined();
+        expect(finalA.remoteChild?.stop?.destinationCommandId).toBeDefined();
+        expect(bTask.remoteChild?.stop?.destinationCommandId).not.toBe(
+          finalA.remoteChild?.stop?.destinationCommandId,
+        );
+        const nativeEvidence = (node: Node, commandId: CommandId) =>
+          Context.get(node.database, SqlClient.SqlClient)<{
+            effect_id: string;
+            effect_type: string;
+            status: string;
+          }>`SELECT effect_id,effect_type,status FROM orchestration_v2_effect_outbox WHERE command_id=${commandId} ORDER BY effect_id`;
+        yield* Effect.logInfo("381 generated-fixture Stop proof", {
+          sourceParentThreadId: parentId,
+          bTaskId: first.taskId,
+          bThreadId: first.childId,
+          bRunId: bRun,
+          bSourceRequestId: finalA.remoteChild!.stop!.requestId,
+          bCommandId: finalA.remoteChild!.stop!.destinationCommandId,
+          cTaskId: second.taskId,
+          cThreadId: second.childId,
+          cRunId: cRun,
+          cSourceRequestId: obligation.requestId,
+          cCommandId: bTask.remoteChild!.stop!.destinationCommandId,
+          bEffects: yield* nativeEvidence(b, finalA.remoteChild!.stop!.destinationCommandId!),
+          cEffects: yield* nativeEvidence(c, bTask.remoteChild!.stop!.destinationCommandId!),
+        });
+
+        expect((yield* a.threads.getThreadShell(parentId))?.activeRunId).toBeNull();
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  30_000,
+);
+
+it.live(
+  "lifecycle381: same public cancellation replays after an in-flight launch attaches",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(
+          descriptorOf("review-attach-b", "B", { peerAuthority: 1 }),
+          "disk",
+        );
+        const a = yield* makeNode(
+          descriptorOf("review-attach-a", "A", { peerAuthority: 1 }),
+          "disk",
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parentId = ThreadId.make("review-attach-parent");
+        yield* seedParent(a, parentId);
+        yield* Ref.set(a.holdLaunchReply, true);
+        yield* nativeCall(a, parentId, "delegate_task", {
+          task: "Cancel an accepted launch with a delayed reply",
+          target: {
+            environmentId: b.environmentId,
+            projectId: b.project.id,
+            providerInstanceId: instanceId,
+            model: selection.model,
+          },
+          clientRequestId: "review-attach-launch",
+        }).pipe(Effect.forkScoped);
+        yield* Deferred.await(a.launchReplyHeld);
+        const before = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents[0]!;
+        expect(before.remoteChild?.threadId).toBeUndefined();
+        const stop = { taskId: before.id, clientRequestId: "review-attach-stop" };
+        const stopCredential = yield* a.registry.issue({
+          threadId: parentId,
+          providerInstanceId: instanceId,
+          capabilities: new Set(["orchestration"]),
+        });
+        const accepted = yield* nativeCall(
+          a,
+          parentId,
+          "task_cancel",
+          stop,
+          new Set(["orchestration"]),
+          stopCredential,
+        );
+        expect(accepted.isError, json(accepted.content)).not.toBe(true);
+        const sameBeforeAttach = yield* nativeCall(
+          a,
+          parentId,
+          "task_cancel",
+          stop,
+          new Set(["orchestration"]),
+          stopCredential,
+        );
+        expect(sameBeforeAttach.isError, json(sameBeforeAttach.content)).not.toBe(true);
+        const intent = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents[0]!
+          .remoteChild!.stop!;
+        yield* Ref.set(a.holdLaunchReply, false);
+        yield* Deferred.succeed(a.releaseLaunchReply, undefined);
+        const childId = yield* attachedChild(a, parentId, before.id);
+        const after = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents[0]!;
+        expect(after.remoteChild?.stop?.requestId).toBe(intent.requestId);
+        expect(after.remoteChild?.threadId).toBe(childId);
+        const history = yield* Context.get(
+          a.database,
+          SqlClient.SqlClient,
+        )`SELECT sequence,json_extract(payload_json,'$.remoteChild.threadId') AS target,json_extract(payload_json,'$.remoteChild.stop.requestId') AS request_id FROM orchestration_events WHERE stream_id=${parentId} AND event_type='subagent.updated' AND json_extract(payload_json,'$.remoteChild.stop.requestId')=${intent.requestId} ORDER BY sequence`;
+        expect(history.some((row) => row.target === null)).toBe(true);
+        expect(history.some((row) => row.target === childId)).toBe(true);
+        const replay = yield* nativeCall(
+          a,
+          parentId,
+          "task_cancel",
+          stop,
+          new Set(["orchestration"]),
+          stopCredential,
+        );
+
+        expect(replay.isError, json(replay.content)).not.toBe(true);
+        yield* a.stopConnections;
+        const restored = yield* a.reconnect();
+        const resumed = Context.get(restored.services, RemoteDelegation.RemoteDelegation);
+        const current = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+          (task) => task.id === before.id,
+        )!;
+        const destinationBefore = yield* b.threads.getThreadEventSequence(childId);
+        // A projection target alone cannot mint the original accepted attachment.
+        for (const changed of [
+          { ...current.remoteChild!, threadId: ThreadId.make("forged-other-child") },
+          {
+            ...current.remoteChild!,
+            environmentId: EnvironmentId.make("forged-other-environment"),
+          },
+          {
+            ...current.remoteChild!,
+            launch: { ...current.remoteChild!.launch!, linkIdentity: "replacement-generation" },
+          },
+          {
+            ...current.remoteChild!,
+            launch: { ...current.remoteChild!.launch!, clientRequestId: "replacement-launch" },
+          },
+        ]) {
+          const event = yield* a.orchestrator
+            .streamStoredEventsFrom({
+              threadId: parentId,
+              afterSequence: 0,
+              eventType: "subagent.updated",
+            })
+            .pipe(Stream.runHead, Effect.flatMap(Effect.fromOption));
+          if (event.event.type !== "subagent.updated")
+            return yield* Effect.die("Missing persisted task");
+          yield* a.sink.write({
+            events: [
+              {
+                ...event.event,
+                id: EventId.make(
+                  `forged-attachment:${changed.threadId}:${changed.environmentId}:${changed.launch!.linkIdentity}:${changed.launch!.clientRequestId}`,
+                ),
+                payload: { ...current, remoteChild: changed },
+              },
+            ],
+          });
+          expect(
+            (yield* resumed.requestStop(parentId, before.id, intent.requestId).pipe(Effect.result))
+              ._tag,
+          ).toBe("Failure");
+        }
+        const now = yield* DateTime.now;
+        yield* a.sink.write({
+          events: [
+            {
+              id: EventId.make("restore-original-attachment"),
+              type: "subagent.updated",
+              threadId: parentId,
+              occurredAt: now,
+              payload: current,
+            },
+          ],
+        });
+        expect(yield* b.threads.getThreadEventSequence(childId)).toBe(destinationBefore);
+        const afterRestart = yield* nativeCall(
+          a,
+          parentId,
+          "task_cancel",
+          stop,
+          new Set(["orchestration"]),
+          stopCredential,
+        );
+        expect(afterRestart.isError, json(afterRestart.content)).not.toBe(true);
+        yield* resumed.requestStop(
+          parentId,
+          before.id,
+          "client-stop:attachment-newer",
+          "later intent",
+        );
+        const oldRetry = yield* nativeCall(
+          a,
+          parentId,
+          "task_cancel",
+          stop,
+          new Set(["orchestration"]),
+          stopCredential,
+        );
+        expect(oldRetry.isError, json(oldRetry.content)).not.toBe(true);
+        expect(
+          (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+            (task) => task.id === before.id,
+          )?.remoteChild?.stop?.requestId,
+        ).toBe("client-stop:attachment-newer");
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  30_000,
+);
+
+it.live(
+  "lifecycle381: production kernel exports the authenticated lifecycle transport and registered delegation",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(
+          descriptorOf("native-route-b", "B", { peerAuthority: 1 }),
+          "disk",
+          true,
+        );
+        const a = yield* makeNode(
+          descriptorOf("native-route-a", "A", { peerAuthority: 1 }),
+          "disk",
+          true,
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const session = (yield* b.linkedSessions)[0];
+        expect(session).toBeDefined();
+        // A lifecycle-capability probe is an authenticated peer operation, not a descriptor assertion.
+        const peers = Context.get(a.services, PeerMcpClient.PeerMcpClient);
+        yield* peers.requireTaskLifecycle!(b.environmentId);
+        const parentId = ThreadId.make("native-route-parent");
+        yield* seedParent(a, parentId);
+        const launched = yield* nativeCall(a, parentId, "delegate_task", {
+          task: "Return native route evidence",
+          mode: "async",
+          clientRequestId: "native-route-job",
+          target: {
+            environmentId: b.environmentId,
+            projectId: b.project.id,
+            providerInstanceId: instanceId,
+            model: "gpt-5.4",
+          },
+        });
+        expect(launched.isError, json(launched.content)).not.toBe(true);
+        const { taskId } = yield* decodeTaskReceipt(launched.structuredContent);
+        const childId = yield* attachedChild(a, parentId, taskId);
+        const view = yield* a.remote.view(parentId, taskId, 0);
+        expect(view.threadId).toBe(childId);
+        expect(view.environmentId).toBe(b.environmentId);
+        expect(
+          (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+            (task) => task.id === taskId,
+          )?.remoteChild?.launch?.lifecycleVersion,
+        ).toBe(1);
+        const http = yield* HttpClient.HttpClient;
+        const unauthenticated = yield* http.execute(
+          HttpClientRequest.get(`${b.url}/mcp/peer-control/tasks`),
+        );
+        expect(unauthenticated.status).toBe(401);
+        const runId = yield* activate(b, childId);
+        const stop = yield* nativeCall(a, parentId, "task_cancel", {
+          taskId,
+          clientRequestId: "native-route-stop",
+        });
+        expect(stop.isError, json(stop.content)).not.toBe(true);
+        const stoppedObservation = (state: "acknowledged" | "confirmed") =>
+          a.orchestrator
+            .streamStoredEventsFrom({
+              threadId: parentId,
+              afterSequence: 0,
+              eventType: "subagent.updated",
+            })
+            .pipe(
+              Stream.filter(
+                (stored) =>
+                  stored.event.type === "subagent.updated" &&
+                  stored.event.payload.id === taskId &&
+                  stored.event.payload.remoteChild?.stop?.state === state,
+              ),
+              Stream.runHead,
+              Effect.flatMap(Effect.fromOption),
+            );
+        const accepted = yield* stoppedObservation("acknowledged");
+        if (accepted.event.type !== "subagent.updated")
+          return yield* Effect.die("Expected Stop projection");
+        const commandId = accepted.event.payload.remoteChild!.stop!.destinationCommandId!;
+        const pair = {
+          parentEnvironmentId: a.environmentId,
+          parentThreadId: parentId,
+          taskId,
+          childEnvironmentId: b.environmentId,
+          childThreadId: childId,
+          childRunId: null,
+        };
+        const generation = accepted.event.payload.remoteChild!.launch!.linkIdentity;
+        const observe = () =>
+          peers.taskLifecycle!(b.environmentId, generation, {
+            pair,
+            operation: { type: "snapshot", after: 0, wait: false, stopCommandId: commandId },
+          });
+        expect(yield* observe()).toMatchObject({
+          type: "snapshot",
+          snapshot: { stopExecution: { state: "pending" } },
+        });
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        expect(
+          yield* sql`SELECT command_id FROM peer_task_stop_receipts WHERE command_id=${commandId}`,
+        ).toHaveLength(1);
+        yield* drainStops(b);
+        expect(yield* observe()).toMatchObject({
+          type: "snapshot",
+          snapshot: { stopExecution: { state: "settled" } },
+        });
+        yield* stoppedObservation("confirmed");
+        expect(
+          (yield* b.threads.getThreadRecords(childId, ["runs"])).runs.find(
+            (run) => run.id === runId,
+          )?.status,
+        ).toBe("interrupted");
+        const effects = yield* sql<{
+          effect_id: string;
+          status: string;
+        }>`SELECT effect_id,status FROM orchestration_v2_effect_outbox WHERE command_id=${commandId} AND effect_type='delegated-tasks.stop'`;
+        expect(effects).toHaveLength(1);
+        expect(effects[0]?.status).toBe("succeeded");
+        yield* Effect.logInfo("Production lifecycle native receipt and shared outbox proof", {
+          commandId,
+          effects,
+        });
+      }),
+    ).pipe(Effect.provide(Layer.merge(FetchHttpClient.layer, NodeServices.layer))),
+  30_000,
 );

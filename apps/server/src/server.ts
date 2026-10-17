@@ -1,3 +1,4 @@
+import * as PeerTaskLifecycle from "./peer/PeerTaskLifecycle.ts";
 import * as PeerLinkEvents from "./peer/PeerLinkEvents.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ForkProviderMaintenance from "./provider/forkProviderMaintenance.ts";
@@ -736,8 +737,6 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.provide(
     PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
   ),
-  // delegate_task to a linked environment, from /mcp and the follower above.
-  Layer.provide(RemoteDelegation.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
   // Both transports consume the same service instance, so caches single-flight across clients
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(layerPullRequestService),
@@ -745,13 +744,6 @@ const layerMakeRoutes = Layer.mergeAll(
   // The stream route and the WebSocket RPCs share one browser.
   Layer.provide(ServerBrowser.layer.pipe(Layer.provide(DesktopBrowserChannel.layer))),
   Layer.provide(PreviewBrowser.layer),
-  // Links to other environments, shared by Settings (WebSocket) and agents (/mcp).
-  Layer.provide(
-    PeerForwarding.layer.pipe(
-      Layer.provideMerge(PeerMcpClient.layer),
-      Layer.provideMerge(PeerNoticeDelivery.layer),
-    ),
-  ),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(layerDesktopAppUpdate))),
   Layer.provide(layerCommandReadiness),
@@ -1097,6 +1089,16 @@ const layerMakeServer = Layer.unwrap(
 
     return layerServerApplication.pipe(
       Layer.provide(CloudLink.layer),
+      // The authenticated transport requires the runtime's real lifecycle dependencies.
+      Layer.provide(PeerTaskLifecycle.layer),
+      // Source clients, MCP and startup recovery share one remote lifecycle owner.
+      Layer.provide(RemoteDelegation.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
+      Layer.provide(
+        PeerForwarding.layer.pipe(
+          Layer.provideMerge(PeerMcpClient.layer),
+          Layer.provideMerge(PeerNoticeDelivery.layer),
+        ),
+      ),
       Layer.provideMerge(layerRuntimeServices),
       Layer.provideMerge(
         McpSessionRegistry.layer.pipe(
