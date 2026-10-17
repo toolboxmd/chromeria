@@ -18,7 +18,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Link } from "@tanstack/react-router";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { useStore } from "zustand";
 import { useEnvironments } from "../../state/environments";
 import { prismSaveStore } from "./PrismSettings.state";
@@ -59,6 +59,9 @@ import {
   planPrismRolePatch,
   prismModelChoices,
   prismModelKey,
+  nextPrismEntryId,
+  syncPrismDraft,
+  type PrismDraftPreference,
   type PrismRoleUpdate,
   type PrismWriteExpectation,
 } from "./PrismSettings.logic";
@@ -112,7 +115,7 @@ const ROLE_DETAILS: Record<
 
 const LANE_LABELS: Record<PrismLane, string> = { easy: "Easy", medium: "Medium", hard: "Hard" };
 
-type DraftPreference = PrismModelPreference & { entryId: number };
+type DraftPreference = PrismDraftPreference;
 const editablePreference = (model: PrismModelPreference, entryId: number): DraftPreference => ({
   ...model,
   entryId,
@@ -238,12 +241,13 @@ function ModelRow({
 }
 
 /** One ordered list, saved on every change like the Providers page. */
-function ModelList({
+export function ModelList({
   title,
   saved,
   choices,
   mixed,
   disabled,
+  saving,
   save,
 }: {
   title: string;
@@ -251,20 +255,27 @@ function ModelList({
   choices: readonly ModelChoice[];
   mixed: boolean;
   disabled: boolean;
+  saving: boolean;
   save: (models: readonly PrismModelPreference[]) => Promise<void>;
 }) {
   const [draft, setDraft] = useState<readonly DraftPreference[]>(() =>
     saved.map(editablePreference),
   );
-  const nextEntryId = useRef(saved.length);
+  // The draft leads while a write is in flight; afterwards it follows what the server streams.
+  if (!saving) {
+    const synced = syncPrismDraft(draft, saved);
+    if (synced !== draft) setDraft(synced);
+  }
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
   const commit = (next: readonly DraftPreference[]) => {
+    // One write at a time: an edit while one is in flight is ignored, so this save owns the restore.
+    if (saving) return;
     setDraft(next);
     // The page shows the failure; the list returns to what is saved.
-    save(savedPreferences(next)).catch(() => setDraft(saved.map(editablePreference)));
+    save(savedPreferences(next)).catch(() => setDraft((current) => syncPrismDraft(current, saved)));
   };
   const onDragEnd = ({ active, over }: DragEndEvent) => {
     const from = draft.findIndex((entry) => entry.entryId === active.id);
@@ -330,7 +341,7 @@ function ModelList({
         onValueChange={(value) => {
           const choice = choices.find((candidate) => prismModelKey(candidate.preference) === value);
           if (choice)
-            commit([...draft, editablePreference(choice.preference, nextEntryId.current++)]);
+            commit([...draft, editablePreference(choice.preference, nextPrismEntryId(draft))]);
         }}
       >
         <SelectTrigger size="sm" className="w-fit" aria-label={`Add ${title} model`}>
@@ -443,7 +454,7 @@ export function PrismSettings() {
     prismSaveStore.getState().acknowledge(failed);
     if (failed.size) {
       const message = `Could not save preferences on ${result.failedEnvironments.map((env) => env.label).join(", ")}.${result.savedEnvironmentCount ? " Other selected environments saved the change." : ""}`;
-      // The representative update remounts its list editor, so failures also live on the page.
+      // The list editor restores its order silently, so the page shows why.
       setSaveError(message);
       throw new Error(message);
     }
@@ -575,11 +586,12 @@ export function PrismSettings() {
                   ))}
                 </ToggleGroup>
                 <ModelList
-                  key={`worker:${workerLane}:${JSON.stringify(settings.prismRoles.worker.lanes[workerLane])}`}
+                  key={`worker:${workerLane}`}
                   title={`Worker ${workerLane}`}
                   saved={settings.prismRoles.worker.lanes[workerLane]}
                   choices={choices}
-                  disabled={!target || pendingWrite !== null}
+                  disabled={!target}
+                  saving={pendingWrite !== null}
                   mixed={targets.some(
                     (candidate) =>
                       JSON.stringify(candidate.settings.prismRoles.worker.lanes[workerLane]) !==
@@ -592,11 +604,12 @@ export function PrismSettings() {
               </>
             ) : (
               <ModelList
-                key={`${selectedRole}:${JSON.stringify(settings.prismRoles[selectedRole].models)}`}
+                key={selectedRole}
                 title={PRISM_ROLE_LABELS[selectedRole]}
                 saved={settings.prismRoles[selectedRole].models}
                 choices={choices}
-                disabled={!target || pendingWrite !== null}
+                disabled={!target}
+                saving={pendingWrite !== null}
                 mixed={targets.some(
                   (candidate) =>
                     JSON.stringify(candidate.settings.prismRoles[selectedRole].models) !==
