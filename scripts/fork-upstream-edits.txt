@@ -233,7 +233,9 @@ packages/provider-grok/src/testing.ts
 apps/web/src/components/files/BrowserDocumentFrame.tsx
 apps/web/src/components/chat/HtmlRenderDialog.test.tsx
 
-# Peer links: upstream port and fork hooks (#164)
+# Peer links: upstream port and fork hooks (#164, #380)
+apps/mobile/src/features/settings/SettingsEnvironmentDetailRouteScreen.tsx
+packages/client-runtime/src/state/commandPermissions.test.ts
 apps/server/src/auth/McpOAuth.ts
 apps/server/src/binCli.ts
 apps/server/src/mcp/McpHttpServer.test.ts
