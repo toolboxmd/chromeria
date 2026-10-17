@@ -1,3 +1,6 @@
+import { PeerTaskView, PeerTaskResource } from "./peerTask.ts";
+import { ThreadId, NodeId } from "./baseSchemas.ts";
+import { OrchestratorMcpTaskCancelResult } from "./orchestratorMcp.ts";
 import { PeerGrant, PeerGrantSummary } from "./peerAuthority.ts";
 import { OrchestratorMcpFailure } from "./orchestratorMcp.ts";
 import { PromachosHomeRpcGroup } from "./promachosHome.ts";
@@ -501,6 +504,8 @@ export const WS_METHODS = {
   peerLinksList: "peerLinks.list",
   peerLinksLink: "peerLinks.link",
   peerLinksUnlink: "peerLinks.unlink",
+  remoteTaskView: "remoteTasks.view",
+  remoteTaskStop: "remoteTasks.stop",
   peerGrantsList: "peerGrants.list",
   peerGrantsUpdate: "peerGrants.update",
   serverGetSettings: "server.getSettings",
@@ -781,6 +786,26 @@ const WsServerGetStorageCleanupReportRpc = Rpc.make(WS_METHODS.serverGetStorageC
   error: EnvironmentAuthorizationError,
 });
 
+const WsRemoteTaskViewRpc = Rpc.make(WS_METHODS.remoteTaskView, {
+  payload: Schema.Struct({
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    resource: Schema.optional(PeerTaskResource),
+    after: NonNegativeInt,
+    textOffset: Schema.optional(NonNegativeInt),
+  }),
+  success: PeerTaskView,
+  error: Schema.Union([OrchestratorMcpFailure, EnvironmentAuthorizationError]),
+});
+const WsRemoteTaskStopRpc = Rpc.make(WS_METHODS.remoteTaskStop, {
+  payload: Schema.Struct({
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    clientRequestId: TrimmedNonEmptyString,
+  }),
+  success: OrchestratorMcpTaskCancelResult,
+  error: Schema.Union([OrchestratorMcpFailure, EnvironmentAuthorizationError]),
+});
 const WsPeerGrantsListRpc = Rpc.make(WS_METHODS.peerGrantsList, {
   payload: Schema.Struct({}),
   success: Schema.Array(PeerGrantSummary),
@@ -1953,6 +1978,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetStorageCleanupReportRpc,
   WsServerGetSettingsRpc,
   WsServerUpdateSettingsRpc,
+  WsRemoteTaskViewRpc,
+  WsRemoteTaskStopRpc,
   WsPeerGrantsListRpc,
   WsPeerGrantsUpdateRpc,
   WsPeerLinksListRpc,

@@ -1,3 +1,5 @@
+import { hasSourceRemoteTaskView } from "@t3tools/client-runtime/state/remote-tasks";
+import { RemoteTaskViewer } from "./RemoteTaskViewer";
 import { useAtomValue } from "@effect/atom-react";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { ThreadHoverCardPopup } from "../ThreadHoverCard";
@@ -226,8 +228,10 @@ export function ThreadRelationshipsPanel(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
 }) {
+  const [viewingRemoteTask, setViewingRemoteTask] = useState<NodeId | null>(null);
   const ref = scopeThreadRef(props.environmentId, props.threadId);
   const projection = useThreadProjection(ref)?.projection ?? null;
+  const selectedRemoteTask = projection?.subagents.find((task) => task.id === viewingRemoteTask);
   const serverConfigs = useServerConfigs();
   const providers = serverConfigs.get(props.environmentId)?.providers;
   const runtimeSubagents = useMemo(
@@ -469,6 +473,13 @@ export function ThreadRelationshipsPanel(props: {
         ) : null
       }
     >
+      {selectedRemoteTask ? (
+        <RemoteTaskViewer
+          environmentId={props.environmentId}
+          task={selectedRemoteTask}
+          onClose={() => setViewingRemoteTask(null)}
+        />
+      ) : null}
       {groups.map((group) => (
         <ThreadLineageGroup key={`${scopedThreadKey(ref)}:${group.id}`} {...group}>
           {(visibleRows) =>
@@ -510,7 +521,8 @@ export function ThreadRelationshipsPanel(props: {
               const remoteUnreachable =
                 remoteEnvironmentId !== null && !serverConfigs.has(remoteEnvironmentId);
               const rowUnavailable =
-                remoteUnreachable || (node?.missing === true && remoteEnvironmentId === null);
+                (remoteUnreachable && !hasSourceRemoteTaskView(agent)) ||
+                (node?.missing === true && remoteEnvironmentId === null);
               const canStop =
                 agent &&
                 agent.remoteChild === undefined &&
@@ -554,7 +566,9 @@ export function ThreadRelationshipsPanel(props: {
                   project.environmentId === (rowEnvironment ?? props.environmentId),
               );
               const relationshipHint = remoteUnreachable
-                ? `Runs on ${agent?.remoteChild?.label ?? "another machine"}, which this client is not connected to`
+                ? !hasSourceRemoteTaskView(agent)
+                  ? `Runs on ${agent?.remoteChild?.label ?? "another machine"}, which this client is not connected to`
+                  : `Runs on ${agent.remoteChild.label}, available through this conversation`
                 : node?.missing && remoteEnvironmentId === null
                   ? "This related thread is unavailable"
                   : remoteEnvironmentId !== null
@@ -632,7 +646,16 @@ export function ThreadRelationshipsPanel(props: {
                         variant="ghost"
                         part={workflowGroup ? "primary" : "row"}
                         disabled={rowUnavailable}
-                        onClick={() => openThread(threadId, rowEnvironmentId)}
+                        onClick={() => {
+                          const remoteTask = projection?.subagents.find(
+                            (task) =>
+                              task.id === agent?.id &&
+                              task.remoteChild?.threadId !== undefined &&
+                              hasSourceRemoteTaskView(task),
+                          );
+                          if (remoteTask) setViewingRemoteTask(remoteTask.id);
+                          else openThread(threadId, rowEnvironmentId);
+                        }}
                       />
                     }
                   >
@@ -682,7 +705,16 @@ export function ThreadRelationshipsPanel(props: {
                               part="primary"
                               aria-label={`${threadTitle} ${threadRelationshipStatusLabel(rowStatus)}`}
                               disabled={rowUnavailable}
-                              onClick={() => openThread(threadId, rowEnvironmentId)}
+                              onClick={() => {
+                                const remoteTask = projection?.subagents.find(
+                                  (task) =>
+                                    task.id === agent?.id &&
+                                    task.remoteChild?.threadId !== undefined &&
+                                    hasSourceRemoteTaskView(task),
+                                );
+                                if (remoteTask) setViewingRemoteTask(remoteTask.id);
+                                else openThread(threadId, rowEnvironmentId);
+                              }}
                             />
                           }
                         >
