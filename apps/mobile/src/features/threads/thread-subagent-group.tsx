@@ -1,3 +1,5 @@
+import { hasSourceRemoteTaskView } from "@t3tools/client-runtime/state/remote-tasks";
+import { RemoteTaskViewer } from "./RemoteTaskViewer";
 import { useAtomValue } from "@effect/atom-react";
 import { StackActions, useIsFocused, useNavigation } from "@react-navigation/native";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -71,6 +73,7 @@ export function ThreadSubagentGroup(props: {
   readonly iconSubtleColor: ColorValue;
   readonly onToggleRow: (rowId: string, anchorKey: string) => void;
 }) {
+  const [remoteTaskId, setRemoteTaskId] = useState<string | null>(null);
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
   const serverConfigs = useServerConfigs();
   const navigation = useNavigation();
@@ -98,6 +101,7 @@ export function ThreadSubagentGroup(props: {
       remoteChild: live?.remoteChild ?? item.remoteChild,
     };
   });
+  const selectedRemote = agents.find((agent) => agent.item.subagentId === remoteTaskId);
   const grouped = agents.length > 1;
   const label = `${agents.length} subagents`;
   const summary = summarizeSubagentStatuses(agents.map((agent) => agent.status));
@@ -106,6 +110,19 @@ export function ThreadSubagentGroup(props: {
     config?.providers.find((provider) => provider.instanceId === item.providerInstanceId)?.iconUrl;
   return (
     <WorkLogBlock>
+      {selectedRemote ? (
+        <RemoteTaskViewer
+          environmentId={props.environmentId}
+          task={{
+            id: selectedRemote.item.subagentId,
+            threadId: selectedRemote.item.threadId,
+            title: selectedRemote.title,
+            result: selectedRemote.result,
+            remoteChild: selectedRemote.remoteChild,
+          }}
+          onClose={() => setRemoteTaskId(null)}
+        />
+      ) : null}
       {grouped ? (
         <Pressable
           accessibilityRole="button"
@@ -160,7 +177,7 @@ export function ThreadSubagentGroup(props: {
             const unreachable =
               resolvedTarget?.environmentId != null &&
               !serverConfigs.has(resolvedTarget.environmentId);
-            const target = unreachable ? null : resolvedTarget;
+            const target = unreachable && !hasSourceRemoteTaskView(agent) ? null : resolvedTarget;
             return (
               <Pressable
                 key={agent.item.id}
@@ -168,7 +185,9 @@ export function ThreadSubagentGroup(props: {
                 accessibilityRole={target === null ? undefined : "link"}
                 accessibilityHint={
                   unreachable
-                    ? `Runs on ${agent.remoteChild?.label ?? "another machine"}, which this device is not connected to`
+                    ? !hasSourceRemoteTaskView(agent)
+                      ? `Runs on ${agent.remoteChild?.label ?? "another machine"}, which this device is not connected to`
+                      : `Runs on ${agent.remoteChild.label}, available through this conversation`
                     : target === null
                       ? agent.remoteChild
                         ? `Running on ${agent.remoteChild.label}. Its thread opens once the launch there is attached`
@@ -177,6 +196,10 @@ export function ThreadSubagentGroup(props: {
                 }
                 disabled={target === null}
                 onPress={() => {
+                  if (agent.remoteChild?.threadId !== undefined && hasSourceRemoteTaskView(agent)) {
+                    setRemoteTaskId(agent.item.subagentId);
+                    return;
+                  }
                   // Push, not navigate: navigate reuses this Thread route, so back
                   // would skip the parent thread.
                   if (target !== null)
