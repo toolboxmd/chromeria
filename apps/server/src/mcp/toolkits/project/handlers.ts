@@ -21,6 +21,7 @@ import * as Claims from "../../../orchestration-v2/AttachmentClaims.ts";
 import * as Project from "../../../project/ProjectService.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
+import * as PeerAuthority from "../../../peer/PeerAuthority.ts";
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -104,6 +105,15 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               );
         const threadId = ThreadId.make(commandId);
         const messageId = MessageId.make(commandId);
+        if (scope.authority !== undefined) {
+          const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+          if (Option.isNone(authority)) return yield* unavailable();
+          yield* authority.value.bind(
+            scope.authority,
+            threadId,
+            scope.client?.linked === true ? true : undefined,
+          );
+        }
         const attachments = input.attachments ?? [];
         if (attachments.some((attachment) => !Claims.attachmentIsPendingUpload(attachment)))
           return yield* new OrchestratorMcpFailure({

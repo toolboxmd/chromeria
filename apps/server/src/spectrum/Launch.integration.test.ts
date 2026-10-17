@@ -365,7 +365,7 @@ it.effect("persists peer origin on the Spectrum and Colors, fencing each descend
       };
       const shell = yield* (yield* Orchestrator.OrchestratorV2).getThreadShell(id);
       if (shell === null) return yield* Effect.die("Persisted Spectrum shell missing");
-      const context = { scope, caller: shell };
+      const context = { scope, caller: shell, limits: shell };
       const foreign = { ...child, linkOrigin: undefined };
       assert.strictEqual(
         (yield* assertSameLink(context, foreign).pipe(Effect.flip)).code,
