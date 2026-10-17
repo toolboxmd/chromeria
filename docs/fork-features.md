@@ -1641,6 +1641,8 @@ sources and reasons.
     "packages/client-runtime/src/state/remoteTasks.test.ts",
     "apps/web/src/state/remoteTasks.ts",
     "apps/web/src/components/chat/RemoteTaskViewer.tsx",
+    "apps/web/src/components/chat/useSubagentOpen.tsx",
+    "apps/web/src/components/chat/BackgroundSubagentOpenButton.tsx",
     "apps/mobile/src/state/remote-tasks.ts",
     "apps/mobile/src/features/threads/RemoteTaskViewer.tsx",
 

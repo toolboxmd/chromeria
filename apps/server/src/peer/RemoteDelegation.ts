@@ -1016,19 +1016,6 @@ const make = Effect.gen(function* () {
           code: "task_not_found",
           message: "This delegated job has no verified remote stop target.",
         });
-      if (task.remoteChild.stop?.requestId === requestId) {
-        if (task.remoteChild.stop.reason !== reason)
-          return yield* new OrchestratorMcpFailure({
-            code: "invalid_request",
-            message: "The stop request identity has conflicting semantics.",
-          });
-        yield* follow(parentThreadId, taskId).pipe(Effect.forkIn(followers));
-        return {
-          taskId,
-          status: "cancel_requested",
-          stopState: task.remoteChild.stop.state,
-        } as const;
-      }
       yield* observe(parentThreadId, taskId, {
         stop: { requestId, state: "pending", ...(reason === undefined ? {} : { reason }) },
         stopResult: {
@@ -1037,7 +1024,14 @@ const make = Effect.gen(function* () {
         },
       });
       yield* follow(parentThreadId, taskId).pipe(Effect.forkIn(followers));
-      return { taskId, status: "cancel_requested", stopState: "pending" } as const;
+      const current = (yield* threads.getThreadRecords(parentThreadId, [
+        "subagents",
+      ])).subagents.find((candidate) => candidate.id === taskId);
+      return {
+        taskId,
+        status: "cancel_requested",
+        stopState: current?.remoteChild?.stop?.state ?? "pending",
+      } as const;
     }).pipe(
       Effect.mapError((error) =>
         error._tag === "OrchestratorMcpFailure"

@@ -7832,6 +7832,33 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
     if (task?.remoteChild === undefined) return;
     const remote = task.remoteChild;
+    if (command.stop?.state === "pending") {
+      // The parent dispatch lock covers history lookup and intent commit. The
+      // event log retains accepted identities even after a newer Stop replaces
+      // the current projection, including after restart or a lost reply.
+      const prior = yield* forkSql<{
+        reason: string | null;
+        environment_id: string;
+        thread_id: string | null;
+        generation: string;
+      }>`SELECT json_extract(payload_json,'$.remoteChild.stop.reason') AS reason,json_extract(payload_json,'$.remoteChild.environmentId') AS environment_id,json_extract(payload_json,'$.remoteChild.threadId') AS thread_id,json_extract(payload_json,'$.remoteChild.launch.linkIdentity') AS generation FROM orchestration_events WHERE stream_id=${command.parentThreadId} AND event_type='subagent.updated' AND json_extract(payload_json,'$.id')=${task.id} AND json_extract(payload_json,'$.remoteChild.stop.requestId')=${command.stop.requestId} ORDER BY sequence LIMIT 1`.pipe(
+        mapDispatchError(command),
+      );
+      if (prior[0] !== undefined) {
+        if (
+          prior[0].reason !== (command.stop.reason ?? null) ||
+          prior[0].environment_id !== remote.environmentId ||
+          prior[0].thread_id !== (remote.threadId ?? null) ||
+          prior[0].generation !== remote.launch?.linkIdentity
+        )
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: new Error("The stop request identity has conflicting semantics."),
+          });
+        return;
+      }
+    }
     if (
       command.observation !== undefined &&
       (command.observation.result !== undefined ||

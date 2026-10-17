@@ -5301,6 +5301,7 @@ it.live(
           threadId: parentId,
           commandId: CommandId.make("stop-control-parent381"),
         });
+        yield* a.remote.requestStop(parentId, taskId, "client-stop:review-first381");
         const task = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
           (t) => t.id === taskId,
         )!;
@@ -5488,6 +5489,94 @@ it.live(
           (yield* b.threads.getThreadRecords(childId, ["runs"])).runs.find((r) => r.id === later)
             ?.status,
         ).toBe("running");
+        // An old lost reply cannot replace a newer deliberate obligation.
+        yield* Effect.all(
+          [
+            a.remote.requestStop(parentId, taskId, "client-stop:review-newer381", "later work"),
+            a.remote.requestStop(parentId, taskId, operation.requestId),
+            a.remote.requestStop(parentId, taskId, "client-stop:review-newer381", "later work"),
+          ],
+          { concurrency: "unbounded" },
+        );
+        const newer = (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+          (candidate) => candidate.id === taskId,
+        )!.remoteChild!.stop;
+        yield* a.remote.requestStop(parentId, taskId, operation.requestId);
+        expect(
+          (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+            (candidate) => candidate.id === taskId,
+          )!.remoteChild!.stop,
+        ).toEqual(newer);
+        yield* a.threads.dispatch({
+          type: "delegated_task.remote.observe",
+          commandId: CommandId.make("serialized-old-replay381"),
+          parentThreadId: parentId,
+          taskId,
+          stop: { requestId: operation.requestId, state: "pending" },
+        });
+        expect(
+          (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+            (candidate) => candidate.id === taskId,
+          )!.remoteChild!.stop,
+        ).toEqual(newer);
+        const historicalConflict = yield* a.remote
+          .requestStop(parentId, taskId, operation.requestId, "changed historical reason")
+          .pipe(Effect.result);
+        expect(historicalConflict._tag).toBe("Failure");
+        yield* connected.stop;
+        connected = yield* a.reconnect();
+        yield* Context.get(connected.services, RemoteDelegation.RemoteDelegation).start();
+        const stopEvent = yield* a.orchestrator
+          .streamStoredEventsFrom({
+            threadId: parentId,
+            afterSequence: 0,
+            eventType: "subagent.updated",
+          })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "subagent.updated" &&
+                stored.event.payload.id === taskId &&
+                stored.event.payload.remoteChild?.stop?.requestId ===
+                  "client-stop:review-newer381" &&
+                stored.event.payload.remoteChild.stop.state === "acknowledged",
+            ),
+            Stream.runHead,
+            Effect.flatMap(Effect.fromOption),
+          );
+        expect(
+          stopEvent.event.type === "subagent.updated" &&
+            stopEvent.event.payload.remoteChild?.stop?.destinationCommandId,
+        ).not.toBe(replay.type === "stop" ? replay.commandId : undefined);
+        yield* drainStops(b);
+        expect(
+          (yield* b.threads.getThreadRecords(childId, ["runs"])).runs.find(
+            (run) => run.id === later,
+          )?.status,
+        ).toBe("interrupted");
+        yield* a.orchestrator
+          .streamStoredEventsFrom({
+            threadId: parentId,
+            afterSequence: 0,
+            eventType: "subagent.updated",
+          })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "subagent.updated" &&
+                stored.event.payload.id === taskId &&
+                stored.event.payload.remoteChild?.stop?.requestId ===
+                  "client-stop:review-newer381" &&
+                stored.event.payload.remoteChild.stop.state === "confirmed",
+            ),
+            Stream.runHead,
+            Effect.flatMap(Effect.fromOption),
+          );
+        const pendingRows = yield* Context.get(a.database, SqlClient.SqlClient)<{
+          count: number;
+        }>`SELECT COUNT(*) AS count FROM orchestration_events WHERE stream_id=${parentId} AND event_type='subagent.updated' AND json_extract(payload_json,'$.id')=${taskId} AND json_extract(payload_json,'$.remoteChild.stop.requestId')='client-stop:review-newer381' AND json_extract(payload_json,'$.remoteChild.stop.state')='pending'`;
+        expect(pendingRows[0]?.count).toBe(1);
+        yield* connected.stop;
         yield* a.threads.dispatch({
           type: "delegated_task.remote.observe",
           commandId: CommandId.make("new-stop-obligation381"),
@@ -5495,13 +5584,14 @@ it.live(
           taskId,
           stop: { requestId: "new-deliberate-stop381", state: "pending" },
         });
+        const afterNewStopSequence = yield* state();
         const grant = (yield* b.authority.grants)[0]!;
         yield* b.auth.revokeSession(grant.sessionId);
         yield* denied({ pair, operation: { type: "stop", requestId: "new-deliberate-stop381" } });
-        expect(yield* state()).toBe(laterSequence);
+        expect(yield* state()).toBe(afterNewStopSequence);
         yield* linkTo(a.links, b, "full-access");
         yield* denied({ pair, operation: { type: "stop", requestId: "new-deliberate-stop381" } });
-        expect(yield* state()).toBe(laterSequence);
+        expect(yield* state()).toBe(afterNewStopSequence);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   30_000,
