@@ -1,3 +1,8 @@
+import { EffectOutboxV2 } from "../orchestration-v2/EffectOutbox.ts";
+import { RecoveryWaitState } from "../peer/recoveryWait.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as PeerTaskLifecycle from "../peer/PeerTaskLifecycle.ts";
+import { PeerTaskLifecycleRequest } from "@t3tools/contracts";
 import * as SpectrumToolkit from "../spectrum/mcpToolkit.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -188,6 +193,7 @@ const decodePeerSession = Schema.decodeUnknownEffect(
   Schema.fromJsonString(PeerAuthority.PeerSession),
 );
 const decodePeerEnvelope = Schema.decodeUnknownEffect(Schema.fromJsonString(PeerAuthorityEnvelope));
+const decodeTaskLifecycle = Schema.decodeUnknownEffect(PeerTaskLifecycleRequest);
 const decodePeerExchange = Schema.decodeUnknownEffect(PeerAuthority.Exchange);
 const isPeerFailure = Schema.is(OrchestratorMcpFailure);
 const peerAuthorityFailure = (error: unknown) =>
@@ -1031,7 +1037,63 @@ const layerPeerControl = Layer.unwrap(
         );
       }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 403 })))),
     );
-    return Layer.merge(post, streaming);
+    const lifecycleThreads = yield* Effect.serviceOption(
+      ThreadManagementService.ThreadManagementService,
+    );
+    const lifecycleSql = yield* Effect.serviceOption(SqlClient.SqlClient);
+    const lifecycleRecovery = yield* RecoveryWaitState;
+    const lifecycleEffects = yield* Effect.serviceOption(EffectOutboxV2);
+    if (
+      Option.isNone(authority) ||
+      Option.isNone(lifecycleThreads) ||
+      Option.isNone(lifecycleSql) ||
+      Option.isNone(lifecycleEffects)
+    )
+      return Layer.merge(post, streaming);
+    const tasks = Layer.unwrap(
+      Effect.gen(function* () {
+        const service = yield* PeerTaskLifecycle.PeerTaskLifecycle;
+        return Layer.merge(
+          HttpRouter.add(
+            "GET",
+            "/mcp/peer-control/tasks",
+            Effect.succeed(HttpServerResponse.jsonUnsafe({ version: 1 })),
+          ),
+          HttpRouter.add(
+            "POST",
+            "/mcp/peer-control/tasks",
+            Effect.gen(function* () {
+              const request = yield* HttpServerRequest.HttpServerRequest;
+              const scope = yield* McpInvocationContext.McpInvocationContext;
+              return yield* Effect.gen(function* () {
+                const input = yield* decodeTaskLifecycle(yield* request.json);
+                return HttpServerResponse.jsonUnsafe(yield* service.execute(scope, input));
+              }).pipe(
+                Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 403 }))),
+              );
+            }),
+          ),
+        );
+      }),
+    ).pipe(
+      Layer.provide(
+        PeerTaskLifecycle.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.succeed(PeerAuthority.PeerAuthority, authority.value),
+              Layer.succeed(RecoveryWaitState, lifecycleRecovery),
+              Layer.succeed(EffectOutboxV2, lifecycleEffects.value),
+              Layer.succeed(
+                ThreadManagementService.ThreadManagementService,
+                lifecycleThreads.value,
+              ),
+              Layer.succeed(SqlClient.SqlClient, lifecycleSql.value),
+            ),
+          ),
+        ),
+      ),
+    );
+    return Layer.mergeAll(post, streaming, tasks);
   }),
 );
 

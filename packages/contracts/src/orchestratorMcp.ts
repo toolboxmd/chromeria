@@ -1,3 +1,4 @@
+import { PeerTaskResult, PeerTaskSnapshot, PeerTaskStop } from "./peerTask.ts";
 import { BareLaunchRequest, BareSupport } from "./bareLaunch.ts";
 import { PrismLane, PrismRole } from "./prism.ts";
 import * as Effect from "effect/Effect";
@@ -226,6 +227,15 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
 export type OrchestratorMcpDelegateTaskInput = typeof OrchestratorMcpDelegateTaskInput.Type;
 
 export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
+  remoteObservation: Schema.optional(
+    Schema.Struct({
+      availability: Schema.Literals(["current", "stale", "unsupported"]),
+      snapshot: Schema.optional(PeerTaskSnapshot),
+      originalRunId: Schema.optional(RunId),
+      latestResult: Schema.optional(PeerTaskResult),
+      stop: Schema.optional(PeerTaskStop),
+    }),
+  ),
   taskId: NodeId,
   /** Null for a task that runs in a linked environment; see `remoteChild`. */
   childThreadId: Schema.NullOr(ThreadId),
@@ -275,6 +285,7 @@ export const OrchestratorMcpTaskCancelInput = Schema.Struct({
 export type OrchestratorMcpTaskCancelInput = typeof OrchestratorMcpTaskCancelInput.Type;
 
 export const OrchestratorMcpTaskCancelResult = Schema.Struct({
+  stopState: Schema.optional(PeerTaskStop.fields.state),
   taskId: NodeId,
   status: Schema.Literals(["cancel_requested", "completed", "failed", "cancelled", "interrupted"]),
 });
