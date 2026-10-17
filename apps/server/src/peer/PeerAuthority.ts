@@ -17,6 +17,8 @@ import {
   PeerReturnPair,
   ThreadId,
   RunId,
+  ScheduledTaskId,
+  OrchestrationV2LinkOrigin,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -35,6 +37,15 @@ import * as PeerNoticeDelivery from "./PeerNoticeDelivery.ts";
 import * as Invocation from "../mcp/McpInvocationContext.ts";
 import * as Environment from "../environment/ServerEnvironment.ts";
 import * as Links from "./PeerLinks.ts";
+
+export type ResourceTarget =
+  | { readonly type: "thread"; readonly threadId: ThreadId }
+  | { readonly type: "schedule"; readonly taskId: ScheduledTaskId }
+  | { readonly type: "environment" };
+type ResourceBinding =
+  | { readonly type: "thread"; readonly thread: OrchestrationV2ThreadShell }
+  | { readonly type: "schedule"; readonly linkOrigin: OrchestrationV2LinkOrigin | undefined }
+  | { readonly type: "environment" };
 
 export const AUTHORITY_HEADER = "t3-peer-authority";
 export const LINK_HEADER = "t3-peer-link";
@@ -88,6 +99,9 @@ const decodeReceipt = Schema.decodeUnknownEffect(ReturnReceipt);
 const decodeStoredCeiling = Schema.decodeUnknownEffect(Schema.fromJsonString(PeerCeiling));
 const decodeGrant = Schema.decodeUnknownEffect(Schema.fromJsonString(PeerGrant));
 const decodePair = Schema.decodeUnknownEffect(Schema.fromJsonString(PeerReturnPair));
+const decodeLinkOrigin = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(OrchestrationV2LinkOrigin),
+);
 const decodeExpiry = Schema.decodeUnknownEffect(Schema.DateTimeUtcFromString);
 const encodeGrant = Schema.encodeEffect(Schema.fromJsonString(PeerGrant));
 const denied = (message: string) =>
@@ -151,10 +165,10 @@ export class PeerAuthority extends Context.Service<
     readonly legacyCeiling: (
       threadId: ThreadId,
     ) => Effect.Effect<PeerCeiling | undefined, OrchestratorMcpFailure>;
-    readonly ownsCreatedThread: (
-      sessionId: string,
-      threadId: ThreadId,
-    ) => Effect.Effect<boolean, OrchestratorMcpFailure>;
+    readonly checkTarget: (
+      scope: Invocation.McpInvocationScope,
+      target: ResourceTarget,
+    ) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly forThread: (
       threadId: ThreadId,
     ) => Effect.Effect<Authority | undefined, OrchestratorMcpFailure>;
@@ -547,7 +561,7 @@ const make = Effect.gen(function* () {
         for (const id of owners) {
           const owner = yield* read(id);
           const current = yield* validate(owner);
-          yield* checkResource(owner, current, target);
+          yield* checkResource(owner, current, { type: "thread", thread: target });
           ceiling = intersect(ceiling, current);
         }
         return ceiling;
@@ -619,44 +633,96 @@ const make = Effect.gen(function* () {
       return intersect(current, intersect(record.ceiling, ceiling));
     });
   const resourceSession = (record: Authority) => record.resourceSessionId ?? record.sessionId;
+  // Creation membership is a union; an acting authority is a conjunction.
+  // Only permanent birth bindings use membership, never an existing target's run.
   const hasResourceSession = (
     record: Authority,
     sessionId: string,
   ): Effect.Effect<boolean, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
-      if (record.context?.type === "run-inputs") {
-        for (const id of record.context.recordIds)
-          if (yield* hasResourceSession(yield* read(id), sessionId)) return true;
-        return false;
+      const context = record.context;
+      if (context === undefined) return resourceSession(record) === sessionId;
+      if (context.type === "legacy-thread" && record.resourceSessionId === sessionId) return true;
+      const ids =
+        context.type === "run-inputs"
+          ? context.recordIds
+          : context.type === "owned-thread"
+            ? [context.creationRecordId, context.runRecordId]
+            : [context.runRecordId];
+      for (const id of ids) if (yield* hasResourceSession(yield* read(id), sessionId)) return true;
+      return false;
+    });
+  const checkCreated = (
+    sessionId: string,
+    target: ResourceBinding,
+  ): Effect.Effect<void, OrchestratorMcpFailure> =>
+    Effect.gen(function* () {
+      if (target.type === "schedule" && target.linkOrigin?.sessionId === sessionId) return;
+      if (target.type === "thread") {
+        if (target.thread.linkOrigin?.sessionId === sessionId) return;
+        const created = yield* permanentForThread(target.thread.id);
+        if (created !== undefined && (yield* hasResourceSession(created, sessionId))) return;
       }
-      return resourceSession(record) === sessionId;
+      return yield* denied("The destination is outside the link's current resource scope.");
     });
   const checkResource = (
     record: Authority,
     ceiling: PeerCeiling,
-    target: OrchestrationV2ThreadShell,
+    target: ResourceBinding,
   ): Effect.Effect<void, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
-      if (record.context?.type === "run-inputs") {
-        // Input conjunctions retain each source's predicate on the actual
-        // resource. They do not turn an ordinary parent into a creation fence.
-        for (const id of record.context.recordIds) {
+      const context = record.context;
+      if (context !== undefined) {
+        // Preserve each owner's predicate on the actual target, including the
+        // legacy creation owner. A copied session or scope enum is not this proof.
+        if (context.type === "legacy-thread") {
+          const imported = yield* legacy(context.threadId);
+          if (imported === undefined || imported.sessionId !== record.resourceSessionId)
+            return yield* denied("The legacy context is no longer available.");
+          yield* activeSession(imported.sessionId);
+          yield* checkCreated(imported.sessionId, target);
+        }
+        const ids =
+          context.type === "run-inputs"
+            ? context.recordIds
+            : context.type === "owned-thread"
+              ? [context.creationRecordId, context.runRecordId]
+              : [context.runRecordId];
+        for (const id of ids) {
           const owner = yield* read(id);
           yield* checkResource(owner, yield* validate(owner), target);
         }
         return;
       }
-      if (
-        record.sessionId === null ||
-        ceiling.resourceScope !== "created-work" ||
-        target.linkOrigin?.sessionId === resourceSession(record)
-      )
-        return;
-      // A local child created by a run on an existing thread has a durable
-      // creation binding even when that ordinary parent has no linkOrigin.
-      const created = yield* permanentForThread(target.id);
-      if (created === undefined || !(yield* hasResourceSession(created, resourceSession(record)!)))
-        return yield* denied("The destination is outside the link's current resource scope.");
+      const sessionId = resourceSession(record);
+      if (sessionId !== null && ceiling.resourceScope === "created-work")
+        yield* checkCreated(sessionId, target);
+    });
+  const loadResource = (
+    target: ResourceTarget,
+  ): Effect.Effect<ResourceBinding, OrchestratorMcpFailure> =>
+    Effect.gen(function* () {
+      if (target.type === "environment") return target;
+      if (target.type === "thread") {
+        const thread = yield* threads
+          .getThreadShell(target.threadId)
+          .pipe(Effect.mapError(unavailable));
+        if (thread === null || thread.deletedAt !== null)
+          return yield* denied("The destination thread is no longer available.");
+        return { type: "thread", thread };
+      }
+      const rows = yield* sql<{
+        link_origin_json: string | null;
+      }>`SELECT link_origin_json FROM scheduled_tasks WHERE task_id = ${target.taskId}`.pipe(
+        Effect.mapError(unavailable),
+      );
+      if (rows[0] === undefined)
+        return yield* denied("The destination schedule is no longer available.");
+      const linkOrigin =
+        rows[0].link_origin_json === null
+          ? undefined
+          : yield* decodeLinkOrigin(rows[0].link_origin_json).pipe(Effect.mapError(unavailable));
+      return { type: "schedule", linkOrigin };
     });
   const checkThread: PeerAuthority["Service"]["checkThread"] = (threadId) =>
     Effect.gen(function* () {
@@ -666,7 +732,7 @@ const make = Effect.gen(function* () {
         const target = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
         if (target === null || target.deletedAt !== null)
           return yield* denied("The destination thread is no longer available.");
-        yield* checkResource(record, ceiling, target);
+        yield* checkResource(record, ceiling, { type: "thread", thread: target });
         return { ...record, ceiling };
       }
       const migrated = yield* legacy(threadId);
@@ -1023,11 +1089,12 @@ const make = Effect.gen(function* () {
         const target = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
         if (target === null || target.deletedAt !== null)
           return yield* denied("The destination thread is no longer available.");
-        if (record !== undefined) yield* checkResource(record, ceiling, target);
+        if (record !== undefined)
+          yield* checkResource(record, ceiling, { type: "thread", thread: target });
         let effective = migrated === undefined ? ceiling : intersect(ceiling, migrated.ceiling);
         if (created !== undefined && created.id !== record?.id) {
           const creationCeiling = yield* validate(created);
-          yield* checkResource(created, creationCeiling, target);
+          yield* checkResource(created, creationCeiling, { type: "thread", thread: target });
           effective = intersect(effective, creationCeiling);
         }
         if (exceededDispatchModeLimit(effective, target) !== undefined)
@@ -1045,12 +1112,50 @@ const make = Effect.gen(function* () {
     checkPayload,
     bind,
     forThread,
-    ownsCreatedThread: (sessionId, threadId) =>
-      permanentForThread(threadId).pipe(
-        Effect.flatMap((record) =>
-          record === undefined ? Effect.succeed(false) : hasResourceSession(record, sessionId),
-        ),
-      ),
+    checkTarget: (scope, target) =>
+      Effect.gen(function* () {
+        const record =
+          scope.client === undefined && scope.thread !== undefined
+            ? yield* checkThread(scope.thread.threadId)
+            : scope.authority === undefined
+              ? undefined
+              : yield* read(scope.authority.id);
+        const migrated =
+          record === undefined && scope.thread !== undefined
+            ? yield* legacy(scope.thread.threadId)
+            : undefined;
+        const sessionId =
+          migrated?.sessionId ??
+          (scope.client?.linked === true ? scope.client.sessionId : undefined);
+        if (record === undefined && sessionId === undefined) return;
+        const binding = yield* loadResource(target);
+        const ceiling = record === undefined ? undefined : yield* validate(record);
+        if (record === undefined) {
+          if (sessionId === undefined) return yield* unavailable();
+          yield* activeSession(sessionId);
+        }
+        const modes = Invocation.intersectModes(
+          Invocation.clientModeCeiling(scope.client),
+          ceiling,
+        );
+        const directFull =
+          scope.thread === undefined &&
+          scope.client?.linked === true &&
+          record?.envelope.descendant !== true &&
+          modes.runtimeMode === "full-access" &&
+          modes.interactionMode === "default";
+        // Preserve the legacy direct exception for environment operations and
+        // unstamped schedules. It never covers descendants or other-link threads.
+        if (
+          directFull &&
+          (binding.type === "environment" ||
+            (binding.type === "schedule" && binding.linkOrigin === undefined))
+        )
+          return;
+        if (record !== undefined && ceiling !== undefined)
+          yield* checkResource(record, ceiling, binding);
+        else if (sessionId !== undefined) yield* checkCreated(sessionId, binding);
+      }),
     returnNotice,
     registerPair,
     grants: Effect.gen(function* () {

@@ -150,11 +150,6 @@ export const withContext = <A, E, R>(
       .pipe(Effect.mapError(unavailable));
     if (shell === null || shell.deletedAt !== null)
       return yield* denied("The destination thread was not found.");
-    if (
-      shell.linkOrigin?.sessionId !== scope.client.sessionId &&
-      scope.authority?.ceiling.resourceScope !== "environment-resources"
-    )
-      return yield* denied("A destination context must belong to the calling peer link.");
     yield* assertSameLink({ scope, caller: undefined }, shell);
     yield* assertTargetWithinLimits(
       Invocation.intersectModes(
@@ -207,7 +202,7 @@ export const withContext = <A, E, R>(
         [...credential.capabilities].filter((capability) => allowed.has(capability)),
       ),
     };
-    return yield* execution.pipe(Effect.provideService(Invocation.McpInvocationContext, bound));
+    return yield* here.pipe(Effect.provideService(Invocation.McpInvocationContext, bound));
   });
 
 const capabilityFor = (name: string): Invocation.McpCapability | undefined =>

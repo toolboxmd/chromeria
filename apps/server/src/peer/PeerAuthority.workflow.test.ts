@@ -30,6 +30,7 @@ import {
   RunId,
   ThreadId,
   type Project,
+  type OrchestrationV2LinkOrigin,
   type ExecutionEnvironmentDescriptor,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -216,6 +217,12 @@ const makeNode = (
       Layer.build,
     );
     const schedules = yield* ScheduledTasks.layer.pipe(
+      Layer.provide(
+        Layer.succeed(
+          ScheduledTasks.ScheduledTaskWebhookOrigin,
+          Effect.succeed({ relayHookBaseUrl: "https://hooks.example.invalid/v1/hooks/fixture" }),
+        ),
+      ),
       Layer.provide(Scheduler.layer),
       Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
       Layer.provide(Layer.succeedContext(launches)),
@@ -353,7 +360,7 @@ const activate = (node: Node, threadId: ThreadId) =>
     });
     return run.id;
   });
-const seedParent = (node: Node, threadId: ThreadId) =>
+const seedParent = (node: Node, threadId: ThreadId, linkOrigin?: OrchestrationV2LinkOrigin) =>
   Effect.gen(function* () {
     yield* node.threads.dispatch({
       type: "thread.create",
@@ -368,6 +375,7 @@ const seedParent = (node: Node, threadId: ThreadId) =>
       worktreePath: null,
       createdBy: "user",
       creationSource: "web",
+      ...(linkOrigin === undefined ? {} : { linkOrigin }),
     });
     yield* node.threads.dispatch({
       type: "message.dispatch",
@@ -1279,23 +1287,13 @@ it.live("explicit descendant environment grants retain operation mode policy", (
         ["full-access", "plan", "environment-resources", false],
         ["full-access", "default", "created-work", false],
       ] as const) {
-        const scoped = {
-          ...caller(b, task.childId),
-          authority: {
-            ...authority,
-            ceiling: {
-              ...authority.ceiling,
-              runtimeMode,
-              interactionMode,
-              resourceScope,
-            },
-          },
-        };
+        yield* b.authority.setGrant({ ...grant, resourceScope });
+        const scoped = { ...caller(b, task.childId), authority };
         const result = yield* Effect.result(
           assertNotLinked(
             { scope: scoped, caller: thread, limits: { runtimeMode, interactionMode } },
             "change environment settings",
-          ),
+          ).pipe(Effect.provideService(PeerAuthority.PeerAuthority, b.authority)),
         );
         expect(result._tag === "Success").toBe(allowed);
       }
@@ -1768,7 +1766,12 @@ it.live(
           ["lower-auto", "auto", "default", true, false],
           ["lower-plan", "full-access", "plan", true, false],
           ["full", "full-access", "default", false, true],
+          ["created", "full-access", "default", false, false],
         ] as const) {
+          yield* b.authority.setGrant({
+            ...grant,
+            resourceScope: key === "created" ? "created-work" : "environment-resources",
+          });
           const launched = yield* nativeCall(a, parent, "delegate_task", {
             task: "Check schedule operation policy",
             mode: "async",
@@ -1847,7 +1850,7 @@ it.live(
             );
         }
         expect(observed).toEqual(
-          [false, false, false, false, true].map((allowed) => ({
+          [false, false, false, false, true, false].map((allowed) => ({
             allowed,
             create: allowed,
             update: allowed,
@@ -2333,9 +2336,14 @@ it.live.each(["auto", "steer", "restart", "restart-only"] as const)(
     ).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.live.each(["first", "last"] as const)(
-  "active inputs retain every contributor after %s revocation",
-  (revoked) =>
+it.live.each([
+  { revoked: "first", reversed: false },
+  { revoked: "last", reversed: false },
+  { revoked: "first", reversed: true },
+  { revoked: "last", reversed: true },
+] as const)(
+  "round4 resource conjunction after $revoked revocation, reverse sources $reversed",
+  ({ revoked, reversed }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const b = yield* makeNode(
@@ -2357,10 +2365,12 @@ it.live.each(["first", "last"] as const)(
           providerInstanceId: instanceId,
           capabilities: new Set(["orchestration", "preview", "device"]),
         });
-        for (const [node, caps] of [
-          [a, new Set(["orchestration", "device"] as const)],
-          [d, new Set(["orchestration", "preview"] as const)],
-        ] as const) {
+        const sources = reversed ? [d, a] : [a, d];
+        for (const node of sources) {
+          const caps =
+            node === a
+              ? new Set(["orchestration", "device"] as const)
+              : new Set(["orchestration", "preview"] as const);
           yield* linkTo(node.links, b, "full-access");
           const parent = ThreadId.make(`multi-${node.environmentId}-source`);
           yield* seedParent(node, parent);
@@ -2430,6 +2440,53 @@ it.live.each(["first", "last"] as const)(
         yield* activate(b, child);
         // Combining inputs must preserve the existing created-work predicate:
         // narrowing consent denies the ordinary parent, not its actual new child.
+        const exclusiveTargets = [];
+        for (const source of [a, d]) {
+          const exclusiveCall = yield* nativeCall(
+            source,
+            ThreadId.make(`multi-${source.environmentId}-source`),
+            "t3_thread_launch",
+            {
+              environmentId: b.environmentId,
+              projectId: b.project.id,
+              modelSelection: selection,
+              title: `Exclusive ${source.environmentId}`,
+              message: "Owned by one source only",
+              clientRequestId: `exclusive-${source.environmentId}`,
+            },
+          );
+          expect(exclusiveCall.isError, json(exclusiveCall.content)).not.toBe(true);
+          exclusiveTargets.push(
+            (yield* decodeLaunchReceipt(exclusiveCall.structuredContent)).threadId,
+          );
+        }
+        const sourceGrants = yield* b.authority.grants;
+        const exclusiveSchedules = [];
+        for (const source of [a, d]) {
+          const origin = sourceGrants.find(
+            (grant) => grant.environmentId === source.environmentId,
+          )!;
+          const created = yield* b.scheduled.upsert({
+            title: `Webhook ${source.environmentId}`,
+            prompt: "Not executed",
+            enabled: false,
+            schedule: { type: "webhook" },
+            projectId: b.project.id,
+            threadId: null,
+            workspaceStrategy: { type: "root" },
+            modelSelection: selection,
+            runtimeMode: "approval-required",
+            interactionMode: "plan",
+            createdBy: "agent",
+            creationSource: "mcp",
+            linkOrigin: { sessionId: origin.sessionId, label: source.environmentId },
+          });
+          expect(created.task.webhook?.url).toBeTruthy();
+          exclusiveSchedules.push(created.task);
+        }
+        const scheduleSummary = Schema.decodeUnknownEffect(
+          OrchestratorToolkit.tools.list_scheduled_tasks.successSchema,
+        );
         const widerGrants = yield* b.authority.grants;
         for (const grant of widerGrants)
           yield* b.authority.setGrant({ ...grant, resourceScope: "created-work" });
@@ -2459,6 +2516,189 @@ it.live.each(["first", "last"] as const)(
           expect((yield* b.threads.getThreadShell(child))?.title).toBe(
             `Created under ${source.environmentId}`,
           );
+        }
+        const contextChildren = [];
+        for (const source of [a, d]) {
+          // A canonical joint birth binding permits either source's private
+          // context selection even though the child has no single linkOrigin.
+          const created = yield* nativeCall(
+            source,
+            ThreadId.make(`multi-${source.environmentId}-source`),
+            "create_threads",
+            {
+              environmentId: b.environmentId,
+              contextThreadId: child,
+              threads: [
+                { prompt: `Child through ${source.environmentId}'s authenticated context` },
+              ],
+              clientRequestId: `context-child-${source.environmentId}`,
+            },
+          );
+          expect(created.isError, json(created.content)).not.toBe(true);
+          contextChildren.push(
+            (yield* decodeCreatedThreads(created.structuredContent)).threads[0]!.threadId,
+          );
+        }
+        for (const [index, exclusive] of exclusiveTargets.entries()) {
+          const otherSource = index === 0 ? d : a;
+          const rejected = yield* nativeCall(
+            otherSource,
+            ThreadId.make(`multi-${otherSource.environmentId}-source`),
+            "t3_thread_update",
+            {
+              environmentId: b.environmentId,
+              threadId: exclusive,
+              action: "rename",
+              title: "Forbidden other-source rename",
+            },
+          );
+          expect(rejected.isError, json(rejected.content)).toBe(true);
+          expect((yield* b.threads.getThreadShell(exclusive))?.title).not.toBe(
+            "Forbidden other-source rename",
+          );
+        }
+        const listed = yield* nativeCall(b, child, "list_scheduled_tasks", {});
+        expect(listed.isError, json(listed.content)).not.toBe(true);
+        const summaries = (yield* scheduleSummary(listed.structuredContent)).tasks;
+        for (const schedule of exclusiveSchedules) {
+          const visible = summaries.find((task) => task.scheduledTaskId === schedule.id);
+          expect(visible).toBeDefined();
+          expect(visible?.webhookUrl).toBeUndefined();
+        }
+        for (const [index, source] of [a, d].entries()) {
+          const listed = yield* nativeCall(
+            source,
+            ThreadId.make(`multi-${source.environmentId}-source`),
+            "list_scheduled_tasks",
+            { environmentId: b.environmentId },
+          );
+          expect(listed.isError, json(listed.content)).not.toBe(true);
+          const summaries = (yield* scheduleSummary(listed.structuredContent)).tasks;
+          for (const [taskIndex, schedule] of exclusiveSchedules.entries())
+            expect(
+              summaries.find((task) => task.scheduledTaskId === schedule.id)?.webhookUrl !==
+                undefined,
+            ).toBe(index === taskIndex);
+        }
+        const recoveredResources = yield* restoreAuthority(b);
+        expect((yield* recoveredResources.forThread(child))?.id).toBe(both?.id);
+        const recoveredCredential = yield* b.registry.issue({
+          threadId: child,
+          providerInstanceId: instanceId,
+        });
+        // Reissued native intake reads that persisted owner and must check the
+        // actual other target before immediate metadata commit on every request.
+        const resourceObservations = [];
+        for (const exclusive of exclusiveTargets) {
+          const forbiddenTitle = `Forbidden composite rename ${exclusive}`;
+          const operation = yield* nativeCall(
+            b,
+            child,
+            "t3_thread_update",
+            {
+              threadId: exclusive,
+              action: "rename",
+              title: forbiddenTitle,
+            },
+            undefined,
+            recoveredCredential,
+          );
+          resourceObservations.push({
+            denied: operation.isError === true,
+            committed: (yield* b.threads.getThreadShell(exclusive))?.title === forbiddenTitle,
+          });
+        }
+        expect(resourceObservations).toEqual([
+          { denied: true, committed: false },
+          { denied: true, committed: false },
+        ]);
+        // One narrow owner must still fence the target when the other is broad.
+        // Neither source order nor a matching copied linkOrigin changes this intersection.
+        for (const broadSource of [a, d]) {
+          for (const grant of widerGrants)
+            yield* b.authority.setGrant({
+              ...grant,
+              resourceScope:
+                grant.environmentId === broadSource.environmentId
+                  ? "environment-resources"
+                  : "created-work",
+            });
+          for (const [index, exclusive] of exclusiveTargets.entries()) {
+            const allowed = [a, d][index] !== broadSource;
+            const title = `Mixed ${broadSource.environmentId} ${exclusive}`;
+            for (let repeat = 0; repeat < 2; repeat++) {
+              const operation = yield* nativeCall(b, child, "t3_thread_update", {
+                threadId: exclusive,
+                action: "rename",
+                title,
+              });
+              expect(operation.isError !== true, json(operation.content)).toBe(allowed);
+              expect((yield* b.threads.getThreadShell(exclusive))?.title === title).toBe(allowed);
+            }
+          }
+        }
+        for (const grant of widerGrants) yield* b.authority.setGrant(grant);
+        for (const exclusive of exclusiveTargets) {
+          const title = `Both explicitly broad ${exclusive}`;
+          const permitted = yield* nativeCall(b, child, "t3_thread_update", {
+            threadId: exclusive,
+            action: "rename",
+            title,
+          });
+          expect(permitted.isError, json(permitted.content)).not.toBe(true);
+          expect((yield* b.threads.getThreadShell(exclusive))?.title).toBe(title);
+        }
+        // Adding an accepted input to an already jointly created child produces
+        // an owned-thread context. Its birth and current run owners both constrain targets.
+        yield* activeProvider(b, child);
+        const extra = yield* nativeCall(
+          a,
+          ThreadId.make(`multi-${a.environmentId}-source`),
+          "t3_thread_send",
+          {
+            environmentId: b.environmentId,
+            threadId: child,
+            message: "Additional accepted child input",
+            mode: "steer",
+            clientRequestId: "owned-child-input",
+          },
+        );
+        expect(extra.isError, json(extra.content)).not.toBe(true);
+        expect((yield* b.authority.forThread(child))?.context?.type).toBe("owned-thread");
+        for (const grant of widerGrants)
+          yield* b.authority.setGrant({ ...grant, resourceScope: "created-work" });
+        for (const exclusive of exclusiveTargets) {
+          const title = `Forbidden owned-context ${exclusive}`;
+          const operation = yield* nativeCall(b, child, "t3_thread_update", {
+            threadId: exclusive,
+            action: "rename",
+            title,
+          });
+          expect(operation.isError, json(operation.content)).toBe(true);
+          expect((yield* b.threads.getThreadShell(exclusive))?.title).not.toBe(title);
+          const read = yield* nativeCall(b, child, "t3_thread_read", { threadId: exclusive });
+          expect(read.isError, json(read.content)).not.toBe(true);
+        }
+        const jointGrandchildCall = yield* nativeCall(b, child, "create_threads", {
+          threads: [{ prompt: "Joint creation through owned context" }],
+        });
+        expect(jointGrandchildCall.isError, json(jointGrandchildCall.content)).not.toBe(true);
+        const grandchild = (yield* decodeCreatedThreads(jointGrandchildCall.structuredContent))
+          .threads[0]!.threadId;
+        yield* activate(b, grandchild);
+        for (const source of [a, d]) {
+          const legitimate = yield* nativeCall(
+            source,
+            ThreadId.make(`multi-${source.environmentId}-source`),
+            "t3_thread_update",
+            {
+              environmentId: b.environmentId,
+              threadId: grandchild,
+              action: "rename",
+              title: `Grandchild under ${source.environmentId}`,
+            },
+          );
+          expect(legitimate.isError, json(legitimate.content)).not.toBe(true);
         }
         for (const grant of widerGrants) yield* b.authority.setGrant(grant);
         const onwardCall = yield* nativeCall(b, target, "t3_thread_launch", {
@@ -2556,7 +2796,7 @@ it.live.each(["first", "last"] as const)(
         expect(
           yield* sql`SELECT record_id FROM peer_run_authority WHERE run_id=${localId}`,
         ).toHaveLength(0);
-        yield* (revoked === "first" ? a : d).links.unlink(b.environmentId);
+        yield* sources[revoked === "first" ? 0 : 1]!.links.unlink(b.environmentId);
         expect((yield* Effect.result(b.authority.checkThread(target)))._tag).toBe("Failure");
         for (const effectId of recoveryEffects)
           expect((yield* Effect.result(b.authority.checkEffect(effectId, target)))._tag).toBe(
@@ -2564,6 +2804,10 @@ it.live.each(["first", "last"] as const)(
           );
         expect((yield* Effect.result(b.authority.checkThread(child)))._tag).toBe("Failure");
         expect((yield* Effect.result(c.authority.checkThread(onward)))._tag).toBe("Failure");
+        for (const contextChild of contextChildren)
+          expect((yield* Effect.result(b.authority.checkThread(contextChild)))._tag).toBe(
+            "Failure",
+          );
         yield* b.authority.checkEffect(`effect:${localId}`, unrelated);
         const forbidden = yield* nativeCall(
           b,
@@ -2836,6 +3080,230 @@ it.live("non-input effect persistence retains its caller without assigning the l
         (yield* Effect.result(b.authority.checkEffect(captures[0]!.effect_id, target)))._tag,
       ).toBe("Failure");
       expect(yield* sql`SELECT record_id FROM peer_run_authority`).toHaveLength(0);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("legacy creation and a modern run both constrain every actual target", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const b = yield* makeNode(descriptorOf("r4-legacy-b", "B", { peerAuthority: 1 }), "disk");
+      const a = yield* makeNode(descriptorOf("r4-legacy-a", "A", { peerAuthority: 1 }));
+      const d = yield* makeNode(descriptorOf("r4-legacy-d", "D", { peerAuthority: 1 }));
+      const parents = [ThreadId.make("r4-legacy-a-parent"), ThreadId.make("r4-legacy-d-parent")];
+      for (const [index, source] of [a, d].entries()) {
+        yield* linkTo(source.links, b, "full-access");
+        yield* seedParent(source, parents[index]!);
+        yield* source.forwarding.call(
+          caller(source, parents[index]!),
+          ProjectToolkit.tools.t3_project_list,
+          b.environmentId,
+          {},
+        );
+      }
+      const grants = yield* b.authority.grants;
+      for (const grant of grants)
+        yield* b.authority.setGrant({ ...grant, resourceScope: "environment-resources" });
+      const dGrant = grants.find((grant) => grant.environmentId === d.environmentId)!;
+      const legacyThread = ThreadId.make("r4-legacy-existing");
+      yield* seedParent(b, legacyThread, { sessionId: dGrant.sessionId, label: "D legacy" });
+      yield* b.authority.legacyCeiling(legacyThread);
+      yield* activeProvider(b, legacyThread);
+      const exclusiveTargets = [];
+      for (const [index, source] of [a, d].entries()) {
+        const launched = yield* nativeCall(source, parents[index]!, "t3_thread_launch", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          modelSelection: selection,
+          title: `Legacy test exclusive ${index}`,
+          message: "Not executed",
+          clientRequestId: `r4-legacy-exclusive-${index}`,
+        });
+        expect(launched.isError, json(launched.content)).not.toBe(true);
+        exclusiveTargets.push((yield* decodeLaunchReceipt(launched.structuredContent)).threadId);
+      }
+      const input = yield* nativeCall(a, parents[0]!, "t3_thread_send", {
+        environmentId: b.environmentId,
+        threadId: legacyThread,
+        message: "Modern accepted contributor",
+        mode: "steer",
+        clientRequestId: "r4-legacy-modern-input",
+      });
+      expect(input.isError, json(input.content)).not.toBe(true);
+      expect((yield* b.authority.forThread(legacyThread))?.context?.type).toBe("legacy-thread");
+      const cached = yield* b.registry.issue({
+        threadId: legacyThread,
+        providerInstanceId: instanceId,
+      });
+      for (const [index, target] of exclusiveTargets.entries()) {
+        const title = `Legacy cross-target ${index}`;
+        const operation = yield* nativeCall(
+          b,
+          legacyThread,
+          "t3_thread_update",
+          {
+            threadId: target,
+            action: "rename",
+            title,
+          },
+          undefined,
+          cached,
+        );
+        expect(operation.isError !== true, json(operation.content)).toBe(index === 1);
+        expect((yield* b.threads.getThreadShell(target))?.title === title).toBe(index === 1);
+      }
+      // A new child records both real creators, without changing the old thread's owner.
+      const created = yield* nativeCall(b, legacyThread, "create_threads", {
+        threads: [{ prompt: "Legacy and modern joint child" }],
+      });
+      expect(created.isError, json(created.content)).not.toBe(true);
+      const child = (yield* decodeCreatedThreads(created.structuredContent)).threads[0]!.threadId;
+      yield* activate(b, child);
+      for (const [index, source] of [a, d].entries()) {
+        const renamed = yield* nativeCall(source, parents[index]!, "t3_thread_update", {
+          environmentId: b.environmentId,
+          threadId: child,
+          action: "rename",
+          title: `Joint legacy child ${index}`,
+        });
+        expect(renamed.isError, json(renamed.content)).not.toBe(true);
+      }
+      const modernGrant = grants.find((grant) => grant.environmentId === a.environmentId)!;
+      yield* b.authority.setGrant({ ...modernGrant, resourceScope: "created-work" });
+      const creator = yield* nativeCall(a, parents[0]!, "t3_thread_update", {
+        environmentId: b.environmentId,
+        threadId: child,
+        action: "rename",
+        title: "Created under both legacy and modern owners",
+      });
+      expect(creator.isError, json(creator.content)).not.toBe(true);
+      expect((yield* b.threads.getThreadShell(child))?.title).toBe(
+        "Created under both legacy and modern owners",
+      );
+      const title = "Forbidden narrowed legacy run";
+      const narrowed = yield* nativeCall(
+        b,
+        legacyThread,
+        "t3_thread_update",
+        {
+          threadId: exclusiveTargets[1],
+          action: "rename",
+          title,
+        },
+        undefined,
+        cached,
+      );
+      expect(narrowed.isError).toBe(true);
+      expect((yield* b.threads.getThreadShell(exclusiveTargets[1]!))?.title).not.toBe(title);
+      const restored = yield* restoreAuthority(b);
+      expect((yield* restored.forThread(legacyThread))?.context?.type).toBe("legacy-thread");
+      yield* b.authority.setGrant({ ...modernGrant, resourceScope: "environment-resources" });
+      yield* b.auth.revokeSession(dGrant.sessionId);
+      const recovered = yield* Effect.result(
+        restored.checkTarget(caller(b, legacyThread), {
+          type: "thread",
+          threadId: exclusiveTargets[1]!,
+        }),
+      );
+      expect(recovered._tag).toBe("Failure");
+      if (recovered._tag === "Failure") expect(recovered.failure.code).toBe("capability_denied");
+      const revoked = yield* nativeCall(b, legacyThread, "t3_thread_update", {
+        threadId: exclusiveTargets[1],
+        action: "rename",
+        title: "Forbidden revoked legacy owner",
+      });
+      expect(revoked.isError).toBe(true);
+      expect((yield* b.threads.getThreadShell(exclusiveTargets[1]!))?.title).not.toBe(
+        "Forbidden revoked legacy owner",
+      );
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("legacy direct full access keeps unstamped schedule operations and the thread fence", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const b = yield* makeNode(descriptorOf("r4-direct-b", "B", { peerAuthority: 1 }));
+      const a = yield* makeNode(descriptorOf("r4-direct-a", "A", { peerAuthority: 1 }));
+      yield* linkTo(a.links, b, "full-access");
+      const parent = ThreadId.make("r4-direct-parent");
+      const unrelated = ThreadId.make("r4-direct-unrelated");
+      yield* seedParent(a, parent);
+      yield* seedParent(b, unrelated);
+      yield* a.forwarding.call(
+        caller(a, parent),
+        ProjectToolkit.tools.t3_project_list,
+        b.environmentId,
+        {},
+      );
+      // Reuse this isolated OAuth session through its real HTTP authenticator,
+      // without modern envelopes, to exercise the separately preserved legacy policy.
+      const authorizationHeader = (yield* Ref.get(b.bearers)).at(-1)!;
+      const native = yield* b.registry.issue({
+        threadId: unrelated,
+        providerInstanceId: instanceId,
+      });
+      const credential = {
+        ...native,
+        config: { ...native.config, endpoint: `${b.url}/mcp`, authorizationHeader },
+      };
+      const fixture = yield* b.scheduled.upsert({
+        title: "Unstamped legacy fixture",
+        prompt: "Not executed",
+        enabled: false,
+        schedule: { type: "interval", everyMs: 60000 },
+        projectId: b.project.id,
+        threadId: null,
+        workspaceStrategy: { type: "root" },
+        modelSelection: selection,
+        runtimeMode: "approval-required",
+        interactionMode: "plan",
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const updated = yield* nativeCall(
+        b,
+        unrelated,
+        "update_scheduled_task",
+        {
+          scheduledTaskId: fixture.task.id,
+          title: "Direct legacy updated",
+        },
+        undefined,
+        credential,
+      );
+      expect(updated.isError, json(updated.content)).not.toBe(true);
+      expect(
+        (yield* b.scheduled.list()).tasks.find((task) => task.id === fixture.task.id)?.title,
+      ).toBe("Direct legacy updated");
+      const removed = yield* nativeCall(
+        b,
+        unrelated,
+        "delete_scheduled_task",
+        { scheduledTaskId: fixture.task.id },
+        undefined,
+        credential,
+      );
+      expect(removed.isError, json(removed.content)).not.toBe(true);
+      expect((yield* b.scheduled.list()).tasks.some((task) => task.id === fixture.task.id)).toBe(
+        false,
+      );
+      const forbidden = yield* nativeCall(
+        b,
+        unrelated,
+        "t3_thread_update",
+        {
+          threadId: unrelated,
+          action: "rename",
+          title: "Forbidden legacy direct takeover",
+        },
+        undefined,
+        credential,
+      );
+      expect(forbidden.isError).toBe(true);
+      expect((yield* b.threads.getThreadShell(unrelated))?.title).not.toBe(
+        "Forbidden legacy direct takeover",
+      );
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
 );

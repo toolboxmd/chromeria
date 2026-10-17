@@ -1768,8 +1768,9 @@ const make = Effect.gen(function* () {
         caller.parent === undefined
           ? scope.client?.access !== "read-only"
           : Exit.isSuccess(yield* Effect.exit(assertLiveCaller(scope, caller.parent)));
-      const origin = callerLinkOrigin({ scope, caller: caller.parent?.thread });
-      const owns = origin === undefined || task.linkOrigin?.sessionId === origin.sessionId;
+      const owns = Exit.isSuccess(
+        yield* Effect.exit(assertSameLink({ scope, caller: caller.parent?.thread }, task)),
+      );
       // This runs after a save, so a failed lookup of the bound thread hides
       // the webhook URL instead of reporting a saved task as an error.
       const modes = yield* scheduledTaskRunModes(task).pipe(Effect.option);
