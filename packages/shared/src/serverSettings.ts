@@ -590,6 +590,8 @@ export function applyServerSettingsPatch(
               ),
             ).filter(([, entry]) => Object.keys(entry).length > 0),
           ),
+          // Entries written from here on hold partial Prism kits.
+          prismRoleOverridesPartial: true,
         }
       : {}),
     ...(patch.defaultModelSelection !== undefined

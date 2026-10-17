@@ -3,6 +3,7 @@ import {
   type ClientSettingsPatch,
   type EnvironmentId,
   isNullableProjectSettingsOverride,
+  overlayPrismRoleKits,
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
   type ProjectId,
   type ProjectScopedServerSettingKey,
@@ -253,6 +254,14 @@ export function planScopedSettingsPatch(
                   };
                   continue;
                 }
+                // Prism overrides are partial: patch only the stored roles.
+                if (key === "prismRoles" && serverPatch.prismRoles) {
+                  next[key] = overlayPrismRoleKits(
+                    current.prismRoles ?? {},
+                    serverPatch.prismRoles,
+                  );
+                  continue;
+                }
                 // A picker's "Inherit" sends null; for keys whose override
                 // cannot store null that means remove the override.
                 if (
@@ -323,11 +332,20 @@ export function planScopedSettingsClear(
   environments: readonly ScopedSettingsEnvironment[],
   keys: readonly ProjectScopedServerSettingKey[],
 ) {
+  return planProjectOverridesReset(scope, environments, (_current, settings, projectId) =>
+    clearProjectSettingsOverrides(settings, projectId, keys),
+  );
+}
+
+/** Rewrite each member's override entry for a reset that removes more than whole keys. */
+export function planProjectOverridesReset(
+  scope: ResolvedSettingsScope,
+  environments: readonly ScopedSettingsEnvironment[],
+  update: Parameters<typeof projectOverrideWrites>[2],
+) {
   const serverWrites =
     scope.kind === "project" || scope.kind === "checkout"
-      ? projectOverrideWrites(scope, environments, (_current, settings, projectId) =>
-          clearProjectSettingsOverrides(settings, projectId, keys),
-        )
+      ? projectOverrideWrites(scope, environments, update)
       : [];
   return {
     clientPatch: {} as ClientSettingsPatch,

@@ -1,4 +1,5 @@
 import {
+  overlayPrismRoleKits,
   ProjectId,
   type PrismModelPreference,
   type PrismRole,
@@ -12,7 +13,7 @@ import {
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import type { ModelEsque } from "../chat/providerIconUtils";
-import { planScopedSettingsPatch } from "./scopedSettings";
+import { planProjectOverridesReset, planScopedSettingsPatch } from "./scopedSettings";
 
 export function prismModelKey(entry: Pick<PrismModelPreference, "instanceId" | "model">) {
   return JSON.stringify([entry.instanceId, entry.model]);
@@ -95,55 +96,30 @@ function prismRolePatch(update: PrismRoleUpdate): PrismRoleKitsPatch {
 }
 
 function applyPrismRoleUpdate(kits: PrismRoleKits, update: PrismRoleUpdate): PrismRoleKits {
-  switch (update.kind) {
-    case "lane":
-      return {
-        ...kits,
-        worker: { ...kits.worker, lanes: { ...kits.worker.lanes, [update.lane]: update.models } },
-      };
-    case "models":
-      return { ...kits, [update.role]: { ...kits[update.role], models: update.models } };
-    case "enabled":
-      return { ...kits, [update.role]: { ...kits[update.role], enabled: update.enabled } };
-  }
+  return overlayPrismRoleKits(kits, prismRolePatch(update));
 }
 
-/** Project overrides store complete kits, while environment updates accept deep patches. */
+/** One role edit; a project override stores only the edited role field or lane. */
 export function planPrismRolePatch(
   scope: Parameters<typeof planScopedSettingsPatch>[0],
   environments: Parameters<typeof planScopedSettingsPatch>[1],
   update: PrismRoleUpdate,
 ): ReturnType<typeof planScopedSettingsPatch> {
-  const plan = planScopedSettingsPatch(scope, environments, {
-    prismRoles: prismRolePatch(update),
+  return planScopedSettingsPatch(scope, environments, { prismRoles: prismRolePatch(update) });
+}
+
+/** "Use environment role settings": drop the project's role overrides, keeping its Promachos kit. */
+export function planPrismRolesReset(
+  scope: Parameters<typeof planScopedSettingsPatch>[0],
+  environments: Parameters<typeof planScopedSettingsPatch>[1],
+): ReturnType<typeof planScopedSettingsPatch> {
+  return planProjectOverridesReset(scope, environments, (current) => {
+    const { prismRoles, ...rest } = current;
+    const next = prismRoles?.promachos
+      ? { ...rest, prismRoles: { promachos: prismRoles.promachos } }
+      : rest;
+    return Object.keys(next).length === 0 ? null : next;
   });
-  return {
-    ...plan,
-    serverWrites: plan.serverWrites.map((write) => {
-      const overrides = write.patch.projectSettingsOverrides;
-      const settings = environments.find((env) => env.environmentId === write.environmentId)
-        ?.serverConfig?.settings;
-      if (!overrides || !settings) return write;
-      return {
-        ...write,
-        patch: {
-          ...write.patch,
-          projectSettingsOverrides: Object.fromEntries(
-            Object.entries(overrides).map(([id, override]) => [
-              id,
-              {
-                ...override,
-                prismRoles: applyPrismRoleUpdate(
-                  resolveProjectSettings(settings, ProjectId.make(id)).settings.prismRoles,
-                  update,
-                ),
-              },
-            ]),
-          ),
-        },
-      };
-    }),
-  };
 }
 
 export function prismModelChoices(
@@ -171,7 +147,7 @@ export function prismModelChoices(
 
 export type PrismWriteExpectation = PrismRoleUpdate | { kind: "inherit" };
 
-/** A successful RPC is not enough: wait for the streamed settings before building another full override. */
+/** A successful RPC is not enough: wait for the streamed settings before building another override. */
 export function prismWriteObserved(
   plan: ReturnType<typeof planScopedSettingsPatch>,
   environments: Parameters<typeof planScopedSettingsPatch>[1],
@@ -183,8 +159,10 @@ export function prismWriteObserved(
     if (!settings) return false;
     const projectIds = Object.keys(write.patch.projectSettingsOverrides ?? {});
     if (expectation.kind === "inherit") {
-      return projectIds.every(
-        (id) => settings.projectSettingsOverrides[ProjectId.make(id)]?.prismRoles === undefined,
+      return projectIds.every((id) =>
+        Object.keys(settings.projectSettingsOverrides[ProjectId.make(id)]?.prismRoles ?? {}).every(
+          (role) => role === "promachos",
+        ),
       );
     }
     const effective = projectIds.length

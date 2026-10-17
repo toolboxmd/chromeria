@@ -13,6 +13,7 @@
 import {
   DEFAULT_SERVER_SETTINGS,
   ModelSelection,
+  type PrismProjectRoleKits,
   ProjectId,
   ProjectScript,
   ProjectSettingsOverrides,
@@ -621,6 +622,53 @@ function foldLegacyProjectSettings(
   };
 }
 
+/**
+ * One-time rewrite of project `prismRoles` overrides saved as whole kits.
+ * Those builds filled every role the project never set with empty lists and
+ * blank fields, so the roles ran on the caller's model instead of the
+ * environment kit (#395). Empty lists, blank instructions and the default
+ * `enabled` are dropped so those roles inherit again; set values are kept.
+ */
+export function migratePrismRoleOverrides(settings: ServerSettings): ServerSettings {
+  if (settings.prismRoleOverridesPartial) return settings;
+  const entries = Object.entries(settings.projectSettingsOverrides);
+  if (!entries.some(([, entry]) => entry.prismRoles !== undefined)) return settings;
+  const projectSettingsOverrides = Object.fromEntries(
+    entries.flatMap(([projectId, entry]) => {
+      if (entry.prismRoles === undefined) return [[projectId, entry]];
+      const { prismRoles, ...rest } = entry;
+      const kits = withoutUnsetPrismFields(prismRoles);
+      const next = kits === undefined ? rest : { ...rest, prismRoles: kits };
+      return Object.keys(next).length === 0 ? [] : [[projectId, next]];
+    }),
+  );
+  return { ...settings, projectSettingsOverrides, prismRoleOverridesPartial: true };
+}
+
+function withoutUnsetPrismFields(kits: PrismProjectRoleKits): PrismProjectRoleKits | undefined {
+  const isSet = (key: string, value: unknown) =>
+    value !== undefined &&
+    value !== "" &&
+    !(Array.isArray(value) && value.length === 0) &&
+    !(key === "enabled" && value === true);
+  const next: Record<string, Record<string, unknown>> = {};
+  for (const [role, kit] of Object.entries(kits)) {
+    const fields: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(kit ?? {})) {
+      if (key !== "lanes") {
+        if (isSet(key, value)) fields[key] = value;
+        continue;
+      }
+      const lanes = Object.fromEntries(
+        Object.entries(value ?? {}).filter(([lane, models]) => isSet(lane, models)),
+      );
+      if (Object.keys(lanes).length > 0) fields.lanes = lanes;
+    }
+    if (Object.keys(fields).length > 0) next[role] = fields;
+  }
+  return Object.keys(next).length > 0 ? (next as PrismProjectRoleKits) : undefined;
+}
+
 const make = Effect.gen(function* () {
   const { settingsPath } = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
@@ -808,7 +856,7 @@ const make = Effect.gen(function* () {
         : migrateLegacyProviderSettings(settings, legacyProviders, providerHistory),
     );
     const folded = settingsFileTrusted
-      ? foldLegacyProjectSettings(loaded, legacyProjectRows)
+      ? migratePrismRoleOverrides(foldLegacyProjectSettings(loaded, legacyProjectRows))
       : loaded;
     // Copied, not moved: the old entry is removed only after the new file is written. A token
     // that cannot be read or copied leaves the retired keys in place, so the migration runs again
