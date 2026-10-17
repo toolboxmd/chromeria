@@ -136,18 +136,24 @@ const roleKits = Schema.Struct({
   escalation: singleListKit(switchable),
 });
 
-/** A role saved under its legacy key loads as the renamed role. */
-const withLegacyRoleKeys = <S extends Schema.Top>(kits: S) =>
+/**
+ * A role saved under its legacy key loads as the renamed role. `kit` adapts
+ * each saved kit before the role schema decodes it.
+ */
+const withLegacyRoleKeys = <S extends Schema.Top>(
+  kits: S,
+  kit: (role: string, saved: unknown) => unknown = (_role, saved) => saved,
+) =>
   Schema.Record(Schema.String, Schema.Unknown).pipe(
     Schema.decodeTo(
       kits,
       SchemaTransformation.transform({
         decode: (saved) => {
           const renamed: Record<string, unknown> = {};
-          for (const [key, kit] of Object.entries(saved)) {
+          for (const [key, value] of Object.entries(saved)) {
             const role = LEGACY_PRISM_ROLE_KEYS[key];
-            if (role === undefined) renamed[key] = kit;
-            else if (saved[role] === undefined) renamed[role] = kit;
+            if (role === undefined) renamed[key] = kit(key, value);
+            else if (saved[role] === undefined) renamed[role] = kit(role, value);
           }
           return renamed as S["Encoded"];
         },
@@ -215,7 +221,14 @@ export type PrismRoleKitsPatch = typeof PrismRoleKitsPatch.Type;
  * environment change still reaches the project. A present empty model list
  * is a real value: that role runs on the caller's model.
  */
-export const PrismProjectRoleKits = withLegacyRoleKeys(PrismRoleKitsPatch);
+export const PrismProjectRoleKits = withLegacyRoleKeys(PrismRoleKitsPatch, (role, saved) => {
+  // Like `singleListKit`: a saved medium lane becomes the single list.
+  if (role === "worker" || typeof saved !== "object" || saved === null) return saved;
+  const { lanes, ...fields } = saved as { lanes?: { medium?: unknown }; models?: unknown };
+  return fields.models === undefined && lanes?.medium !== undefined
+    ? { ...fields, models: lanes.medium }
+    : fields;
+});
 export type PrismProjectRoleKits = typeof PrismProjectRoleKits.Type;
 
 /** `kits` with each present role field (and worker lane) of `patch` replacing its own. */

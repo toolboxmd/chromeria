@@ -175,7 +175,6 @@ describe("Prism role preferences", () => {
         worker: { instructions: "Project instructions", lanes: { medium: [second, first] } },
       },
     });
-    expect(next.prismRoleOverridesPartial).toBe(true);
     expect(resolveProjectSettings(next, projectId).settings.prismRoles.worker).toEqual({
       ...roles.worker,
       instructions: "Project instructions",

@@ -12,6 +12,7 @@ import {
   type ModelSelection,
   type ProjectId,
   type ProjectScopedServerSettingKey,
+  type PrismProjectRoleKits,
   type ProjectSettingsOverrides,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -292,13 +293,15 @@ function mergeSettingsEntries<Value>(
 function mergeProjectSettingsOverridesPatch(
   current: Readonly<Record<string, ProjectSettingsOverrides>>,
   patch: Readonly<Record<string, ProjectSettingsOverrides | null>>,
+  partialPrismRoles: boolean,
 ): Record<string, ProjectSettingsOverrides> {
   const next = new Map(Object.entries(current));
-  for (const [projectId, entry] of Object.entries(patch)) {
-    if (entry === null) {
+  for (const [projectId, written] of Object.entries(patch)) {
+    if (written === null) {
       next.delete(projectId);
       continue;
     }
+    const entry = partialPrismRoles ? written : withoutUnsetPrismRoles(written);
     const storedProviderInstances = current[projectId]?.providerInstances;
     next.set(projectId, {
       ...entry,
@@ -308,6 +311,46 @@ function mergeProjectSettingsOverridesPatch(
     });
   }
   return Object.fromEntries(next);
+}
+
+/**
+ * Drop the empty lists, blank instructions and default `enabled` that a
+ * whole-kit Prism override carries for roles the project never set, so those
+ * roles inherit the environment. Set values are kept; `undefined` when
+ * nothing is left.
+ */
+export function dropUnsetPrismRoleFields(
+  kits: PrismProjectRoleKits,
+): PrismProjectRoleKits | undefined {
+  const isSet = (key: string, value: unknown) =>
+    value !== undefined &&
+    value !== "" &&
+    !(Array.isArray(value) && value.length === 0) &&
+    !(key === "enabled" && value === true);
+  const next: Record<string, Record<string, unknown>> = {};
+  for (const [role, kit] of Object.entries(kits)) {
+    const fields: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(kit ?? {})) {
+      if (key !== "lanes") {
+        if (isSet(key, value)) fields[key] = value;
+        continue;
+      }
+      const lanes = Object.fromEntries(
+        Object.entries(value ?? {}).filter(([lane, models]) => isSet(lane, models)),
+      );
+      if (Object.keys(lanes).length > 0) fields.lanes = lanes;
+    }
+    if (Object.keys(fields).length > 0) next[role] = fields;
+  }
+  return Object.keys(next).length > 0 ? (next as PrismProjectRoleKits) : undefined;
+}
+
+/** The entry with its Prism override reduced to the roles it actually set. */
+export function withoutUnsetPrismRoles(entry: ProjectSettingsOverrides): ProjectSettingsOverrides {
+  if (entry.prismRoles === undefined) return entry;
+  const { prismRoles, ...rest } = entry;
+  const kits = dropUnsetPrismRoleFields(prismRoles);
+  return kits === undefined ? rest : { ...rest, prismRoles: kits };
 }
 
 /**
@@ -426,6 +469,8 @@ export function applyServerSettingsPatch(
     projectAgentBrowserAccessOverrides: _legacyBrowserAccess,
     projectAutoPullOverrides: _legacyAutoPull,
     projectScriptOverrides: _legacyScripts,
+    // A write declaration, not a value: only a declared write sets the marker.
+    prismRoleOverridesPartial: partialPrismRoles,
     ...patchForMerge
   } = patch;
   const currentBackgroundActivity = normalizeServerBackgroundActivitySettings(current);
@@ -587,11 +632,11 @@ export function applyServerSettingsPatch(
               mergeProjectSettingsOverridesPatch(
                 current.projectSettingsOverrides,
                 projectSettingsOverridesPatch,
+                partialPrismRoles === true,
               ),
             ).filter(([, entry]) => Object.keys(entry).length > 0),
           ),
-          // Entries written from here on hold partial Prism kits.
-          prismRoleOverridesPartial: true,
+          ...(partialPrismRoles === true ? { prismRoleOverridesPartial: true } : {}),
         }
       : {}),
     ...(patch.defaultModelSelection !== undefined

@@ -1212,8 +1212,8 @@ export const ServerSettings = Schema.Struct({
    * Whether project `prismRoles` overrides are partial role maps. Earlier
    * builds stored a whole kit whose unset roles were empty lists, which ran
    * those roles on the caller's model; the one-time rewrite drops them so
-   * the roles inherit the environment again. Any project override write
-   * sets it, so a later deliberate empty list is never rewritten.
+   * the roles inherit the environment again. A write that declares partial
+   * overrides also sets it, so a later deliberate empty list is never rewritten.
    */
   prismRoleOverridesPartial: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /**
@@ -1615,6 +1615,15 @@ export const ServerSettingsPatch = Schema.Struct({
   projectSettingsOverrides: Schema.optionalKey(
     Schema.Record(ProjectId, Schema.NullOr(ProjectSettingsOverrides)),
   ),
+  /**
+   * The writer stores partial Prism project overrides. Clients built before
+   * that decode an override as whole kits and send unset roles back as empty
+   * lists, so a write without this flag drops empty Prism lists from its
+   * entries; only a declared write can store an empty list (the caller's
+   * model). Client runtime sets it on every project override write; it
+   * never clears the stored marker.
+   */
+  prismRoleOverridesPartial: Schema.optionalKey(Schema.Boolean),
   enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
   enableDeviceSupport: Schema.optionalKey(Schema.Boolean),
   deviceOnboardingCompleted: Schema.optionalKey(Schema.Boolean),
@@ -1700,7 +1709,7 @@ export function requiredScopesForServerSettingsPatch(
   let changesProviders = false;
   let changesSettings = false;
   for (const [key, value] of Object.entries(patch)) {
-    if (value === undefined) continue;
+    if (value === undefined || key === "prismRoleOverridesPartial") continue;
     if (key === "providers" || key === "providerInstances" || key === "usageLimitSources") {
       changesProviders = true;
     } else {

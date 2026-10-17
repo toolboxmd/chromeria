@@ -13,7 +13,6 @@
 import {
   DEFAULT_SERVER_SETTINGS,
   ModelSelection,
-  type PrismProjectRoleKits,
   ProjectId,
   ProjectScript,
   ProjectSettingsOverrides,
@@ -56,6 +55,7 @@ import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
 import { fromJsonStringPretty, fromLenientJson } from "@t3tools/shared/schemaJson";
 import {
   applyServerSettingsPatch,
+  withoutUnsetPrismRoles,
   deriveLegacyProjectOverrides,
   fallbackTextGenerationModelSelection,
   isModelSelectionProviderEnabled,
@@ -635,38 +635,11 @@ export function migratePrismRoleOverrides(settings: ServerSettings): ServerSetti
   if (!entries.some(([, entry]) => entry.prismRoles !== undefined)) return settings;
   const projectSettingsOverrides = Object.fromEntries(
     entries.flatMap(([projectId, entry]) => {
-      if (entry.prismRoles === undefined) return [[projectId, entry]];
-      const { prismRoles, ...rest } = entry;
-      const kits = withoutUnsetPrismFields(prismRoles);
-      const next = kits === undefined ? rest : { ...rest, prismRoles: kits };
+      const next = withoutUnsetPrismRoles(entry);
       return Object.keys(next).length === 0 ? [] : [[projectId, next]];
     }),
   );
   return { ...settings, projectSettingsOverrides, prismRoleOverridesPartial: true };
-}
-
-function withoutUnsetPrismFields(kits: PrismProjectRoleKits): PrismProjectRoleKits | undefined {
-  const isSet = (key: string, value: unknown) =>
-    value !== undefined &&
-    value !== "" &&
-    !(Array.isArray(value) && value.length === 0) &&
-    !(key === "enabled" && value === true);
-  const next: Record<string, Record<string, unknown>> = {};
-  for (const [role, kit] of Object.entries(kits)) {
-    const fields: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(kit ?? {})) {
-      if (key !== "lanes") {
-        if (isSet(key, value)) fields[key] = value;
-        continue;
-      }
-      const lanes = Object.fromEntries(
-        Object.entries(value ?? {}).filter(([lane, models]) => isSet(lane, models)),
-      );
-      if (Object.keys(lanes).length > 0) fields.lanes = lanes;
-    }
-    if (Object.keys(fields).length > 0) next[role] = fields;
-  }
-  return Object.keys(next).length > 0 ? (next as PrismProjectRoleKits) : undefined;
 }
 
 const make = Effect.gen(function* () {

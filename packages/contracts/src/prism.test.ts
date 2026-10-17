@@ -162,6 +162,24 @@ describe("Prism role kits", () => {
     expect(overrides.prismRoles).toEqual({ reviewer: { models: [luna] }, planner: { models: [] } });
   });
 
+  it("keep a project override's legacy medium lane as the role's list, without defaults", () => {
+    const opus = { instanceId: "claudeAgent", model: "claude-opus-5-5" };
+    const luna = { instanceId: "codex", model: "gpt-5.6-luna" };
+    expect(
+      decodeProjectOverrides({
+        prismRoles: {
+          reviewer: { lanes: { medium: [opus], hard: [luna] } },
+          retry: { models: [luna], lanes: { medium: [opus] } },
+          worker: { lanes: { medium: [luna] } },
+        },
+      }).prismRoles,
+    ).toEqual({
+      reviewer: { models: [opus] },
+      retry: { models: [luna] },
+      worker: { lanes: { medium: [luna] } },
+    });
+  });
+
   it("patch one lane of the worker or one field of another role without defaults", () => {
     expect(decodeKitsPatch({ worker: { lanes: { hard: [] } } })).toEqual({
       worker: { lanes: { hard: [] } },

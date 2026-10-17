@@ -2275,11 +2275,13 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const grok = { instanceId: ProviderInstanceId.make("grok"), model: "grok-4.7" };
       const luna = { instanceId: codex, model: "gpt-6-luna" };
       // What earlier builds stored: every role filled in, one lane actually set.
-      const legacyKits = (yield* Schema.encodeEffect(PrismRoleKits)(
-        DEFAULT_PRISM_ROLE_KITS,
-      )) as Record<string, Record<string, unknown>>;
+      const legacyKits = (yield* encodePrismRoleKits(DEFAULT_PRISM_ROLE_KITS)) as Record<
+        string,
+        Record<string, unknown>
+      >;
       const tuned = ProjectId.make("project-tuned");
       const untouched = ProjectId.make("project-untouched");
+      const lanes = ProjectId.make("project-lanes");
       yield* fileSystem.writeFileString(
         serverConfig.settingsPath,
         JSON.stringify({
@@ -2295,6 +2297,8 @@ it.layer(NodeServices.layer)("server settings", (it) => {
               },
             },
             [untouched]: { prismRoles: legacyKits },
+            // Saved before single lists: the medium lane is the reviewer's list.
+            [lanes]: { prismRoles: { reviewer: { lanes: { easy: [], medium: [luna] } } } },
           },
         }),
       );
@@ -2306,6 +2310,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           defaultAutoPull: true,
           prismRoles: { promachos: { models: [grok] }, worker: { lanes: { medium: [luna] } } },
         },
+        [lanes]: { prismRoles: { reviewer: { models: [luna] } } },
       });
       const persisted = yield* decodeServerSettingsJson(
         yield* fileSystem.readFileString(serverConfig.settingsPath),
