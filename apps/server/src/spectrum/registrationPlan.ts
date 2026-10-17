@@ -7,6 +7,16 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import type { SpectrumState } from "./state.ts";
 import { insertSpectrum } from "./store.ts";
 
+/** Shells copy the caller's acknowledgements, so the commit requires the exact list that was read. */
+function sameAcknowledgements(
+  current: OrchestrationV2AppThread["forkResumedRetirements"],
+  read: OrchestrationV2AppThread["forkResumedRetirements"],
+): boolean {
+  const a = current ?? [];
+  const b = read ?? [];
+  return a.length === b.length && a.every((token, index) => token === b[index]);
+}
+
 /** Registration and lineage shells commit together; only fork SQL is written by this plan. */
 export function spectrumRegistrationPlan(
   state: SpectrumState,
@@ -25,6 +35,7 @@ export function spectrumRegistrationPlan(
           current.runtimeMode !== caller.runtimeMode ||
           current.interactionMode !== caller.interactionMode ||
           current.linkOrigin?.sessionId !== caller.linkOrigin?.sessionId ||
+          !sameAcknowledgements(current.forkResumedRetirements, caller.forkResumedRetirements) ||
           threadOwner(current) !== threadOwner(caller)
         )
           return yield* new ForkCommitGuardRejected({ threadId, kind: "state_conflict" });
