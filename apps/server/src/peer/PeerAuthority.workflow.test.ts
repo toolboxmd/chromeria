@@ -1,3 +1,7 @@
+import { PeerDispatchAuthority } from "./peerEffectAuthority.ts";
+import { vi } from "vite-plus/test";
+import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
+import { ProviderTurnId } from "@t3tools/contracts";
 import { assertNotLinked } from "../mcp/linkOrigin.ts";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
@@ -2157,4 +2161,681 @@ it.live(
         expect((yield* Effect.result(b.authority.checkThread(child)))._tag).toBe("Failure");
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+const activeProvider = (
+  node: Node,
+  target: ThreadId,
+  capabilities: Adapter.ProviderAdapterV2SessionRuntime["providerSession"]["capabilities"] = CodexProviderCapabilitiesV2,
+) =>
+  Effect.gen(function* () {
+    const projection = yield* node.orchestrator.getThreadProjection(target);
+    const run = projection.runs[0]!;
+    const providerThread = projection.providerThreads[0]!;
+    const now = yield* DateTime.now;
+    const providerSession = {
+      id: providerThread.providerSessionId!,
+      driver,
+      providerInstanceId: instanceId,
+      status: "running" as const,
+      cwd: process.cwd(),
+      model: selection.model,
+      capabilities,
+      createdAt: now,
+      updatedAt: now,
+      lastError: null,
+    };
+    yield* node.sink.write({
+      events: [
+        {
+          id: EventId.make(`${target}-${run.activeAttemptId}-attached`),
+          type: "provider-session.attached",
+          threadId: target,
+          occurredAt: now,
+          payload: providerSession,
+        },
+        {
+          id: EventId.make(`${target}-${run.activeAttemptId}-turn`),
+          type: "provider-turn.updated",
+          threadId: target,
+          runId: run.id,
+          occurredAt: now,
+          payload: {
+            id: ProviderTurnId.make(`${target}-${run.activeAttemptId}-turn`),
+            providerThreadId: providerThread.id,
+            nodeId: run.rootNodeId!,
+            runAttemptId: run.activeAttemptId,
+            nativeTurnRef: null,
+            ordinal: 1,
+            status: "running",
+            startedAt: now,
+            completedAt: null,
+          },
+        },
+      ],
+    });
+    const sessions = Context.get(node.runtime, ProviderSessionManager.ProviderSessionManagerV2);
+    const spy = vi
+      .spyOn(sessions, "get")
+      .mockReturnValue(
+        Effect.succeed(Option.some({ providerSession } as Adapter.ProviderAdapterV2SessionRuntime)),
+      );
+    yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
+
+    return run;
+  });
+
+it.live.each(["auto", "steer", "restart", "restart-only"] as const)(
+  "accepted active %s input preserves contributor authority",
+  (mode) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(descriptorOf(`r3-${mode}-b`, "B", { peerAuthority: 1 }));
+        const a = yield* makeNode(descriptorOf(`r3-${mode}-a`, "A", { peerAuthority: 1 }));
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make(`r3-${mode}-source`);
+        const target = ThreadId.make(`r3-${mode}-target`);
+        const unrelated = ThreadId.make(`r3-${mode}-unrelated`);
+        yield* seedParent(a, parent);
+        yield* seedParent(b, target);
+        yield* seedParent(b, unrelated);
+        yield* a.forwarding.call(
+          caller(a, parent),
+          ProjectToolkit.tools.t3_project_list,
+          b.environmentId,
+          {},
+        );
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({
+          ...grant,
+          resourceScope: "environment-resources",
+          preview: true,
+          device: true,
+        });
+        yield* activeProvider(
+          b,
+          target,
+          mode === "restart-only"
+            ? {
+                ...CodexProviderCapabilitiesV2,
+                turns: { ...CodexProviderCapabilitiesV2.turns, supportsActiveSteering: false },
+              }
+            : CodexProviderCapabilitiesV2,
+        );
+        const sent = yield* nativeCall(
+          a,
+          parent,
+          "t3_thread_send",
+          {
+            environmentId: b.environmentId,
+            threadId: target,
+            message: "Incoming peer instruction",
+            mode: mode === "restart-only" ? "auto" : mode,
+            clientRequestId: `r3-${mode}-incoming`,
+          },
+          new Set(["orchestration"]),
+        );
+        expect(sent.isError, json(sent.content)).not.toBe(true);
+        const after = yield* b.orchestrator.getThreadProjection(target);
+        expect(after.runs).toHaveLength(1);
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const effects = yield* sql<{
+          effect_id: string;
+          effect_type: string;
+        }>`SELECT effect_id,effect_type FROM orchestration_v2_effect_outbox WHERE thread_id=${target} AND effect_type=${mode === "auto" || mode === "steer" ? "provider-turn.steer" : "provider-turn.restart"}`;
+        expect(effects).toHaveLength(1);
+        yield* b.authority.checkEffect(effects[0]!.effect_id, target);
+        const executed = yield* Ref.make<ReadonlyArray<string>>([]);
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
+          Effect.provide(
+            EffectWorker.layerWithOptions({ maxAttempts: 1 }).pipe(
+              Layer.provide(
+                Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
+                  execute: (effect) => Ref.update(executed, (ids) => [...ids, effect.id]),
+                }),
+              ),
+              Layer.provide(Layer.succeed(PeerAuthority.PeerAuthority, b.authority)),
+              Layer.provide(Layer.succeedContext(b.runtime)),
+            ),
+          ),
+        );
+        yield* worker.drain();
+        expect((yield* Ref.get(executed)).includes(effects[0]!.effect_id)).toBe(true);
+        const credential = yield* b.registry.issue({
+          threadId: target,
+          providerInstanceId: instanceId,
+          capabilities: new Set(["orchestration", "preview", "device"]),
+        });
+        const owner = yield* b.authority.forThread(target);
+        yield* a.links.unlink(b.environmentId);
+        const forbidden = yield* nativeCall(
+          b,
+          target,
+          "t3_thread_send",
+          {
+            threadId: unrelated,
+            message: "Forbidden after active contributor unlink",
+            mode: "queue",
+            clientRequestId: `r3-${mode}-escape`,
+          },
+          undefined,
+          credential,
+        );
+        const messages = (yield* b.threads.getThreadRecords(unrelated, ["messages"])).messages;
+        expect({
+          owner: owner !== undefined,
+          preview: credential.config.capabilities?.has("preview"),
+          device: credential.config.capabilities?.has("device"),
+          denied: forbidden.isError === true,
+          committed: messages.some((m) => m.text === "Forbidden after active contributor unlink"),
+        }).toEqual({ owner: true, preview: false, device: false, denied: true, committed: false });
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live.each(["first", "last"] as const)(
+  "active inputs retain every contributor after %s revocation",
+  (revoked) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(
+          descriptorOf(`multi-${revoked}-b`, "B", { peerAuthority: 1 }),
+          "disk",
+        );
+        const a = yield* makeNode(descriptorOf(`multi-${revoked}-a`, "A", { peerAuthority: 1 }));
+        const d = yield* makeNode(descriptorOf(`multi-${revoked}-d`, "D", { peerAuthority: 1 }));
+        const c = yield* makeNode(descriptorOf(`multi-${revoked}-c`, "C", { peerAuthority: 1 }));
+        yield* linkTo(b.links, c, "full-access");
+        const target = ThreadId.make(`multi-${revoked}-target`);
+        const unrelated = ThreadId.make(`multi-${revoked}-local`);
+        yield* seedParent(b, target);
+        yield* seedParent(b, unrelated);
+        const run = yield* activeProvider(b, target);
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const cached = yield* b.registry.issue({
+          threadId: target,
+          providerInstanceId: instanceId,
+          capabilities: new Set(["orchestration", "preview", "device"]),
+        });
+        for (const [node, caps] of [
+          [a, new Set(["orchestration", "device"] as const)],
+          [d, new Set(["orchestration", "preview"] as const)],
+        ] as const) {
+          yield* linkTo(node.links, b, "full-access");
+          const parent = ThreadId.make(`multi-${node.environmentId}-source`);
+          yield* seedParent(node, parent);
+          yield* node.forwarding.call(
+            caller(node, parent),
+            ProjectToolkit.tools.t3_project_list,
+            b.environmentId,
+            {},
+          );
+          for (const grant of yield* b.authority.grants)
+            yield* b.authority.setGrant({
+              ...grant,
+              resourceScope: "environment-resources",
+              preview: true,
+              device: true,
+              onward: true,
+            });
+          const credential = yield* node.registry.issue({
+            threadId: parent,
+            providerInstanceId: instanceId,
+            capabilities: caps,
+          });
+          const args = {
+            environmentId: b.environmentId,
+            threadId: target,
+            message: `Input from ${node.environmentId}`,
+            mode: "steer",
+            clientRequestId: `input-${node.environmentId}`,
+          };
+          const accepted = yield* nativeCall(
+            node,
+            parent,
+            "t3_thread_send",
+            args,
+            caps,
+            credential,
+          );
+          expect(accepted.isError, json(accepted.content)).not.toBe(true);
+          const beforeReplay = yield* b.authority.forThread(target);
+          const replay = yield* nativeCall(node, parent, "t3_thread_send", args, caps, credential);
+          expect(replay.isError, json(replay.content)).not.toBe(true);
+          expect((yield* b.authority.forThread(target))?.id).toBe(beforeReplay?.id);
+        }
+        const both = yield* b.authority.checkThread(target);
+        expect(both?.context?.type).toBe("run-inputs");
+        expect(both?.ceiling.capabilities).not.toContain("preview");
+        expect(both?.ceiling.capabilities).not.toContain("device");
+        expect(
+          (yield* b.registry.resolve(cached.config.authorizationHeader.slice(7)))?.authority?.id,
+        ).toBe(both?.id);
+        // Local steering of this same run must not replace its accepted contributors.
+        const local = yield* nativeCall(b, unrelated, "t3_thread_send", {
+          threadId: target,
+          message: "Local same-run input",
+          mode: "steer",
+          clientRequestId: "local-steer",
+        });
+        expect(local.isError, json(local.content)).not.toBe(true);
+        expect((yield* b.authority.forThread(target))?.id).toBe(both?.id);
+        const childCall = yield* nativeCall(b, target, "create_threads", {
+          threads: [{ prompt: "Inherited active inputs" }],
+        });
+        expect(childCall.isError, json(childCall.content)).not.toBe(true);
+        const child = (yield* decodeCreatedThreads(childCall.structuredContent)).threads[0]!
+          .threadId;
+        expect((yield* b.authority.forThread(child))?.id).toBe(both?.id);
+        yield* activate(b, child);
+        // Combining inputs must preserve the existing created-work predicate:
+        // narrowing consent denies the ordinary parent, not its actual new child.
+        const widerGrants = yield* b.authority.grants;
+        for (const grant of widerGrants)
+          yield* b.authority.setGrant({ ...grant, resourceScope: "created-work" });
+        expect((yield* Effect.result(b.authority.checkThread(target)))._tag).toBe("Failure");
+        const rename = yield* nativeCall(b, child, "t3_thread_update", {
+          threadId: child,
+          action: "rename",
+          title: "Still legitimate created work",
+        });
+        expect(rename.isError, json(rename.content)).not.toBe(true);
+        expect((yield* b.threads.getThreadShell(child))?.title).toBe(
+          "Still legitimate created work",
+        );
+        for (const source of [a, d]) {
+          const resourceUpdate = yield* nativeCall(
+            source,
+            ThreadId.make(`multi-${source.environmentId}-source`),
+            "t3_thread_update",
+            {
+              environmentId: b.environmentId,
+              threadId: child,
+              action: "rename",
+              title: `Created under ${source.environmentId}`,
+            },
+          );
+          expect(resourceUpdate.isError, json(resourceUpdate.content)).not.toBe(true);
+          expect((yield* b.threads.getThreadShell(child))?.title).toBe(
+            `Created under ${source.environmentId}`,
+          );
+        }
+        for (const grant of widerGrants) yield* b.authority.setGrant(grant);
+        const onwardCall = yield* nativeCall(b, target, "t3_thread_launch", {
+          environmentId: c.environmentId,
+          projectId: c.project.id,
+          modelSelection: selection,
+          title: "Multiple contributors onward",
+          message: "Both contributor constraints onward",
+          clientRequestId: "multi-onward",
+        });
+        expect(onwardCall.isError, json(onwardCall.content)).not.toBe(true);
+        const onward = (yield* decodeLaunchReceipt(onwardCall.structuredContent)).threadId;
+        const onwardOwner = yield* c.authority.checkThread(onward);
+        expect(onwardOwner?.ceiling.capabilities).not.toContain("preview");
+        expect(onwardOwner?.ceiling.capabilities).not.toContain("device");
+        const restored = yield* restoreAuthority(b);
+        expect((yield* restored.forThread(target))?.id).toBe(both?.id);
+        const now = yield* DateTime.now;
+        const recoveryEffects = [];
+        // Both supported continuation facts preserve the complete immutable input set.
+        for (const kind of [
+          "restartContinuationOfRunId",
+          "forkPrismContinuationSourceRunId",
+        ] as const) {
+          const id = RunId.make(`${target}-${kind}`);
+          const effectId = `effect:${id}`;
+          yield* b.sink.writeWithEffects({
+            events: [
+              {
+                id: EventId.make(`event:${id}`),
+                type: "run.created",
+                threadId: target,
+                runId: id,
+                occurredAt: now,
+                providerInstanceId: instanceId,
+                payload: {
+                  ...run,
+                  id,
+                  ordinal: run.ordinal + (kind === "restartContinuationOfRunId" ? 1 : 2),
+                  [kind]: run.id,
+                  status: "queued",
+                  queuePosition: 1,
+                },
+              },
+            ],
+            effects: [
+              {
+                id: effectId,
+                commandId: CommandId.make(`command:${id}`),
+                threadId: target,
+                request: { type: "provider-turn.start", runId: id },
+              },
+            ],
+          });
+          yield* b.authority.checkEffect(effectId, target);
+          const inherited = yield* sql<{
+            record_id: string;
+          }>`SELECT record_id FROM peer_run_authority WHERE run_id=${id}`;
+          expect(inherited[0]?.record_id).toBe(both?.id);
+          recoveryEffects.push(effectId);
+        }
+        // Unowned local recovery never adopts a different ambient caller.
+        const localRun = (yield* b.threads.getThreadRecords(unrelated, ["runs"])).runs[0]!;
+        const localId = RunId.make(`${target}-local-continuation`);
+        yield* b.sink
+          .writeWithEffects({
+            events: [
+              {
+                id: EventId.make(`event:${localId}`),
+                type: "run.created",
+                threadId: unrelated,
+                runId: localId,
+                occurredAt: now,
+                providerInstanceId: instanceId,
+                payload: {
+                  ...localRun,
+                  id: localId,
+                  ordinal: localRun.ordinal + 1,
+                  restartContinuationOfRunId: localRun.id,
+                  status: "queued",
+                  queuePosition: 1,
+                },
+              },
+            ],
+            effects: [
+              {
+                id: `effect:${localId}`,
+                commandId: CommandId.make(`command:${localId}`),
+                threadId: unrelated,
+                request: { type: "provider-turn.start", runId: localId },
+              },
+            ],
+          })
+          .pipe(Effect.provideService(PeerDispatchAuthority, both?.id));
+        expect(
+          yield* sql`SELECT record_id FROM peer_run_authority WHERE run_id=${localId}`,
+        ).toHaveLength(0);
+        yield* (revoked === "first" ? a : d).links.unlink(b.environmentId);
+        expect((yield* Effect.result(b.authority.checkThread(target)))._tag).toBe("Failure");
+        for (const effectId of recoveryEffects)
+          expect((yield* Effect.result(b.authority.checkEffect(effectId, target)))._tag).toBe(
+            "Failure",
+          );
+        expect((yield* Effect.result(b.authority.checkThread(child)))._tag).toBe("Failure");
+        expect((yield* Effect.result(c.authority.checkThread(onward)))._tag).toBe("Failure");
+        yield* b.authority.checkEffect(`effect:${localId}`, unrelated);
+        const forbidden = yield* nativeCall(
+          b,
+          target,
+          "t3_thread_send",
+          {
+            threadId: unrelated,
+            message: "Forbidden multi-contributor mutation",
+            mode: "queue",
+            clientRequestId: "multi-denied",
+          },
+          undefined,
+          cached,
+        );
+        expect(forbidden.isError).toBe(true);
+        expect(
+          (yield* b.threads.getThreadRecords(unrelated, ["messages"])).messages.some(
+            (message) => message.text === "Forbidden multi-contributor mutation",
+          ),
+        ).toBe(false);
+        expect(
+          yield* sql`SELECT record_id FROM peer_thread_authority WHERE thread_id=${target}`,
+        ).toHaveLength(0);
+        // A genuinely independent local run does not inherit ended inputs.
+        const finishedAt = yield* DateTime.now;
+        const ended = (yield* b.threads.getThreadRecords(target, ["runs"])).runs;
+        yield* b.sink.write({
+          events: ended.map((endedRun) => ({
+            id: EventId.make(`end:${endedRun.id}`),
+            type: "run.updated" as const,
+            threadId: target,
+            runId: endedRun.id,
+            occurredAt: finishedAt,
+            providerInstanceId: instanceId,
+            payload: {
+              ...endedRun,
+              status: "completed" as const,
+              queuePosition: null,
+              completedAt: finishedAt,
+            },
+          })),
+        });
+        yield* b.threads.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${target}-local-next`),
+          threadId: target,
+          messageId: MessageId.make(`${target}-local-next`),
+          text: "Independent local run",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* activate(b, target);
+        expect(yield* b.authority.forThread(target)).toBeUndefined();
+        const localAfter = yield* nativeCall(
+          b,
+          target,
+          "t3_thread_send",
+          {
+            threadId: unrelated,
+            message: "Permitted later local mutation",
+            mode: "queue",
+            clientRequestId: "multi-local-next",
+          },
+          undefined,
+          cached,
+        );
+        expect(localAfter.isError, json(localAfter.content)).not.toBe(true);
+        expect(
+          (yield* b.threads.getThreadRecords(unrelated, ["messages"])).messages.some(
+            (message) => message.text === "Permitted later local mutation",
+          ),
+        ).toBe(true);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("promoting a queued input retains its original contributor on the active run", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const b = yield* makeNode(descriptorOf("reattach-b", "B", { peerAuthority: 1 }), "disk");
+      const a = yield* makeNode(descriptorOf("reattach-a", "A", { peerAuthority: 1 }));
+      yield* linkTo(a.links, b, "full-access");
+      const parent = ThreadId.make("reattach-source"),
+        target = ThreadId.make("reattach-target");
+      yield* seedParent(a, parent);
+      yield* seedParent(b, target);
+      const active = yield* activeProvider(b, target);
+      yield* a.forwarding.call(
+        caller(a, parent),
+        ProjectToolkit.tools.t3_project_list,
+        b.environmentId,
+        {},
+      );
+      const grant = (yield* b.authority.grants)[0]!;
+      yield* b.authority.setGrant({
+        ...grant,
+        resourceScope: "environment-resources",
+        preview: true,
+        device: true,
+      });
+      const queued = yield* nativeCall(
+        a,
+        parent,
+        "t3_thread_send",
+        {
+          environmentId: b.environmentId,
+          threadId: target,
+          message: "Move this accepted input",
+          mode: "queue",
+          clientRequestId: "reattach-queued",
+        },
+        new Set(["orchestration"]),
+      );
+      expect(queued.isError, json(queued.content)).not.toBe(true);
+      const queuedRun = (yield* b.threads.getThreadRecords(target, ["runs"])).runs.find(
+        (run) => run.status === "queued",
+      )!;
+      expect(yield* b.authority.forThread(target)).toBeUndefined();
+      // Simulate the additive migration for an already accepted queued input.
+      const sql = Context.get(b.database, SqlClient.SqlClient);
+      yield* sql`DROP TABLE IF EXISTS peer_message_authority`;
+      yield* restoreAuthority(b);
+      yield* b.threads.dispatch({
+        type: "queued-message.promote-to-steer",
+        commandId: CommandId.make("reattach-promote"),
+        threadId: target,
+        queuedRunId: queuedRun.id,
+        targetRunId: active.id,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const owner = yield* b.authority.checkThread(target);
+      expect(owner).toBeDefined();
+      expect(owner?.ceiling.capabilities).not.toContain("preview");
+      const effects = yield* sql<{
+        effect_id: string;
+      }>`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id=${target} AND effect_type IN ('provider-turn.steer','provider-turn.restart')`;
+      expect(effects).toHaveLength(1);
+      yield* b.authority.checkEffect(effects[0]!.effect_id, target);
+      const localTarget = ThreadId.make("reattach-local-target");
+      yield* seedParent(b, localTarget);
+      const localRun = yield* activeProvider(b, localTarget);
+      yield* b.threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("reattach-local-queued"),
+        threadId: localTarget,
+        messageId: MessageId.make("reattach-local-queued"),
+        text: "A genuinely local queued instruction",
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const localQueued = (yield* b.threads.getThreadRecords(localTarget, ["runs"])).runs.find(
+        (run) => run.status === "queued",
+      )!;
+      // An unrelated authenticated promoter does not become this input's author.
+      yield* b.threads
+        .dispatch({
+          type: "queued-message.promote-to-steer",
+          commandId: CommandId.make("reattach-local-promote"),
+          threadId: localTarget,
+          queuedRunId: localQueued.id,
+          targetRunId: localRun.id,
+          createdBy: "user",
+          creationSource: "web",
+        })
+        .pipe(Effect.provideService(PeerDispatchAuthority, owner?.id));
+      expect(yield* b.authority.forThread(localTarget)).toBeUndefined();
+      const localEffects = yield* sql<{
+        effect_id: string;
+      }>`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id=${localTarget} AND effect_type IN ('provider-turn.steer','provider-turn.restart')`;
+      expect(localEffects).toHaveLength(1);
+      yield* a.links.unlink(b.environmentId);
+      yield* b.authority.checkEffect(localEffects[0]!.effect_id, localTarget);
+      expect(
+        (yield* Effect.result(b.authority.checkEffect(effects[0]!.effect_id, target)))._tag,
+      ).toBe("Failure");
+      const forbidden = yield* nativeCall(b, target, "t3_thread_send", {
+        threadId: target,
+        message: "Forbidden reattached mutation",
+        mode: "queue",
+        clientRequestId: "reattach-denied",
+      });
+      expect(forbidden.isError).toBe(true);
+      expect(
+        (yield* b.threads.getThreadRecords(target, ["messages"])).messages.some(
+          (message) => message.text === "Forbidden reattached mutation",
+        ),
+      ).toBe(false);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("non-input effect persistence retains its caller without assigning the local run", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const b = yield* makeNode(descriptorOf("stop-owner-b", "B", { peerAuthority: 1 }));
+      const a = yield* makeNode(descriptorOf("stop-owner-a", "A", { peerAuthority: 1 }));
+      yield* linkTo(a.links, b, "full-access");
+      const parent = ThreadId.make("stop-owner-source"),
+        target = ThreadId.make("stop-owner-local-target");
+      yield* seedParent(a, parent);
+      yield* seedParent(b, target);
+      yield* activeProvider(b, target);
+      const projection = yield* b.orchestrator.getThreadProjection(target);
+      const scope = projection.checkpointScopes[0]!;
+      expect(scope).toBeDefined();
+      const root = projection.nodes.find((node) => node.id === projection.runs[0]!.rootNodeId)!;
+      const at = yield* DateTime.now;
+      yield* b.sink.write({
+        events: [
+          {
+            id: EventId.make("stop-owner-checkpoint-root"),
+            type: "node.updated",
+            threadId: target,
+            runId: root.runId!,
+            occurredAt: at,
+            payload: { ...root, checkpointScopeId: scope.id },
+          },
+        ],
+      });
+      yield* a.forwarding.call(
+        caller(a, parent),
+        ProjectToolkit.tools.t3_project_list,
+        b.environmentId,
+        {},
+      );
+      const grant = (yield* b.authority.grants)[0]!;
+      yield* b.authority.setGrant({ ...grant, resourceScope: "environment-resources" });
+      const stopped = yield* nativeCall(a, parent, "t3_thread_interrupt", {
+        environmentId: b.environmentId,
+        threadId: target,
+        clientRequestId: "stop-owner-input",
+      });
+      expect(stopped.isError, json(stopped.content)).not.toBe(true);
+      const sql = Context.get(b.database, SqlClient.SqlClient);
+      const intake = yield* sql<{
+        record_id: string;
+      }>`SELECT owner.record_id FROM peer_effect_authority AS owner JOIN orchestration_v2_effect_outbox AS effect ON effect.effect_id=owner.effect_id WHERE effect.thread_id=${target} AND effect.effect_type='provider-turn.interrupt'`;
+      expect(intake).toHaveLength(1);
+      // Exercise the existing non-input effect hook with the actual accepted
+      // caller. Provider execution/completion is an external fixture here.
+      yield* b.sink
+        .writeWithEffects({
+          events: [],
+          effects: [
+            {
+              id: "effect:non-input-capture",
+              commandId: CommandId.make("non-input-capture"),
+              threadId: target,
+              request: {
+                type: "checkpoint.capture",
+                runId: projection.runs[0]!.id,
+                scopeId: scope.id,
+              },
+            },
+          ],
+        })
+        .pipe(Effect.provideService(PeerDispatchAuthority, intake[0]!.record_id));
+      const captures = yield* sql<{
+        effect_id: string;
+      }>`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id=${target} AND effect_type='checkpoint.capture'`;
+      expect(captures).toHaveLength(1);
+      yield* b.authority.checkEffect(captures[0]!.effect_id, target);
+      yield* a.links.unlink(b.environmentId);
+      expect(
+        (yield* Effect.result(b.authority.checkEffect(captures[0]!.effect_id, target)))._tag,
+      ).toBe("Failure");
+      expect(yield* sql`SELECT record_id FROM peer_run_authority`).toHaveLength(0);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
 );

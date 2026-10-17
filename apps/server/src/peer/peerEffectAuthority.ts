@@ -1,10 +1,14 @@
-import type { OrchestrationV2DomainEvent } from "@t3tools/contracts";
+import { sha256 } from "@noble/hashes/sha2";
+import * as Hex from "effect/encoding/Hex";
+import type { OrchestrationV2DomainEvent, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import { Authority, intersect } from "./PeerAuthorityRecord.ts";
 import type { PendingOrchestrationEffectV2 } from "../orchestration-v2/EffectOutbox.ts";
 
-/** Set only by authenticated tool intake. The event sink persists it with the effect intent. */
+/** Set only by authenticated tool intake. The event sink persists it with the accepted input. */
 export const PeerDispatchAuthority = Context.Reference<string | undefined>(
   "t3/peer/PeerDispatchAuthority",
   { defaultValue: () => undefined },
@@ -16,7 +20,23 @@ export const initializePeerEffectAuthority = Effect.gen(function* () {
   yield* sql`CREATE TABLE IF NOT EXISTS peer_effect_authority (effect_id TEXT PRIMARY KEY, record_id TEXT NOT NULL)`;
   yield* sql`CREATE TABLE IF NOT EXISTS peer_run_authority (run_id TEXT PRIMARY KEY, record_id TEXT NOT NULL)`;
   yield* sql`CREATE TABLE IF NOT EXISTS peer_thread_authority (thread_id TEXT PRIMARY KEY, record_id TEXT NOT NULL)`;
+  yield* sql`CREATE TABLE IF NOT EXISTS peer_message_authority (message_id TEXT PRIMARY KEY, record_id TEXT NOT NULL)`;
+  // Existing queued inputs already have a run owner. Preserve that owner if
+  // their stable message is subsequently promoted into another active run.
+  const projections =
+    yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'orchestration_v2_projection_runs'`;
+  if (projections.length > 0) {
+    yield* sql`INSERT INTO peer_message_authority (message_id, record_id)
+      SELECT json_extract(run.payload_json, '$.userMessageId'), owner.record_id
+      FROM orchestration_v2_projection_runs AS run JOIN peer_run_authority AS owner ON owner.run_id = run.run_id
+      WHERE json_extract(run.payload_json, '$.userMessageId') IS NOT NULL
+      ON CONFLICT DO NOTHING`;
+  }
 });
+
+const decodeRecord = Schema.decodeUnknownEffect(Schema.fromJsonString(Authority));
+const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const encodeRecord = Schema.encodeSync(Schema.fromJsonString(Authority));
 
 export const recordPeerEffectAuthority = (
   events: ReadonlyArray<OrchestrationV2DomainEvent>,
@@ -25,8 +45,74 @@ export const recordPeerEffectAuthority = (
   Effect.gen(function* () {
     const authority = yield* PeerDispatchAuthority;
     const sql = yield* SqlClient.SqlClient;
-    // A queued command has no effect yet. Its run owns the accepted authority,
-    // independently of the target thread's owner and of the later promoter.
+    const read = (id: string) =>
+      Effect.gen(function* () {
+        const rows = yield* sql<{
+          record_json: string;
+        }>`SELECT record_json FROM peer_authority_records WHERE id = ${id}`;
+        if (rows[0] === undefined)
+          return yield* Effect.die(new Error("Missing accepted peer authority record"));
+        return yield* decodeRecord(rows[0].record_json);
+      });
+    const combine = (threadId: ThreadId, first: string | undefined, next: string | undefined) =>
+      Effect.gen(function* () {
+        if (first === undefined) return next;
+        if (next === undefined || next === first) return first;
+        const a = yield* read(first);
+        const b = yield* read(next);
+        const ids = [
+          ...new Set(
+            [a, b].flatMap((record) =>
+              record.context?.type === "run-inputs" && record.context.threadId === threadId
+                ? record.context.recordIds
+                : [record.id],
+            ),
+          ),
+        ].sort();
+        const [head, ...tail] = ids;
+        if (head === undefined)
+          return yield* Effect.die(new Error("Empty accepted peer authority set"));
+        const recordIds: [string, ...Array<string>] = [head, ...tail];
+        const context = { type: "run-inputs" as const, threadId, recordIds };
+        const records = yield* Effect.forEach(recordIds, read);
+        const base = records[0]!;
+        const digest = sha256(new TextEncoder().encode(json(context)));
+        const id = `context:${Hex.encode(digest)}`;
+        const record = {
+          ...base,
+          id,
+          context,
+          ceiling: records.reduce(
+            (ceiling, record) => intersect(ceiling, record.ceiling),
+            base.ceiling,
+          ),
+          envelope: { ...base.envelope, recordId: id, actionId: id, digest: id },
+        };
+        yield* sql`INSERT INTO peer_authority_records (id, record_json) VALUES (${id}, ${encodeRecord(record)}) ON CONFLICT DO NOTHING`;
+        return id;
+      });
+    const runOwner = (runId: string) =>
+      sql<{
+        record_id: string;
+      }>`SELECT record_id FROM peer_run_authority WHERE run_id = ${runId}`.pipe(
+        Effect.map((rows) => rows[0]?.record_id),
+      );
+    const attach = (runId: string, threadId: ThreadId, contributor: string | undefined) =>
+      Effect.gen(function* () {
+        const owner = yield* combine(threadId, yield* runOwner(runId), contributor);
+        if (owner !== undefined)
+          yield* sql`INSERT INTO peer_run_authority (run_id, record_id) VALUES (${runId}, ${owner}) ON CONFLICT (run_id) DO UPDATE SET record_id = excluded.record_id`;
+      });
+    const continuations = new Set<string>();
+    const promotedMessages = new Set(
+      events.flatMap((event) =>
+        event.type === "turn-item.updated" &&
+        event.payload.type === "user_message" &&
+        event.payload.inputIntent === "promoted_queued_to_steer"
+          ? [event.payload.messageId]
+          : [],
+      ),
+    );
     for (const event of events) {
       if (event.type === "thread.created" && authority !== undefined) {
         yield* sql`INSERT INTO peer_thread_authority (thread_id, record_id) VALUES (${event.threadId}, ${authority}) ON CONFLICT DO NOTHING`;
@@ -34,35 +120,59 @@ export const recordPeerEffectAuthority = (
       if (event.type !== "run.created") continue;
       const sourceRunId =
         event.payload.restartContinuationOfRunId ?? event.payload.forkPrismContinuationSourceRunId;
-      const inherited =
-        sourceRunId === undefined
-          ? []
-          : yield* sql<{
-              record_id: string;
-            }>`SELECT record_id FROM peer_run_authority WHERE run_id = ${sourceRunId}`;
-      const owner = inherited[0]?.record_id ?? authority;
-      if (owner !== undefined) {
-        yield* sql`INSERT INTO peer_run_authority (run_id, record_id) VALUES (${event.payload.id}, ${owner}) ON CONFLICT DO NOTHING`;
-      }
+      if (sourceRunId !== undefined) continuations.add(event.payload.id);
+      // A continuation is owned by its source, including an unowned local
+      // source. An unrelated caller cannot become the recovery's authority.
+      const owner = sourceRunId === undefined ? authority : yield* runOwner(sourceRunId);
+      yield* attach(event.payload.id, event.threadId, owner);
+      if (owner !== undefined)
+        yield* sql`INSERT INTO peer_message_authority (message_id, record_id) VALUES (${event.payload.userMessageId}, ${owner}) ON CONFLICT DO NOTHING`;
+    }
+    for (const event of events) {
+      if (
+        event.type !== "message.updated" ||
+        event.payload.role !== "user" ||
+        event.payload.runId === null
+      )
+        continue;
+      const message = event.payload;
+      const runId = event.payload.runId;
+      const saved = yield* sql<{
+        record_id: string;
+      }>`SELECT record_id FROM peer_message_authority WHERE message_id = ${message.id}`;
+      // Promotion reattaches an existing input, not a new instruction from
+      // the actor moving it. Its committed message owner is authoritative.
+      const contributor =
+        continuations.has(runId) || promotedMessages.has(message.id) ? undefined : authority;
+      const owner = yield* combine(event.threadId, saved[0]?.record_id, contributor);
+      if (owner !== undefined)
+        yield* sql`INSERT INTO peer_message_authority (message_id, record_id) VALUES (${message.id}, ${owner}) ON CONFLICT (message_id) DO UPDATE SET record_id = excluded.record_id`;
+      yield* attach(runId, event.threadId, owner);
     }
     for (const effect of effects) {
+      const request = effect.request;
       const runId =
-        "runId" in effect.request
-          ? effect.request.runId
-          : "sourceRunId" in effect.request
-            ? effect.request.sourceRunId
-            : undefined;
-      const rows =
-        runId === undefined
-          ? []
-          : yield* sql<{
-              record_id: string;
-            }>`SELECT record_id FROM peer_run_authority WHERE run_id = ${runId}`;
-      // Promotion can happen inside a different caller's command. A local
-      // queued start must never inherit that promoter's peer authority.
-      const owner =
-        rows[0]?.record_id ??
-        (effect.request.type === "provider-turn.start" ? undefined : authority);
+        "runId" in request
+          ? request.runId
+          : "sourceRunId" in request
+            ? request.sourceRunId
+            : request.type === "provider-turn.steer"
+              ? events.find(
+                  (event) =>
+                    event.type === "message.updated" && event.payload.id === request.messageId,
+                )?.runId
+              : undefined;
+      const acceptedRun = runId == null ? undefined : yield* runOwner(runId);
+      // Execution uses accepted input ownership, never a promoter's context.
+      // Other operations keep their own authenticated effect authority too.
+      const executesInput =
+        request.type === "provider-turn.start" ||
+        request.type === "provider-turn.steer" ||
+        request.type === "provider-turn.restart" ||
+        request.type === "provider-runtime.continue";
+      const owner = executesInput
+        ? acceptedRun
+        : yield* combine(effect.threadId, acceptedRun, authority);
       if (owner !== undefined) {
         yield* sql`INSERT INTO peer_effect_authority (effect_id, record_id) VALUES (${effect.id}, ${owner}) ON CONFLICT DO NOTHING`;
       }

@@ -1,3 +1,5 @@
+import { Authority, PeerSession, intersect } from "./PeerAuthorityRecord.ts";
+export { Authority, PeerSession, intersect } from "./PeerAuthorityRecord.ts";
 import { initializePeerEffectAuthority } from "./peerEffectAuthority.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
 import { exceededDispatchModeLimit } from "../orchestration-v2/DispatchModeLimit.ts";
@@ -5,7 +7,6 @@ import {
   AuthSessionId,
   EnvironmentId,
   MessageId,
-  NodeId,
   OrchestratorMcpFailure,
   OrchestratorMcpThreadSendResult,
   OrchestratorMcpThreadSendInput,
@@ -37,43 +38,6 @@ import * as Links from "./PeerLinks.ts";
 
 export const AUTHORITY_HEADER = "t3-peer-authority";
 export const LINK_HEADER = "t3-peer-link";
-export const PeerSession = Schema.Struct({
-  environmentId: EnvironmentId,
-  generation: Schema.String,
-});
-export const Authority = Schema.Struct({
-  id: Schema.String,
-  peer: PeerSession,
-  sessionId: Schema.NullOr(AuthSessionId),
-  /** Resource owner of imported work, distinct from a new verified contributor. */
-  resourceSessionId: Schema.optionalKey(AuthSessionId),
-  localThreadId: Schema.NullOr(ThreadId),
-  originClientId: Schema.NullOr(AuthSessionId),
-  parentId: Schema.NullOr(Schema.String),
-  ceiling: PeerCeiling,
-  envelope: PeerAuthorityEnvelope,
-  tool: Schema.String,
-  readOnly: Schema.Boolean,
-  originRunId: Schema.NullOr(RunId),
-  pair: Schema.optionalKey(Schema.Struct({ parentThreadId: ThreadId, taskId: NodeId })),
-  /** Local constraints, never accepted from a public tool or peer envelope. */
-  context: Schema.optionalKey(
-    Schema.Union([
-      Schema.Struct({
-        type: Schema.Literal("owned-thread"),
-        threadId: ThreadId,
-        creationRecordId: Schema.String,
-        runRecordId: Schema.String,
-      }),
-      Schema.Struct({
-        type: Schema.Literal("legacy-thread"),
-        threadId: ThreadId,
-        runRecordId: Schema.String,
-      }),
-    ]),
-  ),
-});
-export type Authority = typeof Authority.Type;
 const Validation = Schema.Struct({
   type: Schema.Literal("validate"),
   envelope: PeerAuthorityEnvelope,
@@ -133,15 +97,6 @@ const unavailable = () =>
     code: "orchestration_error",
     message: "Peer authority is unavailable; no new action was authorized.",
   });
-export const intersect = (a: PeerCeiling, b: PeerCeiling): PeerCeiling => ({
-  ...Invocation.intersectModes(a, b),
-  resourceScope:
-    a.resourceScope === "created-work" || b.resourceScope === "created-work"
-      ? "created-work"
-      : "environment-resources",
-  onward: a.onward && b.onward,
-  capabilities: a.capabilities.filter((capability) => b.capabilities.includes(capability)),
-});
 
 /** Durable authority and a bounded reverse mailbox. The dialer drains it concurrently with tools. */
 export class PeerAuthority extends Context.Service<
@@ -565,6 +520,12 @@ const make = Effect.gen(function* () {
     });
   const validate = (record: Authority): Effect.Effect<PeerCeiling, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
+      if (record.context?.type === "run-inputs") {
+        let ceiling = record.ceiling;
+        for (const id of record.context.recordIds)
+          ceiling = intersect(ceiling, yield* validate(yield* read(id)));
+        return ceiling;
+      }
       if (record.context !== undefined) {
         const target = yield* threads
           .getThreadShell(record.context.threadId)
@@ -658,12 +619,33 @@ const make = Effect.gen(function* () {
       return intersect(current, intersect(record.ceiling, ceiling));
     });
   const resourceSession = (record: Authority) => record.resourceSessionId ?? record.sessionId;
+  const hasResourceSession = (
+    record: Authority,
+    sessionId: string,
+  ): Effect.Effect<boolean, OrchestratorMcpFailure> =>
+    Effect.gen(function* () {
+      if (record.context?.type === "run-inputs") {
+        for (const id of record.context.recordIds)
+          if (yield* hasResourceSession(yield* read(id), sessionId)) return true;
+        return false;
+      }
+      return resourceSession(record) === sessionId;
+    });
   const checkResource = (
     record: Authority,
     ceiling: PeerCeiling,
     target: OrchestrationV2ThreadShell,
-  ) =>
+  ): Effect.Effect<void, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
+      if (record.context?.type === "run-inputs") {
+        // Input conjunctions retain each source's predicate on the actual
+        // resource. They do not turn an ordinary parent into a creation fence.
+        for (const id of record.context.recordIds) {
+          const owner = yield* read(id);
+          yield* checkResource(owner, yield* validate(owner), target);
+        }
+        return;
+      }
       if (
         record.sessionId === null ||
         ceiling.resourceScope !== "created-work" ||
@@ -673,7 +655,7 @@ const make = Effect.gen(function* () {
       // A local child created by a run on an existing thread has a durable
       // creation binding even when that ordinary parent has no linkOrigin.
       const created = yield* permanentForThread(target.id);
-      if (created === undefined || resourceSession(created) !== resourceSession(record))
+      if (created === undefined || !(yield* hasResourceSession(created, resourceSession(record)!)))
         return yield* denied("The destination is outside the link's current resource scope.");
     });
   const checkThread: PeerAuthority["Service"]["checkThread"] = (threadId) =>
@@ -969,7 +951,8 @@ const make = Effect.gen(function* () {
       let pairOwner = record;
       while (pairOwner.context?.type === "owned-thread")
         pairOwner = yield* read(pairOwner.context.creationRecordId);
-      if (pairOwner.context?.type === "legacy-thread") return undefined;
+      if (pairOwner.context?.type === "legacy-thread" || pairOwner.context?.type === "run-inputs")
+        return undefined;
       const rows = yield* sql<{
         pair_json: string;
       }>`SELECT pair_json FROM peer_return_pairs WHERE record_id = ${pairOwner.id}`.pipe(
@@ -1064,7 +1047,9 @@ const make = Effect.gen(function* () {
     forThread,
     ownsCreatedThread: (sessionId, threadId) =>
       permanentForThread(threadId).pipe(
-        Effect.map((record) => record !== undefined && resourceSession(record) === sessionId),
+        Effect.flatMap((record) =>
+          record === undefined ? Effect.succeed(false) : hasResourceSession(record, sessionId),
+        ),
       ),
     returnNotice,
     registerPair,
