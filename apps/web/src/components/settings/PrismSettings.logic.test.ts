@@ -12,6 +12,7 @@ import {
   prismEffortOptions,
   prismModelChoices,
   prismWriteObserved,
+  syncPrismDraft,
 } from "./PrismSettings.logic";
 import { resolveSettingsScope } from "./settingsScope";
 import { persistScopedSettingsPatch } from "./scopedSettings";
@@ -293,4 +294,31 @@ it("keeps the save barrier until the updated settings snapshot arrives", () => {
   expect(prismWriteObserved(plan, [], expectation)).toBe(false);
   // Failed writes do not wait forever for a snapshot that will never arrive.
   expect(prismWriteObserved({ ...plan, serverWrites: [] }, envs, expectation)).toBe(true);
+});
+
+describe("syncPrismDraft", () => {
+  const third = { instanceId: ProviderInstanceId.make("claude"), model: "third" };
+  const drafted = [
+    { ...second, entryId: 1 },
+    { ...first, entryId: 0 },
+  ];
+
+  it("keeps the draft itself when the reordered save lands", () => {
+    expect(syncPrismDraft(drafted, [second, first])).toBe(drafted);
+  });
+
+  it("restores the last saved order with the same row ids after a failed save", () => {
+    expect(syncPrismDraft(drafted, [first, second])).toEqual([
+      { ...first, entryId: 0 },
+      { ...second, entryId: 1 },
+    ]);
+  });
+
+  it("adopts a different saved list, reusing ids only for matching models", () => {
+    expect(syncPrismDraft(drafted, [third, { ...first, effort: "low" }])).toEqual([
+      { ...third, entryId: 2 },
+      { ...first, effort: "low", entryId: 0 },
+    ]);
+    expect(syncPrismDraft(drafted, [])).toEqual([]);
+  });
 });
