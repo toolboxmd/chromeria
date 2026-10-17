@@ -79,19 +79,26 @@ export const clientModeCeiling = (client: McpClientCaller | undefined): ClientMo
       client === undefined || client.access === "read-only" ? "approval-required" : client.access,
     interactionMode: "default",
   };
-  const asked = client?.narrowedTo;
-  if (asked === undefined) return approved;
-  return {
-    runtimeMode:
-      runtimeModeRank[asked.runtimeMode] < runtimeModeRank[approved.runtimeMode]
-        ? asked.runtimeMode
-        : approved.runtimeMode,
-    interactionMode:
-      interactionModeRank[asked.interactionMode] < interactionModeRank[approved.interactionMode]
-        ? asked.interactionMode
-        : approved.interactionMode,
-  };
+  return intersectModes(approved, client?.narrowedTo);
 };
+
+/** Intersect mode ceilings without inventing a caller or credential. */
+export const intersectModes = (
+  approved: ClientModes,
+  asked: ClientModes | undefined,
+): ClientModes =>
+  asked === undefined
+    ? approved
+    : {
+        runtimeMode:
+          runtimeModeRank[asked.runtimeMode] < runtimeModeRank[approved.runtimeMode]
+            ? asked.runtimeMode
+            : approved.runtimeMode,
+        interactionMode:
+          interactionModeRank[asked.interactionMode] < interactionModeRank[approved.interactionMode]
+            ? asked.interactionMode
+            : approved.interactionMode,
+      };
 
 /**
  * Who is calling and what they may do. Tool parameters choose the target
@@ -101,6 +108,10 @@ export const clientModeCeiling = (client: McpClientCaller | undefined): ClientMo
  * need `thread`.
  */
 export interface McpInvocationScope {
+  /** Frozen migration ceiling for pre-protocol linked work, without invented remote provenance. */
+  readonly legacyPeerCeiling?: import("@t3tools/contracts").PeerCeiling;
+  /** Server-verified durable authority, absent for legacy and ordinary local callers. */
+  readonly authority?: import("../peer/PeerAuthority.ts").Authority;
   readonly environmentId: EnvironmentId;
   readonly capabilities: ReadonlySet<McpCapability>;
   readonly issuedAt: number;

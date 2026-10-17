@@ -1,3 +1,5 @@
+import { PeerGrant, PeerGrantSummary } from "./peerAuthority.ts";
+import { OrchestratorMcpFailure } from "./orchestratorMcp.ts";
 import { PromachosHomeRpcGroup } from "./promachosHome.ts";
 import {
   OrchestrationV2SearchThreadError,
@@ -499,6 +501,8 @@ export const WS_METHODS = {
   peerLinksList: "peerLinks.list",
   peerLinksLink: "peerLinks.link",
   peerLinksUnlink: "peerLinks.unlink",
+  peerGrantsList: "peerGrants.list",
+  peerGrantsUpdate: "peerGrants.update",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
   serverDiscoverSourceControl: "server.discoverSourceControl",
@@ -775,6 +779,17 @@ const WsServerGetStorageCleanupReportRpc = Rpc.make(WS_METHODS.serverGetStorageC
   success: Schema.NullOr(StorageCleanupReport),
   stream: true,
   error: EnvironmentAuthorizationError,
+});
+
+const WsPeerGrantsListRpc = Rpc.make(WS_METHODS.peerGrantsList, {
+  payload: Schema.Struct({}),
+  success: Schema.Array(PeerGrantSummary),
+  error: Schema.Union([OrchestratorMcpFailure, EnvironmentAuthorizationError]),
+});
+const WsPeerGrantsUpdateRpc = Rpc.make(WS_METHODS.peerGrantsUpdate, {
+  payload: PeerGrant,
+  success: PeerGrant,
+  error: Schema.Union([OrchestratorMcpFailure, EnvironmentAuthorizationError]),
 });
 
 const WsPeerLinksListRpc = Rpc.make(WS_METHODS.peerLinksList, {
@@ -1938,6 +1953,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetStorageCleanupReportRpc,
   WsServerGetSettingsRpc,
   WsServerUpdateSettingsRpc,
+  WsPeerGrantsListRpc,
+  WsPeerGrantsUpdateRpc,
   WsPeerLinksListRpc,
   WsPeerLinksLinkRpc,
   WsPeerLinksUnlinkRpc,

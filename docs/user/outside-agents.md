@@ -49,6 +49,22 @@ Then choose what the agent may do:
   threads in every project. A thread it starts or steers cannot run with more
   permissions than the mode you chose.
 
+## Permissions between linked environments
+
+On the receiving environment, open **Settings → Connections** to choose a linked
+environment's access to existing resources, onward delegation, browsers, and
+devices. On mobile these permissions are in the environment's settings. Save
+only the permissions you want that environment's new work to use.
+
+Existing delegated work keeps the ceiling it started with, even after a restart
+or a permission increase. Removing permission also limits existing work. Update
+both environments before using remote return or onward delegation.
+
+A remote delegated child can queue a notice to its own parent without a reverse
+link. This does not let it interrupt the parent or use unrelated threads. A
+pending return receipt means the notice is stored for delivery; the parent has
+not acknowledged it yet.
+
 ## Claude Code
 
 ```sh

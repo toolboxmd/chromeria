@@ -73,6 +73,9 @@ flowchart TD
     %% TF: #259
     XM["Cross-machine control"]
     %% XM: #164 #302
+    PGR["Remote return and onward delegation"]
+    %% PGR: #380
+    XM --> PGR
     NR["Network routes"]
     %% NR: #292 #358
     PRN["Paired session renewal"]
