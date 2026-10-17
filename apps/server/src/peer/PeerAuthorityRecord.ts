@@ -4,6 +4,7 @@ import {
   NodeId,
   PeerAuthorityEnvelope,
   PeerCeiling,
+  PeerReturnPair,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -32,6 +33,16 @@ export const Authority = Schema.Struct({
   /** Local constraints, never accepted from a public tool or peer envelope. */
   context: Schema.optionalKey(
     Schema.Union([
+      Schema.Struct({
+        type: Schema.Literal("task-stop"),
+        pair: PeerReturnPair,
+        requestId: Schema.String,
+        reason: Schema.optional(Schema.String),
+        recordIds: Schema.Array(Schema.String),
+        targets: Schema.Array(
+          Schema.Struct({ threadId: ThreadId, recordIds: Schema.Array(Schema.String) }),
+        ),
+      }),
       Schema.Struct({
         type: Schema.Literal("run-inputs"),
         threadId: ThreadId,

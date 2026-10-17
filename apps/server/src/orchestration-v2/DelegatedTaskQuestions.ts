@@ -111,3 +111,77 @@ export const reconcileDelegatedTaskQuestion = Effect.fnUntraced(function* <E>(
     }
   }
 });
+
+/** Remote metadata enters the same durable queue owner without a foreign local child lookup. */
+export const reconcileRemoteDelegatedTaskQuestions = Effect.fnUntraced(function* <E>(
+  task: OrchestrationV2Subagent,
+  dispatch: (command: OrchestrationV2ServerCommand) => Effect.Effect<unknown, E>,
+) {
+  const remote = task.remoteChild;
+  if (remote?.snapshot === undefined) return;
+  const projections = yield* ProjectionStoreV2;
+  const parent = yield* projections.getThreadRecords(task.threadId, ["runs", "messages"]);
+  const eligible =
+    task.completionDelivery?.state !== "disposed" &&
+    remote.stop === undefined &&
+    parent.thread.archivedAt === null &&
+    parent.thread.deletedAt === null;
+  const pending = new Set<string>();
+  for (const request of remote.snapshot.requests) {
+    if (request.kind !== "user_input" || !eligible) continue;
+    if (
+      task.completionWake === "settled_only" &&
+      request.responseType === "live" &&
+      parent.runs.some(
+        (run) => run.id === task.runId && ["preparing", "starting", "running"].includes(run.status),
+      )
+    )
+      continue;
+    const key = `${task.id}:${request.environmentId}:${request.threadId}:${request.requestId}`;
+    const messageId = MessageId.make(`message:remote-delegated-question:${key}`);
+    pending.add(messageId);
+    const receipts = yield* CommandReceiptStoreV2;
+    let commandId = CommandId.make(`server:remote-delegated-question:${key}`);
+    let attempt = 0;
+    for (;;) {
+      const receipt = yield* receipts.getByCommandId(commandId);
+      if (Option.isNone(receipt) || receipt.value.status === "accepted") break;
+      commandId = CommandId.make(`server:remote-delegated-question-retry:${++attempt}:${key}`);
+    }
+    yield* dispatch({
+      type: "message.dispatch",
+      commandId,
+      threadId: task.threadId,
+      messageId,
+      text: `Delegated task ${task.id} has a pending question in ${remote.label}. Read the destination request with environmentId ${request.environmentId}, threadId ${request.threadId}, requestId ${request.requestId}. It may already have been answered or dismissed.`,
+      notification: {
+        source: { kind: "delegated_task", taskIds: [task.id] },
+        outcome: "updated",
+        summary: "Remote delegated task has a question",
+      },
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" },
+      createdBy: "agent",
+      creationSource: "server",
+    });
+  }
+  const priorIds = new Set(
+    parent.messages
+      .filter((message) => message.id.startsWith(`message:remote-delegated-question:${task.id}:`))
+      .map((message) => message.id),
+  );
+  for (const run of parent.runs) {
+    if (
+      run.status !== "queued" ||
+      !priorIds.has(run.userMessageId) ||
+      pending.has(run.userMessageId)
+    )
+      continue;
+    yield* dispatch({
+      type: "queued-run.cancel",
+      commandId: CommandId.make(`server:remote-question-dismiss:${run.id}`),
+      threadId: task.threadId,
+      runId: run.id,
+    });
+  }
+});

@@ -157,11 +157,17 @@ export function pendingDelegatedChildTasks(
     if (
       task.origin !== "app_owned" ||
       task.result === null ||
-      task.childThreadId === null ||
       (task.completionDelivery?.state === "disposed" &&
         task.completionDelivery.disposedBy !== "stop")
     )
       return false;
+    if (task.remoteChild !== undefined)
+      return (
+        task.remoteChild.stop === undefined &&
+        task.remoteChild.snapshot !== undefined &&
+        task.remoteChild.snapshot.workState !== "result_available"
+      );
+    if (task.childThreadId === null) return false;
     const child = children.get(task.childThreadId);
     return (
       child !== undefined &&
@@ -194,7 +200,7 @@ export function withPendingDelegatedChildWork(input: {
   const pending = [...input.pending];
   for (const task of input.tasks) {
     if (
-      task.childThreadId === null ||
+      (task.childThreadId === null && task.remoteChild?.threadId === undefined) ||
       pending.some(
         (item) =>
           item.taskId === task.id ||
@@ -205,7 +211,12 @@ export function withPendingDelegatedChildWork(input: {
     pending.push({
       taskId: task.id,
       kind: "subagent",
-      childThreadId: task.childThreadId,
+      ...(task.childThreadId !== null
+        ? { childThreadId: task.childThreadId }
+        : {
+            childThreadId: task.remoteChild!.threadId!,
+            childEnvironmentId: task.remoteChild!.environmentId,
+          }),
       description: task.title ?? task.prompt,
     });
   }
