@@ -84,3 +84,5 @@ export * from "./spectrumSettings.ts";
 
 export * from "./browserCookieMirror.ts";
 export * from "./peerAuthority.ts";
+
+export * from "./peerTask.ts";
