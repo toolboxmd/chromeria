@@ -37,7 +37,7 @@ import * as Reports from "./ReportService.ts";
 import { base, input, setup } from "./controllerTestkit.ts";
 import { makeRun, NOW } from "./testFixtures.ts";
 import { readSpectrum } from "./store.ts";
-import { reportAdmission } from "./reportPolicy.ts";
+import { attemptOutcome, REPORT_STOPPED, reportAdmission, reportNeedsYou } from "./reportPolicy.ts";
 import { ForkDispatchPlans } from "../fork/ForkDispatchPlans.ts";
 import { ForkCommandInterceptor } from "../fork/ForkCommandInterceptor.ts";
 import { spectrumLaunchAdmission } from "./launchAdmission.ts";
@@ -687,6 +687,78 @@ it.effect(
       assert.deepStrictEqual(phases, ["independent", "relay", "relay", "synthesis"]);
       assert.strictEqual(current.status, "settled");
     }).pipe(Effect.provide(runtime)),
+);
+
+const retireCaller = Effect.fn("test.Spectrum.retireCaller")(function* (
+  caller: Effect.Success<typeof setup>,
+  resumed: boolean,
+) {
+  const token = CommandId.make("caller:restart:stop");
+  yield* (yield* Events.EventSinkV2).write({
+    events: [
+      {
+        id: EventId.make(`caller:retire:${resumed}`),
+        type: "thread.metadata-updated",
+        threadId: caller.id,
+        occurredAt: NOW,
+        payload: {
+          ...caller,
+          forkRetirement: { token },
+          ...(resumed ? { forkResumedRetirements: [token] } : {}),
+        },
+      },
+    ],
+  });
+});
+
+it.effect("a council launched from a resumed caller dispatches round 1 and settles", () =>
+  Effect.gen(function* () {
+    yield* retireCaller(yield* setup, true);
+    yield* initializeRecoveryHistory;
+    const state = yield* (yield* Launch.SpectrumLaunchService).register(input);
+    const controller = yield* Controller.SpectrumController;
+    const projections = yield* Projection.ProjectionStoreV2;
+    let current = yield* controller.resume(state.threadId);
+    assert.strictEqual(current.status, "active");
+    assert.isTrue(current.round!.slots.every((slot) => slot.runId !== null));
+    while (current.status === "active") {
+      const slot = current.round!.slots.find((candidate) => candidate.replyIds === null)!;
+      const child = yield* projections.getThreadRecords(slot.threadId, ["runs"]);
+      yield* finish(
+        child.runs.find((run) => run.id === slot.runId)!,
+        "reply",
+      );
+      current = yield* controller.resume(state.threadId);
+    }
+    assert.strictEqual(current.status, "settled");
+    const caller = yield* projections.getThreadRecords(input.callerThreadId, ["runs"]);
+    const reportRun = caller.runs.find((run) => run.userMessageId === current.report!.messageId)!;
+    yield* finish(reportRun, "Report acknowledged.");
+    const outcome = yield* attemptOutcome(input.callerThreadId, current.report!);
+    assert.strictEqual(outcome.kind, "delivered");
+  }).pipe(Effect.provide(runtime)),
+);
+
+it.effect("a council retired before round 1 holds its refused stop report for a person", () =>
+  Effect.gen(function* () {
+    const caller = yield* setup;
+    yield* initializeRecoveryHistory;
+    const state = yield* (yield* Launch.SpectrumLaunchService).register(input);
+    yield* retireCaller(caller, false);
+    const controller = yield* Controller.SpectrumController;
+    const retired = yield* controller.resume(state.threadId);
+    assert.strictEqual(retired.status, "retired");
+    assert.isNull(retired.round);
+    assert.isFalse(
+      retired.outbox.some((command) => command.commandId === retired.report?.commandId),
+    );
+    // The stopped caller refused the notice before commit, so it holds for a person.
+    assert.deepStrictEqual(yield* reportNeedsYou(retired), {
+      commandId: retired.report!.commandId,
+      reason: REPORT_STOPPED,
+    });
+    assert.deepStrictEqual(yield* controller.resume(state.threadId), retired);
+  }).pipe(Effect.provide(runtime)),
 );
 
 it.effect(

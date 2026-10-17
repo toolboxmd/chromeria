@@ -9,6 +9,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
+import { isThreadRetired } from "../childThreads/retirement.ts";
 import { ForkDispatchPlans } from "../fork/ForkDispatchPlans.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Projection from "../orchestration-v2/ProjectionStore.ts";
@@ -127,7 +128,21 @@ const make = Effect.gen(function* () {
     );
   // Replay sends the persisted command unchanged; admission is rebuilt from durable state each time.
   const send = Effect.fnUntraced(function* (state: SpectrumState, report: ReportCommand) {
-    yield* dispatch(report, [reportAdmission(state.threadId, report)]);
+    yield* dispatch(report, [reportAdmission(state.threadId, report)]).pipe(
+      // A retired caller refuses before commit, leaving no receipt to retry against. The
+      // retired Spectrum's notice then holds for a person as unsent instead of resending every sweep.
+      Effect.catch((cause) =>
+        Effect.gen(function* () {
+          if (
+            state.status !== "retired" ||
+            !(yield* isThreadRetired(state.callerThreadId).pipe(
+              Effect.provideService(Projection.ProjectionStoreV2, projections),
+            ))
+          )
+            return yield* cause;
+        }),
+      ),
+    );
     return yield* persist(
       CommandId.make(`${report.commandId}:sent`),
       "spectrum.report.sent",
