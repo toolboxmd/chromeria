@@ -1,4 +1,7 @@
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import * as Option from "effect/Option";
 import {
+  ThreadId,
   OrchestratorMcpFailure,
   type OrchestrationV2LinkOrigin,
   type OrchestrationV2ThreadShell,
@@ -26,6 +29,18 @@ export const callerLinkOrigin = (
     readonly caller: Pick<OrchestrationV2ThreadShell, "linkOrigin"> | undefined;
   },
 ): OrchestrationV2LinkOrigin | undefined =>
+  (caller.scope.authority?.resourceSessionId !== undefined
+    ? {
+        sessionId: caller.scope.authority.resourceSessionId,
+        label: caller.caller?.linkOrigin?.label ?? "linked environment",
+      }
+    : undefined) ??
+  (caller.scope.authority?.sessionId != null
+    ? {
+        sessionId: caller.scope.authority.sessionId,
+        label: caller.scope.authority.peer.environmentId,
+      }
+    : undefined) ??
   caller.caller?.linkOrigin ??
   (caller.scope.client?.linked === true
     ? { sessionId: caller.scope.client.sessionId, label: caller.scope.client.label }
@@ -45,11 +60,25 @@ export const assertSameLink = <T extends Pick<OrchestrationV2ThreadShell, "linkO
   target: T,
 ) => {
   const origin = callerLinkOrigin(caller);
-  return origin === undefined ||
-    caller.scope.authority?.ceiling.resourceScope === "environment-resources" ||
-    target.linkOrigin?.sessionId === origin.sessionId
-    ? Effect.void
-    : Effect.fail(outsideLink(origin, `it may change only threads that link started.`));
+  return Effect.gen(function* () {
+    if (
+      origin === undefined ||
+      caller.scope.authority?.ceiling.resourceScope === "environment-resources" ||
+      target.linkOrigin?.sessionId === origin.sessionId
+    )
+      return;
+    // Native descendants of a peer-owned run on an ordinary local parent
+    // carry durable creation authority, even without a legacy linkOrigin.
+    if (caller.scope.authority !== undefined && "id" in target && typeof target.id === "string") {
+      const owner = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+      if (
+        Option.isSome(owner) &&
+        (yield* owner.value.ownsCreatedThread(origin.sessionId, ThreadId.make(target.id)))
+      )
+        return;
+    }
+    return yield* Effect.fail(outsideLink(origin, `it may change only threads that link started.`));
+  });
 };
 
 /** Direct peer calls may use the full access granted by the user.
@@ -70,13 +99,20 @@ const directFullAccessPeer = (caller: Pick<Caller, "scope" | "caller">) => {
 };
 
 /** Preserve legacy direct access and explicitly granted descendant environment operations. */
-export const assertNotLinked = (caller: Pick<Caller, "scope" | "caller">, what: string) => {
+export const assertNotLinked = (
+  caller: Pick<Caller, "scope" | "caller" | "limits">,
+  what: string,
+) => {
+  const modes = intersectModes(
+    caller.limits,
+    caller.scope.authority?.ceiling ?? caller.scope.legacyPeerCeiling,
+  );
   const origin = callerLinkOrigin(caller);
   return origin === undefined ||
     directFullAccessPeer(caller) ||
     (caller.scope.authority?.ceiling.resourceScope === "environment-resources" &&
-      caller.scope.authority.ceiling.runtimeMode === "full-access" &&
-      caller.scope.authority.ceiling.interactionMode === "default")
+      modes.runtimeMode === "full-access" &&
+      modes.interactionMode === "default")
     ? Effect.void
     : Effect.fail(outsideLink(origin, `it cannot ${what}.`));
 };

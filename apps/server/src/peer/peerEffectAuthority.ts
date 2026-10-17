@@ -15,6 +15,7 @@ export const initializePeerEffectAuthority = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`CREATE TABLE IF NOT EXISTS peer_effect_authority (effect_id TEXT PRIMARY KEY, record_id TEXT NOT NULL)`;
   yield* sql`CREATE TABLE IF NOT EXISTS peer_run_authority (run_id TEXT PRIMARY KEY, record_id TEXT NOT NULL)`;
+  yield* sql`CREATE TABLE IF NOT EXISTS peer_thread_authority (thread_id TEXT PRIMARY KEY, record_id TEXT NOT NULL)`;
 });
 
 export const recordPeerEffectAuthority = (
@@ -27,6 +28,9 @@ export const recordPeerEffectAuthority = (
     // A queued command has no effect yet. Its run owns the accepted authority,
     // independently of the target thread's owner and of the later promoter.
     for (const event of events) {
+      if (event.type === "thread.created" && authority !== undefined) {
+        yield* sql`INSERT INTO peer_thread_authority (thread_id, record_id) VALUES (${event.threadId}, ${authority}) ON CONFLICT DO NOTHING`;
+      }
       if (event.type !== "run.created") continue;
       const sourceRunId =
         event.payload.restartContinuationOfRunId ?? event.payload.forkPrismContinuationSourceRunId;

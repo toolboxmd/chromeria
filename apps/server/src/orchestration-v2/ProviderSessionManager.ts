@@ -520,6 +520,11 @@ export const layerWithOptions = (
                 >(["orchestration", "worktree", "pull-requests"]);
                 if (browserToolsAvailable) capabilities.add("preview");
                 if (deviceToolsAvailable) capabilities.add("device");
+                if (frozenCeiling !== undefined) {
+                  for (const capability of capabilities)
+                    if (!frozenCeiling.capabilities.includes(capability))
+                      capabilities.delete(capability);
+                }
                 const existing = yield* mcpSessions.read(threadId);
                 if (existing !== undefined) {
                   // Reserve before the async resolve so a release cannot
@@ -543,9 +548,14 @@ export const layerWithOptions = (
                     resolved.thread.providerInstanceId === providerInstanceId &&
                     // A flipped browser-access setting must not survive through
                     // credential reuse: rotate so the new scope reflects it.
-                    resolved.capabilities.has("preview") === browserToolsAvailable &&
-                    resolved.capabilities.has("device") === deviceToolsAvailable
+                    resolved.capabilities.size === capabilities.size &&
+                    [...capabilities].every((capability) => resolved.capabilities.has(capability))
                   ) {
+                    yield* mcpSessions.set({
+                      ...existing,
+                      browserToolsAvailable: resolved.capabilities.has("preview"),
+                      capabilities: resolved.capabilities,
+                    });
                     return { mcpCredentialId: existing.providerSessionId, issued: false };
                   }
                   dropMcpCredentialReservation(threadId, existing.providerSessionId);

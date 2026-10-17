@@ -1,3 +1,4 @@
+import { initializePeerEffectAuthority } from "./peerEffectAuthority.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
 import { exceededDispatchModeLimit } from "../orchestration-v2/DispatchModeLimit.ts";
 import {
@@ -44,6 +45,8 @@ export const Authority = Schema.Struct({
   id: Schema.String,
   peer: PeerSession,
   sessionId: Schema.NullOr(AuthSessionId),
+  /** Resource owner of imported work, distinct from a new verified contributor. */
+  resourceSessionId: Schema.optionalKey(AuthSessionId),
   localThreadId: Schema.NullOr(ThreadId),
   originClientId: Schema.NullOr(AuthSessionId),
   parentId: Schema.NullOr(Schema.String),
@@ -53,6 +56,22 @@ export const Authority = Schema.Struct({
   readOnly: Schema.Boolean,
   originRunId: Schema.NullOr(RunId),
   pair: Schema.optionalKey(Schema.Struct({ parentThreadId: ThreadId, taskId: NodeId })),
+  /** Local constraints, never accepted from a public tool or peer envelope. */
+  context: Schema.optionalKey(
+    Schema.Union([
+      Schema.Struct({
+        type: Schema.Literal("owned-thread"),
+        threadId: ThreadId,
+        creationRecordId: Schema.String,
+        runRecordId: Schema.String,
+      }),
+      Schema.Struct({
+        type: Schema.Literal("legacy-thread"),
+        threadId: ThreadId,
+        runRecordId: Schema.String,
+      }),
+    ]),
+  ),
 });
 export type Authority = typeof Authority.Type;
 const Validation = Schema.Struct({
@@ -177,6 +196,10 @@ export class PeerAuthority extends Context.Service<
     readonly legacyCeiling: (
       threadId: ThreadId,
     ) => Effect.Effect<PeerCeiling | undefined, OrchestratorMcpFailure>;
+    readonly ownsCreatedThread: (
+      sessionId: string,
+      threadId: ThreadId,
+    ) => Effect.Effect<boolean, OrchestratorMcpFailure>;
     readonly forThread: (
       threadId: ThreadId,
     ) => Effect.Effect<Authority | undefined, OrchestratorMcpFailure>;
@@ -203,7 +226,7 @@ const make = Effect.gen(function* () {
   );
   yield* sql`CREATE TABLE IF NOT EXISTS peer_authority_sessions (session_id TEXT PRIMARY KEY, environment_id TEXT NOT NULL, generation TEXT NOT NULL, grant_json TEXT NOT NULL)`;
   yield* sql`CREATE TABLE IF NOT EXISTS peer_authority_records (id TEXT PRIMARY KEY, record_json TEXT NOT NULL)`;
-  yield* sql`CREATE TABLE IF NOT EXISTS peer_effect_authority (effect_id TEXT PRIMARY KEY, record_id TEXT NOT NULL)`;
+  yield* initializePeerEffectAuthority;
   yield* sql`CREATE TABLE IF NOT EXISTS peer_legacy_authority (thread_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, ceiling_json TEXT NOT NULL)`;
   yield* sql`CREATE TABLE IF NOT EXISTS peer_thread_authority (thread_id TEXT PRIMARY KEY, record_id TEXT NOT NULL)`;
   yield* sql`CREATE TABLE IF NOT EXISTS peer_return_pairs (task_id TEXT PRIMARY KEY, record_id TEXT NOT NULL, pair_json TEXT NOT NULL)`;
@@ -279,7 +302,7 @@ const make = Effect.gen(function* () {
       Effect.asVoid,
       Effect.mapError(unavailable),
     );
-  const forThread: PeerAuthority["Service"]["forThread"] = (threadId) =>
+  const permanentForThread: PeerAuthority["Service"]["forThread"] = (threadId) =>
     Effect.gen(function* () {
       const seen = new Set<ThreadId>();
       let current: ThreadId | null = threadId;
@@ -314,9 +337,73 @@ const make = Effect.gen(function* () {
       }
       return undefined;
     });
+  // Creation ancestry is durable. An otherwise local thread adopts only its
+  // own active run, never an ancestor's current run. An existing job and a
+  // different incoming run constrain each other without replacing either.
+  const forThread: PeerAuthority["Service"]["forThread"] = (threadId) =>
+    Effect.gen(function* () {
+      const created = yield* permanentForThread(threadId);
+      const shell = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
+      if (shell?.activeRunId == null) return created;
+      const rows = yield* sql<{
+        record_id: string;
+      }>`SELECT record_id FROM peer_run_authority WHERE run_id = ${shell.activeRunId}`.pipe(
+        Effect.mapError(unavailable),
+      );
+      if (!rows[0]) return created;
+      const run = yield* read(rows[0].record_id);
+      if (created === undefined) {
+        const imported = yield* legacy(threadId);
+        if (imported === undefined) return run;
+        if (
+          run.context?.type === "legacy-thread" &&
+          run.context.threadId === threadId &&
+          run.resourceSessionId === imported.sessionId
+        )
+          return run;
+        const context = {
+          type: "legacy-thread" as const,
+          threadId,
+          runRecordId: run.id,
+        };
+        const id = `context:${yield* hash(context)}`;
+        yield* save({
+          ...run,
+          id,
+          context,
+          resourceSessionId: AuthSessionId.make(imported.sessionId),
+          ceiling: intersect(run.ceiling, imported.ceiling),
+          envelope: { ...run.envelope, recordId: id, actionId: id, digest: id },
+        });
+        return yield* read(id);
+      }
+      if (
+        created.id === run.id ||
+        (run.context?.type === "owned-thread" && run.context.creationRecordId === created.id)
+      )
+        return run;
+      const context = {
+        type: "owned-thread" as const,
+        threadId,
+        creationRecordId: created.id,
+        runRecordId: run.id,
+      };
+      const id = `context:${yield* hash(context)}`;
+      yield* save({
+        ...created,
+        id,
+        context,
+        ceiling: intersect(created.ceiling, run.ceiling),
+        // This derived record is not an issuer's original action. Readers that
+        // do not understand local intersections must fail its issuer lookup,
+        // rather than silently validate just one of the two owners.
+        envelope: { ...created.envelope, recordId: id, actionId: id, digest: id },
+      });
+      return yield* read(id);
+    });
   const legacy = (threadId: ThreadId) =>
     Effect.gen(function* () {
-      yield* forThread(threadId);
+      yield* permanentForThread(threadId);
       const rows = yield* sql<{
         session_id: string;
         ceiling_json: string;
@@ -478,6 +565,32 @@ const make = Effect.gen(function* () {
     });
   const validate = (record: Authority): Effect.Effect<PeerCeiling, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
+      if (record.context !== undefined) {
+        const target = yield* threads
+          .getThreadShell(record.context.threadId)
+          .pipe(Effect.mapError(unavailable));
+        if (target === null || target.deletedAt !== null)
+          return yield* denied("The authority's destination context is no longer available.");
+        let ceiling = record.ceiling;
+        if (record.context.type === "legacy-thread") {
+          const imported = yield* legacy(record.context.threadId);
+          if (imported === undefined || imported.sessionId !== record.resourceSessionId)
+            return yield* denied("The legacy context is no longer available.");
+          yield* activeSession(imported.sessionId);
+          ceiling = intersect(ceiling, imported.ceiling);
+        }
+        const owners =
+          record.context.type === "owned-thread"
+            ? [record.context.creationRecordId, record.context.runRecordId]
+            : [record.context.runRecordId];
+        for (const id of owners) {
+          const owner = yield* read(id);
+          const current = yield* validate(owner);
+          yield* checkResource(owner, current, target);
+          ceiling = intersect(ceiling, current);
+        }
+        return ceiling;
+      }
       if (record.sessionId !== null) {
         const current = yield* grant(record.sessionId);
         const upstream = yield* ask(record.sessionId, {
@@ -544,6 +657,40 @@ const make = Effect.gen(function* () {
         return yield* denied("The originating grant does not permit onward delegation.");
       return intersect(current, intersect(record.ceiling, ceiling));
     });
+  const resourceSession = (record: Authority) => record.resourceSessionId ?? record.sessionId;
+  const checkResource = (
+    record: Authority,
+    ceiling: PeerCeiling,
+    target: OrchestrationV2ThreadShell,
+  ) =>
+    Effect.gen(function* () {
+      if (
+        record.sessionId === null ||
+        ceiling.resourceScope !== "created-work" ||
+        target.linkOrigin?.sessionId === resourceSession(record)
+      )
+        return;
+      // A local child created by a run on an existing thread has a durable
+      // creation binding even when that ordinary parent has no linkOrigin.
+      const created = yield* permanentForThread(target.id);
+      if (created === undefined || resourceSession(created) !== resourceSession(record))
+        return yield* denied("The destination is outside the link's current resource scope.");
+    });
+  const checkThread: PeerAuthority["Service"]["checkThread"] = (threadId) =>
+    Effect.gen(function* () {
+      const record = yield* forThread(threadId);
+      if (record !== undefined) {
+        const ceiling = yield* validate(record);
+        const target = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
+        if (target === null || target.deletedAt !== null)
+          return yield* denied("The destination thread is no longer available.");
+        yield* checkResource(record, ceiling, target);
+        return { ...record, ceiling };
+      }
+      const migrated = yield* legacy(threadId);
+      if (migrated !== undefined) yield* activeSession(migrated.sessionId);
+      return undefined;
+    });
   const prepare: PeerAuthority["Service"]["prepare"] = (
     scope,
     peer,
@@ -562,7 +709,7 @@ const make = Effect.gen(function* () {
           ? scope.authority
           : scope.thread === undefined
             ? undefined
-            : yield* forThread(scope.thread.threadId);
+            : yield* checkThread(scope.thread.threadId);
       const ceiling: PeerCeiling = {
         ...limits,
         resourceScope: parent?.ceiling.resourceScope ?? "environment-resources",
@@ -817,9 +964,15 @@ const make = Effect.gen(function* () {
       if (input.mode !== undefined && input.mode !== "auto" && input.mode !== "queue")
         return yield* denied("A child may only queue a notice to its parent.");
       // The destination stores only a verified pair returned by the source owner.
+      // Returns retain the actual creation pair, not a newer contributor's
+      // command identity. Its exact child thread is still checked below.
+      let pairOwner = record;
+      while (pairOwner.context?.type === "owned-thread")
+        pairOwner = yield* read(pairOwner.context.creationRecordId);
+      if (pairOwner.context?.type === "legacy-thread") return undefined;
       const rows = yield* sql<{
         pair_json: string;
-      }>`SELECT pair_json FROM peer_return_pairs WHERE record_id = ${record.id}`.pipe(
+      }>`SELECT pair_json FROM peer_return_pairs WHERE record_id = ${pairOwner.id}`.pipe(
         Effect.mapError(unavailable),
       );
       const pair = rows[0]
@@ -873,9 +1026,9 @@ const make = Effect.gen(function* () {
         }>`SELECT record_id FROM peer_effect_authority WHERE effect_id = ${effectId}`.pipe(
           Effect.mapError(unavailable),
         );
-        const record =
-          rows[0] === undefined ? yield* forThread(threadId) : yield* read(rows[0].record_id);
-        const migrated = record === undefined ? yield* legacy(threadId) : undefined;
+        const created = yield* permanentForThread(threadId);
+        const record = rows[0] === undefined ? created : yield* read(rows[0].record_id);
+        const migrated = created === undefined ? yield* legacy(threadId) : undefined;
         if (record === undefined && migrated === undefined) return;
         if (migrated !== undefined) yield* activeSession(migrated.sessionId);
         const ceiling =
@@ -887,28 +1040,20 @@ const make = Effect.gen(function* () {
         const target = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
         if (target === null || target.deletedAt !== null)
           return yield* denied("The destination thread is no longer available.");
-        if (
-          record?.sessionId != null &&
-          ceiling.resourceScope === "created-work" &&
-          target.linkOrigin?.sessionId !== record.sessionId
-        )
-          return yield* denied(
-            "The destination effect is outside the link's current resource scope.",
-          );
-        if (exceededDispatchModeLimit(ceiling, target) !== undefined)
+        if (record !== undefined) yield* checkResource(record, ceiling, target);
+        let effective = migrated === undefined ? ceiling : intersect(ceiling, migrated.ceiling);
+        if (created !== undefined && created.id !== record?.id) {
+          const creationCeiling = yield* validate(created);
+          yield* checkResource(created, creationCeiling, target);
+          effective = intersect(effective, creationCeiling);
+        }
+        if (exceededDispatchModeLimit(effective, target) !== undefined)
           return yield* denied(
             "The destination effect exceeds the current originating authority ceiling.",
           );
       }),
     legacyCeiling: (threadId) => legacy(threadId).pipe(Effect.map((record) => record?.ceiling)),
-    checkThread: (threadId) =>
-      Effect.gen(function* () {
-        const record = yield* forThread(threadId);
-        if (record !== undefined) return { ...record, ceiling: yield* validate(record) };
-        const migrated = yield* legacy(threadId);
-        if (migrated !== undefined) yield* activeSession(migrated.sessionId);
-        return undefined;
-      }),
+    checkThread,
     enroll,
     exchange,
     process,
@@ -917,6 +1062,10 @@ const make = Effect.gen(function* () {
     checkPayload,
     bind,
     forThread,
+    ownsCreatedThread: (sessionId, threadId) =>
+      permanentForThread(threadId).pipe(
+        Effect.map((record) => record !== undefined && resourceSession(record) === sessionId),
+      ),
     returnNotice,
     registerPair,
     grants: Effect.gen(function* () {

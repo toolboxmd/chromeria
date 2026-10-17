@@ -2719,7 +2719,7 @@ const make = Effect.gen(function* () {
                 requestKey: key,
                 index,
               });
-              if (parent.thread.linkOrigin !== undefined && Option.isSome(peerAuthority)) {
+              if (Option.isSome(peerAuthority)) {
                 const inherited = yield* peerAuthority.value.forThread(parent.thread.id);
                 if (inherited !== undefined) yield* peerAuthority.value.bind(inherited, threadId);
               }

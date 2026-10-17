@@ -79,34 +79,45 @@ export const withContext = <A, E, R>(
       Option.isSome(invocation) &&
       invocation.value.thread !== undefined &&
       invocation.value.client === undefined &&
-      (invocation.value.authority !== undefined ||
-        invocation.value.legacyPeerCeiling !== undefined) &&
-      currentTool !== undefined &&
-      !(currentTool.name === "t3_thread_send" && isRemote(params, invocation.value))
+      currentTool !== undefined
     ) {
       const owner = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
-      if (Option.isNone(owner)) return yield* unavailable();
-      const current = yield* owner.value.checkThread(invocation.value.thread.threadId);
-      if (current === undefined && invocation.value.authority !== undefined)
-        return yield* unavailable();
-      if (current !== undefined)
+      if (Option.isSome(owner)) {
+        const scope = invocation.value;
+        const threadId = invocation.value.thread.threadId;
+        const current =
+          currentTool.name === "t3_thread_send" && isRemote(params, scope)
+            ? yield* owner.value.forThread(threadId)
+            : yield* owner.value.checkThread(threadId);
+        const legacy =
+          current === undefined ? yield* owner.value.legacyCeiling(threadId) : undefined;
+        const { authority: _oldAuthority, legacyPeerCeiling: _oldLegacy, ...credential } = scope;
+        const ceiling = current?.ceiling ?? legacy;
         invocation = Option.some({
-          ...invocation.value,
-          authority: current,
-          capabilities: new Set(
-            [...invocation.value.capabilities].filter((capability) =>
-              current.ceiling.capabilities.includes(capability),
-            ),
-          ),
+          ...credential,
+          ...(current === undefined ? {} : { authority: current }),
+          ...(legacy === undefined ? {} : { legacyPeerCeiling: legacy }),
+          capabilities:
+            ceiling === undefined
+              ? scope.capabilities
+              : new Set(
+                  [...scope.capabilities].filter((capability) =>
+                    ceiling.capabilities.includes(capability),
+                  ),
+                ),
         });
+      } else if (
+        invocation.value.authority !== undefined ||
+        invocation.value.legacyPeerCeiling !== undefined
+      )
+        return yield* unavailable();
     }
-    const execution =
-      Option.isSome(invocation) && invocation.value.authority !== undefined
-        ? here.pipe(
-            Effect.provideService(PeerDispatchAuthority, invocation.value.authority.id),
-            Effect.provideService(Invocation.McpInvocationContext, invocation.value),
-          )
-        : here;
+    const execution = Option.isSome(invocation)
+      ? here.pipe(
+          Effect.provideService(PeerDispatchAuthority, invocation.value.authority?.id),
+          Effect.provideService(Invocation.McpInvocationContext, invocation.value),
+        )
+      : here;
     if (
       Option.isSome(invocation) &&
       invocation.value.client?.linked === true &&
