@@ -87,6 +87,7 @@ export class PeerForwarding extends Context.Service<
       scope: Scope,
       environmentId: EnvironmentId,
       input: OrchestratorMcpThreadInterruptInput,
+      options?: { readonly expectedLinkIdentity: string },
     ) => Effect.Effect<OrchestratorMcpThreadInterruptResult, OrchestratorMcpFailure>;
     /** `t3_thread_wait` there, in pieces short enough to survive any route. */
     readonly waitForThread: (
@@ -413,6 +414,7 @@ const make = Effect.gen(function* () {
     scope,
     environmentId,
     input,
+    options,
   ) =>
     forward<OrchestratorMcpThreadInterruptResult>(
       scope,
@@ -421,6 +423,7 @@ const make = Effect.gen(function* () {
       OrchestratorMcpThreadInterruptResult,
       environmentId,
       input,
+      options,
     );
 
   const waitForThread: PeerForwarding["Service"]["waitForThread"] = (scope, environmentId, input) =>

@@ -1,3 +1,4 @@
+import * as ThreadManagement from "./ThreadManagementService.ts";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
@@ -194,6 +195,299 @@ const remoteChild = {
 };
 
 it.layer(layerTest)("a delegated task in a linked environment", (it) => {
+  it.effect(
+    "retains completed remote jobs for observation and records parent Stop after first result",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const parent = yield* seedLiveParent("continued-remote");
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.request",
+          commandId: CommandId.make("command:remote-delegate:continued"),
+          parentThreadId: parent.threadId,
+          parentRunId: parent.runId,
+          parentNodeId: parent.rootNodeId,
+          task: "Continue this same job after its first result.",
+          driver: ProviderDriverKind.make("codex"),
+          modelSelection,
+          remoteChild: {
+            ...remoteChild,
+            launch: {
+              lifecycleVersion: 1,
+              requestNamespace: "recorded-source",
+              clientRequestId: "continued-job",
+              linkIdentity: "recorded-generation",
+              projectId: ProjectId.make("remote-project"),
+              title: "Remote job",
+              delegatedFrom: {
+                environmentId: EnvironmentId.make("source-environment"),
+                threadId: parent.threadId,
+                title: "Source parent",
+              },
+            },
+          },
+          completionWake: "always",
+        });
+        const task = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents[0]!;
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.complete",
+          commandId: CommandId.make("command:remote-first-result"),
+          parentThreadId: parent.threadId,
+          taskId: task.id,
+          status: "completed",
+          result: "Original immutable result",
+          stoppedThere: "ran-out",
+        });
+        const recoverable = yield* projections.getOpenRemoteDelegatedTasks;
+        assert.includeDeepMembers(
+          [...recoverable],
+          [{ parentThreadId: parent.threadId, taskId: task.id }],
+        );
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        yield* threads.stopDelegatedTasks({
+          threadId: parent.threadId,
+          commandId: CommandId.make("parent-stop-after-original"),
+        });
+        const stopped = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.find(
+          (candidate) => candidate.id === task.id,
+        )!;
+        assert.equal(stopped.result, "Original immutable result");
+        assert.equal(stopped.remoteChild?.stop?.state, "pending");
+        assert.equal(stopped.completionDelivery?.state, "disposed");
+      }),
+  );
+  it.effect(
+    "records cancellation and wake disposal with the Stop obligation before a first late result",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const parent = yield* seedLiveParent("atomic-stop");
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.request",
+          commandId: CommandId.make("atomic-stop-create"),
+          parentThreadId: parent.threadId,
+          parentRunId: parent.runId,
+          parentNodeId: parent.rootNodeId,
+          task: "Cancel atomically",
+          driver,
+          modelSelection,
+          remoteChild,
+          completionWake: "always",
+        });
+        const taskId = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents[0]!.id;
+        const offers = yield* Offers;
+        yield* Ref.set(offers, []);
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.observe",
+          commandId: CommandId.make("atomic-stop-intent"),
+          parentThreadId: parent.threadId,
+          taskId,
+          stop: { requestId: "atomic-stop-request", state: "pending" },
+          stopResult: { status: "interrupted", result: "Stopped with parent" },
+        });
+        const stopped = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.find(
+          (task) => task.id === taskId,
+        )!;
+        assert.equal(stopped.result, "Stopped with parent");
+        assert.equal(stopped.status, "interrupted");
+        assert.equal(stopped.completionDelivery?.state, "disposed");
+        assert.equal(stopped.remoteChild?.stop?.state, "pending");
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.complete",
+          commandId: CommandId.make("atomic-stop-late-result"),
+          parentThreadId: parent.threadId,
+          taskId,
+          status: "completed",
+          result: "Late actual reply",
+          observation: {
+            cursor: 10,
+            snapshot: {
+              sequence: 10,
+              observedAt: "2026-10-17T20:00:00Z",
+              title: "Remote",
+              workState: "result_available",
+              pendingChildren: 0,
+              queuedRuns: 0,
+              recoveryWaiting: false,
+              incomplete: false,
+              executionSettled: true,
+              pendingQuestions: 0,
+              requestCount: 0,
+              requests: [],
+            },
+            result: {
+              environmentId: remoteChild.environmentId,
+              threadId: remoteChild.threadId,
+              runId: RunId.make("atomic-late-run"),
+              eventId: EventId.make("atomic-late-event"),
+              sequence: 10,
+              status: "completed",
+              text: "Late actual reply",
+              truncated: false,
+            },
+          },
+        });
+        const late = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.find(
+          (task) => task.id === taskId,
+        )!;
+        assert.equal(late.result, "Stopped with parent");
+        assert.equal(late.status, "interrupted");
+        assert.equal(late.remoteChild?.latestResult?.text, "Late actual reply");
+        assert.equal((yield* Ref.get(offers)).length, 0);
+      }),
+  );
+  it.effect(
+    "delivers each real remote result once, preserves original provenance and rejects stale replay",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const parent = yield* seedLiveParent("ordered-remote");
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.request",
+          commandId: CommandId.make("ordered-create"),
+          parentThreadId: parent.threadId,
+          parentRunId: parent.runId,
+          parentNodeId: parent.rootNodeId,
+          task: "Three results",
+          driver,
+          modelSelection,
+          remoteChild: { ...remoteChild, runId: RunId.make("remote-launched-before-recovery") },
+          completionWake: "always",
+        });
+        const taskId = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents[0]!.id;
+        const offers = yield* Offers;
+        yield* Ref.set(offers, []);
+        const snapshot = (sequence: number) => ({
+          sequence,
+          observedAt: "2026-10-17T20:00:00Z",
+          title: "Remote job",
+          workState: "result_available" as const,
+          pendingChildren: 0,
+          queuedRuns: 0,
+          recoveryWaiting: false,
+          incomplete: false,
+          executionSettled: true,
+          pendingQuestions: 0,
+          requestCount: 0,
+          requests: [],
+        });
+        const report = (n: number, attempt = "main") =>
+          orchestrator.dispatch({
+            type: "delegated_task.remote.complete",
+            commandId: CommandId.make(`ordered-result-${n}:${attempt}`),
+            parentThreadId: parent.threadId,
+            taskId,
+            status: n === 3 ? "failed" : "completed",
+            result: `Result ${n}`,
+            observation: {
+              cursor: n * 10,
+              snapshot: snapshot(n * 10),
+              result: {
+                environmentId: remoteChild.environmentId,
+                threadId: remoteChild.threadId,
+                runId: RunId.make(n === 1 ? "remote-original" : `remote-followup-${n}`),
+                eventId: EventId.make(`remote-terminal-${n}`),
+                sequence: n * 10,
+                status: n === 3 ? "failed" : "completed",
+                text: `Result ${n}`,
+                truncated: false,
+              },
+            },
+          });
+        for (const n of [1, 2, 3]) {
+          yield* report(n);
+          if (n === 1) {
+            yield* report(2, "before-acknowledgement");
+            const blocked = (yield* orchestrator.getThreadProjection(
+              parent.threadId,
+            )).subagents.find((task) => task.id === taskId)!;
+            assert.equal(blocked.remoteChild?.cursor, 10);
+            assert.equal(blocked.remoteChild?.latestResult?.runId, "remote-original");
+            assert.equal((yield* Ref.get(offers)).length, 1);
+          }
+          const task = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.find(
+            (task) => task.id === taskId,
+          )!;
+          assert.equal(task.result, "Result 1");
+          assert.equal(task.remoteChild?.runId, "remote-launched-before-recovery");
+          assert.equal(task.remoteChild?.originalResult?.runId, "remote-original");
+          assert.equal(task.remoteChild?.originalResult?.eventId, "remote-terminal-1");
+          assert.equal(task.remoteChild?.latestResult?.text, `Result ${n}`);
+          assert.equal(task.childThreadId, null);
+          yield* orchestrator.dispatch({
+            type: "delegated_task.completion-delivery.acknowledge",
+            commandId: CommandId.make(`ordered-ack-${n}`),
+            parentThreadId: parent.threadId,
+            taskId,
+            observedByRunId: parent.runId,
+          });
+        }
+        assert.equal((yield* Ref.get(offers)).length, 3);
+        const beforeReplay = yield* orchestrator.getThreadEventSequence(parent.threadId);
+        yield* report(2, "stale-distinct-command");
+        yield* report(2);
+        assert.equal(yield* orchestrator.getThreadEventSequence(parent.threadId), beforeReplay);
+        assert.equal((yield* Ref.get(offers)).length, 3);
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.observe",
+          commandId: CommandId.make("monitor-only-update"),
+          parentThreadId: parent.threadId,
+          taskId,
+          observation: {
+            cursor: 40,
+            snapshot: { ...snapshot(40), workState: "working", queuedRuns: 1 },
+          },
+          availability: "current",
+        });
+        const monitor = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.find(
+          (task) => task.id === taskId,
+        )!;
+        assert.equal(monitor.remoteChild?.latestResult?.runId, "remote-followup-3");
+        assert.equal(monitor.result, "Result 1");
+        assert.equal((yield* Ref.get(offers)).length, 3);
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.observe",
+          commandId: CommandId.make("stop-after-result"),
+          parentThreadId: parent.threadId,
+          taskId,
+          stop: { requestId: "stop-generation", state: "pending" },
+        });
+        // A later real result remains observable but cannot resurrect a stopped parent.
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.complete",
+          commandId: CommandId.make("late-after-stop"),
+          parentThreadId: parent.threadId,
+          taskId,
+          status: "completed",
+          result: "Late result",
+          observation: {
+            cursor: 50,
+            snapshot: snapshot(50),
+            result: {
+              environmentId: remoteChild.environmentId,
+              threadId: remoteChild.threadId,
+              runId: RunId.make("late-run"),
+              eventId: EventId.make("late-event"),
+              sequence: 50,
+              status: "completed",
+              text: "Late result",
+              truncated: false,
+            },
+          },
+        });
+        const late = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.find(
+          (task) => task.id === taskId,
+        )!;
+        assert.equal(late.result, "Result 1");
+        assert.equal(late.remoteChild?.latestResult?.text, "Late result");
+        assert.equal(late.remoteChild?.stop?.state, "pending");
+        assert.equal(late.completionDelivery?.state, "disposed");
+        assert.equal((yield* Ref.get(offers)).length, 3);
+        assert.equal(yield* orchestrator.getThreadShell(remoteChild.threadId), null);
+      }),
+  );
+
   it.effect("is recorded on its parent without a child thread here, once", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -265,9 +559,9 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
           result,
         });
       yield* complete("All 412 tests pass on the box.");
-      // A second report is refused, so the first result stands.
-      const late = yield* complete("A late, different answer.").pipe(Effect.flip);
-      assert.equal(late._tag, "OrchestratorDispatchError");
+      // A duplicate terminal report is a no-op and cannot replace the first result.
+      const late = yield* complete("A late, different answer.");
+      assert.deepEqual(late.storedEvents, []);
 
       const projection = yield* orchestrator.getThreadProjection(parent.threadId);
       const task = projection.subagents.find((candidate) => candidate.id === taskId);
@@ -275,7 +569,7 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
       assert.equal(task?.result, "All 412 tests pass on the box.");
       // The live parent run claimed it, so task_status acknowledges it as for a local child.
       assert.equal(task?.completionDelivery?.state, "claimed");
-      // Nothing is left for the follower to pick up after a restart.
+      // This imported record has no generation-bound lifecycle contract.
       assert.deepEqual(yield* openFor, []);
       const item = projection.turnItems.find(
         (candidate) => candidate.type === "subagent" && candidate.subagentId === taskId,

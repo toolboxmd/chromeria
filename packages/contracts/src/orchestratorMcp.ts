@@ -1,4 +1,5 @@
 import { ThreadToolsRequest } from "./threadTools.ts";
+import { PeerTaskResult, PeerTaskSnapshot, PeerTaskStop } from "./peerTask.ts";
 import { BareLaunchRequest, BareSupport } from "./bareLaunch.ts";
 import {
   ExecutionPurpose,
@@ -232,6 +233,15 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
   purpose: Schema.optional(ExecutionPurpose),
   latestTerminalPurpose: Schema.optional(ExecutionPurpose),
   warnings: Schema.optional(Schema.Array(Schema.String)),
+  remoteObservation: Schema.optional(
+    Schema.Struct({
+      availability: Schema.Literals(["current", "stale", "unsupported"]),
+      snapshot: Schema.optional(PeerTaskSnapshot),
+      originalRunId: Schema.optional(RunId),
+      latestResult: Schema.optional(PeerTaskResult),
+      stop: Schema.optional(PeerTaskStop),
+    }),
+  ),
   taskId: NodeId,
   /** Null for a task that runs in a linked environment; see `remoteChild`. */
   childThreadId: Schema.NullOr(ThreadId),
@@ -307,6 +317,7 @@ export const OrchestratorMcpTaskCancelInput = Schema.Struct({
 export type OrchestratorMcpTaskCancelInput = typeof OrchestratorMcpTaskCancelInput.Type;
 
 export const OrchestratorMcpTaskCancelResult = Schema.Struct({
+  stopState: Schema.optional(PeerTaskStop.fields.state),
   taskId: NodeId,
   status: Schema.Literals(["cancel_requested", "completed", "failed", "cancelled", "interrupted"]),
 });

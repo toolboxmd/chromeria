@@ -764,12 +764,16 @@ export const make = Effect.gen(function* () {
           .pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ cause }))),
       );
       const issuedAt = yield* DateTime.now;
-      const expiresAt =
+      // Beyond year 9999 ISO strings acquire a leading '+', which sorts before
+      // ordinary dates in persisted active-session and revocation predicates.
+      const expiresAt = DateTime.min(
         input?.expiresAt === undefined
           ? DateTime.add(issuedAt, {
               milliseconds: Duration.toMillis(input?.ttl ?? DEFAULT_SESSION_TTL),
             })
-          : DateTime.toUtc(input.expiresAt);
+          : DateTime.toUtc(input.expiresAt),
+        REUSABLE_DEV_SESSION_EXPIRES_AT,
+      );
       const claims: SessionClaims = {
         v: 1,
         kind: "session",

@@ -1858,12 +1858,13 @@ sources and reasons.
 ```json
 {
   "id": "peer-links",
-  "purpose": "Port upstream server peer links and record-first remote delegation until absorption replaces the port; retain permanent pairing-code sessions, target Prism launch intent and recovery-aware waits. Extend routing to all MCP toolkit groups while retaining caller capabilities and link-mode narrowing. Own explicit peer consent, including its mobile settings entry and destination permission checks.",
+  "purpose": "Port upstream server peer links and record-first remote delegation until absorption replaces the port; retain permanent pairing-code sessions, target Prism launch intent and recovery-aware waits. Extend routing to all MCP toolkit groups while retaining caller capabilities and link-mode narrowing. Own explicit peer consent, including its mobile settings entry and destination permission checks. Replay delegated lifecycle results durably and open qualified destination work through the source client connection.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/164",
     "https://github.com/toolboxmd/chromeria/issues/302",
     "https://github.com/toolboxmd/chromeria/issues/367",
-    "https://github.com/toolboxmd/chromeria/issues/380"
+    "https://github.com/toolboxmd/chromeria/issues/380",
+    "https://github.com/toolboxmd/chromeria/issues/381"
   ],
   "prs": [
     "https://github.com/pingdotgg/t3code/pull/16653",
@@ -1877,6 +1878,16 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/pull/391"
   ],
   "newFiles": [
+    "packages/contracts/src/peerTask.ts",
+    "packages/client-runtime/src/state/remoteTasks.ts",
+    "packages/client-runtime/src/state/remoteTasks.test.ts",
+    "apps/web/src/state/remoteTasks.ts",
+    "apps/web/src/components/chat/RemoteTaskViewer.tsx",
+    "apps/web/src/components/chat/useSubagentOpen.tsx",
+    "apps/web/src/components/chat/BackgroundSubagentOpenButton.tsx",
+    "apps/mobile/src/state/remote-tasks.ts",
+    "apps/mobile/src/features/threads/RemoteTaskViewer.tsx",
+
     "apps/server/src/mcp/delegatedTaskModes.ts",
     "apps/server/src/mcp/linkOrigin.test.ts",
     "apps/server/src/mcp/linkOrigin.ts",
@@ -1893,6 +1904,7 @@ sources and reasons.
   ],
   "upstreamFiles": [
     "apps/web/src/state/entities.ts",
+    "packages/client-runtime/src/state/subagentRuntime.ts",
     "apps/mobile/src/features/settings/SettingsEnvironmentDetailRouteScreen.tsx",
     "packages/client-runtime/src/state/commandPermissions.test.ts",
     "apps/server/src/auth/McpOAuth.ts",
@@ -1954,10 +1966,19 @@ sources and reasons.
     "packages/shared/src/orchestrationV2PendingBackgroundWork.ts"
   ],
   "sharedFiles": [
+    "apps/server/src/orchestration-v2/EffectWorker.ts",
+    "packages/client-runtime/package.json",
+    "apps/server/src/childThreads/delegatedFollowups.ts",
+    "apps/server/src/childThreads/delegatedFollowupQueries.ts",
+    "apps/server/src/orchestration-v2/DelegatedTaskQuestions.ts",
+    "packages/contracts/src/clientRpcPermissions.ts",
+    "docs/user/remote-access.md",
+
     "apps/server/src/mcp/toolkits/orchestrator/tools.test.ts",
     "apps/server/src/auth/EnvironmentAuth.ts",
     "apps/server/src/auth/RpcAuthorization.ts",
     "apps/server/src/auth/SessionStore.ts",
+    "apps/server/src/auth/SessionStore.test.ts",
     "apps/server/src/environment/ServerEnvironment.ts",
     "apps/server/src/mcp/McpHttpServer.ts",
     "apps/server/src/mcp/OrchestratorMcpService.activity.test.ts",
