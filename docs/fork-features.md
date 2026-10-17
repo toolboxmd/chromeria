@@ -240,13 +240,15 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/t3code/issues/6",
     "https://github.com/toolboxmd/t3code/issues/20",
     "https://github.com/toolboxmd/chromeria/issues/308",
-    "https://github.com/toolboxmd/chromeria/issues/370"
+    "https://github.com/toolboxmd/chromeria/issues/370",
+    "https://github.com/toolboxmd/chromeria/issues/380"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/9",
     "https://github.com/toolboxmd/t3code/pull/24",
     "https://github.com/toolboxmd/chromeria/pull/309",
-    "https://github.com/toolboxmd/chromeria/pull/373"
+    "https://github.com/toolboxmd/chromeria/pull/373",
+    "https://github.com/toolboxmd/chromeria/pull/391"
   ],
   "newFiles": [
     ".github/workflows/fork.yml",
@@ -268,6 +270,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "AGENTS.md",
     "apps/server/src/auth/PairingGrantStore.test.ts",
     "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts",
+    "apps/server/src/testUtils/shardWeights.json",
     "apps/server/src/orchestration-v2/V1ImportBoundary.test.ts",
     "apps/server/src/vcs/GitVcsDriverCore.test.ts",
     "knip.jsonc",
@@ -1613,11 +1616,12 @@ sources and reasons.
 ```json
 {
   "id": "peer-links",
-  "purpose": "Port upstream server peer links and record-first remote delegation until absorption replaces the port; retain permanent pairing-code sessions, target Prism launch intent and recovery-aware waits. Extend routing to all MCP toolkit groups while retaining caller capabilities and link-mode narrowing.",
+  "purpose": "Port upstream server peer links and record-first remote delegation until absorption replaces the port; retain permanent pairing-code sessions, target Prism launch intent and recovery-aware waits. Extend routing to all MCP toolkit groups while retaining caller capabilities and link-mode narrowing. Own explicit peer consent, including its mobile settings entry and destination permission checks.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/164",
     "https://github.com/toolboxmd/chromeria/issues/302",
-    "https://github.com/toolboxmd/chromeria/issues/367"
+    "https://github.com/toolboxmd/chromeria/issues/367",
+    "https://github.com/toolboxmd/chromeria/issues/380"
   ],
   "prs": [
     "https://github.com/pingdotgg/t3code/pull/16653",
@@ -1627,7 +1631,8 @@ sources and reasons.
     "https://github.com/pingdotgg/t3code/pull/16695",
     "https://github.com/pingdotgg/t3code/pull/16719",
     "https://github.com/toolboxmd/chromeria/pull/304",
-    "https://github.com/toolboxmd/chromeria/pull/368"
+    "https://github.com/toolboxmd/chromeria/pull/368",
+    "https://github.com/toolboxmd/chromeria/pull/391"
   ],
   "newFiles": [
     "apps/server/src/mcp/delegatedTaskModes.ts",
@@ -1644,6 +1649,8 @@ sources and reasons.
     "apps/web/src/components/chat/V2LifecycleRow.remote.test.tsx"
   ],
   "upstreamFiles": [
+    "apps/mobile/src/features/settings/SettingsEnvironmentDetailRouteScreen.tsx",
+    "packages/client-runtime/src/state/commandPermissions.test.ts",
     "apps/server/src/auth/McpOAuth.ts",
     "apps/server/src/binCli.ts",
     "apps/server/src/cli/environment.ts",

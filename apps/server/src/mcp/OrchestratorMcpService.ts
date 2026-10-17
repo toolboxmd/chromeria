@@ -1,3 +1,4 @@
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import type { BareReadGrant } from "../orchestration-v2/bareReadGrant.ts";
 import * as BareRuntime from "@t3tools/provider-core/server/bareLaunch";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
@@ -108,6 +109,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as ScheduledTaskChecks from "../scheduledTaskChecks/ScheduledTaskChecks.ts";
 import {
   clientModeCeiling,
+  intersectModes,
   type McpInvocationScope,
   type McpThreadInvocationScope,
   requireThreadScope,
@@ -875,6 +877,7 @@ function timelineItem(input: {
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
+  const peerAuthority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
   const bareLaunch = yield* BareLaunch.BareLaunch;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
@@ -1005,7 +1008,8 @@ const make = Effect.gen(function* () {
   /**
    * The caller's own thread and the most it may hand to threads it targets. A
    * thread caller is capped by its own modes; an OAuth client by the ceiling
-   * chosen when it was approved.
+   * chosen when it was approved. Peer work also retains its validated frozen
+   * and live originating ceiling, even if the destination shell's modes rise.
    */
   const loadCaller = (scope: McpInvocationScope) =>
     Effect.gen(function* () {
@@ -1013,7 +1017,10 @@ const make = Effect.gen(function* () {
       if (scope.thread === undefined) {
         return {
           parent: undefined,
-          limits: clientModeCeiling(scope.client),
+          limits: intersectModes(
+            clientModeCeiling(scope.client),
+            scope.authority?.ceiling ?? scope.legacyPeerCeiling,
+          ),
         } as const;
       }
       const parent = yield* loadProjection(scope.thread.threadId);
@@ -1024,10 +1031,7 @@ const make = Effect.gen(function* () {
       }
       return {
         parent,
-        limits: {
-          runtimeMode: parent.thread.runtimeMode,
-          interactionMode: parent.thread.interactionMode,
-        },
+        limits: intersectModes(parent.thread, scope.authority?.ceiling ?? scope.legacyPeerCeiling),
       } as const;
     });
 
@@ -1042,7 +1046,12 @@ const make = Effect.gen(function* () {
         yield* resolveRuntimeMode(ceiling.runtimeMode, parent.thread.runtimeMode);
         yield* resolveInteractionMode(ceiling.interactionMode, parent.thread.interactionMode);
       }
-      return { scope: threadScope, parent } as const;
+      const ceiling = scope.authority?.ceiling ?? scope.legacyPeerCeiling;
+      const bounded =
+        ceiling === undefined
+          ? parent
+          : { ...parent, thread: { ...parent.thread, ...intersectModes(parent.thread, ceiling) } };
+      return { scope: threadScope, parent: bounded } as const;
     });
 
   /** A target project: the one passed, else the calling thread's. */
@@ -1760,8 +1769,9 @@ const make = Effect.gen(function* () {
         caller.parent === undefined
           ? scope.client?.access !== "read-only"
           : Exit.isSuccess(yield* Effect.exit(assertLiveCaller(scope, caller.parent)));
-      const origin = callerLinkOrigin({ scope, caller: caller.parent?.thread });
-      const owns = origin === undefined || task.linkOrigin?.sessionId === origin.sessionId;
+      const owns = Exit.isSuccess(
+        yield* Effect.exit(assertSameLink({ scope, caller: caller.parent?.thread }, task)),
+      );
       // This runs after a save, so a failed lookup of the bound thread hides
       // the webhook URL instead of reporting a saved task as an error.
       const modes = yield* scheduledTaskRunModes(task).pipe(Effect.option);
@@ -2527,7 +2537,7 @@ const make = Effect.gen(function* () {
           return yield* remoteDelegation.cancel(scope, remoteTask, input);
         }
         const key = yield* requestKey(input.clientRequestId);
-        const parentProjection = yield* loadProjection(scope.thread.threadId);
+        const { parent: parentProjection } = yield* loadThreadCaller(scope, "task_cancel");
         // Cancelling stops the child and every task under it, each a write to a
         // thread its user may have raised above the parent's modes since it was
         // delegated. All of them are checked before anything is stopped.
@@ -2711,6 +2721,10 @@ const make = Effect.gen(function* () {
                 requestKey: key,
                 index,
               });
+              if (Option.isSome(peerAuthority)) {
+                const inherited = yield* peerAuthority.value.forThread(parent.thread.id);
+                if (inherited !== undefined) yield* peerAuthority.value.bind(inherited, threadId);
+              }
               yield* assertTargetEnabledForProject(
                 parent,
                 stableCommandId({ scope, requestKey: key, operation: "create-thread", index }),

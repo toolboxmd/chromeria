@@ -79,7 +79,7 @@ export const loadCaller = Effect.fn("mcp.loadCaller")(function* () {
       scope,
       threads,
       caller: undefined,
-      limits: McpInvocationContext.clientModeCeiling(scope.client),
+      limits: scope.authority?.ceiling ?? McpInvocationContext.clientModeCeiling(scope.client),
     } satisfies Caller;
   }
   const caller = yield* threads
@@ -97,7 +97,10 @@ export const loadCaller = Effect.fn("mcp.loadCaller")(function* () {
     scope,
     threads,
     caller,
-    limits: { runtimeMode: caller.runtimeMode, interactionMode: caller.interactionMode },
+    limits: McpInvocationContext.intersectModes(
+      { runtimeMode: caller.runtimeMode, interactionMode: caller.interactionMode },
+      scope.authority?.ceiling ?? scope.legacyPeerCeiling,
+    ),
   } satisfies Caller;
 });
 
