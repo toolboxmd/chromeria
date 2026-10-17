@@ -8,6 +8,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import {
   AuthOrchestrationOperateScope,
+  AuthAccessWriteScope,
   AuthSettingsWriteScope,
   AuthSourceControlWriteScope,
   ThreadId,
@@ -59,6 +60,34 @@ const setup = Effect.gen(function* () {
 });
 
 describe("command permissions", () => {
+  it.effect("requires human access administration on the destination to change peer consent", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const consent = createCommandPermissions(runtime, WS_METHODS.peerGrantsUpdate);
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        expect(registry.get(consent.permissionAtom(env))).toBe(false);
+        expect((yield* consent.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
+        registry.set(
+          sessions(env),
+          AsyncResult.success({
+            ...grant(true),
+            scopes: [AuthAccessWriteScope],
+            permissions: [AuthAccessWriteScope],
+          }),
+        );
+        expect(registry.get(consent.permissionAtom(env))).toBe(true);
+        yield* consent.authorize(registry, env);
+        registry.set(sessions(other), AsyncResult.success(grant(true)));
+        expect((yield* consent.authorize(registry, other).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
+      }),
+    ),
+  );
+
   it.effect("requires the destination settings grant to run storage cleanup", () =>
     Effect.scoped(
       Effect.gen(function* () {

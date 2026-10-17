@@ -1,3 +1,4 @@
+import { PeerCeiling } from "./peerAuthority.ts";
 import { BareLaunchRequest, ThreadBare, BareReceipt } from "./bareLaunch.ts";
 import { PrismRole, PrismLane } from "./prism.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
@@ -830,6 +831,8 @@ export const OrchestrationV2RemoteTaskLaunch = Schema.Struct({
   clientRequestId: Schema.String,
   /** Nonsecret grant-generation identity; relinking must not create a replacement child. */
   linkIdentity: Schema.String,
+  /** Accepted origin ceiling; absent legacy launches retain orchestration only. */
+  capabilities: Schema.optional(PeerCeiling.fields.capabilities),
   projectId: ProjectId,
   title: Schema.String,
   modelSelection: Schema.optional(ModelSelection),

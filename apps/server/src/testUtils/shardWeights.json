@@ -31,6 +31,7 @@
   "src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts": 25.4,
   "src/orchestration-v2/testkit/ThreadFork.integration.test.ts": 3.7,
   "src/orchestration-v2/testkit/ThreadMergeBack.integration.test.ts": 4.3,
+  "src/peer/PeerAuthority.workflow.test.ts": 299,
   "src/persistence/OrchestrationEventStore.test.ts": 1.9,
   "src/persistence/Sqlite.test.ts": 0.5,
   "src/process/externalLauncher.test.ts": 2.3,

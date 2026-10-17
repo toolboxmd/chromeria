@@ -1,3 +1,4 @@
+import { PeerGrantSettings } from "./PeerGrantSettings";
 import { SessionPermissions } from "./SessionPermissions";
 import { AUTH_SCOPE_OPTIONS as PAIRING_SCOPE_OPTIONS } from "@t3tools/shared/authScopeOptions";
 import {
@@ -3536,6 +3537,9 @@ export function ConnectionsSettings() {
         <div className={accessRowClassName(presentation)}>
           <p className="text-xs text-destructive">{desktopAccessManagementError}</p>
         </div>
+      ) : null}
+      {primaryEnvironment?.serverConfig?.environment.capabilities.peerAuthority === 1 ? (
+        <PeerGrantSettings environmentId={primaryEnvironment.environmentId} />
       ) : null}
       <PairingClientsList
         endpointUrl={desktopServerExposureState?.endpointUrl}

@@ -91,6 +91,8 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverRemoveKeybinding]: AuthSettingsWriteScope,
   [WS_METHODS.serverGetStorageCleanupReport]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetSettings]: AuthOrchestrationReadScope,
+  [WS_METHODS.peerGrantsList]: AuthAccessReadScope,
+  [WS_METHODS.peerGrantsUpdate]: AuthAccessWriteScope,
   [WS_METHODS.peerLinksList]: AuthAccessReadScope,
   [WS_METHODS.peerLinksLink]: AuthAccessWriteScope,
   [WS_METHODS.peerLinksUnlink]: AuthAccessWriteScope,
