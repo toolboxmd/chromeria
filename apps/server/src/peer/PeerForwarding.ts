@@ -18,7 +18,7 @@ import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import type * as Tool from "effect/ai/Tool";
+import * as Tool from "effect/ai/Tool";
 
 import { assertNotLinked, callerLinkOrigin } from "../mcp/linkOrigin.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
@@ -26,6 +26,9 @@ import { loadCaller, unavailable } from "../mcp/threadAccess.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
+import * as PeerAuthority from "./PeerAuthority.ts";
+import * as Option from "effect/Option";
+import { PeerReturnPair } from "@t3tools/contracts";
 
 /**
  * A peer's `/mcp` holds a wait open for its whole timeout without sending
@@ -54,7 +57,10 @@ export class PeerForwarding extends Context.Service<
       tool: T,
       environmentId: EnvironmentId,
       params: Tool.Parameters<T>,
-      options?: { readonly expectedLinkIdentity: string },
+      options?: {
+        readonly expectedLinkIdentity: string;
+        readonly pair?: PeerAuthority.Authority["pair"];
+      },
     ) => Effect.Effect<Tool.Success<T>, OrchestratorMcpFailure>;
     /**
      * Runs `here` unless `params.environmentId` names a linked environment, in
@@ -95,29 +101,48 @@ export class PeerForwarding extends Context.Service<
 export const remoteTarget = (scope: Scope, environmentId: EnvironmentId | undefined) =>
   environmentId === scope.environmentId ? undefined : environmentId;
 
+const decodeLaunchedChild = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    threadId: PeerReturnPair.fields.childThreadId,
+    runId: PeerReturnPair.fields.childRunId,
+  }),
+);
 const make = Effect.gen(function* () {
   const peers = yield* PeerMcpClient.PeerMcpClient;
   const links = yield* PeerLinks.PeerLinks;
   const crypto = yield* Crypto.Crypto;
   const threads = yield* ThreadManagement.ThreadManagementService;
+  const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
 
   /**
    * The caller's own limits here, which travel with every call it forwards.
-   * Work a link started here never uses this environment's own links: the
-   * peer would see this environment's session, not the link the work came
-   * from, so its fence could not hold.
+   * Linked descendants need explicit durable onward consent. The destination
+   * validates the originating grant through the concurrent control channel.
    */
   const callerLimits = (scope: Scope) =>
     loadCaller().pipe(
       Effect.tap((caller) =>
         callerLinkOrigin(caller) === undefined
           ? assertNotLinked(caller, "use this environment's links")
-          : Effect.fail(
-              new OrchestratorMcpFailure({
-                code: "capability_denied",
-                message: "A peer link cannot forward through another environment's links.",
-              }),
-            ),
+          : Option.isSome(authority) && scope.thread !== undefined
+            ? authority.value.forThread(scope.thread.threadId).pipe(
+                Effect.flatMap((record) =>
+                  record?.ceiling.onward === true
+                    ? Effect.void
+                    : Effect.fail(
+                        new OrchestratorMcpFailure({
+                          code: "capability_denied",
+                          message: "This child's durable grant does not permit onward delegation.",
+                        }),
+                      ),
+                ),
+              )
+            : Effect.fail(
+                new OrchestratorMcpFailure({
+                  code: "capability_denied",
+                  message: "A peer link cannot forward through another environment's links.",
+                }),
+              ),
       ),
       Effect.map((caller) => caller.limits),
       Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
@@ -143,10 +168,13 @@ const make = Effect.gen(function* () {
     success: Schema.Top,
     environmentId: EnvironmentId,
     params: unknown,
-    options?: { readonly expectedLinkIdentity: string },
+    options?: {
+      readonly expectedLinkIdentity: string;
+      readonly pair?: PeerAuthority.Authority["pair"];
+    },
+    readOnly = false,
   ) =>
     Effect.gen(function* () {
-      const limits = yield* callerLimits(scope);
       const encoded = (yield* Schema.encodeUnknownEffect(parameters as Schema.Encoder<unknown>)(
         params,
       ).pipe(Effect.mapError(unavailable))) as Record<string, unknown>;
@@ -199,6 +227,26 @@ const make = Effect.gen(function* () {
           }
         }
       }
+      if (
+        toolName === "t3_thread_send" &&
+        Option.isSome(authority) &&
+        typeof args.threadId === "string" &&
+        typeof args.message === "string"
+      ) {
+        const returned = yield* authority.value.returnNotice(scope, environmentId, {
+          threadId: args.threadId as PeerReturnPair["parentThreadId"],
+          text: args.message,
+          ...(typeof args.mode === "string" ? { mode: args.mode } : {}),
+          ...(typeof args.clientRequestId === "string"
+            ? { clientRequestId: args.clientRequestId }
+            : {}),
+        });
+        if (returned !== undefined)
+          return yield* Schema.decodeUnknownEffect(success as Schema.Decoder<A>)(returned).pipe(
+            Effect.mapError(unavailable),
+          );
+      }
+      const limits = yield* callerLimits(scope);
       const carriesBare = (value: unknown): boolean =>
         Predicate.isObject(value) &&
         (("bare" in value && value.bare !== undefined) ||
@@ -254,16 +302,50 @@ const make = Effect.gen(function* () {
         });
       }
       if (typeof args.clientRequestId === "string") {
-        args.clientRequestId = yield* scopedRequestId(scope.requestNamespace, args.clientRequestId);
+        args.clientRequestId = yield* scopedRequestId(
+          scope.thread === undefined
+            ? scope.requestNamespace
+            : `thread:${scope.environmentId}:${scope.thread.threadId}`,
+          args.clientRequestId,
+        );
       }
-      return yield* peers.call({
+      const link = Option.isSome(authority)
+        ? yield* links.get(environmentId).pipe(Effect.mapError(unavailable))
+        : Option.none();
+      const envelope =
+        Option.isSome(authority) && Option.isSome(link)
+          ? yield* authority.value.prepare(
+              scope,
+              environmentId,
+              link.value.launchIdentity,
+              toolName,
+              args,
+              limits,
+              options?.pair,
+              readOnly,
+            )
+          : undefined;
+      const result = yield* peers.call({
         environmentId,
         tool: toolName,
         arguments: args,
         limits,
         success: success as Schema.Decoder<A>,
+        ...(envelope === undefined ? {} : { authority: envelope }),
         ...(options === undefined ? {} : options),
       });
+      if (envelope !== undefined && options?.pair !== undefined && Option.isSome(authority)) {
+        const child = yield* decodeLaunchedChild(result).pipe(Effect.mapError(unavailable));
+        yield* authority.value.registerPair(envelope, {
+          parentEnvironmentId: scope.environmentId,
+          parentThreadId: options.pair.parentThreadId,
+          taskId: options.pair.taskId,
+          childEnvironmentId: environmentId,
+          childThreadId: child.threadId,
+          childRunId: child.runId,
+        });
+      }
+      return result;
     });
 
   const call: PeerForwarding["Service"]["call"] = (scope, tool, environmentId, params, options) =>
@@ -275,6 +357,7 @@ const make = Effect.gen(function* () {
       environmentId,
       params,
       options,
+      Context.get(tool.annotations, Tool.Readonly),
     );
 
   const route: PeerForwarding["Service"]["route"] = (scope, tool, params, here) => {
@@ -290,6 +373,8 @@ const make = Effect.gen(function* () {
       OrchestratorMcpThreadReadResult,
       environmentId,
       input,
+      undefined,
+      true,
     );
 
   const interruptThread: PeerForwarding["Service"]["interruptThread"] = (
@@ -322,6 +407,8 @@ const make = Effect.gen(function* () {
           OrchestratorMcpThreadWaitResult,
           environmentId,
           { threadId: input.threadId, ...(runId === undefined ? {} : { runId }), timeoutMs: chunk },
+          undefined,
+          true,
         );
         remaining -= chunk;
         if (!result.timedOut || remaining <= 0) return result;
