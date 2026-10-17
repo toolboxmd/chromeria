@@ -272,7 +272,6 @@ const layerTest = Layer.mergeAll(
   RuntimeLayer.layerEventSink,
   ProjectStore.layer,
   ProjectionStore.layer,
-  EffectOutbox.layer,
   ThreadCommandExecutor.layer,
 ).pipe(
   Layer.provide(McpSessionRegistryTestkit.layer),
