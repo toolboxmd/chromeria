@@ -1,5 +1,6 @@
 import * as BrowserCookieMirror from "./preview/BrowserCookieMirror.ts";
 import * as CookieMirrorRoute from "./preview/CookieMirrorRoute.ts";
+import * as PeerLinkEvents from "./peer/PeerLinkEvents.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ForkProviderMaintenance from "./provider/forkProviderMaintenance.ts";
 import * as ProviderAutoUpdate from "./provider/providerAutoUpdate.ts";
@@ -70,6 +71,8 @@ import * as ProviderInstanceRegistryHydration from "./provider/ProviderInstanceR
 import * as ProjectSettingsOverrideSweep from "./provider/ProjectSettingsOverrideSweep.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
+import * as PeerAuthority from "./peer/PeerAuthority.ts";
+import * as PeerNoticeDelivery from "./peer/PeerNoticeDelivery.ts";
 import * as PeerForwarding from "./peer/PeerForwarding.ts";
 import * as RemoteDelegation from "./peer/RemoteDelegation.ts";
 import * as PeerLinks from "./peer/PeerLinks.ts";
@@ -460,6 +463,17 @@ const layerProjectFaviconResolver = ProjectFaviconResolver.layer.pipe(
 
 const layerServerEnvironment = ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer));
 
+// Shared below runtime and MCP credential construction, so dispatch and recovery
+// enforce the same durable ceilings as authenticated transport intake.
+const layerPeerAuthority = PeerAuthority.layer.pipe(
+  Layer.provideMerge(PeerLinks.layer),
+  Layer.provideMerge(PeerLinkEvents.layer),
+  Layer.provide(ProjectionStoreV2.layer),
+  Layer.provide(layerServerEnvironment),
+  Layer.provide(ServerSecretStore.layer),
+  Layer.provide(layerPersistence),
+);
+
 const layerAuth = EnvironmentAuth.layer.pipe(
   Layer.provideMerge(layerPersistence),
   Layer.provide(layerServerEnvironment),
@@ -725,6 +739,7 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.effectDiscard(
     RemoteDelegation.RemoteDelegation.pipe(Effect.flatMap((remote) => remote.start())),
   ),
+  Layer.effectDiscard(PeerMcpClient.PeerMcpClient.pipe(Effect.flatMap((peers) => peers.start))),
 ).pipe(
   Layer.provide(
     PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
@@ -753,7 +768,7 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.provide(
     PeerForwarding.layer.pipe(
       Layer.provideMerge(PeerMcpClient.layer),
-      Layer.provideMerge(PeerLinks.layer),
+      Layer.provideMerge(PeerNoticeDelivery.layer),
     ),
   ),
   Layer.provide(PreviewAutomationBroker.layer),
@@ -1107,6 +1122,7 @@ const layerMakeServer = Layer.unwrap(
           Layer.provide(ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer))),
         ),
       ),
+      Layer.provideMerge(layerPeerAuthority),
       Layer.provide(layerActivation),
       Layer.provideMerge(RelayTracing.layerServerRelayBroker),
       Layer.provideMerge(layerHttpServer),

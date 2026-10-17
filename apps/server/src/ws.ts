@@ -1,3 +1,4 @@
+import * as PeerAuthority from "./peer/PeerAuthority.ts";
 import { stopSpectrum } from "./spectrum/humanStopRpc.ts";
 import { abandonScheduledReport } from "./spectrum/humanReportRpc.ts";
 import { SPECTRUM_WS_METHODS } from "@t3tools/contracts";
@@ -1283,6 +1284,7 @@ const layerWsRpc = (
       const databaseStorage = yield* DatabaseStorage.DatabaseStorage;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const peerLinks = yield* PeerLinks.PeerLinks;
+      const peerAuthority = yield* PeerAuthority.PeerAuthority;
       const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
       const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
@@ -2444,6 +2446,8 @@ const layerWsRpc = (
         [WS_METHODS.serverRunStorageCleanup]: () => storageCleanup.runNow,
         [WS_METHODS.serverGetStorageCleanupReport]: () => storageCleanup.reports,
         [WS_METHODS.serverGetDatabaseStorage]: () => databaseStorage.status,
+        [WS_METHODS.peerGrantsList]: () => peerAuthority.grants,
+        [WS_METHODS.peerGrantsUpdate]: (input) => peerAuthority.setGrant(input),
         [WS_METHODS.peerLinksList]: (_input) =>
           peerLinks.list.pipe(Effect.map((links) => ({ links }))),
         [WS_METHODS.peerLinksLink]: (input) => peerLinks.link(input),
@@ -3197,6 +3201,7 @@ export const layer = Layer.unwrap(
     const issueService = yield* IssueService.IssueService;
     const issueLinks = yield* IssueLinks.IssueLinks;
     const peerLinks = yield* PeerLinks.PeerLinks;
+    const peerAuthority = yield* PeerAuthority.PeerAuthority;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3272,6 +3277,7 @@ export const layer = Layer.unwrap(
               Layer.provide(Layer.succeed(IssueService.IssueService, issueService)),
               Layer.provide(Layer.succeed(IssueLinks.IssueLinks, issueLinks)),
               Layer.provide(Layer.succeed(PeerLinks.PeerLinks, peerLinks)),
+              Layer.provide(Layer.succeed(PeerAuthority.PeerAuthority, peerAuthority)),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(

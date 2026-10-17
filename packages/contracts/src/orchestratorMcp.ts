@@ -569,6 +569,15 @@ export const OrchestratorMcpThreadSendResult = Schema.Union([
     warnings: Schema.optional(Schema.Array(Schema.String)),
     threadId: ThreadId,
     messageId: MessageId,
+    runId: Schema.Null,
+    taskId: NodeId,
+    status: Schema.Literal("queued"),
+    /** Persisted on the child's environment; parent intake has not acknowledged it yet. */
+    delivery: Schema.Literal("pending"),
+  }),
+  Schema.Struct({
+    threadId: ThreadId,
+    messageId: MessageId,
     runId: RunId,
     taskId: Schema.optional(NodeId),
     status: OrchestrationV2RunStatus,

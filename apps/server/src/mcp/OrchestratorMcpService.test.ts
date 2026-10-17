@@ -688,6 +688,7 @@ describe("OrchestratorMcpService", () => {
   const cancelOverRaisedGrandchild = (child: {
     readonly deleted: boolean;
     readonly raisedDuringStop?: boolean;
+    readonly legacyPeerCeiling?: McpInvocationScope["legacyPeerCeiling"];
   }) =>
     Effect.gen(function* () {
       const parentThreadId = ThreadId.make("thread:mcp-cancel-grandchild-parent");
@@ -712,7 +713,8 @@ describe("OrchestratorMcpService", () => {
           {
             thread: {
               id: parentThreadId,
-              runtimeMode: "approval-required",
+              runtimeMode:
+                child.legacyPeerCeiling === undefined ? "approval-required" : "full-access",
               interactionMode: "default",
             },
             runs: [],
@@ -760,7 +762,10 @@ describe("OrchestratorMcpService", () => {
                 ? liveThreadShell(threadId)
                 : threadId === childThreadId && child.deleted
                   ? null
-                  : liveThreadShell(threadId, { runtimeMode: "approval-required" }),
+                  : liveThreadShell(threadId, {
+                      runtimeMode: "approval-required",
+                      interactionMode: child.legacyPeerCeiling?.interactionMode ?? "default",
+                    }),
             ),
           dispatch: (command) =>
             Ref.update(dispatched, (commands) => [...commands, command]).pipe(
@@ -769,10 +774,14 @@ describe("OrchestratorMcpService", () => {
           stopDelegatedTasks: () =>
             Effect.gen(function* () {
               const limit = yield* DispatchModeLimit;
-              if (child.raisedDuringStop === true && limit?.refused !== undefined) {
+              if (
+                child.raisedDuringStop === true &&
+                limit?.refused !== undefined &&
+                (limit.runtimeMode !== "full-access" || limit.interactionMode === "plan")
+              ) {
                 const refusal: DispatchModeRefusal = {
                   threadId: grandchildThreadId,
-                  mode: "runtime",
+                  mode: limit.runtimeMode !== "full-access" ? "runtime" : "interaction",
                   runtimeMode: "full-access",
                   interactionMode: "default",
                 };
@@ -780,7 +789,7 @@ describe("OrchestratorMcpService", () => {
                 return yield* new OrchestratorThreadAboveModeLimitError({
                   commandId: CommandId.make("stop-grandchild"),
                   threadId: grandchildThreadId,
-                  mode: "runtime",
+                  mode: limit.runtimeMode !== "full-access" ? "runtime" : "interaction",
                   runtimeMode: "full-access",
                   interactionMode: "default",
                 });
@@ -809,6 +818,9 @@ describe("OrchestratorMcpService", () => {
         client: undefined,
         capabilities: new Set(["orchestration"]),
         issuedAt: 1,
+        ...(child.legacyPeerCeiling === undefined
+          ? {}
+          : { legacyPeerCeiling: child.legacyPeerCeiling }),
       };
 
       return yield* Effect.gen(function* () {
@@ -857,6 +869,32 @@ describe("OrchestratorMcpService", () => {
         stoppedBelow: false,
       });
     }),
+  );
+
+  it.effect.each(["runtime", "interaction"] as const)(
+    "retains the legacy %s ceiling through recursive cancellation and its locked guard",
+    (mode) =>
+      Effect.gen(function* () {
+        const legacyPeerCeiling: NonNullable<McpInvocationScope["legacyPeerCeiling"]> = {
+          runtimeMode: mode === "runtime" ? "approval-required" : "full-access",
+          interactionMode: mode === "interaction" ? "plan" : "default",
+          resourceScope: "created-work",
+          onward: false,
+          capabilities: ["orchestration"],
+        };
+        assert.deepEqual(yield* cancelOverRaisedGrandchild({ deleted: false, legacyPeerCeiling }), {
+          code: `${mode}_mode_escalation_denied`,
+          dispatched: [],
+          stoppedBelow: false,
+        });
+        const locked = yield* cancelOverRaisedGrandchild({
+          deleted: false,
+          raisedDuringStop: true,
+          legacyPeerCeiling,
+        });
+        assert.equal(locked.code, `${mode}_mode_escalation_denied`);
+        assert.isFalse(locked.stoppedBelow);
+      }),
   );
 });
 

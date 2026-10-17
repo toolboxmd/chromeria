@@ -92,6 +92,9 @@ flowchart TD
     %% TF: #259
     XM["Cross-machine control"]
     %% XM: #164 #302
+    PGR["Remote return and onward delegation"]
+    %% PGR: #380
+    XM --> PGR
     NR["Network routes"]
     %% NR: #292 #358 PR #498 PR #497
     EP["Execution purpose"]

@@ -1,4 +1,5 @@
 import { toolPolicyRejection, ToolPolicyError } from "@t3tools/provider-core/server/toolPolicy";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import {
   BareLaunchError,
@@ -323,6 +324,7 @@ export const layerWithOptions = (
       const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
       const fileSystem = yield* FileSystem.FileSystem;
       const mcpSessionRegistry = yield* McpSessionRegistry.McpSessionRegistry;
+      const peerAuthority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
       const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
       /**
        * When present, an unreadable settings file withholds browser access
@@ -459,13 +461,30 @@ export const layerWithOptions = (
                 // the credential it started with, so a thread that detaches and
                 // re-attaches across a workspace handoff must come back to the
                 // same token or the process's tool calls fail auth.
-                const { browser: browserToolsAvailable, device: deviceToolsAvailable } =
-                  yield* agentAccessSettings(threadId);
+                const accessSettings = yield* agentAccessSettings(threadId);
+                const frozenAuthority = Option.isSome(peerAuthority)
+                  ? yield* peerAuthority.value.forThread(threadId).pipe(Effect.orDie)
+                  : undefined;
+                const frozenCeiling =
+                  frozenAuthority?.ceiling ??
+                  (Option.isSome(peerAuthority)
+                    ? yield* peerAuthority.value.legacyCeiling(threadId).pipe(Effect.orDie)
+                    : undefined);
+                const browserToolsAvailable =
+                  accessSettings.browser &&
+                  (frozenCeiling?.capabilities.includes("preview") ?? true);
+                const deviceToolsAvailable =
+                  accessSettings.device && (frozenCeiling?.capabilities.includes("device") ?? true);
                 const capabilities = new Set<
                   import("../mcp/McpInvocationContext.ts").McpCapability
                 >(["orchestration", "worktree", "pull-requests"]);
                 if (browserToolsAvailable) capabilities.add("preview");
                 if (deviceToolsAvailable) capabilities.add("device");
+                if (frozenCeiling !== undefined) {
+                  for (const capability of capabilities)
+                    if (!frozenCeiling.capabilities.includes(capability))
+                      capabilities.delete(capability);
+                }
                 const existing = yield* mcpSessions.read(threadId);
                 if (existing !== undefined) {
                   // Reserve before the async resolve so a release cannot
@@ -487,9 +506,14 @@ export const layerWithOptions = (
                     resolved !== undefined &&
                     resolved.thread.threadId === threadId &&
                     resolved.thread.providerInstanceId === providerInstanceId &&
-                    resolved.capabilities.has("preview") === browserToolsAvailable &&
-                    resolved.capabilities.has("device") === deviceToolsAvailable
+                    resolved.capabilities.size === capabilities.size &&
+                    [...capabilities].every((capability) => resolved.capabilities.has(capability))
                   ) {
+                    yield* mcpSessions.set({
+                      ...existing,
+                      browserToolsAvailable: resolved.capabilities.has("preview"),
+                      capabilities: resolved.capabilities,
+                    });
                     return { mcpCredentialId: existing.providerSessionId, issued: false };
                   }
                   dropMcpCredentialReservation(threadId, existing.providerSessionId);
@@ -500,6 +524,7 @@ export const layerWithOptions = (
                   providerInstanceId,
                   browserToolsAvailable,
                   capabilities,
+                  ...(frozenAuthority === undefined ? {} : { authority: frozenAuthority }),
                 });
                 yield* mcpSessions.set(credential.config);
                 reserveMcpCredential(threadId, credential.config.providerSessionId);

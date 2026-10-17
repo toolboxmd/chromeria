@@ -247,6 +247,10 @@
       "types": "./src/state/usageProgress.ts",
       "default": "./src/state/usageProgress.ts"
     },
+    "./state/peer-grants": {
+      "types": "./src/state/peerGrants.ts",
+      "default": "./src/state/peerGrants.ts"
+    },
     "./state/server": {
       "types": "./src/state/server.ts",
       "default": "./src/state/server.ts"
