@@ -37,7 +37,7 @@ const outsideLink = (origin: OrchestrationV2LinkOrigin, message: string) =>
     message: `This work was started from ${origin.label} through a linked environment, so ${message}`,
   });
 
-/** Work a linked caller may change: only what its own link started. */
+/** Apply the link's resource scope to destination thread mutations. */
 export const assertSameLink = <T extends Pick<OrchestrationV2ThreadShell, "linkOrigin">>(
   caller: Pick<Caller, "scope"> & {
     readonly caller: Pick<OrchestrationV2ThreadShell, "linkOrigin"> | undefined;
@@ -69,7 +69,7 @@ const directFullAccessPeer = (caller: Pick<Caller, "scope" | "caller">) => {
   );
 };
 
-/** Linked descendants cannot change the environment; direct full-access links can. */
+/** Preserve legacy direct access and explicitly granted descendant environment operations. */
 export const assertNotLinked = (caller: Pick<Caller, "scope" | "caller">, what: string) => {
   const origin = callerLinkOrigin(caller);
   return origin === undefined ||

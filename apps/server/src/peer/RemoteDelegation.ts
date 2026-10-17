@@ -278,6 +278,7 @@ const make = Effect.gen(function* () {
         requestNamespace: `thread:${hereId}:${scope.thread.threadId}`,
         clientRequestId: `delegate:${scope.thread.threadId}:${key}`,
         linkIdentity: link.launchIdentity,
+        capabilities: [...scope.capabilities],
         projectId,
         title: input.title ?? parent.thread.title,
         ...(modelSelection === undefined ? {} : { modelSelection }),
@@ -465,6 +466,7 @@ const make = Effect.gen(function* () {
           remote,
         ),
         requestNamespace: launch.requestNamespace,
+        capabilities: new Set(launch.capabilities ?? ["orchestration"]),
       };
       const launched = yield* forwarding
         .call(

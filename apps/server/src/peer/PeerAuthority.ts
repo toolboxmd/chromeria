@@ -207,27 +207,52 @@ const make = Effect.gen(function* () {
   yield* sql`CREATE TABLE IF NOT EXISTS peer_legacy_authority (thread_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, ceiling_json TEXT NOT NULL)`;
   yield* sql`CREATE TABLE IF NOT EXISTS peer_thread_authority (thread_id TEXT PRIMARY KEY, record_id TEXT NOT NULL)`;
   yield* sql`CREATE TABLE IF NOT EXISTS peer_return_pairs (task_id TEXT PRIMARY KEY, record_id TEXT NOT NULL, pair_json TEXT NOT NULL)`;
-  yield* sql`CREATE TABLE IF NOT EXISTS peer_control_frames (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, frame_json TEXT NOT NULL, answer_json TEXT)`;
+  const controlSchema = `CREATE TABLE IF NOT EXISTS peer_control_frames (cursor INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL, frame_json TEXT NOT NULL, answer_json TEXT)`;
+  yield* sql.unsafe(controlSchema);
+  const schema = yield* sql<{
+    sql: string;
+  }>`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'peer_control_frames'`;
+  if (!schema[0]?.sql.includes("AUTOINCREMENT")) {
+    // Preserve old cursors and receipts. Removing transient frames must never
+    // reuse a cursor already observed by an outbound-only stream.
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql`ALTER TABLE peer_control_frames RENAME TO peer_control_frames_previous`;
+        yield* sql.unsafe(controlSchema);
+        yield* sql`INSERT INTO peer_control_frames (cursor, id, session_id, frame_json, answer_json) SELECT rowid, id, session_id, frame_json, answer_json FROM peer_control_frames_previous ORDER BY rowid`;
+        yield* sql`DROP TABLE peer_control_frames_previous`;
+      }),
+    );
+  }
   yield* sql`CREATE INDEX IF NOT EXISTS peer_control_pending ON peer_control_frames (session_id) WHERE answer_json IS NULL`;
   yield* sql`CREATE INDEX IF NOT EXISTS peer_return_by_record ON peer_return_pairs (record_id)`;
+  // Validation requests have a live waiter, unlike durable pair/return receipts.
+  // A restarted server cannot resume that prior process's interactive request.
+  yield* sql`DELETE FROM peer_control_frames WHERE json_extract(frame_json, '$.body.type') = 'validate'`;
   // Signals only avoid idle queries. Frames and answers are durable and replay after restart.
-  const signals = new Map<string, Deferred.Deferred<void>>();
+  const signals = new Map<string, Set<Deferred.Deferred<void>>>();
   const wake = (key: string) =>
     Effect.gen(function* () {
-      const signal = signals.get(key);
-      // Remove before completing: completion may immediately register the next waiter.
+      const waiting = signals.get(key);
+      // Remove before completing: completion may immediately register a new waiter.
       signals.delete(key);
-      if (signal) yield* Deferred.succeed(signal, undefined);
+      if (waiting) yield* Effect.forEach(waiting, (signal) => Deferred.succeed(signal, undefined));
     });
   const signalFor = (key: string) =>
     Effect.gen(function* () {
-      const signal = signals.get(key) ?? (yield* Deferred.make<void>());
-      signals.set(key, signal);
+      const signal = yield* Deferred.make<void>();
+      // Read and update together, after the allocation yield. Each concurrent
+      // waiter owns its registration and cannot replace or release another's.
+      const waiting = signals.get(key) ?? new Set<Deferred.Deferred<void>>();
+      waiting.add(signal);
+      signals.set(key, waiting);
       return signal;
     });
   const releaseSignal = (key: string, signal: Deferred.Deferred<void>) =>
     Effect.sync(() => {
-      if (signals.get(key) === signal) signals.delete(key);
+      const waiting = signals.get(key);
+      waiting?.delete(signal);
+      if (waiting?.size === 0) signals.delete(key);
     });
   const wait = (key: string, signal: Deferred.Deferred<void>, millis: number) =>
     Deferred.await(signal).pipe(
@@ -398,7 +423,16 @@ const make = Effect.gen(function* () {
         const result = yield* decodeAnswer(rows[0].answer_json).pipe(Effect.mapError(unavailable));
         if (!result.ok) return yield* denied(result.message);
         return result.value;
-      }).pipe(Effect.ensuring(releaseSignal(`frame:${frame.id}`, responseSignal)));
+      }).pipe(
+        Effect.ensuring(releaseSignal(`frame:${frame.id}`, responseSignal)),
+        Effect.ensuring(
+          frame.body.type === "validate"
+            ? sql`DELETE FROM peer_control_frames WHERE id = ${frame.id} AND session_id = ${sessionId}`.pipe(
+                Effect.orDie,
+              )
+            : Effect.void,
+        ),
+      );
     });
   const exchange: PeerAuthority["Service"]["exchange"] = (scope, input) =>
     Effect.gen(function* () {
@@ -421,19 +455,26 @@ const make = Effect.gen(function* () {
         );
       const pendingSignal =
         input.wait === false ? undefined : yield* signalFor(`session:${sessionId}`);
-      let rows = yield* pending();
-      if (rows.length === 0 && pendingSignal !== undefined) {
-        yield* wait(`session:${sessionId}`, pendingSignal, 20_000);
-        rows = yield* pending();
-      }
-      if (pendingSignal !== undefined) yield* releaseSignal(`session:${sessionId}`, pendingSignal);
-      yield* activeSession(sessionId);
-      return {
-        frames: yield* Effect.forEach(rows, (row) =>
-          decodeFrame(row.frame_json).pipe(Effect.mapError(unavailable)),
+      return yield* Effect.gen(function* () {
+        let rows = yield* pending();
+        if (rows.length === 0 && pendingSignal !== undefined) {
+          yield* wait(`session:${sessionId}`, pendingSignal, 20_000);
+          rows = yield* pending();
+        }
+        yield* activeSession(sessionId);
+        return {
+          frames: yield* Effect.forEach(rows, (row) =>
+            decodeFrame(row.frame_json).pipe(Effect.mapError(unavailable)),
+          ),
+          cursor: rows.at(-1)?.cursor ?? input.after ?? 0,
+        };
+      }).pipe(
+        Effect.ensuring(
+          pendingSignal === undefined
+            ? Effect.void
+            : releaseSignal(`session:${sessionId}`, pendingSignal),
         ),
-        cursor: rows.at(-1)?.cursor ?? input.after ?? 0,
-      };
+      );
     });
   const validate = (record: Authority): Effect.Effect<PeerCeiling, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
@@ -459,7 +500,7 @@ const make = Effect.gen(function* () {
       if (
         Option.isNone(link) ||
         link.value.launchIdentity !== record.peer.generation ||
-        DateTime.toEpochMillis(link.value.expiresAt) < (yield* Clock.currentTimeMillis)
+        DateTime.toEpochMillis(link.value.expiresAt) <= (yield* Clock.currentTimeMillis)
       )
         return yield* denied("The originating link generation is no longer authorized.");
       if (record.localThreadId === null) {
@@ -846,6 +887,14 @@ const make = Effect.gen(function* () {
         const target = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
         if (target === null || target.deletedAt !== null)
           return yield* denied("The destination thread is no longer available.");
+        if (
+          record?.sessionId != null &&
+          ceiling.resourceScope === "created-work" &&
+          target.linkOrigin?.sessionId !== record.sessionId
+        )
+          return yield* denied(
+            "The destination effect is outside the link's current resource scope.",
+          );
         if (exceededDispatchModeLimit(ceiling, target) !== undefined)
           return yield* denied(
             "The destination effect exceeds the current originating authority ceiling.",

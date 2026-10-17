@@ -1,3 +1,5 @@
+import { assertNotLinked } from "../mcp/linkOrigin.ts";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Ref from "effect/Ref";
 import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
@@ -20,6 +22,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  RunId,
   ThreadId,
   type Project,
   type ExecutionEnvironmentDescriptor,
@@ -367,12 +370,23 @@ const sendResult = Schema.decodeUnknownEffect(
   ),
 );
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
-const nativeCall = (node: Node, threadId: ThreadId, tool: string, args: Record<string, unknown>) =>
+const decodeTaskReceipt = Schema.decodeUnknownEffect(Schema.Struct({ taskId: NodeId }));
+const nativeCall = (
+  node: Node,
+  threadId: ThreadId,
+  tool: string,
+  args: Record<string, unknown>,
+  capabilities: McpThreadInvocationScope["capabilities"] = new Set([
+    "orchestration",
+    "preview",
+    "device",
+  ]),
+) =>
   Effect.gen(function* () {
     const issued = yield* node.registry.issue({
       threadId,
       providerInstanceId: instanceId,
-      capabilities: new Set(["orchestration", "preview", "device"]),
+      capabilities,
     });
     const http = yield* HttpClient.HttpClient;
     const post = (body: unknown, sessionId?: string) =>
@@ -805,6 +819,19 @@ it.live(
           preview: true,
           device: true,
         });
+        // Import the first candidate's control schema, including real pair receipts.
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const receipts =
+          yield* sql`SELECT rowid AS cursor, id, session_id, frame_json, answer_json FROM peer_control_frames ORDER BY rowid`;
+        expect(receipts.length).toBeGreaterThan(0);
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`ALTER TABLE peer_control_frames RENAME TO peer_control_frames_fixture`;
+            yield* sql`CREATE TABLE peer_control_frames (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, frame_json TEXT NOT NULL, answer_json TEXT)`;
+            yield* sql`INSERT INTO peer_control_frames (rowid, id, session_id, frame_json, answer_json) SELECT rowid, id, session_id, frame_json, answer_json FROM peer_control_frames_fixture`;
+            yield* sql`DROP TABLE peer_control_frames_fixture`;
+          }),
+        );
         const reopened = yield* b.reopenDatabase;
         const restored = yield* PeerAuthority.PeerAuthority.pipe(
           Effect.provide(
@@ -823,6 +850,16 @@ it.live(
           ),
         );
         expect(yield* restored.forThread(task.childId)).toEqual(original);
+        expect(
+          yield* sql`SELECT rowid AS cursor, id, session_id, frame_json, answer_json FROM peer_control_frames ORDER BY rowid`,
+        ).toEqual(receipts);
+        // The existing stream already observed the old cursor. It must see new work.
+        yield* a.forwarding.call(
+          caller(a, parent),
+          ProjectToolkit.tools.t3_project_list,
+          b.environmentId,
+          {},
+        );
         const registry = yield* McpSessionRegistry.__testing.make().pipe(
           Effect.provideService(PeerAuthority.PeerAuthority, restored),
           Effect.provide(Layer.succeedContext(b.serverContext)),
@@ -928,6 +965,436 @@ it.live(
         expect(issued.config.capabilities?.has("device")).toBe(false);
         const denied = yield* b.authority.checkEffect("legacy-effect", threadId).pipe(Effect.flip);
         expect(denied.code).toBe("capability_denied");
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("review: resource-scope removal must deny an already mapped effect on unrelated work", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const b = yield* makeNode(descriptorOf("review-scope-b", "B", { peerAuthority: 1 }));
+      const a = yield* makeNode(descriptorOf("review-scope-a", "A", { peerAuthority: 1 }));
+      yield* linkTo(a.links, b, "full-access");
+      const parent = ThreadId.make("review-scope-parent");
+      const target = ThreadId.make("review-scope-unrelated");
+      yield* seedParent(a, parent);
+      yield* seedParent(b, target);
+      const active = (yield* b.threads.getThreadShell(target))!.activeRunId!;
+      yield* b.threads.dispatch({
+        type: "run.interrupt",
+        commandId: CommandId.make("review-stop"),
+        threadId: target,
+        runId: active,
+        holdQueue: true,
+      });
+      yield* a.forwarding.call(
+        caller(a, parent),
+        ProjectToolkit.tools.t3_project_list,
+        b.environmentId,
+        {},
+      );
+      const grant = (yield* b.authority.grants)[0]!;
+      yield* b.authority.setGrant({ ...grant, resourceScope: "environment-resources" });
+      const sent = yield* nativeCall(a, parent, "t3_thread_send", {
+        environmentId: b.environmentId,
+        threadId: target,
+        message: "Remote command",
+        mode: "auto",
+        clientRequestId: "review-scope-send",
+      });
+      expect(sent.isError, json(sent.content)).not.toBe(true);
+      const sql = Context.get(b.database, SqlClient.SqlClient);
+      const rows = yield* sql<{
+        effect_id: string;
+      }>`SELECT p.effect_id FROM peer_effect_authority p JOIN orchestration_v2_effect_outbox e ON e.effect_id=p.effect_id WHERE e.thread_id=${target} AND e.effect_type='provider-turn.start'`;
+      expect(rows).toHaveLength(1);
+      yield* b.authority.setGrant({ ...grant, resourceScope: "created-work" });
+      const checked = yield* Effect.result(b.authority.checkEffect(rows[0]!.effect_id, target));
+      const executed = yield* Ref.make<ReadonlyArray<string>>([]);
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
+        Effect.provide(
+          EffectWorker.layerWithOptions({ maxAttempts: 1 }).pipe(
+            Layer.provide(
+              Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
+                execute: (effect) => Ref.update(executed, (ids) => [...ids, effect.id]),
+              }),
+            ),
+            Layer.provide(Layer.succeed(PeerAuthority.PeerAuthority, b.authority)),
+            Layer.provide(Layer.succeedContext(b.runtime)),
+          ),
+        ),
+      );
+      yield* worker.drain();
+      const effectId = rows[0]!.effect_id;
+      expect({
+        guard: checked._tag,
+        executed: (yield* Ref.get(executed)).includes(effectId),
+      }).toEqual({ guard: "Failure", executed: false });
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("review: queued sends must retain authority when promoted after link revocation", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const b = yield* makeNode(descriptorOf("review-queue-b", "B", { peerAuthority: 1 }), "disk");
+      const a = yield* makeNode(descriptorOf("review-queue-a", "A", { peerAuthority: 1 }));
+      yield* linkTo(a.links, b, "full-access");
+      const parent = ThreadId.make("review-queue-parent");
+      const target = ThreadId.make("review-queue-unrelated");
+      yield* seedParent(a, parent);
+      yield* seedParent(b, target);
+      yield* a.forwarding.call(
+        caller(a, parent),
+        ProjectToolkit.tools.t3_project_list,
+        b.environmentId,
+        {},
+      );
+      const grant = (yield* b.authority.grants)[0]!;
+      yield* b.authority.setGrant({ ...grant, resourceScope: "environment-resources" });
+      const sent = yield* nativeCall(a, parent, "t3_thread_send", {
+        environmentId: b.environmentId,
+        threadId: target,
+        message: "Queued remote command",
+        mode: "queue",
+        clientRequestId: "review-queue-send",
+      });
+      expect(sent.isError, json(sent.content)).not.toBe(true);
+      const runs = (yield* b.threads.getThreadRecords(target, ["runs"])).runs;
+      const queued = runs.find((run) => run.status === "queued")!;
+      expect(queued).toBeDefined();
+      yield* a.links.unlink(b.environmentId);
+      const active = runs.find((run) => run.status === "running")!;
+      const now = yield* DateTime.now;
+      yield* b.sink.write({
+        events: [
+          {
+            id: EventId.make("review-queue-finish"),
+            type: "run.updated",
+            threadId: target,
+            runId: active.id,
+            providerInstanceId: instanceId,
+            occurredAt: now,
+            payload: { ...active, status: "completed", completedAt: now },
+          },
+        ],
+      });
+      yield* b.orchestrator
+        .streamStoredEventsFrom({ threadId: target, afterSequence: 0, eventType: "run.updated" })
+        .pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "run.updated" &&
+              stored.event.payload.id === queued.id &&
+              stored.event.payload.status !== "queued",
+          ),
+          Stream.runHead,
+          Effect.flatMap(Effect.fromOption),
+        );
+      // Acquire the same lock so promotion has committed its outbox effect.
+      yield* b.threads.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("review-queue-barrier"),
+        threadId: target,
+        runtimeMode: "full-access",
+      });
+      const sql = Context.get(b.database, SqlClient.SqlClient);
+      const effects = yield* sql<{
+        effect_id: string;
+      }>`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id=${target} AND effect_type='provider-turn.start' ORDER BY rowid DESC`;
+      const latest = effects[0]!;
+      const promoted = yield* Context.get(b.runtime, EffectOutbox.EffectOutboxV2).get(
+        latest.effect_id,
+      );
+      expect(Option.isSome(promoted) && promoted.value.request).toEqual({
+        type: "provider-turn.start",
+        runId: queued.id,
+      });
+      const mapped =
+        yield* sql`SELECT record_id FROM peer_effect_authority WHERE effect_id=${latest.effect_id}`;
+      expect(mapped).toHaveLength(1);
+      const reopened = yield* b.reopenDatabase;
+      const persisted = yield* Context.get(reopened, SqlClient.SqlClient)<{
+        record_id: string;
+      }>`SELECT record_id FROM peer_run_authority WHERE run_id = ${queued.id}`;
+      expect(persisted).toEqual(mapped);
+      expect(yield* b.authority.forThread(target)).toBeUndefined();
+      const localEffect = effects.find((effect) => effect.effect_id !== latest.effect_id);
+      if (!localEffect) return yield* Effect.die("Missing original local start");
+      yield* b.authority.checkEffect(localEffect.effect_id, target);
+      // Recovery creates a new run from its durable source without MCP intake.
+      const recoveryId = RunId.make("review-queue-recovery");
+      const recoveryEffect = "effect:review-queue-recovery";
+      yield* b.sink.writeWithEffects({
+        events: [
+          {
+            id: EventId.make("review-queue-recovery"),
+            type: "run.created",
+            threadId: target,
+            runId: recoveryId,
+            providerInstanceId: instanceId,
+            occurredAt: now,
+            payload: {
+              ...queued,
+              id: recoveryId,
+              ordinal: queued.ordinal + 1,
+              restartContinuationOfRunId: queued.id,
+              status: "starting",
+              queuePosition: null,
+            },
+          },
+        ],
+        effects: [
+          {
+            id: recoveryEffect,
+            commandId: CommandId.make("review-queue-recovery"),
+            threadId: target,
+            request: { type: "provider-turn.start", runId: recoveryId },
+          },
+        ],
+      });
+      const recovered = yield* Effect.result(b.authority.checkEffect(recoveryEffect, target));
+      expect(recovered._tag).toBe("Failure");
+      const checked = yield* Effect.result(b.authority.checkEffect(latest.effect_id, target));
+      const executed = yield* Ref.make<ReadonlyArray<string>>([]);
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
+        Effect.provide(
+          EffectWorker.layerWithOptions({ maxAttempts: 1 }).pipe(
+            Layer.provide(
+              Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
+                execute: (effect) => Ref.update(executed, (ids) => [...ids, effect.id]),
+              }),
+            ),
+            Layer.provide(Layer.succeed(PeerAuthority.PeerAuthority, b.authority)),
+            Layer.provide(Layer.succeedContext(b.runtime)),
+          ),
+        ),
+      );
+      yield* worker.drain();
+      expect((yield* Ref.get(executed)).includes(recoveryEffect)).toBe(false);
+      expect((yield* Ref.get(executed)).includes(localEffect.effect_id)).toBe(true);
+      const effectId = latest.effect_id;
+      expect({
+        guard: checked._tag,
+        executed: (yield* Ref.get(executed)).includes(effectId),
+      }).toEqual({ guard: "Failure", executed: false });
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "review: delegated launch must freeze the originating capabilities rather than the follower scope",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(descriptorOf("review-caps-b", "B", { peerAuthority: 1 }));
+        const a = yield* makeNode(descriptorOf("review-caps-a", "A", { peerAuthority: 1 }));
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("review-caps-parent");
+        yield* seedParent(a, parent);
+        yield* a.forwarding.call(
+          caller(a, parent),
+          ProjectToolkit.tools.t3_project_list,
+          b.environmentId,
+          {},
+        );
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, preview: true, device: true });
+        const result = yield* nativeCall(a, parent, "delegate_task", {
+          task: "Use the explicitly permitted tools",
+          target: {
+            environmentId: b.environmentId,
+            projectId: b.project.id,
+            providerInstanceId: instanceId,
+            model: "gpt-5.4",
+          },
+          mode: "async",
+          clientRequestId: "review-caps",
+        });
+        expect(result.isError, json(result.content)).not.toBe(true);
+        const decoded = yield* decodeTaskReceipt(result.structuredContent);
+        const child = yield* attachedChild(a, parent, decoded.taskId);
+        const record = yield* b.authority.forThread(child);
+        expect(record?.ceiling.capabilities).toEqual(
+          expect.arrayContaining(["preview", "device", "worktree", "pull-requests"]),
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("explicit descendant environment grants retain operation mode policy", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const b = yield* makeNode(descriptorOf("policy-b", "B", { peerAuthority: 1 }));
+      const a = yield* makeNode(descriptorOf("policy-a", "A", { peerAuthority: 1 }));
+      yield* linkTo(a.links, b, "full-access");
+      const parent = ThreadId.make("policy-parent");
+      yield* seedParent(a, parent);
+      yield* a.forwarding.call(
+        caller(a, parent),
+        ProjectToolkit.tools.t3_project_list,
+        b.environmentId,
+        {},
+      );
+      const grant = (yield* b.authority.grants)[0];
+      if (!grant) return yield* Effect.die("Missing grant");
+      yield* b.authority.setGrant({ ...grant, resourceScope: "environment-resources" });
+      const task = yield* delegate(a, b, parent, "policy-job");
+      const authority = yield* b.authority.checkThread(task.childId);
+      const thread = yield* b.threads.getThreadShell(task.childId);
+      if (!authority || !thread) return yield* Effect.die("Missing descendant authority");
+      for (const [runtimeMode, interactionMode, resourceScope, allowed] of [
+        ["full-access", "default", "environment-resources", true],
+        ["auto", "default", "environment-resources", false],
+        ["full-access", "plan", "environment-resources", false],
+        ["full-access", "default", "created-work", false],
+      ] as const) {
+        const scoped = {
+          ...caller(b, task.childId),
+          authority: {
+            ...authority,
+            ceiling: {
+              ...authority.ceiling,
+              runtimeMode,
+              interactionMode,
+              resourceScope,
+            },
+          },
+        };
+        const result = yield* Effect.result(
+          assertNotLinked({ scope: scoped, caller: thread }, "change environment settings"),
+        );
+        expect(result._tag === "Success").toBe(allowed);
+      }
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("launch capabilities never acquire missing initial preview or device consent", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const b = yield* makeNode(descriptorOf("caps-narrow-b", "B", { peerAuthority: 1 }));
+      const a = yield* makeNode(descriptorOf("caps-narrow-a", "A", { peerAuthority: 1 }));
+      yield* linkTo(a.links, b, "full-access");
+      const parent = ThreadId.make("caps-narrow-parent");
+      yield* seedParent(a, parent);
+      yield* a.forwarding.call(
+        caller(a, parent),
+        ProjectToolkit.tools.t3_project_list,
+        b.environmentId,
+        {},
+      );
+      const grant = (yield* b.authority.grants)[0];
+      if (!grant) return yield* Effect.die("Missing grant");
+      yield* b.authority.setGrant({ ...grant, preview: true, device: true });
+      const result = yield* nativeCall(
+        a,
+        parent,
+        "delegate_task",
+        {
+          task: "Keep the accepted narrow capabilities",
+          target: {
+            environmentId: b.environmentId,
+            projectId: b.project.id,
+            providerInstanceId: instanceId,
+            model: "gpt-5.4",
+          },
+          mode: "async",
+          clientRequestId: "caps-narrow-job",
+        },
+        new Set(["orchestration"]),
+      );
+      expect(result.isError, json(result.content)).not.toBe(true);
+      const receipt = yield* decodeTaskReceipt(result.structuredContent);
+      const child = yield* attachedChild(a, parent, receipt.taskId);
+      const original = yield* b.authority.forThread(child);
+      expect(original?.ceiling.capabilities).not.toContain("preview");
+      expect(original?.ceiling.capabilities).not.toContain("device");
+      yield* b.registry.revokeAll;
+      const rotated = yield* b.registry.issue({
+        threadId: child,
+        providerInstanceId: instanceId,
+        capabilities: new Set(["preview", "device"]),
+      });
+      expect(rotated.config.capabilities?.has("preview")).toBe(false);
+      expect(rotated.config.capabilities?.has("device")).toBe(false);
+      const source = yield* a.threads.getThreadRecords(parent, ["subagents"]);
+      expect(
+        source.subagents.find((task) => task.id === receipt.taskId)?.remoteChild?.launch
+          ?.capabilities,
+      ).not.toContain("preview");
+      expect(
+        source.subagents.find((task) => task.id === receipt.taskId)?.remoteChild?.launch
+          ?.capabilities,
+      ).not.toContain("device");
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "origin validation expires at the exact grant boundary and leaves no transient history",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(descriptorOf("expiry-b", "B", { peerAuthority: 1 }));
+        const a = yield* makeNode(descriptorOf("expiry-a", "A", { peerAuthority: 1 }));
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("expiry-parent");
+        yield* seedParent(a, parent);
+        const linked = yield* a.links.get(b.environmentId);
+        if (Option.isNone(linked)) return yield* Effect.die("Missing link");
+        const link = linked.value;
+        yield* Effect.forEach(
+          Array.from({ length: 12 }),
+          () =>
+            a.forwarding.call(
+              caller(a, parent),
+              ProjectToolkit.tools.t3_project_list,
+              b.environmentId,
+              {},
+            ),
+          { concurrency: 4 },
+        );
+        for (const node of [a, b]) {
+          const sql = Context.get(node.database, SqlClient.SqlClient);
+          const frames =
+            yield* sql`SELECT id FROM peer_control_frames WHERE json_extract(frame_json, '$.body.type') = 'validate'`;
+          expect(frames).toHaveLength(0);
+        }
+        const envelope = yield* a.authority.prepare(
+          caller(a, parent),
+          b.environmentId,
+          link.launchIdentity,
+          "t3_project_list",
+          {},
+          { runtimeMode: "full-access", interactionMode: "default" },
+          undefined,
+          true,
+        );
+        const clock = yield* Clock.Clock;
+        const expiry = DateTime.toEpochMillis(link.expiresAt);
+        for (const [now, expected] of [
+          [expiry - 1, true],
+          [expiry, false],
+        ] as const) {
+          const result = yield* a.authority
+            .process(b.environmentId, link.launchIdentity, {
+              id: "expiry-check",
+              body: { type: "validate", envelope },
+            })
+            .pipe(
+              Effect.provideService(Clock.Clock, {
+                currentTimeMillis: Effect.succeed(now),
+                currentTimeMillisUnsafe: () => now,
+                currentTimeNanos: clock.currentTimeNanos,
+                currentTimeNanosUnsafe: () => clock.currentTimeNanosUnsafe(),
+                monotonicTimeNanos: clock.monotonicTimeNanos,
+                monotonicTimeNanosUnsafe: () => clock.monotonicTimeNanosUnsafe(),
+                sleep: (duration) => clock.sleep(duration),
+              }),
+            );
+          expect(result.result.ok).toBe(expected);
+        }
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
 );

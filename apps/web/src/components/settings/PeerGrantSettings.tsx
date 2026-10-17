@@ -1,5 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
 import { type EnvironmentId, type PeerGrant, type PeerGrantSummary } from "@t3tools/contracts";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
+import { toastManager } from "../ui/toast";
 import { useState } from "react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Option from "effect/Option";
@@ -77,7 +82,15 @@ function GrantEditor({
         onClick={async () => {
           setSaving(true);
           try {
-            await save({ environmentId, input: draft });
+            const result = await save({ environmentId, input: draft });
+            if (AsyncResult.isFailure(result) && !isAtomCommandInterrupted(result)) {
+              const error = squashAtomCommandFailure(result);
+              toastManager.add({
+                type: "error",
+                title: "Could not save link permissions",
+                description: error instanceof Error ? error.message : String(error),
+              });
+            }
           } finally {
             setSaving(false);
           }

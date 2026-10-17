@@ -1,4 +1,7 @@
-import { recordPeerEffectAuthority } from "../peer/peerEffectAuthority.ts";
+import {
+  initializePeerEffectAuthority,
+  recordPeerEffectAuthority,
+} from "../peer/peerEffectAuthority.ts";
 import { RESTART_CUT_REASONS } from "@t3tools/shared/restartCut";
 import {
   CommandId,
@@ -242,6 +245,7 @@ const layerBase: Layer.Layer<
   EventSinkV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    yield* initializePeerEffectAuthority.pipe(Effect.orDie);
     const commandReceipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
     const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
     const eventStore = yield* EventStore.EventStoreV2;
@@ -417,7 +421,7 @@ const layerBase: Layer.Layer<
             events: normalized,
           });
           yield* applyStoredEvents(committed);
-          yield* recordPeerEffectAuthority(input.effects).pipe(
+          yield* recordPeerEffectAuthority(input.events, input.effects).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
           );
           yield* effectOutbox.enqueue(input.effects);
@@ -483,7 +487,7 @@ const layerBase: Layer.Layer<
               events: normalized,
             });
             yield* applyStoredEvents(storedEvents);
-            yield* recordPeerEffectAuthority(input.effects ?? []).pipe(
+            yield* recordPeerEffectAuthority(input.events, input.effects ?? []).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
             );
             yield* effectOutbox.enqueue(input.effects ?? []);
@@ -789,9 +793,10 @@ const layerBase: Layer.Layer<
             storedEvents,
             eventStore.latestSequence({ threadId: input.threadId }),
           );
-          yield* recordPeerEffectAuthority(input.effects).pipe(
-            Effect.provideService(SqlClient.SqlClient, sql),
-          );
+          yield* recordPeerEffectAuthority(
+            storedEvents.map((stored) => stored.event),
+            input.effects,
+          ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
           yield* effectOutbox.enqueue(input.effects);
           const receipt: CommandReceiptStore.CommandReceiptV2 = {
             commandId: input.commandId,
