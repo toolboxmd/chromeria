@@ -231,6 +231,7 @@
   "src/orchestration-v2/workflowAgentAnswers.test.ts": 0.3,
   "src/orchestration-v2/workflowScriptQuery.test.ts": 0.9,
   "src/os-jank.test.ts": 0.2,
+  "src/peer/PeerAuthority.workflow.test.ts": 299,
   "src/persistence/Errors.test.ts": 0.2,
   "src/persistence/Migrations.test.ts": 0.5,
   "src/persistence/Migrations/016_CanonicalizeModelSelections.test.ts": 0.4,
