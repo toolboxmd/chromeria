@@ -541,10 +541,10 @@ const make = Effect.gen(function* () {
         return ceiling;
       }
       if (record.context !== undefined) {
-        const target = yield* threads
+        const contextThread = yield* threads
           .getThreadShell(record.context.threadId)
           .pipe(Effect.mapError(unavailable));
-        if (target === null || target.deletedAt !== null)
+        if (contextThread === null || contextThread.deletedAt !== null)
           return yield* denied("The authority's destination context is no longer available.");
         let ceiling = record.ceiling;
         if (record.context.type === "legacy-thread") {
@@ -558,10 +558,11 @@ const make = Effect.gen(function* () {
           record.context.type === "owned-thread"
             ? [record.context.creationRecordId, record.context.runRecordId]
             : [record.context.runRecordId];
+        // Keep the immutable owners and their live chains. Resource eligibility
+        // belongs to the actual operation target, which may be a new joint child.
         for (const id of owners) {
           const owner = yield* read(id);
           const current = yield* validate(owner);
-          yield* checkResource(owner, current, { type: "thread", thread: target });
           ceiling = intersect(ceiling, current);
         }
         return ceiling;
@@ -628,8 +629,13 @@ const make = Effect.gen(function* () {
       };
       const parent = record.parentId === null ? undefined : yield* read(record.parentId);
       const ceiling = parent === undefined ? record.ceiling : yield* validate(parent);
-      if (parent !== undefined && !ceiling.onward)
-        return yield* denied("The originating grant does not permit onward delegation.");
+      if (parent !== undefined) {
+        if (!ceiling.onward)
+          return yield* denied("The originating grant does not permit onward delegation.");
+        // A forwarded action still depends on permission for its actual source
+        // thread, even when its owners were inherited from an older context.
+        yield* checkResource(parent, ceiling, { type: "thread", thread });
+      }
       return intersect(current, intersect(record.ceiling, ceiling));
     });
   const resourceSession = (record: Authority) => record.resourceSessionId ?? record.sessionId;

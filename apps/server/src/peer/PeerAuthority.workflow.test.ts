@@ -3090,6 +3090,8 @@ it.live("legacy creation and a modern run both constrain every actual target", (
       const b = yield* makeNode(descriptorOf("r4-legacy-b", "B", { peerAuthority: 1 }), "disk");
       const a = yield* makeNode(descriptorOf("r4-legacy-a", "A", { peerAuthority: 1 }));
       const d = yield* makeNode(descriptorOf("r4-legacy-d", "D", { peerAuthority: 1 }));
+      const c = yield* makeNode(descriptorOf("r5-legacy-c", "C", { peerAuthority: 1 }));
+      yield* linkTo(b.links, c, "full-access");
       const parents = [ThreadId.make("r4-legacy-a-parent"), ThreadId.make("r4-legacy-d-parent")];
       for (const [index, source] of [a, d].entries()) {
         yield* linkTo(source.links, b, "full-access");
@@ -3159,6 +3161,14 @@ it.live("legacy creation and a modern run both constrain every actual target", (
       expect(created.isError, json(created.content)).not.toBe(true);
       const child = (yield* decodeCreatedThreads(created.structuredContent)).threads[0]!.threadId;
       yield* activate(b, child);
+      const childCredential = yield* b.registry.issue({
+        threadId: child,
+        providerInstanceId: instanceId,
+        capabilities: new Set(["orchestration", "preview", "device"]),
+      });
+      expect(childCredential.config.capabilities?.has("preview")).toBe(false);
+      expect(childCredential.config.capabilities?.has("device")).toBe(false);
+
       for (const [index, source] of [a, d].entries()) {
         const renamed = yield* nativeCall(source, parents[index]!, "t3_thread_update", {
           environmentId: b.environmentId,
@@ -3180,6 +3190,82 @@ it.live("legacy creation and a modern run both constrain every actual target", (
       expect((yield* b.threads.getThreadShell(child))?.title).toBe(
         "Created under both legacy and modern owners",
       );
+
+      for (const grant of grants)
+        yield* b.authority.setGrant({ ...grant, resourceScope: "created-work" });
+      for (const [index, source] of [a, d].entries()) {
+        const direct = yield* nativeCall(source, parents[index]!, "t3_thread_update", {
+          environmentId: b.environmentId,
+          threadId: child,
+          action: "rename",
+          title: `Legacy joint creator ${index} narrow`,
+        });
+        expect(direct.isError, json(direct.content)).not.toBe(true);
+      }
+      for (const credential of [childCredential, undefined]) {
+        const selfTitle = credential ? "Legacy joint cached self" : "Legacy joint reissued self";
+        const self = yield* nativeCall(
+          b,
+          child,
+          "t3_thread_update",
+          { threadId: child, action: "rename", title: selfTitle },
+          undefined,
+          credential,
+        );
+        expect(self.isError, json(self.content)).not.toBe(true);
+        expect((yield* b.threads.getThreadShell(child))?.title).toBe(selfTitle);
+      }
+      const grandchildren = yield* nativeCall(b, child, "create_threads", {
+        threads: [{ prompt: "Legacy nested narrow child" }],
+      });
+      expect(grandchildren.isError, json(grandchildren.content)).not.toBe(true);
+      const grandchild = (yield* decodeCreatedThreads(grandchildren.structuredContent)).threads[0]!
+        .threadId;
+      yield* activate(b, grandchild);
+      const nested = yield* nativeCall(b, grandchild, "t3_thread_update", {
+        threadId: grandchild,
+        action: "rename",
+        title: "Legacy narrow grandchild self",
+      });
+      expect(nested.isError, json(nested.content)).not.toBe(true);
+      expect((yield* b.threads.getThreadShell(grandchild))?.title).toBe(
+        "Legacy narrow grandchild self",
+      );
+      for (const exclusive of exclusiveTargets) {
+        const deniedTitle = `Forbidden legacy child exclusive ${exclusive}`;
+        const other = yield* nativeCall(b, child, "t3_thread_update", {
+          threadId: exclusive,
+          action: "rename",
+          title: deniedTitle,
+        });
+        expect(other.isError).toBe(true);
+        expect((yield* b.threads.getThreadShell(exclusive))?.title).not.toBe(deniedTitle);
+      }
+      expect((yield* b.authority.checkThread(child))?.ceiling.onward).toBe(false);
+      const beforeOnward = yield* c.threads.listProjectThreads({
+        projectId: c.project.id,
+        includeSubagents: true,
+      });
+      const deniedOnward = yield* nativeCall(b, grandchild, "t3_thread_launch", {
+        environmentId: c.environmentId,
+        projectId: c.project.id,
+        modelSelection: selection,
+        title: "Forbidden legacy onward",
+        message: "Not executed",
+        clientRequestId: "r5-legacy-onward",
+      });
+      expect(deniedOnward.isError).toBe(true);
+      expect(json(deniedOnward.content)).toContain("onward");
+      expect(
+        yield* c.threads.listProjectThreads({ projectId: c.project.id, includeSubagents: true }),
+      ).toEqual(beforeOnward);
+      const sql = Context.get(b.database, SqlClient.SqlClient);
+      const effects = yield* sql<{
+        effect_id: string;
+      }>`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id=${grandchild} AND effect_type='provider-turn.start'`;
+      expect(effects).toHaveLength(1);
+      yield* b.authority.checkEffect(effects[0]!.effect_id, grandchild);
+
       const title = "Forbidden narrowed legacy run";
       const narrowed = yield* nativeCall(
         b,
@@ -3306,4 +3392,240 @@ it.live("legacy direct full access keeps unstamped schedule operations and the t
       );
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live.each([{ retired: "source-run" }, { retired: "link" }] as const)(
+  "round5: newly joint-created work remains usable after both creators narrow, $retired retirement",
+  ({ retired }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(descriptorOf("r5-b", "B", { peerAuthority: 1 }));
+        const a = yield* makeNode(descriptorOf("r5-a", "A", { peerAuthority: 1 }));
+        const d = yield* makeNode(descriptorOf("r5-d", "D", { peerAuthority: 1 }));
+        const c = yield* makeNode(descriptorOf("r5-c", "C", { peerAuthority: 1 }));
+        yield* linkTo(b.links, c, "full-access");
+        const parents = [ThreadId.make("r5-a-source"), ThreadId.make("r5-d-source")];
+        for (const [i, source] of [a, d].entries()) {
+          yield* linkTo(source.links, b, "full-access");
+          yield* seedParent(source, parents[i]!);
+          yield* source.forwarding.call(
+            caller(source, parents[i]!),
+            ProjectToolkit.tools.t3_project_list,
+            b.environmentId,
+            {},
+          );
+        }
+        const grants = yield* b.authority.grants;
+        for (const grant of grants)
+          yield* b.authority.setGrant({
+            ...grant,
+            resourceScope: "environment-resources",
+            onward: true,
+          });
+        const launch = yield* nativeCall(a, parents[0]!, "t3_thread_launch", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          modelSelection: selection,
+          title: "A-only parent",
+          message: "Work",
+          clientRequestId: "r5-parent",
+        });
+        expect(launch.isError, json(launch.content)).not.toBe(true);
+        const target = (yield* decodeLaunchReceipt(launch.structuredContent)).threadId;
+        yield* activate(b, target);
+        yield* activeProvider(b, target);
+        const steer = yield* nativeCall(d, parents[1]!, "t3_thread_send", {
+          environmentId: b.environmentId,
+          threadId: target,
+          message: "D contributes",
+          mode: "steer",
+          clientRequestId: "r5-steer",
+        });
+        expect(steer.isError, json(steer.content)).not.toBe(true);
+        expect((yield* b.authority.forThread(target))?.context?.type).toBe("owned-thread");
+        const dLaunch = yield* nativeCall(d, parents[1]!, "t3_thread_launch", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          modelSelection: selection,
+          title: "D-only resource",
+          message: "Not executed",
+          clientRequestId: "r5-d-exclusive",
+        });
+        expect(dLaunch.isError, json(dLaunch.content)).not.toBe(true);
+        const dExclusive = (yield* decodeLaunchReceipt(dLaunch.structuredContent)).threadId;
+        const oldForward = yield* nativeCall(b, target, "t3_thread_launch", {
+          environmentId: c.environmentId,
+          projectId: c.project.id,
+          modelSelection: selection,
+          title: "Old exclusive source forward",
+          message: "Not executed",
+          clientRequestId: "r5-old-forward",
+        });
+        expect(oldForward.isError, json(oldForward.content)).not.toBe(true);
+        const oldOnward = (yield* decodeLaunchReceipt(oldForward.structuredContent)).threadId;
+        yield* activate(c, oldOnward);
+        const creation = yield* nativeCall(b, target, "create_threads", {
+          threads: [{ prompt: "Joint A/D child" }],
+        });
+        expect(creation.isError, json(creation.content)).not.toBe(true);
+        const child = (yield* decodeCreatedThreads(creation.structuredContent)).threads[0]!
+          .threadId;
+        yield* activate(b, child);
+        const cached = yield* b.registry.issue({ threadId: child, providerInstanceId: instanceId });
+        for (const grant of grants)
+          yield* b.authority.setGrant({ ...grant, resourceScope: "created-work", onward: true });
+        // Both independent source checks prove permanent joint creation membership.
+        for (const [i, source] of [a, d].entries()) {
+          const result = yield* nativeCall(source, parents[i]!, "t3_thread_update", {
+            environmentId: b.environmentId,
+            threadId: child,
+            action: "rename",
+            title: `Creator ${i} can rename joint child`,
+          });
+          expect(result.isError, json(result.content)).not.toBe(true);
+          expect((yield* b.threads.getThreadShell(child))?.title).toBe(
+            `Creator ${i} can rename joint child`,
+          );
+        }
+        const title = "Joint child self remains allowed";
+        const result = yield* nativeCall(b, child, "t3_thread_update", {
+          threadId: child,
+          action: "rename",
+          title,
+        });
+        const narrowObservation = {
+          denied: result.isError === true,
+          committed: (yield* b.threads.getThreadShell(child))?.title === title,
+        };
+        const reason = json(result.content);
+        for (const grant of grants)
+          yield* b.authority.setGrant({
+            ...grant,
+            resourceScope: "environment-resources",
+            onward: true,
+          });
+        const broadTitle = "Same child succeeds when parent access restored";
+        const broad = yield* nativeCall(b, child, "t3_thread_update", {
+          threadId: child,
+          action: "rename",
+          title: broadTitle,
+        });
+        expect(broad.isError, json(broad.content)).not.toBe(true);
+        expect((yield* b.threads.getThreadShell(child))?.title).toBe(broadTitle);
+        expect(narrowObservation, reason).toEqual({ denied: false, committed: true });
+        for (const grant of grants)
+          yield* b.authority.setGrant({ ...grant, resourceScope: "created-work", onward: true });
+        for (const credential of [cached, undefined]) {
+          const selfTitle = credential ? "Owned cached narrow self" : "Owned reissued narrow self";
+          const self = yield* nativeCall(
+            b,
+            child,
+            "t3_thread_update",
+            { threadId: child, action: "rename", title: selfTitle },
+            undefined,
+            credential,
+          );
+          expect(self.isError, json(self.content)).not.toBe(true);
+          expect((yield* b.threads.getThreadShell(child))?.title).toBe(selfTitle);
+        }
+        for (const exclusive of [target, dExclusive]) {
+          const forbiddenTitle = `Forbidden owned exclusive ${exclusive}`;
+          const forbidden = yield* nativeCall(b, child, "t3_thread_update", {
+            threadId: exclusive,
+            action: "rename",
+            title: forbiddenTitle,
+          });
+          expect(forbidden.isError).toBe(true);
+          expect((yield* b.threads.getThreadShell(exclusive))?.title).not.toBe(forbiddenTitle);
+        }
+        const hostTitle = "Forbidden original host self";
+        const host = yield* nativeCall(b, target, "t3_thread_update", {
+          threadId: target,
+          action: "rename",
+          title: hostTitle,
+        });
+        expect(host.isError).toBe(true);
+        expect((yield* b.threads.getThreadShell(target))?.title).not.toBe(hostTitle);
+        const grandchildren = yield* nativeCall(b, child, "create_threads", {
+          threads: [{ prompt: "Joint nested narrow child" }],
+        });
+        expect(grandchildren.isError, json(grandchildren.content)).not.toBe(true);
+        const grandchild = (yield* decodeCreatedThreads(grandchildren.structuredContent))
+          .threads[0]!.threadId;
+        yield* activate(b, grandchild);
+        const nested = yield* nativeCall(b, grandchild, "t3_thread_update", {
+          threadId: grandchild,
+          action: "rename",
+          title: "Owned narrow grandchild self",
+        });
+        expect(nested.isError, json(nested.content)).not.toBe(true);
+        expect((yield* b.threads.getThreadShell(grandchild))?.title).toBe(
+          "Owned narrow grandchild self",
+        );
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const effects = yield* sql<{
+          effect_id: string;
+        }>`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id=${grandchild} AND effect_type='provider-turn.start'`;
+        expect(effects).toHaveLength(1);
+        yield* b.authority.checkEffect(effects[0]!.effect_id, grandchild);
+        const oldTitle = "Forbidden now-ineligible source host forward";
+        const old = yield* nativeCall(c, oldOnward, "t3_thread_update", {
+          threadId: oldOnward,
+          action: "rename",
+          title: oldTitle,
+        });
+        expect(old.isError).toBe(true);
+        expect((yield* c.threads.getThreadShell(oldOnward))?.title).not.toBe(oldTitle);
+        const onwardCall = yield* nativeCall(b, grandchild, "t3_thread_launch", {
+          environmentId: c.environmentId,
+          projectId: c.project.id,
+          modelSelection: selection,
+          title: "Narrow joint child onward",
+          message: "Not executed",
+          clientRequestId: "r5-child-onward",
+        });
+        expect(onwardCall.isError, json(onwardCall.content)).not.toBe(true);
+        const onward = (yield* decodeLaunchReceipt(onwardCall.structuredContent)).threadId;
+        yield* activate(c, onward);
+        const onwardSelf = yield* nativeCall(c, onward, "t3_thread_update", {
+          threadId: onward,
+          action: "rename",
+          title: "Narrow onward self",
+        });
+        expect(onwardSelf.isError, json(onwardSelf.content)).not.toBe(true);
+        expect((yield* c.threads.getThreadShell(onward))?.title).toBe("Narrow onward self");
+        if (retired === "link") yield* d.links.unlink(b.environmentId);
+        else {
+          const source = (yield* a.threads.getThreadRecords(parents[0]!, ["runs"])).runs[0]!;
+          const now = yield* DateTime.now;
+          yield* a.sink.write({
+            events: [
+              {
+                id: EventId.make("r5-source-retired"),
+                type: "run.updated",
+                threadId: parents[0]!,
+                runId: source.id,
+                providerInstanceId: instanceId,
+                occurredAt: now,
+                payload: { ...source, status: "completed", completedAt: now },
+              },
+            ],
+          });
+        }
+        for (const [node, threadId] of [
+          [b, child],
+          [b, grandchild],
+          [c, onward],
+        ] as const) {
+          const deniedTitle = `Forbidden retired ${retired} ${threadId}`;
+          const denied = yield* nativeCall(node, threadId, "t3_thread_update", {
+            threadId,
+            action: "rename",
+            title: deniedTitle,
+          });
+          expect(denied.isError).toBe(true);
+          expect((yield* node.threads.getThreadShell(threadId))?.title).not.toBe(deniedTitle);
+        }
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
 );
