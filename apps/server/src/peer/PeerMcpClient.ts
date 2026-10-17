@@ -1,3 +1,4 @@
+import { PeerTaskLifecycleRequest, PeerTaskLifecycleResult } from "@t3tools/contracts";
 import * as PeerLinkEvents from "./PeerLinkEvents.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as Stream from "effect/Stream";
@@ -47,6 +48,15 @@ export class PeerMcpClient extends Context.Service<
   PeerMcpClient,
   {
     readonly start: Effect.Effect<void, never, Scope.Scope>;
+    readonly requireTaskLifecycle?: (
+      environmentId: EnvironmentId,
+      generation?: string,
+    ) => Effect.Effect<void, OrchestratorMcpFailure>;
+    readonly taskLifecycle?: (
+      environmentId: EnvironmentId,
+      generation: string,
+      input: Omit<PeerTaskLifecycleRequest, "environmentId" | "generation">,
+    ) => Effect.Effect<PeerTaskLifecycleResult, OrchestratorMcpFailure>;
     /** Calls `tool` on the peer and decodes its structured result with `success`. */
     readonly call: <S extends Schema.Decoder<unknown>>(input: {
       readonly environmentId: EnvironmentId;
@@ -548,7 +558,121 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  return PeerMcpClient.of({ call, start });
+  const lifecycleRequest = (
+    environmentId: EnvironmentId,
+    generation?: string,
+    input?: Omit<PeerTaskLifecycleRequest, "environmentId" | "generation">,
+  ) =>
+    Effect.gen(function* () {
+      const resolved = yield* links.resolve(environmentId).pipe(Effect.mapError(fromLinkError));
+      if (generation !== undefined && generation !== resolved.link.launchIdentity)
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "The delegated task belongs to another link generation.",
+        });
+      if (Option.isNone(environment))
+        return yield* new OrchestratorMcpFailure({
+          code: "orchestration_error",
+          message: "The local environment identity is unavailable.",
+        });
+      const self = yield* environment.value.getEnvironmentId;
+      const peer = { environmentId: self, generation: resolved.link.launchIdentity };
+      // Stop validates the durable source obligation over this same authenticated
+      // channel, including a first control operation after source restart.
+      if (input?.operation.type === "stop") yield* ensureChannel(resolved, self);
+      const request =
+        input === undefined
+          ? HttpClientRequest.get(`${resolved.url}/mcp/peer-control/tasks`)
+          : HttpClientRequest.post(`${resolved.url}/mcp/peer-control/tasks`).pipe(
+              HttpClientRequest.setBody(
+                HttpBody.text(json({ ...peer, ...input }), "application/json"),
+              ),
+            );
+      const response = yield* httpClient.execute(
+        request.pipe(HttpClientRequest.setHeaders({ authorization: `Bearer ${resolved.token}` })),
+      );
+      if (response.status === 404 || response.status === 409)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message:
+            "The destination does not support delegated lifecycle v1. Update both environments; no lifecycle operation was accepted.",
+        });
+      if (response.status !== 200)
+        return yield* new OrchestratorMcpFailure({
+          code:
+            response.status === 401 || response.status === 403
+              ? "capability_denied"
+              : "orchestration_error",
+          message: "The delegated lifecycle operation could not be confirmed.",
+        });
+      const text = yield* response.text;
+      const current = yield* links.get(environmentId).pipe(Effect.mapError(fromLinkError));
+      if (Option.isNone(current) || current.value.launchIdentity !== resolved.link.launchIdentity)
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message:
+            "The delegated lifecycle reply belongs to a link generation that is no longer current.",
+        });
+      return text;
+    }).pipe(
+      Effect.timeout("30 seconds"),
+      Effect.catchTags({
+        TimeoutError: () =>
+          Effect.fail(
+            new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "The delegated lifecycle operation timed out without confirmation.",
+            }),
+          ),
+        HttpClientError: () =>
+          Effect.fail(
+            new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "The delegated execution environment is unreachable.",
+            }),
+          ),
+      }),
+    );
+  const decodeLifecycleVersion = Schema.decodeUnknownEffect(
+    Schema.fromJsonString(Schema.Struct({ version: Schema.Literal(1) })),
+  );
+  const requireTaskLifecycle: NonNullable<PeerMcpClient["Service"]["requireTaskLifecycle"]> = (
+    environmentId,
+    generation,
+  ) =>
+    lifecycleRequest(environmentId, generation).pipe(
+      Effect.flatMap(decodeLifecycleVersion),
+      Effect.asVoid,
+      Effect.mapError((error) =>
+        error._tag === "OrchestratorMcpFailure"
+          ? error
+          : new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message:
+                "The destination does not support delegated lifecycle v1; no delegated work was created.",
+            }),
+      ),
+    );
+  const decodeLifecycle = Schema.decodeUnknownEffect(
+    Schema.fromJsonString(PeerTaskLifecycleResult),
+  );
+  const taskLifecycle: NonNullable<PeerMcpClient["Service"]["taskLifecycle"]> = (
+    environmentId,
+    generation,
+    input,
+  ) =>
+    lifecycleRequest(environmentId, generation, input).pipe(
+      Effect.flatMap(decodeLifecycle),
+      Effect.mapError((error) =>
+        error._tag === "OrchestratorMcpFailure"
+          ? error
+          : new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "The destination lifecycle response is incompatible.",
+            }),
+      ),
+    );
+  return PeerMcpClient.of({ call, start, requireTaskLifecycle, taskLifecycle });
 });
 
 export const layer = Layer.effect(PeerMcpClient, make);

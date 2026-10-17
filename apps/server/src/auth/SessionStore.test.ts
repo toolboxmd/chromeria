@@ -1,3 +1,6 @@
+import * as DateTime from "effect/DateTime";
+import { permanentPeerSessionTtl } from "../peer/permanentSession.ts";
+import { REUSABLE_DEV_SESSION_EXPIRES_AT } from "./ReusableDevAuth.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -152,6 +155,58 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
         expect(yield* Deferred.isDone(ownerInvalidated)).toBe(false);
         yield* sessions.awaitInvalidation(client.sessionId);
       }).pipe(Effect.scoped, Effect.provide(Layer.merge(layerSessionStore(), TestClock.layer()))),
+  );
+
+  it.effect(
+    "caps permanent peer issuance across the two-clock boundary and retains listing and revocation",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionStore.SessionStore;
+        yield* TestClock.setTime(DateTime.makeUnsafe("2026-10-17T00:00:00.000Z").epochMilliseconds);
+        const ttl = yield* permanentPeerSessionTtl;
+        yield* TestClock.adjust(Duration.millis(1));
+        const issued = yield* sessions.issue({
+          ttl,
+          subject: "mcp-client",
+          peerLink: true,
+          runtimeModeCeiling: "auto",
+          client: { label: "T3 Code · Stepped peer", deviceType: "bot" },
+        });
+        expect(DateTime.formatIso(issued.expiresAt)).toBe("9999-12-31T23:59:59.999Z");
+        const sql = yield* SqlClient.SqlClient;
+        const persisted = yield* sql<{
+          expires_at: string;
+        }>`SELECT expires_at FROM auth_sessions WHERE session_id=${issued.sessionId}`;
+        expect(persisted[0]?.expires_at).toBe("9999-12-31T23:59:59.999Z");
+        const listed = (yield* sessions.listActive()).find(
+          (session) => session.sessionId === issued.sessionId,
+        );
+        expect(listed?.expiresAt.epochMilliseconds).toBe(
+          REUSABLE_DEV_SESSION_EXPIRES_AT.epochMilliseconds,
+        );
+        expect((yield* sessions.verify(issued.token)).runtimeModeCeiling).toBe("auto");
+        expect((yield* sessions.verify(issued.token)).peerLink).toBe(true);
+        const ordinary = yield* sessions.issue();
+        expect(ordinary.expiresAt.epochMilliseconds - (yield* DateTime.now).epochMilliseconds).toBe(
+          Duration.toMillis(Duration.days(30)),
+        );
+        const short = yield* sessions.issue({ ttl: Duration.seconds(2) });
+        expect(short.expiresAt.epochMilliseconds - (yield* DateTime.now).epochMilliseconds).toBe(
+          2000,
+        );
+        yield* TestClock.adjust(Duration.seconds(2));
+        expect((yield* sessions.verify(short.token).pipe(Effect.result))._tag).toBe("Failure");
+        expect(yield* sessions.revoke(issued.sessionId)).toBe(true);
+        expect(
+          (yield* sessions.listActive()).some((session) => session.sessionId === issued.sessionId),
+        ).toBe(false);
+        expect((yield* sessions.verify(issued.token).pipe(Effect.result))._tag).toBe("Failure");
+        expect((yield* sessions.verify(ordinary.token)).sessionId).toBe(ordinary.sessionId);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(layerSessionStore(), SqlitePersistence.layerMemory, TestClock.layer()),
+        ),
+      ),
   );
 
   it.effect("expires a connected session at its credential deadline", () =>

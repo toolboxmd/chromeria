@@ -1701,6 +1701,19 @@ const make = Effect.gen(function* () {
                   : { threadId: task.remoteChild.threadId }),
               },
             }),
+        remoteObservation: {
+          availability: task.remoteChild?.availability ?? "stale",
+          ...(task.remoteChild?.snapshot === undefined
+            ? {}
+            : { snapshot: task.remoteChild.snapshot }),
+          ...(task.remoteChild?.originalResult === undefined
+            ? {}
+            : { originalRunId: task.remoteChild.originalResult.runId }),
+          ...(task.remoteChild?.latestResult === undefined
+            ? {}
+            : { latestResult: task.remoteChild.latestResult }),
+          ...(task.remoteChild?.stop === undefined ? {} : { stop: task.remoteChild.stop }),
+        },
         childRunId: null,
         purpose: executionPurposeOf(task),
         warnings: executionPurposeWarnings(executionPurposeOf(task)),
@@ -1709,17 +1722,21 @@ const make = Effect.gen(function* () {
           : { latestTerminalPurpose: task.completionSource.purpose }),
         childNodeId: task.id,
         status,
-        workState: terminal ? "result_available" : "working",
-        hasPendingChildRuns: false,
-        // Remote task rows mirror terminal results, not destination runtime requests.
-        hasPendingQuestion: false,
+        workState:
+          task.remoteChild?.snapshot?.workState ?? (terminal ? "result_available" : "working"),
+        hasPendingChildRuns:
+          (task.remoteChild?.snapshot?.pendingChildren ?? 0) > 0 ||
+          (task.remoteChild?.snapshot?.queuedRuns ?? 0) > 0 ||
+          task.remoteChild?.snapshot?.recoveryWaiting === true,
+        // Question counts come from qualified destination observations.
+        hasPendingQuestion: (task.remoteChild?.snapshot?.pendingQuestions ?? 0) > 0,
         providerInstanceId: task.providerInstanceId,
         model: task.model,
         summary: task.result,
         resultContextTransferId: null,
-        latestTerminalRunId: null,
-        latestTerminalStatus: isTerminalTaskStatus(status) ? status : null,
-        latestTerminalSummary: terminal ? task.result : null,
+        latestTerminalRunId: task.remoteChild?.latestResult?.runId ?? null,
+        latestTerminalStatus: task.remoteChild?.latestResult?.status ?? null,
+        latestTerminalSummary: task.remoteChild?.latestResult?.text ?? null,
         latestTerminalResultContextTransferId: null,
         waitTimedOut,
       } satisfies OrchestratorMcpDelegateTaskResult;

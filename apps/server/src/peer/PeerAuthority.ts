@@ -1,5 +1,6 @@
 import { Authority, PeerSession, intersect } from "./PeerAuthorityRecord.ts";
 export { Authority, PeerSession } from "./PeerAuthorityRecord.ts";
+import { readStopDescendants } from "../childThreads/stopDescendants.ts";
 import { initializePeerEffectAuthority } from "./peerEffectAuthority.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
 import { exceededDispatchModeLimit } from "../orchestration-v2/DispatchModeLimit.ts";
@@ -15,6 +16,7 @@ import {
   PeerGrant,
   PeerGrantSummary,
   PeerReturnPair,
+  type PeerTaskLifecycleRequest,
   ThreadId,
   RunId,
   ScheduledTaskId,
@@ -49,9 +51,17 @@ type ResourceBinding =
 
 export const AUTHORITY_HEADER = "t3-peer-authority";
 export const LINK_HEADER = "t3-peer-link";
+const StopControl = Schema.Struct({
+  pair: PeerReturnPair,
+  requestId: Schema.String,
+  reason: Schema.optional(Schema.String),
+});
+type StopControl = typeof StopControl.Type;
+type StopValidation = StopControl & { readonly upstream?: StopControl };
 const Validation = Schema.Struct({
   type: Schema.Literal("validate"),
   envelope: PeerAuthorityEnvelope,
+  stop: Schema.optional(StopControl),
 });
 const ReturnNotice = Schema.Struct({
   type: Schema.Literal("return"),
@@ -116,6 +126,25 @@ const unavailable = () =>
 export class PeerAuthority extends Context.Service<
   PeerAuthority,
   {
+    readonly authorizeStopEffect: (
+      effectId: string,
+      threadId: ThreadId,
+    ) => Effect.Effect<string | undefined, OrchestratorMcpFailure>;
+    readonly authorizeTaskStop: (
+      scope: Invocation.McpInvocationScope,
+      input: PeerTaskLifecycleRequest & {
+        operation: Extract<PeerTaskLifecycleRequest["operation"], { type: "stop" }>;
+      },
+    ) => Effect.Effect<Authority, OrchestratorMcpFailure>;
+    /** Authenticates only an already committed receipt, never a new operation. */
+    readonly verifyTaskReceipt: (
+      scope: Invocation.McpInvocationScope,
+      input: PeerTaskLifecycleRequest,
+    ) => Effect.Effect<void, OrchestratorMcpFailure>;
+    readonly verifyTask: (
+      scope: Invocation.McpInvocationScope,
+      input: PeerTaskLifecycleRequest,
+    ) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly enroll: (
       scope: Invocation.McpInvocationScope,
       peer: typeof PeerSession.Type,
@@ -532,12 +561,79 @@ const make = Effect.gen(function* () {
         ),
       );
     });
-  const validate = (record: Authority): Effect.Effect<PeerCeiling, OrchestratorMcpFailure> =>
+  const validateStopIntent = (control: StopControl, peer: EnvironmentId, generation: string) =>
     Effect.gen(function* () {
+      const pair = control.pair;
+      if (pair.parentEnvironmentId !== here || pair.childEnvironmentId !== peer)
+        return yield* denied("The stop obligation belongs to another audience.");
+      const rows = yield* sql<{
+        record_id: string;
+        pair_json: string;
+      }>`SELECT record_id,pair_json FROM peer_return_pairs WHERE task_id=${pair.taskId}`.pipe(
+        Effect.mapError(unavailable),
+      );
+      if (rows[0]?.pair_json !== json(pair)) return yield* denied("Unknown stop obligation pair.");
+      const launch = yield* read(rows[0]!.record_id);
+      if (launch.peer.environmentId !== peer || launch.peer.generation !== generation)
+        return yield* denied("The stop obligation belongs to another generation.");
+      yield* validateReturn(launch);
+      const parent = yield* threads
+        .getThreadRecords(pair.parentThreadId, ["subagents"])
+        .pipe(Effect.mapError(unavailable));
+      const task = parent.subagents.find((t) => t.id === pair.taskId);
+      if (
+        parent.thread.deletedAt !== null ||
+        parent.thread.archivedAt !== null ||
+        task?.remoteChild?.threadId !== pair.childThreadId ||
+        task.remoteChild.environmentId !== peer ||
+        task.remoteChild.launch?.linkIdentity !== generation
+      )
+        return yield* denied("The stop relationship was retired.");
+      const intents = yield* sql<{
+        reason: string | null;
+      }>`SELECT DISTINCT json_extract(payload_json,'$.remoteChild.stop.reason') AS reason FROM orchestration_events WHERE stream_id=${pair.parentThreadId} AND event_type='subagent.updated' AND json_extract(payload_json,'$.id')=${pair.taskId} AND json_extract(payload_json,'$.remoteChild.stop.requestId')= ${control.requestId}`.pipe(
+        Effect.mapError(unavailable),
+      );
+      if (intents.length === 0) return yield* denied("No durable stop obligation was accepted.");
+      for (const intent of intents) {
+        if (intent.reason !== (control.reason ?? null))
+          return yield* denied("The stop request identity has conflicting semantics.");
+      }
+      return launch;
+    });
+  const validate = (
+    record: Authority,
+    stop?: StopValidation,
+  ): Effect.Effect<PeerCeiling, OrchestratorMcpFailure> =>
+    Effect.gen(function* () {
+      if (record.context?.type === "task-stop") {
+        const control = record.context;
+        let ceiling = record.ceiling;
+        for (const id of control.recordIds)
+          ceiling = intersect(ceiling, yield* validate(yield* read(id), control));
+        for (const target of control.targets) {
+          const binding = yield* loadResource({ type: "thread", threadId: target.threadId });
+          if (binding.type !== "thread" || binding.thread.archivedAt !== null)
+            return yield* denied("The stop target was retired.");
+          for (const id of control.recordIds) {
+            const owner = yield* read(id);
+            yield* checkResource(owner, yield* validate(owner, control), binding, control);
+          }
+          for (const id of target.recordIds) {
+            const owner = yield* read(id);
+            const current = yield* validate(owner, control);
+            yield* checkResource(owner, current, binding, control);
+            ceiling = intersect(ceiling, current);
+          }
+          if (exceededDispatchModeLimit(ceiling, binding.thread) !== undefined)
+            return yield* denied("The stop exceeds a current destination mode.");
+        }
+        return ceiling;
+      }
       if (record.context?.type === "run-inputs") {
         let ceiling = record.ceiling;
         for (const id of record.context.recordIds)
-          ceiling = intersect(ceiling, yield* validate(yield* read(id)));
+          ceiling = intersect(ceiling, yield* validate(yield* read(id), stop));
         return ceiling;
       }
       if (record.context !== undefined) {
@@ -562,7 +658,7 @@ const make = Effect.gen(function* () {
         // belongs to the actual operation target, which may be a new joint child.
         for (const id of owners) {
           const owner = yield* read(id);
-          const current = yield* validate(owner);
+          const current = yield* validate(owner, stop);
           ceiling = intersect(ceiling, current);
         }
         return ceiling;
@@ -571,7 +667,21 @@ const make = Effect.gen(function* () {
         const current = yield* grant(record.sessionId);
         const upstream = yield* ask(record.sessionId, {
           id: `validate:${record.id}:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
-          body: { type: "validate", envelope: record.envelope },
+          body: {
+            type: "validate",
+            envelope: record.envelope,
+            ...(stop === undefined ||
+            record.envelope.environmentId !== stop.pair.parentEnvironmentId ||
+            here !== stop.pair.childEnvironmentId
+              ? {}
+              : {
+                  stop: {
+                    pair: stop.pair,
+                    requestId: stop.requestId,
+                    ...(stop.reason === undefined ? {} : { reason: stop.reason }),
+                  },
+                }),
+          },
         });
         return intersect(
           record.ceiling,
@@ -607,14 +717,23 @@ const make = Effect.gen(function* () {
         .pipe(Effect.mapError(unavailable));
       if (thread === null || thread.deletedAt !== null)
         return yield* denied("The originating thread is no longer available.");
+      const stoppedOrigin =
+        stop !== undefined &&
+        record.localThreadId === stop.pair.parentThreadId &&
+        record.peer.environmentId === stop.pair.childEnvironmentId &&
+        (record.pair === undefined || record.pair.taskId === stop.pair.taskId);
       if (record.pair !== undefined) {
         const parent = yield* threads
           .getThreadRecords(record.pair.parentThreadId, ["subagents"])
           .pipe(Effect.mapError(unavailable));
         const task = parent.subagents.find((task) => task.id === record.pair?.taskId);
-        if (task === undefined || task.status === "cancelled" || task.status === "interrupted")
+        if (
+          task === undefined ||
+          (!stoppedOrigin && (task.status === "cancelled" || task.status === "interrupted"))
+        )
           return yield* denied("The originating delegated job was stopped or retired.");
       } else if (
+        !stoppedOrigin &&
         !record.readOnly &&
         (record.originRunId === null ||
           thread.activeRunId !== record.originRunId ||
@@ -628,13 +747,14 @@ const make = Effect.gen(function* () {
         interactionMode: thread.interactionMode,
       };
       const parent = record.parentId === null ? undefined : yield* read(record.parentId);
-      const ceiling = parent === undefined ? record.ceiling : yield* validate(parent);
+      const ceiling =
+        parent === undefined ? record.ceiling : yield* validate(parent, stop?.upstream ?? stop);
       if (parent !== undefined) {
         if (!ceiling.onward)
           return yield* denied("The originating grant does not permit onward delegation.");
         // A forwarded action still depends on permission for its actual source
         // thread, even when its owners were inherited from an older context.
-        yield* checkResource(parent, ceiling, { type: "thread", thread });
+        yield* checkResource(parent, ceiling, { type: "thread", thread }, stop?.upstream ?? stop);
       }
       return intersect(current, intersect(record.ceiling, ceiling));
     });
@@ -650,7 +770,7 @@ const make = Effect.gen(function* () {
       if (context === undefined) return resourceSession(record) === sessionId;
       if (context.type === "legacy-thread" && record.resourceSessionId === sessionId) return true;
       const ids =
-        context.type === "run-inputs"
+        context.type === "run-inputs" || context.type === "task-stop"
           ? context.recordIds
           : context.type === "owned-thread"
             ? [context.creationRecordId, context.runRecordId]
@@ -675,9 +795,22 @@ const make = Effect.gen(function* () {
     record: Authority,
     ceiling: PeerCeiling,
     target: ResourceBinding,
+    stop?: StopValidation,
   ): Effect.Effect<void, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
       const context = record.context;
+      if (context?.type === "task-stop") {
+        if (target.type !== "thread")
+          return yield* denied("A stop obligation only controls its exact threads.");
+        const entry = context.targets.find((item) => item.threadId === target.thread.id);
+        if (entry === undefined)
+          return yield* denied("The effect is outside the recorded stop target set.");
+        for (const id of [...context.recordIds, ...entry.recordIds]) {
+          const owner = yield* read(id);
+          yield* checkResource(owner, yield* validate(owner, context), target, context);
+        }
+        return;
+      }
       if (context !== undefined) {
         // Preserve each owner's predicate on the actual target, including the
         // legacy creation owner. A copied session or scope enum is not this proof.
@@ -696,7 +829,7 @@ const make = Effect.gen(function* () {
               : [context.runRecordId];
         for (const id of ids) {
           const owner = yield* read(id);
-          yield* checkResource(owner, yield* validate(owner), target);
+          yield* checkResource(owner, yield* validate(owner, stop), target, stop);
         }
         return;
       }
@@ -963,6 +1096,57 @@ const make = Effect.gen(function* () {
           json(record.envelope) !== json(envelope)
         )
           return yield* denied("The validation frame belongs to another action or link.");
+        if (frame.body.stop !== undefined) {
+          const control = frame.body.stop;
+          yield* validateStopIntent(control, peer, generation);
+          if (record.localThreadId !== control.pair.parentThreadId)
+            return yield* denied("The stop cannot borrow another source actor.");
+          const inherited = yield* sql<{
+            record_id: string;
+          }>`SELECT record_id FROM peer_task_stop_authority WHERE task_id=${control.pair.taskId} AND request_id=${control.requestId}`.pipe(
+            Effect.mapError(unavailable),
+          );
+          const inheritedRecord =
+            inherited[0] === undefined ? undefined : yield* read(inherited[0].record_id);
+          const upstream =
+            inheritedRecord?.context?.type === "task-stop" ? inheritedRecord.context : undefined;
+          const requesterCeiling =
+            inheritedRecord === undefined ? undefined : yield* validate(inheritedRecord);
+          let ceiling = yield* validate(record, {
+            ...control,
+            ...(upstream === undefined ? {} : { upstream }),
+          });
+          const parent = yield* threads
+            .getThreadShell(control.pair.parentThreadId)
+            .pipe(Effect.mapError(unavailable));
+          if (parent === null) return yield* denied("The stop source disappeared.");
+          if (inheritedRecord !== undefined && requesterCeiling !== undefined) {
+            yield* checkResource(inheritedRecord, requesterCeiling, {
+              type: "thread",
+              thread: parent,
+            });
+            ceiling = intersect(ceiling, requesterCeiling);
+          }
+
+          // Stop has ended the active run. Keep its actual accepted input owners,
+          // plus creation ownership, rather than falling back to raw thread modes.
+          const latest = yield* sql<{
+            record_id: string;
+          }>`SELECT owner.record_id FROM orchestration_v2_projection_runs AS run JOIN peer_run_authority AS owner ON owner.run_id=run.run_id WHERE run.run_id=(SELECT latest.run_id FROM orchestration_v2_projection_runs AS latest WHERE latest.thread_id=${control.pair.parentThreadId} ORDER BY json_extract(latest.payload_json,'$.ordinal') DESC LIMIT 1)`.pipe(
+            Effect.mapError(unavailable),
+          );
+          const current = yield* forThread(control.pair.parentThreadId);
+          for (const id of new Set([
+            ...(current === undefined ? [] : [current.id]),
+            ...latest.map((row) => row.record_id),
+          ])) {
+            const owner = yield* read(id);
+            const live = yield* validate(owner, upstream);
+            yield* checkResource(owner, live, { type: "thread", thread: parent }, upstream);
+            ceiling = intersect(ceiling, live);
+          }
+          return ceiling;
+        }
         return yield* validate(record);
       }
       const input = frame.body;
@@ -1073,40 +1257,204 @@ const make = Effect.gen(function* () {
       );
       return yield* decodeReceipt(value).pipe(Effect.mapError(unavailable));
     });
+  const verifyTask = (
+    scope: Invocation.McpInvocationScope,
+    input: PeerTaskLifecycleRequest,
+    receiptOnly = false,
+  ): Effect.Effect<void, OrchestratorMcpFailure> =>
+    Effect.gen(function* () {
+      yield* enroll(scope, input);
+      if (scope.client?.linked !== true) return yield* denied("An authenticated peer is required.");
+      const rows = yield* sql<{
+        record_id: string;
+        pair_json: string;
+      }>`SELECT record_id, pair_json FROM peer_return_pairs WHERE task_id = ${input.pair.taskId}`.pipe(
+        Effect.mapError(unavailable),
+      );
+      if (!rows[0] || rows[0].pair_json !== json(input.pair))
+        return yield* denied("Unknown delegated lifecycle pair.");
+      const record = yield* read(rows[0].record_id);
+      if (
+        record.sessionId !== scope.client.sessionId ||
+        record.peer.environmentId !== input.environmentId ||
+        record.peer.generation !== input.generation ||
+        input.pair.parentEnvironmentId !== input.environmentId ||
+        input.pair.childEnvironmentId !== here
+      )
+        return yield* denied("The lifecycle pair belongs to another grant generation.");
+      yield* validateReturn(record);
+      if (receiptOnly) {
+        if (input.operation.type !== "stop")
+          return yield* denied("Only an existing stop receipt can be reconciled here.");
+        return;
+      }
+      const child = yield* threads
+        .getThreadShell(input.pair.childThreadId)
+        .pipe(Effect.mapError(unavailable));
+      if (child === null || child.deletedAt !== null || child.archivedAt !== null)
+        return yield* denied("The delegated lifecycle pair was retired.");
+      const current = yield* grant(record.sessionId);
+      if (!record.ceiling.capabilities.includes("orchestration"))
+        return yield* denied("This pair does not permit lifecycle observation.");
+      yield* checkResource(
+        record,
+        {
+          ...record.ceiling,
+          resourceScope:
+            record.ceiling.resourceScope === "created-work"
+              ? "created-work"
+              : current.resourceScope,
+        },
+        { type: "thread", thread: child },
+      );
+      if (input.operation.type === "view" && input.operation.resource !== undefined) {
+        if (input.operation.resource.environmentId !== here)
+          return yield* denied("The lifecycle resource belongs to another destination.");
+        yield* checkResource(
+          record,
+          {
+            ...record.ceiling,
+            resourceScope:
+              record.ceiling.resourceScope === "created-work"
+                ? "created-work"
+                : current.resourceScope,
+          },
+          yield* loadResource({ type: "thread", threadId: input.operation.resource.threadId }),
+        );
+      }
+    });
+  const checkEffect: PeerAuthority["Service"]["checkEffect"] = (effectId, threadId) =>
+    Effect.gen(function* () {
+      const rows = yield* sql<{
+        record_id: string;
+      }>`SELECT record_id FROM peer_effect_authority WHERE effect_id = ${effectId}`.pipe(
+        Effect.mapError(unavailable),
+      );
+      const created = yield* permanentForThread(threadId);
+      const record = rows[0] === undefined ? created : yield* read(rows[0].record_id);
+      const migrated = created === undefined ? yield* legacy(threadId) : undefined;
+      if (record?.context?.type === "task-stop") {
+        const effects = yield* sql<{
+          effect_type: string;
+        }>`SELECT effect_type FROM orchestration_v2_effect_outbox WHERE effect_id=${effectId}`.pipe(
+          Effect.mapError(unavailable),
+        );
+        if (
+          !effects[0] ||
+          !["provider-turn.interrupt", "provider-session.detach", "delegated-tasks.stop"].includes(
+            effects[0].effect_type,
+          )
+        )
+          return yield* denied("A stop obligation cannot authorize general work.");
+      }
+      if (record === undefined && migrated === undefined) return;
+      if (migrated !== undefined) yield* activeSession(migrated.sessionId);
+      const ceiling =
+        record !== undefined
+          ? yield* validate(record)
+          : migrated !== undefined
+            ? migrated.ceiling
+            : yield* unavailable();
+      const target = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
+      if (target === null || target.deletedAt !== null)
+        return yield* denied("The destination thread is no longer available.");
+      if (record !== undefined)
+        yield* checkResource(record, ceiling, { type: "thread", thread: target });
+      let effective = migrated === undefined ? ceiling : intersect(ceiling, migrated.ceiling);
+      if (created !== undefined && created.id !== record?.id) {
+        const creationCeiling = yield* validate(
+          created,
+          record?.context?.type === "task-stop" ? record.context : undefined,
+        );
+        yield* checkResource(
+          created,
+          creationCeiling,
+          { type: "thread", thread: target },
+          record?.context?.type === "task-stop" ? record.context : undefined,
+        );
+        effective = intersect(effective, creationCeiling);
+      }
+      if (exceededDispatchModeLimit(effective, target) !== undefined)
+        return yield* denied(
+          "The destination effect exceeds the current originating authority ceiling.",
+        );
+    });
   return PeerAuthority.of({
-    checkEffect: (effectId, threadId) =>
+    authorizeTaskStop: (scope, input) =>
+      Effect.gen(function* () {
+        yield* verifyTask(scope, input);
+        const rows = yield* sql<{
+          record_id: string;
+        }>`SELECT record_id FROM peer_return_pairs WHERE task_id=${input.pair.taskId}`.pipe(
+          Effect.mapError(unavailable),
+        );
+        if (!rows[0]) return yield* denied("Unknown stop pair.");
+        const original = yield* read(rows[0].record_id);
+        const control = {
+          pair: input.pair,
+          requestId: input.operation.requestId,
+          ...(input.operation.reason === undefined ? {} : { reason: input.operation.reason }),
+        };
+        const targets: Array<{ threadId: ThreadId; recordIds: Array<string> }> = [];
+        const queue = [input.pair.childThreadId];
+        const seen = new Set<ThreadId>();
+        while (queue.length) {
+          const id = queue.shift()!;
+          if (seen.has(id)) continue;
+          seen.add(id);
+          if (seen.size > 256) return yield* denied("The stop descendant bound was exceeded.");
+          const records = yield* threads
+            .getThreadRecords(id, ["subagents"])
+            .pipe(Effect.mapError(unavailable));
+          const owner = yield* forThread(id);
+          targets.push({ threadId: id, recordIds: owner === undefined ? [] : [owner.id] });
+          queue.push(
+            ...records.subagents.flatMap((task) =>
+              task.origin === "app_owned" && task.childThreadId !== null
+                ? [task.childThreadId]
+                : [],
+            ),
+          );
+          const shells = yield* threads.getShellSnapshot().pipe(Effect.mapError(unavailable));
+          const descendants = yield* readStopDescendants(
+            id,
+            [...shells.threads, ...shells.archivedThreads],
+            (threadId) =>
+              threads
+                .getThreadShell(threadId)
+                .pipe(Effect.map(Option.fromNullishOr), Effect.mapError(unavailable)),
+          );
+          queue.push(...descendants);
+        }
+        const context = {
+          type: "task-stop" as const,
+          ...control,
+          recordIds: [original.id],
+          targets,
+        };
+        const id = `task-stop:${yield* hash(context)}`;
+        const record: Authority = { ...original, id, context };
+        yield* save(record);
+        const ceiling = yield* validate(record);
+        if (!ceiling.capabilities.includes("orchestration"))
+          return yield* denied("The stop has no orchestration grant.");
+        return { ...record, ceiling };
+      }),
+    verifyTask,
+    verifyTaskReceipt: (scope, input) => verifyTask(scope, input, true),
+    checkEffect,
+    authorizeStopEffect: (effectId, threadId) =>
       Effect.gen(function* () {
         const rows = yield* sql<{
           record_id: string;
-        }>`SELECT record_id FROM peer_effect_authority WHERE effect_id = ${effectId}`.pipe(
+        }>`SELECT record_id FROM peer_effect_authority WHERE effect_id=${effectId}`.pipe(
           Effect.mapError(unavailable),
         );
-        const created = yield* permanentForThread(threadId);
-        const record = rows[0] === undefined ? created : yield* read(rows[0].record_id);
-        const migrated = created === undefined ? yield* legacy(threadId) : undefined;
-        if (record === undefined && migrated === undefined) return;
-        if (migrated !== undefined) yield* activeSession(migrated.sessionId);
-        const ceiling =
-          record !== undefined
-            ? yield* validate(record)
-            : migrated !== undefined
-              ? migrated.ceiling
-              : yield* unavailable();
-        const target = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
-        if (target === null || target.deletedAt !== null)
-          return yield* denied("The destination thread is no longer available.");
-        if (record !== undefined)
-          yield* checkResource(record, ceiling, { type: "thread", thread: target });
-        let effective = migrated === undefined ? ceiling : intersect(ceiling, migrated.ceiling);
-        if (created !== undefined && created.id !== record?.id) {
-          const creationCeiling = yield* validate(created);
-          yield* checkResource(created, creationCeiling, { type: "thread", thread: target });
-          effective = intersect(effective, creationCeiling);
-        }
-        if (exceededDispatchModeLimit(effective, target) !== undefined)
-          return yield* denied(
-            "The destination effect exceeds the current originating authority ceiling.",
-          );
+        if (!rows[0]) return undefined;
+        const record = yield* read(rows[0].record_id);
+        if (record.context?.type !== "task-stop") return undefined;
+        yield* checkEffect(effectId, threadId);
+        return record.id;
       }),
     legacyCeiling: (threadId) => legacy(threadId).pipe(Effect.map((record) => record?.ceiling)),
     checkThread,

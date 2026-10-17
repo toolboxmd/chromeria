@@ -1,3 +1,4 @@
+import * as RemoteDelegation from "./peer/RemoteDelegation.ts";
 import * as PeerAuthority from "./peer/PeerAuthority.ts";
 import { stopSpectrum } from "./spectrum/humanStopRpc.ts";
 import { abandonScheduledReport } from "./spectrum/humanReportRpc.ts";
@@ -1283,6 +1284,7 @@ const layerWsRpc = (
       const storageCleanup = yield* StorageCleanup.StorageCleanup;
       const databaseStorage = yield* DatabaseStorage.DatabaseStorage;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
+      const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
       const peerLinks = yield* PeerLinks.PeerLinks;
       const peerAuthority = yield* PeerAuthority.PeerAuthority;
       const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
@@ -2446,6 +2448,20 @@ const layerWsRpc = (
         [WS_METHODS.serverRunStorageCleanup]: () => storageCleanup.runNow,
         [WS_METHODS.serverGetStorageCleanupReport]: () => storageCleanup.reports,
         [WS_METHODS.serverGetDatabaseStorage]: () => databaseStorage.status,
+        [WS_METHODS.remoteTaskView]: (input) =>
+          remoteDelegation.view(
+            input.parentThreadId,
+            input.taskId,
+            input.after,
+            input.textOffset,
+            input.resource,
+          ),
+        [WS_METHODS.remoteTaskStop]: (input) =>
+          remoteDelegation.requestStop(
+            input.parentThreadId,
+            input.taskId,
+            `client-stop:${input.clientRequestId}`,
+          ),
         [WS_METHODS.peerGrantsList]: () => peerAuthority.grants,
         [WS_METHODS.peerGrantsUpdate]: (input) => peerAuthority.setGrant(input),
         [WS_METHODS.peerLinksList]: (_input) =>

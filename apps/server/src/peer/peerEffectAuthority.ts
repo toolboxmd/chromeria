@@ -17,6 +17,7 @@ export const PeerDispatchAuthority = Context.Reference<string | undefined>(
 /** Initialized with the event sink so local-only services need no peer runtime. */
 export const initializePeerEffectAuthority = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE IF NOT EXISTS peer_task_stop_authority (task_id TEXT NOT NULL,request_id TEXT NOT NULL,record_id TEXT NOT NULL,PRIMARY KEY(task_id,request_id))`;
   yield* sql`CREATE TABLE IF NOT EXISTS peer_effect_authority (effect_id TEXT PRIMARY KEY, record_id TEXT NOT NULL)`;
   yield* sql`CREATE TABLE IF NOT EXISTS peer_run_authority (run_id TEXT PRIMARY KEY, record_id TEXT NOT NULL)`;
   yield* sql`CREATE TABLE IF NOT EXISTS peer_thread_authority (thread_id TEXT PRIMARY KEY, record_id TEXT NOT NULL)`;
@@ -103,6 +104,43 @@ export const recordPeerEffectAuthority = (
         if (owner !== undefined)
           yield* sql`INSERT INTO peer_run_authority (run_id, record_id) VALUES (${runId}, ${owner}) ON CONFLICT (run_id) DO UPDATE SET record_id = excluded.record_id`;
       });
+    // An inherited native Stop is authority for this exact next obligation,
+    // never general authority for the now-stopped intermediate thread.
+    if (authority !== undefined) {
+      const owner = yield* read(authority);
+      if (owner.context?.type === "task-stop") {
+        for (const effect of effects)
+          if (
+            ![
+              "provider-turn.interrupt",
+              "provider-session.detach",
+              "delegated-tasks.stop",
+            ].includes(effect.request.type) ||
+            !owner.context.targets.some((target) => target.threadId === effect.threadId)
+          )
+            return yield* Effect.die(
+              new Error(
+                "A stop obligation only authorizes its named native Stop effects and targets",
+              ),
+            );
+      }
+      for (const event of events) {
+        if (
+          event.type === "subagent.updated" &&
+          event.payload.remoteChild?.stop?.state === "pending"
+        ) {
+          if (
+            owner.context?.type === "task-stop" &&
+            !owner.context.targets.some((target) => target.threadId === event.threadId)
+          )
+            return yield* Effect.die(
+              new Error("A stop obligation cannot own an unrelated source intent"),
+            );
+          const stop = event.payload.remoteChild.stop;
+          yield* sql`INSERT INTO peer_task_stop_authority (task_id,request_id,record_id) VALUES (${event.payload.id},${stop.requestId},${authority}) ON CONFLICT DO NOTHING`;
+        }
+      }
+    }
     const continuations = new Set<string>();
     const promotedMessages = new Set(
       events.flatMap((event) =>
