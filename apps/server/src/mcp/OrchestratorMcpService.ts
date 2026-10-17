@@ -1008,7 +1008,8 @@ const make = Effect.gen(function* () {
   /**
    * The caller's own thread and the most it may hand to threads it targets. A
    * thread caller is capped by its own modes; an OAuth client by the ceiling
-   * chosen when it was approved.
+   * chosen when it was approved. Peer work also retains its validated frozen
+   * and live originating ceiling, even if the destination shell's modes rise.
    */
   const loadCaller = (scope: McpInvocationScope) =>
     Effect.gen(function* () {
@@ -1016,7 +1017,10 @@ const make = Effect.gen(function* () {
       if (scope.thread === undefined) {
         return {
           parent: undefined,
-          limits: clientModeCeiling(scope.client),
+          limits: intersectModes(
+            clientModeCeiling(scope.client),
+            scope.authority?.ceiling ?? scope.legacyPeerCeiling,
+          ),
         } as const;
       }
       const parent = yield* loadProjection(scope.thread.threadId);
@@ -1027,10 +1031,7 @@ const make = Effect.gen(function* () {
       }
       return {
         parent,
-        limits: {
-          runtimeMode: parent.thread.runtimeMode,
-          interactionMode: parent.thread.interactionMode,
-        },
+        limits: intersectModes(parent.thread, scope.authority?.ceiling ?? scope.legacyPeerCeiling),
       } as const;
     });
 

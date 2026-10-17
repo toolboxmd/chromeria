@@ -86,6 +86,9 @@ import type { McpThreadInvocationScope } from "../mcp/McpInvocationContext.ts";
 const instanceId = ProviderInstanceId.make("codex");
 const driver = ProviderDriverKind.make("codex");
 const selection = { instanceId, model: "gpt-5.4" };
+const decodeScheduledTaskList = Schema.decodeUnknownEffect(
+  OrchestratorToolkit.tools.list_scheduled_tasks.successSchema,
+);
 const adapter = {
   instanceId,
   driver,
@@ -999,6 +1002,59 @@ it.live(
         });
         expect(issued.config.capabilities?.has("preview")).toBe(false);
         expect(issued.config.capabilities?.has("device")).toBe(false);
+        yield* b.threads.dispatch({
+          type: "thread.interaction-mode.set",
+          commandId: CommandId.make("legacy-interaction-mode"),
+          threadId,
+          interactionMode: "default",
+        });
+        yield* b.threads.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("legacy-private-output-run"),
+          threadId,
+          messageId: MessageId.make("legacy-private-output-message"),
+          text: "Fixture only",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* activate(b, threadId);
+        const fixtures = [];
+        for (const modes of [
+          { runtimeMode: "full-access", interactionMode: "plan" },
+          { runtimeMode: "auto", interactionMode: "default" },
+          { runtimeMode: "auto", interactionMode: "plan" },
+        ] as const) {
+          const fixture = yield* b.scheduled.upsert({
+            title: `Legacy ${modes.runtimeMode}/${modes.interactionMode}`,
+            prompt: "Never executed",
+            enabled: false,
+            schedule: { type: "webhook" },
+            projectId: b.project.id,
+            threadId: null,
+            workspaceStrategy: { type: "root" },
+            modelSelection: selection,
+            ...modes,
+            createdBy: "user",
+            creationSource: "web",
+            linkOrigin: { sessionId: grant.sessionId, label: "A" },
+          });
+          expect(fixture.task.webhook?.url).toBeTruthy();
+          fixtures.push(fixture.task.id);
+        }
+        const listed = yield* nativeCall(b, threadId, "list_scheduled_tasks", {});
+        expect(listed.isError, json(listed.content)).not.toBe(true);
+        const summaries = yield* decodeScheduledTaskList(listed.structuredContent);
+        expect(
+          fixtures.map(
+            (id) =>
+              summaries.tasks.find((task) => task.scheduledTaskId === id)?.webhookUrl !== undefined,
+          ),
+        ).toEqual([false, false, true]);
+        expect(summaries.tasks.map((task) => task.scheduledTaskId)).toEqual(
+          expect.arrayContaining(fixtures),
+        );
         const denied = yield* b.authority.checkEffect("legacy-effect", threadId).pipe(Effect.flip);
         expect(denied.code).toBe("capability_denied");
       }),
@@ -3626,6 +3682,184 @@ it.live.each([{ retired: "source-run" }, { retired: "link" }] as const)(
           expect(denied.isError).toBe(true);
           expect((yield* node.threads.getThreadShell(threadId))?.title).not.toBe(deniedTitle);
         }
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "round7: private webhook URLs retain the frozen runtime ceiling after destination mode increase",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(descriptorOf("r7-webhook-b", "B", { peerAuthority: 1 }));
+        const a = yield* makeNode(descriptorOf("r7-webhook-a", "A", { peerAuthority: 1 }));
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("r7-webhook-source");
+        yield* seedParent(a, parent);
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("r7-source-auto"),
+          threadId: parent,
+          runtimeMode: "auto",
+        });
+        yield* a.forwarding.call(
+          caller(a, parent),
+          ProjectToolkit.tools.t3_project_list,
+          b.environmentId,
+          {},
+        );
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, resourceScope: "environment-resources" });
+        const launched = yield* nativeCall(a, parent, "t3_thread_launch", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          modelSelection: selection,
+          title: "Frozen auto child",
+          message: "Work",
+          clientRequestId: "r7-webhook-child",
+        });
+        expect(launched.isError, json(launched.content)).not.toBe(true);
+        const child = (yield* decodeLaunchReceipt(launched.structuredContent)).threadId;
+        yield* activate(b, child);
+        expect((yield* b.authority.checkThread(child))?.ceiling.runtimeMode).toBe("auto");
+        const fixture = yield* b.scheduled.upsert({
+          title: "Full access webhook",
+          prompt: "Never executed",
+          enabled: false,
+          schedule: { type: "webhook" },
+          projectId: b.project.id,
+          threadId: null,
+          workspaceStrategy: { type: "root" },
+          modelSelection: selection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdBy: "user",
+          creationSource: "web",
+        });
+        expect(fixture.task.webhook?.url).toBeTruthy();
+        const list = () =>
+          Effect.gen(function* () {
+            const result = yield* nativeCall(b, child, "list_scheduled_tasks", {});
+            expect(result.isError, json(result.content)).not.toBe(true);
+            return (yield* decodeScheduledTaskList(result.structuredContent)).tasks.find(
+              (t) => t.scheduledTaskId === fixture.task.id,
+            );
+          });
+        const narrow = yield* list();
+        expect(narrow).toBeDefined();
+        expect(narrow?.webhookUrl).toBeUndefined();
+        yield* b.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("r7-destination-full"),
+          threadId: child,
+          runtimeMode: "full-access",
+        });
+        expect((yield* b.authority.checkThread(child))?.ceiling.runtimeMode).toBe("auto");
+        const elevated = yield* list();
+        const write = yield* nativeCall(b, child, "update_scheduled_task", {
+          scheduledTaskId: fixture.task.id,
+          title: "Forbidden higher-mode edit",
+        });
+        const stored = (yield* b.scheduled.list()).tasks.find((t) => t.id === fixture.task.id);
+        expect(write.isError).toBe(true);
+        expect(stored?.title).toBe("Full access webhook");
+        expect({
+          frozenMode: (yield* b.authority.checkThread(child))?.ceiling.runtimeMode,
+          metadataVisible: elevated !== undefined,
+          privateUrlVisible: elevated?.webhookUrl !== undefined,
+          writeDenied: write.isError === true,
+        }).toEqual({
+          frozenMode: "auto",
+          metadataVisible: true,
+          privateUrlVisible: false,
+          writeDenied: true,
+        });
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "round7: private webhook URLs retain current originating runtime after source narrowing",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(descriptorOf("r7-webhook-b", "B", { peerAuthority: 1 }));
+        const a = yield* makeNode(descriptorOf("r7-webhook-a", "A", { peerAuthority: 1 }));
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("r7-webhook-source");
+        yield* seedParent(a, parent);
+        yield* a.forwarding.call(
+          caller(a, parent),
+          ProjectToolkit.tools.t3_project_list,
+          b.environmentId,
+          {},
+        );
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, resourceScope: "environment-resources" });
+        const launched = yield* nativeCall(a, parent, "t3_thread_launch", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          modelSelection: selection,
+          title: "Frozen auto child",
+          message: "Work",
+          clientRequestId: "r7-webhook-child",
+        });
+        expect(launched.isError, json(launched.content)).not.toBe(true);
+        const child = (yield* decodeLaunchReceipt(launched.structuredContent)).threadId;
+        yield* activate(b, child);
+        expect((yield* b.authority.checkThread(child))?.ceiling.runtimeMode).toBe("full-access");
+        const fixture = yield* b.scheduled.upsert({
+          title: "Full access webhook",
+          prompt: "Never executed",
+          enabled: false,
+          schedule: { type: "webhook" },
+          projectId: b.project.id,
+          threadId: null,
+          workspaceStrategy: { type: "root" },
+          modelSelection: selection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdBy: "user",
+          creationSource: "web",
+        });
+        expect(fixture.task.webhook?.url).toBeTruthy();
+        const list = () =>
+          Effect.gen(function* () {
+            const result = yield* nativeCall(b, child, "list_scheduled_tasks", {});
+            expect(result.isError, json(result.content)).not.toBe(true);
+            return (yield* decodeScheduledTaskList(result.structuredContent)).tasks.find(
+              (t) => t.scheduledTaskId === fixture.task.id,
+            );
+          });
+        const narrow = yield* list();
+        expect(narrow).toBeDefined();
+        expect(narrow?.webhookUrl).toBeTruthy();
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("r7-source-narrow"),
+          threadId: parent,
+          runtimeMode: "auto",
+        });
+        expect((yield* b.authority.checkThread(child))?.ceiling.runtimeMode).toBe("auto");
+        const elevated = yield* list();
+        const write = yield* nativeCall(b, child, "update_scheduled_task", {
+          scheduledTaskId: fixture.task.id,
+          title: "Forbidden higher-mode edit",
+        });
+        const stored = (yield* b.scheduled.list()).tasks.find((t) => t.id === fixture.task.id);
+        expect(write.isError).toBe(true);
+        expect(stored?.title).toBe("Full access webhook");
+        expect({
+          frozenMode: (yield* b.authority.checkThread(child))?.ceiling.runtimeMode,
+          metadataVisible: elevated !== undefined,
+          privateUrlVisible: elevated?.webhookUrl !== undefined,
+          writeDenied: write.isError === true,
+        }).toEqual({
+          frozenMode: "auto",
+          metadataVisible: true,
+          privateUrlVisible: false,
+          writeDenied: true,
+        });
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
 );
