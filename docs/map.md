@@ -95,6 +95,9 @@ flowchart TD
     PGR["Remote return and onward delegation"]
     %% PGR: #380
     XM --> PGR
+    RTL["Remote delegated task lifecycle"]
+    %% RTL: #381 PR #392
+    PGR --> RTL
     NR["Network routes"]
     %% NR: #292 #358 PR #498 PR #497
     EP["Execution purpose"]

@@ -1,5 +1,7 @@
 import { ThreadMcpToolkit } from "./toolkits/threadMcp/tools.ts";
 import * as ThreadMcpHandlers from "./toolkits/threadMcp/handlers.ts";
+import * as PeerTaskLifecycle from "../peer/PeerTaskLifecycle.ts";
+import { PeerTaskLifecycleRequest } from "@t3tools/contracts";
 import * as SpectrumToolkit from "../spectrum/mcpToolkit.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -213,6 +215,7 @@ const decodePeerSession = Schema.decodeUnknownEffect(
   Schema.fromJsonString(PeerAuthority.PeerSession),
 );
 const decodePeerEnvelope = Schema.decodeUnknownEffect(Schema.fromJsonString(PeerAuthorityEnvelope));
+const decodeTaskLifecycle = Schema.decodeUnknownEffect(PeerTaskLifecycleRequest);
 const decodePeerExchange = Schema.decodeUnknownEffect(PeerAuthority.Exchange);
 const isPeerFailure = Schema.is(OrchestratorMcpFailure);
 const peerAuthorityFailure = (error: unknown) =>
@@ -1133,7 +1136,33 @@ const layerPeerControl = Layer.unwrap(
         );
       }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 403 })))),
     );
-    return Layer.merge(post, streaming);
+    const lifecycle = yield* Effect.serviceOption(PeerTaskLifecycle.PeerTaskLifecycle);
+    if (Option.isNone(authority)) return Layer.merge(post, streaming);
+    const tasks = Layer.merge(
+      HttpRouter.add(
+        "GET",
+        "/mcp/peer-control/tasks",
+        Effect.succeed(
+          Option.isSome(lifecycle)
+            ? HttpServerResponse.jsonUnsafe({ version: 1 })
+            : HttpServerResponse.empty({ status: 409 }),
+        ),
+      ),
+      HttpRouter.add(
+        "POST",
+        "/mcp/peer-control/tasks",
+        Effect.gen(function* () {
+          if (Option.isNone(lifecycle)) return HttpServerResponse.empty({ status: 409 });
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const scope = yield* McpInvocationContext.McpInvocationContext;
+          return yield* Effect.gen(function* () {
+            const input = yield* decodeTaskLifecycle(yield* request.json);
+            return HttpServerResponse.jsonUnsafe(yield* lifecycle.value.execute(scope, input));
+          }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 403 }))));
+        }),
+      ),
+    );
+    return Layer.mergeAll(post, streaming, tasks);
   }),
 );
 

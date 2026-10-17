@@ -192,7 +192,13 @@ export function deriveThreadRelationshipGraph(input: {
         targetThreadId: target.threadId,
         kind: "subagent",
         status:
-          child?.activityRunStatus ?? (child?.latestRunId != null ? child.status : subagent.status),
+          child?.activityRunStatus ??
+          (child?.latestRunId != null
+            ? child.status
+            : subagent.remoteChild?.snapshot !== undefined &&
+                subagent.remoteChild.snapshot.workState !== "result_available"
+              ? "running"
+              : (subagent.remoteChild?.latestResult?.status ?? subagent.status)),
         targetEnvironmentId: target.environmentId,
       });
     }

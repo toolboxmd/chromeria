@@ -1,4 +1,5 @@
 import { executionPurposeOf } from "@t3tools/contracts";
+import { PeerDispatchAuthority } from "../peer/peerEffectAuthority.ts";
 import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import { CommandId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -788,10 +789,32 @@ export const layerWithOptions = (
                   ),
                 )
               : Effect.void;
+          const stopOwner =
+            Option.isSome(authority) &&
+            ["provider-turn.interrupt", "provider-session.detach", "delegated-tasks.stop"].includes(
+              effect.request.type,
+            )
+              ? authority.value.authorizeStopEffect(effect.id, effect.threadId).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationEffectExecutionError({
+                        effectId: effect.id,
+                        effectType: effect.request.type,
+                        cause,
+                      }),
+                  ),
+                )
+              : Effect.succeed(undefined);
           const execution = authorized
             .pipe(
               Effect.andThen(
-                executor.execute(effect, { willRetry: effect.attemptCount < maxAttempts }),
+                stopOwner.pipe(
+                  Effect.flatMap((owner) =>
+                    executor
+                      .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
+                      .pipe(Effect.provideService(PeerDispatchAuthority, owner)),
+                  ),
+                ),
               ),
             )
             .pipe(Effect.as("executed" as const));
