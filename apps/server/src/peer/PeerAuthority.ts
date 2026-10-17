@@ -1,5 +1,5 @@
 import { Authority, PeerSession, intersect } from "./PeerAuthorityRecord.ts";
-export { Authority, PeerSession, intersect } from "./PeerAuthorityRecord.ts";
+export { Authority, PeerSession } from "./PeerAuthorityRecord.ts";
 import { initializePeerEffectAuthority } from "./peerEffectAuthority.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
 import { exceededDispatchModeLimit } from "../orchestration-v2/DispatchModeLimit.ts";
