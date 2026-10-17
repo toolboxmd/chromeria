@@ -1,4 +1,5 @@
 import { executionPurposeOf } from "@t3tools/contracts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import { CommandId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -615,6 +616,7 @@ export const layerWithOptions = (
     Effect.gen(function* () {
       const outbox = yield* EffectOutbox.EffectOutboxV2;
       const executor = yield* OrchestrationEffectExecutorV2;
+      const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
       const workerId = options.workerId ?? `orchestration-v2:${process.pid}`;
       const leaseDurationMs = Math.max(1, options.leaseDurationMs ?? 30_000);
       const maxAttempts = Math.max(1, options.maxAttempts ?? 5);
@@ -764,8 +766,34 @@ export const layerWithOptions = (
           );
           if (cancelledBeforeExecution) return true;
 
-          const execution = executor
-            .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
+          const authorized =
+            Option.isSome(authority) &&
+            [
+              "provider-turn.start",
+              "provider-runtime.continue",
+              "provider-turn.steer",
+              "provider-turn.restart",
+              "runtime-request.respond",
+              "provider-thread.rollback",
+            ].includes(effect.request.type)
+              ? authority.value.checkEffect(effect.id, effect.threadId).pipe(
+                  Effect.asVoid,
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationEffectExecutionError({
+                        effectId: effect.id,
+                        effectType: effect.request.type,
+                        cause,
+                      }),
+                  ),
+                )
+              : Effect.void;
+          const execution = authorized
+            .pipe(
+              Effect.andThen(
+                executor.execute(effect, { willRetry: effect.attemptCount < maxAttempts }),
+              ),
+            )
             .pipe(Effect.as("executed" as const));
           const exit = yield* Effect.exit(Effect.raceFirst(execution, cancellation)).pipe(
             Effect.ensuring(outbox.clearCancellation(effect.id)),

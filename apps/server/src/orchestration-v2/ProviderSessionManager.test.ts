@@ -1,6 +1,7 @@
 import * as CheckpointService from "./CheckpointService.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import * as ForkProviderStartAdmission from "../provider/forkProviderStartAdmission.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as NetAddress from "effect/net/NetAddress";
@@ -8,6 +9,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import {
+  AuthSessionId,
   EnvironmentId,
   CommandId,
   CheckpointScopeId,
@@ -5578,5 +5580,98 @@ it.effect(
         yield* Deferred.await(childClosed);
         assert.equal(observers, 0);
       }).pipe(Effect.provide(layer), Effect.scoped);
+    }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 reuses one native credential across run owners without retaining the previous authority",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const mcpConfigs = yield* Ref.make<
+        ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
+      >([]);
+      const owner = yield* Ref.make<PeerAuthority.Authority | undefined>(undefined);
+      const environmentId = EnvironmentId.make("peer-source");
+      const owned = (id: string): PeerAuthority.Authority => ({
+        id,
+        peer: { environmentId, generation: "original-grant" },
+        sessionId: AuthSessionId.make("peer-session"),
+        localThreadId: null,
+        originClientId: null,
+        parentId: null,
+        ceiling: {
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          resourceScope: "environment-resources",
+          onward: false,
+          capabilities: ["orchestration"],
+        },
+        envelope: {
+          version: 1,
+          environmentId,
+          generation: "original-grant",
+          recordId: id,
+          actionId: id,
+          digest: "fixture",
+          route: [environmentId],
+          descendant: true,
+        },
+        tool: "t3_thread_send",
+        readOnly: false,
+        originRunId: null,
+      });
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const ids = yield* IdAllocator.IdAllocatorV2;
+        const registry = yield* McpSessionRegistry.McpSessionRegistry;
+        const sessions = yield* McpProviderSessions.McpProviderSessions;
+        const threadId = ThreadId.make("run-owner-reused-credential");
+        const providerSessionId = yield* ids.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* sink.write({
+          events: [
+            yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now: yield* DateTime.now }),
+          ],
+        });
+        const input = { threadId, providerSessionId, modelSelection, runtimePolicy };
+        yield* manager.open(input);
+        const first = (yield* Ref.get(mcpConfigs)).at(-1);
+        if (!first) return yield* Effect.die("Missing native credential");
+        const token = first.authorizationHeader.replace(/^Bearer\s+/, "");
+        for (const next of [owned("peer-run-one"), owned("peer-run-two"), undefined]) {
+          yield* Ref.set(owner, next);
+          yield* manager.detach({ threadId, providerSessionId, detail: "Next authorized run" });
+          yield* manager.open(input);
+          const config = yield* sessions.read(threadId);
+          assert.equal(config?.providerSessionId, first.providerSessionId);
+          const resolved = yield* registry.resolve(token);
+          assert.equal(resolved?.authority?.id, next?.id);
+          assert.deepEqual([...(config?.capabilities ?? [])], [...(resolved?.capabilities ?? [])]);
+          assert.equal(resolved?.capabilities.has("worktree"), next === undefined);
+          assert.equal(
+            resolved?.capabilities.has("preview"),
+            next === undefined && (first.capabilities?.has("preview") ?? false),
+          );
+          assert.equal(
+            resolved?.capabilities.has("device"),
+            next === undefined && (first.capabilities?.has("device") ?? false),
+          );
+        }
+      }).pipe(
+        Effect.provide(
+          layerTest({ state, idleTimeoutMs: 1000, mcpConfigs }).pipe(
+            Layer.provide(
+              Layer.mock(PeerAuthority.PeerAuthority)({
+                forThread: () => Ref.get(owner),
+                legacyCeiling: () => Effect.succeed(undefined),
+              }),
+            ),
+          ),
+        ),
+      );
     }),
 );

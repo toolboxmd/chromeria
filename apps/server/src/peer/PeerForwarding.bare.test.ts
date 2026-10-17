@@ -93,7 +93,10 @@ it.effect.each([{ bare: {} }, { threads: [{ bare: {} }] }, { colors: [{ bare: {}
         Layer.provide(
           Layer.mergeAll(
             NodeCrypto.layer,
-            Layer.succeed(PeerMcpClient.PeerMcpClient, { call }),
+            Layer.succeed(PeerMcpClient.PeerMcpClient, {
+              start: Effect.void,
+              call,
+            }),
             Layer.mock(PeerLinks.PeerLinks)({}),
             Layer.mock(ThreadManagement.ThreadManagementService)({
               getThreadShell: () =>
