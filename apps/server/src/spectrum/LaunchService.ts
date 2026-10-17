@@ -85,6 +85,10 @@ function shell(
     owner: threadOwner(caller),
     coOwners: [],
     ...(caller.linkOrigin === undefined ? {} : { linkOrigin: caller.linkOrigin }),
+    // Registration admits only a live caller, so its acknowledged lineage tokens are the shells' too.
+    ...(caller.forkResumedRetirements === undefined
+      ? {}
+      : { forkResumedRetirements: caller.forkResumedRetirements }),
     createdBy: "agent",
     creationSource: "server",
     runtimeMode: caller.runtimeMode,
