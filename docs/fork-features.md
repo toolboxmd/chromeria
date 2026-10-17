@@ -240,13 +240,15 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/t3code/issues/6",
     "https://github.com/toolboxmd/t3code/issues/20",
     "https://github.com/toolboxmd/chromeria/issues/308",
-    "https://github.com/toolboxmd/chromeria/issues/370"
+    "https://github.com/toolboxmd/chromeria/issues/370",
+    "https://github.com/toolboxmd/chromeria/issues/380"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/9",
     "https://github.com/toolboxmd/t3code/pull/24",
     "https://github.com/toolboxmd/chromeria/pull/309",
-    "https://github.com/toolboxmd/chromeria/pull/373"
+    "https://github.com/toolboxmd/chromeria/pull/373",
+    "https://github.com/toolboxmd/chromeria/pull/391"
   ],
   "newFiles": [
     ".github/workflows/fork.yml",
@@ -268,6 +270,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "AGENTS.md",
     "apps/server/src/auth/PairingGrantStore.test.ts",
     "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts",
+    "apps/server/src/testUtils/shardWeights.json",
     "apps/server/src/orchestration-v2/V1ImportBoundary.test.ts",
     "apps/server/src/vcs/GitVcsDriverCore.test.ts",
     "knip.jsonc",
