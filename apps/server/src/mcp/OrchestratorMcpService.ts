@@ -2537,7 +2537,7 @@ const make = Effect.gen(function* () {
           return yield* remoteDelegation.cancel(scope, remoteTask, input);
         }
         const key = yield* requestKey(input.clientRequestId);
-        const parentProjection = yield* loadProjection(scope.thread.threadId);
+        const { parent: parentProjection } = yield* loadThreadCaller(scope, "task_cancel");
         // Cancelling stops the child and every task under it, each a write to a
         // thread its user may have raised above the parent's modes since it was
         // delegated. All of them are checked before anything is stopped.

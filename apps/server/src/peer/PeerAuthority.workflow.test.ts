@@ -3863,3 +3863,223 @@ it.live(
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
 );
+
+it.live("round8-cancel: native task cancellation must retain live originating mode ceilings", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const b = yield* makeNode(descriptorOf("r8-cancel-b", "B", { peerAuthority: 1 }));
+      const a = yield* makeNode(descriptorOf("r8-cancel-a", "A", { peerAuthority: 1 }));
+      yield* linkTo(a.links, b, "full-access");
+      const source = ThreadId.make("r8-cancel-source");
+      yield* seedParent(a, source);
+      const launched = yield* nativeCall(a, source, "t3_thread_launch", {
+        environmentId: b.environmentId,
+        projectId: b.project.id,
+        modelSelection: selection,
+        title: "Remote parent",
+        message: "Work",
+        clientRequestId: "r8-cancel-parent",
+      });
+      expect(launched.isError, json(launched.content)).not.toBe(true);
+      const parent = (yield* decodeLaunchReceipt(launched.structuredContent)).threadId;
+      yield* activate(b, parent);
+      const delegated = yield* nativeCall(b, parent, "delegate_task", {
+        task: "Local child",
+        mode: "async",
+        clientRequestId: "r8-cancel-child",
+        target: { providerInstanceId: instanceId, model: "gpt-5.4" },
+      });
+      expect(delegated.isError, json(delegated.content)).not.toBe(true);
+      const taskId = (yield* decodeTaskReceipt(delegated.structuredContent)).taskId;
+      const task = (yield* b.threads.getThreadRecords(parent, ["subagents"])).subagents.find(
+        (t) => t.id === taskId,
+      )!;
+      const child = task.childThreadId;
+      if (child === null) return yield* Effect.die("Missing local delegated child");
+      const runId = yield* activate(b, child);
+      expect((yield* b.threads.getThreadShell(child))?.runtimeMode).toBe("full-access");
+      yield* a.threads.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("r8-cancel-source-auto"),
+        threadId: source,
+        runtimeMode: "auto",
+      });
+      expect((yield* b.authority.checkThread(parent))?.ceiling.runtimeMode).toBe("auto");
+      const interrupt = yield* nativeCall(b, parent, "t3_thread_interrupt", {
+        threadId: child,
+        clientRequestId: "r8-cancel-interrupt-control",
+      });
+      expect(interrupt.isError).toBe(true);
+      const before = (yield* b.threads.getThreadRecords(child, ["runs"])).runs.find(
+        (r) => r.id === runId,
+      )!;
+      expect(before.status).toBe("running");
+      const sql = Context.get(b.database, SqlClient.SqlClient);
+      const effectsBefore =
+        yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id=${child} ORDER BY effect_id`;
+      const taskBefore = (yield* b.threads.getThreadRecords(parent, ["subagents"])).subagents.find(
+        (t) => t.id === taskId,
+      )!;
+      const cancel = yield* nativeCall(b, parent, "task_cancel", {
+        taskId,
+        clientRequestId: "r8-cancel-effective",
+      });
+      const after = (yield* b.threads.getThreadRecords(child, ["runs"])).runs.find(
+        (r) => r.id === runId,
+      )!;
+      expect(
+        {
+          effectiveMode: (yield* b.authority.checkThread(parent))?.ceiling.runtimeMode,
+          interruptDenied: interrupt.isError === true,
+          cancelDenied: cancel.isError === true,
+          childStatus: after.status,
+        },
+        json(cancel),
+      ).toEqual({
+        effectiveMode: "auto",
+        interruptDenied: true,
+        cancelDenied: true,
+        childStatus: "running",
+      });
+      expect(
+        yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id=${child} ORDER BY effect_id`,
+      ).toEqual(effectsBefore);
+      const taskAfter = (yield* b.threads.getThreadRecords(parent, ["subagents"])).subagents.find(
+        (t) => t.id === taskId,
+      )!;
+      expect(taskAfter.completionDelivery).toEqual(taskBefore.completionDelivery);
+      yield* a.threads.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("r8-cancel-source-restored"),
+        threadId: source,
+        runtimeMode: "full-access",
+      });
+      const permitted = yield* nativeCall(b, parent, "task_cancel", {
+        taskId,
+        clientRequestId: "r8-cancel-effective",
+      });
+      expect(permitted.isError, json(permitted)).not.toBe(true);
+      expect(permitted.structuredContent).toMatchObject({ taskId, status: "cancel_requested" });
+      expect(
+        (yield* b.threads.getThreadRecords(child, ["runs"])).runs.find((r) => r.id === runId)
+          ?.status,
+      ).toBe("interrupted");
+      expect(
+        (yield* b.threads.getThreadRecords(parent, ["subagents"])).subagents.find(
+          (t) => t.id === taskId,
+        )?.completionDelivery?.state,
+      ).toBe("disposed");
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "round8-cancel-plan: native task cancellation must retain live originating mode ceilings",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(descriptorOf("r8-cancel-b", "B", { peerAuthority: 1 }));
+        const a = yield* makeNode(descriptorOf("r8-cancel-a", "A", { peerAuthority: 1 }));
+        yield* linkTo(a.links, b, "full-access");
+        const source = ThreadId.make("r8-cancel-source");
+        yield* seedParent(a, source);
+        const launched = yield* nativeCall(a, source, "t3_thread_launch", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          modelSelection: selection,
+          title: "Remote parent",
+          message: "Work",
+          clientRequestId: "r8-cancel-parent",
+        });
+        expect(launched.isError, json(launched.content)).not.toBe(true);
+        const parent = (yield* decodeLaunchReceipt(launched.structuredContent)).threadId;
+        yield* activate(b, parent);
+        const delegated = yield* nativeCall(b, parent, "delegate_task", {
+          task: "Local child",
+          mode: "async",
+          clientRequestId: "r8-cancel-child",
+          target: { providerInstanceId: instanceId, model: "gpt-5.4" },
+        });
+        expect(delegated.isError, json(delegated.content)).not.toBe(true);
+        const taskId = (yield* decodeTaskReceipt(delegated.structuredContent)).taskId;
+        const task = (yield* b.threads.getThreadRecords(parent, ["subagents"])).subagents.find(
+          (t) => t.id === taskId,
+        )!;
+        const child = task.childThreadId;
+        if (child === null) return yield* Effect.die("Missing local delegated child");
+        const runId = yield* activate(b, child);
+        expect((yield* b.threads.getThreadShell(child))?.runtimeMode).toBe("full-access");
+        yield* a.threads.dispatch({
+          type: "thread.interaction-mode.set",
+          commandId: CommandId.make("r8-cancel-source-auto"),
+          threadId: source,
+          interactionMode: "plan",
+        });
+        expect((yield* b.authority.checkThread(parent))?.ceiling.interactionMode).toBe("plan");
+        const interrupt = yield* nativeCall(b, parent, "t3_thread_interrupt", {
+          threadId: child,
+          clientRequestId: "r8-cancel-interrupt-control",
+        });
+        expect(interrupt.isError).toBe(true);
+        const before = (yield* b.threads.getThreadRecords(child, ["runs"])).runs.find(
+          (r) => r.id === runId,
+        )!;
+        expect(before.status).toBe("running");
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const effectsBefore =
+          yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id=${child} ORDER BY effect_id`;
+        const taskBefore = (yield* b.threads.getThreadRecords(parent, [
+          "subagents",
+        ])).subagents.find((t) => t.id === taskId)!;
+        const cancel = yield* nativeCall(b, parent, "task_cancel", {
+          taskId,
+          clientRequestId: "r8-cancel-effective",
+        });
+        const after = (yield* b.threads.getThreadRecords(child, ["runs"])).runs.find(
+          (r) => r.id === runId,
+        )!;
+        expect(
+          {
+            effectiveMode: (yield* b.authority.checkThread(parent))?.ceiling.interactionMode,
+            interruptDenied: interrupt.isError === true,
+            cancelDenied: cancel.isError === true,
+            childStatus: after.status,
+          },
+          json(cancel),
+        ).toEqual({
+          effectiveMode: "plan",
+          interruptDenied: true,
+          cancelDenied: true,
+          childStatus: "running",
+        });
+        expect(
+          yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id=${child} ORDER BY effect_id`,
+        ).toEqual(effectsBefore);
+        const taskAfter = (yield* b.threads.getThreadRecords(parent, ["subagents"])).subagents.find(
+          (t) => t.id === taskId,
+        )!;
+        expect(taskAfter.completionDelivery).toEqual(taskBefore.completionDelivery);
+        yield* a.threads.dispatch({
+          type: "thread.interaction-mode.set",
+          commandId: CommandId.make("r8-cancel-source-restored"),
+          threadId: source,
+          interactionMode: "default",
+        });
+        const permitted = yield* nativeCall(b, parent, "task_cancel", {
+          taskId,
+          clientRequestId: "r8-cancel-effective",
+        });
+        expect(permitted.isError, json(permitted)).not.toBe(true);
+        expect(permitted.structuredContent).toMatchObject({ taskId, status: "cancel_requested" });
+        expect(
+          (yield* b.threads.getThreadRecords(child, ["runs"])).runs.find((r) => r.id === runId)
+            ?.status,
+        ).toBe("interrupted");
+        expect(
+          (yield* b.threads.getThreadRecords(parent, ["subagents"])).subagents.find(
+            (t) => t.id === taskId,
+          )?.completionDelivery?.state,
+        ).toBe("disposed");
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
