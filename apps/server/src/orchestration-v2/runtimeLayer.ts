@@ -392,6 +392,8 @@ const layerMcpAppRequestsProvided = McpAppRequests.layer.pipe(
 );
 
 export const layer = Layer.mergeAll(
+  // Transport lifecycle receipts and the worker share the same durable effect owner.
+  EffectOutbox.layer,
   layerRecoveryWaitProvided,
   layerOrchestratorProvided,
   layerMcpAppRequestsProvided,

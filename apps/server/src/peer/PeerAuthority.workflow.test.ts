@@ -1,3 +1,12 @@
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as SourceProviders from "../sourceControl/SourceControlProviderRegistry.ts";
+import * as ProductionRuntime from "../orchestration-v2/runtimeLayer.ts";
+import * as Instances from "../provider/ProviderInstanceRegistry.ts";
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import * as NativeSessions from "../mcp/McpSessionRegistry.testkit.ts";
+import * as Checkpoints from "../checkpointing/CheckpointStore.ts";
+import * as ProviderCatalog from "../provider/ProviderRegistry.ts";
 import * as RecoveryStore from "../prism/RecoveryStore.ts";
 import * as PeerTaskLifecycle from "./PeerTaskLifecycle.ts";
 import { RecoveryWaitState } from "./recoveryWait.ts";
@@ -113,6 +122,7 @@ const graphConnections = new WeakMap<Scope.Scope, Set<Scope.Closeable>>();
 const makeNode = (
   descriptor: ExecutionEnvironmentDescriptor,
   storage: "memory" | "disk" = "memory",
+  productionKernel = false,
 ) =>
   Effect.gen(function* () {
     const graphScope = yield* Scope.Scope;
@@ -155,17 +165,84 @@ const makeNode = (
       getEnvironmentId: Effect.succeed(descriptor.environmentId),
       getDescriptor: Effect.succeed(descriptor),
     });
-    const runtime = yield* Runtime.layerWithRegistry(
-      { name: `peer-authority-${descriptor.label}` },
-      Adapters.layerFromAdapters([adapter]),
-      { databaseLayer: db, runEffectWorker: false },
-    ).pipe(Layer.fresh, Layer.build);
     const nodeConfig = Config.layerTest(process.cwd(), {
       prefix: `peer-authority-${descriptor.label}-`,
     });
     const settings = Settings.layerTest({
       providerInstances: { [instanceId]: { driver, enabled: true } },
     });
+    const testInstance = {
+      instanceId,
+      driverKind: driver,
+      displayName: "Deterministic native boundary",
+      enabled: true,
+      continuationIdentity: { driverKind: driver, continuationKey: "production-binding" },
+      snapshot: { getSnapshot: Effect.succeed({}) } as unknown as ProviderInstance["snapshot"],
+      textGeneration: {} as ProviderInstance["textGeneration"],
+      orchestrationAdapter: adapter,
+    } satisfies ProviderInstance;
+    // This branch builds the actual kernel exported by layerProduction, without
+    // supplying an outbox/store to the transport. Only external adapters are replaced.
+    const production = Layer.mergeAll(
+      ProductionRuntime.layer,
+      ProductionRuntime.layerEventSink,
+      ProjectionStore.layer,
+    ).pipe(
+      Layer.provide(
+        Layer.succeed(Instances.ProviderInstanceRegistry, {
+          getInstance: (id) => Effect.succeed(id === instanceId ? testInstance : undefined),
+          listInstances: Effect.succeed([testInstance]),
+          listUnavailable: Effect.succeed([]),
+          streamChanges: Stream.empty,
+          subscribeChanges: Effect.never,
+        }),
+      ),
+      Layer.provide(NativeSessions.layer),
+      Layer.provide(McpProviderSessions.layer),
+      Layer.provide(Layer.mock(Checkpoints.CheckpointStore)({})),
+      Layer.provide(Layer.mock(ProviderCatalog.ProviderRegistry)({})),
+      Layer.provide(Layer.mock(GitWorkflow.GitWorkflowService)({})),
+      Layer.provide(
+        Layer.mock(SourceProviders.SourceControlProviderRegistry)({
+          resolveLink: () => Effect.die("No external repository host in this fixture"),
+        }),
+      ),
+      Layer.provide(projectLayer),
+      Layer.provide(nodeConfig),
+      Layer.provide(settings),
+      Layer.provide(db),
+    );
+    const runtime = yield* productionKernel
+      ? production.pipe(Layer.fresh, Layer.build)
+      : Runtime.layerWithRegistry(
+          { name: `peer-authority-${descriptor.label}` },
+          Adapters.layerFromAdapters([adapter]),
+          { databaseLayer: db, runEffectWorker: false },
+        ).pipe(Layer.fresh, Layer.build);
+    if (productionKernel)
+      yield* Effect.flatMap(ProjectStore.ProjectStoreV2, (projects) =>
+        projects.apply({
+          sequence: 0,
+          eventId: EventId.make(`seed:${project.id}`),
+          aggregateKind: "project",
+          aggregateId: project.id,
+          occurredAt: project.createdAt,
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "project.created",
+          payload: {
+            projectId: project.id,
+            title: project.title,
+            workspaceRoot: project.workspaceRoot,
+            defaultModelSelection: selection,
+            scripts: [],
+            createdAt: project.createdAt,
+            updatedAt: project.updatedAt,
+          },
+        }),
+      ).pipe(Effect.provide(ProjectStore.layer.pipe(Layer.provide(db))));
     const folders = Layer.mock(Folders.ManagedProjectFolders)({
       namedProjectsRoot: "/unused",
       folderForThread: () => Effect.succeed(Option.none()),
@@ -343,16 +420,21 @@ const makeNode = (
         ),
         Effect.provide(Layer.merge(environment, Layer.succeedContext(serverContext))),
       );
+    const lifecycleContext = Context.mergeAll(
+      services,
+      runtime,
+      database,
+      productionKernel ? Context.empty() : Context.make(RecoveryWaitState, lifecycleRecovery),
+    );
+    const lifecycle = yield* PeerTaskLifecycle.layer.pipe(
+      Layer.provide(Layer.succeedContext(lifecycleContext)),
+      Layer.build,
+    );
     const peer = yield* servePeer(descriptor, tools, {
       database: db,
       registry,
       secretStore: Context.get(services, Secrets.ServerSecretStore),
-      authorityServices: Context.mergeAll(
-        services,
-        runtime,
-        database,
-        Context.make(RecoveryWaitState, lifecycleRecovery),
-      ),
+      authorityServices: Context.merge(lifecycleContext, lifecycle),
     }).pipe(Effect.provide(Layer.succeedContext(serverContext)));
     yield* Effect.addFinalizer(() =>
       Effect.forEach([...connectionScopes], (lifetime) => Scope.close(lifetime, Exit.void), {
@@ -5997,5 +6079,130 @@ it.live(
         ).toBe("client-stop:attachment-newer");
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
+  30_000,
+);
+
+it.live(
+  "lifecycle381: production kernel exports the authenticated lifecycle transport and registered delegation",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const b = yield* makeNode(
+          descriptorOf("native-route-b", "B", { peerAuthority: 1 }),
+          "disk",
+          true,
+        );
+        const a = yield* makeNode(
+          descriptorOf("native-route-a", "A", { peerAuthority: 1 }),
+          "disk",
+          true,
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const session = (yield* b.linkedSessions)[0];
+        expect(session).toBeDefined();
+        // A lifecycle-capability probe is an authenticated peer operation, not a descriptor assertion.
+        const peers = Context.get(a.services, PeerMcpClient.PeerMcpClient);
+        yield* peers.requireTaskLifecycle!(b.environmentId);
+        const parentId = ThreadId.make("native-route-parent");
+        yield* seedParent(a, parentId);
+        const launched = yield* nativeCall(a, parentId, "delegate_task", {
+          task: "Return native route evidence",
+          mode: "async",
+          clientRequestId: "native-route-job",
+          target: {
+            environmentId: b.environmentId,
+            projectId: b.project.id,
+            providerInstanceId: instanceId,
+            model: "gpt-5.4",
+          },
+        });
+        expect(launched.isError, json(launched.content)).not.toBe(true);
+        const { taskId } = yield* decodeTaskReceipt(launched.structuredContent);
+        const childId = yield* attachedChild(a, parentId, taskId);
+        const view = yield* a.remote.view(parentId, taskId, 0);
+        expect(view.threadId).toBe(childId);
+        expect(view.environmentId).toBe(b.environmentId);
+        expect(
+          (yield* a.threads.getThreadRecords(parentId, ["subagents"])).subagents.find(
+            (task) => task.id === taskId,
+          )?.remoteChild?.launch?.lifecycleVersion,
+        ).toBe(1);
+        const http = yield* HttpClient.HttpClient;
+        const unauthenticated = yield* http.execute(
+          HttpClientRequest.get(`${b.url}/mcp/peer-control/tasks`),
+        );
+        expect(unauthenticated.status).toBe(401);
+        const runId = yield* activate(b, childId);
+        const stop = yield* nativeCall(a, parentId, "task_cancel", {
+          taskId,
+          clientRequestId: "native-route-stop",
+        });
+        expect(stop.isError, json(stop.content)).not.toBe(true);
+        const stoppedObservation = (state: "acknowledged" | "confirmed") =>
+          a.orchestrator
+            .streamStoredEventsFrom({
+              threadId: parentId,
+              afterSequence: 0,
+              eventType: "subagent.updated",
+            })
+            .pipe(
+              Stream.filter(
+                (stored) =>
+                  stored.event.type === "subagent.updated" &&
+                  stored.event.payload.id === taskId &&
+                  stored.event.payload.remoteChild?.stop?.state === state,
+              ),
+              Stream.runHead,
+              Effect.flatMap(Effect.fromOption),
+            );
+        const accepted = yield* stoppedObservation("acknowledged");
+        if (accepted.event.type !== "subagent.updated")
+          return yield* Effect.die("Expected Stop projection");
+        const commandId = accepted.event.payload.remoteChild!.stop!.destinationCommandId!;
+        const pair = {
+          parentEnvironmentId: a.environmentId,
+          parentThreadId: parentId,
+          taskId,
+          childEnvironmentId: b.environmentId,
+          childThreadId: childId,
+          childRunId: null,
+        };
+        const generation = accepted.event.payload.remoteChild!.launch!.linkIdentity;
+        const observe = () =>
+          peers.taskLifecycle!(b.environmentId, generation, {
+            pair,
+            operation: { type: "snapshot", after: 0, wait: false, stopCommandId: commandId },
+          });
+        expect(yield* observe()).toMatchObject({
+          type: "snapshot",
+          snapshot: { stopExecution: { state: "pending" } },
+        });
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        expect(
+          yield* sql`SELECT command_id FROM peer_task_stop_receipts WHERE command_id=${commandId}`,
+        ).toHaveLength(1);
+        yield* drainStops(b);
+        expect(yield* observe()).toMatchObject({
+          type: "snapshot",
+          snapshot: { stopExecution: { state: "settled" } },
+        });
+        yield* stoppedObservation("confirmed");
+        expect(
+          (yield* b.threads.getThreadRecords(childId, ["runs"])).runs.find(
+            (run) => run.id === runId,
+          )?.status,
+        ).toBe("interrupted");
+        const effects = yield* sql<{
+          effect_id: string;
+          status: string;
+        }>`SELECT effect_id,status FROM orchestration_v2_effect_outbox WHERE command_id=${commandId} AND effect_type='delegated-tasks.stop'`;
+        expect(effects).toHaveLength(1);
+        expect(effects[0]?.status).toBe("succeeded");
+        yield* Effect.logInfo("Production lifecycle native receipt and shared outbox proof", {
+          commandId,
+          effects,
+        });
+      }),
+    ).pipe(Effect.provide(Layer.merge(FetchHttpClient.layer, NodeServices.layer))),
   30_000,
 );
