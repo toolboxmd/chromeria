@@ -202,10 +202,15 @@ export const make = Effect.gen(function* () {
           }>`SELECT session_id AS "sessionId",
           commitment_hash AS commitment, state FROM auth_session_renewal_enrollment WHERE enrollment_id = ${id}`;
           const entry = rows[0];
-          if (!entry || entry.commitment !== expectedCommitment || entry.state !== "pending")
+          if (
+            !entry ||
+            entry.commitment !== expectedCommitment ||
+            (entry.state !== "pending" && entry.state !== "approved")
+          )
             return yield* new RenewalRejected({});
           const sessionId = AuthSessionId.make(entry.sessionId);
           yield* active(sessionId);
+          if (entry.state === "approved") return;
           const enrolled =
             yield* sql`SELECT 1 FROM auth_session_renewal WHERE session_id = ${sessionId}`;
           if (enrolled.length > 0) return yield* new RenewalConflict({});
