@@ -2903,7 +2903,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      const root = yield* fs.makeTempDirectoryScoped();
+      const root = yield* fs.makeTempDirectoryScoped().pipe(Effect.flatMap(fs.realPath));
       yield* fs.writeFileString(`${root}/input.txt`, "only named input");
       const h = makeHarness({
         bare: true,
