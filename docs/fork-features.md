@@ -1965,6 +1965,7 @@ sources and reasons.
   "issues": ["https://github.com/toolboxmd/chromeria/issues/289"],
   "prs": ["https://github.com/toolboxmd/chromeria/compare/main...feat/289-bare-launch"],
   "newFiles": [
+    "apps/server/src/orchestration-v2/BareLaunch.recovery.integration.test.ts",
     "apps/server/src/orchestration-v2/Adapters/BareAdapters.test.ts",
     "apps/server/src/orchestration-v2/BareLaunch.test.ts",
     "apps/server/src/orchestration-v2/BareLaunch.ts",
