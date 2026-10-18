@@ -1,3 +1,5 @@
+import * as GitWorkflow from "../git/GitWorkflowService.ts";
+import { readScheduledBare } from "../scheduledTasks/bareState.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
@@ -85,6 +87,7 @@ const selection = {
 const adapter = {
   instanceId,
   driver: ProviderDriverKind.make("codex"),
+  bareSupport: Effect.succeed({ supported: true as const }),
   getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
   openSession: () => Effect.die("These tests prove committed dispatch without a provider process"),
@@ -198,7 +201,11 @@ const runtime = (
     dependencies,
     ScheduledTaskChecks.withOutcomeChecks(
       options.dispatchBarrier === undefined
-        ? ScheduledTaskService.layer.pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})))
+        ? ScheduledTaskService.layer.pipe(
+            Layer.provide(
+              BareLaunch.layer.pipe(Layer.provide(Layer.mock(GitWorkflow.GitWorkflowService)({}))),
+            ),
+          )
         : withDispatchBarrier(options.dispatchBarrier),
     ).pipe(Layer.provide(dependencies)),
   );
@@ -323,6 +330,48 @@ const settled = (task: ScheduledTask) =>
 
 const ONCE_ID = "scheduled-task:once";
 const CANONICAL = "2026-10-08T12:00:00.000Z";
+
+it.effect(
+  "the production decorator preserves admitted bare reads, explicit denial and old-client edits",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const input = {
+          id: ScheduledTaskId.make("scheduled-task:bare-grant"),
+          title: "Bare grant",
+          prompt: "Read the named file",
+          enabled: false,
+          projectId,
+          threadId: null,
+          workspaceStrategy: { type: "root" as const },
+          modelSelection: selection,
+          runtimeMode: "approval-required" as const,
+          interactionMode: "default" as const,
+          schedule: { type: "interval" as const, everyMs: 60_000 },
+          bare: { additions: [{ type: "file" as const, path: "/outside-project/input.txt" }] },
+        };
+        const grant = { type: "roots" as const, roots: ["/outside-project"] };
+        yield* service.upsert(input, { bareReadGrant: grant });
+        assert.deepEqual((yield* readScheduledBare(input.id))?.readGrant, grant);
+
+        const { bare: _bare, ...oldForm } = input;
+        yield* service.upsert(
+          { ...oldForm, title: "Edited by an older client", requireExisting: true },
+          { bareReadGrant: { type: "none" } },
+        );
+        assert.deepEqual((yield* readScheduledBare(input.id))?.readGrant, grant);
+        assert.deepEqual((yield* service.list()).tasks[0]?.bare, input.bare);
+
+        const denied = yield* service
+          .upsert(input, { bareReadGrant: { type: "none" } })
+          .pipe(Effect.flip);
+        assert.include(denied.message, "filesystem:read");
+        assert.deepEqual((yield* readScheduledBare(input.id))?.readGrant, grant);
+      }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+    }).pipe(Effect.scoped),
+);
 
 it.effect(
   "an overdue one-shot fires once through real dispatch; a replay with another offset and a restart send nothing more",
