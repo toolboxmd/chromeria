@@ -189,6 +189,20 @@ export const layer: Layer.Layer<
                 );
               }),
             ),
+        hasReplacementAttempt: () =>
+          projectionStore
+            .getThreadRecords(input.threadId, ["runs"], { runIds: [input.runId] })
+            .pipe(
+              Effect.map((current) => {
+                const run = current.runs.find((candidate) => candidate.id === input.runId);
+                return (
+                  run !== undefined &&
+                  run.activeAttemptId !== null &&
+                  run.activeAttemptId !== input.attemptId &&
+                  (run.status === "starting" || run.status === "running")
+                );
+              }),
+            ),
         hasUnpairedRunInterruptRequest: () =>
           projectionStore
             .hasUnpairedRunInterruptRequest(
@@ -1513,6 +1527,7 @@ export const layer: Layer.Layer<
             !acceptedAttempts.some((source) => source.nativeThreadId !== undefined)),
         shouldStartProviderTurn: runControls.shouldStartProviderTurn,
         shouldFinalizeRun: runControls.shouldFinalizeRun,
+        hasReplacementAttempt: runControls.hasReplacementAttempt,
         hasUnpairedRunInterruptRequest: runControls.hasUnpairedRunInterruptRequest,
         message: {
           messageId: message.id,

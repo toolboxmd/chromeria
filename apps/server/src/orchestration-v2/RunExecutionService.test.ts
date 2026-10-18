@@ -1975,6 +1975,54 @@ it.effect("does not pin ingestion on background items when the root turn is inte
   }),
 );
 
+it.effect("drains its own background item past an interrupted terminal for a replacement", () =>
+  Effect.gen(function* () {
+    const observed = yield* runBackgroundItemScenario(
+      "bg-interrupted-replaced",
+      (ids) => [
+        backgroundTurnItemEvent(ids, "subagent", "running", 1),
+        rootTerminalEvent(ids, "interrupted"),
+        backgroundTurnItemEvent(ids, "subagent", "completed", 2),
+      ],
+      { hasReplacementAttempt: () => Effect.succeed(true) },
+    );
+    assert.deepEqual(observed, ["turn_item:running", "root-finalized", "turn_item:completed"]);
+  }),
+);
+
+it.effect("does not drain for a replacement after the runtime closed its background work", () =>
+  Effect.gen(function* () {
+    const observed = yield* runBackgroundItemScenario(
+      "bg-interrupted-replaced-ended",
+      (ids) => [
+        backgroundTurnItemEvent(ids, "subagent", "running", 1),
+        {
+          ...rootTerminalEvent(ids, "interrupted"),
+          backgroundWork: "ended",
+        } as ProviderAdapter.ProviderAdapterV2Event,
+        backgroundTurnItemEvent(ids, "subagent", "completed", 2),
+      ],
+      { hasReplacementAttempt: () => Effect.succeed(true) },
+    );
+    assert.deepEqual(observed, ["turn_item:running", "root-finalized"]);
+  }),
+);
+
+it.effect("does not pin ingestion on a failed attempt's background item for a replacement", () =>
+  Effect.gen(function* () {
+    const observed = yield* runBackgroundItemScenario(
+      "bg-failed-replaced",
+      (ids) => [
+        backgroundTurnItemEvent(ids, "subagent", "running", 1),
+        rootTerminalEvent(ids, "failed"),
+        backgroundTurnItemEvent(ids, "subagent", "completed", 2),
+      ],
+      { hasReplacementAttempt: () => Effect.succeed(true) },
+    );
+    assert.deepEqual(observed, ["turn_item:running", "root-finalized"]);
+  }),
+);
+
 it.effect("seeds inherited background items before their next update", () =>
   Effect.gen(function* () {
     const key = "inherited-background-seeded";
@@ -4598,6 +4646,7 @@ function runBackgroundItemScenario(
       ReadonlyArray<{ readonly id: TurnItemId; readonly runId: RunId }>
     >;
     readonly onSubscribe?: Effect.Effect<void>;
+    readonly hasReplacementAttempt?: () => Effect.Effect<boolean>;
   },
 ) {
   return Effect.gen(function* () {
@@ -4695,6 +4744,9 @@ function runBackgroundItemScenario(
           : {
               loadInheritedBackgroundTurnItems: options.loadInheritedBackgroundTurnItems,
             }),
+        ...(options?.hasReplacementAttempt === undefined
+          ? {}
+          : { hasReplacementAttempt: options.hasReplacementAttempt }),
         providerTurnOrdinal: 1,
         message: {
           messageId: MessageId.make(`message:${key}:user`),
