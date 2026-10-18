@@ -241,6 +241,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/t3code/issues/20",
     "https://github.com/toolboxmd/chromeria/issues/244",
     "https://github.com/toolboxmd/chromeria/issues/308",
+    "https://github.com/toolboxmd/chromeria/issues/287",
     "https://github.com/toolboxmd/chromeria/issues/370",
     "https://github.com/toolboxmd/chromeria/issues/411"
   ],
@@ -249,6 +250,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/t3code/pull/24",
     "https://github.com/toolboxmd/chromeria/compare/main...fix/244-acp-replay-atomic-status",
     "https://github.com/toolboxmd/chromeria/pull/309",
+    "https://github.com/toolboxmd/chromeria/compare/main...fix/287-dev-runner-tailscale-serve",
     "https://github.com/toolboxmd/chromeria/pull/373",
     "https://github.com/toolboxmd/chromeria/pull/419"
   ],
@@ -284,6 +286,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/web/src/components/device/DeviceSetup.test.ts",
     "apps/web/src/components/device/DeviceSetup.tsx",
     "knip.jsonc",
+    "scripts/dev-runner.ts",
+    "scripts/dev-runner.test.ts",
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",
     "packages/contracts/src/device.ts",

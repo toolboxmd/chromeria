@@ -148,6 +148,35 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
   });
 
   describe("createDevRunnerEnv", () => {
+    it.effect("disables backend Tailscale Serve regardless of ambient configuration", () =>
+      Effect.gen(function* () {
+        for (const mode of ["dev", "dev:server", "dev:web", "dev:desktop"] as const) {
+          for (const ambientServe of ["true", "false", undefined]) {
+            const baseEnv = {
+              T3CODE_TAILSCALE_SERVE: ambientServe,
+              T3CODE_TAILSCALE_SERVE_PORT: "443",
+            };
+            const env = yield* createDevRunnerEnv({
+              mode,
+              baseEnv,
+              serverOffset: 0,
+              webOffset: 0,
+              t3Home: undefined,
+              browser: undefined,
+              autoBootstrapProjectFromCwd: undefined,
+              logWebSocketEvents: undefined,
+              host: undefined,
+              port: undefined,
+              devUrl: undefined,
+            });
+
+            assert.equal(env.T3CODE_TAILSCALE_SERVE, "false");
+            assert.equal(baseEnv.T3CODE_TAILSCALE_SERVE, ambientServe);
+          }
+        }
+      }),
+    );
+
     it.effect("forwards the reusable auth token to web dev and removes it for desktop", () =>
       Effect.gen(function* () {
         const input = {

@@ -304,6 +304,9 @@ export function createDevRunnerEnv({
 
     const output: NodeJS.ProcessEnv = {
       ...baseEnv,
+      // --share owns the web-port mapping; the backend must not inherit the
+      // host service's Serve configuration and replace its route.
+      T3CODE_TAILSCALE_SERVE: "false",
       PORT: String(webPort),
       VITE_DEV_SERVER_URL:
         devUrl?.toString() ??
