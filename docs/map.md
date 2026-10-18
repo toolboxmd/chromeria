@@ -59,6 +59,8 @@ flowchart TD
     %% BR: #256
     TIW["Turn-item writes"]
     %% TIW: #425 PR #433
+    RO["Run observers"]
+    %% RO: #456 PR #457
     PU["Provider updates"]
     %% PU: #263
     RS["Resume after restart"]
@@ -92,6 +94,7 @@ flowchart TD
     T3C --- MI
     T3S --- BR
     T3S --- TIW
+    T3S --- RO
     T3P --- PU
     T3T --- RS
     T3T --- SN
