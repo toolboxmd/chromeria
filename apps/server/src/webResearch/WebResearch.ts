@@ -5,6 +5,7 @@ import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -18,7 +19,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as PageCache from "./PageCache.ts";
 import * as PublicHttp from "./PublicHttp.ts";
 import { classify, extract } from "./extract.ts";
-import { type CachedPage, WebReadInput, WebReadResult } from "./schemas.ts";
+import { type CachedPage, WebReadInput, WebReadPage, WebReadResult } from "./schemas.ts";
 
 // robots-parser exports a callable module.exports; its declaration incorrectly models a CJS default member under NodeNext.
 const parseRobots = robotsParser as unknown as typeof robotsParser.default;
@@ -62,6 +63,9 @@ export class WebResearch extends Context.Service<
 
 const decodeInput = Schema.decodeEffect(WebReadInput);
 const hash = (text: string) => NodeCrypto.createHash("sha256").update(text).digest("hex");
+const DEFAULT_SUBPAGE_PATTERN =
+  "camere|alloggi|appartament|ospitalit|rooms|soggiorn|eventi|prezzi|tariffe";
+const READ_BUDGET_MS = 30_000;
 const parseUrl = (value: string, base?: string) => {
   try {
     const url = new URL(value, base);
@@ -105,15 +109,10 @@ class PageExtractionError extends Schema.TaggedError<PageExtractionError>()("Pag
   cause: Schema.Defect(),
 }) {}
 
-class ReadFreshness extends Context.Service<
-  ReadFreshness,
-  { readonly previousCacheId: string | undefined; readonly maxAgeHours: number | undefined }
->()("t3/webResearch/WebResearch/ReadFreshness") {}
-
-const isFresh = (page: CachedPage, maxAgeHours: number | undefined, now: number) =>
-  page.expiresAt > now &&
-  (maxAgeHours === undefined ||
-    (maxAgeHours > 0 && now - page.fetchedAt <= maxAgeHours * 3600_000));
+class PageRequest extends Data.Class<{
+  readonly href: string;
+  readonly sameOrigin: string | undefined;
+}> {}
 
 const make = Effect.gen(function* () {
   const http = yield* PublicHttp.PublicHttp;
@@ -262,7 +261,7 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const fetchPage = Effect.fnUntraced(function* (original: URL) {
+  const fetchPage = Effect.fnUntraced(function* (original: URL, sameOrigin?: string) {
     const delay = yield* Ref.make(0);
     const budget = yield* Ref.make(30_000);
     let finalUrl = original.href;
@@ -274,6 +273,9 @@ const make = Effect.gen(function* () {
       const visited = new Set<string>();
       for (let hop = 0; hop < 6; hop++) {
         finalUrl = url.href;
+        // A linked page may redirect, but traversal never leaves the root's final origin.
+        if (sameOrigin !== undefined && url.origin !== sameOrigin)
+          return { status: "unsupported" as const, title: "", text: "" };
         if (visited.has(url.href)) return { status: "origin_error" as const, title: "", text: "" };
         visited.add(url.href);
         if (/(^|\.)booking\.com$|(^|\.)airbnb\./i.test(url.hostname))
@@ -315,6 +317,7 @@ const make = Effect.gen(function* () {
                 visibleText: response.body.trim(),
                 password: false,
                 refresh: undefined,
+                links: [],
               }
             : yield* Effect.try({
                 try: () => extract(response.body, url.href),
@@ -333,7 +336,12 @@ const make = Effect.gen(function* () {
           if (state.challenges >= 2 || response.status === 429)
             state.blockedUntil = now + Math.max(60_000, retryAfterMs ?? 0);
         } else if (status === "ok") state.challenges = 0;
-        return { status, title: page.title, text: status === "ok" ? page.text : "" };
+        return {
+          status,
+          title: page.title,
+          text: status === "ok" ? page.text : "",
+          links: status === "ok" ? page.links : [],
+        };
       }
       return { status: "origin_error" as const, title: "", text: "" };
     });
@@ -374,79 +382,70 @@ const make = Effect.gen(function* () {
           : content.status === "login" || content.status === "consent" || content.status === "thin"
             ? 300_000
             : 60_000),
-      cacheId: hash(`${original.href}\n${fetchedAt}\n${content.status}\n${contentHash}`),
+      cacheId: hash(
+        `${original.href}\n${fetchedAt}\n${content.status}\n${contentHash}\n${sameOrigin ?? ""}`,
+      ),
       sourceRung: "http",
       ...content,
       httpStatus,
       contentHash,
       delayMs: yield* Ref.get(delay),
       retryAfterMs,
+      links: "links" in content ? content.links : [],
+      ...(sameOrigin === undefined ? {} : { restrictedToOrigin: sameOrigin }),
     };
     if (cacheable) yield* cache.put(page);
     return page;
   });
 
-  // Effect Cache owns pending work and cancels it only when all readers leave.
-  // Zero TTL leaves completed-page freshness solely with the persistent cache.
+  // Pending fetches survive one reader's cancellation and stop when all readers leave.
+  // Restricted traversal cannot join an unrestricted fetch that may leave the origin.
   const flights = yield* Cache.makeWith(
-    Effect.fnUntraced(function* (href: string) {
-      const intent = yield* ReadFreshness;
-      // A previous flight may finish between the caller's cache miss and joining here.
-      const stored = yield* cache.get({ url: href });
-      const now = yield* Clock.currentTimeMillis;
-      if (
-        stored &&
-        stored.cacheId !== intent.previousCacheId &&
-        isFresh(stored, intent.maxAgeHours === 0 ? undefined : intent.maxAgeHours, now)
-      )
-        return { page: stored, fromCache: true };
-      return { page: yield* fetchPage(new URL(href)), fromCache: false };
-    }),
-    { capacity: Infinity, timeToLive: () => 0, requireServicesAt: "lookup" },
+    (key: PageRequest) => fetchPage(new URL(key.href), key.sameOrigin),
+    { capacity: Infinity, timeToLive: () => 0 },
   );
 
-  const read = Effect.fn("WebResearch.read")(function* (raw: typeof WebReadInput.Type) {
-    const input = yield* decodeInput(raw).pipe(
-      Effect.mapError(() => new WebResearchInputError({ reason: "invalid_input" })),
-    );
-    if ((input.url === undefined) === (input.cacheId === undefined))
-      return yield* new WebResearchInputError({ reason: "invalid_input" });
-    let page: CachedPage;
+  const loadPage = Effect.fnUntraced(function* (
+    url: URL,
+    options: {
+      readonly maxAgeHours: number | undefined;
+      readonly sameOrigin?: string;
+      readonly requireLinks?: boolean;
+    },
+  ) {
     let reused = true;
-    let delayMs = 0;
     const now = yield* Clock.currentTimeMillis;
-    if (input.cacheId !== undefined) {
-      const stored = yield* cache.get({ cacheId: input.cacheId });
-      if (!stored) return yield* new WebResearchInputError({ reason: "cache_missing" });
-      if (input.maxAgeHours !== undefined && now - stored.fetchedAt > input.maxAgeHours * 3600_000)
-        return yield* new WebResearchInputError({ reason: "cache_expired" });
-      page = stored;
-    } else {
-      const url = parseUrl(input.url!);
-      if (!url) return yield* new WebResearchInputError({ reason: "invalid_url" });
-      const stored = yield* cache.get({ url: url.href });
-      if (stored && isFresh(stored, input.maxAgeHours, now)) page = stored;
-      else {
-        const flight = yield* Effect.gen(function* () {
-          const active = yield* Cache.getOption(flights, url.href);
-          if (Option.isSome(active)) return active.value;
-          reused = false;
-          return yield* Cache.get(flights, url.href);
-        }).pipe(
-          Effect.provideService(ReadFreshness, {
-            previousCacheId: stored?.cacheId,
-            maxAgeHours: input.maxAgeHours,
-          }),
-        );
-        page = flight.page;
-        reused ||= flight.fromCache;
-        delayMs = flight.fromCache ? 0 : page.delayMs;
-      }
+    const stored = yield* cache.get({ url: url.href });
+    if (
+      stored &&
+      stored.expiresAt > now &&
+      (!options.requireLinks || stored.links !== undefined) &&
+      (options.sameOrigin === undefined
+        ? stored.restrictedToOrigin === undefined ||
+          parseUrl(stored.finalUrl)?.origin === url.origin
+        : stored.restrictedToOrigin === options.sameOrigin ||
+          parseUrl(stored.finalUrl)?.origin === options.sameOrigin) &&
+      (options.maxAgeHours === undefined ||
+        (options.maxAgeHours > 0 && now - stored.fetchedAt <= options.maxAgeHours * 3600_000))
+    )
+      return { page: stored, reused, delayMs: 0 };
+    const key = new PageRequest({ href: url.href, sameOrigin: options.sameOrigin });
+    const active = yield* Cache.getOption(flights, key);
+    let page: CachedPage;
+    if (Option.isSome(active)) page = active.value;
+    else {
+      reused = false;
+      page = yield* Cache.get(flights, key);
     }
-    const offset = input.offset ?? 0;
-    if (offset > page.text.length)
-      return yield* new WebResearchInputError({ reason: "invalid_offset" });
-    const text = page.text.slice(offset, offset + (input.maxChars ?? 20_000));
+    return { page, reused, delayMs: page.delayMs };
+  });
+
+  const pageResult = (
+    { page, reused, delayMs }: Effect.Success<ReturnType<typeof loadPage>>,
+    offset: number,
+    maxChars: number,
+  ): typeof WebReadPage.Type => {
+    const text = page.text.slice(offset, offset + maxChars);
     const end = offset + text.length;
     return {
       url: page.url,
@@ -468,6 +467,109 @@ const make = Effect.gen(function* () {
       totalChars: page.text.length,
       offset,
       nextOffset: end < page.text.length ? end : null,
+    };
+  };
+
+  const read = Effect.fn("WebResearch.read")(function* (raw: typeof WebReadInput.Type) {
+    const input = yield* decodeInput(raw).pipe(
+      Effect.mapError(() => new WebResearchInputError({ reason: "invalid_input" })),
+    );
+    if ((input.url === undefined) === (input.cacheId === undefined))
+      return yield* new WebResearchInputError({ reason: "invalid_input" });
+    const terms = (input.subpagePattern ?? DEFAULT_SUBPAGE_PATTERN)
+      .toLowerCase()
+      .split("|")
+      .map((term) => term.trim());
+    if (terms.some((term) => term.length === 0))
+      return yield* new WebResearchInputError({ reason: "invalid_input" });
+    const startedAt = yield* Clock.currentTimeMillis;
+    const follow =
+      input.followSubpages !== false && input.url !== undefined && (input.offset ?? 0) === 0;
+    let page: CachedPage;
+    let reused = true;
+    let delayMs = 0;
+    if (input.cacheId !== undefined) {
+      const stored = yield* cache.get({ cacheId: input.cacheId });
+      if (!stored) return yield* new WebResearchInputError({ reason: "cache_missing" });
+      if (
+        input.maxAgeHours !== undefined &&
+        startedAt - stored.fetchedAt > input.maxAgeHours * 3600_000
+      )
+        return yield* new WebResearchInputError({ reason: "cache_expired" });
+      page = stored;
+    } else {
+      const url = parseUrl(input.url!);
+      if (!url) return yield* new WebResearchInputError({ reason: "invalid_url" });
+      ({ page, reused, delayMs } = yield* loadPage(url, {
+        maxAgeHours: input.maxAgeHours,
+        requireLinks: follow,
+      }));
+    }
+    const offset = input.offset ?? 0;
+    if (offset > page.text.length)
+      return yield* new WebResearchInputError({ reason: "invalid_offset" });
+    const maxChars = input.maxChars ?? 20_000;
+    const root = pageResult({ page, reused, delayMs }, offset, maxChars);
+    const subpages: Array<typeof WebReadPage.Type> = [];
+    const reasons = new Set<(typeof WebReadResult.Type.truncationReasons)[number]>();
+    if (root.nextOffset !== null) reasons.add("output_budget");
+    const candidates: Array<URL> = [];
+    const origin = new URL(page.finalUrl).origin;
+    const visited = new Set([page.url, page.finalUrl]);
+    if (follow && page.status === "ok") {
+      for (const link of page.links ?? []) {
+        const target = parseUrl(link.url);
+        if (!target || target.origin !== origin || visited.has(target.href)) continue;
+        const searchable = `${target.pathname}${target.search}\n${link.label}`.toLowerCase();
+        if (!terms.some((term) => searchable.includes(term))) continue;
+        visited.add(target.href);
+        candidates.push(target);
+      }
+    }
+    let remainingChars = maxChars - root.text.length;
+    const fetched = new Set([page.url, page.finalUrl]);
+    let completed = 0;
+    for (const target of candidates) {
+      if (fetched.has(target.href)) {
+        completed++;
+        continue;
+      }
+      if (subpages.length >= (input.maxSubpages ?? 6)) {
+        reasons.add("page_budget");
+        break;
+      }
+      if (remainingChars === 0) {
+        reasons.add("output_budget");
+        break;
+      }
+      const remainingMs = READ_BUDGET_MS - ((yield* Clock.currentTimeMillis) - startedAt);
+      if (remainingMs <= 0) {
+        reasons.add("time_budget");
+        break;
+      }
+      const loaded = yield* loadPage(target, {
+        maxAgeHours: input.maxAgeHours,
+        sameOrigin: origin,
+      }).pipe(Effect.timeoutOption(remainingMs));
+      if (Option.isNone(loaded)) {
+        reasons.add("time_budget");
+        break;
+      }
+      const child = pageResult(loaded.value, 0, remainingChars);
+      subpages.push(child);
+      completed++;
+      remainingChars -= child.text.length;
+      if (child.nextOffset !== null) reasons.add("output_budget");
+      fetched.add(target.href);
+      fetched.add(child.finalUrl);
+    }
+    return {
+      ...root,
+      subpages,
+      truncated: reasons.size > 0,
+      truncationReasons: [...reasons],
+      pendingSubpages: candidates.slice(completed, completed + 6).map((target) => target.href),
+      unvisitedSubpages: candidates.length - completed,
     };
   });
   return WebResearch.of({ read });

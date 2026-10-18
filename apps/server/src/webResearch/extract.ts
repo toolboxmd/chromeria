@@ -41,6 +41,7 @@ export const extract = (html: string, url: string) => {
   let refresh: string | undefined;
   let password = false;
   const structured: Array<string> = [];
+  const links: Array<{ url: string; label: string }> = [];
   const joinChildren = (node: Node, depth: number): string => {
     const parts: Array<string> = [];
     let length = 0;
@@ -92,8 +93,11 @@ export const extract = (html: string, url: string) => {
       if (href) {
         try {
           const target = new URL(href, url);
-          if (["http:", "https:", "mailto:", "tel:"].includes(target.protocol))
+          if (["http:", "https:", "mailto:", "tel:"].includes(target.protocol)) {
+            if (["http:", "https:"].includes(target.protocol))
+              links.push({ url: target.href, label: compact(inner).slice(0, 256) });
             return `[${inner.trim() || target.href}](${target.href})`;
+          }
         } catch {
           /* A malformed link is still readable as text. */
         }
@@ -114,7 +118,7 @@ export const extract = (html: string, url: string) => {
     .join("\n\n");
   if (text.length > MAX_TEXT_CHARS)
     throw new RangeError("Research page text exceeds the extraction limit.");
-  return { title: title ?? "", text, refresh, password, visibleText: compact(rendered) };
+  return { title: title ?? "", text, refresh, password, visibleText: compact(rendered), links };
 };
 
 /** Classify the document itself, so a footer's login link is not mistaken for a wall. */

@@ -10,6 +10,11 @@ export const WebReadInput = Schema.Struct({
   maxAgeHours: Schema.optional(
     Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 8760 })),
   ),
+  followSubpages: Schema.optional(Schema.Boolean),
+  subpagePattern: Schema.optional(
+    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+  ),
+  maxSubpages: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 6 }))),
 });
 
 export const PageStatus = Schema.Literals([
@@ -40,10 +45,13 @@ export const CachedPage = Schema.Struct({
   contentHash: CacheId,
   delayMs: Schema.Number,
   retryAfterMs: Schema.NullOr(Schema.Number),
+  // Optional so cache continuations created by the public HTTP core remain readable.
+  links: Schema.optional(Schema.Array(Schema.Struct({ url: Schema.String, label: Schema.String }))),
+  restrictedToOrigin: Schema.optional(Schema.String),
 });
 export type CachedPage = typeof CachedPage.Type;
 
-export const WebReadResult = Schema.Struct({
+export const WebReadPage = Schema.Struct({
   url: Schema.String,
   finalUrl: Schema.String,
   fetchedAt: Schema.String,
@@ -64,4 +72,13 @@ export const WebReadResult = Schema.Struct({
   totalChars: Schema.Int,
   offset: Schema.Int,
   nextOffset: Schema.NullOr(Schema.Int),
+});
+
+export const WebReadResult = Schema.Struct({
+  ...WebReadPage.fields,
+  subpages: Schema.Array(WebReadPage),
+  truncated: Schema.Boolean,
+  truncationReasons: Schema.Array(Schema.Literals(["page_budget", "time_budget", "output_budget"])),
+  pendingSubpages: Schema.Array(Schema.String),
+  unvisitedSubpages: Schema.Int,
 });

@@ -74,10 +74,13 @@ const fixture = Effect.fnUntraced(function* (
   cacheLayer: typeof PageCache.layer = PageCache.layer,
 ) {
   const requests = yield* Queue.unbounded<{ url: string; at: number }>();
+  const observed: Array<{ url: string; at: number }> = [];
   const http = PublicHttp.PublicHttp.of({
     get: (url) =>
       Effect.gen(function* () {
-        yield* Queue.offer(requests, { url: url.href, at: yield* Clock.currentTimeMillis });
+        const request = { url: url.href, at: yield* Clock.currentTimeMillis };
+        observed.push(request);
+        yield* Queue.offer(requests, request);
         return url.pathname === "/robots.txt"
           ? typeof robots === "string"
             ? response(robots, 200, { "content-type": "text/plain" })
@@ -100,7 +103,7 @@ const fixture = Effect.fnUntraced(function* (
     Layer.provide(reader),
     Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
   );
-  return { layer, requests };
+  return { layer, requests, observed };
 });
 
 // Advance only after a recorded network milestone, never by waiting for wall time.
@@ -118,6 +121,425 @@ const finish = Effect.fnUntraced(function* <A, E, R>(
 });
 
 describe("web_read at the registered MCP seam", () => {
+  it.effect("includes a matching depth-one subpage with its own provenance by default", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture((url) =>
+        Effect.succeed(
+          response(
+            url.pathname === "/"
+              ? html.replace(
+                  "</body>",
+                  `<a href="/camere#one">Camere</a>
+                  <a href="https://SUBPAGES.example:443/a/../camere#two">Duplicate</a>
+                  <a href="/eventi">Eventi</a><a href="/#rooms">Rooms home</a>
+                  <a href="/about">About us</a></body>`,
+                )
+              : html
+                  .replace("eight guest rooms", "twelve guest rooms")
+                  .replace(
+                    "</body>",
+                    '<a href="/prezzi">Prices at depth two</a><a href="/">Home</a></body>',
+                  ),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const result = yield* finish(read({ url: "https://subpages.example/" }), f.requests, 4);
+        expect(result).toMatchObject({
+          status: "ok",
+          subpages: [
+            {
+              url: "https://subpages.example/camere",
+              finalUrl: "https://subpages.example/camere",
+              status: "ok",
+              rung: "http",
+              sourceRung: "http",
+            },
+            { url: "https://subpages.example/eventi", status: "ok" },
+          ],
+          truncated: false,
+          pendingSubpages: [],
+          unvisitedSubpages: 0,
+        });
+        for (const child of result.subpages) {
+          expect(child.text).toContain("twelve guest rooms");
+          expect(child.fetchedAt).toMatch(/^1970-/);
+          expect(child.cacheId).toMatch(/^[a-f0-9]{64}$/);
+          expect(child.contentHash).not.toBe(result.contentHash);
+          expect(child.cacheId).not.toBe(result.cacheId);
+        }
+        expect(f.observed.map((request) => request.url)).toEqual([
+          "https://subpages.example/robots.txt",
+          "https://subpages.example/",
+          "https://subpages.example/camere",
+          "https://subpages.example/eventi",
+        ]);
+        expect(
+          f.observed.slice(1).every((request, i) => request.at - f.observed[i]!.at >= 3000),
+        ).toBe(true);
+        const cached = yield* read({ url: "https://subpages.example/" });
+        expect(cached.rung).toBe("cache");
+        expect(cached.subpages.map((page) => page.cacheId)).toEqual(
+          result.subpages.map((page) => page.cacheId),
+        );
+        expect(cached.subpages.every((page) => page.rung === "cache" && page.delayMs === 0)).toBe(
+          true,
+        );
+        expect(f.observed).toHaveLength(4);
+      }).pipe(Effect.provide(f.layer));
+    }),
+  );
+
+  it.effect(
+    "disables following and overrides matching without evaluating regular expressions",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* fixture((url) =>
+          Effect.succeed(
+            response(
+              url.pathname === "/"
+                ? html.replace(
+                    "</body>",
+                    '<a href="/rooms">Rooms</a><a href="/conference">Conference</a></body>',
+                  )
+                : html,
+            ),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const single = yield* finish(
+            read({ url: "https://patterns.example/", followSubpages: false }),
+            f.requests,
+          );
+          expect(single.subpages).toEqual([]);
+          const custom = yield* finish(
+            read({ url: "https://patterns.example/", subpagePattern: "Conference|rates" }),
+            f.requests,
+            1,
+          );
+          expect(custom.subpages.map((page) => page.url)).toEqual([
+            "https://patterns.example/conference",
+          ]);
+          const literal = yield* read({ url: "https://patterns.example/", subpagePattern: ".*" });
+          expect(literal.subpages).toEqual([]);
+          const rooms = yield* finish(
+            read({ url: "https://patterns.example/", subpagePattern: "ROOMS" }),
+            f.requests,
+            1,
+          );
+          expect(rooms.subpages.map((page) => page.url)).toEqual([
+            "https://patterns.example/rooms",
+          ]);
+          expect(f.observed).toHaveLength(4);
+        }).pipe(Effect.provide(f.layer));
+      }),
+  );
+
+  it.effect("bounds traversal to six pages by default and reports pending page continuation", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture((url) =>
+        Effect.succeed(
+          response(
+            url.pathname === "/"
+              ? html.replace(
+                  "</body>",
+                  Array.from(
+                    { length: 9 },
+                    (_, i) => `<a href="/rooms-${i + 1}">Rooms ${i + 1}</a>`,
+                  ).join("") + "</body>",
+                )
+              : html,
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const result = yield* finish(read({ url: "https://pages.example/" }), f.requests, 8);
+        expect(result.subpages).toHaveLength(6);
+        expect(result).toMatchObject({
+          truncated: true,
+          truncationReasons: ["page_budget"],
+          unvisitedSubpages: 3,
+          pendingSubpages: [
+            "https://pages.example/rooms-7",
+            "https://pages.example/rooms-8",
+            "https://pages.example/rooms-9",
+          ],
+        });
+        expect(f.observed).toHaveLength(8);
+        const smaller = yield* read({ url: "https://pages.example/", maxSubpages: 1 });
+        expect(smaller.subpages).toHaveLength(1);
+        expect(smaller.unvisitedSubpages).toBe(8);
+        expect(smaller.pendingSubpages).toHaveLength(6);
+        expect(smaller.truncationReasons).toContain("page_budget");
+        expect(f.observed).toHaveLength(8);
+      }).pipe(Effect.provide(f.layer));
+    }),
+  );
+
+  it.effect(
+    "shares the output budget across pages and continues text and unfetched URLs separately",
+    () =>
+      Effect.gen(function* () {
+        const fullText = "Room facts retained for continuation. ".repeat(50).trim();
+        const f = yield* fixture((url) =>
+          Effect.succeed(
+            url.pathname === "/"
+              ? response(
+                  html.replace(
+                    "</body>",
+                    '<a href="/rooms">Rooms</a><a href="/eventi">Events</a></body>',
+                  ),
+                )
+              : response(fullText, 200, { "content-type": "text/plain" }),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const result = yield* finish(
+            read({ url: "https://output.example/", maxChars: 400 }),
+            f.requests,
+            3,
+          );
+          const child = result.subpages[0]!;
+          expect(
+            result.text.length + result.subpages.reduce((sum, page) => sum + page.text.length, 0),
+          ).toBe(400);
+          expect(child.nextOffset).toBeGreaterThan(0);
+          expect(result).toMatchObject({
+            truncated: true,
+            truncationReasons: ["output_budget"],
+            pendingSubpages: ["https://output.example/eventi"],
+            unvisitedSubpages: 1,
+          });
+          const rest = yield* read({ cacheId: child.cacheId, offset: child.nextOffset });
+          expect(child.text + rest.text).toBe(fullText);
+          expect(rest).toMatchObject({ rung: "cache", nextOffset: null, subpages: [] });
+          expect(f.observed).toHaveLength(3);
+          const pending = yield* finish(
+            read({ url: result.pendingSubpages[0], followSubpages: false }),
+            f.requests,
+            1,
+          );
+          expect(pending.text).toBe(fullText);
+          expect(f.observed).toHaveLength(4);
+        }).pipe(Effect.provide(f.layer));
+      }),
+  );
+
+  it.effect("returns completed pages at the total deadline and cancels unfinished traversal", () =>
+    Effect.gen(function* () {
+      const interrupted = yield* Deferred.make<void>();
+      const f = yield* fixture(
+        (url) =>
+          url.pathname === "/rooms-slow"
+            ? Effect.never.pipe(Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined)))
+            : Effect.succeed(
+                response(
+                  url.pathname === "/"
+                    ? html.replace(
+                        "</body>",
+                        '<a href="/rooms">Rooms</a><a href="/rooms-slow">Slow rooms</a><a href="/eventi">Events</a></body>',
+                      )
+                    : html,
+                ),
+              ),
+        undefined,
+        "User-agent: *\nAllow: /\nCrawl-delay: 8",
+      );
+      yield* Effect.gen(function* () {
+        const startedAt = yield* Clock.currentTimeMillis;
+        const fiber = yield* Effect.forkScoped(read({ url: "https://deadline.example/" }));
+        expect((yield* Queue.take(f.requests)).url).toBe("https://deadline.example/robots.txt");
+        for (const path of ["/", "/rooms", "/rooms-slow"]) {
+          yield* TestClock.adjust(8000);
+          expect((yield* Queue.take(f.requests)).url).toBe(`https://deadline.example${path}`);
+        }
+        yield* TestClock.adjust(6000);
+        const result = yield* Fiber.join(fiber);
+        yield* Deferred.await(interrupted);
+        expect((yield* Clock.currentTimeMillis) - startedAt).toBe(30_000);
+        expect(result).toMatchObject({
+          status: "ok",
+          subpages: [{ url: "https://deadline.example/rooms", status: "ok" }],
+          truncated: true,
+          truncationReasons: ["time_budget"],
+          pendingSubpages: [
+            "https://deadline.example/rooms-slow",
+            "https://deadline.example/eventi",
+          ],
+          unvisitedSubpages: 2,
+        });
+        expect(f.observed).toHaveLength(4);
+      }).pipe(Effect.provide(f.layer));
+    }),
+  );
+
+  it.effect("retains successful pages and independent failure provenance", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture((url) =>
+        Effect.succeed(
+          url.pathname === "/"
+            ? response(
+                html.replace(
+                  "</body>",
+                  '<a href="/rooms-error">Rooms</a><a href="/eventi">Events</a><a href="/rooms-login">Members</a></body>',
+                ),
+              )
+            : url.pathname === "/rooms-error"
+              ? response("Origin failed", 500)
+              : url.pathname === "/rooms-login"
+                ? response("<title>Sign in</title><input type='password'>")
+                : response(),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const result = yield* finish(read({ url: "https://partial.example/" }), f.requests, 5);
+        expect(result.status).toBe("ok");
+        expect(result.subpages.map((page) => page.status)).toEqual(["origin_error", "ok", "login"]);
+        expect(result.subpages[0]).toMatchObject({
+          url: "https://partial.example/rooms-error",
+          httpStatus: 500,
+          text: "",
+        });
+        expect(result.subpages[1]!.text).toContain("eight guest rooms");
+        expect(result.subpages[2]).toMatchObject({ nextAction: "needs_session", text: "" });
+        expect(new Set([result.cacheId, ...result.subpages.map((page) => page.cacheId)]).size).toBe(
+          4,
+        );
+        expect(result.truncated).toBe(false);
+        expect(f.observed).toHaveLength(5);
+      }).pipe(Effect.provide(f.layer));
+    }),
+  );
+
+  it.effect(
+    "refuses external and private links and subpage redirects while using public-network validation",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* fixture((url) =>
+          url.pathname === "/camere-rebound"
+            ? Effect.fail(new PublicHttp.PublicNetworkBlockedError({ host: url.hostname }))
+            : Effect.succeed(
+                url.pathname === "/"
+                  ? response(
+                      html.replace(
+                        "</body>",
+                        `<a href="https://outside.example/rooms">Rooms</a>
+              <a href="http://127.0.0.1/rooms">Rooms</a><a href="http://192.168.1.1/rooms">Rooms</a>
+              <a href="http://[::1]/rooms">Rooms</a><a href="http://100.64.0.1/rooms">Rooms</a>
+              <a href="https://user:secret@safe.example/rooms">Rooms</a><a href="javascript:rooms()">Rooms</a>
+              <a href="/rooms-external">Rooms</a><a href="/eventi-private">Events</a>
+              <a href="/camere-rebound">Camere</a><a href="/alloggi">Alloggi</a></body>`,
+                      ),
+                    )
+                  : url.pathname === "/rooms-external"
+                    ? response("", 302, { location: "https://outside.example/rooms" })
+                    : url.pathname === "/eventi-private"
+                      ? response(
+                          '<meta http-equiv="refresh" content="0; url=http://127.0.0.1/rooms">',
+                        )
+                      : response(),
+              ),
+        );
+        yield* Effect.gen(function* () {
+          const result = yield* finish(read({ url: "https://safe.example/" }), f.requests, 6);
+          expect(result.subpages.map((page) => page.status)).toEqual([
+            "unsupported",
+            "unsupported",
+            "blocked_local",
+            "ok",
+          ]);
+          expect(result.subpages[0]).toMatchObject({
+            finalUrl: "https://outside.example/rooms",
+            text: "",
+          });
+          expect(result.subpages[1]).toMatchObject({
+            finalUrl: "http://127.0.0.1/rooms",
+            text: "",
+          });
+          expect(f.observed.map((request) => request.url)).toEqual([
+            "https://safe.example/robots.txt",
+            "https://safe.example/",
+            "https://safe.example/rooms-external",
+            "https://safe.example/eventi-private",
+            "https://safe.example/camere-rebound",
+            "https://safe.example/alloggi",
+          ]);
+          const cached = yield* read({ url: "https://safe.example/" });
+          expect(cached.subpages.map((page) => page.status)).toEqual([
+            "unsupported",
+            "unsupported",
+            "blocked_local",
+            "ok",
+          ]);
+          expect(cached.subpages.every((page) => page.rung === "cache")).toBe(true);
+          expect(f.observed).toHaveLength(6);
+          const direct = yield* finish(
+            read({ url: "https://safe.example/rooms-external", followSubpages: false }),
+            f.requests,
+            3,
+          );
+          expect(direct).toMatchObject({ status: "ok", finalUrl: "https://outside.example/rooms" });
+          expect(f.observed).toHaveLength(9);
+        }).pipe(Effect.provide(f.layer));
+      }),
+  );
+
+  it.effect(
+    "resolves links from the final root URL and deduplicates redirected aliases and cycles",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* fixture((url) =>
+          Effect.succeed(
+            url.pathname === "/start"
+              ? response("", 302, { location: "/home/" })
+              : url.pathname === "/home/"
+                ? response(
+                    html.replace(
+                      "</body>",
+                      '<a href="alias">Rooms</a><a href="camere">Camere</a><a href="/start#rooms">Rooms home</a><a href="#rooms">Rooms home</a></body>',
+                    ),
+                  )
+                : url.pathname === "/home/alias"
+                  ? response("", 302, { location: "camere" })
+                  : response(
+                      html.replace(
+                        "</body>",
+                        '<a href="/home/">Home</a><a href="/rooms-deeper">Rooms at depth two</a></body>',
+                      ),
+                    ),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const result = yield* finish(
+            read({ url: "https://canonical.example/start" }),
+            f.requests,
+            5,
+          );
+          expect(result).toMatchObject({
+            url: "https://canonical.example/start",
+            finalUrl: "https://canonical.example/home/",
+            subpages: [
+              {
+                url: "https://canonical.example/home/alias",
+                finalUrl: "https://canonical.example/home/camere",
+                status: "ok",
+              },
+            ],
+            truncated: false,
+            unvisitedSubpages: 0,
+            pendingSubpages: [],
+          });
+          expect(f.observed.map((request) => new URL(request.url).pathname)).toEqual([
+            "/robots.txt",
+            "/start",
+            "/home/",
+            "/home/alias",
+            "/home/camere",
+          ]);
+        }).pipe(Effect.provide(f.layer));
+      }),
+  );
+
   it.effect(
     "keeps full document facts, tables, links and JSON-LD with bounded continuation and provenance",
     () =>
@@ -362,6 +784,12 @@ describe("web_read at the registered MCP seam", () => {
           { url: "https://example.com/", cacheId: "a".repeat(64) },
           { url: "https://example.com/", maxChars: 20_001 },
           { cacheId: "../secrets" },
+          { url: "https://example.com/", maxSubpages: 7 },
+          { url: "https://example.com/", maxSubpages: 0 },
+          { url: "https://example.com/", subpagePattern: "" },
+          { url: "https://example.com/", subpagePattern: "rooms|" },
+          { url: "https://example.com/", subpagePattern: "x".repeat(257) },
+          { url: "https://example.com/", followSubpages: "false" },
         ]) {
           const exit = yield* Effect.exit(call(input));
           expect(
@@ -380,6 +808,62 @@ describe("web_read at the registered MCP seam", () => {
         expect(yield* Queue.size(f.requests)).toBe(0);
       }).pipe(Effect.provide(f.layer));
     }),
+  );
+
+  it.effect(
+    "shares a subpage fetch across concurrent callers and applies freshness to each page",
+    () =>
+      Effect.gen(function* () {
+        const release = yield* Deferred.make<void>();
+        let rooms = html;
+        const f = yield* fixture((url) =>
+          url.pathname === "/"
+            ? Effect.succeed(
+                response(html.replace("</body>", '<a href="/camere">Camere</a></body>')),
+              )
+            : Deferred.await(release).pipe(Effect.map(() => response(rooms))),
+        );
+        yield* Effect.gen(function* () {
+          yield* finish(
+            read({ url: "https://shared-pages.example/", followSubpages: false }),
+            f.requests,
+          );
+          const first = yield* Effect.forkScoped(read({ url: "https://shared-pages.example/" }));
+          expect((yield* Queue.take(f.requests)).url).toBe("https://shared-pages.example/camere");
+          const second = yield* Effect.forkScoped(
+            read(
+              { url: "https://shared-pages.example/" },
+              {
+                ...scope,
+                requestNamespace: "second-agent",
+                thread: { ...scope.thread!, threadId: ThreadId.make("second-thread") },
+              },
+            ),
+          );
+          yield* TestClock.adjust(0);
+          yield* Deferred.succeed(release, undefined);
+          const a = yield* Fiber.join(first);
+          const b = yield* Fiber.join(second);
+          expect(a.subpages[0]!.rung).toBe("http");
+          expect(b.subpages[0]).toMatchObject({
+            rung: "cache",
+            cacheId: a.subpages[0]!.cacheId,
+            contentHash: a.subpages[0]!.contentHash,
+          });
+          expect(f.observed).toHaveLength(3);
+          rooms = html.replace("eight guest rooms", "twelve guest rooms");
+          yield* TestClock.adjust(3000);
+          const fresh = yield* finish(
+            read({ url: "https://shared-pages.example/", maxAgeHours: 0 }),
+            f.requests,
+            2,
+          );
+          expect(fresh.subpages[0]!.rung).toBe("http");
+          expect(fresh.subpages[0]!.text).toContain("twelve guest rooms");
+          expect(fresh.subpages[0]!.contentHash).not.toBe(a.subpages[0]!.contentHash);
+          expect(f.observed).toHaveLength(5);
+        }).pipe(Effect.provide(f.layer));
+      }),
   );
 
   it.effect("shares an in-flight fetch across callers and preserves the cache hash", () =>
