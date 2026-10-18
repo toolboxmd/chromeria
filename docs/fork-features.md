@@ -2062,3 +2062,21 @@ sources and reasons.
   "keywords": ["listedSession", "reconcileRelayRoutes", "watchAccountRelayRoutes"]
 }
 ```
+
+## legacy-terminal-labels
+
+```json
+{
+  "id": "legacy-terminal-labels",
+  "purpose": "Preserve embedded legacy terminal labels after supplementary Unicode letters across Node runtimes.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/345"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/412"],
+  "newFiles": [],
+  "upstreamFiles": [
+    "packages/shared/src/composerContextLegacy.test.ts",
+    "packages/shared/src/composerContextLegacy.ts"
+  ],
+  "sharedFiles": [],
+  "keywords": ["upgradeLegacyContextMessage", "supplementary Unicode", "terminal labels"]
+}
+```
