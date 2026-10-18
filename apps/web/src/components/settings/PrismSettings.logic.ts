@@ -31,6 +31,38 @@ export function movePrismPreference<T extends PrismModelPreference>(
   return next;
 }
 
+/** A list row while editing; `entryId` keeps drag identity stable across saves. */
+export type PrismDraftPreference = PrismModelPreference & { entryId: number };
+
+const samePreference = (a: PrismModelPreference, b: PrismModelPreference) =>
+  prismModelKey(a) === prismModelKey(b) && a.effort === b.effort;
+
+/** Row ids only need to be unique within their list. */
+export const nextPrismEntryId = (draft: readonly PrismDraftPreference[]) =>
+  Math.max(-1, ...draft.map((entry) => entry.entryId)) + 1;
+
+/**
+ * Adopts the saved list into the draft. Returns the same draft when nothing differs, and
+ * otherwise reuses the ids of matching rows so a landed save never remounts them.
+ */
+export function syncPrismDraft(
+  draft: readonly PrismDraftPreference[],
+  saved: readonly PrismModelPreference[],
+): readonly PrismDraftPreference[] {
+  if (
+    draft.length === saved.length &&
+    draft.every((entry, index) => samePreference(entry, saved[index]!))
+  )
+    return draft;
+  const unused = [...draft];
+  let nextEntryId = nextPrismEntryId(draft);
+  return saved.map((model) => {
+    const match = unused.findIndex((entry) => samePreference(entry, model));
+    const entryId = match >= 0 ? unused.splice(match, 1)[0]!.entryId : nextEntryId++;
+    return { ...model, entryId };
+  });
+}
+
 export function prismEffortOptions(capabilities: ModelCapabilities | null | undefined) {
   const descriptor = capabilities?.optionDescriptors?.find(
     (option) =>

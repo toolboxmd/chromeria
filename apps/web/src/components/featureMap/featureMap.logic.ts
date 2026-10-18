@@ -331,6 +331,152 @@ export function featureMapShown(input: {
       };
 }
 
+/** Scale range for the expanded map. Below this the drawing is unreadably small; above it, unstable. */
+export const MAP_SCALE_MIN = 0.1;
+export const MAP_SCALE_MAX = 4;
+/** A press that travels farther than this is a pan, not a click that opens a part. */
+export const MAP_DRAG_THRESHOLD_PX = 4;
+const MAP_ZOOM_STEP = 1.25;
+/** Inset kept around the diagram when it is fitted to the viewport. */
+export const MAP_FIT_PADDING_PX = 24;
+/**
+ * `scale * exp(-pixelDelta * sensitivity)`. One mouse notch is about 100 pixels,
+ * which changes the scale by roughly 14%.
+ */
+export const MAP_WHEEL_SENSITIVITY = 0.0015;
+const MAP_WHEEL_LINE_PX = 16;
+const MAP_WHEEL_PAGE_PX = 800;
+
+/** Translation is in viewport pixels. Matches CSS `translate(x, y) scale(scale)` with origin at the top left. */
+export interface MapViewport {
+  readonly scale: number;
+  readonly x: number;
+  readonly y: number;
+}
+
+export function clampMapScale(scale: number): number {
+  if (!Number.isFinite(scale)) return 1;
+  return Math.min(MAP_SCALE_MAX, Math.max(MAP_SCALE_MIN, scale));
+}
+
+/**
+ * Zoom so the content point under `anchor` stays under `anchor`. `anchor` is in
+ * viewport pixels. A scale that clamp does not change leaves the viewport as it was.
+ */
+export function zoomMapViewport(
+  viewport: MapViewport,
+  anchor: { readonly x: number; readonly y: number },
+  nextScale: number,
+): MapViewport {
+  const scale = clampMapScale(nextScale);
+  if (!Number.isFinite(viewport.scale) || viewport.scale === 0 || scale === viewport.scale) {
+    return viewport;
+  }
+  const contentX = (anchor.x - viewport.x) / viewport.scale;
+  const contentY = (anchor.y - viewport.y) / viewport.scale;
+  return {
+    scale,
+    x: anchor.x - contentX * scale,
+    y: anchor.y - contentY * scale,
+  };
+}
+
+export function panMapViewport(
+  viewport: MapViewport,
+  delta: { readonly x: number; readonly y: number },
+): MapViewport {
+  if (!Number.isFinite(delta.x) || !Number.isFinite(delta.y) || (delta.x === 0 && delta.y === 0)) {
+    return viewport;
+  }
+  return { scale: viewport.scale, x: viewport.x + delta.x, y: viewport.y + delta.y };
+}
+
+/** One button step, still inside the scale range. */
+export function stepMapScale(scale: number, direction: "in" | "out"): number {
+  const stepped = direction === "in" ? scale * MAP_ZOOM_STEP : scale / MAP_ZOOM_STEP;
+  return clampMapScale(stepped);
+}
+
+/**
+ * Next scale for a wheel event. Positive `deltaY` zooms out. `deltaMode` is the
+ * WheelEvent value: 0 pixels, 1 lines, 2 pages.
+ */
+export function scaleAfterWheel(scale: number, deltaY: number, deltaMode = 0): number {
+  if (!Number.isFinite(deltaY) || deltaY === 0 || !Number.isFinite(scale))
+    return clampMapScale(scale);
+  const pixels =
+    deltaMode === 1
+      ? deltaY * MAP_WHEEL_LINE_PX
+      : deltaMode === 2
+        ? deltaY * MAP_WHEEL_PAGE_PX
+        : deltaY;
+  return clampMapScale(scale * Math.exp(-pixels * MAP_WHEEL_SENSITIVITY));
+}
+
+/**
+ * Scale that fits the whole diagram in the viewport, centered. A diagram that
+ * cannot fit without leaving the scale range is centered at the nearest limit.
+ * Returns null when either box has no area, so the caller can wait for layout.
+ */
+export function fitMapViewport(input: {
+  readonly contentWidth: number;
+  readonly contentHeight: number;
+  readonly viewWidth: number;
+  readonly viewHeight: number;
+}): MapViewport | null {
+  const { contentWidth, contentHeight, viewWidth, viewHeight } = input;
+  if (
+    !(contentWidth > 0) ||
+    !(contentHeight > 0) ||
+    !(viewWidth > 0) ||
+    !(viewHeight > 0) ||
+    !Number.isFinite(contentWidth) ||
+    !Number.isFinite(contentHeight) ||
+    !Number.isFinite(viewWidth) ||
+    !Number.isFinite(viewHeight)
+  ) {
+    return null;
+  }
+  const availableWidth = Math.max(1, viewWidth - MAP_FIT_PADDING_PX * 2);
+  const availableHeight = Math.max(1, viewHeight - MAP_FIT_PADDING_PX * 2);
+  const scale = clampMapScale(
+    Math.min(availableWidth / contentWidth, availableHeight / contentHeight),
+  );
+  return {
+    scale,
+    x: (viewWidth - contentWidth * scale) / 2,
+    y: (viewHeight - contentHeight * scale) / 2,
+  };
+}
+
+export function pointerMovedPastDragThreshold(
+  start: { readonly x: number; readonly y: number },
+  current: { readonly x: number; readonly y: number },
+): boolean {
+  const dx = current.x - start.x;
+  const dy = current.y - start.y;
+  return dx * dx + dy * dy > MAP_DRAG_THRESHOLD_PX * MAP_DRAG_THRESHOLD_PX;
+}
+
+/**
+ * Where a node's top-right sits in the scaled layer's own coordinates.
+ * Screen-space rects include the layer's transform, so the offset is divided by scale.
+ */
+export function iconAnchorInLayer(input: {
+  readonly node: { readonly right: number; readonly top: number };
+  readonly layer: { readonly left: number; readonly top: number };
+  readonly scale: number;
+}): { readonly left: number; readonly top: number } {
+  const scale = input.scale;
+  if (!Number.isFinite(scale) || scale <= 0) {
+    return { left: input.node.right - input.layer.left, top: input.node.top - input.layer.top };
+  }
+  return {
+    left: (input.node.right - input.layer.left) / scale,
+    top: (input.node.top - input.layer.top) / scale,
+  };
+}
+
 /** Chromeria-tracked work is identified by the snapshot, never the local checkout. */
 export function isChromeriaFeatureMapPart(
   map: Pick<MapSnapshot, "host" | "repository">,
