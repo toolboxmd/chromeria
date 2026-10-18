@@ -304,9 +304,6 @@ export function createDevRunnerEnv({
 
     const output: NodeJS.ProcessEnv = {
       ...baseEnv,
-      // --share owns the web-port mapping; the backend must not inherit the
-      // host service's Serve configuration and replace its route.
-      T3CODE_TAILSCALE_SERVE: "false",
       PORT: String(webPort),
       VITE_DEV_SERVER_URL:
         devUrl?.toString() ??
@@ -328,6 +325,9 @@ export function createDevRunnerEnv({
     delete output.T3_BOOT_SERVICE_UNIT;
 
     if (!isDesktopMode) {
+      // --share owns the web-port mapping; the backend must not inherit the
+      // host service's Serve configuration and replace its route.
+      output.T3CODE_TAILSCALE_SERVE = "false";
       output.T3CODE_PORT = String(serverPort);
       // HOST is Vite's own bind address, and the desktop branch below is the
       // only place we set it. An inherited one (an exported HOST, a container,
