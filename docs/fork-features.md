@@ -1121,10 +1121,19 @@ Child creation paths are owned by child-threads and shared with thread-people.
 ```json
 {
   "id": "prism-settings",
-  "purpose": "Keep scoped Prism kits, ordered model lists and worker lanes editable with saved settings replay and honest explicit retry/escalation kit semantics.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/169"],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/183"],
+  "purpose": "Keep scoped Prism kits, ordered model lists and worker lanes editable with saved settings replay and honest explicit retry/escalation kit semantics. Project overrides are partial role maps over the environment kits.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/169",
+    "https://github.com/toolboxmd/chromeria/issues/395"
+  ],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/183",
+    "https://github.com/toolboxmd/chromeria/pull/408"
+  ],
   "newFiles": [
+    "apps/server/src/prism/PrismRoleOverrides.test.ts",
+    "apps/server/src/prism/PrismRoleOverrides.ts",
+    "packages/shared/src/prismProjectOverrides.test.ts",
     "apps/web/src/components/settings/PrismSettings.logic.test.ts",
     "apps/web/src/components/settings/PrismSettings.logic.ts",
     "apps/web/src/components/settings/PrismSettings.state.test.ts",
@@ -1133,11 +1142,15 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/web/src/routes/settings.prism.tsx"
   ],
   "upstreamFiles": [
+    "apps/server/src/serverSettings.ts",
     "apps/web/src/components/settings/SettingsSidebarNav.tsx",
-    "apps/web/src/routeTree.gen.ts"
+    "apps/web/src/routeTree.gen.ts",
+    "packages/shared/src/projectSettings.ts"
   ],
   "sharedFiles": [
     "apps/server/src/serverSettings.test.ts",
+    "packages/client-runtime/src/state/server.ts",
+    "packages/shared/src/serverSettings.ts",
     "apps/web/src/components/settings/settingsSearch.ts",
     "packages/contracts/src/settings.ts",
     "packages/contracts/src/prism.ts",

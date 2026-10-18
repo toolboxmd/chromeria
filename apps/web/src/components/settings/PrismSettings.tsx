@@ -53,10 +53,11 @@ import { useSettingsScope } from "./SettingsScopeContext";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
 import { useScopedSettings } from "./useScopedSettings";
 import { useScopedModelDisabledReason } from "./useScopedModelAvailability";
-import { persistScopedSettingsPatch, planScopedSettingsClear } from "./scopedSettings";
+import { persistScopedSettingsPatch } from "./scopedSettings";
 import {
   movePrismPreference,
   planPrismRolePatch,
+  planPrismRolesReset,
   prismModelChoices,
   prismModelKey,
   nextPrismEntryId,
@@ -500,7 +501,7 @@ export function PrismSettings() {
               variant="ghost-muted"
               disabled={!target || pendingWrite !== null}
               onClick={() => {
-                void savePlan(planScopedSettingsClear(scope, environments, ["prismRoles"]), {
+                void savePlan(planPrismRolesReset(scope, environments), {
                   kind: "inherit",
                 }).catch((cause: unknown) =>
                   setSaveError(
