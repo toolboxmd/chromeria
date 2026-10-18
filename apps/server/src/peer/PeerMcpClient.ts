@@ -1,3 +1,8 @@
+import {
+  PeerSavedPreviewAuthorizationRequest,
+  PeerSavedPreviewAuthorizationResult,
+  PeerSavedPreviewAuthorizationSupport,
+} from "@t3tools/contracts";
 import { PeerTaskLifecycleRequest, PeerTaskLifecycleResult } from "@t3tools/contracts";
 import * as PeerLinkEvents from "./PeerLinkEvents.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -28,9 +33,20 @@ import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerNoticeDelivery from "./PeerNoticeDelivery.ts";
 import * as PeerAuthority from "./PeerAuthority.ts";
 import { PeerAuthorityEnvelope } from "@t3tools/contracts";
+import { PeerRequestProtocol } from "@t3tools/contracts";
 
 /** The only MCP protocol version a T3 Code `/mcp` registers. */
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeRequestProtocol = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(PeerRequestProtocol),
+);
+const decodeSavedPreviewSupport = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(PeerSavedPreviewAuthorizationSupport),
+);
+const decodeSavedPreviewResult = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(PeerSavedPreviewAuthorizationResult),
+);
+
 const PROTOCOL_VERSION = "2025-06-18";
 
 /** The limits a call carries to the peer: the calling agent's modes here. */
@@ -47,6 +63,22 @@ export interface PeerCallLimits {
 export class PeerMcpClient extends Context.Service<
   PeerMcpClient,
   {
+    readonly authorizeSavedPreview?: (input: {
+      request: PeerSavedPreviewAuthorizationRequest;
+      authority: PeerAuthorityEnvelope;
+      limits: PeerCallLimits;
+    }) => Effect.Effect<PeerSavedPreviewAuthorizationResult, OrchestratorMcpFailure>;
+    readonly requireRequestProtocol?: (
+      environmentId: EnvironmentId,
+      generation?: string,
+    ) => Effect.Effect<PeerRequestProtocol, OrchestratorMcpFailure>;
+    readonly uploadAttachment: (input: {
+      readonly environmentId: EnvironmentId;
+      readonly generation: string;
+      readonly relativeUrl: string;
+      readonly bytes: Stream.Stream<Uint8Array, unknown>;
+      readonly sizeBytes: number;
+    }) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly start: Effect.Effect<void, never, Scope.Scope>;
     readonly requireTaskLifecycle?: (
       environmentId: EnvironmentId,
@@ -97,7 +129,12 @@ const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unkno
 const decodeToolCallResponse = Schema.decodeUnknownEffect(Schema.fromJsonString(ToolCallResponse));
 const decodeFailure = Schema.decodeUnknownOption(
   Schema.fromJsonString(
-    Schema.Struct({ code: OrchestratorMcpFailure.fields.code, message: Schema.String }),
+    Schema.Struct({
+      code: OrchestratorMcpFailure.fields.code,
+      message: Schema.String,
+      requestId: OrchestratorMcpFailure.fields.requestId,
+      lastConfirmedStage: OrchestratorMcpFailure.fields.lastConfirmedStage,
+    }),
   ),
 );
 
@@ -496,7 +533,7 @@ const make = Effect.gen(function* () {
         // A refusal keeps the peer's own code, so the agent sees why it was refused.
         const refused = decodeFailure(text);
         return yield* refused._tag === "Some"
-          ? new OrchestratorMcpFailure({ code: refused.value.code, message: refused.value.message })
+          ? new OrchestratorMcpFailure(refused.value)
           : new OrchestratorMcpFailure({
               code: "orchestration_error",
               message: text || "The linked environment refused the call.",
@@ -672,7 +709,205 @@ const make = Effect.gen(function* () {
             }),
       ),
     );
-  return PeerMcpClient.of({ call, start, requireTaskLifecycle, taskLifecycle });
+  const uploadAttachment: PeerMcpClient["Service"]["uploadAttachment"] = (input) =>
+    Effect.gen(function* () {
+      const resolved = yield* links
+        .resolve(input.environmentId)
+        .pipe(Effect.mapError(fromLinkError));
+      if (
+        resolved.link.launchIdentity !== input.generation ||
+        !/^\/api\/attachments\/upload\/[A-Za-z0-9_.-]+$/.test(input.relativeUrl)
+      )
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "The attachment transfer does not match its destination grant or upload route.",
+        });
+      const response = yield* httpClient
+        .execute(
+          HttpClientRequest.post(`${resolved.url}${input.relativeUrl}`).pipe(
+            HttpClientRequest.setBody(
+              HttpBody.stream(input.bytes, "application/octet-stream", input.sizeBytes),
+            ),
+          ),
+        )
+        .pipe(
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message:
+                  "The attachment transfer response was lost; retry the original request key.",
+              }),
+          ),
+        );
+      if (response.status !== 204)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "The destination did not accept the attachment bytes.",
+        });
+    });
+  const requireRequestProtocol: NonNullable<PeerMcpClient["Service"]["requireRequestProtocol"]> = (
+    environmentId,
+    generation,
+  ) =>
+    Effect.gen(function* () {
+      const resolved = yield* links.resolve(environmentId).pipe(Effect.mapError(fromLinkError));
+      if (generation !== undefined && resolved.link.launchIdentity !== generation)
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "The original request grant was replaced.",
+        });
+      const response = yield* httpClient
+        .execute(
+          HttpClientRequest.get(`${resolved.url}/mcp/peer-control/requests`).pipe(
+            HttpClientRequest.setHeader("authorization", `Bearer ${resolved.token}`),
+          ),
+        )
+        .pipe(
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "The request protocol could not be confirmed.",
+              }),
+          ),
+        );
+      if (response.status !== 200)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message:
+            "The destination does not support durable requests v1; no mutation was forwarded.",
+        });
+      return yield* decodeRequestProtocol(
+        yield* response.text.pipe(
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "The request protocol response was lost.",
+              }),
+          ),
+        ),
+      ).pipe(
+        Effect.mapError(
+          () =>
+            new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message:
+                "The destination request protocol is incompatible; no mutation was forwarded.",
+            }),
+        ),
+      );
+    });
+  const authorizeSavedPreview: NonNullable<PeerMcpClient["Service"]["authorizeSavedPreview"]> = (
+    input,
+  ) =>
+    Effect.gen(function* () {
+      const resolved = yield* links
+        .resolve(input.request.environmentId)
+        .pipe(Effect.mapError(fromLinkError));
+      if (resolved.link.launchIdentity !== input.request.generation)
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "The original saved-preview destination grant was replaced.",
+        });
+      const endpoint = `${resolved.url}/mcp/peer-control/saved-preview`;
+      const support = yield* httpClient.execute(
+        HttpClientRequest.get(endpoint).pipe(
+          HttpClientRequest.setHeader("authorization", `Bearer ${resolved.token}`),
+        ),
+      );
+      if (support.status === 404 || support.status === 409)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message:
+            "The destination does not support saved-preview authorization v1; no renderer or save was requested.",
+        });
+      if (support.status !== 200)
+        return yield* new OrchestratorMcpFailure({
+          code:
+            support.status === 401 || support.status === 403
+              ? "capability_denied"
+              : "orchestration_error",
+          message: "Saved-preview authority is unavailable.",
+        });
+      yield* decodeSavedPreviewSupport(yield* support.text).pipe(
+        Effect.mapError(
+          () =>
+            new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "The saved-preview authorization protocol is unsupported.",
+            }),
+        ),
+      );
+      yield* ensureChannel(resolved, input.authority.environmentId);
+      const response = yield* httpClient.execute(
+        HttpClientRequest.post(endpoint).pipe(
+          HttpClientRequest.setHeaders({
+            authorization: `Bearer ${resolved.token}`,
+            [McpInvocationContext.MODE_LIMIT_HEADER]: `${input.limits.runtimeMode}/${input.limits.interactionMode}`,
+            [PeerAuthority.LINK_HEADER]: json({
+              environmentId: input.authority.environmentId,
+              generation: input.request.generation,
+            }),
+            [PeerAuthority.AUTHORITY_HEADER]: json(input.authority),
+          }),
+          HttpClientRequest.setBody(HttpBody.text(json(input.request), "application/json")),
+        ),
+      );
+      const text = yield* response.text;
+      if (response.status !== 200) {
+        const refusal = decodeFailure(text);
+        if (Option.isSome(refusal)) return yield* new OrchestratorMcpFailure(refusal.value);
+        return yield* new OrchestratorMcpFailure({
+          code:
+            response.status === 401 || response.status === 403
+              ? "capability_denied"
+              : "orchestration_error",
+          message: "Saved-preview authority could not be confirmed.",
+        });
+      }
+      const result = yield* decodeSavedPreviewResult(text).pipe(
+        Effect.mapError(
+          () =>
+            new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "The saved-preview authorization result is invalid.",
+            }),
+        ),
+      );
+      if (
+        result.environmentId !== input.request.environmentId ||
+        result.generation !== input.request.generation ||
+        result.contextThreadId !== input.request.contextThreadId ||
+        result.operationId !== input.request.operationId
+      )
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "Saved-preview authorization belongs to a different context.",
+        });
+      return result;
+    }).pipe(
+      Effect.catchTags({
+        HttpClientError: () =>
+          Effect.fail(
+            new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message:
+                "Saved-preview authority is unavailable; no protected replay was authorized.",
+            }),
+          ),
+      }),
+    );
+  return PeerMcpClient.of({
+    call,
+    start,
+    requireTaskLifecycle,
+    taskLifecycle,
+    uploadAttachment,
+    requireRequestProtocol,
+    authorizeSavedPreview,
+  });
 });
 
 export const layer = Layer.effect(PeerMcpClient, make);
