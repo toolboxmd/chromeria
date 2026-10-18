@@ -30,6 +30,7 @@ export function validateForkStateOnlyCommand(input: {
 export function forkCommitSequence<E, R>(
   input: {
     readonly commandId: CommandId;
+    readonly events: ReadonlyArray<unknown>;
     readonly forkPlans?: ReadonlyArray<unknown>;
     readonly effects: ReadonlyArray<unknown>;
   },
@@ -38,6 +39,9 @@ export function forkCommitSequence<E, R>(
 ): Effect.Effect<number, E | ForkStateOnlyCommitError, R> {
   const sequence = storedEvents.at(-1)?.sequence;
   if (sequence !== undefined) return Effect.succeed(sequence);
+  // A validated event-bearing command can become a no-op after item normalization.
+  // It still commits its receipt and core effects at the current thread sequence.
+  if (input.events.length > 0) return latestThreadSequence;
   if ((input.forkPlans?.length ?? 0) === 0)
     return Effect.fail(
       new ForkStateOnlyCommitError({ commandId: input.commandId, kind: "missing_plan" }),

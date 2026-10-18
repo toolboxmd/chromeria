@@ -240,6 +240,133 @@ it.effect("stores each command state once across batches and concurrent deliveri
   }).pipe(Effect.provide(Layer.fresh(layerTest))),
 );
 
+it.effect.each([
+  { withEffects: false, withForkPlan: false },
+  { withEffects: true, withForkPlan: false },
+  { withEffects: false, withForkPlan: true },
+  { withEffects: true, withForkPlan: true },
+])("accepts an all-filtered command and preserves its receipt and effects: %j", (variant) => {
+  const notifications: Array<number> = [];
+  const layerObservedOutbox = Layer.effect(
+    EffectOutbox.EffectOutboxV2,
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      return EffectOutbox.EffectOutboxV2.of({
+        ...outbox,
+        notifyAvailable: (count = 1) =>
+          Effect.sync(() => {
+            notifications.push(count);
+          }),
+      });
+    }),
+  ).pipe(Layer.provide(layerEffectOutboxProvided));
+  const layerObservedSink = EventSink.layerFromStores.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerStoresProvided,
+        layerObservedOutbox,
+        layerCommandReceiptStoreProvided,
+        ProjectStore.layer.pipe(Layer.provide(layerDatabase)),
+        TurnItemPositionStore.layer.pipe(Layer.provide(layerDatabase)),
+      ),
+    ),
+  );
+  return Effect.gen(function* () {
+    const sink = yield* EventSink.EventSinkV2;
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make("thread:filtered-command");
+    const commandId = CommandId.make("command:filtered-command");
+    const item = {
+      id: TurnItemId.make("turn-item:filtered-command"),
+      threadId,
+      runId: null,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 900,
+      type: "command_execution",
+      status: "completed",
+      title: null,
+      input: "printf result",
+      output: "result",
+      exitCode: 0,
+      startedAt: now,
+      completedAt: now,
+      updatedAt: now,
+    } satisfies OrchestrationV2TurnItem;
+    yield* sink.write({
+      events: [
+        threadCreatedEvent({
+          id: "event:filtered-command:thread",
+          thread: makeThread(threadId, now),
+          now,
+        }),
+        {
+          id: EventId.make("event:filtered-command:item"),
+          type: "turn-item.updated",
+          threadId,
+          occurredAt: now,
+          payload: item,
+        },
+      ],
+    });
+    const beforeSequence = yield* sink.latestSequence({ threadId });
+    const input = {
+      commandId,
+      threadId,
+      commandType: "prepared-run.progress",
+      acceptedAt: now,
+      events: [
+        {
+          id: EventId.make("event:filtered-command:duplicate"),
+          type: "turn-item.updated" as const,
+          threadId,
+          occurredAt: now,
+          payload: item,
+        },
+      ],
+      effects: variant.withEffects
+        ? [
+            {
+              id: "effect:filtered-command",
+              commandId,
+              threadId,
+              request: { type: "terminal.cleanup" as const },
+            },
+          ]
+        : [],
+      ...(variant.withForkPlan ? { forkPlans: [{ guards: [], mutations: [] }] } : {}),
+    };
+    const result = yield* sink.commitCommand(input);
+    assert.isTrue(result.committed);
+    assert.lengthOf(result.storedEvents, 0);
+    assert.equal(result.receipt.status, "accepted");
+    assert.equal(result.receipt.resultSequence, beforeSequence);
+    const saved = yield* receipts.getByCommandId(commandId);
+    assert.isTrue(Option.isSome(saved));
+    if (Option.isSome(saved)) assert.deepEqual(saved.value, result.receipt);
+    assert.lengthOf(yield* outbox.listByCommandId(commandId), variant.withEffects ? 1 : 0);
+    assert.deepEqual(notifications, variant.withEffects ? [1] : []);
+    assert.equal(yield* sink.latestSequence({ threadId }), beforeSequence);
+    const retry = yield* sink.commitCommand(input);
+    assert.isFalse(retry.committed);
+    assert.deepEqual(retry.receipt, result.receipt);
+    assert.lengthOf(retry.storedEvents, 0);
+    assert.lengthOf(yield* outbox.listByCommandId(commandId), variant.withEffects ? 1 : 0);
+    assert.deepEqual(notifications, variant.withEffects ? [1] : []);
+  }).pipe(
+    Effect.provide(
+      Layer.fresh(
+        Layer.mergeAll(layerObservedSink, layerObservedOutbox, layerCommandReceiptStoreProvided),
+      ),
+    ),
+  );
+});
+
 it.effect("rebuilds event history one bounded page at a time", () =>
   Effect.gen(function* () {
     const eventStore = yield* EventStore.EventStoreV2;

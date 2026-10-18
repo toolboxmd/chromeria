@@ -719,7 +719,12 @@ const layerBase: Layer.Layer<
           ) {
             if (Option.isSome(yield* commandReceipts.getByCommandId(input.commandId))) {
               const existing = yield* existingCommandResult(input.commandId);
-              return { ...existing, committed: false as const, cancelledEffectIds: [] };
+              return {
+                ...existing,
+                committed: false as const,
+                cancelledEffectIds: [],
+                enqueuedEffectCount: 0,
+              };
             }
             standaloneDeclineEvent = yield* patchRestartCutDecline(input);
             if (standaloneDeclineEvent === undefined) {
@@ -738,6 +743,7 @@ const layerBase: Layer.Layer<
                 storedEvents: [],
                 committed: false as const,
                 cancelledEffectIds: [],
+                enqueuedEffectCount: 0,
               };
             }
           }
@@ -752,7 +758,12 @@ const layerBase: Layer.Layer<
           });
           if (!reserved) {
             const existing = yield* existingCommandResult(input.commandId);
-            return { ...existing, committed: false as const, cancelledEffectIds: [] };
+            return {
+              ...existing,
+              committed: false as const,
+              cancelledEffectIds: [],
+              enqueuedEffectCount: 0,
+            };
           }
 
           yield* validateForkStateOnlyCommand({
@@ -781,6 +792,7 @@ const layerBase: Layer.Layer<
                   storedEvents: [],
                   committed: true as const,
                   cancelledEffectIds: [],
+                  enqueuedEffectCount: 0,
                 };
               }
             }
@@ -857,7 +869,13 @@ const layerBase: Layer.Layer<
               );
             }
           }
-          return { receipt, storedEvents, committed: true as const, cancelledEffectIds };
+          return {
+            receipt,
+            storedEvents,
+            committed: true as const,
+            cancelledEffectIds,
+            enqueuedEffectCount: input.effects.length,
+          };
         }),
         (result) =>
           Effect.gen(function* () {
@@ -865,8 +883,8 @@ const layerBase: Layer.Layer<
               result.cancelledEffectIds,
               input.cancelUnsettledEffects?.drain,
             );
-            if (result.committed && result.storedEvents.length > 0 && input.effects.length > 0) {
-              yield* effectOutbox.notifyAvailable(input.effects.length);
+            if (result.enqueuedEffectCount > 0) {
+              yield* effectOutbox.notifyAvailable(result.enqueuedEffectCount);
             }
             if (result.committed) yield* publishStoredEvents(result.storedEvents);
           }),
