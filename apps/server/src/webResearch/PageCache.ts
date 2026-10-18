@@ -24,7 +24,7 @@ export class PageCacheError extends Schema.TaggedError<PageCacheError>()("PageCa
 }) {
   override get message() {
     if (this.operation === "open")
-      return "The research page cache is unavailable; web_read is disabled until the cache can be opened.";
+      return "The research page cache is unavailable; web_read is disabled. Repair the cache and restart the server to retry opening it.";
     return "The research page cache could not be read or written.";
   }
 }
@@ -116,12 +116,16 @@ export const layer = Layer.unwrap(
   }),
 ).pipe(
   Layer.catchTag("PageCacheError", (error) =>
-    Layer.succeed(
+    Layer.effect(
       PageCache,
-      PageCache.of({
-        get: () => Effect.fail(error),
-        put: () => Effect.fail(error),
-      }),
+      Effect.logWarning(error.message, error.cause).pipe(
+        Effect.as(
+          PageCache.of({
+            get: () => Effect.fail(error),
+            put: () => Effect.fail(error),
+          }),
+        ),
+      ),
     ),
   ),
 );

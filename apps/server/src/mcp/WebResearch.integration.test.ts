@@ -11,6 +11,7 @@ import {
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
@@ -40,9 +41,28 @@ const response = (text = body) => ({
 });
 const decodeResult = Schema.decodeUnknownEffect(WebReadResult);
 
+const memoryCache = (pages: Map<string, CachedPage>) => {
+  return Layer.succeed(
+    PageCache.PageCache,
+    PageCache.PageCache.of({
+      get: (key) =>
+        Effect.sync(() =>
+          "url" in key
+            ? (pages.get(key.url) ?? null)
+            : ([...pages.values()].find((page) => page.cacheId === key.cacheId) ?? null),
+        ),
+      put: (page) =>
+        Effect.sync(() => {
+          pages.set(page.url, page);
+        }),
+    }),
+  );
+};
+
 const fixture = Effect.fnUntraced(function* (
   respond: PublicHttp.PublicHttp["Service"]["get"] = () => Effect.succeed(response()),
   cacheLayer: typeof PageCache.layer = PageCache.layer,
+  robots = "User-agent: *\nAllow: /",
 ) {
   const requests = yield* Queue.unbounded<{ url: string; at: number }>();
   const runtime = Replay.layerWithRegistry(
@@ -57,9 +77,7 @@ const fixture = Effect.fnUntraced(function* (
         get: (url) =>
           Effect.gen(function* () {
             yield* Queue.offer(requests, { url: url.href, at: yield* Clock.currentTimeMillis });
-            return url.pathname === "/robots.txt"
-              ? response("User-agent: *\nAllow: /")
-              : yield* respond(url);
+            return url.pathname === "/robots.txt" ? response(robots) : yield* respond(url);
           }),
       }),
     ),
@@ -160,21 +178,7 @@ it.effect(
 it.effect("round 2: queued fast reads do not time out or cache queue failures", () =>
   Effect.gen(function* () {
     const pages = new Map<string, CachedPage>();
-    const cacheLayer = Layer.succeed(
-      PageCache.PageCache,
-      PageCache.PageCache.of({
-        get: (key) =>
-          Effect.sync(() =>
-            "url" in key
-              ? (pages.get(key.url) ?? null)
-              : ([...pages.values()].find((page) => page.cacheId === key.cacheId) ?? null),
-          ),
-        put: (page) =>
-          Effect.sync(() => {
-            pages.set(page.url, page);
-          }),
-      }),
-    );
+    const cacheLayer = memoryCache(pages);
     const f = yield* fixture(undefined, cacheLayer);
     yield* Effect.gen(function* () {
       const s = yield* session;
@@ -273,6 +277,7 @@ it.effect.each(["corrupt-index", "cache-dir-is-file"] as const)(
           const result = yield* s.call({ url: "https://cache.example/" });
           expect(result.isError).toBe(true);
           expect(JSON.stringify(result.content)).toContain("research page cache is unavailable");
+          expect(JSON.stringify(result.content)).toContain("restart the server");
           expect(yield* Queue.size(f.requests)).toBe(0);
         }).pipe(Effect.ensuring(s.check));
       }).pipe(Effect.provide(f.layer));
@@ -385,6 +390,136 @@ it.effect("round 2: ignores a non-web meta refresh and preserves readable conten
         expect(page).toMatchObject({ status: "ok", finalUrl: "https://refresh.example/" });
         expect(page.text).toContain("Full text stays in the page cache.");
         expect(yield* Queue.size(f.requests)).toBe(0);
+      }).pipe(Effect.ensuring(s.check));
+    }).pipe(Effect.provide(f.layer));
+  }),
+);
+
+it.effect.each([600, 99999999])(
+  "round 3: Retry-After %s refuses long waits without caching the refusal",
+  (seconds) =>
+    Effect.gen(function* () {
+      const pages = new Map<string, CachedPage>();
+      const f = yield* fixture(
+        (url) =>
+          Effect.succeed(
+            url.pathname === "/first"
+              ? {
+                  ...response(),
+                  status: seconds === 600 ? 503 : 200,
+                  headers: { "retry-after": String(seconds) },
+                }
+              : response(),
+          ),
+        memoryCache(pages),
+      );
+      yield* Effect.gen(function* () {
+        const s = yield* session;
+        yield* Effect.gen(function* () {
+          const first = yield* Effect.forkScoped(s.read({ url: "https://backoff.example/first" }));
+          yield* Queue.take(f.requests);
+          yield* TestClock.adjust(3000);
+          yield* Fiber.join(first);
+          yield* Queue.take(f.requests);
+          const refused = yield* Effect.forkScoped(s.read({ url: "https://backoff.example/next" }));
+          yield* TestClock.adjust("60 seconds");
+          // A completed fiber retains its exit; an unbounded wait is interrupted and fails this assertion.
+          yield* Fiber.interrupt(refused);
+          const exit = yield* Fiber.await(refused);
+          expect(Exit.isSuccess(exit)).toBe(true);
+          if (Exit.isSuccess(exit))
+            expect(exit.value).toMatchObject({
+              status: "challenge",
+              rung: "http",
+              delayMs: 0,
+              retryAfterMs: seconds * 1000,
+            });
+          expect(pages.has("https://backoff.example/next")).toBe(false);
+          expect(yield* Queue.size(f.requests)).toBe(0);
+          if (seconds === 600) {
+            yield* TestClock.adjust("540 seconds");
+            const recovered = yield* s.read({ url: "https://backoff.example/next" });
+            expect(recovered).toMatchObject({ status: "ok", rung: "http", delayMs: 0 });
+            expect((yield* Queue.take(f.requests)).url).toBe("https://backoff.example/next");
+          }
+        }).pipe(Effect.ensuring(s.check));
+      }).pipe(Effect.provide(f.layer));
+    }),
+);
+
+it.effect.each([120, 3600])(
+  "round 3: Crawl-delay %s refuses long waits before fetching the page",
+  (seconds) =>
+    Effect.gen(function* () {
+      const pages = new Map<string, CachedPage>();
+      const f = yield* fixture(
+        undefined,
+        memoryCache(pages),
+        `User-agent: *\nAllow: /\nCrawl-delay: ${seconds}`,
+      );
+      yield* Effect.gen(function* () {
+        const s = yield* session;
+        yield* Effect.gen(function* () {
+          const first = yield* Effect.forkScoped(s.read({ url: "https://crawl.example/" }));
+          yield* Queue.take(f.requests);
+          yield* TestClock.adjust("60 seconds");
+          yield* Fiber.interrupt(first);
+          const exit = yield* Fiber.await(first);
+          expect(Exit.isSuccess(exit)).toBe(true);
+          if (Exit.isSuccess(exit))
+            expect(exit.value).toMatchObject({
+              status: "challenge",
+              delayMs: 0,
+              retryAfterMs: seconds * 1000,
+            });
+          expect(pages.size).toBe(0);
+          expect(yield* Queue.size(f.requests)).toBe(0);
+          if (seconds === 120) {
+            yield* TestClock.adjust("60 seconds");
+            expect(yield* s.read({ url: "https://crawl.example/" })).toMatchObject({
+              status: "ok",
+              rung: "http",
+              delayMs: 0,
+            });
+            expect((yield* Queue.take(f.requests)).url).toBe("https://crawl.example/");
+          }
+        }).pipe(Effect.ensuring(s.check));
+      }).pipe(Effect.provide(f.layer));
+    }),
+);
+
+it.effect("round 3: bounds actual semaphore contention separately from active fetch time", () =>
+  Effect.gen(function* () {
+    const pages = new Map<string, CachedPage>();
+    const f = yield* fixture(undefined, memoryCache(pages));
+    yield* Effect.gen(function* () {
+      const s = yield* session;
+      yield* Effect.gen(function* () {
+        const fiber = yield* Effect.forkScoped(
+          Effect.forEach(
+            Array.from({ length: 24 }, (_, i) => `https://contention.example/${i}`),
+            (url) => s.read({ url }),
+            { concurrency: "unbounded" },
+          ),
+        );
+        yield* Queue.take(f.requests);
+        yield* TestClock.adjust("63 seconds");
+        yield* Fiber.interrupt(fiber);
+        const exit = yield* Fiber.await(fiber);
+        expect(Exit.isSuccess(exit)).toBe(true);
+        if (Exit.isSuccess(exit)) {
+          expect(exit.value.some((page) => page.status === "challenge")).toBe(true);
+          expect(
+            exit.value.every(
+              (page) =>
+                page.status === "ok" ||
+                (page.status === "challenge" &&
+                  page.delayMs === 60_000 &&
+                  (page.retryAfterMs ?? 0) > 0),
+            ),
+          ).toBe(true);
+        }
+        expect([...pages.values()].every((page) => page.status === "ok")).toBe(true);
       }).pipe(Effect.ensuring(s.check));
     }).pipe(Effect.provide(f.layer));
   }),

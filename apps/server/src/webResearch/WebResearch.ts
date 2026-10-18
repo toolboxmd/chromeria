@@ -6,6 +6,7 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -89,6 +90,17 @@ class ReadStopped extends Schema.TaggedError<ReadStopped>()("ReadStopped", {
   retryAfterMs: Schema.NullOr(Schema.Number),
 }) {}
 
+// Queue refusals are transient limiter state, never persisted page snapshots.
+class OriginQueueWaitError extends Schema.TaggedError<OriginQueueWaitError>()(
+  "OriginQueueWaitError",
+  {
+    retryAfterMs: Schema.Number,
+    delayMs: Schema.Number,
+  },
+) {}
+
+const maxQueueWaitMs = 60_000;
+
 class PageExtractionError extends Schema.TaggedError<PageExtractionError>()("PageExtractionError", {
   cause: Schema.Defect(),
 }) {}
@@ -140,17 +152,18 @@ const make = Effect.gen(function* () {
   ) {
     const state = originFor(url.origin);
     const queuedAt = yield* Clock.currentTimeMillis;
-    return yield* Effect.gen(function* () {
+    const refuse = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
-      if (state.blockedUntil > now) {
-        yield* Ref.update(delay, (ms) => ms + now - queuedAt);
-        return yield* new ReadStopped({
-          status: "challenge",
-          httpStatus: null,
-          retryAfterMs: state.blockedUntil - now,
-        });
-      }
+      return yield* new OriginQueueWaitError({
+        retryAfterMs: Math.max(1, Math.max(state.blockedUntil, state.nextStart) - now),
+        delayMs: now - queuedAt,
+      });
+    });
+    const run = Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
       const spacing = Math.max(0, state.nextStart - now);
+      if (state.blockedUntil > now || now - queuedAt + spacing > maxQueueWaitMs)
+        return yield* refuse;
       if (spacing) yield* Effect.sleep(spacing);
       const startedAt = yield* Clock.currentTimeMillis;
       yield* Ref.update(delay, (ms) => ms + startedAt - queuedAt);
@@ -179,7 +192,17 @@ const make = Effect.gen(function* () {
       );
       if (response.status === 429) state.blockedUntil = Math.max(after + 60_000, state.nextStart);
       return response;
-    }).pipe(state.lock.withPermits(1));
+    });
+    // Once acquired, cancel the queue deadline; the lock still owns cleanup on cancellation.
+    const acquired = yield* Deferred.make<void>();
+    const deadline = Effect.raceFirst(
+      Effect.sleep(maxQueueWaitMs),
+      Deferred.await(acquired).pipe(Effect.andThen(Effect.never)),
+    );
+    return yield* Effect.raceFirst(
+      state.lock.withPermits(1)(Deferred.succeed(acquired, undefined).pipe(Effect.andThen(run))),
+      deadline.pipe(Effect.andThen(refuse)),
+    );
   });
 
   const robotRules = yield* Cache.makeWith(
@@ -228,7 +251,14 @@ const make = Effect.gen(function* () {
         retryAfterMs: null,
       });
     }),
-    { capacity: 1024, timeToLive: (exit) => (Exit.isSuccess(exit) ? "1 hour" : "1 minute") },
+    {
+      capacity: 1024,
+      timeToLive: (exit) => {
+        if (Exit.isSuccess(exit)) return "1 hour";
+        const error = Cause.findErrorOption(exit.cause);
+        return Option.isSome(error) && error.value._tag === "OriginQueueWaitError" ? 0 : "1 minute";
+      },
+    },
   );
 
   const fetchPage = Effect.fnUntraced(function* (original: URL) {
@@ -237,6 +267,7 @@ const make = Effect.gen(function* () {
     let finalUrl = original.href;
     let httpStatus: number | null = null;
     let retryAfterMs: number | null = null;
+    let cacheable = true;
     const fetch = Effect.gen(function* () {
       let url = original;
       const visited = new Set<string>();
@@ -314,6 +345,13 @@ const make = Effect.gen(function* () {
         PageExtractionError: () =>
           Effect.succeed({ status: "provider_error" as const, title: "", text: "" }),
         TimeoutError: () => Effect.succeed({ status: "timeout" as const, title: "", text: "" }),
+        OriginQueueWaitError: (error) => {
+          cacheable = false;
+          retryAfterMs = error.retryAfterMs;
+          return Ref.update(delay, (ms) => ms + error.delayMs).pipe(
+            Effect.as({ status: "challenge" as const, title: "", text: "" }),
+          );
+        },
         ReadStopped: (error) => {
           httpStatus = error.httpStatus;
           retryAfterMs = error.retryAfterMs;
@@ -342,7 +380,7 @@ const make = Effect.gen(function* () {
       delayMs: yield* Ref.get(delay),
       retryAfterMs,
     };
-    yield* cache.put(page);
+    if (cacheable) yield* cache.put(page);
     return page;
   });
 
