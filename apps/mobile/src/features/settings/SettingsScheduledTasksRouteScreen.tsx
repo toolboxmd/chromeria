@@ -1368,6 +1368,7 @@ function EnvironmentTasks({
                   Last run failed: {task.lastRunError}
                 </Text>
               ) : null}
+              <ScheduledTaskFork.ForkTaskSummaryText task={task} />
             </Pressable>
             <Menu
               actions={[
@@ -1418,7 +1419,6 @@ function EnvironmentTasks({
                   tintColorClassName="accent-icon"
                   type="monochrome"
                 />
-                <ScheduledTaskFork.ForkTaskSummaryText task={task} />
               </Pressable>
             </Menu>
           </View>

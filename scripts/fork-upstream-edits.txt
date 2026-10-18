@@ -411,9 +411,12 @@ packages/client-runtime/src/work-log/itemDetail.ts
 packages/shared/src/orchestrationV2PendingBackgroundWork.test.ts
 packages/shared/src/orchestrationV2PendingBackgroundWork.ts
 
-apps/server/src/persistence/Migrations.ts
+apps/server/src/persistence/Migrations/063_DropUnusedV1Projections.ts
 apps/server/src/persistence/Migrations/063_DropUnusedV1Projections.test.ts
 packages/source-control-github/package.json
 apps/server/src/sourceControl/builtInDrivers.ts
 apps/web/src/components/chat/RightPanelSurfaceContent.tsx
 apps/web/src/state/entities.ts
+apps/server/src/orchestration-v2/testkit/OrchestratorReplayRecovery.integration.test.ts
+apps/web/src/components/settings/ProviderSettingsPanel.environment.browser.test.tsx
+packages/client-runtime/src/state/presentation.test.ts

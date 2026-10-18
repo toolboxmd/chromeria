@@ -66,6 +66,7 @@ import { buildThreadRouteParams } from "../../threadRoutes";
 import {
   useProjects,
   useQuietThreadShell,
+  useServerConfigs,
   useThreadProjection,
   useThreadRelationshipShells,
 } from "../../state/entities";
@@ -357,6 +358,7 @@ export function ThreadRelationshipsPanel(props: {
   const ref = scopeThreadRef(props.environmentId, props.threadId);
   const projection = useThreadProjection(ref)?.projection ?? null;
   const providersByEnvironment = useEnvironmentProviders();
+  const serverConfigs = useServerConfigs();
   const relationshipShells = useThreadRelationshipShells(ref);
   const allProjects = useProjects();
   const archived = useArchivedThreadSnapshots([props.environmentId]);
@@ -493,10 +495,12 @@ export function ThreadRelationshipsPanel(props: {
     return null;
   }
 
-  const openThread = (threadId: ThreadId, environmentId: EnvironmentId = props.environmentId) => {
+  const openThread = (threadId: ThreadId, environmentId?: EnvironmentId) => {
     void navigate({
       to: "/$environmentId/$threadId",
-      params: buildThreadRouteParams(scopeThreadRef(environmentId, threadId)),
+      params: buildThreadRouteParams(
+        scopeThreadRef(environmentId ?? props.environmentId, threadId),
+      ),
     });
   };
 
@@ -645,7 +649,7 @@ export function ThreadRelationshipsPanel(props: {
               const remoteEnvironmentId = !isParent ? rowEnvironment : null;
               const rowEnvironmentId = remoteEnvironmentId ?? props.environmentId;
               const remoteUnreachable =
-                remoteEnvironmentId !== null && !providersByEnvironment.has(remoteEnvironmentId);
+                remoteEnvironmentId !== null && !serverConfigs.has(remoteEnvironmentId);
               const rowUnavailable =
                 remoteUnreachable || (node?.missing === true && remoteEnvironmentId === null);
               const canStop =

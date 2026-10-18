@@ -36,20 +36,22 @@ export function ClientPersonSelect({
   const save = async (next: string) => {
     if (!canEditPerson || saving) return;
     setSaving(true);
-    try {
-      await setServerClientSessionPerson(sessionId, next);
-      if (current && primaryEnvironmentId !== null) {
-        appAtomRegistry.refresh(environmentSession.sessionStateAtom(primaryEnvironmentId));
-      }
-    } catch (error) {
-      toastManager.add({
-        type: "error",
-        title: "Could not change the person",
-        description: error instanceof Error ? error.message : "An error occurred.",
+    await setServerClientSessionPerson(sessionId, next)
+      .then(() => {
+        if (current && primaryEnvironmentId !== null) {
+          appAtomRegistry.refresh(environmentSession.sessionStateAtom(primaryEnvironmentId));
+        }
+      })
+      .catch((error: unknown) => {
+        toastManager.add({
+          type: "error",
+          title: "Could not change the person",
+          description: error instanceof Error ? error.message : "An error occurred.",
+        });
+      })
+      .finally(() => {
+        setSaving(false);
       });
-    } finally {
-      setSaving(false);
-    }
   };
 
   return (

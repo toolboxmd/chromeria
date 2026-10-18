@@ -50,7 +50,12 @@ import { composerDraftHasUserContent, useComposerDraftStore } from "../../compos
 import { useEnvironmentScope } from "~/state/session";
 import { threadEnvironment } from "../../state/threads";
 import { vcsEnvironment } from "../../state/vcs";
-import { useChildThreadInputs, readThreadShell, waitForThreadShell } from "../../state/entities";
+import {
+  useChildThreadInputs,
+  readThreadShell,
+  useServerConfigs,
+  waitForThreadShell,
+} from "../../state/entities";
 import { environmentShell } from "../../state/shell";
 import { ThreadStatusLine } from "./ThreadStatusLine";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
@@ -60,7 +65,6 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { backgroundWorkNowItem, childInputNowItem, goalNowItem } from "./ThreadActivityBanners";
 import type { useLocalDispatchState } from "./useLocalDispatchState";
-import { useEnvironmentProviders } from "../../state/environments";
 const RELATED_THREAD_SHELL_WAIT_MS = 1_000;
 
 type PendingThreadRequests = ReturnType<typeof usePendingThreadRequests>;
@@ -437,7 +441,8 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     });
   };
   const onOpenRelatedThreadStable = useStableCallback(onOpenRelatedThread);
-  const environmentProviders = useEnvironmentProviders();
+  // Disabled environments drop out of the server configs, so their children cannot open.
+  const reachableEnvironments = useServerConfigs();
   const childThreadInputs = useChildThreadInputs(activeThreadRef);
   const childInputNow = childInputNowItem({
     childThreadInputs,
@@ -528,7 +533,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
         stopping: isStoppingBackgroundWork,
         onStop: handleStopBackgroundWorkStable,
         onOpenThread: onOpenRelatedThreadStable,
-        reachableEnvironments: environmentProviders,
+        reachableEnvironments,
       })
     : null;
   // The relative times read the clock; nowMinute re-renders them on the minute.

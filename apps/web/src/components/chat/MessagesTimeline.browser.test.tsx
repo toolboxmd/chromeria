@@ -1060,6 +1060,8 @@ it("opens a remote child in its environment and disables the link after disconne
   ] as unknown as ReadonlyArray<Entry>;
   {
     await using screen = await renderTimeline(entries, { onOpenThread });
+    const fold = screen.buttons(/^Worked for/)[0];
+    if (fold) await click(fold);
     await vi.waitFor(() => expect(screen.buttons("Open Remote roast")).toHaveLength(1));
     await click(screen.button("Open Remote roast"));
     expect(onOpenThread).toHaveBeenCalledWith("thread-remote-child", "environment-cavallo");
@@ -1068,6 +1070,8 @@ it("opens a remote child in its environment and disables the link after disconne
   onOpenThread.mockClear();
   try {
     await using screen = await renderTimeline(entries, { onOpenThread });
+    const disconnectedFold = screen.buttons(/^Worked for/)[0];
+    if (disconnectedFold) await click(disconnectedFold);
     await vi.waitFor(() => expect(screen.text()).toContain("Remote roast"));
     expect(screen.buttons("Open Remote roast")).toHaveLength(0);
     expect(onOpenThread).not.toHaveBeenCalled();

@@ -57,6 +57,12 @@ it.effect(
         status: run.status,
         delivery: "started",
       };
+      const parentShell = () =>
+        liveThreadShell(parentId, {
+          runtimeMode,
+          interactionMode,
+          activeRunId: live ? run.id : null,
+        });
       const dependencies = Layer.mergeAll(
         NodeServices.layer,
         Settings.layerTest(),
@@ -69,10 +75,11 @@ it.effect(
         Layer.mock(Providers.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
         Layer.mock(Adapters.ProviderAdapterRegistryV2)({ list: () => Effect.succeed([]) }),
         Layer.mock(Threads.ThreadManagementService)({
-          getThreadShell: (id) => Effect.succeed(liveThreadShell(id)),
+          getThreadShell: (id) =>
+            Effect.sync(() => (id === parentId ? parentShell() : liveThreadShell(id))),
           getThreadRecords: () =>
             Effect.sync(() => ({
-              ...idleThreadProjection(liveThreadShell(parentId, { runtimeMode, interactionMode })),
+              ...idleThreadProjection(parentShell()),
               runs: live ? [{ ...run, threadId: parentId, status: "running" as const }] : [],
             })),
           getProjectThreadRecords: ({ threadId }) =>
