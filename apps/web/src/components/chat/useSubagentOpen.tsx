@@ -15,7 +15,7 @@ import { RemoteTaskViewer } from "./RemoteTaskViewer";
 
 /** All task opens select the source viewer before considering destination profiles. */
 export function useSubagentOpen(
-  parentRef: ScopedThreadRef,
+  parentRef: ScopedThreadRef | null,
   agent: OrchestrationV2Subagent | null,
   onOpenThread: (threadId: ThreadId, environmentId?: EnvironmentId) => void,
   fallback: SubagentChildTarget | null = null,
@@ -37,7 +37,7 @@ export function useSubagentOpen(
       }
     },
     viewer:
-      viewing && source && agent !== null ? (
+      viewing && source && agent !== null && parentRef !== null ? (
         <RemoteTaskViewer
           environmentId={parentRef.environmentId}
           task={agent}

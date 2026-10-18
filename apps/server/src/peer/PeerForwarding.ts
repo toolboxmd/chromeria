@@ -153,33 +153,40 @@ const make = Effect.gen(function* () {
    * validates the originating grant through the concurrent control channel.
    */
   const forwardingCaller = (scope: Scope) =>
-    loadCaller().pipe(
-      Effect.tap((caller) =>
-        callerLinkOrigin(caller) === undefined
-          ? assertNotLinked(caller, "use this environment's links")
-          : Option.isSome(authority) && scope.thread !== undefined
-            ? authority.value.forThread(scope.thread.threadId).pipe(
-                Effect.flatMap((record) =>
-                  record?.ceiling.onward === true
-                    ? Effect.void
-                    : Effect.fail(
-                        new OrchestratorMcpFailure({
-                          code: "capability_denied",
-                          message: "This child's durable grant does not permit onward delegation.",
-                        }),
-                      ),
-                ),
-              )
-            : Effect.fail(
-                new OrchestratorMcpFailure({
-                  code: "capability_denied",
-                  message: "A peer link cannot forward through another environment's links.",
-                }),
-              ),
-      ),
-      Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
-      Effect.provideService(ThreadManagement.ThreadManagementService, threads),
-    );
+    Effect.gen(function* () {
+      const pendingRelay = yield* PeerAuthority.PendingRequestRelay;
+      return yield* loadCaller().pipe(
+        Effect.tap((caller) =>
+          pendingRelay && scope.client?.linked === true && scope.authority !== undefined
+            ? Effect.void
+            : callerLinkOrigin(caller) === undefined
+              ? assertNotLinked(caller, "use this environment's links")
+              : Option.isSome(authority) && scope.thread !== undefined
+                ? authority.value.forThread(scope.thread.threadId).pipe(
+                    Effect.flatMap((record) =>
+                      record?.ceiling.onward === true
+                        ? Effect.void
+                        : Effect.fail(
+                            new OrchestratorMcpFailure({
+                              code: "capability_denied",
+                              message:
+                                "This child's durable grant does not permit onward delegation.",
+                            }),
+                          ),
+                    ),
+                  )
+                : Effect.fail(
+                    new OrchestratorMcpFailure({
+                      code: "capability_denied",
+                      message: "A peer link cannot forward through another environment's links.",
+                    }),
+                  ),
+        ),
+        Effect.map((caller) => caller.limits),
+        Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+        Effect.provideService(ThreadManagement.ThreadManagementService, threads),
+      );
+    });
 
   /**
    * Every caller here reaches the peer as the one link session, so a retry
@@ -207,6 +214,14 @@ const make = Effect.gen(function* () {
     readOnly = false,
   ): Effect.Effect<A, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
+      if (toolName === "t3_pending_request_respond" || toolName === "t3_pending_request_dismiss") {
+        if (peers.requirePendingRequests === undefined)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "The peer does not support verified pending request actions.",
+          });
+        yield* peers.requirePendingRequests(environmentId, options?.expectedLinkIdentity);
+      }
       const encoded = (yield* Schema.encodeUnknownEffect(parameters as Schema.Encoder<unknown>)(
         params,
       ).pipe(Effect.mapError(unavailable))) as Record<string, unknown>;

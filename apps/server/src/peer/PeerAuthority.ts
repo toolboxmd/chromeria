@@ -79,11 +79,38 @@ const ReturnNotice = Schema.Struct({
   text: OrchestratorMcpThreadSendInput.fields.message,
   mode: Schema.Literals(["auto", "queue"]),
 });
+const PendingActor = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("thread"),
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("client"),
+    environmentId: EnvironmentId,
+    sessionId: AuthSessionId,
+  }),
+]);
+type PendingActor = typeof PendingActor.Type;
+/** Private service-owned markers; no MCP parameter supplies either value. */
+export const PendingRequestRelay = Context.Reference<boolean>("t3/peer/PendingRequestRelay", {
+  defaultValue: () => false,
+});
+export const PendingClientSession = Context.Reference<
+  { readonly sessionId: string; readonly readOnly: boolean } | undefined
+>("t3/peer/PendingClientSession", { defaultValue: () => undefined });
 const Frame = Schema.Struct({
   id: Schema.String,
   body: Schema.Union([
     Validation,
     ReturnNotice,
+    Schema.Struct({ type: Schema.Literal("request-actor"), envelope: PeerAuthorityEnvelope }),
+    Schema.Struct({
+      type: Schema.Literal("request-ancestry"),
+      pair: PeerReturnPair,
+      actor: PendingActor,
+      remaining: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 16 })),
+    }),
     Schema.Struct({
       type: Schema.Literal("pair"),
       envelope: PeerAuthorityEnvelope,
@@ -159,6 +186,14 @@ export class PeerAuthority extends Context.Service<
       scope: Invocation.McpInvocationScope,
       input: PeerTaskLifecycleRequest,
     ) => Effect.Effect<void, OrchestratorMcpFailure>;
+    readonly pendingWithinTask: (
+      ancestor: { readonly environmentId: EnvironmentId; readonly threadId: ThreadId },
+      target: ThreadId,
+    ) => Effect.Effect<boolean, OrchestratorMcpFailure>;
+    readonly pendingActor: (
+      scope: Invocation.McpInvocationScope,
+      target: ThreadId,
+    ) => Effect.Effect<"ancestor" | "client" | undefined, OrchestratorMcpFailure>;
     readonly enroll: (
       scope: Invocation.McpInvocationScope,
       peer: typeof PeerSession.Type,
@@ -264,7 +299,7 @@ const make = Effect.gen(function* () {
   yield* sql`CREATE INDEX IF NOT EXISTS peer_return_by_record ON peer_return_pairs (record_id)`;
   // Validation requests have a live waiter, unlike durable pair/return receipts.
   // A restarted server cannot resume that prior process's interactive request.
-  yield* sql`DELETE FROM peer_control_frames WHERE json_extract(frame_json, '$.body.type') = 'validate'`;
+  yield* sql`DELETE FROM peer_control_frames WHERE json_extract(frame_json, '$.body.type') IN ('validate','request-actor','request-ancestry')`;
   // Signals only avoid idle queries. Frames and answers are durable and replay after restart.
   const signals = new Map<string, Set<Deferred.Deferred<void>>>();
   const wake = (key: string) =>
@@ -526,7 +561,9 @@ const make = Effect.gen(function* () {
       }).pipe(
         Effect.ensuring(releaseSignal(`frame:${frame.id}`, responseSignal)),
         Effect.ensuring(
-          frame.body.type === "validate"
+          frame.body.type === "validate" ||
+            frame.body.type === "request-actor" ||
+            frame.body.type === "request-ancestry"
             ? sql`DELETE FROM peer_control_frames WHERE id = ${frame.id} AND session_id = ${sessionId}`.pipe(
                 Effect.orDie,
               )
@@ -721,6 +758,8 @@ const make = Effect.gen(function* () {
         if (record.originClientId === null)
           return yield* denied("A forwarding action requires its originating actor.");
         yield* activeSession(record.originClientId);
+        if (record.requestClientSessionId !== undefined)
+          yield* requireClient(record.requestClientSessionId, record.readOnly);
         if (record.parentId === null) return record.ceiling;
         const parent = yield* validate(yield* read(record.parentId));
         if (!parent.onward)
@@ -961,8 +1000,14 @@ const make = Effect.gen(function* () {
           : {}),
         ...(pair ? { pair } : {}),
       };
+      const clientSession = yield* PendingClientSession;
       const record: Authority = {
         id,
+        requestActorThreadId:
+          scope.client?.linked === true ? null : (scope.thread?.threadId ?? null),
+        ...(clientSession === undefined
+          ? {}
+          : { requestClientSessionId: AuthSessionId.make(clientSession.sessionId) }),
         peer: { environmentId: peer, generation },
         sessionId: null,
         localThreadId: scope.thread?.threadId ?? null,
@@ -1100,8 +1145,149 @@ const make = Effect.gen(function* () {
         return yield* denied("The return link generation was revoked or expired.");
       if (record.parentId !== null) yield* validateReturn(yield* read(record.parentId));
     });
+  const decodePendingActor = Schema.decodeUnknownEffect(PendingActor);
+  const requireClient = (sessionId: string, readOnly = false) =>
+    Effect.gen(function* () {
+      yield* activeSession(sessionId);
+      const session = yield* authSessions
+        .getById({ sessionId: AuthSessionId.make(sessionId) })
+        .pipe(Effect.mapError(unavailable));
+      if (
+        Option.isNone(session) ||
+        !session.value.scopes.includes(readOnly ? "orchestration:read" : "orchestration:operate")
+      )
+        return yield* denied("The source client cannot answer requests.");
+    });
+  const actorForRecord = (record: Authority): Effect.Effect<PendingActor, OrchestratorMcpFailure> =>
+    Effect.gen(function* () {
+      yield* validate(record);
+      if (record.sessionId !== null) {
+        return yield* decodePendingActor(
+          yield* ask(record.sessionId, {
+            id: `request-actor:${record.id}:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+            body: { type: "request-actor", envelope: record.envelope },
+          }),
+        ).pipe(Effect.mapError(unavailable));
+      }
+      if (record.requestClientSessionId !== undefined) {
+        yield* requireClient(record.requestClientSessionId, record.readOnly);
+        return { type: "client", environmentId: here, sessionId: record.requestClientSessionId };
+      }
+      if (record.requestActorThreadId != null)
+        return { type: "thread", environmentId: here, threadId: record.requestActorThreadId };
+      if (record.requestActorThreadId === null && record.parentId !== null)
+        return yield* actorForRecord(yield* read(record.parentId));
+      return yield* denied("The request has no verified originating thread or client.");
+    });
+  // Walk real local edges, then ask the owner of the exact authenticated pair.
+  // Environments may repeat in ancestry; the finite hop budget is not a transport route.
+  const ancestor = (
+    actor: PendingActor,
+    target: ThreadId,
+    remaining = 16,
+  ): Effect.Effect<boolean, OrchestratorMcpFailure> =>
+    Effect.gen(function* () {
+      const seen = new Set<ThreadId>();
+      let id = target;
+      while (!seen.has(id) && seen.size < 256) {
+        seen.add(id);
+        const shell = yield* threads.getThreadShell(id).pipe(Effect.mapError(unavailable));
+        if (shell === null || shell.deletedAt !== null || shell.archivedAt !== null) return false;
+        if (actor.type === "thread" && actor.environmentId === here && actor.threadId === id)
+          return true;
+        if (
+          shell.lineage.relationshipToParent === "subagent" &&
+          shell.lineage.parentThreadId !== null
+        ) {
+          id = shell.lineage.parentThreadId;
+          continue;
+        }
+        if (remaining <= 1) return false;
+        const rows = yield* sql<{
+          record_id: string;
+          pair_json: string;
+        }>`SELECT record_id,pair_json FROM peer_return_pairs WHERE json_extract(pair_json,'$.childEnvironmentId')=${here} AND json_extract(pair_json,'$.childThreadId')=${id}`.pipe(
+          Effect.mapError(unavailable),
+        );
+        if (rows.length !== 1) return false;
+        const pair = yield* decodePair(rows[0]!.pair_json).pipe(Effect.mapError(unavailable));
+        const owner = yield* read(rows[0]!.record_id);
+        if (owner.sessionId === null || owner.peer.environmentId !== pair.parentEnvironmentId)
+          return false;
+        yield* validateReturn(owner);
+        const result = yield* ask(owner.sessionId, {
+          id: `request-ancestry:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`,
+          body: { type: "request-ancestry", pair, actor, remaining: remaining - 1 },
+        });
+        return result === true;
+      }
+      return false;
+    });
+  const pendingActor: PeerAuthority["Service"]["pendingActor"] = (scope, target) =>
+    Effect.gen(function* () {
+      const clientSession = yield* PendingClientSession;
+      if (clientSession !== undefined) {
+        yield* requireClient(clientSession.sessionId, clientSession.readOnly);
+        return "client";
+      }
+      const actor: PendingActor =
+        scope.client?.linked === true && scope.authority !== undefined
+          ? yield* actorForRecord(scope.authority)
+          : scope.thread !== undefined
+            ? { type: "thread", environmentId: here, threadId: scope.thread.threadId }
+            : yield* denied(
+                "Only a verified ancestor or authenticated client may answer a request.",
+              );
+      if (actor.type === "client") return "client";
+      if (actor.environmentId === here && actor.threadId === target) return undefined;
+      return (yield* ancestor(actor, target)) ? "ancestor" : undefined;
+    });
   const process: PeerAuthority["Service"]["process"] = (peer, generation, frame) =>
     Effect.gen(function* () {
+      if (frame.body.type === "request-actor") {
+        const record = yield* read(frame.body.envelope.recordId);
+        if (
+          record.sessionId !== null ||
+          record.peer.environmentId !== peer ||
+          record.peer.generation !== generation ||
+          json(record.envelope) !== json(frame.body.envelope)
+        )
+          return yield* denied("The request actor belongs to another action or link.");
+        return yield* actorForRecord(record);
+      }
+      if (frame.body.type === "request-ancestry") {
+        const { pair, actor, remaining } = frame.body;
+        const rows = yield* sql<{
+          record_id: string;
+          pair_json: string;
+        }>`SELECT record_id,pair_json FROM peer_return_pairs WHERE task_id=${pair.taskId}`.pipe(
+          Effect.mapError(unavailable),
+        );
+        if (!rows[0] || rows[0].pair_json !== json(pair))
+          return yield* denied("Unknown request ancestry pair.");
+        const record = yield* read(rows[0].record_id);
+        if (
+          record.sessionId !== null ||
+          record.peer.environmentId !== peer ||
+          record.peer.generation !== generation ||
+          pair.parentEnvironmentId !== here ||
+          pair.childEnvironmentId !== peer
+        )
+          return yield* denied("The request ancestry belongs to another generation.");
+        yield* validateReturn(record);
+        const parent = yield* threads
+          .getThreadRecords(pair.parentThreadId, ["subagents"])
+          .pipe(Effect.mapError(unavailable));
+        const task = parent.subagents.find((task) => task.id === pair.taskId);
+        if (
+          !task ||
+          task.completionDelivery?.state === "disposed" ||
+          task.remoteChild?.threadId !== pair.childThreadId ||
+          ["cancelled", "interrupted"].includes(task.status)
+        )
+          return false;
+        return yield* ancestor(actor, pair.parentThreadId, remaining);
+      }
       if (frame.body.type === "pair") {
         const record = yield* read(frame.body.envelope.recordId);
         if (record.peer.environmentId !== peer || record.peer.generation !== generation)
@@ -1456,6 +1642,7 @@ const make = Effect.gen(function* () {
       return modes;
     });
   return PeerAuthority.of({
+    pendingWithinTask: (resource, target) => ancestor({ type: "thread", ...resource }, target),
     checkRecord: (id) => Effect.flatMap(read(id), validate).pipe(Effect.asVoid),
     authorizeTaskStop: (scope, input) =>
       Effect.gen(function* () {
@@ -1517,6 +1704,7 @@ const make = Effect.gen(function* () {
           return yield* denied("The stop has no orchestration grant.");
         return { ...record, ceiling };
       }),
+    pendingActor,
     verifyTask,
     verifyTaskReceipt: (scope, input) => verifyTask(scope, input, true),
     checkEffect,

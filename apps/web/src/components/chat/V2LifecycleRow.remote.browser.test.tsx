@@ -1,6 +1,6 @@
 import { act, cloneElement, type ReactElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { EnvironmentId, NodeId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, NodeId, ThreadId, type PeerTaskSnapshot } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import * as DateTime from "effect/DateTime";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
@@ -57,6 +57,10 @@ vi.mock("../../state/remoteTasks", async () => {
             environmentId: "cavallo",
             threadId: "remote-child",
             snapshot: {
+              sequence: 1,
+              executionSettled: false,
+              pendingQuestions: 0,
+              requests: [],
               title: "Source inspected work",
               observedAt: "2026-10-17T00:00:00Z",
               workState: "working",
@@ -65,7 +69,7 @@ vi.mock("../../state/remoteTasks", async () => {
               requestCount: 0,
               recoveryWaiting: false,
               incomplete: false,
-            },
+            } satisfies PeerTaskSnapshot,
             childrenTruncated: false,
             children: [],
             messages: [{ id: "source-message", role: "assistant", text: "Read through A" }],

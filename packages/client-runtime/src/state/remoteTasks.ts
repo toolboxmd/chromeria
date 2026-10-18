@@ -15,7 +15,15 @@ export function createRemoteTaskState<R, E>(
     label: "remote-tasks:stop",
     tag: WS_METHODS.remoteTaskStop,
   });
-  return { view, stop };
+  const request = createEnvironmentRpcCommand(runtime, {
+    label: "remote-tasks:request",
+    tag: WS_METHODS.remoteTaskRequest,
+  });
+  const readRequest = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "remote-tasks:read-request",
+    tag: WS_METHODS.remoteTaskRequestRead,
+  });
+  return { view, stop, request, readRequest };
 }
 
 /** Imported jobs keep direct navigation; only acknowledged source-owned support selects this viewer. */

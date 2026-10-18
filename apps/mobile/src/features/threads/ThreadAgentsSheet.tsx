@@ -45,6 +45,15 @@ export function useThreadTurnSubagents(target: AgentsTarget | null): ThreadTurnS
   );
 }
 
+const EMPTY_PENDING_REMOTE_TASKS = Atom.make<ReadonlyArray<OrchestrationV2Subagent>>([]);
+export function usePendingRemoteTasks(target: AgentsTarget | null) {
+  return useAtomValue(
+    target === null
+      ? EMPTY_PENDING_REMOTE_TASKS
+      : environmentThreadDetails.pendingRemoteTasksAtom(target),
+  );
+}
+
 export function ThreadAgentsSheet({ route }: StaticScreenProps<AgentsTarget>) {
   const { layout } = useAdaptiveWorkspaceLayout();
   const target = route.params;

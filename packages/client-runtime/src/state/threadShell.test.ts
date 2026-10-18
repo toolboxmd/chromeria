@@ -53,6 +53,33 @@ function makeHarness(environmentIds: ReadonlyArray<EnvironmentId> = [environment
 }
 
 describe("v2 thread shell lists", () => {
+  it("keeps remote attention on a source-only shell and propagates through real local ancestry", () => {
+    const { registry, threads, snapshotAtom } = makeHarness();
+    const root = { ...v2ThreadShell, id: ThreadId.make("remote369-root") };
+    const local = {
+      ...v2ThreadShell,
+      id: ThreadId.make("remote369-local"),
+      lineage: {
+        rootThreadId: root.id,
+        parentThreadId: root.id,
+        relationshipToParent: "subagent" as const,
+      },
+      remotePendingRequest: "approval" as const,
+    };
+    registry.set(snapshotAtom(environmentId), { ...v2ShellSnapshot, threads: [root, local] });
+    const rootAtom = threads.threadShellAtom({ environmentId, threadId: root.id });
+    const localAtom = threads.threadShellAtom({ environmentId, threadId: local.id });
+    expect(registry.get(rootAtom)?.pendingSubagentRequest).toBe("approval");
+    expect(registry.get(localAtom)?.pendingSubagentRequest).toBe("approval");
+    registry.set(snapshotAtom(environmentId), {
+      ...v2ShellSnapshot,
+      threads: [root, { ...local, remotePendingRequest: null }],
+    });
+    expect(registry.get(rootAtom)?.pendingSubagentRequest).toBeNull();
+    expect(registry.get(localAtom)?.pendingSubagentRequest).toBeNull();
+    registry.dispose();
+  });
+
   it("preserves ordered reference arrays when a middle thread changes", () => {
     const { registry, threads, snapshotAtom } = makeHarness();
     const snapshot = {
