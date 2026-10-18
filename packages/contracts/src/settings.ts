@@ -16,6 +16,7 @@ import {
   ForwardCompatibleNullable,
   ForwardCompatibleOptional,
   OmittedWhenNull,
+  EnvironmentId,
   ProjectId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -1052,6 +1053,9 @@ export const StorageCleanupSettings = Schema.Struct({
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
 export const ServerSettings = Schema.Struct({
+  webResearch: Schema.Struct({
+    host: Schema.NullOr(EnvironmentId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  }).pipe(Schema.withDecodingDefault(Effect.succeed({ host: null }))),
   // Null means no client has migrated this preference yet; an empty value is
   // authoritative so another device cannot resurrect cleared preferences.
   favorites: Schema.NullOr(ModelFavorites).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -1360,6 +1364,7 @@ const ModelSelectionPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  webResearch: Schema.optionalKey(Schema.Struct({ host: Schema.NullOr(EnvironmentId) })),
   setModelFavorites: Schema.optionalKey(
     Schema.Array(Schema.Struct({ ...ModelFavorite.fields, favorite: Schema.Boolean })),
   ),

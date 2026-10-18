@@ -97,7 +97,7 @@ flowchart TD
     OAG["Outside-agent grants"]
     %% OAG: #553 PR #558
     WR["Agent web research"]
-    %% WR: #423 PR #453
+    %% WR: #423 PR #455
     WRR["Headless page rendering"]
     %% WRR: #442
     WR --- WRR

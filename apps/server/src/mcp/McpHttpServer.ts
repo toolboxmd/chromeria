@@ -72,6 +72,7 @@ import { HtmlPreviewTool, HtmlPreviewToolkit, HtmlRenderToolkit } from "./toolki
 import * as WebResearchHandlers from "./toolkits/webResearch/handlers.ts";
 import { WebResearchToolkit } from "./toolkits/webResearch/tools.ts";
 import * as WebResearch from "../webResearch/WebResearch.ts";
+import * as ResearchHost from "../webResearch/ResearchHost.ts";
 import * as PageCache from "../webResearch/PageCache.ts";
 import * as PublicHttp from "../webResearch/PublicHttp.ts";
 import * as PublicRender from "../webResearch/PublicRender.ts";
@@ -841,10 +842,82 @@ export const layerHtmlToolkit = Layer.mergeAll(
   imageToolRegistration(registerHtmlPreview(), HtmlHandlers.layerPreview),
 ).pipe(Layer.provide(HtmlRender.layer));
 
+// Effect's generic registration displays Error.message instead of encoding the
+// declared error schema. Research peers need the code as well as the message.
+const registerWebRead = Effect.fn("McpHttpServer.registerWebRead")(function* () {
+  const server = yield* McpServer.McpServer;
+  const research = yield* ResearchHost.ResearchHost;
+  const threads = yield* ThreadManagementService.ThreadManagementService;
+  const built = yield* WebResearchToolkit;
+  const tool = WebResearchToolkit.tools.web_read;
+  yield* server.addTool({
+    tool: new McpSchema.Tool({
+      name: tool.name,
+      description: Tool.getDescription(tool),
+      inputSchema: Tool.getJsonSchema(tool),
+      outputSchema: Tool.getJsonSchemaFromSchema(tool.successSchema),
+      annotations: {
+        ...Context.getOption(tool.annotations, Tool.Title).pipe(
+          Option.map((title) => ({ title })),
+          Option.getOrUndefined,
+        ),
+        readOnlyHint: Context.get(tool.annotations, Tool.Readonly),
+        destructiveHint: Context.get(tool.annotations, Tool.Destructive),
+        idempotentHint: Context.get(tool.annotations, Tool.Idempotent),
+        openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
+      },
+    }),
+    annotations: tool.annotations,
+    handle: (payload) =>
+      Effect.withFiber((fiber) =>
+        built.handle("web_read", payload).pipe(
+          Stream.unwrap,
+          Stream.run(Sink.last()),
+          Effect.flatMap(Effect.fromOption),
+          Effect.provideService(ResearchHost.ResearchHost, research),
+          Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+          Effect.provideService(
+            McpInvocationContext.McpInvocationContext,
+            Context.getUnsafe(fiber.context, McpInvocationContext.McpInvocationContext),
+          ),
+          Effect.map(
+            ({ encodedResult }) =>
+              new McpSchema.CallToolResult({
+                structuredContent: encodedResult,
+                content: [{ type: "text", text: encodeJsonText(encodedResult) }],
+              }),
+          ),
+          Effect.catchTags({
+            AiError: (error) =>
+              Effect.fail(
+                error.reason._tag === "ToolParameterValidationError"
+                  ? new McpSchema.InvalidParams({ message: error.reason.message })
+                  : new McpSchema.InternalError({ message: "The research read failed." }),
+              ),
+            NoSuchElementError: () =>
+              Effect.fail(
+                new McpSchema.InternalError({ message: "The research read returned no result." }),
+              ),
+            OrchestratorMcpFailure: (error) => {
+              const failure = { code: error.code, message: error.message };
+              // outputSchema describes pages. SDK clients also validate error structuredContent.
+              return Effect.succeed(
+                new McpSchema.CallToolResult({
+                  isError: true,
+                  content: [{ type: "text", text: encodeJsonText(failure) }],
+                }),
+              );
+            },
+          }),
+        ),
+      ),
+  });
+});
+
 // One environment-owned reader/cache/limiter is shared by all MCP sessions.
-export const layerWebResearchToolkit = toolkitRegistration(
-  WebResearchToolkit,
-  WebResearchHandlers.layer,
+export const layerWebResearchToolkit = Layer.effectDiscard(registerWebRead()).pipe(
+  Layer.provide(McpToolAccess.HandlersLayer.layer(WebResearchHandlers.layer)),
+  Layer.provide(ResearchHost.layer),
 );
 
 const layerWebResearch = layerWebResearchToolkit.pipe(

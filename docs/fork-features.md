@@ -2398,15 +2398,17 @@ sources and reasons.
 ```json
 {
   "id": "agent-web-research",
-  "purpose": "Read research pages through one caller-gated MCP service with full text, typed failures, isolated headless rendering for thin/consent pages, a shared page cache, an origin limiter and provenance.",
+  "purpose": "Read research pages through one caller-gated MCP service with full text, typed failures, isolated headless rendering for thin/consent pages, a shared page cache, an origin limiter and provenance; optionally share one linked environment's reader with caller limits and cache ownership preserved.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/423",
     "https://github.com/toolboxmd/chromeria/issues/440",
-    "https://github.com/toolboxmd/chromeria/issues/442"
+    "https://github.com/toolboxmd/chromeria/issues/442",
+    "https://github.com/toolboxmd/chromeria/issues/443"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/449",
-    "https://github.com/toolboxmd/chromeria/pull/453"
+    "https://github.com/toolboxmd/chromeria/pull/453",
+    "https://github.com/toolboxmd/chromeria/pull/455"
   ],
   "newFiles": [
     "apps/server/src/mcp/WebResearch.integration.test.ts",
@@ -2419,9 +2421,12 @@ sources and reasons.
     "apps/server/src/webResearch/PublicHttp.ts",
     "apps/server/src/webResearch/PublicRender.test.ts",
     "apps/server/src/webResearch/PublicRender.ts",
+    "apps/server/src/webResearch/ResearchHost.test.ts",
+    "apps/server/src/webResearch/ResearchHost.ts",
     "apps/server/src/webResearch/WebResearch.ts",
     "apps/server/src/webResearch/extract.ts",
-    "apps/server/src/webResearch/schemas.ts"
+    "apps/server/src/webResearch/schemas.ts",
+    "packages/contracts/src/researchHost.test.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/htmlRender/publicProxy.ts",
@@ -2431,11 +2436,19 @@ sources and reasons.
     "GLOSSARY.md",
     "apps/server/package.json",
     "apps/server/src/mcp/McpHttpServer.ts",
+    "apps/server/src/mcp/McpRouting.ts",
+    "apps/server/src/mcp/McpToolAccess.ts",
+    "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
+    "apps/server/src/auth/RpcAuthorization.test.ts",
+    "apps/server/src/serverSettings.test.ts",
     "docs/map.md",
+    "docs/user/remote-access.md",
+    "packages/contracts/src/settings.ts",
+    "packages/contracts/src/orchestratorMcp.ts",
     "packages/provider-core/src/server/orchestrationInstructions.ts",
     "pnpm-lock.yaml"
   ],
-  "keywords": ["web_read", "WebResearch", "web-cache", "ChromeriaResearch"]
+  "keywords": ["web_read", "WebResearch", "ResearchHost", "web-cache", "ChromeriaResearch"]
 }
 ```
 

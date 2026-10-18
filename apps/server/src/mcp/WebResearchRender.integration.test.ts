@@ -30,7 +30,10 @@ import * as PageCache from "../webResearch/PageCache.ts";
 import * as PublicHttp from "../webResearch/PublicHttp.ts";
 import * as PublicRender from "../webResearch/PublicRender.ts";
 import * as WebResearch from "../webResearch/WebResearch.ts";
-import { WebReadResult } from "../webResearch/schemas.ts";
+import { HostedWebReadResult } from "../webResearch/ResearchHost.ts";
+import * as Settings from "../serverSettings.ts";
+import * as PeerForwarding from "../peer/PeerForwarding.ts";
+import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as Invocation from "./McpInvocationContext.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 
@@ -47,7 +50,7 @@ const client = McpSchema.McpServerClient.of({
   },
   getClient: Effect.die("unused"),
 });
-const decodeResult = Schema.decodeUnknownEffect(WebReadResult);
+const decodeResult = Schema.decodeUnknownEffect(HostedWebReadResult);
 const read = Effect.fnUntraced(function* (arguments_: Record<string, unknown>) {
   const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
   yield* worker.drain();
@@ -120,6 +123,9 @@ const fixture = Effect.fnUntraced(function* (
   const layer = McpHttpServer.layerWebResearchToolkit.pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provide(reader),
+    Layer.provide(Settings.layerTest()),
+    Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+    Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
     Layer.provideMerge(runtime),
     Layer.provide(NodeCrypto.layer),
   );
@@ -189,7 +195,11 @@ it.effect.each([
           nextOffset: 20_000,
           delayMs: 3000,
         });
-        const rest = yield* read({ cacheId: result.cacheId, offset: result.nextOffset });
+        const rest = yield* read({
+          cacheId: result.cacheId,
+          cacheEnvironmentId: result.cacheEnvironmentId,
+          offset: result.nextOffset,
+        });
         expect(result.text + rest.text).toContain("| Family | 4 |");
         expect(result.text + rest.text).toContain("https://render.example/camere");
         expect(result.text + rest.text).toContain('"numberOfRooms":8');
@@ -625,7 +635,11 @@ it.effect.each(["continuation", "repeat"] as const)(
         });
         const cached = yield* read(
           followUp === "continuation"
-            ? { cacheId: result.cacheId, offset: result.nextOffset }
+            ? {
+                cacheId: result.cacheId,
+                cacheEnvironmentId: result.cacheEnvironmentId,
+                offset: result.nextOffset,
+              }
             : { url: "https://render.example/" },
         );
         expect(cached).toMatchObject({
@@ -745,7 +759,11 @@ it.effect(
           expect(result.text.length + child.text.length).toBe(20_000);
           expect(child.nextOffset).not.toBeNull();
           expect(result.truncationReasons).toContain("output_budget");
-          const rest = yield* read({ cacheId: child.cacheId, offset: child.nextOffset });
+          const rest = yield* read({
+            cacheId: child.cacheId,
+            cacheEnvironmentId: child.cacheEnvironmentId,
+            offset: child.nextOffset,
+          });
           expect(rest).toMatchObject({ rung: "cache", sourceRung: "render", subpages: [] });
           expect(child.text + rest.text).toContain("| Family | 4 |");
           expect(child.text + rest.text).toContain('"numberOfRooms":8');
