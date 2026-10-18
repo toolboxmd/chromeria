@@ -3,6 +3,8 @@ import {
   CommandId,
   EventId,
   type OrchestrationV2Run,
+  type OrchestrationV2TurnItem,
+  type TurnItemId,
   OrchestrationV2RunJson,
   OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
@@ -336,19 +338,37 @@ const layerBase: Layer.Layer<
             : [],
         ),
       );
-      return Effect.forEach(
-        events,
-        (event): Effect.Effect<OrchestrationV2DomainEvent, unknown> =>
-          event.type === "turn-item.updated"
-            ? turnItemPositions
-                .normalize(
-                  event.payload,
-                  event.payload.runId === null ? undefined : runOrdinals.get(event.payload.runId),
-                )
-                .pipe(Effect.map((payload) => ({ ...event, payload })))
-            : Effect.succeed(event),
-        { concurrency: 1 },
-      );
+      return Effect.gen(function* () {
+        const normalized: Array<OrchestrationV2DomainEvent> = [];
+        const pendingItems = new Map<TurnItemId, OrchestrationV2TurnItem>();
+        for (const event of events) {
+          if (event.type !== "turn-item.updated") {
+            normalized.push(event);
+            continue;
+          }
+          const payload = yield* turnItemPositions.normalize(
+            event.payload,
+            event.payload.runId === null ? undefined : runOrdinals.get(event.payload.runId),
+          );
+          // Compare after position allocation, inside the write transaction.
+          // Independent deliveries and commands can repeat a stored snapshot.
+          const previous =
+            pendingItems.get(payload.id) ??
+            (yield* projectionStore.getTurnItem({
+              threadId: payload.threadId,
+              itemId: payload.id,
+            }));
+          if (previous !== null && previous !== undefined) {
+            const unchanged =
+              (yield* ProjectionStore.encodeTurnItemPayload(previous)) ===
+              (yield* ProjectionStore.encodeTurnItemPayload(payload));
+            if (unchanged) continue;
+          }
+          pendingItems.set(payload.id, payload);
+          normalized.push({ ...event, payload });
+        }
+        return normalized;
+      });
     };
 
     const applyStoredEvents = (storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>) =>
@@ -670,7 +690,12 @@ const layerBase: Layer.Layer<
           ) {
             if (Option.isSome(yield* commandReceipts.getByCommandId(input.commandId))) {
               const existing = yield* existingCommandResult(input.commandId);
-              return { ...existing, committed: false as const, cancelledEffectIds: [] };
+              return {
+                ...existing,
+                committed: false as const,
+                cancelledEffectIds: [],
+                enqueuedEffectCount: 0,
+              };
             }
             standaloneDeclineEvent = yield* patchRestartCutDecline(input);
             if (standaloneDeclineEvent === undefined) {
@@ -689,6 +714,7 @@ const layerBase: Layer.Layer<
                 storedEvents: [],
                 committed: false as const,
                 cancelledEffectIds: [],
+                enqueuedEffectCount: 0,
               };
             }
           }
@@ -703,7 +729,12 @@ const layerBase: Layer.Layer<
           });
           if (!reserved) {
             const existing = yield* existingCommandResult(input.commandId);
-            return { ...existing, committed: false as const, cancelledEffectIds: [] };
+            return {
+              ...existing,
+              committed: false as const,
+              cancelledEffectIds: [],
+              enqueuedEffectCount: 0,
+            };
           }
 
           yield* validateForkStateOnlyCommand({
@@ -732,6 +763,7 @@ const layerBase: Layer.Layer<
                   storedEvents: [],
                   committed: true as const,
                   cancelledEffectIds: [],
+                  enqueuedEffectCount: 0,
                 };
               }
             }
@@ -808,7 +840,13 @@ const layerBase: Layer.Layer<
               );
             }
           }
-          return { receipt, storedEvents, committed: true as const, cancelledEffectIds };
+          return {
+            receipt,
+            storedEvents,
+            committed: true as const,
+            cancelledEffectIds,
+            enqueuedEffectCount: input.effects.length,
+          };
         }),
         (result) =>
           Effect.gen(function* () {
@@ -816,8 +854,8 @@ const layerBase: Layer.Layer<
               result.cancelledEffectIds,
               input.cancelUnsettledEffects?.drain,
             );
-            if (result.committed && result.storedEvents.length > 0 && input.effects.length > 0) {
-              yield* effectOutbox.notifyAvailable(input.effects.length);
+            if (result.enqueuedEffectCount > 0) {
+              yield* effectOutbox.notifyAvailable(result.enqueuedEffectCount);
             }
             if (result.committed) yield* publishStoredEvents(result.storedEvents);
           }),
