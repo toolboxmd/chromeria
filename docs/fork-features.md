@@ -2198,3 +2198,39 @@ sources and reasons.
   "keywords": ["canRouteRelatedSubagent", "relatedThreadIds", "activeChildProviderTurns"]
 }
 ```
+
+## agent-web-research
+
+```json
+{
+  "id": "agent-web-research",
+  "purpose": "Read research pages through one caller-gated MCP service with full text, typed failures, a shared page cache, an origin limiter and provenance.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/423",
+    "https://github.com/toolboxmd/chromeria/issues/440"
+  ],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/449"],
+  "newFiles": [
+    "apps/server/src/mcp/WebResearch.integration.test.ts",
+    "apps/server/src/mcp/toolkits/webResearch/handlers.test.ts",
+    "apps/server/src/mcp/toolkits/webResearch/handlers.ts",
+    "apps/server/src/mcp/toolkits/webResearch/tools.ts",
+    "apps/server/src/webResearch/PageCache.ts",
+    "apps/server/src/webResearch/PublicHttp.test.ts",
+    "apps/server/src/webResearch/PublicHttp.ts",
+    "apps/server/src/webResearch/WebResearch.ts",
+    "apps/server/src/webResearch/extract.ts",
+    "apps/server/src/webResearch/schemas.ts"
+  ],
+  "upstreamFiles": ["apps/server/src/htmlRender/publicProxy.ts"],
+  "sharedFiles": [
+    "GLOSSARY.md",
+    "apps/server/package.json",
+    "apps/server/src/mcp/McpHttpServer.ts",
+    "docs/map.md",
+    "packages/provider-core/src/server/orchestrationInstructions.ts",
+    "pnpm-lock.yaml"
+  ],
+  "keywords": ["web_read", "WebResearch", "web-cache", "ChromeriaResearch"]
+}
+```

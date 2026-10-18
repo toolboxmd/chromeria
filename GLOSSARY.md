@@ -292,3 +292,15 @@ _Avoid_: repeated correction
 A serve that the harness's own records prove the model received, followed by a
 response to that input. Without that proof, the serve is unknown.
 _Avoid_: delivered, injected (for this proof)
+
+## Research
+
+**Fetch ladder**:
+The ordered ways Chromeria tries to read a research page, stopping when one
+returns usable content.
+_Avoid_: rung list
+
+**Page cache**:
+Chromeria's reusable store of research pages and their provenance, shared by
+threads that use the same research environment.
+_Avoid_: scrape cache

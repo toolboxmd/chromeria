@@ -441,3 +441,6 @@ packages/shared/src/projectSettings.ts
 apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash/input.ts
 apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash/output.ts
 apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash_fast_wake/input.ts
+
+# Public research reads reuse the preview network block list (#423, #440)
+apps/server/src/htmlRender/publicProxy.ts
