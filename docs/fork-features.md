@@ -239,6 +239,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
   "issues": [
     "https://github.com/toolboxmd/t3code/issues/6",
     "https://github.com/toolboxmd/t3code/issues/20",
+    "https://github.com/toolboxmd/chromeria/issues/244",
     "https://github.com/toolboxmd/chromeria/issues/308",
     "https://github.com/toolboxmd/chromeria/issues/370",
     "https://github.com/toolboxmd/chromeria/issues/411"
@@ -246,6 +247,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/9",
     "https://github.com/toolboxmd/t3code/pull/24",
+    "https://github.com/toolboxmd/chromeria/compare/main...fix/244-acp-replay-atomic-status",
     "https://github.com/toolboxmd/chromeria/pull/309",
     "https://github.com/toolboxmd/chromeria/pull/373",
     "https://github.com/toolboxmd/chromeria/pull/419"
@@ -269,6 +271,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     ".github/workflows/ci.yml",
     ".github/workflows/mobile-fingerprint-check.yml",
     "AGENTS.md",
+    "apps/server/scripts/acp-replay-agent.ts",
     "apps/server/src/auth/PairingGrantStore.test.ts",
     "apps/server/src/device/DeviceService.ts",
     "apps/server/src/device/LocalDeviceHost.test.ts",
