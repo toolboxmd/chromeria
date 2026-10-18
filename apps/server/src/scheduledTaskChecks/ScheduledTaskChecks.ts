@@ -574,7 +574,7 @@ const decoratedLayer = Layer.effect(
           Stream.mapEffect(attachList),
           Stream.map((result) => ({ ...result, tasks: result.tasks.map(withoutCommandOutput) })),
         ),
-      upsert: (input) =>
+      upsert: (input, options) =>
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis;
           const { tasks } = yield* inner.list();
@@ -608,7 +608,7 @@ const decoratedLayer = Layer.effect(
                   : chooseWeeklyMinutes(schedule, busyMinutes(tasks, input.id, now), now),
             };
           }
-          const result = yield* inner.upsert({ ...input, schedule });
+          const result = yield* inner.upsert({ ...input, schedule }, options);
           return { task: yield* attach(result.task) };
         }),
       setEnabled: (input) =>
