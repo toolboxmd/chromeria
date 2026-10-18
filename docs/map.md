@@ -57,6 +57,8 @@ flowchart TD
     %% MI: #205
     BR["Bounded event reads"]
     %% BR: #256
+    TIW["Turn-item writes"]
+    %% TIW: #425 PR #433
     PU["Provider updates"]
     %% PU: #263
     RS["Resume after restart"]
@@ -89,6 +91,7 @@ flowchart TD
     T3S --- UA
     T3C --- MI
     T3S --- BR
+    T3S --- TIW
     T3P --- PU
     T3T --- RS
     T3T --- SN

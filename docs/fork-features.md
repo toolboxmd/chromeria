@@ -2132,3 +2132,26 @@ sources and reasons.
   "keywords": ["listedSession", "reconcileRelayRoutes", "watchAccountRelayRoutes"]
 }
 ```
+
+## unchanged-turn-items
+
+```json
+{
+  "id": "unchanged-turn-items",
+  "purpose": "Ingest shared-session turn-item deliveries once across overlapping run observers, and skip unchanged snapshots at the event sink; carried upstream fix.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/425"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/433"],
+  "newFiles": ["apps/server/src/orchestration-v2/testkit/TurnItemRedelivery.integration.test.ts"],
+  "upstreamFiles": [],
+  "sharedFiles": [
+    "apps/server/src/fork/commitSequence.ts",
+    "apps/server/src/orchestration-v2/EventSink.ts",
+    "apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
+    "apps/server/src/orchestration-v2/ProjectionStore.ts",
+    "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+    "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+    "apps/server/src/orchestration-v2/RunExecutionService.ts"
+  ],
+  "keywords": ["pendingItems", "itemIngestions", "encodeTurnItemPayload"]
+}
+```
