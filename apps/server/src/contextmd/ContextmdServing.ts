@@ -84,6 +84,9 @@ export const MOMENT_BUDGET_MS = 1200;
 const REPLY_RESERVE_MS = 250;
 /** A Cue wait ends this long before the moment's work is cut, so a late score still leaves it served. */
 const CUE_MARGIN_MS = 50;
+/** Only unmatched startup hooks wait; leave the rest of the moment's budget for selection. */
+const RUN_JOIN_WAIT_MS = 500;
+const RUN_JOIN_RECHECK_MS = 25;
 /** Cue's window reads the last user messages, the replies between them and the work since the last one. */
 const TRANSCRIPT_USERS = 6;
 const TRANSCRIPT_REPLIES = 100;
@@ -761,6 +764,24 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed((): RunJoin => ({ type: "unjoined" })),
     );
 
+  const joinStartup = Effect.fnUntraced(function* (session: string, kind: string) {
+    let join = yield* resolveRun(session);
+    if (join.type !== "unjoined" || (kind !== "session_start" && kind !== "user_message"))
+      return join;
+    const starting = yield* sql`SELECT 1 FROM orchestration_v2_projection_runs
+      WHERE status = 'starting'
+      LIMIT 1`;
+    if (starting.length === 0) return join;
+    // Session loading can emit hooks before it returns the native id to the run registrar.
+    // Never infer ownership from a starting run: only the exact native-session join can serve.
+    const until = (yield* Clock.currentTimeMillis) + RUN_JOIN_WAIT_MS;
+    while (join.type === "unjoined" && (yield* Clock.currentTimeMillis) < until) {
+      yield* Effect.sleep(Duration.millis(RUN_JOIN_RECHECK_MS));
+      join = yield* resolveRun(session);
+    }
+    return join;
+  });
+
   const threadDirectory = (threadId: string) =>
     sql<{ readonly directory: string | null }>`
       SELECT COALESCE(json_extract(t.payload_json, '$.worktreePath'), p.workspace_root) AS directory
@@ -1023,7 +1044,7 @@ const make = Effect.gen(function* () {
           Effect.flatMap((config) =>
             Effect.gen(function* () {
               const identity = yield* Select.identify(harness, raw.value);
-              const join = yield* during("run_join", resolveRun(identity.session));
+              const join = yield* during("run_join", joinStartup(identity.session, identity.kind));
               const directory =
                 join.type === "run"
                   ? yield* during("project_directory", threadDirectory(join.threadId))
