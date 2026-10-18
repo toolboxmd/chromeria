@@ -8,6 +8,7 @@ import {
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -23,6 +24,7 @@ import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as Registry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as Replay from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as PreviewBrowser from "../preview/PreviewBrowser.ts";
 import * as PageCache from "../webResearch/PageCache.ts";
 import * as PublicHttp from "../webResearch/PublicHttp.ts";
 import * as PublicRender from "../webResearch/PublicRender.ts";
@@ -334,6 +336,7 @@ it.effect("shares in-flight renders and caps concurrency at two across MCP calle
       const c = yield* f.start("https://three.example/");
       expect(active).toBe(2);
       expect(yield* Queue.size(entered)).toBe(0);
+      yield* TestClock.adjust(1000);
       yield* Deferred.succeed(release, undefined);
       expect(yield* Queue.take(entered)).toBe("https://three.example/");
       const results = yield* Effect.all([
@@ -349,6 +352,7 @@ it.effect("shares in-flight renders and caps concurrency at two across MCP calle
         sourceRung: "render",
       });
       expect(renders).toBe(3);
+      expect(results[3]!.delayMs).toBe(4000);
       expect(peak).toBe(2);
       expect(active).toBe(0);
       expect(yield* Queue.size(f.requests)).toBe(0);
@@ -496,4 +500,65 @@ it.effect("render navigations cannot bypass robots or introduce unsupported docu
       expect(yield* Queue.size(f.requests)).toBe(0);
     }).pipe(Effect.provide(f.layer));
   }),
+);
+
+it.effect(
+  "the pinned renderer preserves an HTTP redirect's final error status through MCP",
+  (ctx) =>
+    Effect.gen(function* () {
+      const executable = (yield* HostProcess.Environment).T3CODE_TEST_HEADLESS_SHELL;
+      if (!executable)
+        return ctx.skip("Set T3CODE_TEST_HEADLESS_SHELL to the installed pinned shell.");
+      const rendererLayer = PublicRender.layer.pipe(
+        Layer.provide(
+          Layer.succeed(PreviewBrowser.PreviewBrowser, {
+            installed: Effect.succeedSome(executable),
+            executable: Effect.die("Research must not install a browser."),
+          }),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const renderer = yield* PublicRender.PublicRender;
+        const f = yield* fixture(renderer.render, (url) =>
+          Effect.succeed(
+            url.pathname === "/"
+              ? response("<script>location.href='/it';</script>")
+              : url.pathname === "/it"
+                ? {
+                    ...response("", 302),
+                    headers: { "content-type": "text/plain", location: "/it/" },
+                  }
+                : response(
+                    `<h1>Page not found</h1><p>${"Ordinary server response text. ".repeat(10)}</p>`,
+                    404,
+                  ),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const before = yield* f.setup;
+          const work = yield* f.start();
+          yield* TestClock.adjust(3000);
+          expect((yield* Queue.take(f.requests)).url).toBe("https://render.example/it");
+          yield* TestClock.adjust(3000);
+          expect((yield* Queue.take(f.requests)).url).toBe("https://render.example/it/");
+          const result = yield* Fiber.join(work);
+          expect(result).toMatchObject({
+            status: "origin_error",
+            httpStatus: 404,
+            sourceRung: "render",
+            rung: "render",
+            finalUrl: "https://render.example/it/",
+            text: "",
+          });
+          expect(yield* read({ url: "https://render.example/" })).toMatchObject({
+            status: "origin_error",
+            rung: "cache",
+            httpStatus: 404,
+          });
+          expect(
+            yield* Orchestrator.OrchestratorV2.use((o) => o.getThreadProjection(threadId)),
+          ).toEqual(before);
+        }).pipe(Effect.provide(f.layer));
+      }).pipe(Effect.provide(rendererLayer));
+    }),
 );

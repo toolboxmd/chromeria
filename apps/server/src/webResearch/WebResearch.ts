@@ -461,9 +461,14 @@ const make = Effect.gen(function* () {
         }
         if (status === "thin" || status === "consent") {
           sourceRung = "render";
-          const rendered = yield* renderer.render({ url, initial: response, loadDocument }).pipe(
+          const queuedAt = yield* Clock.currentTimeMillis;
+          const rendered = yield* Effect.gen(function* () {
+            const enteredAt = yield* Clock.currentTimeMillis;
+            yield* Ref.update(delay, (ms) => ms + enteredAt - queuedAt);
+            return yield* renderer.render({ url, initial: response, loadDocument });
+          }).pipe(
             renders.withPermits(1),
-            // Includes waiting for a render permit. The whole fetch ladder still has its 30s bound.
+            // Includes the permit wait; HTTP retains the core's separate active-time budget.
             Effect.timeout("20 seconds"),
           );
           finalUrl = rendered.finalUrl;

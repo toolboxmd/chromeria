@@ -75,7 +75,11 @@ const fixture = Effect.fnUntraced(function* (
   );
   const reader = WebResearch.layer.pipe(
     Layer.provide(cacheLayer),
-    Layer.provide(Layer.succeed(PublicRender.PublicRender, { render: () => Effect.die("Usable HTTP pages must not render.") })),
+    Layer.provide(
+      Layer.succeed(PublicRender.PublicRender, {
+        render: () => Effect.die("Usable HTTP pages must not render."),
+      }),
+    ),
     Layer.provide(
       Layer.succeed(PublicHttp.PublicHttp, {
         get: (url) =>

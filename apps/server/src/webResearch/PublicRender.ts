@@ -74,9 +74,16 @@ const routeDocuments = (
   let httpStatus = input.initial.status;
   let responseHeaders = input.initial.headers;
   let failure: PublicRenderError | undefined;
+  let redirects = 0;
   const route = async (route: Route) => {
     const request = route.request();
     if (!/^https?:/.test(request.url()) || !["GET", "HEAD"].includes(request.method())) {
+      if (request.isNavigationRequest() && request.frame() === page.mainFrame())
+        failure = new PublicRenderError({
+          status: "unsupported",
+          httpStatus: null,
+          retryAfterMs: null,
+        });
       await route.abort("blockedbyclient").catch(() => {});
       return;
     }
@@ -105,6 +112,34 @@ const routeDocuments = (
         httpStatus = response.status;
         responseHeaders = response.headers;
       }
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        const location = response.headers.location;
+        if (++redirects >= 6 || !location || !URL.canParse(location, request.url()))
+          throw new PublicRenderError({
+            status: "origin_error",
+            httpStatus: response.status,
+            retryAfterMs: null,
+          });
+        const target = new URL(location, request.url());
+        if (!["http:", "https:"].includes(target.protocol) || target.username || target.password)
+          throw new PublicRenderError({
+            status: "unsupported",
+            httpStatus: response.status,
+            retryAfterMs: null,
+          });
+        const escaped = target.href
+          .replaceAll("&", "&amp;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("<", "&lt;");
+        // Playwright skips routing HTTP redirect hops. A new document navigation keeps
+        // every hop in loadDocument and preserves the target URL for relative links.
+        await route.fulfill({
+          status: 200,
+          contentType: "text/html; charset=utf-8",
+          body: `<!doctype html><meta http-equiv="refresh" content="0;url=${escaped}">`,
+        });
+        return;
+      }
       // Public HTTP decoded/decompressed the body; do not replay its cookies into browser storage.
       const headers = Object.fromEntries(
         Object.entries(response.headers).filter(
@@ -122,7 +157,11 @@ const routeDocuments = (
         status: response.status,
         headers: {
           ...headers,
-          "content-type": "text/html; charset=utf-8",
+          "content-type":
+            response.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase() ===
+            "text/plain"
+              ? "text/plain; charset=utf-8"
+              : "text/html; charset=utf-8",
         },
         body: response.body,
       });
@@ -145,10 +184,58 @@ const routeDocuments = (
   };
 };
 
+/** The callback adapter owns its document fibers until the DOM has been read. */
+const renderBrowser = async (context: BrowserContext, input: RenderInput, signal: AbortSignal) => {
+  const documentsController = new AbortController();
+  const abortDocuments = () => documentsController.abort();
+  signal.addEventListener("abort", abortDocuments, { once: true });
+  try {
+    signal.throwIfAborted();
+    await context.addInitScript(
+      "delete window.RTCPeerConnection; delete window.webkitRTCPeerConnection;",
+    );
+    const page = await context.newPage();
+    const documents = routeDocuments(context, page, input, documentsController.signal);
+    await documents.install();
+    try {
+      await page.goto(input.url.href, { waitUntil: "networkidle", timeout: 0 });
+      const finalUrl = page.url();
+      if (!/^https?:/.test(finalUrl))
+        throw new PublicRenderError({
+          status: "unsupported",
+          httpStatus: null,
+          retryAfterMs: null,
+        });
+      const body = await page.evaluate<string>(
+        `document.documentElement.outerHTML.slice(0, ${MAX_DOM_CHARS + 1})`,
+      );
+      const { httpStatus, headers, failure } = documents.outcome();
+      if (failure) throw failure;
+      if (body.length > MAX_DOM_CHARS)
+        throw new Error("Research DOM exceeds the extraction limit.");
+      return { body, finalUrl, httpStatus, headers };
+    } catch (cause) {
+      throw documents.outcome().failure ?? cause;
+    }
+  } finally {
+    // Effect's signal aborts on interruption; a successful snapshot must also stop
+    // a document load that raced the snapshot and would otherwise outlive the read.
+    abortDocuments();
+    signal.removeEventListener("abort", abortDocuments);
+  }
+};
+
 const make = Effect.gen(function* () {
   const previewBrowser = yield* PreviewBrowser.PreviewBrowser;
   const env = yield* HostProcess.Environment;
   const render = Effect.fn("PublicRender.render")(function* (input: RenderInput) {
+    // Playwright callbacks leave the current fiber. Keep the caller's clock and
+    // service context when they enter the reader again through document I/O.
+    const services = yield* Effect.context<never>();
+    const documentInput = {
+      ...input,
+      loadDocument: (url: URL) => input.loadDocument(url).pipe(Effect.provideContext(services)),
+    };
     const executable = yield* previewBrowser.installed;
     if (Option.isNone(executable))
       return yield* new PublicRenderError({
@@ -182,28 +269,7 @@ const make = Effect.gen(function* () {
       (browser) => Effect.promise(() => browser.close()).pipe(Effect.ignore),
     );
     return yield* Effect.tryPromise({
-      try: async (signal) => {
-        const context = browser.context;
-        await context.addInitScript(
-          "delete window.RTCPeerConnection; delete window.webkitRTCPeerConnection;",
-        );
-        const page = await context.newPage();
-        const documents = routeDocuments(context, page, input, signal);
-        await documents.install();
-        try {
-          await page.goto(input.url.href, { waitUntil: "networkidle", timeout: 0 });
-          const body = await page.evaluate<string>(
-            `document.documentElement.outerHTML.slice(0, ${MAX_DOM_CHARS + 1})`,
-          );
-          const { httpStatus, headers, failure } = documents.outcome();
-          if (failure) throw failure;
-          if (body.length > MAX_DOM_CHARS)
-            throw new Error("Research DOM exceeds the extraction limit.");
-          return { body, finalUrl: page.url(), httpStatus, headers };
-        } catch (cause) {
-          throw documents.outcome().failure ?? cause;
-        }
-      },
+      try: (signal) => renderBrowser(browser.context, documentInput, signal),
       catch: (cause) =>
         isRenderError(cause)
           ? cause
