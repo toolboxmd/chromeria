@@ -602,7 +602,7 @@ it.effect("live run recovery finalizes its child without reading settled childre
   }).pipe(Effect.provide(dependencies)),
 );
 
-it.effect.each(["fresh", "decided-history"] as const)(
+it.effect.each(["fresh", "decided-history", "unresolved-history"] as const)(
   "%s updates preserve the first retryable failure's retry",
   (scenario) =>
     Effect.gen(function* () {
@@ -629,7 +629,7 @@ it.effect.each(["fresh", "decided-history"] as const)(
           ...run,
           status: "running" as const,
           startedAt: run.requestedAt,
-          ordinal: scenario === "decided-history" ? 2 : run.ordinal,
+          ordinal: scenario === "fresh" ? run.ordinal : 2,
         };
         yield* sink.write({
           events: [
@@ -644,7 +644,7 @@ it.effect.each(["fresh", "decided-history"] as const)(
         });
         // Finish observing the nonterminal event before the failure can mask it.
         yield* Queue.take(observed);
-        if (scenario === "decided-history") {
+        if (scenario !== "fresh") {
           const old = {
             ...running,
             id: RunId.make("decided:old-run"),
@@ -664,15 +664,16 @@ it.effect.each(["fresh", "decided-history"] as const)(
               },
             ],
           });
-          yield* History.writeRecoveryOutcome({
-            sourceRunId: old.id,
-            threadId: childId,
-            status: "decided",
-            outcome: "not_retryable",
-            reason: "exhausted",
-          });
-          // A late delegated-completion update must not reopen this decided source
-          // and initialize the newer running run's controller as closed.
+          if (scenario === "decided-history")
+            yield* History.writeRecoveryOutcome({
+              sourceRunId: old.id,
+              threadId: childId,
+              status: "decided",
+              outcome: "not_retryable",
+              reason: "exhausted",
+            });
+          // Neither a late update to a decided source nor reconciling an unresolved one
+          // may initialize the newer running run's controller as closed.
           yield* sink.write({
             events: [
               {
