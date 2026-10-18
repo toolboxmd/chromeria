@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -778,7 +779,7 @@ it.effect(
             contentHash: child.contentHash,
             text: child.text,
           });
-          expect(alias.fetchedAt).not.toBe(new Date(yield* Clock.currentTimeMillis).toISOString());
+          expect(alias.fetchedAt).not.toBe(DateTime.formatIso(yield* DateTime.now));
           expect(yield* Queue.size(f.requests)).toBe(0);
           expect(
             yield* Orchestrator.OrchestratorV2.use((o) => o.getThreadProjection(threadId)),
