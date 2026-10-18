@@ -1,5 +1,5 @@
 import { BareLaunchRequest, BareSupport } from "./bareLaunch.ts";
-import { PRISM_DELEGATE_ROLE_GUIDE, PrismDelegateRole, PrismLane } from "./prism.ts";
+import { PRISM_DELEGATE_ROLE_GUIDE, PrismDelegateRoleInput, PrismLane } from "./prism.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
@@ -179,8 +179,8 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
   lane: Schema.optional(PrismLane),
   prismRole: Schema.optional(
-    PrismDelegateRole.annotate({
-      description: `Explicit Prism role kit: ${PRISM_DELEGATE_ROLE_GUIDE}. Omit to map role: review to reviewer, research to researcher, design to designer, and everything else to worker.`,
+    PrismDelegateRoleInput.annotate({
+      description: `Explicit Prism role kit: ${PRISM_DELEGATE_ROLE_GUIDE}. Omit to map role: review to reviewer, research to researcher, design to designer, and everything else to worker. dispatcher, retry and escalation are removed and work only to retry a request an older build accepted.`,
     }),
   ),
   task: OrchestratorMcpPrompt.annotate({

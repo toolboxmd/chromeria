@@ -3,7 +3,9 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { OrchestratorMcpDelegateTaskInput, OrchestrationV2RemoteTaskLaunch } from "./index.ts";
 import {
+  admitDelegateRole,
   DEFAULT_PRISM_ROLE_KITS,
+  PRISM_DELEGATE_ROLE_ERROR,
   PrismRole,
   PrismRoleKits,
   PrismRoleKitsPatch,
@@ -150,7 +152,7 @@ describe("Prism role kits", () => {
     expect(() => decodeRole("dispatcher")).toThrow();
   });
 
-  it("accept the seven delegated roles and reject removed names and Promachos with the list", () => {
+  it("accept the seven delegated roles and reject Promachos and unknown names with the list", () => {
     for (const prismRole of [
       "planner",
       "researcher",
@@ -162,11 +164,27 @@ describe("Prism role kits", () => {
     ]) {
       expect(decodeDelegate({ task: "Do it.", prismRole }).prismRole).toBe(prismRole);
     }
-    for (const prismRole of ["dispatcher", "retry", "escalation", "promachos"]) {
+    for (const prismRole of ["promachos", "nonsense"]) {
       expect(() => decodeDelegate({ task: "Do it.", prismRole })).toThrow(
-        "prismRole must be one of: planner, researcher, designer, worker, roast, reviewer, judge.",
+        PRISM_DELEGATE_ROLE_ERROR,
       );
     }
+    expect(PRISM_DELEGATE_ROLE_ERROR).toBe(
+      "prismRole must be one of: planner, researcher, designer, worker, roast, reviewer, judge.",
+    );
+  });
+
+  it("admit a removed delegated role only when replaying a request an older build accepted", () => {
+    for (const [removed, successor] of [
+      ["dispatcher", "planner"],
+      ["retry", "worker"],
+      ["escalation", "worker"],
+    ] as const) {
+      const prismRole = decodeDelegate({ task: "Do it.", prismRole: removed }).prismRole!;
+      expect(admitDelegateRole(prismRole, false)).toBeUndefined();
+      expect(admitDelegateRole(prismRole, true)).toBe(successor);
+    }
+    expect(admitDelegateRole("judge", false)).toBe("judge");
   });
 
   it("load saved settings that still name a role runtime mode, dropping it", () => {

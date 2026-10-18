@@ -14,6 +14,8 @@ import {
   ProviderDriverKind,
   type RunId,
   type ThreadId,
+  admitDelegateRole,
+  PRISM_DELEGATE_ROLE_ERROR,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -247,6 +249,15 @@ const make = Effect.gen(function* () {
       const commandId = CommandId.make(
         `command:mcp:${encodeURIComponent(scope.requestNamespace)}:remote-delegate:${encodeURIComponent(key)}`,
       );
+      const prismRole =
+        input.prismRole === undefined
+          ? Prism.delegatedPrismRole(input.role)
+          : admitDelegateRole(input.prismRole, yield* threads.hasReceipt(commandId));
+      if (prismRole === undefined)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: PRISM_DELEGATE_ROLE_ERROR,
+        });
       const launch = {
         ...(input.bare === undefined ? {} : { bare: input.bare }),
         requestNamespace: scope.requestNamespace,
@@ -255,7 +266,7 @@ const make = Effect.gen(function* () {
         projectId,
         title: input.title ?? parent.thread.title,
         ...(modelSelection === undefined ? {} : { modelSelection }),
-        prismRole: input.prismRole ?? Prism.delegatedPrismRole(input.role),
+        prismRole,
         ...(input.lane === undefined ? {} : { lane: input.lane }),
         ...(input.workspaceStrategy === undefined
           ? {}

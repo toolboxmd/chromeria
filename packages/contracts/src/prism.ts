@@ -28,10 +28,24 @@ export const PrismRole = Schema.Literals(PRISM_ROLES);
 export type PrismRole = typeof PrismRole.Type;
 
 /** Roles `delegate_task` accepts. Promachos is a launch kit, not delegated work. */
-export const PrismDelegateRole = Schema.Literals(PRISM_DELEGATE_ROLES).annotate({
-  message: `prismRole must be one of: ${PRISM_DELEGATE_ROLES.join(", ")}.`,
-});
+export const PrismDelegateRole = Schema.Literals(PRISM_DELEGATE_ROLES);
 export type PrismDelegateRole = typeof PrismDelegateRole.Type;
+
+export const PRISM_DELEGATE_ROLE_ERROR = `prismRole must be one of: ${PRISM_DELEGATE_ROLES.join(", ")}.`;
+
+/** Delegated roles an older build accepted; only a replay of such a request may name one. */
+const REMOVED_DELEGATE_ROLES = ["dispatcher", "retry", "escalation"] as const;
+
+/**
+ * `delegate_task`'s `prismRole`. A removed name decodes so that retrying a
+ * request an older build accepted can return its task; `admitDelegateRole`
+ * refuses it on any new request.
+ */
+export const PrismDelegateRoleInput = Schema.Literals([
+  ...PRISM_DELEGATE_ROLES,
+  ...REMOVED_DELEGATE_ROLES,
+]).annotate({ message: PRISM_DELEGATE_ROLE_ERROR });
+export type PrismDelegateRoleInput = typeof PrismDelegateRoleInput.Type;
 
 /**
  * Removed roles that stored records (scheduled tasks, remote launches) may
@@ -61,6 +75,18 @@ export const StoredPrismRole = Schema.Literals([
     }),
   ),
 );
+
+/**
+ * The role a `delegate_task` call runs as, or `undefined` when it names a
+ * removed role on a request no older build accepted.
+ */
+export function admitDelegateRole(
+  role: PrismDelegateRoleInput,
+  isReplay: boolean,
+): PrismDelegateRole | undefined {
+  if (!(role in REMOVED_PRISM_ROLES)) return role as PrismDelegateRole;
+  return isReplay ? REMOVED_PRISM_ROLES[role as keyof typeof REMOVED_PRISM_ROLES] : undefined;
+}
 
 /** Work difficulty a job or spawn runs at; the worker keeps one model list per lane. */
 const PRISM_LANES = ["easy", "medium", "hard"] as const;

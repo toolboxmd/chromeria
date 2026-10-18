@@ -7,6 +7,7 @@ import {
   CommandId,
   EnvironmentId,
   NodeId,
+  OrchestratorMcpDelegateTaskInput,
   type OrchestrationV2ThreadShell,
   type ScheduledTask,
   ScheduledTaskId,
@@ -22,6 +23,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as ServerConfig from "../config.ts";
@@ -57,6 +59,8 @@ const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
 );
 import { restartCutView } from "@t3tools/shared/restartCut";
+
+const decodeDelegateTaskInput = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
 
 describe("OrchestratorMcpService", () => {
   it.effect("retries terminal acknowledgement with a fresh command id", () =>
@@ -1926,6 +1930,108 @@ describe("OrchestratorMcpService provider resolution", () => {
             modelSelection: { instanceId: string; model: string };
           };
           assert.equal(retryCommand.modelSelection.instanceId, codexInstanceId);
+        }).pipe(
+          Effect.provide(
+            layerOrchestratorService.pipe(
+              Layer.provide(ServerSettings.layerTest()),
+              Layer.provide(layerDependencies),
+            ),
+          ),
+        );
+      }),
+  );
+
+  it.effect(
+    "replays an accepted delegation that names a removed Prism role and refuses it on a new request",
+    () =>
+      Effect.gen(function* () {
+        const dispatched = yield* Ref.make(0);
+        const accepted = yield* Ref.make(false);
+        const task = {
+          id: taskId,
+          threadId: parentThreadId,
+          runId: parentRunId,
+          parentNodeId,
+          origin: "app_owned",
+          createdBy: "agent",
+          driver: ProviderDriverKind.make("codex"),
+          providerInstanceId: codexInstanceId,
+          providerThreadId: null,
+          childThreadId,
+          nativeTaskRef: null,
+          prompt: "Fix the build.",
+          title: null,
+          model: "gpt-5.4",
+          status: "running",
+          result: null,
+          startedAt: null,
+          completedAt: null,
+        };
+        const layerDependencies = Layer.mergeAll(
+          NodeServices.layer,
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
+            getThreadRecords: (threadId) =>
+              Ref.get(accepted).pipe(
+                Effect.map((isAccepted) =>
+                  threadId === parentThreadId
+                    ? parentProjection(isAccepted ? [task] : [])
+                    : childProjection,
+                ),
+              ),
+            hasReceipt: () => Ref.get(accepted),
+            isProviderInstanceEnabledForProject: () => Effect.succeed(true),
+            assertProviderInstanceEnabled: () => Effect.void,
+            dispatch: () =>
+              Ref.update(dispatched, (count) => count + 1).pipe(
+                Effect.as({
+                  sequence: 1,
+                  storedEvents: [
+                    {
+                      sequence: 1,
+                      commandId: null,
+                      event: { type: "subagent.updated", payload: task },
+                    },
+                  ],
+                } as never),
+              ),
+          }),
+          providerRegistryLayer([
+            providerSnapshot({
+              instanceId: codexInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+              model: "gpt-5.4",
+            }),
+          ]),
+          adapterRegistryLayer([codexInstanceId]),
+          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+          ServerSettings.layerTest(),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        );
+
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const request = decodeDelegateTaskInput({
+            task: "Fix the build.",
+            prismRole: "retry",
+            mode: "async",
+            clientRequestId: "delegate-removed-role-1",
+          });
+          const refused = yield* service.delegateTask(scope, request).pipe(Effect.flip);
+          assert.equal(refused.code, "invalid_request");
+          assert.equal(
+            refused.message,
+            "prismRole must be one of: planner, researcher, designer, worker, roast, reviewer, judge.",
+          );
+          assert.equal(yield* Ref.get(dispatched), 0);
+
+          // An older build accepted the same request before the upgrade.
+          yield* Ref.set(accepted, true);
+          const replay = yield* service.delegateTask(scope, request);
+          assert.equal(replay.taskId, taskId);
+          assert.equal(replay.status, "running");
         }).pipe(
           Effect.provide(
             layerOrchestratorService.pipe(
