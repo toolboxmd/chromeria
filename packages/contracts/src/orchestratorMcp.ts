@@ -268,9 +268,13 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
   model: Schema.NullOr(Schema.String),
   summary: Schema.NullOr(Schema.String),
   resultContextTransferId: Schema.NullOr(ContextTransferId),
+  hasPendingApproval: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "An eligible descendant approval ends mode=wait. Read the qualified request before answering; the task keeps its permission mode.",
+  }),
   hasPendingQuestion: Schema.Boolean.annotate({
     description:
-      "Blocking question ends mode=wait. Pass threadId=childThreadId to t3_pending_request_list, t3_pending_request_read (with requestId) and t3_pending_request_respond, or ask the user; the task's completion still wakes this thread.",
+      "Blocking question ends mode=wait. Local work uses childThreadId; remote work uses the source parent threadId and qualified requestTarget/requestRoute from remoteObservation.snapshot or its notice. Read the current request before responding; task completion still wakes this thread.",
   }),
   waitTimedOut: Schema.Boolean.annotate({
     description:

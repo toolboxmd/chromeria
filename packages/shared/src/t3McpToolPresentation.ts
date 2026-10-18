@@ -40,6 +40,7 @@ export type T3McpToolSummaryAction =
   | "question-list"
   | "question-read"
   | "question-respond"
+  | "question-dismiss"
   | "secret-request"
   | "worktree-handoff"
   | "worktree-list"
@@ -296,6 +297,10 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   t3_pending_request_respond: tool(
     ["Answer", "Answering", "Answered", "pending questions"],
     "question-respond",
+  ),
+  t3_pending_request_dismiss: tool(
+    ["Dismiss", "Dismissing", "Dismissed", "a pending question"],
+    "question-dismiss",
   ),
   t3_thread_configuration: tool(
     ["Read", "Reading", "Read", "thread configuration"],

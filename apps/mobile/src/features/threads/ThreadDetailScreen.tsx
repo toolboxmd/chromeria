@@ -2,6 +2,7 @@ import * as Dialog from "../../components/ui/Dialog";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button as RetryStopButton } from "../../components/ui/Button";
 import { ThreadExecutionPurposeControl } from "./ThreadExecutionPurposeControl";
+import { RemoteTaskViewer } from "./RemoteTaskViewer";
 import { useAtomValue } from "@effect/atom-react";
 import { useChildThreadInputs, useThreadReportedModelSelection } from "../../state/entities";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
@@ -153,7 +154,7 @@ import {
 } from "./ThreadComposer";
 import { ComposerPopoverHost } from "./ComposerPopoverHost";
 import { ThreadFeed, type ThreadFeedHistoryControls } from "./ThreadFeed";
-import { useThreadTurnSubagents } from "./ThreadAgentsSheet";
+import { useThreadTurnSubagents, usePendingRemoteTasks } from "./ThreadAgentsSheet";
 import { ComposerQueuedEditBanner } from "./ComposerQueuedEdit";
 import { useThreadQueuedCount } from "./ThreadQueueControl";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
@@ -412,6 +413,8 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   });
   const composerError = useAtomValue(threadComposerErrorsAtom)[selectedThreadKey]?.message ?? null;
   const queuedCount = useThreadQueuedCount(props.selectedThreadDetailRef);
+  const pendingRemoteTasks = usePendingRemoteTasks(props.selectedThreadDetailRef);
+  const [viewingRemoteInput, setViewingRemoteInput] = useState(false);
   const turnSubagents = useThreadTurnSubagents(props.selectedThreadDetailRef);
   const agentsSegment = resolveSubagentPillSegment(turnSubagents);
   const composerEditorRef = useRef<ComposerEditorHandle>(null);
@@ -495,6 +498,17 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     if (threadSyncLabel !== null) {
       return { kind: "syncing", label: threadSyncLabel };
     }
+    const remoteInput = pendingRemoteTasks[0];
+    if (remoteInput && contentPresentationKind === "ready")
+      return {
+        kind: "child-input",
+        label: "Remote task needs input",
+        accessibilityLabel: `Open request from ${remoteInput.title ?? "remote task"}`,
+        onPress: () => {
+          Keyboard.dismiss();
+          setViewingRemoteInput(true);
+        },
+      };
     const childInput = childThreadInputs[0];
     if (childInput && contentPresentationKind === "ready") {
       return {
@@ -1054,6 +1068,13 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
 
   return (
     <View className="flex-1">
+      {viewingRemoteInput && pendingRemoteTasks[0] ? (
+        <RemoteTaskViewer
+          environmentId={props.environmentId}
+          task={pendingRemoteTasks[0]}
+          onClose={() => setViewingRemoteInput(false)}
+        />
+      ) : null}
       {!usesNativeWorkspaceColumns ? <NativeLayoutObserver onChange={setScreenMetrics} /> : null}
       {showContent ? (
         <View

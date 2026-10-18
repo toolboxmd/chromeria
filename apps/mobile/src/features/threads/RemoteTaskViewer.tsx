@@ -1,3 +1,4 @@
+import { RemotePendingRequest } from "./RemotePendingRequest";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId, OrchestrationV2Subagent, PeerTaskResource } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
@@ -71,6 +72,20 @@ export function RemoteTaskViewer(props: {
           {view ? (
             <>
               <Text>Observed: {view.snapshot.observedAt}</Text>
+              {view.snapshot.requests
+                .filter(
+                  (request) =>
+                    request.kind !== "auth_refresh" && request.kind !== "dynamic_tool_call",
+                )
+                .map((request) => (
+                  <RemotePendingRequest
+                    key={`${request.environmentId}:${request.threadId}:${request.requestId}:${request.revision}`}
+                    environmentId={props.environmentId}
+                    task={props.task}
+                    request={request}
+                    onResolved={refresh}
+                  />
+                ))}
               <Text>
                 {view.snapshot.pendingChildren} pending children · {view.snapshot.queuedRuns} queued
                 runs · {view.snapshot.requestCount} pending requests

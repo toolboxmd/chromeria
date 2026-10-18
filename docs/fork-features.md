@@ -968,7 +968,10 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/restartContinuation/RestartCut.test.ts",
     "apps/server/src/restartContinuation/EventSinkRestartCut.test.ts",
     "apps/server/src/restartContinuation/UnresolvedRestartCuts.test.ts",
-    "apps/server/src/restartContinuation/RestartPersistence.test.ts"
+    "apps/server/src/restartContinuation/RestartPersistence.test.ts",
+    "apps/server/src/childThreads/PendingRequestIngress.ts",
+    "apps/server/src/childThreads/PendingRequestService.ts",
+    "apps/server/src/childThreads/pendingResponseAdmission.ts"
   ],
   "upstreamFiles": [
     "packages/client-runtime/src/state/threadDetail.ts",
@@ -1858,14 +1861,15 @@ sources and reasons.
 ```json
 {
   "id": "peer-links",
-  "purpose": "Port upstream server peer links and record-first remote delegation until absorption replaces the port; retain permanent pairing-code sessions, target Prism launch intent and recovery-aware waits. Extend routing to all MCP toolkit groups while retaining caller capabilities and link-mode narrowing. Own explicit peer consent, including its mobile settings entry and destination permission checks. Replay delegated lifecycle results durably and open qualified destination work through the source client connection. Bind negotiated requests to verified durable caller identity, transfer attachment bytes through destination staging, reconcile native acceptance and retain truthful unknown outcomes for unreconcilable effects.",
+  "purpose": "Port upstream server peer links and record-first remote delegation until absorption replaces the port; retain permanent pairing-code sessions, target Prism launch intent and recovery-aware waits. Extend routing to all MCP toolkit groups while retaining caller capabilities and link-mode narrowing. Own explicit peer consent, including its mobile settings entry and destination permission checks. Replay delegated lifecycle results durably and open qualified destination work through the source client connection. Bind negotiated requests to verified durable caller identity, transfer attachment bytes through destination staging, reconcile native acceptance and retain truthful unknown outcomes for unreconcilable effects. Surface qualified descendant questions and approvals through verified mixed ancestry and the authenticated source client, with native revision guards and receipt replay.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/164",
     "https://github.com/toolboxmd/chromeria/issues/302",
     "https://github.com/toolboxmd/chromeria/issues/367",
     "https://github.com/toolboxmd/chromeria/issues/380",
     "https://github.com/toolboxmd/chromeria/issues/381",
-    "https://github.com/toolboxmd/chromeria/issues/382"
+    "https://github.com/toolboxmd/chromeria/issues/382",
+    "https://github.com/toolboxmd/chromeria/issues/369"
   ],
   "prs": [
     "https://github.com/pingdotgg/t3code/pull/16653",
@@ -1877,7 +1881,8 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/pull/304",
     "https://github.com/toolboxmd/chromeria/pull/368",
     "https://github.com/toolboxmd/chromeria/pull/391",
-    "https://github.com/toolboxmd/chromeria/pull/410"
+    "https://github.com/toolboxmd/chromeria/pull/410",
+    "https://github.com/toolboxmd/chromeria/pull/416"
   ],
   "newFiles": [
     "packages/contracts/src/peerTask.ts",
@@ -1889,7 +1894,6 @@ sources and reasons.
     "apps/web/src/components/chat/BackgroundSubagentOpenButton.tsx",
     "apps/mobile/src/state/remote-tasks.ts",
     "apps/mobile/src/features/threads/RemoteTaskViewer.tsx",
-
     "apps/server/src/mcp/delegatedTaskModes.ts",
     "apps/server/src/mcp/linkOrigin.test.ts",
     "apps/server/src/mcp/linkOrigin.ts",
@@ -1914,7 +1918,11 @@ sources and reasons.
     "apps/server/src/scheduledTasks/mutationReceipts.ts",
     "packages/contracts/src/mcpRequest.ts",
     "packages/contracts/src/peerAttachments.ts",
-    "packages/contracts/src/peerAuthority.ts"
+    "packages/contracts/src/peerAuthority.ts",
+    "apps/mobile/src/features/threads/RemotePendingRequest.test.tsx",
+    "apps/mobile/src/features/threads/RemotePendingRequest.tsx",
+    "apps/web/src/components/chat/RemotePendingRequest.test.tsx",
+    "apps/web/src/components/chat/RemotePendingRequest.tsx"
   ],
   "upstreamFiles": [
     "apps/web/src/state/entities.ts",
@@ -1993,7 +2001,16 @@ sources and reasons.
     "apps/server/src/orchestration-v2/AttachmentClaims.ts",
     "apps/server/src/project/ManagedProjectFolders.test.ts",
     "apps/server/src/project/ManagedProjectFolders.ts",
-    "apps/server/src/device/DeviceService.ts"
+    "apps/server/src/device/DeviceService.ts",
+    "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",
+    "packages/client-runtime/src/state/models.ts",
+    "packages/client-runtime/src/state/threadDetail.ts",
+    "packages/client-runtime/src/state/threadShell.test.ts",
+    "packages/client-runtime/src/state/threadShell.ts",
+    "packages/shared/src/agentAwareness.test.ts",
+    "packages/shared/src/agentAwareness.ts",
+    "apps/server/src/orchestration-v2/WireProjection.test.ts",
+    "packages/client-runtime/src/t3ToolSummary.test.ts"
   ],
   "sharedFiles": [
     "apps/server/src/orchestration-v2/EffectWorker.ts",
@@ -2056,7 +2073,10 @@ sources and reasons.
     "apps/server/src/mcp/toolkits/thread/handlers.ts",
     "apps/server/src/mcp/toolkits/thread/tools.ts",
     "apps/server/src/orchestration-v2/ThreadMessageIntake.ts",
-    "apps/server/src/scheduledTaskChecks/DispatchPolicy.ts"
+    "apps/server/src/scheduledTaskChecks/DispatchPolicy.ts",
+    "apps/server/src/orchestration-v2/DelegatedTaskQuestionReactor.ts",
+    "apps/web/src/components/ChatView.tsx",
+    "docs/user/thread-sidebar.md"
   ],
   "keywords": [
     "peer_environment_links",
