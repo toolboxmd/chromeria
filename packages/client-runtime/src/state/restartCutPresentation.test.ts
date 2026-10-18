@@ -70,6 +70,27 @@ const explanation = (runs: ReadonlyArray<OrchestrationV2Run>) => {
 
 describe("restart-cut client presentation", () => {
   it.each([
+    { name: "no runs", runs: [] },
+    { name: "ordinary runs", runs: [{ ...source, restartCut: undefined }] },
+  ])("returns ordinary rows by reference without inspecting them with $name", ({ runs }) => {
+    let reads = 0;
+    const ordinaryRows = [
+      {
+        ...row,
+        get visibility() {
+          reads++;
+          return "local" as const;
+        },
+      },
+    ];
+    const render = createRestartCutProjector();
+    expect(render({ runs, visibleTurnItems: ordinaryRows })).toBe(ordinaryRows);
+    const streamedRows = [...ordinaryRows];
+    expect(render({ runs: [...runs], visibleTurnItems: streamedRows })).toBe(streamedRows);
+    expect(reads).toBe(0);
+  });
+
+  it.each([
     { name: "pending", runs: [source], expected: "Continuation pending." },
     {
       name: "continued",
