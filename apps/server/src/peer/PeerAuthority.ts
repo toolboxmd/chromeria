@@ -40,6 +40,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as PeerNoticeDelivery from "./PeerNoticeDelivery.ts";
 import * as Invocation from "../mcp/McpInvocationContext.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { requestNamespace, requestGeneration } from "../mcp/requestIdentity.ts";
 import { requestDigest } from "../mcp/McpRequestReceipts.ts";
 import * as Environment from "../environment/ServerEnvironment.ts";
@@ -167,6 +169,11 @@ export class PeerAuthority extends Context.Service<
       expectedProjectId?: string,
     ) => Effect.Effect<Option.Option<McpScheduledMutationReceipt>, OrchestratorMcpFailure>;
     readonly checkRecord: (id: string) => Effect.Effect<void, OrchestratorMcpFailure>;
+    readonly recheckInvocation: (
+      scope: Invocation.McpThreadInvocationScope,
+      capability: "device" | "preview",
+      threadId: ThreadId,
+    ) => Effect.Effect<Invocation.McpThreadInvocationScope, OrchestratorMcpFailure>;
     readonly authorizeStopEffect: (
       effectId: string,
       threadId: ThreadId,
@@ -653,6 +660,23 @@ const make = Effect.gen(function* () {
       }
       return launch;
     });
+  const currentCapabilities = (
+    capabilities: PeerCeiling["capabilities"],
+    projectId: OrchestrationV2ThreadShell["projectId"],
+  ) =>
+    Effect.gen(function* () {
+      const settings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
+      if (Option.isNone(settings)) return capabilities;
+      const current = yield* settings.value.getSettings.pipe(Effect.mapError(unavailable));
+      const effective = resolveProjectSettings(current, projectId).settings;
+      return capabilities.filter((name) =>
+        name === "preview"
+          ? effective.enableAgentBrowserAccess
+          : name === "device"
+            ? effective.enableAgentDeviceAccess
+            : true,
+      );
+    });
   const validate = (
     record: Authority,
     stop?: StopValidation,
@@ -797,6 +821,7 @@ const make = Effect.gen(function* () {
       }
       const current = {
         ...record.ceiling,
+        capabilities: yield* currentCapabilities(record.ceiling.capabilities, thread.projectId),
         runtimeMode: thread.runtimeMode,
         interactionMode: thread.interactionMode,
       };
@@ -1641,7 +1666,64 @@ const make = Effect.gen(function* () {
       else if (sessionId !== undefined) yield* checkCreated(sessionId, binding);
       return modes;
     });
+  const recheckInvocation: PeerAuthority["Service"]["recheckInvocation"] = (
+    scope,
+    capability,
+    threadId,
+  ) =>
+    Effect.gen(function* () {
+      // The incoming action remains the owner even when its selected destination
+      // thread has a different creation/run authority.
+      const record =
+        scope.authority !== undefined
+          ? yield* read(scope.authority.id)
+          : scope.client?.linked === true
+            ? yield* denied("The peer has no verified invocation authority.")
+            : yield* checkThread(scope.thread.threadId);
+      const target = yield* loadResource({ type: "thread", threadId });
+      if (target.type !== "thread" || target.thread.archivedAt !== null)
+        return yield* denied("The destination context is no longer available.");
+      let ceiling = record === undefined ? undefined : yield* validate(record);
+      if (record !== undefined && ceiling !== undefined) {
+        if (scope.authority !== undefined) ceiling = intersect(ceiling, scope.authority.ceiling);
+        yield* checkResource(record, ceiling, target);
+      }
+      let modes: Invocation.ClientModes | undefined = ceiling ?? scope.legacyPeerCeiling;
+      if (scope.client === undefined) {
+        const caller = yield* threads
+          .getThreadShell(scope.thread.threadId)
+          .pipe(Effect.mapError(unavailable));
+        if (
+          caller === null ||
+          caller.deletedAt !== null ||
+          caller.archivedAt !== null ||
+          caller.activeRunId === null ||
+          caller.providerInstanceId !== scope.thread.providerInstanceId
+        )
+          return yield* denied("The original caller no longer owns a live run.");
+        modes = Invocation.intersectModes(caller, modes);
+      } else modes = Invocation.intersectModes(Invocation.clientModeCeiling(scope.client), modes);
+      if (exceededDispatchModeLimit(modes, target.thread) !== undefined)
+        return yield* denied(
+          "The device or browser action exceeds current originating or destination modes.",
+        );
+      const capabilities = new Set(
+        (yield* currentCapabilities([...scope.capabilities], target.thread.projectId)).filter(
+          (name) => ceiling === undefined || ceiling.capabilities.includes(name),
+        ),
+      );
+      if (!capabilities.has(capability))
+        return yield* denied("The original invocation no longer has the required capability.");
+      return {
+        ...scope,
+        capabilities,
+        ...(record === undefined || ceiling === undefined
+          ? {}
+          : { authority: { ...record, ceiling } }),
+      };
+    });
   return PeerAuthority.of({
+    recheckInvocation,
     pendingWithinTask: (resource, target) => ancestor({ type: "thread", ...resource }, target),
     checkRecord: (id) => Effect.flatMap(read(id), validate).pipe(Effect.asVoid),
     authorizeTaskStop: (scope, input) =>

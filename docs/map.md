@@ -105,6 +105,10 @@ flowchart TD
     %% RPR: #369 PR #420
     RTL --> RPR
     PAR --> RPR
+    RBD["Remote browser and device control"]
+    %% RBD: #383 PR #421
+    PGR --> RBD
+    PAR --> RBD
     NR["Network routes"]
     %% NR: #292 #358 PR #498 PR #497
     EP["Execution purpose"]
