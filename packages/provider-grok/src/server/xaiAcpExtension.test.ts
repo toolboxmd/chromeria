@@ -211,6 +211,26 @@ describe("XAiAcpExtension", () => {
     });
   });
 
+  it.each(["subagent_type", "subagentType"])(
+    "uses legacy %s when variant is absent, while an explicit Bash variant wins",
+    (field) => {
+      const rawInput = { [field]: "generalPurpose", prompt: "Audit apps/server." };
+      const tool = {
+        toolCallId: "legacy-task",
+        title: "Tool",
+        status: "inProgress" as const,
+        data: { rawInput },
+      };
+      expect(extractXAiAcpSubagentUpdate(tool)?.nativeTaskId).toBe("legacy-task");
+      expect(
+        extractXAiAcpSubagentUpdate({
+          ...tool,
+          data: { rawInput: { ...rawInput, variant: "Bash" } },
+        }),
+      ).toBeUndefined();
+    },
+  );
+
   it("extracts Grok child session lineage from completed Task output", () => {
     expect(
       extractXAiAcpSubagentUpdate({
