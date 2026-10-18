@@ -378,6 +378,17 @@ const make = Effect.gen(function* () {
               cause,
             }),
           ),
+        OriginQueueWaitError: (cause) =>
+          Effect.gen(function* () {
+            cacheable = false;
+            yield* Ref.update(delay, (ms) => ms + cause.delayMs);
+            return yield* new PublicRender.PublicRenderError({
+              status: "challenge",
+              httpStatus: null,
+              retryAfterMs: cause.retryAfterMs,
+              cause,
+            });
+          }),
         ReadStopped: (cause) =>
           Effect.fail(
             new PublicRender.PublicRenderError({

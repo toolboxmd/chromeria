@@ -562,3 +562,67 @@ it.effect(
       }).pipe(Effect.provide(rendererLayer));
     }),
 );
+
+it.effect("rendered origin queue refusals stay typed and do not poison the page cache", (ctx) =>
+  Effect.gen(function* () {
+    const executable = (yield* HostProcess.Environment).T3CODE_TEST_HEADLESS_SHELL;
+    if (!executable)
+      return ctx.skip("Set T3CODE_TEST_HEADLESS_SHELL to the installed pinned shell.");
+    const rendererLayer = PublicRender.layer.pipe(
+      Layer.provide(
+        Layer.succeed(PreviewBrowser.PreviewBrowser, {
+          installed: Effect.succeedSome(executable),
+          executable: Effect.die("Research must not install a browser."),
+        }),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const renderer = yield* PublicRender.PublicRender;
+      let documents = 0;
+      const f = yield* fixture(renderer.render, (url) =>
+        Effect.sync(() => {
+          expect(url.href).toBe("https://render.example/");
+          documents++;
+          return documents === 1
+            ? {
+                ...response("<script>location.href='/next';</script>"),
+                headers: { "content-type": "text/html", "retry-after": "120" },
+              }
+            : response(article);
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const before = yield* f.setup;
+        const refused = yield* Fiber.join(yield* f.start());
+        expect(refused).toMatchObject({
+          status: "challenge",
+          rung: "render",
+          sourceRung: "render",
+          httpStatus: null,
+          retryAfterMs: 120_000,
+          delayMs: 3000,
+          text: "",
+        });
+        expect(yield* read({ url: "https://render.example/" })).toMatchObject({
+          status: "challenge",
+          rung: "http",
+          retryAfterMs: 120_000,
+          text: "",
+        });
+        expect(yield* Queue.size(f.requests)).toBe(0);
+        yield* TestClock.adjust(120_000);
+        const retry = yield* Effect.forkScoped(read({ url: "https://render.example/" }));
+        expect((yield* Queue.take(f.requests)).url).toBe("https://render.example/");
+        expect(yield* Fiber.join(retry)).toMatchObject({ status: "ok", rung: "http" });
+        expect(documents).toBe(2);
+        expect(yield* read({ url: "https://render.example/" })).toMatchObject({
+          status: "ok",
+          rung: "cache",
+        });
+        expect(
+          yield* Orchestrator.OrchestratorV2.use((o) => o.getThreadProjection(threadId)),
+        ).toEqual(before);
+      }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.provide(rendererLayer));
+  }),
+);
