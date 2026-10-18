@@ -140,11 +140,11 @@ it("keeps setup progression available while showing incomplete Android discovery
   };
   await act(async () => root.render(panel()));
   const dialog = page.getByRole("dialog");
-  await expect.element(dialog).toHaveTextContent("may be incomplete");
-  await expect.element(dialog).not.toHaveTextContent("SDK and Emulator are available");
+  await expect.element(dialog).toMatchTextContent("may be incomplete");
+  await expect.element(dialog).not.toMatchTextContent("SDK and Emulator are available");
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
-  await expect.element(dialog).toHaveTextContent("Allow agent control");
+  await expect.element(dialog).toMatchTextContent("Allow agent control");
 });
 
 it("shows uncertainty in the compact Integrations platform status until discovery recovers", async () => {
