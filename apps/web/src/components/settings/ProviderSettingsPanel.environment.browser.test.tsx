@@ -21,6 +21,7 @@ const state = vi.hoisted(() => ({
   canManageProviders: true,
   canWriteSettings: true,
   searchTargetId: null as string | null,
+  scopeEnvironmentId: "remote-device",
   readEnvironmentIds: [] as string[],
   updateEnvironmentIds: [] as string[],
   mutationEnvironmentIds: [] as string[],
@@ -29,6 +30,7 @@ const state = vi.hoisted(() => ({
   uninstall: vi.fn(),
   acceptUrlAuth: vi.fn(),
   updateSettings: vi.fn(),
+  updateScopedSettings: vi.fn(),
   updateModelPreferences: vi.fn(),
   toggleFavorite: vi.fn(),
   mutateProviderInstance: vi.fn(),
@@ -45,6 +47,7 @@ vi.mock(import("../../state/server"), async (original) => {
     updateProvider: "update",
     uninstallAcpRegistryManagedBinary: "uninstall",
     acceptAcpRegistryUrlAuth: "accept-url-auth",
+    updateSettings: "scoped-settings",
   } as const;
   const labelled = Object.fromEntries(
     Object.entries(commandLabels).map(([key, label]) => [
@@ -71,6 +74,7 @@ vi.mock(import("../../state/use-atom-command"), async (original) => ({
       update: state.updateProvider,
       uninstall: state.uninstall,
       "accept-url-auth": state.acceptUrlAuth,
+      "scoped-settings": state.updateScopedSettings,
     })[command.label ?? ""] ?? vi.fn()) as never,
 }));
 vi.mock(import("../../state/query"), async (original) => ({
@@ -101,8 +105,8 @@ vi.mock(import("../../hooks/useSettings"), async (original) => ({
 }));
 vi.mock(import("../../state/session"), async (original) => {
   const scope = (environmentId: string, requested: string) =>
-    environmentId === "remote-device" &&
-    (requested === "providers:manage"
+    (environmentId === "remote-device" || environmentId === "primary-settings") &&
+    (requested === "providers:manage" && environmentId === "remote-device"
       ? state.canManageProviders
       : requested === "settings:write"
         ? state.canWriteSettings
@@ -116,6 +120,19 @@ vi.mock(import("../../state/session"), async (original) => {
 vi.mock(import("../../state/entities"), async (original) => ({
   ...(await original()),
   useProjects: (() => []) as never,
+}));
+vi.mock(import("../../state/environments"), async (original) => ({
+  ...(await original()),
+  usePrimaryEnvironmentId: (() => "primary-settings") as never,
+  useEnvironments: (() => ({
+    isReady: true,
+    environments: ["remote-device", "primary-settings"].map((environmentId) => ({
+      environmentId,
+      label: environmentId,
+      connection: { phase: "connected" },
+      serverConfig: { settings: state.settings },
+    })),
+  })) as never,
 }));
 vi.mock(import("./settingsLayout"), async (original) => ({
   ...(await original()),
@@ -157,6 +174,7 @@ vi.mock(import("../ProviderUpdatesAction"), async (original) => ({
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { EnvironmentProviderSettings } from "./ProviderSettingsPanel";
+import { SettingsScopeProvider } from "./SettingsScopeContext";
 
 const environmentId = EnvironmentId.make("remote-device");
 const codexId = ProviderInstanceId.make("codex");
@@ -200,16 +218,18 @@ async function render(options?: {
   await act(async () =>
     root.render(
       <RegistryContext.Provider value={appAtomRegistry}>
-        <div className="@container/providers">
-          <EnvironmentProviderSettings
-            environmentId={environmentId}
-            environmentLabel="Remote device"
-            {...(options?.readOnly === undefined ? {} : { readOnly: options.readOnly })}
-            {...(options?.targetInstanceId === undefined
-              ? {}
-              : { targetInstanceId: options.targetInstanceId })}
-          />
-        </div>
+        <SettingsScopeProvider search={{ machine: state.scopeEnvironmentId }} onChange={() => {}}>
+          <div className="@container/providers">
+            <EnvironmentProviderSettings
+              environmentId={environmentId}
+              environmentLabel="Remote device"
+              {...(options?.readOnly === undefined ? {} : { readOnly: options.readOnly })}
+              {...(options?.targetInstanceId === undefined
+                ? {}
+                : { targetInstanceId: options.targetInstanceId })}
+            />
+          </div>
+        </SettingsScopeProvider>
       </RegistryContext.Provider>,
     ),
   );
@@ -229,10 +249,12 @@ beforeEach(async () => {
   state.canManageProviders = true;
   state.canWriteSettings = true;
   state.searchTargetId = null;
+  state.scopeEnvironmentId = "remote-device";
   state.readEnvironmentIds = [];
   state.updateEnvironmentIds = [];
   state.mutationEnvironmentIds = [];
   state.updateSettings.mockReset();
+  state.updateScopedSettings.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   state.updateModelPreferences.mockReset();
   state.toggleFavorite.mockReset();
   state.mutateProviderInstance.mockReset().mockResolvedValue(AsyncResult.success({}));
@@ -253,6 +275,18 @@ afterEach(async () => {
 });
 
 describe("EnvironmentProviderSettings routing", () => {
+  it("keeps provider update checks on the settings scope when another provider device is selected", async () => {
+    state.scopeEnvironmentId = "primary-settings";
+    await render();
+    await userEvent.click(page.getByRole("switch", { name: "Check provider versions" }));
+    expect(state.updateScopedSettings).toHaveBeenCalledExactlyOnceWith({
+      environmentId: "primary-settings",
+      input: {
+        patch: { enableProviderUpdateChecks: !DEFAULT_UNIFIED_SETTINGS.enableProviderUpdateChecks },
+      },
+    });
+    expect(state.updateSettings).not.toHaveBeenCalled();
+  });
   it("shows Codex and Claude while hiding untouched disabled provider slots", async () => {
     await render();
     await expect.element(select("Codex")).toBeVisible();

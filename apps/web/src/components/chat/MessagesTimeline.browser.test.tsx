@@ -1001,6 +1001,8 @@ describe("MessagesTimeline subagents", () => {
       },
     ];
     await renderTimeline(entries, { onOpenThread });
+    const fold = buttons(/^Worked for/)[0];
+    if (fold) await click(fold);
     await vi.waitFor(() => expect(buttons("Open Remote roast")).toHaveLength(1));
     await click(button("Open Remote roast"));
     expect(onOpenThread).toHaveBeenCalledWith("thread-remote-child", "environment-cavallo");
@@ -1009,6 +1011,8 @@ describe("MessagesTimeline subagents", () => {
     remoteConnection.connected = false;
     onOpenThread.mockClear();
     await renderTimeline(entries, { onOpenThread });
+    const disconnectedFold = buttons(/^Worked for/)[0];
+    if (disconnectedFold) await click(disconnectedFold);
     await vi.waitFor(() => expect(text()).toContain("Remote roast"));
     expect(buttons("Open Remote roast")).toHaveLength(0);
     expect(onOpenThread).not.toHaveBeenCalled();

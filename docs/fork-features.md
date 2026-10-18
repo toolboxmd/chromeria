@@ -340,7 +340,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "packages/provider-opencode/src/server/v2/adapter.ts",
     "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts",
     "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
-    "apps/server/src/orchestration-v2/testkit/OrchestratorReplayRestartBackgroundNote.integration.test.ts"
+    "apps/server/src/orchestration-v2/testkit/OrchestratorReplayRestartBackgroundNote.integration.test.ts",
+    "apps/server/src/orchestration-v2/testkit/OrchestratorReplayRecovery.integration.test.ts"
   ],
   "sharedFiles": [
     "packages/provider-opencode/src/server/adapter.test.ts",
@@ -463,6 +464,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/server/src/server.ts",
     "apps/server/src/ws.ts",
     "apps/web/src/components/settings/ProviderSettingsPanel.tsx",
+    "apps/web/src/components/settings/ProviderSettingsPanel.environment.browser.test.tsx",
     "apps/web/src/components/settings/SettingsPanels.tsx",
     "apps/web/src/components/settings/settingsSearch.ts",
     "docs/user/updating.md"
@@ -500,7 +502,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/server/src/serverRuntimeStartup.ts",
     "apps/server/src/serverSettings.test.ts",
     "packages/contracts/src/settings.ts",
-    "apps/server/src/persistence/Migrations.ts",
+    "apps/server/src/persistence/Migrations/063_DropUnusedV1Projections.ts",
     "apps/server/src/persistence/Migrations/063_DropUnusedV1Projections.test.ts"
   ],
   "sharedFiles": [],
@@ -1704,6 +1706,7 @@ sources and reasons.
     "packages/client-runtime/src/state/threadExecution.test.ts",
     "packages/client-runtime/src/state/threadExecution.ts",
     "packages/client-runtime/src/state/threadRelationships.test.ts",
+    "packages/client-runtime/src/state/presentation.test.ts",
     "packages/client-runtime/src/state/threadRelationships.ts",
     "apps/mobile/src/features/threads/thread-work-log.tsx",
     "packages/client-runtime/src/work-log/itemDetail.test.ts",

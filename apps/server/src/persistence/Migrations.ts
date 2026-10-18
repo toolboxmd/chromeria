@@ -65,7 +65,7 @@ import Migration0059 from "./Migrations/059_McpAppModelContext.ts";
 import Migration0060 from "./Migrations/060_ThreadSnapshotWindowIndexes.ts";
 import Migration0061 from "./Migrations/061_PullRequestReviewGuides.ts";
 import Migration0062 from "./Migrations/062_ThreadFailureLookupIndex.ts";
-import { retainLegacyProjections as Migration0063 } from "./forkV1Migrations.ts";
+import Migration0063 from "./Migrations/063_DropUnusedV1Projections.ts";
 
 export const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],

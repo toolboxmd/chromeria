@@ -39,7 +39,8 @@ vi.mock("../ui/tooltip", () => ({
   TooltipPopup: () => null,
 }));
 
-vi.mock("../ThreadHoverCard", () => ({
+vi.mock("../ThreadHoverCard", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../ThreadHoverCard")>()),
   ThreadHoverCardPopup: () => null,
 }));
 

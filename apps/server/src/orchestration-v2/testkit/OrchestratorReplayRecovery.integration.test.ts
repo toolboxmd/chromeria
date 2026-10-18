@@ -111,11 +111,21 @@ const readClaudeCancelledSubagentResumeTranscript = Effect.fn(
   const firstOutcome = indices.find(
     (index) => frameField(index, "subtype") === "task_notification",
   );
-  if (firstSubagentFrame === undefined || firstOutcome === undefined) {
+  const firstRuntimeExit = recorded.entries.findIndex((entry) => entry.type === "runtime_exit");
+  if (
+    firstSubagentFrame === undefined ||
+    firstOutcome === undefined ||
+    firstRuntimeExit <= firstOutcome
+  ) {
     throw new Error("Expected the recorded subagent's first run.");
   }
   const entries = recorded.entries
-    .filter((_, index) => index < firstSubagentFrame || index > firstOutcome)
+    // A native query exit ends its background tasks. This cut models the server
+    // restarting while that provider process and its subagent are still live.
+    .filter(
+      (_, index) =>
+        index !== firstRuntimeExit && (index < firstSubagentFrame || index > firstOutcome),
+    )
     .map((entry) => {
       if (entry.type !== "expect_outbound" || entry.label !== "prompt.offer:2") return entry;
       const frame = entry.frame as {

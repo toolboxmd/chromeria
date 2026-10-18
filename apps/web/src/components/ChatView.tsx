@@ -375,6 +375,7 @@ import {
   useEnvironmentSupportsServerBrowser,
   useProject,
   useProjects,
+  useServerConfigs,
   useThreadProjection,
   useThreadStatus,
   useThreadHistory,
@@ -5169,7 +5170,7 @@ export default function ChatView(props: ChatViewProps) {
     };
   })() as ComposerBannerStackItem | null;
 
-  const serverConfigsForBackgroundWork = useEnvironmentProviders();
+  const serverConfigsForBackgroundWork = useServerConfigs();
   const backgroundWorkBannerItem = (() => {
     const presentation = presentPendingBackgroundWork(activeBackgroundTasks);
     if (presentation === null || !activeThread) {

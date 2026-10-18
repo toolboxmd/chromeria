@@ -430,7 +430,7 @@ it("ignores a link from another window, an unfocused frame, or an inactive activ
   const frame = document.querySelector("iframe")!;
   const stranger = document.createElement("iframe");
   document.body.append(stranger);
-  expect(stranger.contentWindow).not.toBe(frame.contentWindow);
+  expect(stranger.contentWindow !== frame.contentWindow).toBe(true);
   frame.focus();
   await postLink(frame, issueUrl, { source: stranger.contentWindow });
   document.querySelector<HTMLButtonElement>('[aria-label="Open full screen"]')!.focus();
