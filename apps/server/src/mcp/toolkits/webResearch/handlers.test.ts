@@ -71,6 +71,7 @@ const fixture = Effect.fnUntraced(function* (
   respond: PublicHttp.PublicHttp["Service"]["get"] = () => Effect.succeed(response()),
   directory?: string,
   robots: string | PublicHttp.PublicHttp["Service"]["get"] = "User-agent: *\nAllow: /",
+  cacheLayer: typeof PageCache.layer = PageCache.layer,
 ) {
   const requests = yield* Queue.unbounded<{ url: string; at: number }>();
   const http = PublicHttp.PublicHttp.of({
@@ -90,7 +91,7 @@ const fixture = Effect.fnUntraced(function* (
   ).pipe(Layer.provide(NodeServices.layer));
   const resources = Layer.mergeAll(config, NodeServices.layer);
   const reader = WebResearch.layer.pipe(
-    Layer.provide(PageCache.layer),
+    Layer.provide(cacheLayer),
     Layer.provide(Layer.succeed(PublicHttp.PublicHttp, http)),
     Layer.provide(resources),
   );
@@ -257,6 +258,99 @@ describe("web_read at the registered MCP seam", () => {
     }),
   );
 
+  it.effect("keeps the document title when an SVG icon is titled Login", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture(() =>
+        Effect.succeed(response(html.replace("</body>", "<svg><title>Login</title></svg></body>"))),
+      );
+      yield* Effect.gen(function* () {
+        const result = yield* finish(read({ url: "https://svg.example/" }), f.requests);
+        expect(result).toMatchObject({ status: "ok", title: "Villa Example" });
+      }).pipe(Effect.provide(f.layer));
+    }),
+  );
+
+  it.effect("preserves contact details behind mail and phone links", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture(() =>
+        Effect.succeed(
+          response(
+            html.replace(
+              "</body>",
+              '<a href="mailto:bookings@villa.example">Write to us</a><a href="tel:+390612345678">Call us</a></body>',
+            ),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const result = yield* finish(read({ url: "https://contact.example/" }), f.requests);
+        expect(result.text).toContain("[Write to us](mailto:bookings@villa.example)");
+        expect(result.text).toContain("[Call us](tel:+390612345678)");
+      }).pipe(Effect.provide(f.layer));
+    }),
+  );
+
+  it.effect("classifies a JavaScript shell with a noscript tracker as thin", () =>
+    Effect.gen(function* () {
+      const body =
+        '<title>Villa JS</title><div id="root"></div><noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-EXAMPLE" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>';
+      const f = yield* fixture(() => Effect.succeed(response(body)));
+      yield* Effect.gen(function* () {
+        expect(yield* finish(read({ url: "https://noscript.example/" }), f.requests)).toMatchObject(
+          {
+            status: "thin",
+            text: "",
+            totalChars: 0,
+          },
+        );
+      }).pipe(Effect.provide(f.layer));
+    }),
+  );
+
+  it.effect.each(["0", "600"])(
+    "preserves readable content with a %s-second self refresh",
+    (delay) =>
+      Effect.gen(function* () {
+        const f = yield* fixture(() =>
+          Effect.succeed(
+            response(
+              html.replace(
+                "</head>",
+                `<meta http-equiv="refresh" content="${delay};url=/"></head>`,
+              ),
+            ),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const result = yield* finish(read({ url: "https://refresh.example/" }), f.requests);
+          expect(result.status).toBe("ok");
+          expect(result.text).toContain("eight guest rooms");
+          expect(yield* Queue.size(f.requests)).toBe(0);
+        }).pipe(Effect.provide(f.layer));
+      }),
+  );
+
+  it.effect("ignores a delayed refresh to a different page", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture((url) =>
+        url.pathname === "/"
+          ? Effect.succeed(
+              response(
+                html.replace(
+                  "</head>",
+                  '<meta http-equiv="refresh" content="600;url=/later"></head>',
+                ),
+              ),
+            )
+          : Effect.die("A delayed refresh must not replace the requested content."),
+      );
+      yield* Effect.gen(function* () {
+        const result = yield* finish(read({ url: "https://refresh.example/" }), f.requests);
+        expect(result).toMatchObject({ status: "ok", finalUrl: "https://refresh.example/" });
+      }).pipe(Effect.provide(f.layer));
+    }),
+  );
+
   it.effect("rejects invalid requests and non-thread clients before any network call", () =>
     Effect.gen(function* () {
       const f = yield* fixture();
@@ -349,6 +443,88 @@ describe("web_read at the registered MCP seam", () => {
         expect(result.delayMs).toBeGreaterThanOrEqual(3000);
       }).pipe(Effect.provide(f.layer));
     }),
+  );
+
+  it.effect("keeps a shared fetch alive when its first reader cancels", () =>
+    Effect.gen(function* () {
+      const release = yield* Deferred.make<void>();
+      // Synchronous empty storage isolates cancellation after both MCP readers join the fetch.
+      const memoryCache = Layer.succeed(
+        PageCache.PageCache,
+        PageCache.PageCache.of({
+          get: () => Effect.succeed(null),
+          put: () => Effect.void,
+        }),
+      );
+      const f = yield* fixture(
+        () => Deferred.await(release).pipe(Effect.as(response())),
+        undefined,
+        undefined,
+        memoryCache,
+      );
+      yield* Effect.gen(function* () {
+        const first = yield* Effect.forkScoped(read({ url: "https://cancel.example/" }));
+        yield* Queue.take(f.requests);
+        yield* TestClock.adjust(3000);
+        yield* Queue.take(f.requests);
+        const second = yield* Effect.forkScoped(read({ url: "https://cancel.example/" }));
+        yield* TestClock.adjust(0); // Drain runnable readers until both wait on the held page.
+        yield* Fiber.interrupt(first);
+        yield* Deferred.succeed(release, undefined);
+        const result = yield* Fiber.join(second);
+        expect(result).toMatchObject({ status: "ok", rung: "cache", delayMs: 3000 });
+        expect(result.text).toContain("eight guest rooms");
+        expect(yield* Queue.size(f.requests)).toBe(0);
+      }).pipe(Effect.provide(f.layer));
+    }),
+  );
+
+  it.effect("cancels abandoned fetches and lets a later read start again", () =>
+    Effect.gen(function* () {
+      const stopped = yield* Deferred.make<void>();
+      let attempts = 0;
+      const f = yield* fixture(() =>
+        ++attempts === 1
+          ? Effect.never.pipe(Effect.ensuring(Deferred.succeed(stopped, undefined)))
+          : Effect.succeed(response()),
+      );
+      yield* Effect.gen(function* () {
+        const first = yield* Effect.forkScoped(read({ url: "https://abandoned.example/" }));
+        yield* Queue.take(f.requests);
+        yield* TestClock.adjust(3000);
+        yield* Queue.take(f.requests);
+        yield* Fiber.interrupt(first);
+        yield* Deferred.await(stopped);
+        const second = yield* Effect.forkScoped(read({ url: "https://abandoned.example/" }));
+        yield* TestClock.adjust(3000);
+        yield* Queue.take(f.requests);
+        expect((yield* Fiber.join(second)).status).toBe("ok");
+        expect(attempts).toBe(2);
+        expect(yield* Queue.size(f.requests)).toBe(0);
+      }).pipe(Effect.provide(f.layer));
+    }),
+  );
+
+  it.effect.each([{}, { location: "/robots.txt" }])(
+    "stops a robots redirect without a new target: %j",
+    (headers) =>
+      Effect.gen(function* () {
+        let calls = 0;
+        const f = yield* fixture(undefined, undefined, () =>
+          ++calls === 1
+            ? Effect.succeed(response("", 302, headers))
+            : Effect.die("The same robots redirect must not be requested twice."),
+        );
+        yield* Effect.gen(function* () {
+          const result = yield* finish(
+            read({ url: "https://robots-loop.example/" }),
+            f.requests,
+            1,
+          );
+          expect(result).toMatchObject({ status: "provider_error", text: "" });
+          expect(yield* Queue.size(f.requests)).toBe(0);
+        }).pipe(Effect.provide(f.layer));
+      }),
   );
 
   it.effect("honours a shorter freshness request and immutable cache continuation", () =>

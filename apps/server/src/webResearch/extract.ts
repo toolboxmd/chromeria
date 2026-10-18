@@ -31,13 +31,13 @@ const blocks = new Set([
   "section",
   "ul",
 ]);
-const omitted = new Set(["style", "template", "svg", "canvas", "head"]);
+const omitted = new Set(["style", "template", "svg", "canvas", "noscript"]);
 const MAX_TEXT_CHARS = 4 * 1024 * 1024;
 
 /** Full-document extraction: article-only readers lose venue tables and structured facts. */
 export const extract = (html: string, url: string) => {
   const document = parse(html);
-  let title = "";
+  let title: string | undefined;
   let refresh: string | undefined;
   let password = false;
   const structured: Array<string> = [];
@@ -58,15 +58,22 @@ export const extract = (html: string, url: string) => {
     if ("value" in node) return node.value.replace(/\s+/g, " ");
     if (!("tagName" in node)) return joinChildren(node, depth);
     const tag = node.tagName;
+    if (omitted.has(tag)) return "";
     if (attribute(node, "hidden") !== undefined || attribute(node, "aria-hidden") === "true")
       return "";
-    if (tag === "title") title = compact(plain(node)).slice(0, 500);
+    if (
+      title === undefined &&
+      tag === "title" &&
+      node.namespaceURI === "http://www.w3.org/1999/xhtml" &&
+      node.parentNode?.nodeName === "head"
+    )
+      title = compact(plain(node)).slice(0, 500);
     if (tag === "input" && attribute(node, "type")?.toLowerCase() === "password") password = true;
     if (tag === "meta" && attribute(node, "http-equiv")?.toLowerCase() === "refresh") {
-      const match = /^\s*\d+(?:\.\d+)?\s*;\s*url\s*=\s*(.*?)\s*$/i.exec(
+      const match = /^\s*(\d+(?:\.\d+)?)\s*;\s*url\s*=\s*(.*?)\s*$/i.exec(
         attribute(node, "content") ?? "",
       );
-      if (match?.[1]) refresh = match[1].replace(/^['"]|['"]$/g, "");
+      if (match?.[2] && Number(match[1]) <= 1) refresh = match[2].replace(/^['"]|['"]$/g, "");
     }
     if (tag === "script") {
       if (attribute(node, "type")?.toLowerCase() === "application/ld+json") {
@@ -76,7 +83,7 @@ export const extract = (html: string, url: string) => {
     }
     // Inspect metadata before dropping head so redirects and JSON-LD are retained.
     const inner = joinChildren(node, depth);
-    if (omitted.has(tag)) return "";
+    if (tag === "head") return "";
     if (/^h[1-6]$/.test(tag)) return `\n\n${"#".repeat(Number(tag[1]))} ${inner.trim()}\n\n`;
     if (tag === "br") return "\n";
     if (tag === "li") return `\n- ${inner.trim()}\n`;
@@ -85,7 +92,7 @@ export const extract = (html: string, url: string) => {
       if (href) {
         try {
           const target = new URL(href, url);
-          if (["http:", "https:"].includes(target.protocol))
+          if (["http:", "https:", "mailto:", "tel:"].includes(target.protocol))
             return `[${inner.trim() || target.href}](${target.href})`;
         } catch {
           /* A malformed link is still readable as text. */
@@ -107,7 +114,7 @@ export const extract = (html: string, url: string) => {
     .join("\n\n");
   if (text.length > MAX_TEXT_CHARS)
     throw new RangeError("Research page text exceeds the extraction limit.");
-  return { title, text, refresh, password, visibleText: compact(rendered) };
+  return { title: title ?? "", text, refresh, password, visibleText: compact(rendered) };
 };
 
 /** Classify the document itself, so a footer's login link is not mistaken for a wall. */

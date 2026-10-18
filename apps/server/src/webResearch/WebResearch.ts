@@ -5,10 +5,10 @@ import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
-import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -106,10 +106,6 @@ const make = Effect.gen(function* () {
       challenges: number;
     }
   >();
-  const flights = new Map<
-    string,
-    Deferred.Deferred<CachedPage, WebResearchInputError | PageCache.PageCacheError>
-  >();
   const originFor = (origin: string) => {
     let state = origins.get(origin);
     if (!state) {
@@ -158,18 +154,26 @@ const make = Effect.gen(function* () {
     Effect.fnUntraced(function* (origin: string) {
       let url = new URL("/robots.txt", origin);
       const delay = yield* Ref.make(0);
+      const visited = new Set<string>();
       for (let hop = 0; hop < 6; hop++) {
+        if (visited.has(url.href)) break;
+        visited.add(url.href);
         const response = yield* request(url, delay);
         if ([301, 302, 303, 307, 308].includes(response.status)) {
-          const target = parseUrl(response.headers.location ?? "", url.href);
+          const target = response.headers.location
+            ? parseUrl(response.headers.location, url.href)
+            : undefined;
           if (!target)
             return yield* new ReadStopped({
               status: "provider_error",
               httpStatus: response.status,
               retryAfterMs: null,
             });
-          url = target;
-          continue;
+          if (!visited.has(target.href)) {
+            url = target;
+            continue;
+          }
+          break;
         }
         if (response.status === 429 || response.status >= 500)
           return yield* new ReadStopped({
@@ -254,8 +258,10 @@ const make = Effect.gen(function* () {
         if (page.refresh !== undefined && (status === "ok" || status === "thin")) {
           const target = parseUrl(page.refresh, url.href);
           if (!target) return { status: "origin_error" as const, title: "", text: "" };
-          url = target;
-          continue;
+          if (!visited.has(target.href)) {
+            url = target;
+            continue;
+          }
         }
         if (status === "challenge") {
           state.challenges++;
@@ -308,6 +314,13 @@ const make = Effect.gen(function* () {
     return page;
   });
 
+  // Effect Cache owns pending work and cancels it only when all readers leave.
+  // Zero TTL leaves completed-page freshness solely with the persistent cache.
+  const flights = yield* Cache.makeWith((href: string) => fetchPage(new URL(href)), {
+    capacity: Infinity,
+    timeToLive: () => 0,
+  });
+
   const read = Effect.fn("WebResearch.read")(function* (raw: typeof WebReadInput.Type) {
     const input = yield* decodeInput(raw).pipe(
       Effect.mapError(() => new WebResearchInputError({ reason: "invalid_input" })),
@@ -316,6 +329,7 @@ const make = Effect.gen(function* () {
       return yield* new WebResearchInputError({ reason: "invalid_input" });
     let page: CachedPage;
     let reused = true;
+    let delayMs = 0;
     const now = yield* Clock.currentTimeMillis;
     if (input.cacheId !== undefined) {
       const stored = yield* cache.get({ cacheId: input.cacheId });
@@ -335,25 +349,13 @@ const make = Effect.gen(function* () {
       )
         page = stored;
       else {
-        // Register/finish under a mask so cancellation cannot strand the shared Deferred.
-        page = yield* Effect.uninterruptibleMask((restore) =>
-          Effect.gen(function* () {
-            const active = flights.get(url.href);
-            if (active) return yield* restore(Deferred.await(active));
-            const pending = yield* Deferred.make<
-              CachedPage,
-              WebResearchInputError | PageCache.PageCacheError
-            >();
-            flights.set(url.href, pending);
-            reused = false;
-            return yield* restore(fetchPage(url)).pipe(
-              Effect.onExit((exit) => {
-                flights.delete(url.href);
-                return Deferred.done(pending, exit);
-              }),
-            );
-          }),
-        );
+        const active = yield* Cache.getOption(flights, url.href);
+        if (Option.isSome(active)) page = active.value;
+        else {
+          reused = false;
+          page = yield* Cache.get(flights, url.href);
+        }
+        delayMs = page.delayMs;
       }
     }
     const offset = input.offset ?? 0;
@@ -372,7 +374,7 @@ const make = Effect.gen(function* () {
       title: page.title,
       contentHash: page.contentHash,
       cacheId: page.cacheId,
-      delayMs: reused ? 0 : page.delayMs,
+      delayMs,
       retryAfterMs: page.retryAfterMs,
       ...(page.status === "login" ? { nextAction: "needs_session" as const } : {}),
       contentNotice:
