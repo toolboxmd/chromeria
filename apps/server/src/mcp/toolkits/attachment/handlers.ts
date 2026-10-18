@@ -14,7 +14,7 @@ import * as McpToolAccess from "../../McpToolAccess.ts";
 import { newCommandId, readThread, unavailable } from "../../threadAccess.ts";
 import { AttachmentToolkit } from "./tools.ts";
 import * as Staging from "../../../assets/AttachmentStaging.ts";
-import { requestDigest } from "../../McpRequestReceipts.ts";
+import { CurrentRequest, requestDigest } from "../../McpRequestReceipts.ts";
 import { requestNamespace } from "../../requestIdentity.ts";
 import * as Option from "effect/Option";
 import { CommandId } from "@t3tools/contracts";
@@ -105,10 +105,12 @@ export const layer = McpToolAccess.toLayer(
         (input) =>
           Effect.gen(function* () {
             const staging = yield* Effect.serviceOption(Staging.AttachmentStaging);
+            const request = yield* CurrentRequest;
             if (Option.isSome(staging))
               yield* staging.value.discard(
                 yield* McpInvocationContext.McpInvocationContext,
                 input.attachmentId,
+                request,
               );
             else if (uploadOwners.get(input.attachmentId)?.owner !== (yield* uploadOwner)) {
               return yield* new OrchestratorMcpFailure({
@@ -116,7 +118,8 @@ export const layer = McpToolAccess.toLayer(
                 message: "Only the caller that prepared a pending upload can discard it.",
               });
             }
-            yield* Upload.deletePendingAttachment(input.attachmentId);
+            if (Option.isNone(staging) || request === undefined)
+              yield* Upload.deletePendingAttachment(input.attachmentId);
             uploadOwners.delete(input.attachmentId);
             return {};
           }),

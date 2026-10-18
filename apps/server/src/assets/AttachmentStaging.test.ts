@@ -22,6 +22,7 @@ import * as Invocation from "../mcp/McpInvocationContext.ts";
 import * as Claims from "../orchestration-v2/AttachmentClaims.ts";
 import * as Staging from "./AttachmentStaging.ts";
 import * as Upload from "./AttachmentUpload.ts";
+import * as Requests from "../mcp/McpRequestReceipts.ts";
 
 const scope: Invocation.McpInvocationScope = {
   environmentId: EnvironmentId.make("staging-a"),
@@ -41,6 +42,7 @@ const database = Sqlite.layerMemory.pipe(
   Layer.provideMerge(NodeServices.layer),
 );
 const layer = Staging.layer.pipe(Layer.provideMerge(database));
+const keyedLayer = Requests.layer.pipe(Layer.provideMerge(layer));
 const bytes = new Uint8Array([1, 2, 3, 4]);
 const digest = Hex.encode(sha256(bytes));
 const metadata = {
@@ -360,4 +362,215 @@ it.effect("Grok R1: a concurrent discard deletes bytes only if it wins against r
       }
     }),
   ).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  "before-cleanup",
+  "before-cleanup-changed",
+  "after-claim",
+  "after-unlink",
+] as const)(
+  "S6: native discard acceptance survives %s interruption without unsafe cleanup replay",
+  (crash) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { claims, attachment } = yield* upload;
+        yield* Upload.storeAttachmentUpload(claims, bytes);
+        const requests = yield* Requests.McpRequestReceipts;
+        const intent = { attachmentId: attachment.id, clientRequestId: "native-discard" };
+        const request = yield* requests.identify(
+          scope,
+          "t3_attachment_discard",
+          intent,
+          intent.clientRequestId,
+        );
+        const fs = yield* FileSystem.FileSystem;
+        const path = resolveAttachmentPath({
+          attachmentsDir: (yield* Config.ServerConfig).attachmentsDir,
+          attachment,
+        })!;
+        const crashingFs = FileSystem.FileSystem.of({
+          ...fs,
+          readFile: (file) =>
+            fs
+              .readFile(file)
+              .pipe(
+                Effect.andThen((value) =>
+                  crash.startsWith("before-cleanup") && file === path
+                    ? Effect.interrupt
+                    : Effect.succeed(value),
+                ),
+              ),
+          remove: (file, options) =>
+            file !== path
+              ? fs.remove(file, options)
+              : (crash === "after-unlink" ? fs.remove(file, options) : Effect.void).pipe(
+                  Effect.andThen(Effect.interrupt),
+                ),
+        });
+        const crashing = Context.get(
+          yield* Layer.build(
+            Staging.layer.pipe(
+              Layer.provide(Layer.succeed(FileSystem.FileSystem, crashingFs)),
+              Layer.fresh,
+            ),
+          ),
+          Staging.AttachmentStaging,
+        );
+        const process = yield* crashing
+          .discard(scope, attachment.id, request)
+          .pipe(Effect.forkScoped);
+        yield* Fiber.await(process);
+        const sql = yield* SqlClient.SqlClient;
+        const accepted = yield* sql<{
+          consumer: string;
+          discard_receipt: string;
+          discard_cleanup: string;
+        }>`SELECT consumer,discard_receipt,discard_cleanup FROM attachment_staging WHERE id=${attachment.id}`;
+        expect(accepted).toHaveLength(1);
+        expect(accepted[0]?.consumer).toBe("discarded");
+        expect(JSON.parse(accepted[0]!.discard_receipt)).toEqual({
+          id: request.id,
+          generation: request.generation,
+          inputDigest: request.inputDigest,
+        });
+        expect(accepted[0]?.discard_cleanup).toBe(
+          crash.startsWith("before-cleanup") ? "pending" : "started",
+        );
+        expect(yield* fs.exists(path)).toBe(crash !== "after-unlink");
+        let removals = 0;
+        const observed = FileSystem.FileSystem.of({
+          ...fs,
+          remove: (file, options) => {
+            if (file === path) removals++;
+            return fs.remove(file, options);
+          },
+        });
+        const rebuilt = Context.get(
+          yield* Layer.build(
+            Staging.layer.pipe(
+              Layer.provide(Layer.succeed(FileSystem.FileSystem, observed)),
+              Layer.fresh,
+            ),
+          ),
+          Staging.AttachmentStaging,
+        );
+        if (crash === "before-cleanup-changed")
+          yield* fs.writeFile(path, new Uint8Array([9, 8, 7, 6]));
+        const renewed = {
+          ...scope,
+          thread: { ...scope.thread!, providerSessionId: "renewed-discard" },
+        };
+        const same = yield* requests.identify(
+          renewed,
+          "t3_attachment_discard",
+          intent,
+          intent.clientRequestId,
+        );
+        yield* rebuilt.discard(renewed, attachment.id, same);
+        expect(removals).toBe(crash === "before-cleanup" ? 1 : 0);
+        expect(yield* fs.exists(path)).toBe(
+          crash === "after-claim" || crash === "before-cleanup-changed",
+        );
+        // A proven native tombstone does not grant permission to delete later bytes.
+        yield* fs.writeFile(path, new Uint8Array([9, 8, 7, 6]));
+        yield* rebuilt.discard(renewed, attachment.id, same);
+        expect(Array.from(yield* fs.readFile(path))).toEqual([9, 8, 7, 6]);
+        expect(
+          (yield* Effect.result(
+            rebuilt.discard(renewed, attachment.id, { ...same, inputDigest: "changed" }),
+          ))._tag,
+        ).toBe("Failure");
+        expect(
+          (yield* Effect.result(
+            rebuilt.discard(renewed, attachment.id, { ...same, generation: "replacement" }),
+          ))._tag,
+        ).toBe("Failure");
+      }),
+    ).pipe(Effect.provide(keyedLayer)),
+);
+
+it.effect("S6: imported/unkeyed tombstones cannot acquire a keyed receipt", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { claims, attachment } = yield* upload;
+      yield* Upload.storeAttachmentUpload(claims, bytes);
+      const staging = yield* Staging.AttachmentStaging;
+      yield* staging.discard(scope, attachment.id);
+      const request = yield* (yield* Requests.McpRequestReceipts).identify(
+        scope,
+        "t3_attachment_discard",
+        { attachmentId: attachment.id },
+        "imported-discard",
+      );
+      expect((yield* Effect.result(staging.discard(scope, attachment.id, request)))._tag).toBe(
+        "Failure",
+      );
+      const sql = yield* SqlClient.SqlClient;
+      expect(
+        yield* sql`SELECT discard_receipt FROM attachment_staging WHERE id=${attachment.id}`,
+      ).toEqual([{ discard_receipt: null }]);
+    }),
+  ).pipe(Effect.provide(keyedLayer)),
+);
+
+it.effect.each([false, true])(
+  "S6: concurrent discard rival keys=%s retain one native acceptance and cleanup",
+  (rival) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { claims, attachment } = yield* upload;
+        yield* Upload.storeAttachmentUpload(claims, bytes);
+        const requests = yield* Requests.McpRequestReceipts;
+        const request = (key: string) =>
+          requests.identify(
+            scope,
+            "t3_attachment_discard",
+            { attachmentId: attachment.id, clientRequestId: key },
+            key,
+          );
+        const one = yield* request("first");
+        const two = yield* request(rival ? "rival" : "first");
+        const fs = yield* FileSystem.FileSystem;
+        const path = resolveAttachmentPath({
+          attachmentsDir: (yield* Config.ServerConfig).attachmentsDir,
+          attachment,
+        })!;
+        let removals = 0;
+        const observed = FileSystem.FileSystem.of({
+          ...fs,
+          remove: (file, options) => {
+            if (file === path) removals++;
+            return fs.remove(file, options);
+          },
+        });
+        const native = Context.get(
+          yield* Layer.build(
+            Staging.layer.pipe(
+              Layer.provide(Layer.succeed(FileSystem.FileSystem, observed)),
+              Layer.fresh,
+            ),
+          ),
+          Staging.AttachmentStaging,
+        );
+        const results = yield* Effect.all(
+          [one, two].map((identity) =>
+            Effect.result(native.discard(scope, attachment.id, identity)),
+          ),
+          { concurrency: "unbounded" },
+        );
+        expect(results.filter((result) => result._tag === "Success")).toHaveLength(rival ? 1 : 2);
+        expect(results.filter((result) => result._tag === "Failure")).toHaveLength(rival ? 1 : 0);
+        expect(removals).toBe(1);
+        expect(yield* fs.exists(path)).toBe(false);
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{
+          discard_receipt: string;
+          consumer: string;
+        }>`SELECT discard_receipt,consumer FROM attachment_staging WHERE id=${attachment.id}`;
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.consumer).toBe("discarded");
+        expect([one.id, two.id]).toContain(JSON.parse(rows[0]!.discard_receipt).id);
+      }),
+    ).pipe(Effect.provide(keyedLayer)),
 );

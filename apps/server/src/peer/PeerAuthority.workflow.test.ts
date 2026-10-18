@@ -9710,6 +9710,45 @@ it.live.each(["reserve", "discard"] as const)(
             clientRequestId: "race382-discard",
           });
           expect(discarded.isError, json(discarded)).not.toBe(true);
+          expect(yield* fs.exists(file)).toBe(false);
+          const proofSql = Context.get(node.database, SqlClient.SqlClient);
+          expect(
+            yield* proofSql`SELECT consumer FROM attachment_staging WHERE id=${attachment.id}`,
+          ).toEqual([{ consumer: "discarded" }]);
+          const reconstructed = { ...node, ...(yield* node.restartSchedulerTransport) };
+          const replayDiscard = yield* nativeCall(reconstructed, parent, "t3_attachment_discard", {
+            attachmentId: attachment.id,
+            clientRequestId: "race382-discard",
+          });
+          expect(replayDiscard.isError, json(replayDiscard)).not.toBe(true);
+          expect(replayDiscard.content).toEqual(discarded.content);
+          const acceptance = yield* proofSql<{
+            discard_receipt: string;
+            discard_cleanup: string;
+          }>`SELECT discard_receipt,discard_cleanup FROM attachment_staging WHERE id=${attachment.id}`;
+          expect(acceptance[0]?.discard_receipt).toContain('"inputDigest"');
+          expect(acceptance[0]?.discard_receipt).toContain('"generation":"local"');
+          expect(acceptance[0]?.discard_cleanup).toBe("started");
+          expect(
+            (yield* nativeCall(reconstructed, parent, "t3_attachment_discard", {
+              attachmentId: attachment.id,
+              clientRequestId: "race382-rival-discard",
+            })).isError,
+          ).toBe(true);
+          expect(
+            (yield* nativeCall(reconstructed, parent, "t3_attachment_discard", {
+              attachmentId: "pending-unrelated.pdf",
+              clientRequestId: "race382-discard",
+            })).isError,
+          ).toBe(true);
+          const other = ThreadId.make("race382-other-caller");
+          yield* seedParent(node, other);
+          expect(
+            (yield* nativeCall(reconstructed, other, "t3_attachment_discard", {
+              attachmentId: attachment.id,
+              clientRequestId: "race382-discard",
+            })).isError,
+          ).toBe(true);
           yield* Deferred.succeed(release, undefined);
           const refused = yield* Fiber.join(pending).pipe(
             Effect.ensuring(Effect.sync(() => paused.mockRestore())),
@@ -9721,6 +9760,15 @@ it.live.each(["reserve", "discard"] as const)(
               (message) => message.text === "Must not accept discarded bytes",
             ),
           ).toHaveLength(0);
+          // Historical acceptance does not delete independently replaced bytes.
+          yield* fs.writeFile(file, new Uint8Array([9, 8, 7, 6]));
+          expect(
+            (yield* nativeCall(reconstructed, parent, "t3_attachment_discard", {
+              attachmentId: attachment.id,
+              clientRequestId: "race382-discard",
+            })).isError,
+          ).not.toBe(true);
+          expect(Array.from(yield* fs.readFile(file))).toEqual([9, 8, 7, 6]);
         }
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
@@ -10580,6 +10628,113 @@ it.live(
           message: "Invalid saved-preview authorization context.",
         });
         expect(yield* fs.exists(a.config.browserArtifactsDir)).toBe(false);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30000,
+);
+
+const decodeDiscardUpload = Schema.decodeUnknownEffect(PeerAttachmentUploadResult);
+it.live(
+  "S6: remote discard recovers lost native acceptance after renewal/reconstruction and retains current authority",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const options = { productionKernel: true, attachmentRequests: true };
+        const a = yield* makeNode(
+          descriptorOf("discard-s6-a", "A", { peerAuthority: 1 }),
+          "disk",
+          options,
+        );
+        const b = yield* makeNode(
+          descriptorOf("discard-s6-b", "B", { peerAuthority: 1 }),
+          "disk",
+          options,
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("discard-s6-parent");
+        yield* seedParent(a, parent);
+        const metadata = {
+          type: "file",
+          name: "discard.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 4,
+        };
+        const prepared = yield* nativeCall(a, parent, "t3_attachment_prepare_upload", {
+          environmentId: b.environmentId,
+          upload: metadata,
+          digest: "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a",
+          clientRequestId: "discard-s6-upload",
+        });
+        expect(prepared.isError, json(prepared)).not.toBe(true);
+        const issued = yield* decodeDiscardUpload(prepared.structuredContent);
+        const http = yield* HttpClient.HttpClient;
+        expect(
+          (yield* http.execute(
+            HttpClientRequest.post(`${b.url}${issued.relativeUrl}`).pipe(
+              HttpClientRequest.setBody(HttpBody.uint8Array(new Uint8Array([1, 2, 3, 4]))),
+            ),
+          )).status,
+        ).toBe(204);
+        const input = {
+          environmentId: b.environmentId,
+          attachmentId: issued.attachmentId,
+          clientRequestId: "discard-s6-accept",
+        };
+        const fs = yield* FileSystem.FileSystem;
+        const path = resolveAttachmentPathById({
+          attachmentsDir: b.config.attachmentsDir,
+          attachmentId: issued.attachmentId,
+        })!;
+        expect(Array.from(yield* fs.readFile(path))).toEqual([1, 2, 3, 4]);
+        yield* Ref.set(a.dropCommittedToolReply, "t3_attachment_discard");
+        const lost = yield* nativeCall(a, parent, "t3_attachment_discard", input);
+        expect(lost.isError).toBe(true);
+        expect(json(lost)).toContain("Isolated committed tool reply loss");
+        expect(yield* fs.exists(path)).toBe(false);
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const accepted =
+          yield* sql`SELECT consumer,discard_receipt,discard_cleanup FROM attachment_staging WHERE id=${issued.attachmentId}`;
+        expect(accepted).toMatchObject([{ consumer: "discarded", discard_cleanup: "started" }]);
+        const rebuilt = { ...b, ...(yield* b.restartSchedulerTransport) };
+        yield* Context.get(
+          a.database,
+          SqlClient.SqlClient,
+        )`UPDATE peer_environment_links SET urls_json=${json([rebuilt.url])} WHERE environment_id=${b.environmentId}`;
+        const recovered = yield* nativeCall(a, parent, "t3_attachment_discard", input);
+        expect(recovered.isError, json(recovered)).not.toBe(true);
+        expect(recovered.structuredContent).toEqual({});
+        expect(
+          yield* sql`SELECT consumer,discard_receipt,discard_cleanup FROM attachment_staging WHERE id=${issued.attachmentId}`,
+        ).toEqual(accepted);
+        expect(yield* fs.exists(path)).toBe(false);
+        const rival = ThreadId.make("discard-s6-rival");
+        yield* seedParent(a, rival);
+        expect((yield* nativeCall(a, rival, "t3_attachment_discard", input)).isError).toBe(true);
+        expect(
+          (yield* nativeCall(a, parent, "t3_attachment_discard", {
+            ...input,
+            attachmentId: "pending-unrelated.pdf",
+          })).isError,
+        ).toBe(true);
+        yield* fs.writeFile(path, new Uint8Array([9, 8, 7, 6]));
+        expect((yield* nativeCall(a, parent, "t3_attachment_discard", input)).isError).not.toBe(
+          true,
+        );
+        expect(Array.from(yield* fs.readFile(path))).toEqual([9, 8, 7, 6]);
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.auth.revokeSession(grant.sessionId);
+        expect((yield* nativeCall(a, parent, "t3_attachment_discard", input)).isError).toBe(true);
+        yield* a.links.unlink(b.environmentId);
+        yield* linkTo(a.links, rebuilt, "full-access");
+        const enrolled = yield* nativeCall(a, parent, "t3_project_list", {
+          environmentId: b.environmentId,
+        });
+        expect(enrolled.isError, json(enrolled)).not.toBe(true);
+        expect((yield* nativeCall(a, parent, "t3_attachment_discard", input)).isError).toBe(true);
+        expect(Array.from(yield* fs.readFile(path))).toEqual([9, 8, 7, 6]);
+        expect(
+          yield* sql`SELECT consumer,discard_receipt,discard_cleanup FROM attachment_staging WHERE id=${issued.attachmentId}`,
+        ).toEqual(accepted);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
   30000,
