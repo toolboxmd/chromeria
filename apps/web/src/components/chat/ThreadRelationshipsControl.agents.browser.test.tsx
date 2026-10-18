@@ -33,9 +33,9 @@ vi.mock(import("../../state/entities"), async (original) => ({
   ...(await original()),
   useThreadProjection: (() => ({ projection: state.projection })) as never,
   useThreadRelationshipShells: ((ref: { readonly environmentId: string }) =>
-    (state.shells as ReadonlyArray<{ readonly environmentId: string; readonly source: unknown }>)
-      .filter((shell) => shell.environmentId === ref.environmentId)
-      .map((shell) => shell.source)) as never,
+    (
+      state.shells as ReadonlyArray<{ readonly environmentId: string; readonly source: unknown }>
+    ).map((shell) => (shell.environmentId === ref.environmentId ? shell.source : shell))) as never,
   useProjects: (() => state.projects) as never,
 }));
 vi.mock(import("../../state/environments"), async (original) => ({
@@ -206,19 +206,13 @@ it("shows a child delegated to a linked environment and opens it there", async (
     contextTransfers: [],
     subagents: [agent],
   };
-  await act(async () => {
-    renderer = create(
-      <ThreadRelationshipsPanel
-        environmentId={EnvironmentId.make("test")}
-        threadId={ThreadId.make("parent")}
-      />,
-    );
-  });
-  const text = renderer.root
-    .findAll((node) => typeof node.type === "string")
-    .flatMap((node) => node.children.filter((child) => typeof child === "string"))
-    .join(" ")
-    .replace(/\s+/g, " ");
+  await render(
+    <ThreadRelationshipsPanel
+      environmentId={EnvironmentId.make("test")}
+      threadId={ThreadId.make("parent")}
+    />,
+  );
+  const text = container.textContent!.replace(/\s+/g, " ");
   // The row takes its title and live status from the remote shell, not the
   // settled task record, and is counted once: not once as a childless runner
   // and again as an active row.
@@ -227,19 +221,11 @@ it("shows a child delegated to a linked environment and opens it there", async (
   expect(text).toContain("Lineage · 1 running");
   expect(text).not.toContain("2 running");
   // Stopping it belongs to the owning task, not a local interrupt.
-  expect(
-    renderer.root.findAllByProps({ "aria-label": "Stop subagent Remote roast thread" }),
-  ).toHaveLength(0);
-  const rowButton = renderer.root
-    .findAllByType("button")
-    .find((button) =>
-      button
-        .findAll((node) => typeof node.type === "string")
-        .some((node) => node.children.includes("Remote roast thread")),
-    );
+  expect(allByLabel("Stop subagent Remote roast thread")).toHaveLength(0);
+  const rowButton = buttons().find((button) => button.textContent?.includes("Remote roast thread"));
   expect(rowButton).toBeDefined();
-  expect(rowButton!.props.disabled).not.toBe(true);
-  await act(async () => rowButton!.props.onClick());
+  expect(rowButton!.disabled).toBe(false);
+  await click(rowButton!);
   expect(state.navigate).toHaveBeenCalledWith({
     to: "/$environmentId/$threadId",
     params: { environmentId: "cavallo", threadId: "remote-child" },
@@ -248,22 +234,11 @@ it("shows a child delegated to a linked environment and opens it there", async (
   // Without a client connection to cavallo the same row renders disabled.
   state.navigate.mockClear();
   state.configs.delete("cavallo");
-  await act(async () => {
-    renderer.update(
-      <ThreadRelationshipsPanel
-        environmentId={EnvironmentId.make("test")}
-        threadId={ThreadId.make("parent")}
-      />,
-    );
-  });
-  const disabledRowButton = renderer.root
-    .findAllByType("button")
-    .find((button) =>
-      button
-        .findAll((node) => typeof node.type === "string")
-        .some((node) => node.children.includes("Remote roast thread")),
-    );
+  await update();
+  const disabledRowButton = buttons().find((button) =>
+    button.textContent?.includes("Remote roast thread"),
+  );
   expect(disabledRowButton).toBeDefined();
-  expect(disabledRowButton!.props.disabled).toBe(true);
+  expect(disabledRowButton!.disabled).toBe(true);
   expect(state.navigate).not.toHaveBeenCalled();
 });

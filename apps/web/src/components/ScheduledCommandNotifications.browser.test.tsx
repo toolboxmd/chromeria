@@ -1,7 +1,7 @@
 import type { ClientSettings } from "@t3tools/contracts/settings";
 import { EnvironmentId } from "@t3tools/contracts";
 import { act } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const state = vi.hoisted(() => ({
@@ -44,7 +44,8 @@ import { ScheduledCommandNotifications } from "./ScheduledCommandNotifications";
 
 const environmentId = EnvironmentId.make("env-1");
 const onNotification = vi.fn();
-let renderer: ReactTestRenderer | undefined;
+let root: Root;
+let container: HTMLDivElement;
 
 /** A command task as the live list carries it: no output, only its health. */
 const commandTask = (failureStreak: number, lastSuccessfulRunId: string | null) => ({
@@ -62,28 +63,28 @@ async function receive(...tasks: ReadonlyArray<ReturnType<typeof commandTask>>) 
         onNotification={onNotification}
       />
     );
-    if (renderer) renderer.update(element);
-    else renderer = create(element);
+    root.render(element);
   });
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
   Object.assign(state, { mode: "off", inApp: true, focused: true, visible: "visible", data: null });
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  vi.stubGlobal("window", Object.assign(new EventTarget(), { focus: vi.fn() }));
-  vi.stubGlobal("document", {
-    get visibilityState() {
-      return state.visible;
-    },
-    hasFocus: () => state.focused,
-  });
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  vi.spyOn(window, "focus").mockImplementation(() => {});
+  vi.spyOn(document, "visibilityState", "get").mockImplementation(
+    () => state.visible as DocumentVisibilityState,
+  );
+  vi.spyOn(document, "hasFocus").mockImplementation(() => state.focused);
   vi.stubGlobal("Notification", Object.assign(state.notification, { permission: "granted" }));
 });
 
 afterEach(async () => {
-  await act(() => renderer?.unmount());
-  renderer = undefined;
+  await act(() => root.unmount());
+  container.remove();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 

@@ -502,8 +502,14 @@ function useSidebarThreads(input: {
     noProjectKeys,
   });
 
-  const { pinnedThreads, activeThreads, workingThreads, noProjectThreads, snoozedThreads, settledThreads } =
-    partition;
+  const {
+    pinnedThreads,
+    activeThreads,
+    workingThreads,
+    noProjectThreads,
+    snoozedThreads,
+    settledThreads,
+  } = partition;
   // Older settled threads load in pages; the shelf lists them only as far as they are loaded.
   const olderSettledShelf = useOlderSettledShelf({
     scopes: olderSettledScopes([...serverConfigs.keys()], scopedProjectKeys),
@@ -702,7 +708,9 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
           ? settled
           : section === "pinned"
             ? pinned
-            : section === "no-project" ? noProject : inbox(thread)
+            : section === "no-project"
+              ? noProject
+              : inbox(thread)
       ).push(thread);
     }
   }
@@ -2064,7 +2072,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           activeThreads,
           workingShelfEnabled,
         });
-  const draggedNoProjectOrder = draggingScratch && dragState !== null && draggedScratchThread !== undefined ? sortThreadsForSidebar([...noProjectThreads, applySidebarThreadDrop(draggedScratchThread, "active", dragState.occurredAt)]).map(threadShellKey) : undefined;
+  const draggedNoProjectOrder =
+    draggingScratch && dragState !== null && draggedScratchThread !== undefined
+      ? sortThreadsForSidebar([
+          ...noProjectThreads,
+          applySidebarThreadDrop(draggedScratchThread, "active", dragState.occurredAt),
+        ]).map(threadShellKey)
+      : undefined;
   const sidebarSortingStrategy = createSidebarSortingStrategy({
     items: sidebarListItems,
     enabled: !isContextDrag,
@@ -2139,7 +2153,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       activeOrder: activeKeys,
       activeKeysById,
       activeReorderableKeys: activeReorderableThreadKeys,
-      activeTimeOrdered: workingShelfEnabled,
+      activeTimeOrdered:
+        workingShelfEnabled ||
+        noProjectKeys.has(`${activeThread.environmentId}:${activeThread.projectId}`),
     });
     if (plan.kind === "none") return;
     if (plan.kind === "settle" && settlingThreadKeysRef.current.has(activeKey)) return;

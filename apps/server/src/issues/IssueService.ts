@@ -42,11 +42,8 @@ import {
   featureMapRefsOf,
   parseFeatureMapFile,
 } from "./featureMap.ts";
-import * as GitHubApi from "@t3tools/source-control-github/server/GitHubApi";
-import {
-  type GraphQlDocument,
-  readGraphQlPages,
-} from "@t3tools/source-control-github/server/githubGraphQl";
+import * as GitHubApi from "./IssueGitHubApi.ts";
+import { type GraphQlDocument, readGraphQlPages } from "./gitHubDocuments.ts";
 import {
   decodeIssueDetailJson,
   decodeIssueStatesJson,
@@ -134,7 +131,7 @@ const restRepository = (repository: string) => {
 };
 
 const make = Effect.gen(function* () {
-  const api = yield* GitHubApi.GitHubApi;
+  const api = yield* GitHubApi.IssueGitHubApi;
   const projects = yield* ProjectService.ProjectService;
   const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const issueLinks = yield* IssueLinks.IssueLinks;

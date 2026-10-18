@@ -1542,6 +1542,7 @@ function EnvironmentTasks({
                   tintColorClassName="accent-icon"
                   type="monochrome"
                 />
+                <ScheduledTaskFork.ForkTaskSummaryText task={task} />
               </Pressable>
             </Menu>
           </View>

@@ -1,5 +1,5 @@
 import { RunAttemptId, RunId } from "@t3tools/contracts";
-import { useMemo } from "react";
+
 import {
   timelineTurnFoldRunIdsByEntryId,
   type MessagesTimelineRow,
@@ -70,24 +70,20 @@ export function usePromachosTimelineDisclosures(input: FoldInput, enabled: boole
   const disclosures = enabled ? promachosTimelineDisclosures(input) : null;
   const runsKey = disclosures ? [...disclosures.runs].join("\n") : null;
   const attemptsKey = disclosures ? [...disclosures.attempts].join("\n") : null;
-  return useMemo(
-    () =>
-      runsKey === null || attemptsKey === null
-        ? null
-        : {
-            runs: new Set(
-              runsKey
-                .split("\n")
-                .filter(Boolean)
-                .map((id) => RunId.make(id)),
-            ),
-            attempts: new Set(
-              attemptsKey
-                .split("\n")
-                .filter(Boolean)
-                .map((id) => RunAttemptId.make(id)),
-            ),
-          },
-    [runsKey, attemptsKey],
-  );
+  return runsKey === null || attemptsKey === null
+    ? null
+    : {
+        runs: new Set(
+          runsKey
+            .split("\n")
+            .filter(Boolean)
+            .map((id) => RunId.make(id)),
+        ),
+        attempts: new Set(
+          attemptsKey
+            .split("\n")
+            .filter(Boolean)
+            .map((id) => RunAttemptId.make(id)),
+        ),
+      };
 }

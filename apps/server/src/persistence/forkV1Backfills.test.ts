@@ -2,12 +2,15 @@
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeCrypto from "node:crypto";
+import * as NodeSqlite from "node:sqlite";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as LegacyV1ThreadImporter from "../orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
@@ -18,6 +21,43 @@ import {
   type ForkV1Backfill,
 } from "./forkV1Backfills.ts";
 import { forkV1SnapshotLayer, vacuumForkV1Snapshot } from "./forkV1Snapshot.testFixtures.ts";
+
+const encodePrivateRow = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
+const retainedTables = [
+  "projection_thread_activities",
+  "projection_turns",
+  "projection_thread_proposed_plans",
+  "projection_pending_approvals",
+  "projection_state",
+  "checkpoint_diff_blobs",
+  "projection_thread_messages",
+  "projection_thread_pull_requests",
+] as const;
+
+/** Digest private copied data without exposing transcript or payload contents. */
+function retainedSnapshot(snapshotPath: string) {
+  const database = new NodeSqlite.DatabaseSync(snapshotPath, { readOnly: true });
+  try {
+    return retainedTables.map((name) => {
+      const schemas = database
+        .prepare("SELECT type, name, sql FROM sqlite_master WHERE tbl_name = ? ORDER BY type, name")
+        .all(name);
+      const digest = NodeCrypto.createHash("sha256");
+      let rows = 0;
+      if (schemas.some((schema) => schema.type === "table")) {
+        for (const row of database.prepare(`SELECT * FROM ${name} ORDER BY rowid`).iterate()) {
+          digest.update(encodePrivateRow(row));
+          digest.update("\n");
+          rows++;
+        }
+      }
+      return { name, schemas, rows, sha256: digest.digest("hex") };
+    });
+  } finally {
+    database.close();
+  }
+}
 
 it.effect(
   "recovers partial backfill failure and repeats after importing shells without transcripts",
@@ -120,6 +160,15 @@ const realSource = process.env.CHROMERIA_V1_SNAPSHOT_SOURCE;
       yield* Effect.promise(() =>
         vacuumForkV1Snapshot({ sourcePath: realSource!, destinationPath: snapshotPath }),
       );
+      const messagesAndLinks = () =>
+        retainedSnapshot(snapshotPath)
+          .slice(-2)
+          .map(({ name, rows, sha256 }) => ({ name, rows, sha256 }));
+      const sourceMessagesAndLinks = messagesAndLinks();
+      yield* runMigrations({ toMigrationInclusive: 62 }).pipe(
+        Effect.provide(NodeSqliteClient.layer({ filename: snapshotPath })),
+      );
+      const before63 = retainedSnapshot(snapshotPath);
       yield* Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
@@ -162,6 +211,13 @@ const realSource = process.env.CHROMERIA_V1_SNAPSHOT_SOURCE;
         yield* runForkV1Backfills();
         assert.equal((yield* importer.importPendingTranscripts).importedMessageCount, 0);
         assert.deepEqual(yield* sql`SELECT COUNT(*) AS count FROM orchestration_events`, before);
+        assert.deepEqual(yield* runMigrations(), []);
+        assert.deepEqual(
+          yield* sql`SELECT migration_id, name FROM effect_sql_migrations WHERE migration_id = 63`,
+          [{ migration_id: 63, name: "DropUnusedV1Projections" }],
+        );
       }).pipe(Effect.provide(forkV1SnapshotLayer(snapshotPath)));
+      assert.deepEqual(retainedSnapshot(snapshotPath), before63);
+      assert.deepEqual(messagesAndLinks(), sourceMessagesAndLinks);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

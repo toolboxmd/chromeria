@@ -55,6 +55,9 @@ import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import { RESTART_CUT_REASONS } from "@t3tools/shared/restartCut";
 import { subagentResultForRun } from "@t3tools/provider-core/server/subagentProjection";
+import { continueRestartedRun } from "./RestartContinuation.ts";
+import * as ThreadManagement from "./ThreadManagementService.ts";
+import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 
 const providers = [
   ["codex", CodexProviderCapabilitiesV2],
@@ -175,6 +178,124 @@ const recovery = ProviderRuntimeRecovery.ProviderRuntimeRecoveryService.use((ser
       ),
     ),
   ),
+);
+
+it.effect.each(["none", "restart-cut", "user-stop"] as const)(
+  "admits a background recovery note past only an unstarted restart cut, newer=%s",
+  (newer) => {
+    const stopped = newer === "user-stop";
+    const name = `restart-note-admission-${newer}`;
+    const threadId = ThreadId.make(`thread:${name}`);
+    const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "restart-proof" };
+    const runtime = ProviderReplayHarness.layerWithRegistry(
+      { name },
+      ProviderAdapterRegistry.layerSingle(
+        unfinishedAdapter(ProviderDriverKind.make("codex"), CodexProviderCapabilitiesV2),
+      ),
+      { runEffectWorker: false, runContinuationWorker: false },
+    );
+    const services = ThreadManagement.layer.pipe(
+      Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory))),
+      Layer.provideMerge(runtime),
+      Layer.provideMerge(ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true })),
+    );
+    return Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`${name}:create`),
+        threadId,
+        projectId: ProjectId.make(`project:${name}`),
+        title: name,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const message = (suffix: string) => ({
+        type: "message.dispatch" as const,
+        commandId: CommandId.make(`${name}:${suffix}`),
+        threadId,
+        messageId: MessageId.make(`${name}:${suffix}`),
+        text: suffix,
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" as const },
+        createdBy: "user" as const,
+        creationSource: "web" as const,
+      });
+      yield* orchestrator.dispatch(message("initial"));
+      const source = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+      const now = yield* DateTime.now;
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make(`${name}:lost-background`),
+            type: "run.updated",
+            threadId,
+            runId: source.id,
+            occurredAt: now,
+            payload: {
+              ...source,
+              status: "completed",
+              startedAt: now,
+              completedAt: now,
+              restartCancelledBackgroundWork: [
+                { kind: "subagent", label: "Interrupted reviewer", id: "agent-1" },
+              ],
+            },
+          },
+        ],
+      });
+      if (newer === "restart-cut") {
+        yield* orchestrator.dispatch({
+          ...message("unstarted-system-wake"),
+          createdBy: "agent",
+          creationSource: "server",
+        });
+        const wake = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+        assert.isNull(wake.startedAt);
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make(`${name}:cancel-wake`),
+              type: "run.updated",
+              threadId,
+              runId: wake.id,
+              occurredAt: now,
+              payload: { ...wake, status: "cancelled", completedAt: now },
+            },
+          ],
+        });
+      } else if (stopped) {
+        yield* orchestrator.dispatch(message("newer-user-work"));
+        yield* orchestrator.dispatch({
+          type: "thread.stop",
+          commandId: CommandId.make(`${name}:stop`),
+          threadId,
+        });
+        const latest = (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!;
+        assert.isNull(latest.startedAt);
+        assert.equal(latest.status, "interrupted");
+      }
+      yield* continueRestartedRun({ threadId, sourceRunId: source.id });
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      assert.lengthOf(
+        after.runs.filter((run) => run.restartContinuationOfRunId === source.id),
+        stopped ? 0 : 1,
+      );
+      assert.equal(
+        after.messages.some(
+          (entry) => entry.id === MessageId.make(`message:restart-continuation:${source.id}`),
+        ),
+        !stopped,
+      );
+    }).pipe(Effect.scoped, Effect.provide(services));
+  },
 );
 
 it.live(

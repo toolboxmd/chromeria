@@ -212,7 +212,9 @@ export class ThreadLaunchService extends Context.Service<
       launch: Effect.Effect<ThreadLaunchResult, E, R>,
     ) => Effect.Effect<ThreadLaunchResult, ThreadLaunchError | E, R>;
     /** Dispatches prepared-run.retry and prepares the run's workspace again. */
-    readonly retryPreparation: (input: ThreadLaunchPreparationInput) => Effect.Effect<
+    readonly retryPreparation: (
+      input: ThreadLaunchPreparationInput,
+    ) => Effect.Effect<
       Orchestrator.OrchestratorV2DispatchResult,
       | Orchestrator.OrchestratorV2Error
       | ThreadManagement.ThreadManagementProviderInstanceDisabledError

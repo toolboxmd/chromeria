@@ -1,9 +1,9 @@
-import { act, type ReactNode } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { act, cloneElement, type ReactElement, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { EnvironmentId, NodeId, ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import * as DateTime from "effect/DateTime";
-import { afterEach, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 
 const state = vi.hoisted(() => ({
   subagents: [] as unknown[],
@@ -34,12 +34,8 @@ vi.mock("../../state/entities", async (importOriginal) => {
 
 vi.mock("../ui/tooltip", () => ({
   Tooltip: ({ children }: { children: ReactNode }) => children,
-  TooltipTrigger: ({ render, children }: { render: ReactNode; children: ReactNode }) => (
-    <>
-      {render}
-      {children}
-    </>
-  ),
+  TooltipTrigger: ({ render, children }: { render: ReactElement; children: ReactNode }) =>
+    cloneElement(render, {}, children),
   TooltipPopup: () => null,
 }));
 
@@ -49,11 +45,18 @@ vi.mock("../ThreadHoverCard", () => ({
 
 import { NotificationSubagentOpenButton, SubagentNotificationLink } from "./V2LifecycleRow";
 
-let renderer: ReactTestRenderer | undefined;
+let root: Root;
+let container: HTMLDivElement;
+
+beforeEach(() => {
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+});
 
 afterEach(async () => {
-  await act(async () => renderer?.unmount());
-  renderer = undefined;
+  await act(async () => root.unmount());
+  container.remove();
   state.subagents = [];
   state.configs.clear();
 });
@@ -84,25 +87,23 @@ const remoteAgent = {
 const parentRef = scopeThreadRef(EnvironmentId.make("test"), ThreadId.make("parent"));
 
 function buttonsByLabel(label: string) {
-  return renderer!.root
-    .findAllByType("button")
-    .filter((button) => button.props["aria-label"] === label);
+  return [...container.querySelectorAll("button")].filter(
+    (button) => button.getAttribute("aria-label") === label,
+  );
 }
 
 it("opens a remote delegated task's notification card in its own environment", async () => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   state.subagents = [remoteAgent];
   state.configs.set("cavallo", {});
   const onOpenThread = vi.fn();
   await act(async () => {
-    renderer = create(
+    root.render(
       <SubagentNotificationLink
         parentRef={parentRef}
         subagentId={NodeId.make("remote-agent")}
         outcome="completed"
         createdAt="2026-09-16T12:02:00Z"
         timestampFormat="locale"
-        providerStatuses={[]}
         onOpenThread={onOpenThread}
         fallback={<span>fallback</span>}
       />,
@@ -110,7 +111,7 @@ it("opens a remote delegated task's notification card in its own environment", a
   });
   const buttons = buttonsByLabel("Open Remote roast");
   expect(buttons).toHaveLength(1);
-  await act(async () => buttons[0]!.props.onClick());
+  await act(async () => buttons[0]!.click());
   expect(onOpenThread).toHaveBeenCalledWith(
     ThreadId.make("remote-child"),
     EnvironmentId.make("cavallo"),
@@ -118,11 +119,10 @@ it("opens a remote delegated task's notification card in its own environment", a
 });
 
 it("renders no link for a remote notification when the client is not connected there", async () => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   state.subagents = [remoteAgent];
   const onOpenThread = vi.fn();
   await act(async () => {
-    renderer = create(
+    root.render(
       <NotificationSubagentOpenButton
         parentRef={parentRef}
         subagentId={NodeId.make("remote-agent")}
@@ -134,7 +134,7 @@ it("renders no link for a remote notification when the client is not connected t
 
   state.configs.set("cavallo", {});
   await act(async () => {
-    renderer!.update(
+    root.render(
       <NotificationSubagentOpenButton
         parentRef={parentRef}
         subagentId={NodeId.make("remote-agent")}
@@ -144,7 +144,7 @@ it("renders no link for a remote notification when the client is not connected t
   });
   const buttons = buttonsByLabel("Open subagent thread");
   expect(buttons).toHaveLength(1);
-  await act(async () => buttons[0]!.props.onClick({ stopPropagation: vi.fn() }));
+  await act(async () => buttons[0]!.click());
   expect(onOpenThread).toHaveBeenCalledWith(
     ThreadId.make("remote-child"),
     EnvironmentId.make("cavallo"),

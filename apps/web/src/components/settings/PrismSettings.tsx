@@ -20,7 +20,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { Link } from "@tanstack/react-router";
 import { type ReactNode, useEffect, useState } from "react";
 import { useStore } from "zustand";
-import { useEnvironments } from "../../state/environments";
+import { useEnvironmentProviders, useEnvironments } from "../../state/environments";
 import { prismSaveStore } from "./PrismSettings.state";
 import {
   ArrowDownIcon,
@@ -424,8 +424,7 @@ function RoleRow({
 }
 
 export function PrismSettings() {
-  const { scope, target, targets, environment, environments, connectedEnvironments } =
-    useSettingsScope();
+  const { scope, target, targets, environments, connectedEnvironments } = useSettingsScope();
   const settings = useScopedSettings();
   const { pendingWrite, saveError, setSaveError } = useStore(prismSaveStore);
   const { environments: allEnvironments } = useEnvironments();
@@ -467,7 +466,9 @@ export function PrismSettings() {
   const [selectedRole, setSelectedRole] = useState<PageRole>("dispatcher");
   const [workerLane, setWorkerLane] = useState<PrismLane>("medium");
 
-  const providers = environment?.serverConfig?.providers ?? EMPTY_SERVER_PROVIDERS;
+  const providersByEnvironment = useEnvironmentProviders();
+  const providers =
+    (target && providersByEnvironment.get(target.environmentId)) ?? EMPTY_SERVER_PROVIDERS;
   const entries = applyProviderInstanceSettings(
     deriveProviderInstanceEntries(providers),
     settings,
@@ -626,51 +627,53 @@ export function PrismSettings() {
           {connectedEnvironments.map((env) => (
             <div key={env.environmentId} className="space-y-3">
               <h3 className="text-sm font-medium">{env.label}</h3>
-              {(env.serverConfig?.providers ?? []).map((provider) => (
-                <div key={provider.instanceId} className="space-y-2 rounded-lg border p-3">
-                  <p className="text-sm">
-                    {provider.displayName ?? provider.instanceId}
-                    {!provider.enabled ? " (disabled)" : ""}
-                  </p>
-                  {provider.usageLimits?.checkedAt && (
-                    <p className="text-xs text-muted-foreground">
-                      Checked {new Date(provider.usageLimits.checkedAt).toLocaleString()}
+              {(providersByEnvironment.get(env.environmentId) ?? EMPTY_SERVER_PROVIDERS).map(
+                (provider) => (
+                  <div key={provider.instanceId} className="space-y-2 rounded-lg border p-3">
+                    <p className="text-sm">
+                      {provider.displayName ?? provider.instanceId}
+                      {!provider.enabled ? " (disabled)" : ""}
                     </p>
-                  )}
-                  {provider.usageLimits?.unavailable && (
-                    <p className="text-xs text-muted-foreground">
-                      {provider.usageLimits.unavailable.message ??
-                        (provider.usageLimits.unavailable.reason === "probeFailed"
-                          ? "Usage refresh failed; showing the last reading if available."
-                          : "Usage reporting is unsupported.")}
-                    </p>
-                  )}
-                  {!provider.usageLimits?.windows.length && (
-                    <p className="text-xs text-muted-foreground">No usage windows reported.</p>
-                  )}
-                  {provider.usageLimits?.windows.map((window) => (
-                    <div key={window.id} className="space-y-1">
-                      <div className="flex flex-wrap justify-between gap-2 text-xs">
-                        <span>
-                          {window.label}: {window.usedPercent}% used
-                        </span>
-                        <span className="text-muted-foreground">
-                          {window.resetsAt
-                            ? `Resets ${new Date(window.resetsAt).toLocaleString()}`
-                            : "Reset time not reported"}
-                        </span>
+                    {provider.usageLimits?.checkedAt && (
+                      <p className="text-xs text-muted-foreground">
+                        Checked {new Date(provider.usageLimits.checkedAt).toLocaleString()}
+                      </p>
+                    )}
+                    {provider.usageLimits?.unavailable && (
+                      <p className="text-xs text-muted-foreground">
+                        {provider.usageLimits.unavailable.message ??
+                          (provider.usageLimits.unavailable.reason === "probeFailed"
+                            ? "Usage refresh failed; showing the last reading if available."
+                            : "Usage reporting is unsupported.")}
+                      </p>
+                    )}
+                    {!provider.usageLimits?.windows.length && (
+                      <p className="text-xs text-muted-foreground">No usage windows reported.</p>
+                    )}
+                    {provider.usageLimits?.windows.map((window) => (
+                      <div key={window.id} className="space-y-1">
+                        <div className="flex flex-wrap justify-between gap-2 text-xs">
+                          <span>
+                            {window.label}: {window.usedPercent}% used
+                          </span>
+                          <span className="text-muted-foreground">
+                            {window.resetsAt
+                              ? `Resets ${new Date(window.resetsAt).toLocaleString()}`
+                              : "Reset time not reported"}
+                          </span>
+                        </div>
+                        <meter
+                          className="h-2 w-full"
+                          aria-label={`${provider.displayName ?? provider.instanceId} ${window.label} used`}
+                          min={0}
+                          max={100}
+                          value={window.usedPercent}
+                        />
                       </div>
-                      <meter
-                        className="h-2 w-full"
-                        aria-label={`${provider.displayName ?? provider.instanceId} ${window.label} used`}
-                        min={0}
-                        max={100}
-                        value={window.usedPercent}
-                      />
-                    </div>
-                  ))}
-                </div>
-              ))}
+                    ))}
+                  </div>
+                ),
+              )}
             </div>
           ))}
           {connectedEnvironments.length === 0 && (
