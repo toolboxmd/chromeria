@@ -833,11 +833,12 @@ Child creation paths are owned by child-threads and shared with thread-people.
 ```json
 {
   "id": "child-threads",
-  "purpose": "Create native children in any project, handle descendant requests, preserve durable subtree Stop and restart outcomes, and expose guarded agent queue resume.",
+  "purpose": "Create native children in any project, handle descendant requests, preserve durable subtree Stop and restart outcomes, park delegated completions until explicit resume, and expose guarded agent queue resume.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/168",
     "https://github.com/toolboxmd/chromeria/issues/269",
-    "https://github.com/toolboxmd/chromeria/issues/264"
+    "https://github.com/toolboxmd/chromeria/issues/264",
+    "https://github.com/toolboxmd/chromeria/issues/422"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/181",
@@ -899,6 +900,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/orchestration-v2/ThreadMessageIntake.ts",
     "apps/server/src/orchestration-v2/ThreadManagementService.ts",
     "apps/server/src/orchestration-v2/ThreadStop.test.ts",
+    "apps/server/src/orchestration-v2/ProviderContinuationService.ts",
+    "apps/server/src/orchestration-v2/ProviderContinuationService.test.ts",
     "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts",
     "packages/contracts/src/orchestrationV2.ts",
     "packages/contracts/src/orchestratorMcp.ts",

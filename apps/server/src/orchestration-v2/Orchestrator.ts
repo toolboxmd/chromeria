@@ -12,7 +12,6 @@ import {
   untransferredDelegatedRuns,
   restartContinuationRuns,
 } from "../childThreads/delegatedFollowups.ts";
-import { pendingDelegatedChildQuery } from "../childThreads/delegatedFollowupQueries.ts";
 import * as PrismRecovery from "../prism/RecoveryHooks.ts";
 import { ForkDispatchPlans } from "../fork/ForkDispatchPlans.ts";
 import type {
@@ -1166,6 +1165,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const offerDelegatedCompletionDelivery = (threadId: ThreadId, parentRunId: RunId) =>
     Effect.gen(function* () {
+      const state = yield* retirement(threadId);
+      if (state.retired || !state.complete) return;
       const projection = yield* projectionStore.getThreadRecords(
         threadId,
         ["runs", "messages", "providerTurns", "providerThreads"],
@@ -1202,6 +1203,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         driver: providerThread.driver,
         detail: null,
         delivery: "message_text",
+        // Stop owns eligibility even after an offer has left the mailbox. The
+        // worker uses this upstream hook before reading or dispatching it.
+        dispatchIfCurrent: (effect) =>
+          Effect.gen(function* () {
+            const current = yield* retirement(threadId).pipe(Effect.orDie);
+            if (current.retired || !current.complete) return Option.none();
+            return Option.some(yield* effect);
+          }),
         delegatedCompletion: {
           parentRunId,
           generation: delivery.generation,
@@ -1212,6 +1221,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const offerDelegatedCompletionDeliveries = (threadId: ThreadId) =>
     Effect.gen(function* () {
+      const state = yield* retirement(threadId);
+      if (state.retired || !state.complete) return;
       const projection = yield* projectionStore.getThreadRecords(threadId, ["runs"]);
       for (const run of projection.runs) {
         if (
@@ -9604,8 +9615,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   /**
    * What Stop holds besides the run it interrupts: durable queued messages wait for the
    * user, buffered provider wakes are cancelled, and the thread's pull request watches end.
-   * Every wake its delegated tasks still owe is dropped, since Stop stops those tasks too.
-   * `cohortRunIds` are dropped even when they owe nothing, like a plain interrupt's.
+   * Delegated results retain their mailbox ownership and wait for explicit resume.
    */
   const holdStoppedThread = (input: {
     readonly command: Extract<
@@ -9613,13 +9623,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       { readonly type: "run.interrupt" | "thread.stop" }
     >;
     readonly events: Ref.Ref<Array<OrchestrationV2DomainEvent>>;
-    readonly projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "subagents">;
-    readonly cohortRunIds: ReadonlyArray<RunId>;
+    readonly projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs">;
     readonly now: DateTime.Utc;
   }) =>
     Effect.gen(function* () {
       const emitEvent = emit(input.events, input.command);
-      const { thread, runs, subagents } = input.projection;
+      const { thread, runs } = input.projection;
       const queuedRuns = runs.filter((run) => run.status === "queued");
       const queuedMessages =
         queuedRuns.length === 0
@@ -9680,38 +9689,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ...thread,
             pullRequests: pullRequests.map((link) => withPullRequestWatch(link, undefined)),
           },
-        });
-      }
-      const cohortRunIds = new Set(input.cohortRunIds);
-      // A completed task can still own requested child runs. Stop closes that
-      // cohort without replacing the first result or its acknowledgment.
-      const pendingChildTasks = yield* pendingDelegatedChildQuery(forkSql, [thread.id]).pipe(
-        mapDispatchError(input.command),
-      );
-      const pendingChildIds = new Set(pendingChildTasks.map((row) => row.subagent_id));
-      for (const run of runs) {
-        if (run.delegatedCompletion?.delivery != null) cohortRunIds.add(run.id);
-      }
-      for (const task of subagents) {
-        const delivery = task.completionDelivery?.state;
-        if (
-          task.origin === "app_owned" &&
-          task.runId !== null &&
-          ((delivery !== "acknowledged" && delivery !== "delivered" && delivery !== "disposed") ||
-            pendingChildIds.has(task.id))
-        ) {
-          cohortRunIds.add(task.runId);
-        }
-      }
-      // Each disposal reads the events the ones before it wrote.
-      for (const parentRunId of cohortRunIds) {
-        yield* disposeDelegatedCompletionCohort({
-          command: input.command,
-          events: input.events,
-          projection: yield* getProjectionWithPendingEvents(thread.id, input.events),
-          parentRunId,
-          disposition: "stopped",
-          now: input.now,
         });
       }
     });
@@ -10143,7 +10120,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               command,
               events,
               projection,
-              cohortRunIds: [completionCohortRunId],
               now,
             })
           : Effect.gen(function* () {
@@ -10591,7 +10567,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       for (const run of reached.values()) {
         yield* markStoppedRun({ command, events, thread: projection.thread, run, now });
       }
-      yield* holdStoppedThread({ command, events, projection, cohortRunIds: [], now });
+      yield* holdStoppedThread({ command, events, projection, now });
       return undefined;
     });
 
@@ -12206,6 +12182,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (command.type === "queue.resume") {
         yield* mapDispatchError(command)(startNextQueuedRun(command.threadId));
       }
+      if (command.type === "message.dispatch" && explicitMessage(command)) {
+        yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.threadId));
+      }
       return {
         sequence: receipt.resultSequence,
         storedEvents,
@@ -12246,20 +12225,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       : undefined;
     const resume = command.type === "message.dispatch" && explicitMessage(command);
     const humanOverride = command.type === "message.dispatch" && humanMessage(command);
-    const forkPlans =
+    const retirementPlan =
       state === undefined
-        ? []
-        : [
-            retirementAdmission({
-              threadId: admissionThreadId,
-              expectedTokens: state.tokens,
-              resume,
-              humanOverride,
-              ...(command.type === "prepared-run.release"
-                ? { admittedHumanRunId: command.runId }
-                : {}),
-            }),
-          ];
+        ? undefined
+        : retirementAdmission({
+            threadId: admissionThreadId,
+            expectedTokens: state.tokens,
+            resume,
+            humanOverride,
+            ...(command.type === "prepared-run.release"
+              ? { admittedHumanRunId: command.runId }
+              : {}),
+          });
+    const forkPlans = retirementPlan === undefined ? [] : [retirementPlan];
     if (command.type === "thread.stop" && command.forkRetirementStop !== undefined)
       forkPlans.push(propagatedStopAdmission(command.threadId, command.forkRetirementStop));
     if (command.type === "message.dispatch") {
@@ -12267,6 +12245,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (wightPlan !== null) forkPlans.push(wightPlan);
     }
     const plan = yield* Effect.gen(function* () {
+      // Core restart handling records a cancelled continuation when Stop won.
+      // Preserve that cleanup without letting it reach feature interceptors.
+      if (
+        command.type === "message.dispatch" &&
+        command.restartContinuationOfRunId !== undefined &&
+        state?.retired
+      )
+        return yield* dispatchOnce(command);
+      // Refuse before feature planning, while retaining the same guards at commit.
+      for (const guard of retirementPlan?.guards ?? []) {
+        yield* guard.pipe(
+          Effect.provideService(SqlClient.SqlClient, forkSql),
+          Effect.provideService(ProjectionStoreV2, projectionStore),
+          Effect.mapError(
+            (cause) =>
+              new OrchestratorCommandRejectedError({
+                commandId: command.commandId,
+                commandType: command.type,
+                cause: cause.message,
+              }),
+          ),
+        );
+      }
       if (command.type === "message.dispatch" && !(yield* wightAdmission.permits(command)))
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
@@ -12535,6 +12536,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     if (command.type === "queue.resume") {
       yield* mapDispatchError(command)(startNextQueuedRun(command.threadId));
+    }
+    if (resume && state?.retired) {
+      yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.threadId));
     }
     if (command.type === "notification.delivery.accept") {
       yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.threadId));

@@ -62,7 +62,7 @@ flowchart TD
     RS["Resume after restart"]
     %% RS: #264
     SN["Child notices"]
-    %% SN: #269 #341
+    %% SN: #269 #341 #422
     ST["Urgent interruption"]
     %% ST: #285
     CK["Command keys"]

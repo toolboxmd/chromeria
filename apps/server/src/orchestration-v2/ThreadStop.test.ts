@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  EnvironmentId,
   EventId,
   MessageId,
   OrchestrationV2Command,
@@ -21,6 +22,24 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
+import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import * as ProviderContinuationService from "./ProviderContinuationService.ts";
+import * as EventSink from "./EventSink.ts";
+import { ForkCommandInterceptor } from "../fork/ForkCommandInterceptor.ts";
+import * as WightAdmission from "../wight/AdmissionHooks.ts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as OrchestratorMcpService from "../mcp/OrchestratorMcpService.ts";
+import * as BareLaunch from "./BareLaunch.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as ProjectService from "../project/ProjectService.ts";
+import * as ThreadLaunchService from "./ThreadLaunchService.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
+import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as EventStore from "./EventStore.ts";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -71,6 +90,24 @@ const layerTest = ThreadManagementService.layer.pipe(
 
 const encodeEffectRequest = Schema.encodeSync(Schema.fromJsonString(OrchestrationEffectRequestV2));
 const decodeClientCommand = Schema.decodeUnknownEffect(OrchestrationV2Command);
+
+// task_status uses real thread records and acknowledgement; unrelated MCP capabilities stay unused.
+const layerTaskStatus = OrchestratorMcpService.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      NodeServices.layer,
+      Layer.mock(BareLaunch.BareLaunch)({}),
+      Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+      ProviderAdapterRegistry.layerFromAdapters([adapter]),
+      Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      Layer.mock(ProjectService.ProjectService)({}),
+      Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+      Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+      Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+      Layer.mock(SecretRequests.SecretRequests)({}),
+    ),
+  ),
+);
 
 it.effect(
   "a delayed descendant Stop cannot retire a human turn that acknowledged its ancestor token",
@@ -397,6 +434,205 @@ const threadState = (threadId: ThreadId) =>
     };
   });
 
+it.effect.each(["before-stop", "after-stop"] as const)(
+  "parks child results offered %s until explicit resume and delivers each identity once",
+  (timing) =>
+    Effect.gen(function* () {
+      const incoming =
+        yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+      const idle = yield* Queue.unbounded<void>();
+      const offers = yield* Ref.make(0);
+      const requests = {
+        offer: (request: ProviderContinuationRequests.ProviderContinuationRequest) =>
+          Ref.update(offers, (n) => n + 1).pipe(
+            Effect.andThen(Queue.offer(incoming, request)),
+            Effect.asVoid,
+          ),
+        take: Queue.offer(idle, undefined).pipe(Effect.andThen(Queue.take(incoming))),
+      };
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const parentId = ThreadId.make("parked-parent");
+        yield* createWatchingThread(parentId, 101);
+        yield* send(parentId, "delegate work", "start_immediately");
+        const childId = yield* delegate(parentId, "late child result");
+        const readChildId = yield* delegate(parentId, "result read through task_status");
+        const childRun = (yield* orchestrator.getThreadProjection(childId)).runs[0]!;
+        const readChildRun = (yield* orchestrator.getThreadProjection(readChildId)).runs[0]!;
+        const stop = orchestrator.dispatch({
+          type: "thread.stop",
+          threadId: parentId,
+          commandId: CommandId.make("park-parent"),
+        });
+        if (timing === "after-stop") yield* stop;
+        const now = yield* DateTime.now;
+        // A provider finishes while the durable descendant Stop effect is still pending.
+        yield* sink.write({
+          commandId: CommandId.make("command:runtime-reconcile:late-child"),
+          events: [
+            {
+              id: EventId.make("late-child-completed"),
+              type: "run.updated",
+              threadId: childId,
+              runId: childRun.id,
+              occurredAt: now,
+              payload: { ...childRun, status: "completed", completedAt: now },
+            },
+          ],
+        });
+        yield* orchestrator.recoverDelegatedTask(childId, childRun.id);
+        if (timing === "before-stop") yield* stop;
+        assert.equal(yield* Ref.get(offers), timing === "after-stop" ? 0 : 1);
+        yield* sink.write({
+          commandId: CommandId.make("command:runtime-reconcile:readable-child"),
+          events: [
+            {
+              id: EventId.make("readable-child-completed"),
+              type: "run.updated",
+              threadId: readChildId,
+              runId: readChildRun.id,
+              occurredAt: now,
+              payload: { ...readChildRun, status: "completed", completedAt: now },
+            },
+          ],
+        });
+        yield* orchestrator.recoverDelegatedTask(readChildId, readChildRun.id);
+        const readableTask = (yield* orchestrator.getThreadProjection(parentId)).subagents.find(
+          (task) => task.childThreadId === readChildId,
+        )!;
+        const status = yield* Effect.gen(function* () {
+          const mcp = yield* OrchestratorMcpService.OrchestratorMcpService;
+          return yield* mcp.taskStatus(
+            {
+              environmentId: EnvironmentId.make("parked-result-test"),
+              capabilities: new Set(["orchestration"]),
+              issuedAt: 0,
+              requestNamespace: "parked-result-test",
+              client: undefined,
+              thread: {
+                threadId: parentId,
+                providerSessionId: "parked-parent-session",
+                providerInstanceId: instanceId,
+              },
+            },
+            readableTask.id,
+          );
+        }).pipe(Effect.provide(layerTaskStatus));
+        assert.equal(status.status, "completed");
+        assert.equal(status.summary, readableTask.result);
+        assert.isNotNull(status.summary);
+        // Reading a terminal task acknowledges it, so only the unread result wakes on resume.
+        const parked = yield* orchestrator.getThreadProjection(parentId);
+        const task = parked.subagents[0]!;
+        assert.equal(task.status, "completed");
+        assert.isNotNull(task.result);
+        assert.equal(task.completionDelivery?.state, "claimed");
+        const delivery = parked.runs[0]!.delegatedCompletion!.delivery!;
+        assert.deepEqual(delivery.taskIds, [task.id]);
+        assert.isFalse(parked.messages.some((message) => message.id === delivery.messageId));
+
+        // The real continuation worker acknowledges each consumed queue item by taking again.
+        const threads = yield* ThreadManagementService.ThreadManagementService;
+        let dispatches = 0;
+        let reads = 0;
+        yield* Layer.build(
+          ProviderContinuationService.layer.pipe(
+            Layer.provide(IdAllocator.layer),
+            Layer.provide(
+              Layer.succeed(ThreadManagementService.ThreadManagementService, {
+                ...threads,
+                getThreadRecords: (...args) => {
+                  reads++;
+                  return threads.getThreadRecords(...args);
+                },
+                dispatch: (command) => {
+                  dispatches++;
+                  return threads.dispatch(command);
+                },
+              }),
+            ),
+          ),
+        );
+        yield* Queue.take(idle);
+        if (timing === "before-stop") yield* Queue.take(idle);
+        // A stale offer is discarded before dispatch, including the recovery reads it triggers.
+        assert.equal(reads, 0);
+        assert.equal(dispatches, 0);
+        yield* send(parentId, "explicit resume", "start_immediately");
+        yield* Queue.take(idle);
+        const resumed = yield* orchestrator.getThreadProjection(parentId);
+        assert.equal(
+          resumed.messages.filter((message) => message.id === delivery.messageId).length,
+          1,
+        );
+        assert.equal(
+          resumed.runs.filter((run) => run.userMessageId === delivery.messageId).length,
+          1,
+        );
+        // Reconciliation and a second explicit resume cannot create a second delivery.
+        yield* orchestrator.recoverDelegatedTask(childId, childRun.id);
+        yield* send(parentId, "resume again", "queue_after_active");
+        assert.equal(yield* Ref.get(offers), timing === "after-stop" ? 1 : 2);
+        assert.equal(dispatches, 1);
+      }).pipe(
+        Effect.provide(layerTest),
+        Effect.provideService(ProviderContinuationRequests.ProviderContinuationRequests, requests),
+      );
+    }).pipe(Effect.scoped),
+);
+
+it.effect("rejects stopped commands before Wight admission and feature interception", () =>
+  Effect.gen(function* () {
+    let intercepts = 0;
+    let wightChecks = 0;
+    yield* Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make("stop-before-interceptors");
+      yield* createWatchingThread(threadId, 102);
+      yield* orchestrator.dispatch({
+        type: "thread.stop",
+        threadId,
+        commandId: CommandId.make("stop-before-hooks"),
+      });
+      intercepts = 0;
+      wightChecks = 0;
+      const exit = yield* Effect.exit(
+        orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("refused-before-hooks"),
+          threadId,
+          messageId: MessageId.make("refused-before-hooks"),
+          text: "automatic work",
+          attachments: [],
+          createdBy: "agent",
+          creationSource: "server",
+          dispatchMode: { type: "queue_after_active" },
+        }),
+      );
+      assert.isTrue(Exit.isFailure(exit));
+      assert.equal(wightChecks, 0);
+      assert.equal(intercepts, 0);
+    }).pipe(
+      Effect.provide(layerTest),
+      Effect.provideService(ForkCommandInterceptor, {
+        plan: () =>
+          Effect.sync(() => {
+            intercepts++;
+            return null;
+          }),
+      }),
+      Effect.provideService(WightAdmission.AdmissionHooks, {
+        permits: () =>
+          Effect.sync(() => {
+            wightChecks++;
+            return true;
+          }),
+      }),
+    );
+  }),
+);
+
 it.effect("Stop ends watches, holds queues, and stops the delegated tasks under the thread", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -441,7 +677,8 @@ it.effect("Stop ends watches, holds queues, and stops the delegated tasks under 
       watched: [],
     });
     const parent = yield* orchestrator.getThreadProjection(parentThreadId);
-    assert.equal(parent.subagents[0]?.completionDelivery?.state, "disposed");
+    // Durable Stop parks results; it no longer disposes the child's mailbox ownership.
+    assert.isUndefined(parent.subagents[0]?.completionDelivery);
     const effects = yield* sql<{ readonly effect_type: string }>`
       SELECT effect_type FROM orchestration_v2_effect_outbox WHERE command_id = ${stopCommandId}
     `;
