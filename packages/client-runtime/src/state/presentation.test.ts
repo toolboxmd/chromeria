@@ -60,7 +60,8 @@ describe("environment summary subscriptions", () => {
     try {
       const cached = { ...config(), providers: [] } as ServerConfig;
       h.registry.set(h.configs(SECOND), cached);
-      expect(h.registry.get(h.full.serverConfigsAtom).has(SECOND)).toBe(true);
+      const connected = h.registry.get(h.full.serverConfigsAtom);
+      expect(connected.has(SECOND)).toBe(true);
 
       h.registry.set(h.catalog, {
         isReady: true,
@@ -69,7 +70,10 @@ describe("environment summary subscriptions", () => {
           [SECOND, { ...entry(SECOND), enabled: false }],
         ]),
       });
-      expect(h.registry.get(h.full.serverConfigsAtom).has(SECOND)).toBe(false);
+      const disabled = h.registry.get(h.full.serverConfigsAtom);
+      expect(disabled).not.toBe(connected);
+      expect(disabled.has(SECOND)).toBe(false);
+      expect(connected.has(SECOND)).toBe(true);
       expect(h.registry.get(h.full.providersByEnvironmentAtom).get(SECOND)).toBe(cached.providers);
       expect(h.registry.get(h.full.presentationsAtom).get(SECOND)?.entry.enabled).toBe(false);
 
@@ -80,7 +84,9 @@ describe("environment summary subscriptions", () => {
           [SECOND, entry(SECOND)],
         ]),
       });
+      expect(h.registry.get(h.full.serverConfigsAtom)).not.toBe(disabled);
       expect(h.registry.get(h.full.serverConfigsAtom).has(SECOND)).toBe(true);
+      expect(disabled.has(SECOND)).toBe(false);
       expect(h.registry.get(h.full.providersByEnvironmentAtom).get(SECOND)).toBe(cached.providers);
 
       h.registry.set(h.configs(SECOND), null);
