@@ -2221,7 +2221,7 @@ sources and reasons.
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/449",
-    "https://github.com/toolboxmd/chromeria/compare/feat/423-web-read-core...feat/442-web-read-render"
+    "https://github.com/toolboxmd/chromeria/pull/453"
   ],
   "newFiles": [
     "apps/server/src/mcp/WebResearch.integration.test.ts",
