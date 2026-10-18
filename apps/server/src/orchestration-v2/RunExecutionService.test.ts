@@ -915,12 +915,13 @@ it("selects only live background items from non-completed settled prior runs", (
   ]);
 });
 
-it("does not carry interrupted or still-running child ownership into later attempts", () => {
-  assert.isFalse(RunExecutionService.canRouteRelatedSubagent("interrupted"));
-  assert.isFalse(RunExecutionService.canRouteRelatedSubagent("failed"));
-  assert.isFalse(RunExecutionService.canRouteRelatedSubagent("cancelled"));
-  assert.isTrue(RunExecutionService.canRouteRelatedSubagent("completed"));
-  assert.isFalse(RunExecutionService.canRouteRelatedSubagent("running"));
+it("does not carry app-owned, interrupted or still-running child ownership into later attempts", () => {
+  assert.isFalse(RunExecutionService.canRouteRelatedSubagent("completed", "app_owned"));
+  assert.isFalse(RunExecutionService.canRouteRelatedSubagent("interrupted", "provider_native"));
+  assert.isFalse(RunExecutionService.canRouteRelatedSubagent("failed", "provider_native"));
+  assert.isFalse(RunExecutionService.canRouteRelatedSubagent("cancelled", "provider_native"));
+  assert.isTrue(RunExecutionService.canRouteRelatedSubagent("completed", "provider_native"));
+  assert.isFalse(RunExecutionService.canRouteRelatedSubagent("running", "provider_native"));
 
   const threadId = ThreadId.make("thread:related-child:next-attempt");
   const childThreadId = ThreadId.make("thread:related-child:interrupted");
@@ -934,7 +935,7 @@ it("does not carry interrupted or still-running child ownership into later attem
   const state = RunExecutionService.makeProviderEventRoutingState({
     identity,
     providerTurnId: null,
-    relatedThreadIds: RunExecutionService.canRouteRelatedSubagent("interrupted")
+    relatedThreadIds: RunExecutionService.canRouteRelatedSubagent("interrupted", "provider_native")
       ? [childThreadId]
       : [],
   });

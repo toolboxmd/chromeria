@@ -2178,3 +2178,23 @@ sources and reasons.
   "keywords": ["pendingItems", "itemIngestions", "encodeTurnItemPayload"]
 }
 ```
+
+## parent-run-observers
+
+```json
+{
+  "id": "parent-run-observers",
+  "purpose": "Leave app-owned child event ingestion with its own run so later parent roots release their observers at terminal; preserve native background draining and durable parent wakes.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/456"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...fix/456-parent-run-observers"],
+  "newFiles": [],
+  "upstreamFiles": [],
+  "sharedFiles": [
+    "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+    "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+    "apps/server/src/orchestration-v2/RunExecutionService.ts",
+    "apps/server/src/orchestration-v2/RunExecutionService.test.ts"
+  ],
+  "keywords": ["canRouteRelatedSubagent", "relatedThreadIds", "activeChildProviderTurns"]
+}
+```

@@ -4111,3 +4111,223 @@ it.effect.each([
       }).pipe(Effect.provide(layer), Effect.scoped);
     }),
 );
+
+it.effect(
+  "releases completed parent observers while an app-owned child follow-up keeps running",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const childThreadId = ThreadId.make("thread:observers:child");
+      const parentThreadId = ThreadId.make("thread:observers:parent");
+      const childAttemptId = RunAttemptId.make("attempt:observers:child");
+      const childTurnId = ProviderTurnId.make("turn:observers:child");
+      const probeTurnId = ProviderTurnId.make("turn:observers:probe");
+      const barrierTurnId = ProviderTurnId.make("turn:observers:barrier");
+      let observers = 0;
+      let ingestions = 0;
+      const childClosed = yield* Deferred.make<void>();
+      const base = layerTest({
+        state,
+        idleTimeoutMs: 60_000,
+        observeIngest: (input) =>
+          Effect.sync(() => {
+            if (
+              input.event.type === "provider_turn.updated" &&
+              input.event.providerTurn.id === probeTurnId
+            )
+              ingestions++;
+          }),
+      });
+      const layer = RunExecutionService.layer.pipe(
+        Layer.provideMerge(
+          Layer.mergeAll(
+            base,
+            McpAppModelContext.layerEmpty,
+            ServerSettings.layerTest(),
+            Layer.mock(CheckpointService.CheckpointServiceV2)({
+              captureBaseline: () => Effect.void,
+            }),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const allocator = yield* IdAllocator.IdAllocatorV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const execution = yield* RunExecutionService.RunExecutionServiceV2;
+        const now = yield* DateTime.now;
+        for (const threadId of [parentThreadId, childThreadId])
+          yield* sink.write({
+            events: [yield* makeThreadCreatedEvent({ idAllocator: allocator, threadId, now })],
+          });
+        const sessionId = yield* allocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId: parentThreadId,
+        });
+        const runtime = yield* manager.open({
+          providerSessionId: sessionId,
+          threadId: parentThreadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const queue = (yield* Ref.get(state)).eventQueues.get(String(sessionId))!;
+        const childProviderThread = makeProviderThread({
+          idAllocator: allocator,
+          threadId: childThreadId,
+          providerSessionId: sessionId,
+          now,
+          nativeThreadId: "observers-child",
+        });
+        const barriers: Array<Deferred.Deferred<void>> = [];
+        const start = Effect.fnUntraced(function* (index: number) {
+          const isChild = index === 0;
+          const threadId = isChild ? childThreadId : parentThreadId;
+          const providerThread = isChild
+            ? childProviderThread
+            : makeProviderThread({
+                idAllocator: allocator,
+                threadId,
+                providerSessionId: sessionId,
+                now,
+                nativeThreadId: "observers-parent",
+              });
+          const runId = RunId.make(`run:observers:${index}`);
+          const attemptId = isChild
+            ? childAttemptId
+            : RunAttemptId.make(`attempt:observers:${index}`);
+          const turnId = isChild ? childTurnId : ProviderTurnId.make(`turn:observers:${index}`);
+          const drained = yield* Deferred.make<void>();
+          barriers.push(drained);
+          yield* execution.startRootRun({
+            commandId: CommandId.make(`command:observers:${index}`),
+            appThread: yield* projections.getThread(threadId),
+            providerSessionId: sessionId,
+            session: {
+              ...runtime,
+              subscribeEvents: runtime.subscribeEvents!.pipe(
+                Effect.map((subscription) => {
+                  observers++;
+                  return {
+                    ...subscription,
+                    // One signal at a time makes the barrier follow prior ingestion.
+                    events: subscription.events.pipe(
+                      Stream.rechunk(1),
+                      Stream.tap((event) =>
+                        event.type === "provider_turn.updated" &&
+                        event.providerTurn.id === barrierTurnId
+                          ? Deferred.succeed(drained, undefined)
+                          : Effect.void,
+                      ),
+                    ),
+                    close: subscription.close.pipe(
+                      Effect.andThen(
+                        Effect.sync(() => {
+                          observers--;
+                        }),
+                      ),
+                      Effect.andThen(Deferred.succeed(drained, undefined)),
+                      Effect.andThen(
+                        isChild ? Deferred.succeed(childClosed, undefined) : Effect.void,
+                      ),
+                    ),
+                  };
+                }),
+              ),
+            },
+            run: {
+              id: runId,
+              threadId,
+              ordinal: index || 1,
+              providerInstanceId: modelSelection.instanceId,
+            } as OrchestrationV2Run,
+            rootNode: {
+              id: NodeId.make(`node:observers:${index}`),
+            } as OrchestrationV2ExecutionNode,
+            checkpointScope: {
+              id: CheckpointScopeId.make(`scope:observers:${index}`),
+            } as OrchestrationV2CheckpointScope,
+            providerThread,
+            attempt: { id: attemptId, providerTurnId: turnId } as OrchestrationV2RunAttempt,
+            attemptId,
+            providerTurnOrdinal: index || 1,
+            // Use the production adoption rule. The durable task stays completed
+            // while its independently owned child runs a t3_thread_send follow-up.
+            relatedThreadIds:
+              !isChild && RunExecutionService.canRouteRelatedSubagent("completed", "app_owned")
+                ? [childThreadId]
+                : [],
+            shouldFinalizeRun: () => Effect.succeed(false),
+            message: {
+              messageId: MessageId.make(`message:observers:${index}`),
+              text: "continue",
+              attachments: [],
+              createdBy: "agent",
+              creationSource: "server",
+            },
+            modelSelection,
+            runtimePolicy,
+          });
+          return { providerThread, turnId };
+        });
+        const childEvent = (id: ProviderTurnId): ProviderAdapter.ProviderAdapterV2Event => ({
+          type: "provider_turn.updated",
+          driver: CODEX_DRIVER,
+          threadId: childThreadId,
+          providerTurn: {
+            id,
+            providerThreadId: childProviderThread.id,
+            nodeId: NodeId.make("node:observers:0"),
+            runAttemptId: childAttemptId,
+            nativeTurnRef: null,
+            ordinal: id === childTurnId ? 7 : id === probeTurnId ? 8 : 9,
+            status: "running",
+            startedAt: now,
+            completedAt: null,
+          },
+        });
+        yield* start(0);
+        // Match the live band: 98 later parent runs, one long-running child.
+        for (let index = 1; index <= 98; index++) {
+          const parent = yield* start(index);
+          yield* Queue.offer(queue, childEvent(childTurnId));
+          yield* Queue.offer(queue, {
+            type: "turn.terminal",
+            driver: CODEX_DRIVER,
+            providerThreadId: parent.providerThread.id,
+            providerTurnId: parent.turnId,
+            runOrdinal: index,
+            status: "completed",
+            failure: null,
+            threadDisposition: "reusable",
+          });
+        }
+        yield* Queue.offer(queue, childEvent(probeTurnId));
+        yield* Queue.offer(queue, childEvent(barrierTurnId));
+        for (const barrier of barriers) yield* Deferred.await(barrier);
+        const store = yield* EventStore.EventStoreV2;
+        const stored = yield* store
+          .read({ threadId: childThreadId, eventType: "provider-turn.updated" })
+          .pipe(Stream.runCollect);
+        const storedProbeEvents = stored.filter(
+          ({ event }) => event.type === "provider-turn.updated" && event.payload.id === probeTurnId,
+        ).length;
+        assert.deepEqual(
+          { observers, ingestions, stored: storedProbeEvents },
+          { observers: 1, ingestions: 1, stored: 1 },
+        );
+        yield* Queue.offer(queue, {
+          type: "turn.terminal",
+          driver: CODEX_DRIVER,
+          providerThreadId: childProviderThread.id,
+          providerTurnId: barrierTurnId,
+          runOrdinal: 1,
+          status: "completed",
+          failure: null,
+          threadDisposition: "reusable",
+        });
+        yield* Deferred.await(childClosed);
+        assert.equal(observers, 0);
+      }).pipe(Effect.provide(layer), Effect.scoped);
+    }),
+);

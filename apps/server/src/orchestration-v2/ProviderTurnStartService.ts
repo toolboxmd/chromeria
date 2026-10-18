@@ -1552,7 +1552,7 @@ export const layer: Layer.Layer<
         return;
       }
       const routableSubagents = projection.subagents.filter((subagent) =>
-        RunExecutionService.canRouteRelatedSubagent(subagent.status),
+        RunExecutionService.canRouteRelatedSubagent(subagent.status, subagent.origin),
       );
       const startWithHandoffs = Effect.fn("ProviderTurnStartService.startWithHandoffs")(
         function* (turnInput: Parameters<typeof session.startTurn>[0], compact = false) {

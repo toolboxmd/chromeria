@@ -187,9 +187,15 @@ function childTurnsContinue(terminal: ProviderTerminalEvent): boolean {
   return terminal.status === "failed" && terminal.childTurnsContinue === true;
 }
 
-/** Launching runs still ingest running subagents; taking them over would duplicate events. */
-export function canRouteRelatedSubagent(status: OrchestrationV2Subagent["status"]): boolean {
-  return status === "completed";
+/**
+ * App-owned children have their own run observer and durable parent wakes. A running native
+ * subagent stays with its launching run, which still ingests it; taking it over duplicates events.
+ */
+export function canRouteRelatedSubagent(
+  status: OrchestrationV2Subagent["status"],
+  origin: OrchestrationV2Subagent["origin"],
+): boolean {
+  return origin === "provider_native" && status === "completed";
 }
 
 function emptyOpenRunOwnedSubagentProjection(): OpenRunOwnedSubagentProjection {
