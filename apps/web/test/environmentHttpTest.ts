@@ -30,6 +30,7 @@ type BrowserSessionHandler = (
 ) => Effect.Effect<AuthBrowserSessionResult, EnvironmentAuthInvalidError>;
 
 interface EnvironmentHttpTestScenario {
+  readonly renewalLayer?: Layer.Layer<SessionRenewal.SessionRenewal>;
   readonly renewal?: SessionRenewal.SessionRenewal["Service"]["ensure"];
   readonly descriptor?: () => Effect.Effect<ExecutionEnvironmentDescriptor>;
   readonly session?: () => Effect.Effect<AuthSessionState>;
@@ -131,21 +132,22 @@ export async function installEnvironmentHttpTest(scenario: EnvironmentHttpTestSc
   const runtime = ManagedRuntime.make(
     Layer.mergeAll(
       Layer.succeed(PrimaryEnvironmentHttpClient, client),
-      Layer.mock(SessionRenewal.SessionRenewal, {
-        ensure: scenario.renewal ?? (() => Effect.succeed({ _tag: "NotEnrolled" })),
-        stage: (input) =>
-          Effect.succeed({
-            ...input,
-            epoch: "fixture",
-            current: "a".repeat(43),
-            generation: 0,
-            pending: null,
-            accessToken: null,
-            expiresAt: null,
-            renewAfter: null,
-          }),
-        complete: () => Effect.void,
-      }),
+      scenario.renewalLayer ??
+        Layer.mock(SessionRenewal.SessionRenewal, {
+          ensure: scenario.renewal ?? (() => Effect.succeed({ _tag: "NotEnrolled" })),
+          stage: (input) =>
+            Effect.succeed({
+              ...input,
+              epoch: "fixture",
+              current: "a".repeat(43),
+              generation: 0,
+              pending: null,
+              accessToken: null,
+              expiresAt: null,
+              renewAfter: null,
+            }),
+          complete: () => Effect.void,
+        }),
     ),
   );
   __setPrimaryHttpRunnerForTests((effect) => runtime.runPromise(effect));

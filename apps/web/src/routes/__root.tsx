@@ -145,12 +145,32 @@ function RootRouteView() {
   const pathname = useLocation({ select: (location) => location.pathname });
   const { authGateState } = Route.useRouteContext();
   const primaryEnvironmentAuthenticated = authGateState.status === "authenticated";
+  const router = useRouter();
+  useEffect(() => {
+    if (authGateState.status !== "retryable") return;
+    const timer = window.setTimeout(() => {
+      void router.invalidate();
+    }, authGateState.retryAfterMs);
+    return () => window.clearTimeout(timer);
+  }, [authGateState, router]);
   // Once true, stays true: a visit to /welcome means the bootstrap already chose a route.
   const [returningFromWelcome, setReturningFromWelcome] = useState(pathname === "/welcome");
   if (pathname === "/welcome" && !returningFromWelcome) setReturningFromWelcome(true);
   const hostedPromptLinkLanding = useHostedPromptLinkLanding(
     authGateState.status === "hosted-static",
   );
+
+  if (authGateState.status === "retryable") {
+    return (
+      <StandalonePage tone="pairing">
+        <StandalonePageHeader
+          eyebrow={APP_DISPLAY_NAME}
+          title="Reconnecting to this environment"
+          description="Your session is temporarily unavailable. Retrying automatically."
+        />
+      </StandalonePage>
+    );
+  }
 
   if (pathname === "/pair" || pathname === "/connect" || pathname === "/connect-agent") {
     return (
