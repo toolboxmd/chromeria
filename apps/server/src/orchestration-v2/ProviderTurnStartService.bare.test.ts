@@ -46,6 +46,7 @@ function harness(
   options: {
     accepted?: boolean;
     rolledBack?: boolean;
+    earlierDelivered?: boolean;
     resumeFailure?: boolean;
     missed?: "user" | "mixed";
     fork?: "before-carrier" | "after-carrier";
@@ -151,8 +152,10 @@ function harness(
   const previousTurn = {
     id: ProviderTurnId.make("turn:bare-history:previous"),
     providerThreadId,
-    nodeId,
-    runAttemptId: previousAttempt,
+    nodeId: options.earlierDelivered ? NodeId.make("node:earlier") : nodeId,
+    runAttemptId: options.earlierDelivered
+      ? RunAttemptId.make("attempt:bare-history:earlier")
+      : previousAttempt,
     nativeTurnRef: { driver, nativeId: "previous-turn", strength: "strong" as const },
     ordinal: 1,
     status: "completed" as const,
@@ -216,8 +219,21 @@ function harness(
               ...attempt,
               id: previousAttempt,
               runId: previousId,
-              status: "completed" as const,
+              attemptOrdinal: options.earlierDelivered ? 2 : 1,
+              status: options.earlierDelivered ? ("failed" as const) : ("completed" as const),
               nativeThreadId: nativeRef.nativeId,
+            },
+          ]
+        : []),
+      ...(options.earlierDelivered
+        ? [
+            {
+              ...attempt,
+              id: RunAttemptId.make("attempt:bare-history:earlier"),
+              runId: previousId,
+              rootNodeId: NodeId.make("node:earlier"),
+              nativeThreadId: nativeRef.nativeId,
+              status: "completed" as const,
             },
           ]
         : []),
@@ -277,6 +293,16 @@ function harness(
     ],
     turnItems: options.missed
       ? [
+          ...(options.earlierDelivered
+            ? [
+                {
+                  ...userItem,
+                  id: TurnItemId.make("item:earlier"),
+                  nodeId: NodeId.make("node:earlier"),
+                  text: "Already delivered",
+                },
+              ]
+            : []),
           userItem,
           ...(options.missed === "mixed"
             ? [
@@ -572,6 +598,17 @@ it.effect("bare retry resends only missed user text in order and keeps whitespac
     expect(h.delivered.map((turn) => turn.message.text)).toEqual([
       "NAMED_BODY\n\nMissed task exactly\n  keep spaces\n\nRun the task.",
     ]);
+  }),
+);
+
+it.effect("bare retry of a two-attempt run excludes the earlier delivered attempt", () =>
+  Effect.gen(function* () {
+    const h = harness({ missed: "user", accepted: true, earlierDelivered: true });
+    yield* h.start;
+    expect(h.delivered.map((turn) => turn.message.text)).toEqual([
+      "Missed task exactly\n  keep spaces\n\nRun the task.",
+    ]);
+    expect(h.additions).not.toHaveBeenCalled();
   }),
 );
 
