@@ -61,6 +61,11 @@ const servicesOver = <E, R>(database: Layer.Layer<SqlClient.SqlClient, E, R>) =>
     Layer.provideMerge(v2Stores(database)),
   );
 const services = servicesOver(SqlitePersistence.layerMemory);
+const coldServices = IssueLinks.layer.pipe(
+  Layer.provide(closingReferences),
+  Layer.provideMerge(readLayer(IDENTITIES, {})),
+  Layer.provideMerge(v2Stores(SqlitePersistence.layerMemory)),
+);
 
 const seed = Effect.gen(function* () {
   yield* insertProject("project-web", "/work/acme-web");
@@ -108,6 +113,37 @@ const storedRows = Effect.flatMap(
 );
 
 describe("IssueLinks", () => {
+  it.effect("derives a thread's branch link while its project identity cache is cold", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const links = yield* IssueLinks.IssueLinks;
+      expect(linksOf(yield* links.forThread(THREAD))).toEqual([
+        { issue: "acme/web#28", sources: ["branch"] },
+      ]);
+    }).pipe(Effect.provide(coldServices)),
+  );
+
+  it.effect("resolves a short reference while its project identity cache is cold", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const links = yield* IssueLinks.IssueLinks;
+      expect(yield* links.resolveTarget(THREAD, { number: 12 })).toEqual({
+        ...issue(12),
+        url: "https://github.com/acme/web/issues/12",
+      });
+    }).pipe(Effect.provide(coldServices)),
+  );
+
+  it.effect("finds branch-linked threads while project identity caches are cold", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      expect(yield* threadsFor(issue(28), issue(28, "acme/api"))).toEqual([
+        [[THREAD, ["branch"]]],
+        [["thread-api", ["branch"]]],
+      ]);
+    }).pipe(Effect.provide(coldServices)),
+  );
+
   it.effect("links manually by number in the thread's repository, once", () =>
     Effect.gen(function* () {
       yield* seed;

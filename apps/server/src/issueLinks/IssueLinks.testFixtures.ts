@@ -20,6 +20,7 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 
 const CREATED_AT = "2026-09-01T00:00:00.000Z";
 const providerInstanceId = ProviderInstanceId.make("codex");
@@ -54,12 +55,18 @@ export const v2Stores = <E, R>(database: Layer.Layer<SqlClient.SqlClient, E, R>)
  * V2 projection and project rows. A checkout resolves to the identity mapped for its workspace
  * root instead of asking git.
  */
-export const readLayer = (identities: Readonly<Record<string, RepositoryIdentity>>) => {
+export const readLayer = (
+  identities: Readonly<Record<string, RepositoryIdentity>>,
+  cachedIdentities = identities,
+) => {
   const enrich = (project: OrchestrationProjectShell): OrchestrationProjectShell => ({
     ...project,
-    repositoryIdentity: identities[project.workspaceRoot] ?? null,
+    repositoryIdentity: cachedIdentities[project.workspaceRoot] ?? null,
   });
   return Layer.mergeAll(
+    Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
+      resolve: (cwd) => Effect.succeed(identities[cwd] ?? null),
+    }),
     Layer.unwrap(
       Effect.map(ProjectionStore.ProjectionStoreV2, (store) =>
         Layer.mock(Orchestrator.OrchestratorV2)({
