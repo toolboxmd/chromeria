@@ -1039,7 +1039,8 @@ const make = Effect.gen(function* () {
                   ({ event }) =>
                     event.type === "run-attempt.created" &&
                     event.payload.runId === run.id &&
-                    event.payload.reason === "steering_restart",
+                    event.payload.reason === "steering_restart" &&
+                    event.payload.deliveryIntent === "restart",
                 )
               ? "restarted"
               : "steered";
