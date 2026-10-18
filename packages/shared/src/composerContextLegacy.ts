@@ -418,9 +418,11 @@ export function upgradeLegacyContextMessage(text: string): UpgradedLegacyContext
     if (placedTerminals.has(record)) continue;
     const label = inlineTerminalLabel(record);
     let at = body.indexOf(label);
+    // A character class before `$` misses supplementary code points on Node 26's V8.
+    // Keep the equivalent alternation: https://github.com/pingdotgg/t3code/issues/18272.
     while (
       at !== -1 &&
-      (/[\p{L}\p{N}\p{M}_@.-]$/u.test(body.slice(0, at)) ||
+      (/(?:\p{L}|\p{N}|\p{M}|[_@.-])$/u.test(body.slice(0, at)) ||
         /^(?:[\p{L}\p{N}\p{M}_-]|[.@]+[\p{L}\p{N}\p{M}_-])/u.test(body.slice(at + label.length)))
     ) {
       at = body.indexOf(label, at + 1);
