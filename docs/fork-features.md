@@ -965,7 +965,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
 ```json
 {
   "id": "child-follow-up-wake",
-  "purpose": "Wake the parent once for every finished follow-up turn of a delegated child, not for Monitor wakes. Retire this edit and take upstream's when pingdotgg/t3code#13490 is fixed upstream.",
+  "purpose": "Deliver each finished requested follow-up once and rearm its parent wake while reusing the original delegated task and preserving its first result; exclude Monitor wakes. Upstream #17696 (c572cb71d2, already absorbed) fixes #13490 by creating fresh tasks, so it does not replace this adaptation. Retire when upstream preserves the same task identity and first result with equivalent per-run delivery, or the fork adopts its fresh-task lifecycle and the retained regressions pass.",
   "issues": [
     "https://github.com/pingdotgg/t3code/issues/13490",
     "https://github.com/toolboxmd/chromeria/issues/212"
@@ -974,14 +974,25 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "newFiles": [],
   "upstreamFiles": ["apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts"],
   "sharedFiles": [
+    "apps/server/src/childThreads/delegatedFollowups.ts",
+    "apps/server/src/childThreads/delegatedFollowupQueries.ts",
+    "apps/server/src/mcp/OrchestratorMcpService.ts",
     "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
     "apps/server/src/mcp/delegatedTaskContinuation.test.ts",
     "packages/shared/src/forkToolInstructions.ts",
     "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
     "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "apps/server/src/orchestration-v2/ProjectionStore.ts",
     "packages/provider-core/src/server/orchestrationInstructions.ts"
   ],
-  "keywords": ["13490", "finalizeAppOwnedSubagent", "priorResultTransfers", "follow-up turn"]
+  "keywords": [
+    "13490",
+    "17696",
+    "recordSubagentFollowup",
+    "finalizeAppOwnedSubagent",
+    "priorResultTransfers",
+    "follow-up turn"
+  ]
 }
 ```
 
