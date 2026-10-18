@@ -597,7 +597,9 @@ it.effect.each([
       yield* Effect.gen(function* () {
         const s = yield* session;
         yield* Effect.gen(function* () {
-          const fiber = yield* Effect.forkScoped(s.read({ url: "https://active.example/" }));
+          const fiber = yield* Effect.forkScoped(
+            s.read({ url: "https://active.example/", followSubpages: false }),
+          );
           yield* Queue.take(f.requests);
           yield* TestClock.adjust(seconds * 1000);
           expect(yield* Queue.take(f.requests)).toEqual({
@@ -628,7 +630,9 @@ it.effect("round 4: the active HTTP timeout starts after long spacing", () =>
     yield* Effect.gen(function* () {
       const s = yield* session;
       yield* Effect.gen(function* () {
-        const fiber = yield* Effect.forkScoped(s.read({ url: "https://active-timeout.example/" }));
+        const fiber = yield* Effect.forkScoped(
+          s.read({ url: "https://active-timeout.example/", followSubpages: false }),
+        );
         yield* Queue.take(f.requests);
         yield* TestClock.adjust("60 seconds");
         yield* Queue.take(f.requests);
@@ -662,7 +666,7 @@ it.effect("round 4: eight queued slow responses finish on their own active budge
         const fiber = yield* Effect.forkScoped(
           Effect.forEach(
             Array.from({ length: 8 }, (_, i) => `https://slow-queue.example/${i}`),
-            (url) => s.read({ url }),
+            (url) => s.read({ url, followSubpages: false }),
             { concurrency: "unbounded" },
           ),
         );
