@@ -49,7 +49,8 @@ export const Route = createFileRoute("/_chat")({
   beforeLoad: async ({ context, location }) => {
     if (
       context.authGateState.status !== "authenticated" &&
-      context.authGateState.status !== "hosted-static"
+      context.authGateState.status !== "hosted-static" &&
+      context.authGateState.status !== "retryable"
     ) {
       throw redirect({ to: "/pair", replace: true });
     }

@@ -135,6 +135,7 @@ export interface ServerClientSessionRecord {
 
 type ServerAuthGateState =
   | { status: "authenticated" }
+  | { status: "retryable"; retryAfterMs: number }
   | {
       status: "requires-auth";
       auth: AuthSessionState["auth"];
@@ -144,6 +145,7 @@ type ServerAuthGateState =
 let bootstrapPromise: Promise<ServerAuthGateState> | null = null;
 let resolvedAuthenticatedGateState: ServerAuthGateState | null = null;
 let explicitPairingRequested = false;
+let startupRenewalRetryDelayMs = 500;
 const AUTH_SESSION_ESTABLISH_TIMEOUT_MS = 2_000;
 const AUTH_SESSION_ESTABLISH_STEP_MS = 100;
 
@@ -359,9 +361,19 @@ async function bootstrapServerAuth(urlCredential: string | null): Promise<Server
     const recovered = await runRenewal(
       SessionRenewal.SessionRenewal.pipe(
         Effect.flatMap((renewal) => renewal.ensure(`cookie:${origin}`, origin)),
+        Effect.catchTags({
+          RenewalRejected: () => Effect.succeed({ _tag: "NotEnrolled" } as const),
+          ConnectionTransientError: () => Effect.succeed({ _tag: "Retryable" } as const),
+        }),
       ),
-    ).catch(() => null);
-    if (recovered?._tag === "Renewed" && (await fetchSessionState()).authenticated)
+    );
+    if (recovered._tag === "Retryable") {
+      const retryAfterMs = startupRenewalRetryDelayMs;
+      startupRenewalRetryDelayMs = Math.min(retryAfterMs * 2, 5_000);
+      return { status: "retryable", retryAfterMs };
+    }
+    startupRenewalRetryDelayMs = 500;
+    if (recovered._tag === "Renewed" && (await fetchSessionState()).authenticated)
       return { status: "authenticated" };
     return {
       status: "requires-auth",
@@ -506,6 +518,7 @@ export async function resolveInitialServerAuthGateState(): Promise<ServerAuthGat
     explicitPairingRequested = true;
   }
   if (explicitPairingRequested) {
+    startupRenewalRetryDelayMs = 500;
     const currentSession = await fetchSessionState();
     return { status: "requires-auth", auth: currentSession.auth };
   }
@@ -535,6 +548,7 @@ export async function resolveInitialServerAuthGateState(): Promise<ServerAuthGat
   bootstrapPromise = nextPromise;
   return nextPromise
     .then((result) => {
+      if (result.status !== "retryable") startupRenewalRetryDelayMs = 500;
       if (bootstrapPromise === nextPromise && result.status === "authenticated") {
         resolvedAuthenticatedGateState = result;
       }
@@ -551,4 +565,5 @@ export function __resetServerAuthBootstrapForTests() {
   bootstrapPromise = null;
   resolvedAuthenticatedGateState = null;
   explicitPairingRequested = false;
+  startupRenewalRetryDelayMs = 500;
 }
