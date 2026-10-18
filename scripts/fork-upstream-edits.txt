@@ -449,3 +449,6 @@ apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash_fast_wake
 
 # Public research reads reuse the preview network block list (#423, #440)
 apps/server/src/htmlRender/publicProxy.ts
+
+# Public research rendering reuses the pinned browser/context owner (#442)
+apps/server/src/preview/ServerBrowserContexts.ts

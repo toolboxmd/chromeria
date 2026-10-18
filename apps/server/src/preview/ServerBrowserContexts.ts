@@ -68,6 +68,43 @@ export const presentAsChrome = async (
 };
 
 export class ServerBrowserContexts {
+  /** A research render owns its browser and fresh storage, with no route to human profiles. */
+  static async publicContext(input: {
+    readonly executable: string;
+    readonly proxyPort: number;
+    readonly env: NodeJS.ProcessEnv;
+  }) {
+    const { chromium } = loadPlaywright();
+    const browser = await chromium.launch({
+      executablePath: input.executable,
+      env: input.env,
+      headless: true,
+      chromiumSandbox: !sandboxDisabled(input.env),
+      timeout: 10_000,
+      proxy: { server: `socks5://127.0.0.1:${input.proxyPort}`, bypass: "<-loopback>" },
+      args: [
+        "--disable-gpu",
+        "--disable-quic",
+        "--block-new-web-contents",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        // All destination DNS belongs to the proxy, including speculation and worker traffic.
+        "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
+      ],
+    });
+    try {
+      const context = await browser.newContext({
+        viewport: { width: 1280, height: 800 },
+        serviceWorkers: "block",
+        acceptDownloads: false,
+        userAgent: "ChromeriaResearch/1.0 (+https://github.com/toolboxmd/chromeria)",
+      });
+      return { context, close: () => browser.close() };
+    } catch (cause) {
+      await browser.close().catch(constVoid);
+      throw cause;
+    }
+  }
+
   private readonly options: Options;
   private readonly contexts = new Map<string, Promise<BrowserContext>>();
   private readonly clearing = new Map<string, Promise<void>>();
