@@ -158,6 +158,7 @@ apps/server/src/auth/SessionStore.ts
 apps/server/src/auth/http.ts
 apps/server/src/mcp/toolkits/project/handlers.test.ts
 apps/server/src/mcp/toolkits/project/handlers.ts
+apps/server/src/orchestration-v2/ProjectionStore.test.ts
 apps/server/src/orchestration-v2/ProjectionStore.ts
 apps/server/src/orchestration-v2/testkit/OrchestratorScenario.ts
 apps/server/src/persistence/AuthSessions.ts
