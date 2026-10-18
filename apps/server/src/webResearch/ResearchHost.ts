@@ -123,20 +123,10 @@ const make = Effect.gen(function* () {
         code: "capability_denied",
         message: "Research reads require a peer link with agent access.",
       });
+    // Queueing and crawl delays can exceed a fetch budget; the host times active HTTP work.
     const page = yield* forwarding
       .call(scope, peerTool, host, input, { expectedLinkIdentity: resolved.link.launchIdentity })
       .pipe(
-        Effect.timeout("60 seconds"),
-        Effect.catchTags({
-          TimeoutError: (cause) =>
-            Effect.fail(
-              new ResearchHostUnavailable({
-                environmentId: host,
-                reason: "transport",
-                cause,
-              }),
-            ),
-        }),
         Effect.mapError((cause) =>
           cause._tag === "OrchestratorMcpFailure" && cause.code === "orchestration_error"
             ? new ResearchHostUnavailable({ environmentId: host, reason: "transport", cause })

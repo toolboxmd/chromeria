@@ -1,6 +1,8 @@
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -85,6 +87,7 @@ const decodeFailure = Schema.decodeSync(
 const decodePage = Schema.decodeUnknownSync(HostedWebReadResult);
 const failure = (result: McpSchema.CallToolResult) => {
   expect(result.isError, JSON.stringify(result.content)).toBe(true);
+  expect(result.structuredContent).toBeUndefined();
   const part = result.content[0];
   if (part?.type !== "text") throw new Error("Expected a typed MCP failure");
   expect(part.text).toMatch(/^\s*\{/);
@@ -95,9 +98,7 @@ const page = (result: McpSchema.CallToolResult) => {
   return decodePage(result.structuredContent);
 };
 
-const fixture = Effect.fnUntraced(function* (
-  peerCall?: PeerMcpClient.PeerMcpClient["Service"]["call"],
-) {
+const fixture = Effect.fnUntraced(function* (robots = "User-agent: *\nAllow: /") {
   const requests = yield* Queue.unbounded<string>();
   const callers = yield* Queue.unbounded<Invocation.McpInvocationScope>();
   const release = yield* Deferred.make<void>();
@@ -117,7 +118,7 @@ const fixture = Effect.fnUntraced(function* (
             yield* Queue.offer(requests, target.pathname);
             const invocation = yield* Effect.serviceOption(Invocation.McpInvocationContext);
             if (Option.isSome(invocation)) yield* Queue.offer(callers, invocation.value);
-            if (target.pathname === "/robots.txt") return response("User-agent: *\nAllow: /");
+            if (target.pathname === "/robots.txt") return response(robots);
             yield* Deferred.await(release);
             return response(body);
           }),
@@ -131,12 +132,6 @@ const fixture = Effect.fnUntraced(function* (
   ).pipe(Effect.provide(hostServer), Effect.provideService(Scope.Scope, hostScope));
   const makeSource = Effect.fnUntraced(function* (descriptor: typeof cavallo) {
     const linking = yield* Layer.build(layerLinkingEnvironment(descriptor));
-    const forwarding =
-      peerCall === undefined
-        ? PeerForwarding.layer
-        : PeerForwarding.layer.pipe(
-            Layer.provide(Layer.succeed(PeerMcpClient.PeerMcpClient, { call: peerCall })),
-          );
     const localRequests = yield* Queue.unbounded<string>();
     const threads = Layer.mock(Threads.ThreadManagementService)({
       getThreadShell: (id) =>
@@ -159,7 +154,7 @@ const fixture = Effect.fnUntraced(function* (
             ),
           ),
         ),
-        Layer.provide(forwarding),
+        Layer.provide(PeerForwarding.layer),
         Layer.provide(Layer.succeedContext(linking)),
         Layer.provide(threads),
         Layer.provideMerge(Settings.layerTest({ webResearch: { host: bestia.environmentId } })),
@@ -170,6 +165,7 @@ const fixture = Effect.fnUntraced(function* (
     const scope = scopeOf(descriptor.environmentId);
     return {
       links: Context.get(linking, PeerLinks.PeerLinks),
+      peers: Context.get(linking, PeerMcpClient.PeerMcpClient),
       settings: Context.get(services, Settings.ServerSettingsService),
       localRequests,
       scope,
@@ -273,10 +269,17 @@ it.effect(
       }
       yield* linkTo(f.a.links, f.host, "read-only");
       expect(failure(yield* f.a.call({ url })).code).toBe("capability_denied");
-      // Exercise destination authorization too, bypassing only the source setting's preflight.
-      expect(failure(yield* f.a.call({ url, environmentId: bestia.environmentId })).code).toBe(
-        "capability_denied",
-      );
+      // Call the destination directly to exercise its authorization without the source preflight.
+      const deniedAtHost = yield* f.a.peers
+        .call({
+          environmentId: bestia.environmentId,
+          tool: "web_read",
+          arguments: { url },
+          limits: { runtimeMode: "full-access", interactionMode: "default" },
+          success: HostedWebReadResult,
+        })
+        .pipe(Effect.flip);
+      expect(deniedAtHost.code).toBe("capability_denied");
       yield* linkTo(f.b.links, f.host, "auto");
       expect(
         failure(
@@ -326,20 +329,74 @@ it.effect("rejects configured forwarding chains before a second link is used", (
   }).pipe(Effect.provide(testLayers)),
 );
 
-it.effect("bounds a peer call that stops responding after link resolution", () =>
+it.effect("keeps a healthy host read pending through a long robots crawl delay", () =>
   Effect.gen(function* () {
-    const forwarded = yield* Deferred.make<void>();
-    const f = yield* fixture(() =>
-      Deferred.succeed(forwarded, undefined).pipe(Effect.andThen(Effect.never)),
-    );
+    const f = yield* fixture("User-agent: *\nAllow: /\nCrawl-delay: 75");
     yield* linkTo(f.a.links, f.host);
-    const call = yield* Effect.forkScoped(f.a.call({ url }));
-    yield* Deferred.await(forwarded);
-    yield* TestClock.adjust("60 seconds");
-    expect(failure(yield* Fiber.join(call)).code).toBe("research_host_unavailable");
+    const completed = yield* Deferred.make<void>();
+    const read = yield* Effect.forkScoped(
+      f.a.call({ url }).pipe(Effect.onExit(() => Deferred.succeed(completed, undefined))),
+    );
+    expect(yield* Queue.take(f.requests)).toBe("/robots.txt");
+    yield* TestClock.adjust("61 seconds");
+    expect(yield* Deferred.isDone(completed)).toBe(false);
+    yield* TestClock.adjust("14 seconds");
+    expect(yield* Queue.take(f.requests)).toBe("/rooms");
+    yield* Deferred.succeed(f.release, undefined);
+    expect(page(yield* Fiber.join(read))).toMatchObject({ status: "ok", delayMs: 75_000 });
+    expect(yield* Queue.size(f.a.localRequests)).toBe(0);
+  }).pipe(Effect.provide(testLayers)),
+);
+
+it.effect("does not let an explicit environmentId bypass the configured research host", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture();
+    yield* linkTo(f.a.links, f.host);
+    yield* f.a.settings.updateSettings({ webResearch: { host: rocky.environmentId } });
+    // Without the routing guard this reaches bestia and returns its loop error instead.
+    yield* f.hostSettings.updateSettings({ webResearch: { host: cavallo.environmentId } });
+    const rejected = failure(yield* f.a.call({ url, environmentId: bestia.environmentId }));
+    expect(rejected).toMatchObject({ code: "invalid_request" });
+    expect(rejected.message).toContain("webResearch.host");
     expect(yield* Queue.size(f.requests)).toBe(0);
     expect(yield* Queue.size(f.a.localRequests)).toBe(0);
   }).pipe(Effect.provide(testLayers)),
+);
+
+it.effect(
+  "the pinned MCP SDK receives typed failures without validating them as page results",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* linkTo(f.a.links, f.host);
+      yield* f.hostSettings.updateSettings({ webResearch: { host: cavallo.environmentId } });
+      const resolved = yield* f.a.links.resolve(bestia.environmentId);
+      const sdk = yield* Effect.acquireRelease(
+        Effect.promise(async () => {
+          const sdk = new Client({ name: "research-sdk-proof", version: "1" });
+          await sdk.connect(
+            // @ts-expect-error -- SDK 1.29.0's sessionId getter conflicts with its own Transport under exactOptionalPropertyTypes.
+            new StreamableHTTPClientTransport(new URL(`${resolved.url}/mcp`), {
+              requestInit: { headers: { authorization: `Bearer ${resolved.token}` } },
+            }),
+          );
+          return sdk;
+        }),
+        (sdk) => Effect.promise(() => sdk.close()),
+      );
+      // listTools installs the SDK's outputSchema validators, as an agent harness does.
+      yield* Effect.promise(() => sdk.listTools());
+      const result = yield* Effect.promise(() =>
+        sdk.callTool({ name: "web_read", arguments: { url } }),
+      );
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toBeUndefined();
+      expect(result.content).toContainEqual({
+        type: "text",
+        text: expect.stringContaining('"code":"research_host_unavailable"'),
+      });
+      expect(yield* Queue.size(f.requests)).toBe(0);
+    }).pipe(Effect.provide(testLayers)),
 );
 
 it.effect(

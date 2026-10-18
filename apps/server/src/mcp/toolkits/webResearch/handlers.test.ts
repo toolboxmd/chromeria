@@ -142,6 +142,20 @@ const finish = Effect.fnUntraced(function* <A, E, R>(
 });
 
 describe("web_read at the registered MCP seam", () => {
+  it.effect("identifies the invalid parameter in a protocol validation error", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* Effect.gen(function* () {
+        const error = yield* call({ url: "https://villa.example/", maxChars: 20_001 }).pipe(
+          Effect.flip,
+        );
+        expect(error).toBeInstanceOf(McpSchema.InvalidParams);
+        expect(error.message).toContain("maxChars");
+        expect(yield* Queue.size(f.requests)).toBe(0);
+      }).pipe(Effect.provide(f.layer));
+    }),
+  );
+
   it.effect("includes a matching depth-one subpage with its own provenance by default", () =>
     Effect.gen(function* () {
       const f = yield* fixture((url) =>

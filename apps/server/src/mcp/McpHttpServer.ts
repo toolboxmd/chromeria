@@ -868,18 +868,22 @@ const registerWebRead = Effect.fn("McpHttpServer.registerWebRead")(function* () 
               }),
           ),
           Effect.catchTags({
-            AiError: () =>
-              Effect.fail(new McpSchema.InvalidParams({ message: "Invalid web_read parameters." })),
+            AiError: (error) =>
+              Effect.fail(
+                error.reason._tag === "ToolParameterValidationError"
+                  ? new McpSchema.InvalidParams({ message: error.reason.message })
+                  : new McpSchema.InternalError({ message: "The research read failed." }),
+              ),
             NoSuchElementError: () =>
               Effect.fail(
                 new McpSchema.InternalError({ message: "The research read returned no result." }),
               ),
             OrchestratorMcpFailure: (error) => {
               const failure = { code: error.code, message: error.message };
+              // outputSchema describes pages. SDK clients also validate error structuredContent.
               return Effect.succeed(
                 new McpSchema.CallToolResult({
                   isError: true,
-                  structuredContent: failure,
                   content: [{ type: "text", text: encodeJsonText(failure) }],
                 }),
               );
