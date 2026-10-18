@@ -358,7 +358,8 @@ export interface OrchestratorV2DispatchResult {
 export interface OrchestratorV2Shape {
   readonly resumeQueuedRuns: Effect.Effect<number, OrchestratorV2Error>;
   readonly recoverDelegatedTasks: Effect.Effect<void>;
-  readonly recoverDelegatedTask: (threadId: ThreadId, sourceRunId: RunId) => Effect.Effect<void>;
+  /** Settles one delegated child; sourceRunId also releases a declined restart continuation. */
+  readonly recoverDelegatedTask: (threadId: ThreadId, sourceRunId?: RunId) => Effect.Effect<void>;
   /** Reconciles native question lifetime and delivery under the parent lock. */
   readonly reconcileDelegatedTaskQuestion: (
     parentThreadId: ThreadId,
@@ -14240,13 +14241,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   );
 
   const recoverDelegatedTask = Effect.fn("Orchestrator.recoverDelegatedTask")(
-    function* (threadId: ThreadId, sourceRunId: RunId) {
+    function* (threadId: ThreadId, sourceRunId?: RunId) {
       const parentThreadId = yield* appOwnedSubagentParentThreadId(threadId);
       if (parentThreadId === undefined) return;
       yield* threadDispatch.withLock(
         parentThreadId,
-        finalizeAppOwnedSubagent(threadId, { settledContinuationOf: sourceRunId }),
+        finalizeAppOwnedSubagent(
+          threadId,
+          sourceRunId === undefined ? undefined : { settledContinuationOf: sourceRunId },
+        ),
       );
+      yield* requestWake(threadId);
     },
     (effect, threadId, _sourceRunId) =>
       effect.pipe(
