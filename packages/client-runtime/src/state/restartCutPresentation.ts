@@ -28,7 +28,7 @@ export function createRestartCutProjector() {
       if (index === undefined) continue; // Do not pull unloaded or inherited history into this window.
       const cut = restartCutView(run, runs);
       if (cut === undefined) continue;
-      const summary =
+      const detail =
         "Stopped because Chromeria restarted. " +
         (cut.state === "continued"
           ? `Continuation started (run ${runs.find((next) => next.id === cut.continuationRunId)?.ordinal ?? cut.continuationRunId}, ${cut.continuationStatus}).`
@@ -40,7 +40,7 @@ export function createRestartCutProjector() {
       const cached = cache.get(id);
       const at = run.restartCut?.cutAt ?? run.completedAt;
       const notice: Rows[number] =
-        cached?.item.type === "notification" && cached.item.summary === summary
+        cached?.item.type === "notification" && cached.item.detail === detail
           ? cached
           : {
               position: 0,
@@ -65,7 +65,8 @@ export function createRestartCutProjector() {
                 type: "notification",
                 source: { kind: "system" },
                 outcome: "cancelled",
-                summary,
+                summary: "Stopped by restart",
+                detail,
               },
             };
       cache.set(id, notice);

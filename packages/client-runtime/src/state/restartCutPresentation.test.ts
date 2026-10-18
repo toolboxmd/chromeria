@@ -6,6 +6,7 @@ import {
   type OrchestrationV2Run,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
+import { turnItemHasDetail } from "../work-log/itemDetail.ts";
 import { RESTART_CUT_REASONS } from "@t3tools/shared/restartCut";
 import { v2Now, v2Projection, v2ThreadId } from "./orchestrationV2TestFixtures.ts";
 import * as Option from "effect/Option";
@@ -62,12 +63,56 @@ const row: OrchestrationV2ThreadProjection["visibleTurnItems"][number] = {
 const rows = [row];
 const project = (runs: ReadonlyArray<OrchestrationV2Run>) =>
   createRestartCutProjector()({ runs, visibleTurnItems: rows });
-const summary = (runs: ReadonlyArray<OrchestrationV2Run>) => {
+const explanation = (runs: ReadonlyArray<OrchestrationV2Run>) => {
   const item = project(runs).at(-1)!.item;
-  return item.type === "notification" ? item.summary : null;
+  return item.type === "notification" ? item.detail : null;
 };
 
 describe("restart-cut client presentation", () => {
+  it.each([
+    { name: "pending", runs: [source], expected: "Continuation pending." },
+    {
+      name: "continued",
+      runs: [
+        source,
+        {
+          ...source,
+          id: RunId.make("resumed"),
+          ordinal: 2,
+          status: "running" as const,
+          restartCut: undefined,
+          restartContinuationOfRunId: source.id,
+        },
+      ],
+      expected: "Continuation started (run 2, running).",
+    },
+    {
+      name: "declined",
+      runs: [
+        {
+          ...source,
+          restartCut: {
+            continuation: "declined" as const,
+            cutAt: v2Now,
+            reason: RESTART_CUT_REASONS.CONTINUATION_OFF,
+          },
+        },
+      ],
+      expected: "Continuation declined. Continuing threads after restarts is turned off.",
+    },
+  ])(
+    "makes the full $name explanation expandable when the label is truncated",
+    ({ runs, expected }) => {
+      const item = project(runs).at(-1)!.item;
+      expect(turnItemHasDetail(item)).toBe(true);
+      expect(item.type).toBe("notification");
+      if (item.type !== "notification") throw new Error("Missing restart notice");
+      expect(item.summary).toBe("Stopped by restart");
+      expect(item.detail).toContain("Stopped because Chromeria restarted.");
+      expect(item.detail).toContain(expected);
+    },
+  );
+
   it("exposes the explanation through the shared client atom without altering durable history", () => {
     const projection = { ...v2Projection, runs: [source], visibleTurnItems: rows };
     const state = Atom.make(
@@ -83,7 +128,7 @@ describe("restart-cut client presentation", () => {
     const ref = { environmentId: EnvironmentId.make("local"), threadId: v2ThreadId };
     const visible = registry.get(details.visibleTurnItemsAtom(ref));
     expect(visible).toHaveLength(2);
-    expect(visible[1]?.item.type === "notification" && visible[1].item.summary).toContain(
+    expect(visible[1]?.item.type === "notification" && visible[1].item.detail).toContain(
       "Stopped because Chromeria restarted",
     );
     expect(registry.get(details.threadAtom(ref))?.projection).toBe(projection);
@@ -95,7 +140,7 @@ describe("restart-cut client presentation", () => {
     expect(result[0]).toBe(row);
     expect(result).toHaveLength(2);
     expect(result[1]?.item.runId).toBe(source.id);
-    expect(summary([source])).toContain(
+    expect(explanation([source])).toContain(
       "Stopped because Chromeria restarted. Continuation pending.",
     );
   });
@@ -111,15 +156,15 @@ describe("restart-cut client presentation", () => {
       startedAt: null,
       completedAt: null,
     };
-    expect(summary([source, continuation])).toContain("Continuation pending");
-    expect(summary([source, { ...continuation, startedAt: v2Now, status: "running" }])).toContain(
-      "Continuation started (run 2, running)",
-    );
+    expect(explanation([source, continuation])).toContain("Continuation pending");
+    expect(
+      explanation([source, { ...continuation, startedAt: v2Now, status: "running" }]),
+    ).toContain("Continuation started (run 2, running)");
   });
 
   it("shows the authoritative decline reason", () => {
     expect(
-      summary([
+      explanation([
         {
           ...source,
           restartCut: {
@@ -160,7 +205,7 @@ describe("restart-cut client presentation", () => {
     };
     const updated = render({ runs: [source, next], visibleTurnItems: rows });
     expect(updated[1]).not.toBe(first[1]);
-    expect(updated[1]?.item.type === "notification" && updated[1].item.summary).toContain(
+    expect(updated[1]?.item.type === "notification" && updated[1].item.detail).toContain(
       "Continuation started (run 2, completed)",
     );
     expect(rows).toEqual([row]);
