@@ -43,6 +43,60 @@ describe("device setup guidance", () => {
     ).toContain("Device Manager");
   });
 
+  it.each([true, false])(
+    "keeps Android discovery uncertain with a known device (physical=%s)",
+    (physical) => {
+      const device = {
+        hostId: "remote",
+        id: "phone",
+        name: "Known Android device",
+        platform: "android" as const,
+        version: "Android 16",
+        booted: true,
+        physical,
+      };
+      const state = deviceState({
+        hostStatus: "idle",
+        hosts: [
+          {
+            id: "remote",
+            label: "Remote Mac",
+            kind: "ssh",
+            hubInstalled: true,
+            agentDeviceInstalled: true,
+            platforms: [{ platform: "android", available: true }],
+          },
+        ],
+        hostStatuses: { remote: { status: "ready", androidDiscoveryIncomplete: true } },
+        devices: [device],
+      });
+      const partial = platformSetupStatus(state, "android");
+      expect(partial.ready).toBe(false);
+      expect(partial.message).toContain("may be incomplete");
+      expect(partial.message).not.toContain("SDK and Emulator are available");
+      expect(deviceHubReadiness(state).ready).toBe(true);
+      expect(state.devices).toEqual([device]);
+      const recovered = { ...state, hostStatuses: { remote: { status: "ready" as const } } };
+      expect(platformSetupStatus(recovered, "android").ready).toBe(true);
+      expect(platformSetupStatus(recovered, "android").message).not.toContain("incomplete");
+    },
+  );
+
+  it("preserves a specific missing-tool explanation from the server", () => {
+    const state = deviceState({
+      hosts: [
+        {
+          ...deviceState().hosts[0]!,
+          platforms: [
+            { platform: "ios", available: true },
+            { platform: "android", available: false, reason: "Android Emulator is missing." },
+          ],
+        },
+      ],
+    });
+    expect(platformSetupStatus(state, "android").message).toBe("Android Emulator is missing.");
+  });
+
   it("counts a remote device host when this machine has no simulator tooling", () => {
     const state = deviceState({
       hostStatus: "idle",

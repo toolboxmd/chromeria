@@ -261,6 +261,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "scripts/fork-upstream-edits.txt",
     "patches/vitest@5.0.1.patch",
     "scripts/lib/vitest-cache.test.ts",
+    "apps/web/src/components/device/DeviceDiscovery.browser.test.tsx",
     "apps/server/src/forkWsRpc.ts"
   ],
   "upstreamFiles": [
