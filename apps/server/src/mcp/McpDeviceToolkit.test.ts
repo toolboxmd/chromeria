@@ -9,11 +9,12 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { McpSchema, McpServer } from "effect/ai";
+import { McpSchema, McpServer, Tool } from "effect/ai";
 
 import * as ServerConfig from "../config.ts";
 import * as DeviceService from "../device/DeviceService.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
+import { DeviceToolkit } from "./toolkits/device/tools.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
 
@@ -124,12 +125,26 @@ const layerTest = McpHttpServer.layerDeviceToolkit.pipe(
   Layer.provide(NodeServices.layer),
 );
 
+it.effect("offers app-owned typed device commands through the registered toolkit", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    expect(Tool.getJsonSchema(DeviceToolkit.tools.device_execute)).toMatchObject({
+      type: "object",
+    });
+    expect(server.tools.map(({ tool }) => tool.name)).toEqual(
+      expect.arrayContaining(["device_commands", "device_execute"]),
+    );
+  }).pipe(Effect.scoped, Effect.provide(layerTest)),
+);
+
 it.effect("registers the device tools and returns the screenshot as image content", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const server = yield* McpServer.McpServer;
       const names = server.tools.map(({ tool }) => tool.name).toSorted();
-      expect(names).toEqual(["device_close", "device_list", "device_open", "device_screenshot"]);
+      expect(names).toEqual(
+        expect.arrayContaining(["device_close", "device_list", "device_open", "device_screenshot"]),
+      );
 
       const callWith = (capabilities: ReadonlyArray<McpInvocationContext.McpCapability>) =>
         Effect.provideService(McpInvocationContext.McpInvocationContext, invocation(capabilities));
