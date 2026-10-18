@@ -200,8 +200,11 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           return {
             promachos: kit("promachos"),
             planner: kit("planner"),
-            dispatcher: kit("dispatcher"),
+            researcher: kit("researcher"),
+            designer: kit("designer"),
+            roast: kit("roast"),
             reviewer: kit("reviewer"),
+            judge: kit("judge"),
             worker: {
               instructions: `${scope} worker instructions.`,
               skills: ["operations", `${scope}-worker`],
@@ -228,8 +231,6 @@ it.layer(NodeServices.layer)("server settings", (it) => {
                 ],
               },
             },
-            retry: { ...kit("retry"), enabled: false },
-            escalation: { ...kit("escalation"), enabled: false },
           };
         };
         const opaque = {
@@ -1905,21 +1906,32 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const tuned = ProjectId.make("project-tuned");
       const untouched = ProjectId.make("project-untouched");
       const lanes = ProjectId.make("project-lanes");
+      // Kits of roles removed since (#399), as those builds stored them.
+      const removedKits = {
+        dispatcher: { instructions: "", skills: [], models: [grok] },
+        retry: { instructions: "", skills: [], models: [luna], enabled: true },
+        escalation: { instructions: "", skills: [], models: [], enabled: false },
+      };
       yield* fileSystem.writeFileString(
         serverConfig.settingsPath,
         JSON.stringify({
           projectSettingsFolded: true,
-          prismRoles: { reviewer: { models: [sol] }, worker: { lanes: { hard: [sol] } } },
+          prismRoles: {
+            ...removedKits,
+            reviewer: { models: [sol] },
+            worker: { lanes: { hard: [sol] } },
+          },
           projectSettingsOverrides: {
             [tuned]: {
               defaultAutoPull: true,
               prismRoles: {
                 ...legacyKits,
+                ...removedKits,
                 promachos: { ...legacyKits.promachos, models: [grok] },
                 worker: { ...legacyKits.worker, lanes: { easy: [], medium: [luna], hard: [] } },
               },
             },
-            [untouched]: { prismRoles: legacyKits },
+            [untouched]: { prismRoles: { ...legacyKits, ...removedKits } },
             // Saved before single lists: the medium lane is the reviewer's list.
             [lanes]: { prismRoles: { reviewer: { lanes: { easy: [], medium: [luna] } } } },
           },
@@ -1935,10 +1947,12 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         },
         [lanes]: { prismRoles: { reviewer: { models: [luna] } } },
       });
-      const persisted = yield* decodeServerSettingsJson(
-        yield* fileSystem.readFileString(serverConfig.settingsPath),
-      );
+      const raw = yield* fileSystem.readFileString(serverConfig.settingsPath);
+      const persisted = yield* decodeServerSettingsJson(raw);
       assert.deepEqual(persisted.projectSettingsOverrides, settings.projectSettingsOverrides);
+      for (const role of Object.keys(removedKits)) assert.notInclude(raw, `"${role}"`);
+      assert.deepEqual(persisted.prismRoles.reviewer.models, [sol]);
+      assert.deepEqual(persisted.prismRoles.worker.lanes.hard, [sol]);
 
       // A later environment change reaches every role the project did not set.
       const changed = yield* serverSettings.updateSettings({

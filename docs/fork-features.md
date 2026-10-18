@@ -1162,11 +1162,12 @@ Child creation paths are owned by child-threads and shared with thread-people.
 ```json
 {
   "id": "prism-settings",
-  "purpose": "Keep scoped Prism kits, ordered model lists and worker lanes editable with saved settings replay and honest explicit retry/escalation kit semantics. Project overrides are partial role maps over the environment kits.",
+  "purpose": "Keep scoped Prism kits for the seven delegated roles (Planner, Researcher, Designer, Worker lanes, Roast, Reviewer, Judge) plus the stored Promachos kit editable with ordered Color lists and saved settings replay. Removed role kits drop at decode; stored records that name a removed role read as its successor. Project overrides are partial role maps over the environment kits.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/169",
     "https://github.com/toolboxmd/chromeria/issues/395",
-    "https://github.com/toolboxmd/chromeria/issues/397"
+    "https://github.com/toolboxmd/chromeria/issues/397",
+    "https://github.com/toolboxmd/chromeria/issues/399"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/183",
@@ -1202,7 +1203,15 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "packages/contracts/src/prism.ts",
     "packages/contracts/src/prism.test.ts"
   ],
-  "keywords": ["prismRoles", "PrismSettings", "worker lanes", "prismRole", "Retry", "Escalation"]
+  "keywords": [
+    "prismRoles",
+    "PrismSettings",
+    "worker lanes",
+    "prismRole",
+    "Researcher",
+    "Roast",
+    "Judge"
+  ]
 }
 ```
 

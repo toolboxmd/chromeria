@@ -259,34 +259,48 @@ describe("PrismService", () => {
       assert.strictEqual(error.code, "invalid_request");
     }),
   );
-  it.effect("explicit retry and escalation kits still route with legacy enabled false", () =>
+  it.effect("routes each new role through its own kit and Color list", () =>
     Effect.gen(function* () {
       const p = yield* provider;
+      const models = [
+        ...p.models,
+        ...["research", "design", "roast", "judge"].map((slug) => ({
+          slug,
+          name: slug,
+          isCustom: false,
+          capabilities: null,
+        })),
+      ];
       yield* Effect.gen(function* () {
         const service = yield* Prism.PrismService;
-        for (const role of ["retry", "escalation"] as const) {
+        for (const [role, model] of [
+          ["researcher", "research"],
+          ["designer", "design"],
+          ["roast", "roast"],
+          ["judge", "judge"],
+        ] as const) {
           const result = yield* service.resolve({ projectId, role });
-          assert.strictEqual(result.modelSelection.model, "configured");
-          assert.strictEqual(result.kitText, "Planner requested kit.");
+          assert.strictEqual(result.modelSelection.model, model);
+          assert.strictEqual(result.kitText, `${role} kit.`);
         }
       }).pipe(
         Effect.provide(
           Prism.layer.pipe(
             Layer.provide(
               Layer.mergeAll(
-                registry([p]),
+                registry([{ ...p, models }]),
                 Settings.layerTest({
                   prismRoles: {
-                    retry: {
-                      enabled: false,
-                      models: [selection],
-                      instructions: "Planner requested kit.",
+                    researcher: {
+                      models: [{ instanceId, model: "research" }],
+                      instructions: "researcher kit.",
                     },
-                    escalation: {
-                      enabled: false,
-                      models: [selection],
-                      instructions: "Planner requested kit.",
+                    designer: {
+                      models: [{ instanceId, model: "design" }],
+                      instructions: "designer kit.",
                     },
+                    roast: { models: [{ instanceId, model: "roast" }], instructions: "roast kit." },
+                    judge: { models: [{ instanceId, model: "judge" }], instructions: "judge kit." },
                   },
                 }),
               ),
@@ -301,7 +315,8 @@ describe("PrismService", () => {
     assert.strictEqual(Prism.delegatedPrismRole("test"), "worker");
     assert.strictEqual(Prism.delegatedPrismRole("general"), "worker");
     assert.strictEqual(Prism.delegatedPrismRole("review"), "reviewer");
-    assert.strictEqual(Prism.delegatedPrismRole("research"), "planner");
-    assert.strictEqual(Prism.delegatedPrismRole("design"), "planner");
+    assert.strictEqual(Prism.delegatedPrismRole("research"), "researcher");
+    assert.strictEqual(Prism.delegatedPrismRole("design"), "designer");
+    assert.strictEqual(Prism.delegatedPrismRole(), "worker");
   });
 });

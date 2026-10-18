@@ -212,25 +212,29 @@ it("keeps the same model at distinct efforts as separate ordered entries", () =>
   expect(next.prismRoles.worker).toEqual(roles.worker);
 });
 
-it("switches Retry off and back on without touching its model list", () => {
+it("saves a Planner list without touching the other read-only roles", () => {
   const envs = [environment("one")];
   const scope = resolveSettingsScope({}, [], envs);
-  const off = planPrismRolePatch(scope, envs, {
-    kind: "enabled",
-    role: "retry",
-    enabled: false,
+  const planner = planPrismRolePatch(scope, envs, {
+    kind: "models",
+    role: "planner",
+    models: [first],
   });
-  const next = applyServerSettingsPatch(envs[0]!.serverConfig.settings, off.serverWrites[0]!.patch);
-  expect(next.prismRoles.retry).toEqual({ ...roles.retry, enabled: false });
-  expect(next.prismRoles.escalation.enabled).toBe(true);
-  const on = planPrismRolePatch(scope, envs, {
-    kind: "enabled",
-    role: "retry",
-    enabled: true,
-  });
-  expect(applyServerSettingsPatch(next, on.serverWrites[0]!.patch).prismRoles.retry).toEqual(
-    roles.retry,
+  const next = applyServerSettingsPatch(
+    envs[0]!.serverConfig.settings,
+    planner.serverWrites[0]!.patch,
   );
+  expect(next.prismRoles.planner.models).toEqual([first]);
+  const judge = planPrismRolePatch(scope, envs, {
+    kind: "models",
+    role: "judge",
+    models: [second],
+  });
+  const both = applyServerSettingsPatch(next, judge.serverWrites[0]!.patch);
+  expect(both.prismRoles.planner.models).toEqual([first]);
+  expect(both.prismRoles.judge.models).toEqual([second]);
+  expect(both.prismRoles.roast).toEqual(roles.roast);
+  expect(both.prismRoles.researcher).toEqual(roles.researcher);
 });
 
 it("keeps the save barrier until the updated settings snapshot arrives", () => {

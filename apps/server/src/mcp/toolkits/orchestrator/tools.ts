@@ -86,8 +86,8 @@ const OrchestratorCapabilitiesTool = Tool.make("orchestrator_capabilities", {
 
 const DelegateTaskTool = Tool.make("delegate_task", {
   description:
-    "Start one child agent with only `task`. No parent history. Set `target.environmentId` to run it on a linked environment, with `target.projectId` for its project. The target's Prism picks provider, model and effort from the role kit and usage headroom; omit `target` unless the user chose a provider/model (an explicit target wins). `prismRole` picks a kit, `lane` worker difficulty; unconfigured roles inherit the parent model. Use visible T3 delegation instead of native or shell agent runners. Separate checkout or PR per child: `isolation:'worktree'`. Keep `taskId` for `task_status` and `task_cancel`.",
-  parameters: OrchestratorMcpDelegateTaskInput,
+    "Start one child agent with only `task`. No parent history. Set `target.environmentId` to run it on a linked environment, with `target.projectId` for its project. The target's Prism picks provider, model and effort from the role kit and usage headroom; omit `target` unless the user chose a provider/model (an explicit target wins). `prismRole` picks a kit (planner, researcher, designer, worker, roast, reviewer or judge); without it, `role` review runs as reviewer, research as researcher, design as designer, else worker. `lane` sets worker difficulty; unconfigured roles inherit the parent model. Use visible T3 delegation instead of native or shell agent runners. Separate checkout or PR per child: `isolation:'worktree'`. Keep `taskId` for `task_status` and `task_cancel`.",
+  parameters: McpRouting.parameters(OrchestratorMcpDelegateTaskInput),
   success: OrchestratorMcpDelegateTaskResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",

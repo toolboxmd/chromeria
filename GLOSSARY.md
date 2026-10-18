@@ -74,8 +74,9 @@ out. AgentsMD's "routing tool" means Prism here.
 _Avoid_: Model Router, router (alone)
 
 **Prism role**:
-A kit Prism routes for: promachos, planner, dispatcher, reviewer, worker, retry
-or escalation.
+What delegated work is for, with its own instructions and ordered Colors:
+Planner, Researcher, Designer, Worker, Roast, Reviewer or Judge. Promachos is a
+stored launch kit, not a role `delegate_task` accepts.
 
 **Lane**:
 The difficulty of a worker delegation, `easy`, `medium` or `hard`, which Prism
@@ -200,8 +201,8 @@ One handoff from a parent to a child thread through `delegate_task` (`taskId`,
 _Avoid_: dispatch
 
 **Planner**:
-The top-level agent the user works with. It owns judgment, specs and
-acceptance, and delegates the rest.
+The agent that owns judgment, specs and acceptance and delegates the rest;
+usually the top-level thread, or one launched with the Planner role.
 _Avoid_: main agent, coordinator
 
 **Parent**:

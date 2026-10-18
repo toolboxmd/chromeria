@@ -481,8 +481,41 @@ const boxToolkitLayer = (thread: BoxThread) => {
   ).pipe(
     Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
     Layer.provide(NodeCrypto.layer),
-    Layer.provide(layerBoxThreads),
-    Layer.provide(layerBoxLaunches),
+    Layer.provide(
+      Settings.layerTest({
+        prismRoles: {
+          worker: {
+            lanes: { medium: [modelSelection], hard: [{ instanceId, model: "box-prism" }] },
+          },
+          reviewer: { models: [modelSelection] },
+          roast: { models: [{ instanceId, model: "box-prism" }] },
+        },
+      }),
+    ),
+    Layer.provide(
+      actual === undefined
+        ? layerBoxThreads
+        : Layer.succeed(ThreadManagement.ThreadManagementService, actual.threads),
+    ),
+    Layer.provide(
+      actual === undefined
+        ? layerBoxLaunches
+        : Layer.succeed(ThreadLaunch.ThreadLaunchService, {
+            ...actual.launches,
+            launch: (input) =>
+              actual.launches.launch(input).pipe(
+                Effect.tap((result) =>
+                  Effect.gen(function* () {
+                    yield* Ref.set(thread.launched, result.threadId);
+                    yield* Ref.update(thread.launchIds, (ids) => [...ids, result.threadId]);
+                    yield* Deferred.succeed(thread.launchAccepted, undefined);
+                    if (yield* Ref.get(thread.holdLaunch))
+                      yield* Deferred.await(thread.releaseLaunch);
+                  }),
+                ),
+              ),
+          }),
+    ),
     Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
     Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
     Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
@@ -1332,7 +1365,7 @@ const recordPending = (
           linkIdentity: link.launchIdentity,
           projectId: boxProject,
           title: "Remote suite",
-          prismRole: "escalation",
+          prismRole: "roast",
           lane: "hard",
           workspaceStrategy: { type: "root", branch: "remote-root" },
           runtimeMode: "full-access",
@@ -1429,7 +1462,7 @@ it.effect.each([false, true])(
           expect(yield* Ref.get(thread.launchIds)).toHaveLength(1);
           const task = yield* taskResult(after, taskId);
           expect(task?.remoteChild?.launch).toMatchObject({
-            prismRole: "escalation",
+            prismRole: "roast",
             lane: "hard",
             workspaceStrategy: { type: "root", branch: "remote-root" },
           });
