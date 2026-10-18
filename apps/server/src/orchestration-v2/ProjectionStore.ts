@@ -1213,7 +1213,7 @@ const encodeMessagePayload = Schema.encodeEffect(
 const encodePlanPayload = Schema.encodeEffect(
   Schema.fromJsonString(OrchestrationV2PlanArtifactSchema),
 );
-const encodeTurnItemPayload = Schema.encodeEffect(
+export const encodeTurnItemPayload = Schema.encodeEffect(
   Schema.fromJsonString(OrchestrationV2TurnItemJsonSchema),
 );
 const encodeCheckpointScopePayload = Schema.encodeEffect(
