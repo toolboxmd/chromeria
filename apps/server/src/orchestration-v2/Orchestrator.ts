@@ -1173,6 +1173,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ? undefined
       : projection.messages.find((candidate) => candidate.id === delivery.messageId);
 
+  // Stop commits through this same write transaction. The final retirement
+  // decision and nonblocking enqueue share that interval without taking
+  // ancestor locks beneath the caller's destination lock.
+  const offerIfNotRetired = (request: ProviderContinuationRequests.ProviderContinuationRequest) =>
+    mapDelegatedCompletionError(
+      forkSql.withTransaction(
+        Effect.gen(function* () {
+          const current = yield* retirement(request.threadId);
+          if (current.retired || !current.complete) return;
+          yield* continuationRequests.offer(request);
+        }),
+      ),
+    );
+
   const offerDelegatedCompletionDelivery = (threadId: ThreadId, parentRunId: RunId) =>
     Effect.gen(function* () {
       const state = yield* retirement(threadId);
@@ -1207,7 +1221,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (providerThread === undefined) {
         return;
       }
-      yield* continuationRequests.offer({
+      yield* offerIfNotRetired({
         threadId,
         providerThreadId: providerThread.id,
         driver: providerThread.driver,
@@ -10945,7 +10959,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const delivery = cohort?.delivery?.taskIds.length === 0 ? null : (cohort?.delivery ?? null);
     const deliveryRun = completionDeliveryRun(input.parentProjection, delivery);
     if (delivery !== null) {
-      if (deliveryRun?.status === "queued" && deliveryRun.userMessageId === delivery?.messageId) {
+      const outsideResumeSnapshot =
+        delivery.forkResumeCommandId !== undefined &&
+        !(delivery.forkResumeTaskIds ?? delivery.taskIds).includes(input.task.id);
+      if (
+        !outsideResumeSnapshot &&
+        deliveryRun?.status === "queued" &&
+        deliveryRun.userMessageId === delivery?.messageId
+      ) {
         const taskIds = Array.from(new Set([...delivery.taskIds, input.task.id]));
         const message = completionDeliveryMessage(input.parentProjection, delivery);
         const nextCohort = {
@@ -10983,7 +11004,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           offer: false,
         };
       }
-      if (deliveryRun !== undefined && isBlockingRun(deliveryRun)) {
+      if (outsideResumeSnapshot || (deliveryRun !== undefined && isBlockingRun(deliveryRun))) {
         return {
           task: {
             ...input.updatedTask,
@@ -11653,7 +11674,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           observedByRunId: null,
         });
       }
-      const pendingTaskIds = projection.subagents
+      const allPendingTaskIds = projection.subagents
         .filter(
           (task) =>
             task.origin === "app_owned" &&
@@ -11663,9 +11684,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               nextTaskStates.get(task.id)?.state === "pending"),
         )
         .map((task) => task.id);
-      // Results that arrived while this delivery was outstanding go out
-      // together in one successor. Each child becomes pending once, so a
-      // cohort's successors are bounded by its children.
+      const resumeTaskIds = delivery.forkResumeTaskIds ?? (unconsumed ? delivery.taskIds : []);
+      const resumedTaskIds =
+        delivery.forkResumeCommandId === undefined
+          ? []
+          : allPendingTaskIds.filter((taskId) => resumeTaskIds.includes(taskId));
+      // Release the resume snapshot first. Results arriving later must retain
+      // ordinary queue holds instead of borrowing an earlier task's receipt.
+      const pendingTaskIds = resumedTaskIds.length > 0 ? resumedTaskIds : allPendingTaskIds;
+      // Each child becomes pending once, so the cohort's successors remain
+      // bounded by its children even when the resume snapshot goes first.
       const canReserveFollowUp =
         cohort.disposition === "open" &&
         projection.thread.archivedAt === null &&
@@ -11684,10 +11712,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               }),
             ),
             taskIds: pendingTaskIds,
-            // Resume still owns unread work when settlement runs after resume.
-            // A consumed wake must not grant that permission to later results.
-            ...(unconsumed && delivery.forkResumeCommandId !== undefined
-              ? { forkResumeCommandId: delivery.forkResumeCommandId }
+            ...(resumedTaskIds.length > 0
+              ? {
+                  forkResumeCommandId: delivery.forkResumeCommandId,
+                  forkResumeTaskIds: resumedTaskIds,
+                }
               : {}),
           }
         : null;
@@ -11776,7 +11805,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     // settled_only tasks defer only to a blocking wait in their spawning run.
     const parentIsLive = hasLiveRun({ runs: [parentRun] });
-    const pendingTaskIds =
+    const allPendingTaskIds =
       projection.thread.archivedAt === null && projection.thread.deletedAt === null
         ? projection.subagents
             .filter(
@@ -11789,6 +11818,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             )
             .map((task) => task.id)
         : [];
+    const resumedTaskIds =
+      delivery.forkResumeCommandId === undefined
+        ? []
+        : allPendingTaskIds.filter((taskId) => delivery.forkResumeTaskIds?.includes(taskId));
+    const pendingTaskIds = resumedTaskIds.length > 0 ? resumedTaskIds : allPendingTaskIds;
     const nextDelivery =
       pendingTaskIds.length === 0
         ? null
@@ -11804,6 +11838,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               }),
             ),
             taskIds: pendingTaskIds,
+            ...(resumedTaskIds.length > 0
+              ? {
+                  forkResumeCommandId: delivery.forkResumeCommandId,
+                  forkResumeTaskIds: resumedTaskIds,
+                }
+              : {}),
           };
     const acceptedIds = new Set(delivery.taskIds);
     const pendingIds = new Set(pendingTaskIds);
@@ -12441,7 +12481,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           const resumedDeliveries: OrchestrationV2DomainEvent[] = [];
           if (resume && state?.retired) {
             const queued = yield* projectionStore
-              .getThreadRecords(thread.id, ["runs", "messages"], { messageRoles: ["user"] })
+              .getThreadRecords(thread.id, ["runs", "messages", "subagents"], {
+                messageRoles: ["user"],
+              })
               .pipe(mapDispatchError(command));
             for (const run of queued.runs) {
               let current = run;
@@ -12469,7 +12511,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   ...updated,
                   delegatedCompletion: {
                     ...cohort,
-                    delivery: { ...cohort.delivery, forkResumeCommandId: command.commandId },
+                    delivery: {
+                      ...cohort.delivery,
+                      forkResumeCommandId: command.commandId,
+                      forkResumeTaskIds: [
+                        ...new Set([
+                          ...cohort.delivery.taskIds,
+                          ...queued.subagents
+                            .filter(
+                              (task) =>
+                                task.origin === "app_owned" &&
+                                task.runId === run.id &&
+                                task.completionDelivery?.state === "pending",
+                            )
+                            .map((task) => task.id),
+                        ]),
+                      ],
+                    },
                   },
                 };
               }

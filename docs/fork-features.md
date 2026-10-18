@@ -933,6 +933,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "forkRetirement",
     "forkResumedRetirements",
     "forkResumeCommandId",
+    "forkResumeTaskIds",
     "subagent_result",
     "lineageBackfill",
     "restartCut",
