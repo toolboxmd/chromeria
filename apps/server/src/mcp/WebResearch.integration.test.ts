@@ -49,7 +49,9 @@ const memoryCache = (pages: Map<string, CachedPage>) => {
         Effect.sync(() =>
           "url" in key
             ? (pages.get(key.url) ?? null)
-            : ([...pages.values()].find((page) => page.cacheId === key.cacheId) ?? null),
+            : "cacheId" in key
+              ? ([...pages.values()].find((page) => page.cacheId === key.cacheId) ?? null)
+              : null,
         ),
       put: (page) =>
         Effect.sync(() => {
@@ -175,6 +177,55 @@ it.effect(
     }),
 );
 
+it.effect(
+  "a subpage read shares bounded output with drained effects and separate continuation",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture((url) =>
+        Effect.succeed(
+          response(
+            url.pathname === "/"
+              ? '<h1>Research fixture</h1><p>Room and event facts live on separate pages. The reader preserves their provenance and shares one output budget.</p><a href="/camere">Rooms</a><a href="/eventi">Events</a>'
+              : body,
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const s = yield* session;
+        yield* Effect.gen(function* () {
+          const fiber = yield* Effect.forkScoped(
+            s.call({ url: "https://subpage-integration.example/" }),
+          );
+          expect((yield* Queue.take(f.requests)).url).toBe(
+            "https://subpage-integration.example/robots.txt",
+          );
+          yield* TestClock.adjust(3000);
+          expect((yield* Queue.take(f.requests)).url).toBe("https://subpage-integration.example/");
+          yield* TestClock.adjust(3000);
+          expect((yield* Queue.take(f.requests)).url).toBe(
+            "https://subpage-integration.example/camere",
+          );
+          const result = yield* Fiber.join(fiber);
+          expect(result.isError).not.toBe(true);
+          const pages = yield* decodeResult(result.structuredContent);
+          expect(pages).toMatchObject({
+            status: "ok",
+            nextOffset: null,
+            subpages: [{ url: "https://subpage-integration.example/camere", status: "ok" }],
+            truncated: true,
+            truncationReasons: ["output_budget"],
+            pendingSubpages: ["https://subpage-integration.example/eventi"],
+            unvisitedSubpages: 1,
+          });
+          expect(pages.text.length + pages.subpages[0]!.text.length).toBe(20_000);
+          expect(pages.subpages[0]!.nextOffset).toBeGreaterThan(0);
+          expect(JSON.stringify(result).length).toBeLessThan(50_000);
+          expect(yield* Queue.size(f.requests)).toBe(0);
+        }).pipe(Effect.ensuring(s.check));
+      }).pipe(Effect.provide(f.layer));
+    }),
+);
+
 it.effect("round 2: queued fast reads do not time out or cache queue failures", () =>
   Effect.gen(function* () {
     const pages = new Map<string, CachedPage>();
@@ -185,7 +236,9 @@ it.effect("round 2: queued fast reads do not time out or cache queue failures", 
       yield* Effect.gen(function* () {
         const urls = Array.from({ length: 12 }, (_, i) => `https://queue.example/room-${i}`);
         const fiber = yield* Effect.forkScoped(
-          Effect.forEach(urls, (url) => s.read({ url }), { concurrency: "unbounded" }),
+          Effect.forEach(urls, (url) => s.read({ url, followSubpages: false }), {
+            concurrency: "unbounded",
+          }),
         );
         expect((yield* Queue.take(f.requests)).url).toBe("https://queue.example/robots.txt");
         yield* TestClock.adjust("36 seconds");
@@ -196,7 +249,7 @@ it.effect("round 2: queued fast reads do not time out or cache queue failures", 
         ]);
         expect([...pages.values()].every((page) => page.status === "ok")).toBe(true);
         expect(yield* Queue.size(f.requests)).toBe(12);
-        const cached = yield* Effect.forEach(urls, (url) => s.read({ url }));
+        const cached = yield* Effect.forEach(urls, (url) => s.read({ url, followSubpages: false }));
         expect(cached.every((page) => page.status === "ok" && page.rung === "cache")).toBe(true);
         expect(yield* Queue.size(f.requests)).toBe(12);
       }).pipe(Effect.ensuring(s.check));
@@ -218,7 +271,9 @@ it.effect("round 2: only active HTTP time consumes the total redirect budget", (
     yield* Effect.gen(function* () {
       const s = yield* session;
       yield* Effect.gen(function* () {
-        const fiber = yield* Effect.forkScoped(s.read({ url: "https://budget.example/start" }));
+        const fiber = yield* Effect.forkScoped(
+          s.read({ url: "https://budget.example/start", followSubpages: false }),
+        );
         yield* Queue.take(f.requests);
         yield* TestClock.adjust(3000);
         for (let hop = 0; hop < 3; hop++) {
@@ -498,7 +553,7 @@ it.effect("round 3: bounds actual semaphore contention separately from active fe
         const fiber = yield* Effect.forkScoped(
           Effect.forEach(
             Array.from({ length: 24 }, (_, i) => `https://contention.example/${i}`),
-            (url) => s.read({ url }),
+            (url) => s.read({ url, followSubpages: false }),
             { concurrency: "unbounded" },
           ),
         );
@@ -542,7 +597,9 @@ it.effect.each([
       yield* Effect.gen(function* () {
         const s = yield* session;
         yield* Effect.gen(function* () {
-          const fiber = yield* Effect.forkScoped(s.read({ url: "https://active.example/" }));
+          const fiber = yield* Effect.forkScoped(
+            s.read({ url: "https://active.example/", followSubpages: false }),
+          );
           yield* Queue.take(f.requests);
           yield* TestClock.adjust(seconds * 1000);
           expect(yield* Queue.take(f.requests)).toEqual({
@@ -573,7 +630,9 @@ it.effect("round 4: the active HTTP timeout starts after long spacing", () =>
     yield* Effect.gen(function* () {
       const s = yield* session;
       yield* Effect.gen(function* () {
-        const fiber = yield* Effect.forkScoped(s.read({ url: "https://active-timeout.example/" }));
+        const fiber = yield* Effect.forkScoped(
+          s.read({ url: "https://active-timeout.example/", followSubpages: false }),
+        );
         yield* Queue.take(f.requests);
         yield* TestClock.adjust("60 seconds");
         yield* Queue.take(f.requests);
@@ -607,7 +666,7 @@ it.effect("round 4: eight queued slow responses finish on their own active budge
         const fiber = yield* Effect.forkScoped(
           Effect.forEach(
             Array.from({ length: 8 }, (_, i) => `https://slow-queue.example/${i}`),
-            (url) => s.read({ url }),
+            (url) => s.read({ url, followSubpages: false }),
             { concurrency: "unbounded" },
           ),
         );

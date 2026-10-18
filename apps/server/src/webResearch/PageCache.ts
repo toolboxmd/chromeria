@@ -2,6 +2,7 @@
 import * as NodeZlib from "node:zlib";
 import * as NodeUtil from "node:util";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -17,6 +18,13 @@ const gzip = NodeUtil.promisify(NodeZlib.gzip);
 const gunzip = NodeUtil.promisify(NodeZlib.gunzip);
 const decode = Schema.decodeUnknownEffect(Schema.fromJsonString(CachedPage));
 const encode = Schema.encodeEffect(Schema.fromJsonString(CachedPage));
+// JSON escapes control characters in both page text and the retained link labels.
+const MAX_CACHE_JSON_BYTES = 64 * 1024 * 1024;
+
+type CacheKey =
+  | { readonly url: string; readonly sameOrigin?: string }
+  | { readonly redirectTarget: string; readonly sameOrigin: string }
+  | { readonly cacheId: string };
 
 export class PageCacheError extends Schema.TaggedError<PageCacheError>()("PageCacheError", {
   operation: Schema.Literals(["open", "read", "write"]),
@@ -32,9 +40,7 @@ export class PageCacheError extends Schema.TaggedError<PageCacheError>()("PageCa
 export class PageCache extends Context.Service<
   PageCache,
   {
-    readonly get: (
-      key: { readonly url: string } | { readonly cacheId: string },
-    ) => Effect.Effect<CachedPage | null, PageCacheError>;
+    readonly get: (key: CacheKey) => Effect.Effect<CachedPage | null, PageCacheError>;
     readonly put: (page: CachedPage) => Effect.Effect<void, PageCacheError>;
   }
 >()("t3/webResearch/PageCache") {}
@@ -45,20 +51,41 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const config = yield* ServerConfig.ServerConfig;
   const directory = path.join(config.stateDir, "web-cache");
-  yield* sql`CREATE TABLE IF NOT EXISTS pages (id TEXT PRIMARY KEY, url TEXT NOT NULL, fetched_at REAL NOT NULL)`.pipe(
-    Effect.andThen(sql`CREATE INDEX IF NOT EXISTS pages_url ON pages(url, fetched_at DESC)`),
-    Effect.mapError((cause) => new PageCacheError({ operation: "open", cause })),
-  );
+  yield* Effect.gen(function* () {
+    yield* sql`CREATE TABLE IF NOT EXISTS pages (id TEXT PRIMARY KEY, url TEXT NOT NULL, fetched_at REAL NOT NULL)`;
+    const columns = yield* sql<{ readonly name: string }>`PRAGMA table_info(pages)`;
+    // Older core caches have only URL/time metadata; their unrestricted entries stay readable.
+    if (!columns.some((column) => column.name === "restriction_origin"))
+      yield* sql`ALTER TABLE pages ADD COLUMN restriction_origin TEXT`;
+    if (!columns.some((column) => column.name === "final_origin"))
+      yield* sql`ALTER TABLE pages ADD COLUMN final_origin TEXT`;
+    if (!columns.some((column) => column.name === "final_url"))
+      yield* sql`ALTER TABLE pages ADD COLUMN final_url TEXT`;
+    if (!columns.some((column) => column.name === "indexed_at")) {
+      yield* sql`ALTER TABLE pages ADD COLUMN indexed_at REAL`;
+      yield* sql`UPDATE pages SET indexed_at = fetched_at`;
+    }
+    yield* sql`CREATE INDEX IF NOT EXISTS pages_url ON pages(url, fetched_at DESC)`;
+    yield* sql`CREATE INDEX IF NOT EXISTS pages_url_indexed ON pages(url, indexed_at DESC)`;
+    yield* sql`CREATE INDEX IF NOT EXISTS pages_final_url ON pages(final_url, indexed_at DESC)`;
+  }).pipe(Effect.mapError((cause) => new PageCacheError({ operation: "open", cause })));
 
-  const get = Effect.fn("PageCache.get")(function* (
-    key: { readonly url: string } | { readonly cacheId: string },
-  ) {
+  const get = Effect.fn("PageCache.get")(function* (key: CacheKey) {
     const rows = yield* (
-      "url" in key
-        ? sql<{
-            readonly id: string;
-          }>`SELECT id FROM pages WHERE url = ${key.url} ORDER BY fetched_at DESC, rowid DESC LIMIT 1`
-        : sql<{ readonly id: string }>`SELECT id FROM pages WHERE id = ${key.cacheId}`
+      "redirectTarget" in key
+        ? sql<{ readonly id: string }>`SELECT id FROM pages
+            WHERE (url = ${key.redirectTarget} OR final_url = ${key.redirectTarget})
+            AND (restriction_origin = ${key.sameOrigin} OR final_origin = ${key.sameOrigin} OR final_origin IS NULL)
+            ORDER BY indexed_at DESC, rowid DESC LIMIT 1`
+        : "url" in key
+          ? key.sameOrigin === undefined
+            ? sql<{ readonly id: string }>`SELECT id FROM pages WHERE url = ${key.url}
+              AND (restriction_origin IS NULL OR final_origin = ${new URL(key.url).origin})
+              ORDER BY indexed_at DESC, rowid DESC LIMIT 1`
+            : sql<{ readonly id: string }>`SELECT id FROM pages WHERE url = ${key.url}
+              AND (restriction_origin = ${key.sameOrigin} OR final_origin = ${key.sameOrigin} OR final_origin IS NULL)
+              ORDER BY indexed_at DESC, rowid DESC LIMIT 1`
+          : sql<{ readonly id: string }>`SELECT id FROM pages WHERE id = ${key.cacheId}`
     ).pipe(Effect.mapError((cause) => new PageCacheError({ operation: "read", cause })));
     const id = rows[0]?.id;
     if (id === undefined) return null;
@@ -72,7 +99,7 @@ const make = Effect.gen(function* () {
       .readFile(path.join(directory, `${id}.gz`))
       .pipe(Effect.mapError((cause) => new PageCacheError({ operation: "read", cause })));
     const json = yield* Effect.tryPromise({
-      try: () => gunzip(compressed, { maxOutputLength: 32 * 1024 * 1024 }),
+      try: () => gunzip(compressed, { maxOutputLength: MAX_CACHE_JSON_BYTES }),
       catch: (cause) => new PageCacheError({ operation: "read", cause }),
     });
     return yield* decode(json.toString("utf8")).pipe(
@@ -83,6 +110,11 @@ const make = Effect.gen(function* () {
     const json = yield* encode(page).pipe(
       Effect.mapError((cause) => new PageCacheError({ operation: "write", cause })),
     );
+    if (Buffer.byteLength(json, "utf8") > MAX_CACHE_JSON_BYTES)
+      return yield* new PageCacheError({
+        operation: "write",
+        cause: new RangeError("Research page exceeds the cache body limit."),
+      });
     const body = yield* Effect.tryPromise({
       try: () => gzip(json),
       catch: (cause) => new PageCacheError({ operation: "write", cause }),
@@ -91,7 +123,12 @@ const make = Effect.gen(function* () {
       .writeFile(path.join(directory, `${page.cacheId}.gz`), body)
       .pipe(Effect.mapError((cause) => new PageCacheError({ operation: "write", cause })));
     // Publish the index after the body exists. Cache ids are immutable across refreshes.
-    yield* sql`INSERT OR REPLACE INTO pages (id, url, fetched_at) VALUES (${page.cacheId}, ${page.url}, ${page.fetchedAt})`.pipe(
+    // Redirects may reuse an older target body; index order follows publication, not body age.
+    const indexedAt = yield* Clock.currentTimeMillis;
+    // A refused redirect never fetched its target, so only successful bodies advertise final URLs.
+    const reusableFinalUrl = page.status === "ok" ? page.finalUrl : null;
+    yield* sql`INSERT OR REPLACE INTO pages (id, url, fetched_at, restriction_origin, final_origin, final_url, indexed_at)
+      VALUES (${page.cacheId}, ${page.url}, ${page.fetchedAt}, ${page.restrictedToOrigin ?? null}, ${new URL(page.finalUrl).origin}, ${reusableFinalUrl}, ${indexedAt})`.pipe(
       Effect.mapError((cause) => new PageCacheError({ operation: "write", cause })),
     );
   });
