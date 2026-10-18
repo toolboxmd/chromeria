@@ -237,6 +237,26 @@ describe("web_read at the registered MCP seam", () => {
     }),
   );
 
+  it.effect("ignores hidden login forms when classifying a readable page", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture(() =>
+        Effect.succeed(
+          response(
+            html.replace(
+              "</body>",
+              "<form hidden><input type='password'>Log in to continue</form></body>",
+            ),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const result = yield* finish(read({ url: "https://hidden-login.example/" }), f.requests);
+        expect(result.status).toBe("ok");
+        expect(result.text).toContain("eight guest rooms");
+      }).pipe(Effect.provide(f.layer));
+    }),
+  );
+
   it.effect("rejects invalid requests and non-thread clients before any network call", () =>
     Effect.gen(function* () {
       const f = yield* fixture();
@@ -392,6 +412,18 @@ describe("web_read at the registered MCP seam", () => {
         const requested = yield* Queue.take(f.requests);
         expect(requested.url).toBe("https://robots.example/private/public");
         expect((yield* Fiber.join(fiber)).status).toBe("ok");
+      }).pipe(Effect.provide(f.layer));
+    }),
+  );
+
+  it.effect("returns a typed failure for excessively deep untrusted markup", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture(() =>
+        Effect.succeed(response(`${"<div>".repeat(5000)}${html}${"</div>".repeat(5000)}`)),
+      );
+      yield* Effect.gen(function* () {
+        const result = yield* finish(read({ url: "https://deep.example/" }), f.requests);
+        expect(result).toMatchObject({ status: "provider_error", text: "" });
       }).pipe(Effect.provide(f.layer));
     }),
   );

@@ -32,6 +32,7 @@ const blocks = new Set([
   "ul",
 ]);
 const omitted = new Set(["style", "template", "svg", "canvas", "head"]);
+const MAX_TEXT_CHARS = 4 * 1024 * 1024;
 
 /** Full-document extraction: article-only readers lose venue tables and structured facts. */
 export const extract = (html: string, url: string) => {
@@ -39,15 +40,28 @@ export const extract = (html: string, url: string) => {
   let title = "";
   let refresh: string | undefined;
   let password = false;
-  let form = false;
   const structured: Array<string> = [];
-  const visit = (node: Node): string => {
+  const joinChildren = (node: Node, depth: number): string => {
+    const parts: Array<string> = [];
+    let length = 0;
+    for (const child of children(node)) {
+      const text = visit(child, depth + 1);
+      length += text.length;
+      if (length > MAX_TEXT_CHARS)
+        throw new RangeError("Research page text exceeds the extraction limit.");
+      parts.push(text);
+    }
+    return parts.join("");
+  };
+  const visit = (node: Node, depth = 0): string => {
+    if (depth > 512) throw new RangeError("Research page nesting exceeds the extraction limit.");
     if ("value" in node) return node.value.replace(/\s+/g, " ");
-    if (!("tagName" in node)) return children(node).map(visit).join("");
+    if (!("tagName" in node)) return joinChildren(node, depth);
     const tag = node.tagName;
+    if (attribute(node, "hidden") !== undefined || attribute(node, "aria-hidden") === "true")
+      return "";
     if (tag === "title") title = compact(plain(node)).slice(0, 500);
     if (tag === "input" && attribute(node, "type")?.toLowerCase() === "password") password = true;
-    if (tag === "form") form = true;
     if (tag === "meta" && attribute(node, "http-equiv")?.toLowerCase() === "refresh") {
       const match = /^\s*\d+(?:\.\d+)?\s*;\s*url\s*=\s*(.*?)\s*$/i.exec(
         attribute(node, "content") ?? "",
@@ -61,13 +75,8 @@ export const extract = (html: string, url: string) => {
       return "";
     }
     // Inspect metadata before dropping head so redirects and JSON-LD are retained.
-    const inner = children(node).map(visit).join("");
-    if (
-      omitted.has(tag) ||
-      attribute(node, "hidden") !== undefined ||
-      attribute(node, "aria-hidden") === "true"
-    )
-      return "";
+    const inner = joinChildren(node, depth);
+    if (omitted.has(tag)) return "";
     if (/^h[1-6]$/.test(tag)) return `\n\n${"#".repeat(Number(tag[1]))} ${inner.trim()}\n\n`;
     if (tag === "br") return "\n";
     if (tag === "li") return `\n- ${inner.trim()}\n`;
@@ -96,7 +105,9 @@ export const extract = (html: string, url: string) => {
   const text = [rendered, ...structured.map((json) => `JSON-LD:\n${json}`)]
     .filter(Boolean)
     .join("\n\n");
-  return { title, text, refresh, password, form, visibleText: compact(rendered) };
+  if (text.length > MAX_TEXT_CHARS)
+    throw new RangeError("Research page text exceeds the extraction limit.");
+  return { title, text, refresh, password, visibleText: compact(rendered) };
 };
 
 /** Classify the document itself, so a footer's login link is not mistaken for a wall. */

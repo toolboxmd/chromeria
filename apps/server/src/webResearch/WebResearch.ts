@@ -88,6 +88,10 @@ class ReadStopped extends Schema.TaggedError<ReadStopped>()("ReadStopped", {
   retryAfterMs: Schema.NullOr(Schema.Number),
 }) {}
 
+class PageExtractionError extends Schema.TaggedError<PageExtractionError>()("PageExtractionError", {
+  cause: Schema.Defect(),
+}) {}
+
 const make = Effect.gen(function* () {
   const http = yield* PublicHttp.PublicHttp;
   const cache = yield* PageCache.PageCache;
@@ -240,10 +244,12 @@ const make = Effect.gen(function* () {
                 text: response.body.trim(),
                 visibleText: response.body.trim(),
                 password: false,
-                form: false,
                 refresh: undefined,
               }
-            : extract(response.body, url.href);
+            : yield* Effect.try({
+                try: () => extract(response.body, url.href),
+                catch: (cause) => new PageExtractionError({ cause }),
+              });
         const status = classify(page, response.status);
         if (page.refresh !== undefined && (status === "ok" || status === "thin")) {
           const target = parseUrl(page.refresh, url.href);
@@ -266,6 +272,8 @@ const make = Effect.gen(function* () {
         PublicNetworkBlockedError: () =>
           Effect.succeed({ status: "blocked_local" as const, title: "", text: "" }),
         PublicHttpError: () =>
+          Effect.succeed({ status: "provider_error" as const, title: "", text: "" }),
+        PageExtractionError: () =>
           Effect.succeed({ status: "provider_error" as const, title: "", text: "" }),
         TimeoutError: () => Effect.succeed({ status: "timeout" as const, title: "", text: "" }),
         ReadStopped: (error) => {
