@@ -71,6 +71,7 @@ import { WebResearchToolkit } from "./toolkits/webResearch/tools.ts";
 import * as WebResearch from "../webResearch/WebResearch.ts";
 import * as PageCache from "../webResearch/PageCache.ts";
 import * as PublicHttp from "../webResearch/PublicHttp.ts";
+import * as PublicRender from "../webResearch/PublicRender.ts";
 
 const mcpResourceMetadataUrl = (request: HttpServerRequest.HttpServerRequest) =>
   HttpServerRequest.toURL(request).pipe(
@@ -828,7 +829,11 @@ export const layerWebResearchToolkit = toolkitRegistration(
 
 const layerWebResearch = layerWebResearchToolkit.pipe(
   Layer.provide(
-    WebResearch.layer.pipe(Layer.provide(PageCache.layer), Layer.provide(PublicHttp.layer)),
+    WebResearch.layer.pipe(
+      Layer.provide(PageCache.layer),
+      Layer.provide(PublicHttp.layer),
+      Layer.provide(PublicRender.layer),
+    ),
   ),
 );
 
