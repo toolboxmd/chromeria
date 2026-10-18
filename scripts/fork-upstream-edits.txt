@@ -437,6 +437,7 @@ apps/server/src/device/DeviceService.ts
 apps/server/src/device/LocalDeviceHost.test.ts
 apps/server/src/device/LocalDeviceHost.ts
 apps/web/src/components/device/DevicePanel.tsx
+apps/web/src/components/device/DeviceHostUpdates.tsx
 apps/web/src/components/device/DeviceSetup.test.ts
 apps/web/src/components/device/DeviceSetup.tsx
 packages/contracts/src/device.ts

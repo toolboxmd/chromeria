@@ -154,14 +154,6 @@ export function DevicePanel(props: {
 
   return (
     <PreviewPanelShell mode={props.mode}>
-      {hostReady && !activeDevice && state.hostStatusDetail ? (
-        <div
-          role="status"
-          className="whitespace-pre-line border-b px-3 py-2 text-xs text-muted-foreground"
-        >
-          {state.hostStatusDetail}
-        </div>
-      ) : null}
       <DeviceHostUpdates state={state} environmentId={environmentId} />
       {bootingDevices.length > 0 ? (
         <div role="status" className="border-b px-3 py-2 text-xs text-muted-foreground">
@@ -232,7 +224,9 @@ export function DevicePanel(props: {
                   <p className="max-w-sm">
                     {state.hostStatus === "failed"
                       ? (state.hostStatusDetail ?? "The device hub failed to start.")
-                      : "No simulators or emulators were found on this environment."}
+                      : isAndroidDiscoveryUncertain(state)
+                        ? "Device discovery is incomplete. Check the host warning above, then refresh devices."
+                        : "No simulators or emulators were found on this environment."}
                   </p>
                 </>
               ) : null}

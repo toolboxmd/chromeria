@@ -277,6 +277,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/server/src/orchestration-v2/V1ImportBoundary.test.ts",
     "apps/server/src/vcs/GitVcsDriverCore.test.ts",
     "apps/web/src/components/device/DevicePanel.tsx",
+    "apps/web/src/components/device/DeviceHostUpdates.tsx",
     "apps/web/src/components/device/DeviceSetup.test.ts",
     "apps/web/src/components/device/DeviceSetup.tsx",
     "knip.jsonc",

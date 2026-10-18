@@ -18,7 +18,14 @@ export function DeviceHostUpdates({
     <div className="space-y-2">
       {state.hosts.map((host) => {
         const status = state.hostStatuses[host.id];
-        if (!status || !["installing", "starting", "failed"].includes(status.status)) return null;
+        const discoveryWarning =
+          status?.status === "ready" &&
+          (Boolean(status.detail) || status.androidDiscoveryIncomplete === true);
+        if (
+          !status ||
+          (!["installing", "starting", "failed"].includes(status.status) && !discoveryWarning)
+        )
+          return null;
         const failed = status.status === "failed";
         return (
           <div
@@ -29,17 +36,23 @@ export function DeviceHostUpdates({
             <div className="min-w-0 flex-1">
               <p className="font-medium">{host.label}</p>
               <p className="whitespace-pre-wrap break-words text-muted-foreground">
-                {status.detail ??
-                  (failed
-                    ? "Device support could not start."
-                    : status.status === "installing"
-                      ? "Installing device tools…"
-                      : "Starting device tools…")}
+                {status.detail ||
+                  (discoveryWarning
+                    ? "Device discovery is incomplete."
+                    : failed
+                      ? "Device support could not start."
+                      : status.status === "installing"
+                        ? "Installing device tools…"
+                        : "Starting device tools…")}
               </p>
               {failed ? (
                 <p className="mt-1 text-muted-foreground">
                   Check the host connection and network access, then retry. Your device settings are
                   saved.
+                </p>
+              ) : discoveryWarning ? (
+                <p className="mt-1 text-muted-foreground">
+                  Check this host, then refresh devices. Discovered devices remain available.
                 </p>
               ) : null}
             </div>
