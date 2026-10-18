@@ -80,7 +80,7 @@ flowchart TD
     NR["Network routes"]
     %% NR: #292 #358
     PRN["Paired session renewal"]
-    %% PRN: #323
+    %% PRN: #323 #336
     WR["Agent web research"]
     %% WR: #423 PR #453
     WRR["Headless page rendering"]
