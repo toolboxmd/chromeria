@@ -19,7 +19,10 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/chromeria/issues/176",
     "https://github.com/toolboxmd/chromeria/issues/396"
   ],
-  "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/176-spectrum-v2"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/176-spectrum-v2",
+    "https://github.com/toolboxmd/chromeria/pull/494"
+  ],
   "newFiles": [
     "apps/mobile/src/features/settings/spectrumReportAction.tsx",
     "apps/server/src/fork/ForkCommandInterceptor.ts",
