@@ -2062,3 +2062,18 @@ sources and reasons.
   "keywords": ["listedSession", "reconcileRelayRoutes", "watchAccountRelayRoutes"]
 }
 ```
+
+## launcher-test-fixtures
+
+```json
+{
+  "id": "launcher-test-fixtures",
+  "purpose": "Stop launcher test fixtures on IPC owner loss and await captured child exits during teardown. Drop when upstream provides equivalent fixture lifetime handling and regression coverage.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/157"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/414"],
+  "newFiles": [],
+  "upstreamFiles": ["apps/server/src/serviceLauncher.test.ts"],
+  "sharedFiles": [],
+  "keywords": ["launcher fixture ownership", "spawnedChildren", "disconnect"]
+}
+```

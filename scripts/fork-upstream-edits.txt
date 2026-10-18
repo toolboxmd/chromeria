@@ -410,3 +410,6 @@ packages/client-runtime/src/work-log/itemDetail.test.ts
 packages/client-runtime/src/work-log/itemDetail.ts
 packages/shared/src/orchestrationV2PendingBackgroundWork.test.ts
 packages/shared/src/orchestrationV2PendingBackgroundWork.ts
+
+# Launcher test fixture ownership (#157)
+apps/server/src/serviceLauncher.test.ts
