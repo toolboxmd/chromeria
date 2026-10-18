@@ -31,6 +31,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -84,6 +85,10 @@ export const MOMENT_BUDGET_MS = 1200;
 const REPLY_RESERVE_MS = 250;
 /** A Cue wait ends this long before the moment's work is cut, so a late score still leaves it served. */
 const CUE_MARGIN_MS = 50;
+/** Bound authenticated startup payloads that outlive their hook, including outside sessions. */
+const STARTUP_TTL_SECONDS = 10;
+const STARTUP_LIMIT = 32;
+const STARTUP_BYTES = 4 * MAX_BODY_BYTES;
 /** Cue's window reads the last user messages, the replies between them and the work since the last one. */
 const TRANSCRIPT_USERS = 6;
 const TRANSCRIPT_REPLIES = 100;
@@ -179,10 +184,25 @@ interface NativeForkRequest {
   readonly boundaryAt: DateTime.Utc;
 }
 
+interface PendingStartup {
+  readonly session: string;
+  readonly request: MomentRequest;
+  readonly bytes: number;
+  readonly receivedAt: number;
+  readonly finished: Deferred.Deferred<void>;
+  registeredRunId: string | null;
+  phase: "waiting" | "recovering";
+}
+
 export class ContextmdServing extends Context.Service<
   ContextmdServing,
   {
     readonly moment: (request: MomentRequest) => Effect.Effect<MomentResponse>;
+    /** Called only after the running attempt's native identity has committed. */
+    readonly nativeSessionRegistered: (input: {
+      readonly nativeSessionId: string;
+      readonly runId: string;
+    }) => Effect.Effect<void>;
     readonly settle: (delivery: string) => Effect.Effect<{ readonly status: 204 | 404 }>;
     /** The hook dropped a reserved reply before the model saw it. */
     readonly release: (delivery: string) => Effect.Effect<{ readonly status: 204 | 404 }>;
@@ -278,6 +298,7 @@ const shownOutput = (row: {
 };
 
 const make = Effect.gen(function* () {
+  const serviceScope = yield* Effect.scope;
   const config = yield* ServerConfig.ServerConfig;
   const sql = yield* SqlClient.SqlClient;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -311,6 +332,7 @@ const make = Effect.gen(function* () {
   if (Option.isNone(opened)) {
     return ContextmdServing.of({
       moment: () => Effect.succeed({ status: 204 } as const),
+      nativeSessionRegistered: () => Effect.void,
       settle: () => Effect.succeed({ status: 404 } as const),
       release: () => Effect.succeed({ status: 404 } as const),
       pointerApplying: () => Effect.succeed({ status: 409 } as const),
@@ -345,6 +367,11 @@ const make = Effect.gen(function* () {
   const { db, state } = opened.value;
   const clock = yield* Clock.Clock;
   const parsed: ParseCache = new Map();
+  const startups = new Map<string, PendingStartup>();
+  const recovering = new Map<
+    string,
+    { readonly runId: string; readonly ready: Deferred.Deferred<void> }
+  >();
   // One client per Cue service URL, so its availability is shared by every moment on this machine.
   const cueClients = new Map<string, CueClient>();
   const cueClient = (url: string) => {
@@ -761,6 +788,18 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed((): RunJoin => ({ type: "unjoined" })),
     );
 
+  const pruneStartups = (now: number) =>
+    Effect.sync(() => {
+      for (const [delivery, entry] of startups) {
+        if (now - entry.receivedAt >= STARTUP_TTL_SECONDS) {
+          startups.delete(delivery);
+        }
+      }
+    });
+  yield* ServerActivation.forkParked(
+    nowSeconds.pipe(Effect.flatMap(pruneStartups), Effect.repeat(Schedule.spaced("1 second"))),
+  );
+
   const threadDirectory = (threadId: string) =>
     sql<{ readonly directory: string | null }>`
       SELECT COALESCE(json_extract(t.payload_json, '$.worktreePath'), p.workspace_root) AS directory
@@ -932,8 +971,22 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const moment: ContextmdServing["Service"]["moment"] = (request) =>
+  const serveMoment = (
+    request: MomentRequest,
+    mode:
+      | { readonly type: "hook" }
+      | {
+          readonly type: "retained_startup";
+          readonly runId: string;
+          readonly receivedAt: number;
+        } = { type: "hook" },
+  ): Effect.Effect<MomentResponse> =>
     Effect.gen(function* () {
+      let startup: PendingStartup | undefined;
+      let waitedForRecovery = false;
+      yield* Effect.addFinalizer(() =>
+        startup === undefined ? Effect.void : Deferred.succeed(startup.finished, undefined),
+      );
       const startedAt = yield* nowSeconds;
       const phaseClock = yield* Clock.Clock;
       let phase: MomentPhase = "authorization";
@@ -1023,7 +1076,68 @@ const make = Effect.gen(function* () {
           Effect.flatMap((config) =>
             Effect.gen(function* () {
               const identity = yield* Select.identify(harness, raw.value);
-              const join = yield* during("run_join", resolveRun(identity.session));
+              const join = yield* during(
+                "run_join",
+                Effect.gen(function* () {
+                  let join = yield* resolveRun(identity.session);
+                  if (
+                    mode.type !== "hook" ||
+                    join.type !== "unjoined" ||
+                    (identity.kind !== "session_start" && identity.kind !== "user_message")
+                  )
+                    return join;
+                  const starting = yield* sql`SELECT 1 FROM orchestration_v2_projection_runs
+                  WHERE status = 'starting' LIMIT 1`;
+                  if (starting.length === 0) return yield* resolveRun(identity.session);
+                  yield* pruneStartups(startedAt);
+                  startup = startups.get(delivery);
+                  if (startup === undefined) {
+                    const bytes = Buffer.byteLength(body, "utf8");
+                    while (
+                      startups.size >= STARTUP_LIMIT ||
+                      [...startups.values()].reduce((sum, e) => sum + e.bytes, bytes) >
+                        STARTUP_BYTES
+                    ) {
+                      const oldest = startups.entries().next().value;
+                      if (oldest === undefined) break;
+                      startups.delete(oldest[0]);
+                    }
+                    startup = {
+                      session: identity.session,
+                      bytes,
+                      receivedAt: startedAt,
+                      phase: "waiting",
+                      registeredRunId: null,
+                      request: {
+                        ...request,
+                        authorized: Effect.succeed(true),
+                        body: Effect.succeed(body),
+                      },
+                      finished: yield* Deferred.make<void>(),
+                    };
+                    startups.set(delivery, startup);
+                  }
+                  // Retain before rechecking so a concurrent registration cannot be missed.
+                  // No exact identity means we cannot distinguish an outside hook from startup.
+                  join = yield* resolveRun(identity.session);
+                  return join;
+                }),
+              );
+              if (startup !== undefined && join.type === "unjoined")
+                return {
+                  type: "retained" as const,
+                  status: "unjoined" as const,
+                  reason: "awaiting_registration",
+                };
+              // Registration returns before recovery. The first subsequent hook waits here,
+              // inside its own budget; neither the original hook nor recovery waits on itself.
+              if (mode.type === "hook" && startup === undefined && join.type === "run") {
+                const recovery = recovering.get(identity.session);
+                if (recovery?.runId === join.runId) {
+                  waitedForRecovery = true;
+                  yield* Deferred.await(recovery.ready);
+                }
+              }
               const directory =
                 join.type === "run"
                   ? yield* during("project_directory", threadDirectory(join.threadId))
@@ -1042,7 +1156,7 @@ const make = Effect.gen(function* () {
                 "selection",
                 Select.select(harness, raw.value, config, library),
               );
-              return { selection, config, library, join };
+              return { type: "selected" as const, selection, config, library, join };
             }),
           ),
           Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -1050,17 +1164,25 @@ const make = Effect.gen(function* () {
           Effect.provideService(Crypto.Crypto, crypto),
           Effect.catchTags({
             ContextmdBadConfig: (e) =>
-              Effect.succeed({ status: "bad_config" as const, reason: e.reason }),
+              Effect.succeed({
+                type: "error" as const,
+                status: "bad_config" as const,
+                reason: e.reason,
+              }),
             ContextmdBadEvent: (e) =>
-              Effect.succeed({ status: "bad_event" as const, reason: e.reason }),
+              Effect.succeed({
+                type: "error" as const,
+                status: "bad_event" as const,
+                reason: e.reason,
+              }),
           }),
         );
-        if (!("selection" in selected)) {
-          yield* unserved(selected.status, { reason: selected.reason });
-          return { reply: { status: 204 } as const };
+        if (selected.type !== "selected") {
+          yield* unserved(selected.status, { ...known, reason: selected.reason });
+          return { reply: { status: 204 } as const, retainStartup: selected.status === "unjoined" };
         }
         let selection: Selection = selected.selection;
-        const join = selected.join;
+        let join = selected.join;
         const configured = yield* during(
           "pointer_configured",
           withFiles(Select.configuredGreatLibrary(selected.config)),
@@ -1134,6 +1256,21 @@ const make = Effect.gen(function* () {
             selection = { ...selection, owners: { ...selection.owners, ...asked.owners } };
           }
         }
+        if (mode.type === "retained_startup" || startup !== undefined || waitedForRecovery) {
+          const current = yield* during("run_join", resolveRun(selection.moment.session));
+          const now = yield* nowSeconds;
+          if (
+            join.type !== "run" ||
+            current.type !== "run" ||
+            current.runId !== join.runId ||
+            (mode.type === "retained_startup" &&
+              (current.runId !== mode.runId || now - mode.receivedAt >= STARTUP_TTL_SECONDS)) ||
+            (startup?.registeredRunId != null && current.runId !== startup.registeredRunId)
+          ) {
+            if (mode.type === "retained_startup") return { reply: { status: 204 } as const };
+            join = { type: "unjoined" };
+          }
+        }
         return { work: { delivery, harness, selection, join, readChecks, cue } };
       }).pipe(Effect.timeoutOption(Duration.millis(workLeft)));
       if (Option.isNone(prepared)) {
@@ -1151,10 +1288,18 @@ const make = Effect.gen(function* () {
         });
         return { status: 204 } as const;
       }
-      if ("reply" in prepared.value) return prepared.value.reply;
+      if ("reply" in prepared.value) {
+        if (
+          startup !== undefined &&
+          request.delivery !== undefined &&
+          !("retainStartup" in prepared.value && prepared.value.retainStartup)
+        )
+          startups.delete(request.delivery);
+        return prepared.value.reply;
+      }
       const { delivery, harness, selection, join, readChecks, cue } = prepared.value.work;
       const now = yield* nowSeconds;
-      return state.decide({
+      const reply = state.decide({
         harness,
         delivery,
         ...(request.pointerDelivery === undefined
@@ -1165,8 +1310,11 @@ const make = Effect.gen(function* () {
         readChecks,
         cue,
         now,
-        startedAt,
+        startedAt: mode.type === "hook" ? startedAt : mode.receivedAt,
+        deliveryMode: mode.type,
       });
+      startups.delete(delivery);
+      return reply;
     }).pipe(
       // Authentication, run joins and Cue windows only read the main database. Use its existing
       // WAL reader so a writer's transaction cannot spend the hook's deadline before selection.
@@ -1176,7 +1324,65 @@ const make = Effect.gen(function* () {
           Effect.as({ status: 204 } as const),
         ),
       ),
+      Effect.scoped,
     );
+
+  const recoverStartups: ContextmdServing["Service"]["nativeSessionRegistered"] = (input) =>
+    Effect.gen(function* () {
+      yield* pruneStartups(yield* nowSeconds);
+      if (startups.size === 0) return;
+      const join = yield* resolveRun(input.nativeSessionId);
+      if (join.type !== "run" || join.runId !== input.runId) return;
+      const pending = [...startups.entries()].filter(
+        ([, entry]) =>
+          entry.session === input.nativeSessionId &&
+          (entry.registeredRunId === null || entry.registeredRunId === input.runId),
+      );
+      for (const [, entry] of pending) {
+        entry.registeredRunId = input.runId;
+      }
+      for (const [delivery, entry] of pending) {
+        // Let the original hook finish before recovering its retained payload.
+        yield* Deferred.await(entry.finished);
+        if (startups.get(delivery) !== entry || entry.phase === "recovering") continue;
+        entry.phase = "recovering";
+        yield* serveMoment(entry.request, {
+          type: "retained_startup",
+          runId: input.runId,
+          receivedAt: entry.receivedAt,
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              entry.phase = "waiting";
+            }),
+          ),
+        );
+      }
+    }).pipe(
+      NodeSqliteClient.readOnly,
+      Effect.catchCause((cause) =>
+        Effect.logWarning("ContextMD startup registration failed", { cause }),
+      ),
+    );
+
+  const nativeSessionRegistered: ContextmdServing["Service"]["nativeSessionRegistered"] = (input) =>
+    Effect.gen(function* () {
+      if (![...startups.values()].some((entry) => entry.session === input.nativeSessionId)) return;
+      if (recovering.get(input.nativeSessionId)?.runId === input.runId) return;
+      const recovery = { runId: input.runId, ready: yield* Deferred.make<void>() };
+      // Publish the barrier synchronously, before dispatch can produce another hook.
+      recovering.set(input.nativeSessionId, recovery);
+      yield* recoverStartups(input).pipe(
+        Effect.ensuring(
+          Effect.gen(function* () {
+            if (recovering.get(input.nativeSessionId) === recovery)
+              recovering.delete(input.nativeSessionId);
+            yield* Deferred.succeed(recovery.ready, undefined);
+          }),
+        ),
+        Effect.forkIn(serviceScope),
+      );
+    });
 
   const settle: ContextmdServing["Service"]["settle"] = (delivery) =>
     Effect.gen(function* () {
@@ -1225,7 +1431,8 @@ const make = Effect.gen(function* () {
       ),
     );
   return ContextmdServing.of({
-    moment,
+    moment: (request) => serveMoment(request),
+    nativeSessionRegistered,
     settle,
     release,
     rejected,

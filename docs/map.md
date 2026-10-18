@@ -64,7 +64,7 @@ flowchart TD
     PU["Provider updates"]
     %% PU: #263
     RS["Resume after restart"]
-    %% RS: #264
+    %% RS: #264 PR #417
     SN["Child notices"]
     %% SN: #269 #341 #422 PR #431
     ST["Urgent interruption"]

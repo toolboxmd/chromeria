@@ -351,6 +351,7 @@ function harness(
       }),
     ),
     recordInstallations: vi.fn(() => Effect.void),
+    nativeSessionRegistered: vi.fn(() => Effect.void),
     attachSessionInstructions: vi.fn(() => Effect.void),
     recordNativeFork: vi.fn(() => Effect.void),
     releaseSessionInstructions: vi.fn(() => Effect.void),

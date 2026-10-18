@@ -91,6 +91,8 @@ interface Fire {
   readonly profile?: Profile;
   readonly delivery?: string;
   readonly settle?: boolean;
+  readonly deliveryMode?: "retained_startup";
+  readonly greatLibrary?: Candidate;
   readonly readChecks?: ReadonlyArray<{ readonly toolUseId: string; readonly ok: boolean | null }>;
   readonly toolUseId?: string | null;
   readonly cue?: CueMoment;
@@ -111,6 +113,7 @@ const makeHarness = (file = ":memory:") => {
     const reply = state.decide({
       harness: profile.harness,
       delivery,
+      ...(f.deliveryMode === undefined ? {} : { deliveryMode: f.deliveryMode }),
       selection: {
         moment: {
           kind: f.kind,
@@ -131,6 +134,7 @@ const makeHarness = (file = ":memory:") => {
                   : null,
           reads: f.reads ?? [],
         },
+        ...(f.greatLibrary === undefined ? {} : { greatLibrary: f.greatLibrary }),
         candidates: f.candidates ?? [],
         notes: [],
         owners: { "/store": "abc123" },
@@ -1096,6 +1100,133 @@ describe("ServingState epochs and carries", () => {
       [0, 1],
     );
     assert.strictEqual(h.db.prepare("SELECT count(*) AS n FROM budgets").get()!.n, 0);
+  });
+
+  it("keeps a large session-start file outside the serve budget beside a carry", () => {
+    const h = makeHarness();
+    h.fire({
+      kind: "user_message",
+      candidates: [entry("carry", "c".repeat(100))],
+      deliveryMode: "retained_startup",
+    });
+    const pack = "p".repeat(8200);
+    const reply = h.fire({
+      kind: "session_start",
+      candidates: [entry("pack", pack, { matcher: "session_start" })],
+    });
+    assert.equal(reply.status, 200);
+    assert.include(h.text(reply)!, pack);
+    assert.include(h.text(reply)!, "c".repeat(100));
+    assert.equal(h.db.prepare("SELECT serve_used FROM budgets").get()!.serve_used, 100);
+  });
+
+  it("serves an identical fresh session-start file once without charging its carry", () => {
+    const h = makeHarness();
+    const pack = entry("pack", "p".repeat(7000), { matcher: "session_start" });
+    h.fire({ kind: "session_start", candidates: [pack], deliveryMode: "retained_startup" });
+    const reply = h.fire({ kind: "session_start", candidates: [pack], settle: false });
+    assert.equal(reply.status, 200);
+    assert.equal(h.text(reply), pack.text);
+    assert.equal(
+      h.db.prepare("SELECT coalesce(sum(serve_used), 0) AS used FROM budgets").get()!.used,
+      0,
+    );
+    assert.deepEqual(h.db.prepare("SELECT state FROM carries").get(), { state: "reserved" });
+    h.state.releaseReservation(reply.delivery);
+    assert.deepEqual(h.db.prepare("SELECT state FROM carries").get(), { state: "waiting" });
+    h.fire({ kind: "session_start", candidates: [pack] });
+    assert.deepEqual(h.db.prepare("SELECT state FROM carries").get(), { state: "printed" });
+    assert.equal(
+      h.fire({ kind: "tool_result", candidates: [entry("later", "r".repeat(1500))] }).status,
+      200,
+    );
+  });
+
+  it("settles an exempt startup carry on SessionStart without a fresh copy", () => {
+    const h = makeHarness();
+    h.fire({
+      kind: "session_start",
+      candidates: [entry("pack", "p".repeat(7000), { matcher: "session_start" })],
+      deliveryMode: "retained_startup",
+    });
+    assert.equal(h.fire({ kind: "session_start" }).status, 200);
+    assert.deepEqual(h.db.prepare("SELECT state FROM carries").get(), { state: "printed" });
+    assert.equal(h.fire({ kind: "session_start" }).status, 204);
+  });
+
+  it("keeps ordinary context under its own limit beside a large startup carry", () => {
+    const h = makeHarness();
+    h.fire({
+      kind: "session_start",
+      candidates: [entry("pack", "p".repeat(7000), { matcher: "session_start" })],
+      deliveryMode: "retained_startup",
+    });
+    const reply = h.fire({
+      kind: "tool_result",
+      candidates: [entry("ordinary", "r".repeat(2500))],
+    });
+    assert.equal(reply.status, 200);
+    assert.include(h.text(reply)!, "p".repeat(7000));
+    assert.notInclude(h.text(reply)!, "r".repeat(2500));
+    assert.equal(h.db.prepare("SELECT serve_used FROM budgets").get()!.serve_used, 0);
+    assert.equal(
+      h.fire({ kind: "tool_result", candidates: [entry("later", "r".repeat(1500))] }).status,
+      200,
+    );
+  });
+
+  it("keeps a near-limit startup carry waiting when the prompt prints an owed pointer", () => {
+    const h = makeHarness();
+    const pack = entry("pack", "p".repeat(9490), { matcher: "session_start" });
+    h.fire({ kind: "session_start", candidates: [pack], deliveryMode: "retained_startup" });
+    const library = entry("library", "Read /library/INDEX.md in full.", {
+      matcher: "great_library",
+    });
+    const prompt = h.fire({ kind: "user_message", greatLibrary: library });
+    assert.equal(prompt.status, 200);
+    assert.include(h.text(prompt)!, library.text);
+    assert.deepEqual(h.db.prepare("SELECT state FROM carries").get(), { state: "waiting" });
+    const next = h.fire({ kind: "pre_tool" });
+    assert.equal(next.status, 200);
+    assert.include(h.text(next)!, pack.text);
+    assert.deepEqual(h.db.prepare("SELECT state FROM carries").get(), { state: "printed" });
+    assert.equal(h.fire({ kind: "pre_tool" }).status, 204);
+  });
+
+  it("cuts a startup carry larger than its original session-start limit", () => {
+    const h = makeHarness();
+    h.fire({
+      kind: "session_start",
+      candidates: [entry("pack", "p".repeat(9600), { matcher: "session_start" })],
+      deliveryMode: "retained_startup",
+    });
+    assert.equal(h.fire({ kind: "pre_tool" }).status, 204);
+    assert.deepEqual(h.db.prepare("SELECT state FROM carries").get(), { state: "cut_budget" });
+    assert.deepEqual(h.outcomes("pack"), ["cut_budget", "cut_budget"]);
+    h.fire({ kind: "pre_tool" });
+    assert.deepEqual(h.outcomes("pack"), ["cut_budget", "cut_budget"]);
+  });
+
+  it("recovers a retained Grok user message through its PreToolUse carry seam", () => {
+    const h = makeHarness();
+    const session = sessionIn(false, "grok");
+    assert.equal(
+      h.fire({
+        kind: "user_message",
+        profile: GROK,
+        session,
+        cue: {
+          ...cueOk({ prompt: 1 }),
+          candidates: [cueEntry("prompt", "Recovered prompt rule.")],
+        },
+        deliveryMode: "retained_startup",
+      }).status,
+      204,
+    );
+    const next = h.fire({ kind: "pre_tool", profile: GROK, session });
+    assert.equal(next.status, 200);
+    assert.include(h.text(next)!, "Recovered prompt rule.");
+    assert.equal(h.fire({ kind: "pre_tool", profile: GROK, session }).status, 204);
   });
 
   it("starts a new epoch on a compaction moment", () => {

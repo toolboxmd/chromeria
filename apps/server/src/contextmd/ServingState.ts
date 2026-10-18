@@ -116,6 +116,7 @@ export type RunJoin =
   | { readonly type: "ambiguous" };
 
 export interface MomentInput {
+  readonly deliveryMode?: "hook" | "retained_startup";
   readonly harness: string;
   readonly delivery: string;
   readonly pointerDelivery?: string;
@@ -171,6 +172,7 @@ export interface Unserved {
   readonly harness: string | null;
   readonly delivery: string | null;
   readonly status:
+    | "unjoined"
     | "unmapped"
     | "bad_config"
     | "bad_event"
@@ -251,27 +253,43 @@ interface CandidateRow {
 
 /** Collects the parts of one output under the per-output byte limit and one budget. */
 class Composer {
-  readonly parts: Array<{ text: string; claim: Claim }> = [];
+  readonly parts: Array<{ text: string; claim: Claim; startup: boolean }> = [];
   private head: string;
   private readonly limit: number;
   private budgetLeft: number;
   private used: number;
-  constructor(head: string, limit: number, budgetLeft: number) {
+  private startupUsed = 0;
+  private readonly startupLimit: number;
+  constructor(head: string, limit: number, budgetLeft: number, startupLimit = limit) {
     this.head = head;
     this.limit = limit;
+    this.startupLimit = Math.max(limit, startupLimit);
     this.budgetLeft = budgetLeft;
     this.used = utf8(head);
   }
   private cost = (text: string) => utf8(text) + 2;
-  fits = (text: string) =>
-    this.used + this.cost(text) <= this.limit &&
-    this.cost(text) + (this.parts.length ? 0 : utf8(this.head)) <= this.budgetLeft;
-  overLimit = (text: string) => this.used + this.cost(text) > this.limit;
-  add = (text: string, claim: Claim) => {
-    const cost = this.cost(text) + (this.parts.length ? 0 : utf8(this.head));
+  private outputLimit = (startup: boolean) =>
+    startup || this.startupUsed > 0 ? this.startupLimit : this.limit;
+  private budgetCost = (text: string) =>
+    this.cost(text) + (this.parts.some((p) => !p.startup) ? 0 : utf8(this.head));
+  fits = (text: string, startup = false) =>
+    !this.overLimit(text, startup) && (startup || this.budgetCost(text) <= this.budgetLeft);
+  overLimit = (text: string, startup = false) =>
+    this.used + this.cost(text) > this.outputLimit(startup) ||
+    (!startup && this.used - this.startupUsed + this.cost(text) > this.limit);
+  exceedsLimitAlone = (text: string, startup = false) =>
+    utf8(this.head) + this.cost(text) > (startup ? this.startupLimit : this.limit);
+  add = (text: string, claim: Claim, startup = false) => {
+    if (startup) this.startupUsed += this.cost(text);
+    else this.budgetLeft -= this.budgetCost(text);
     this.used += this.cost(text);
-    this.budgetLeft -= cost;
-    this.parts.push({ text, claim });
+    this.parts.push({ text, claim, startup });
+  };
+  /** Startup files keep their budget exemption even when carried to a later hook. */
+  budgetBytes = () => {
+    const normal = this.parts.filter((p) => !p.startup);
+    if (normal.length === 0) return 0;
+    return utf8((this.head ? this.head + "\n\n" : "") + normal.map((p) => p.text).join("\n\n"));
   };
   /** Room left for one more part under the output limit. */
   room = () => this.limit - this.used - 2;
@@ -1473,6 +1491,37 @@ export class ServingState {
       }
       return finish({ status: 204 });
     }
+    const fires = this.cueFires(input.cue ?? null, holdout, momentId);
+    if (fires.length > 0) sel = { ...sel, candidates: [...sel.candidates, ...fires] };
+    this.expireCarries(harness, m.session, joined.runId);
+    if (input.deliveryMode === "retained_startup") {
+      if (
+        sel.profile.delivering.includes(m.kind) ||
+        (m.kind === "user_message" && sel.profile.carry_to !== null)
+      ) {
+        this.carry(
+          harness,
+          {
+            ...sel,
+            candidates: [
+              ...(sel.greatLibrary == null ? [] : [sel.greatLibrary]),
+              ...(m.kind === "user_message"
+                ? this.dropAfterAction(sel, momentId).candidates
+                : sel.candidates),
+            ],
+          },
+          epoch,
+          momentId,
+          joined.runId,
+          now,
+        );
+      } else {
+        for (const c of sel.candidates)
+          this.insertCandidate(momentId, { ...this.base(c), outcome: "no_seam" });
+      }
+      // This hook already replied. Account for its join without reserving an undeliverable reply.
+      return finish({ status: 204 });
+    }
     if (harness === "grok" && m.kind === "compaction")
       this.retainInstallation(sel, epoch, momentId, joined.runId, input.delivery, now);
     if (
@@ -1488,9 +1537,6 @@ export class ServingState {
         this.reservePointer(sel, epoch, momentId, joined.runId, input.pointerDelivery, now);
       }
     }
-    const fires = this.cueFires(input.cue ?? null, holdout, momentId);
-    if (fires.length > 0) sel = { ...sel, candidates: [...sel.candidates, ...fires] };
-    this.expireCarries(harness, m.session, joined.runId);
     this.applyReadChecks(harness, m.session, input.readChecks ?? [], momentId, now);
     if ((m.kind === "tool_result" || m.kind === "tool_failure") && m.failed !== true) {
       this.recordReads(harness, sel, epoch, momentId, now);
@@ -1509,7 +1555,11 @@ export class ServingState {
       case "tool_result":
       case "tool_failure": {
         const after = this.dropAfterAction(sel, momentId);
-        if (after.candidates.length === 0 && this.eligiblePointer(after, epoch) === null)
+        if (
+          after.candidates.length === 0 &&
+          this.eligiblePointer(after, epoch) === null &&
+          !this.hasCarries(harness, m.session, joined.runId)
+        )
           return finish({ status: 204 });
         if (!delivering && after.profile.carry_to !== null) {
           this.carry(harness, after, epoch, momentId, joined.runId, now);
@@ -1524,6 +1574,10 @@ export class ServingState {
         return finish(...this.serveContext(after, epoch, momentId, joined.runId, input.delivery));
       }
       default:
+        if (delivering && sel.profile.carry_to === null)
+          return finish(
+            ...this.printCarries(harness, sel, epoch, momentId, joined.runId, input.delivery),
+          );
         return finish({ status: 204 });
     }
   }
@@ -1756,13 +1810,33 @@ export class ServingState {
         this.insertCandidate(momentId, { ...this.base(c), outcome: "no_seam" });
       return [{ status: 204 }];
     }
-    const out = new Composer(
-      "",
-      delivering ? sel.profile.session_start_limit_bytes : sel.profile.limit_bytes,
-      Number.POSITIVE_INFINITY,
-    );
+    const limit = delivering ? sel.profile.session_start_limit_bytes : sel.profile.limit_bytes;
+    const carryOutput = new Composer("", limit, Math.max(this.budgetLeft(runId).serve, 0));
     let charged = 0;
-    if (pointer !== null) {
+    const carried: Claim[] = [];
+    this.appendCarries(
+      sel.profile.harness,
+      sel,
+      epoch,
+      momentId,
+      runId,
+      carryOutput,
+      carried,
+      delivering ? sel.candidates.filter((c) => c.matcher === "session_start") : [],
+    );
+    const carriedBytes = carryOutput.budgetBytes();
+    if (carriedBytes > 0) {
+      this.charge(runId, carriedBytes, 0);
+      charged += carriedBytes;
+    }
+    this.writeClaims(delivery, sel.profile.harness, sel.moment.session, epoch, runId, carried);
+    // Files share the output limit; only ordinary carries spend the serve budget.
+    const out = new Composer("", limit, Number.POSITIVE_INFINITY);
+    for (const part of carryOutput.parts) out.add(part.text, part.claim, part.startup);
+    if (
+      pointer !== null &&
+      !carried.some((claim) => claim.entry === pointer.entry && claim.version === pointer.version)
+    ) {
       const text = this.pointerText(sel, pointer);
       const bytes = utf8(text);
       if (bytes > this.budgetLeft(runId).serve) {
@@ -1784,10 +1858,11 @@ export class ServingState {
         out.add(text, claim);
         this.writeClaims(delivery, sel.profile.harness, sel.moment.session, epoch, runId, [claim]);
         this.charge(runId, bytes, 0);
-        charged = bytes;
+        charged += bytes;
       }
     }
     for (const c of sel.candidates) {
+      if (carried.some((claim) => claim.entry === c.entry && claim.version === c.version)) continue;
       if (!delivering) {
         this.insertCandidate(momentId, { ...this.base(c), outcome: "no_seam" });
         continue;
@@ -1807,14 +1882,27 @@ export class ServingState {
         outcome: "reserved",
         bytes: utf8(c.text),
       });
-      out.add(c.text, {
+      const carry = this.get<{ id: number }>(
+        "SELECT id FROM carries WHERE harness = ? AND session = ? AND run_id = ? AND entry = ? AND version = ? AND state = 'waiting'",
+        sel.profile.harness,
+        sel.moment.session,
+        runId,
+        c.entry,
+        c.version,
+      );
+      const claim: Claim = {
         kind: "start",
         entry: c.entry,
         version: c.version,
         rule: null,
         whole: true,
         candidateId: id,
-      });
+        ...(carry === undefined ? {} : { carryId: carry.id }),
+      };
+      out.add(c.text, claim);
+      // Use the fresh file's exemption and the existing carry reservation/release lifecycle.
+      if (carry !== undefined)
+        this.writeClaims(delivery, sel.profile.harness, sel.moment.session, epoch, runId, [claim]);
     }
     const text = out.text();
     if (text === null) return [{ status: 204 }];
@@ -2023,10 +2111,7 @@ export class ServingState {
     if (denyQueue.length > 0) {
       return this.deny(harness, sel, epoch, momentId, runId, delivery, denyQueue, now);
     }
-    if (sel.profile.carry_to === "pre_tool") {
-      return this.printCarries(harness, sel, epoch, momentId, runId, delivery);
-    }
-    return [{ status: 204 }];
+    return this.printCarries(harness, sel, epoch, momentId, runId, delivery);
   }
 
   private liftWithout(
@@ -2174,6 +2259,7 @@ export class ServingState {
       sel.profile.heads.context,
       sel.profile.limit_bytes,
       Math.max(left.serve, 0),
+      sel.profile.session_start_limit_bytes,
     );
     const claims: Claim[] = [];
     const pointer = this.eligiblePointer(sel, epoch);
@@ -2192,7 +2278,9 @@ export class ServingState {
       }
     }
     out.keepBack(sel.greatLibraryBytes ?? 0);
+    this.appendCarries(sel.profile.harness, sel, epoch, momentId, runId, out, claims);
     for (const c of sel.candidates) {
+      if (claims.some((claim) => claim.entry === c.entry && claim.version === c.version)) continue;
       if (this.settledIn(runId, epoch, c.entry, c.version)) {
         this.insertCandidate(momentId, { ...this.base(c), outcome: "deduped" });
         continue;
@@ -2226,13 +2314,13 @@ export class ServingState {
     }
     const text = out.text();
     if (text === null) return [{ status: 204 }];
-    const bytes = utf8(text);
+    const bytes = out.budgetBytes();
     this.charge(runId, bytes, 0);
     this.writeClaims(delivery, sel.profile.harness, sel.moment.session, epoch, runId, claims);
     return [this.render(sel, "context", text), { runId, serve: bytes, deny: 0 }];
   }
 
-  /** Grok: a serve selected where the harness discards hook output waits for the next PreToolUse. */
+  /** Keep context until the session's next applicable hook, including startup hooks that timed out. */
   private carry(
     harness: string,
     sel: Selection,
@@ -2304,6 +2392,44 @@ export class ServingState {
     runId: string,
     delivery: string,
   ): [Reply, { runId: string; serve: number; deny: number }?] {
+    const left = this.budgetLeft(runId);
+    const out = new Composer(
+      sel.profile.heads.context,
+      sel.profile.limit_bytes,
+      Math.max(left.serve - (sel.greatLibraryBytes ?? 0), 0),
+      sel.profile.session_start_limit_bytes,
+    );
+    const claims: Claim[] = [];
+    this.appendCarries(harness, sel, epoch, momentId, runId, out, claims);
+    const text = out.text();
+    if (text === null) return [{ status: 204 }];
+    const bytes = out.budgetBytes();
+    this.charge(runId, bytes, 0);
+    this.writeClaims(delivery, harness, sel.moment.session, epoch, runId, claims);
+    return [this.render(sel, "context", text), { runId, serve: bytes, deny: 0 }];
+  }
+
+  private hasCarries(harness: string, session: string, runId: string) {
+    return (
+      this.get(
+        "SELECT 1 FROM carries WHERE harness = ? AND session = ? AND run_id = ? AND state = 'waiting' LIMIT 1",
+        harness,
+        session,
+        runId,
+      ) !== undefined
+    );
+  }
+
+  private appendCarries(
+    harness: string,
+    sel: Selection,
+    epoch: number,
+    momentId: number,
+    runId: string,
+    out: Composer,
+    claims: Claim[],
+    freshFiles: ReadonlyArray<Candidate> = [],
+  ) {
     const waiting = this.all<{
       id: number;
       entry: string;
@@ -2317,28 +2443,49 @@ export class ServingState {
       sel.moment.session,
       runId,
     );
-    if (waiting.length === 0) return [{ status: 204 }];
-    const left = this.budgetLeft(runId);
-    const out = new Composer(
-      sel.profile.heads.context,
-      sel.profile.limit_bytes,
-      Math.max(left.serve - (sel.greatLibraryBytes ?? 0), 0),
-    );
-    const claims: Claim[] = [];
     for (const w of waiting) {
+      if (freshFiles.some((c) => c.entry === w.entry && c.version === w.version)) continue;
+      if (claims.some((c) => c.entry === w.entry && c.version === w.version)) continue;
+      if (
+        this.settledIn(runId, epoch, w.entry, w.version) ||
+        (w.matcher === "great_library" &&
+          !this.greatLibraryOwed(harness, sel.moment.session, epoch))
+      ) {
+        this.run("UPDATE carries SET state = 'expired' WHERE id = ?", w.id);
+        continue;
+      }
       const base = {
         matcher: w.matcher ?? "exact_key",
         entry: w.entry,
         version: w.version,
         score: w.score,
       };
-      if (!out.fits(w.text)) {
+      const startup = w.matcher === "session_start" && sel.profile.session_start_limit_bytes > 0;
+      if (
+        startup &&
+        out.exceedsLimitAlone(w.text, true) &&
+        utf8(w.text) + 2 <= sel.profile.session_start_limit_bytes
+      )
+        out.dropHead();
+      if (!out.fits(w.text, startup)) {
         this.insertCandidate(momentId, {
           ...base,
           seam: "carry_print",
           outcome: "cut_budget",
-          reason: out.overLimit(w.text) ? "moment" : "turn",
+          reason: out.overLimit(w.text, startup) ? "moment" : "turn",
         });
+        // Startup files have no heading of their own. Other hook content can only defer them.
+        if (
+          startup
+            ? utf8(w.text) + 2 > sel.profile.session_start_limit_bytes
+            : out.exceedsLimitAlone(w.text)
+        ) {
+          this.run("UPDATE carries SET state = 'cut_budget' WHERE id = ?", w.id);
+          this.run(
+            "UPDATE candidates SET outcome = 'cut_budget', reason = 'moment' WHERE id = (SELECT candidate_id FROM carries WHERE id = ?)",
+            w.id,
+          );
+        }
         continue;
       }
       const id = this.insertCandidate(momentId, {
@@ -2357,14 +2504,8 @@ export class ServingState {
         candidateId: id,
         carryId: w.id,
       };
-      out.add(w.text, claim);
+      out.add(w.text, claim, startup);
       claims.push(claim);
     }
-    const text = out.text();
-    if (text === null) return [{ status: 204 }];
-    const bytes = utf8(text);
-    this.charge(runId, bytes, 0);
-    this.writeClaims(delivery, harness, sel.moment.session, epoch, runId, claims);
-    return [this.render(sel, "context", text), { runId, serve: bytes, deny: 0 }];
   }
 }
