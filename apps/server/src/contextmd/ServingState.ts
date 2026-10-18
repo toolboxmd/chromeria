@@ -116,6 +116,7 @@ export type RunJoin =
   | { readonly type: "ambiguous" };
 
 export interface MomentInput {
+  readonly deliveryMode?: "hook" | "retained_startup";
   readonly harness: string;
   readonly delivery: string;
   readonly pointerDelivery?: string;
@@ -1473,6 +1474,32 @@ export class ServingState {
       }
       return finish({ status: 204 });
     }
+    const fires = this.cueFires(input.cue ?? null, holdout, momentId);
+    if (fires.length > 0) sel = { ...sel, candidates: [...sel.candidates, ...fires] };
+    this.expireCarries(harness, m.session, joined.runId);
+    if (input.deliveryMode === "retained_startup") {
+      if (sel.profile.delivering.includes(m.kind)) {
+        this.carry(
+          harness,
+          {
+            ...sel,
+            candidates: [
+              ...(sel.greatLibrary == null ? [] : [sel.greatLibrary]),
+              ...sel.candidates,
+            ],
+          },
+          epoch,
+          momentId,
+          joined.runId,
+          now,
+        );
+      } else {
+        for (const c of sel.candidates)
+          this.insertCandidate(momentId, { ...this.base(c), outcome: "no_seam" });
+      }
+      // This hook already replied. Account for its join without reserving an undeliverable reply.
+      return finish({ status: 204 });
+    }
     if (harness === "grok" && m.kind === "compaction")
       this.retainInstallation(sel, epoch, momentId, joined.runId, input.delivery, now);
     if (
@@ -1488,9 +1515,6 @@ export class ServingState {
         this.reservePointer(sel, epoch, momentId, joined.runId, input.pointerDelivery, now);
       }
     }
-    const fires = this.cueFires(input.cue ?? null, holdout, momentId);
-    if (fires.length > 0) sel = { ...sel, candidates: [...sel.candidates, ...fires] };
-    this.expireCarries(harness, m.session, joined.runId);
     this.applyReadChecks(harness, m.session, input.readChecks ?? [], momentId, now);
     if ((m.kind === "tool_result" || m.kind === "tool_failure") && m.failed !== true) {
       this.recordReads(harness, sel, epoch, momentId, now);
@@ -1509,7 +1533,11 @@ export class ServingState {
       case "tool_result":
       case "tool_failure": {
         const after = this.dropAfterAction(sel, momentId);
-        if (after.candidates.length === 0 && this.eligiblePointer(after, epoch) === null)
+        if (
+          after.candidates.length === 0 &&
+          this.eligiblePointer(after, epoch) === null &&
+          !this.hasCarries(harness, m.session, joined.runId)
+        )
           return finish({ status: 204 });
         if (!delivering && after.profile.carry_to !== null) {
           this.carry(harness, after, epoch, momentId, joined.runId, now);
@@ -1524,6 +1552,10 @@ export class ServingState {
         return finish(...this.serveContext(after, epoch, momentId, joined.runId, input.delivery));
       }
       default:
+        if (delivering && sel.profile.carry_to === null)
+          return finish(
+            ...this.printCarries(harness, sel, epoch, momentId, joined.runId, input.delivery),
+          );
         return finish({ status: 204 });
     }
   }
@@ -1759,9 +1791,19 @@ export class ServingState {
     const out = new Composer(
       "",
       delivering ? sel.profile.session_start_limit_bytes : sel.profile.limit_bytes,
-      Number.POSITIVE_INFINITY,
+      this.hasCarries(sel.profile.harness, sel.moment.session, runId)
+        ? Math.max(this.budgetLeft(runId).serve, 0)
+        : Number.POSITIVE_INFINITY,
     );
     let charged = 0;
+    const carried: Claim[] = [];
+    this.appendCarries(sel.profile.harness, sel, epoch, momentId, runId, out, carried);
+    const carriedBytes = utf8(out.text() ?? "");
+    if (carriedBytes > 0) {
+      this.charge(runId, carriedBytes, 0);
+      this.writeClaims(delivery, sel.profile.harness, sel.moment.session, epoch, runId, carried);
+      charged += carriedBytes;
+    }
     if (pointer !== null) {
       const text = this.pointerText(sel, pointer);
       const bytes = utf8(text);
@@ -1784,10 +1826,11 @@ export class ServingState {
         out.add(text, claim);
         this.writeClaims(delivery, sel.profile.harness, sel.moment.session, epoch, runId, [claim]);
         this.charge(runId, bytes, 0);
-        charged = bytes;
+        charged += bytes;
       }
     }
     for (const c of sel.candidates) {
+      if (carried.some((claim) => claim.entry === c.entry && claim.version === c.version)) continue;
       if (!delivering) {
         this.insertCandidate(momentId, { ...this.base(c), outcome: "no_seam" });
         continue;
@@ -2023,10 +2066,7 @@ export class ServingState {
     if (denyQueue.length > 0) {
       return this.deny(harness, sel, epoch, momentId, runId, delivery, denyQueue, now);
     }
-    if (sel.profile.carry_to === "pre_tool") {
-      return this.printCarries(harness, sel, epoch, momentId, runId, delivery);
-    }
-    return [{ status: 204 }];
+    return this.printCarries(harness, sel, epoch, momentId, runId, delivery);
   }
 
   private liftWithout(
@@ -2192,7 +2232,9 @@ export class ServingState {
       }
     }
     out.keepBack(sel.greatLibraryBytes ?? 0);
+    this.appendCarries(sel.profile.harness, sel, epoch, momentId, runId, out, claims);
     for (const c of sel.candidates) {
+      if (claims.some((claim) => claim.entry === c.entry && claim.version === c.version)) continue;
       if (this.settledIn(runId, epoch, c.entry, c.version)) {
         this.insertCandidate(momentId, { ...this.base(c), outcome: "deduped" });
         continue;
@@ -2232,7 +2274,7 @@ export class ServingState {
     return [this.render(sel, "context", text), { runId, serve: bytes, deny: 0 }];
   }
 
-  /** Grok: a serve selected where the harness discards hook output waits for the next PreToolUse. */
+  /** Keep context until the session's next applicable hook, including startup hooks that timed out. */
   private carry(
     harness: string,
     sel: Selection,
@@ -2304,6 +2346,42 @@ export class ServingState {
     runId: string,
     delivery: string,
   ): [Reply, { runId: string; serve: number; deny: number }?] {
+    const left = this.budgetLeft(runId);
+    const out = new Composer(
+      sel.profile.heads.context,
+      sel.profile.limit_bytes,
+      Math.max(left.serve - (sel.greatLibraryBytes ?? 0), 0),
+    );
+    const claims: Claim[] = [];
+    this.appendCarries(harness, sel, epoch, momentId, runId, out, claims);
+    const text = out.text();
+    if (text === null) return [{ status: 204 }];
+    const bytes = utf8(text);
+    this.charge(runId, bytes, 0);
+    this.writeClaims(delivery, harness, sel.moment.session, epoch, runId, claims);
+    return [this.render(sel, "context", text), { runId, serve: bytes, deny: 0 }];
+  }
+
+  private hasCarries(harness: string, session: string, runId: string) {
+    return (
+      this.get(
+        "SELECT 1 FROM carries WHERE harness = ? AND session = ? AND run_id = ? AND state = 'waiting' LIMIT 1",
+        harness,
+        session,
+        runId,
+      ) !== undefined
+    );
+  }
+
+  private appendCarries(
+    harness: string,
+    sel: Selection,
+    epoch: number,
+    momentId: number,
+    runId: string,
+    out: Composer,
+    claims: Claim[],
+  ) {
     const waiting = this.all<{
       id: number;
       entry: string;
@@ -2317,15 +2395,16 @@ export class ServingState {
       sel.moment.session,
       runId,
     );
-    if (waiting.length === 0) return [{ status: 204 }];
-    const left = this.budgetLeft(runId);
-    const out = new Composer(
-      sel.profile.heads.context,
-      sel.profile.limit_bytes,
-      Math.max(left.serve - (sel.greatLibraryBytes ?? 0), 0),
-    );
-    const claims: Claim[] = [];
     for (const w of waiting) {
+      if (claims.some((c) => c.entry === w.entry && c.version === w.version)) continue;
+      if (
+        this.settledIn(runId, epoch, w.entry, w.version) ||
+        (w.matcher === "great_library" &&
+          !this.greatLibraryOwed(harness, sel.moment.session, epoch))
+      ) {
+        this.run("UPDATE carries SET state = 'expired' WHERE id = ?", w.id);
+        continue;
+      }
       const base = {
         matcher: w.matcher ?? "exact_key",
         entry: w.entry,
@@ -2360,11 +2439,5 @@ export class ServingState {
       out.add(w.text, claim);
       claims.push(claim);
     }
-    const text = out.text();
-    if (text === null) return [{ status: 204 }];
-    const bytes = utf8(text);
-    this.charge(runId, bytes, 0);
-    this.writeClaims(delivery, harness, sel.moment.session, epoch, runId, claims);
-    return [this.render(sel, "context", text), { runId, serve: bytes, deny: 0 }];
   }
 }
