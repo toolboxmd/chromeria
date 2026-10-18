@@ -97,7 +97,10 @@ export function decideRecovery(input: {
       ? { ...record, state: "reset_wait", resetAt: failure.resetAt! }
       : record;
   }
-  if (related && previous.state === "closed") return record;
+  // A run first observed unfinished, such as beside an older reconciled source, got a closed
+  // controller before anything was decided about it; its own failure is judged fresh.
+  const undecided = previous?.originalRunId === run.id && previous.sourceEndedAt === null;
+  if (related && previous.state === "closed" && !undecided) return record;
   if (related && run.id === previous.sourceRunId && previous.state === "retry_pending") {
     return { ...previous };
   }
