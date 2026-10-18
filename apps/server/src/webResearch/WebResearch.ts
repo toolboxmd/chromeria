@@ -384,7 +384,6 @@ const make = Effect.gen(function* () {
           ),
         OriginQueueWaitError: (cause) =>
           Effect.gen(function* () {
-            cacheable = false;
             yield* Ref.update(delay, (ms) => ms + cause.delayMs);
             return yield* new PublicRender.PublicRenderError({
               status: "challenge",
@@ -530,6 +529,8 @@ const make = Effect.gen(function* () {
           );
         },
         PublicRenderError: (error) => {
+          // Only a queue refusal that fails the render prevents caching its result.
+          if (Schema.is(OriginQueueWaitError)(error.cause)) cacheable = false;
           httpStatus = error.httpStatus;
           retryAfterMs = error.retryAfterMs;
           return Effect.succeed({ status: error.status, title: "", text: "" });

@@ -575,6 +575,81 @@ it.effect(
     }),
 );
 
+it.effect.each(["continuation", "repeat"] as const)(
+  "an ignored child-frame queue refusal preserves the main page's cached %s",
+  (followUp) =>
+    Effect.gen(function* () {
+      let renders = 0;
+      const mainArticle = `<h1>Main article</h1><p>${"The main document has guest rooms and a garden for events. ".repeat(500)}</p><p>End marker: cached main document after a refused frame.</p>`;
+      const f = yield* fixture(
+        (input) =>
+          Effect.gen(function* () {
+            renders++;
+            yield* input.loadDocument(new URL("/embedded-frame", input.url)).pipe(
+              Effect.match({
+                onFailure: (error) => {
+                  expect(error).toMatchObject({
+                    status: "challenge",
+                    httpStatus: null,
+                    retryAfterMs: 120_000,
+                    cause: { _tag: "OriginQueueWaitError" },
+                  });
+                },
+                onSuccess: () => {
+                  throw new Error("The embedded document must be refused by Retry-After.");
+                },
+              }),
+            );
+            return {
+              body: mainArticle,
+              finalUrl: input.url.href,
+              httpStatus: 200,
+              headers: {},
+            };
+          }),
+        () =>
+          Effect.succeed({
+            ...response(shell),
+            headers: { "content-type": "text/html", "retry-after": "120" },
+          }),
+      );
+      yield* Effect.gen(function* () {
+        const before = yield* f.setup;
+        const result = yield* Fiber.join(yield* f.start());
+        expect(result).toMatchObject({
+          status: "ok",
+          rung: "render",
+          sourceRung: "render",
+          nextOffset: 20_000,
+          delayMs: 3000,
+        });
+        const cached = yield* read(
+          followUp === "continuation"
+            ? { cacheId: result.cacheId, offset: result.nextOffset }
+            : { url: "https://render.example/" },
+        );
+        expect(cached).toMatchObject({
+          status: "ok",
+          rung: "cache",
+          sourceRung: "render",
+          cacheId: result.cacheId,
+          contentHash: result.contentHash,
+        });
+        if (followUp === "continuation") {
+          expect(cached.nextOffset).toBeNull();
+          expect(result.text + cached.text).toContain(
+            "End marker: cached main document after a refused frame.",
+          );
+        } else expect(cached.text).toBe(result.text);
+        expect(renders).toBe(1);
+        expect(yield* Queue.size(f.requests)).toBe(0);
+        expect(
+          yield* Orchestrator.OrchestratorV2.use((o) => o.getThreadProjection(threadId)),
+        ).toEqual(before);
+      }).pipe(Effect.provide(f.layer));
+    }),
+);
+
 it.effect("rendered origin queue refusals stay typed and do not poison the page cache", (ctx) =>
   Effect.gen(function* () {
     const executable = (yield* HostProcess.Environment).T3CODE_TEST_HEADLESS_SHELL;
