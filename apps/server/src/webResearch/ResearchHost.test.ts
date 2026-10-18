@@ -5,6 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -27,6 +28,7 @@ import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as PeerMcpClient from "../peer/PeerMcpClient.ts";
+import * as PreviewBrowser from "../preview/PreviewBrowser.ts";
 import {
   descriptorOf,
   layerLinkingEnvironment,
@@ -36,6 +38,7 @@ import {
 import * as Settings from "../serverSettings.ts";
 import * as PageCache from "./PageCache.ts";
 import * as PublicHttp from "./PublicHttp.ts";
+import * as PublicRender from "./PublicRender.ts";
 import * as WebResearch from "./WebResearch.ts";
 import { HostedWebReadResult } from "./ResearchHost.ts";
 
@@ -73,10 +76,15 @@ const scopeOf = (environmentId: EnvironmentId): Invocation.McpInvocationScope =>
   capabilities: new Set(), // Reading research is not orchestration control.
   issuedAt: 0,
 });
-const readerLayer = (get: PublicHttp.PublicHttp["Service"]["get"]) =>
+const readerLayer = (
+  get: PublicHttp.PublicHttp["Service"]["get"],
+  render: PublicRender.PublicRender["Service"]["render"] = () =>
+    Effect.die("A forwarding source or plain HTTP fixture must not render locally."),
+) =>
   WebResearch.layer.pipe(
     Layer.provide(PageCache.layer),
     Layer.provide(Layer.succeed(PublicHttp.PublicHttp, { get })),
+    Layer.provide(Layer.succeed(PublicRender.PublicRender, { render })),
     Layer.provide(Config.layerTest(process.cwd(), { prefix: "research-host-cache-" })),
     Layer.provide(NodeServices.layer),
     Layer.fresh,
@@ -101,6 +109,7 @@ const page = (result: McpSchema.CallToolResult) => {
 const fixture = Effect.fnUntraced(function* (
   robots = "User-agent: *\nAllow: /",
   respond = (_target: URL) => response(body),
+  render?: PublicRender.PublicRender["Service"]["render"],
 ) {
   const requests = yield* Queue.unbounded<string>();
   const callers = yield* Queue.unbounded<Invocation.McpInvocationScope>();
@@ -116,15 +125,17 @@ const fixture = Effect.fnUntraced(function* (
     bestia,
     McpHttpServer.layerWebResearchToolkit.pipe(
       Layer.provide(
-        readerLayer((target) =>
-          Effect.gen(function* () {
-            yield* Queue.offer(requests, target.pathname);
-            const invocation = yield* Effect.serviceOption(Invocation.McpInvocationContext);
-            if (Option.isSome(invocation)) yield* Queue.offer(callers, invocation.value);
-            if (target.pathname === "/robots.txt") return response(robots);
-            yield* Deferred.await(release);
-            return respond(target);
-          }),
+        readerLayer(
+          (target) =>
+            Effect.gen(function* () {
+              yield* Queue.offer(requests, target.pathname);
+              const invocation = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+              if (Option.isSome(invocation)) yield* Queue.offer(callers, invocation.value);
+              if (target.pathname === "/robots.txt") return response(robots);
+              yield* Deferred.await(release);
+              return respond(target);
+            }),
+          render,
         ),
       ),
       Layer.provide(Layer.succeedContext(hostSettingsContext)),
@@ -195,6 +206,216 @@ const fixture = Effect.fnUntraced(function* (
   };
 });
 const testLayers = NodeCrypto.layer;
+
+it.effect("returns shared subpage ownership and forwards selection through the peer", () =>
+  Effect.gen(function* () {
+    const root = `<h1>Guest house</h1><p>${"Visit the house and garden. ".repeat(12)}</p><a href='/conference'>Conference</a><a href='/camere'>Rooms</a>`;
+    const f = yield* fixture(undefined, (target: URL) =>
+      response(target.pathname === "/rooms" ? root : body),
+    );
+    yield* linkTo(f.a.links, f.host);
+    yield* linkTo(f.b.links, f.host);
+    yield* Deferred.succeed(f.release, undefined);
+    const work = yield* Effect.forkScoped(
+      f.a.call({ url, subpagePattern: "Conference", maxSubpages: 1 }),
+    );
+    expect(yield* Queue.take(f.requests)).toBe("/robots.txt");
+    yield* TestClock.adjust(3000);
+    expect(yield* Queue.take(f.requests)).toBe("/rooms");
+    yield* TestClock.adjust(3000);
+    expect(yield* Queue.take(f.requests)).toBe("/conference");
+    const result = page(yield* Fiber.join(work));
+    expect(result.subpages).toHaveLength(1);
+    const child = result.subpages[0]!;
+    expect(child).toMatchObject({
+      url: "https://venue.example/conference",
+      status: "ok",
+      cacheEnvironmentId: bestia.environmentId,
+    });
+    expect(child.nextOffset).not.toBeNull();
+    const rest = page(
+      yield* f.b.call({
+        cacheId: child.cacheId,
+        cacheEnvironmentId: child.cacheEnvironmentId,
+        offset: child.nextOffset,
+      }),
+    );
+    expect(rest).toMatchObject({ rung: "cache", cacheId: child.cacheId, nextOffset: null });
+    expect(child.text + rest.text).toHaveLength(child.totalChars);
+    expect(
+      page(yield* f.b.call({ url, subpagePattern: "Conference", maxSubpages: 1 })).subpages[0],
+    ).toMatchObject({
+      rung: "cache",
+      cacheId: child.cacheId,
+      cacheEnvironmentId: bestia.environmentId,
+    });
+    yield* f.b.settings.updateSettings({ webResearch: { host: null } });
+    expect(
+      failure(
+        yield* f.b.call({ cacheId: child.cacheId, cacheEnvironmentId: child.cacheEnvironmentId }),
+      ).code,
+    ).toBe("invalid_request");
+    expect(yield* Queue.size(f.requests)).toBe(0);
+    expect(yield* Queue.size(f.a.localRequests)).toBe(0);
+    expect(yield* Queue.size(f.b.localRequests)).toBe(0);
+  }).pipe(Effect.provide(testLayers)),
+);
+
+it.effect("preserves a host traversal deadline and its single-page retry guidance", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture("User-agent: *\nAllow: /\nCrawl-delay: 40");
+    yield* linkTo(f.a.links, f.host);
+    yield* Deferred.succeed(f.release, undefined);
+    const work = yield* Effect.forkScoped(f.a.call({ url }));
+    expect(yield* Queue.take(f.requests)).toBe("/robots.txt");
+    yield* TestClock.adjust("30 seconds");
+    const error = failure(yield* Fiber.join(work));
+    expect(error.code).toBe("research_budget_exceeded");
+    expect(error.message).toContain("followSubpages:false");
+    expect(yield* Queue.size(f.requests)).toBe(0);
+    const retry = yield* Effect.forkScoped(f.a.call({ url, followSubpages: false }));
+    yield* TestClock.adjust("10 seconds");
+    expect(yield* Queue.take(f.requests)).toBe("/rooms");
+    expect(page(yield* Fiber.join(retry))).toMatchObject({ status: "ok", rung: "http" });
+    expect(yield* Queue.size(f.a.localRequests)).toBe(0);
+  }).pipe(Effect.provide(testLayers)),
+);
+
+it.effect("shares successful rendered caching after an ignored iframe queue refusal", () =>
+  Effect.gen(function* () {
+    let renders = 0;
+    const f = yield* fixture(
+      undefined,
+      () => ({
+        ...response("<div id='app'></div>"),
+        headers: { "content-type": "text/html", "retry-after": "120" },
+      }),
+      (input) =>
+        Effect.gen(function* () {
+          renders++;
+          const refused = yield* input
+            .loadDocument(new URL("/iframe", input.url))
+            .pipe(Effect.flip, Effect.orDie);
+          expect(refused).toMatchObject({ status: "challenge", retryAfterMs: 120_000 });
+          return { body, finalUrl: input.url.href, httpStatus: 200, headers: {} };
+        }),
+    );
+    yield* linkTo(f.a.links, f.host);
+    yield* linkTo(f.b.links, f.host);
+    yield* Deferred.succeed(f.release, undefined);
+    const work = yield* Effect.forkScoped(f.a.call({ url, followSubpages: false }));
+    expect(yield* Queue.take(f.requests)).toBe("/robots.txt");
+    yield* TestClock.adjust(3000);
+    expect(yield* Queue.take(f.requests)).toBe("/rooms");
+    const first = page(yield* Fiber.join(work));
+    expect(first).toMatchObject({ status: "ok", sourceRung: "render", nextOffset: 20_000 });
+    const rest = page(
+      yield* f.b.call({
+        cacheId: first.cacheId,
+        cacheEnvironmentId: first.cacheEnvironmentId,
+        offset: first.nextOffset,
+      }),
+    );
+    expect(rest).toMatchObject({ rung: "cache", sourceRung: "render", nextOffset: null });
+    expect(first.text + rest.text).toHaveLength(first.totalChars);
+    expect(page(yield* f.b.call({ url, followSubpages: false }))).toMatchObject({
+      rung: "cache",
+      cacheId: first.cacheId,
+    });
+    expect(renders).toBe(1);
+    expect(yield* Queue.size(f.requests)).toBe(0);
+    expect(yield* Queue.size(f.a.localRequests)).toBe(0);
+    expect(yield* Queue.size(f.b.localRequests)).toBe(0);
+  }).pipe(Effect.provide(testLayers)),
+);
+
+it.effect(
+  "shares real rendered subpages, continuation and restricted navigation across peers",
+  (ctx) =>
+    Effect.gen(function* () {
+      const executable = (yield* HostProcess.Environment).T3CODE_TEST_HEADLESS_SHELL;
+      if (!executable)
+        return ctx.skip("Set T3CODE_TEST_HEADLESS_SHELL to the installed pinned shell.");
+      const rendererLayer = PublicRender.layer.pipe(
+        Layer.provide(
+          Layer.succeed(PreviewBrowser.PreviewBrowser, {
+            installed: Effect.succeedSome(executable),
+            executable: Effect.die("Research must not install a browser."),
+          }),
+        ),
+        Layer.provide(NodeServices.layer),
+      );
+      yield* Effect.gen(function* () {
+        const renderer = yield* PublicRender.PublicRender;
+        const root = `<h1>Guest house</h1><p>${"Visit the house and garden. ".repeat(12)}</p><a href='/camere'>Rooms</a><a href='/conference'>Conference</a>`;
+        const scripted = (html: string) =>
+          `<body><script>document.body.innerHTML=${JSON.stringify(html).replaceAll("<", "\\u003c")}</script></body>`;
+        const f = yield* fixture(
+          undefined,
+          (target: URL) =>
+            response(
+              target.pathname === "/rooms"
+                ? scripted(root)
+                : target.pathname === "/conference"
+                  ? "<script>location.href='https://foreign.example/rooms';</script>"
+                  : scripted(`${body}<table><tr><td>Family</td><td>4</td></tr></table>`),
+            ),
+          renderer.render,
+        );
+        yield* linkTo(f.a.links, f.host);
+        yield* linkTo(f.b.links, f.host);
+        yield* Deferred.succeed(f.release, undefined);
+        const work = yield* Effect.forkScoped(
+          f.a.call({ url, subpagePattern: "ROOMS", maxSubpages: 1 }),
+        );
+        expect(yield* Queue.take(f.requests)).toBe("/robots.txt");
+        yield* TestClock.adjust(3000);
+        expect(yield* Queue.take(f.requests)).toBe("/rooms");
+        yield* TestClock.adjust(3000);
+        expect(yield* Queue.take(f.requests)).toBe("/camere");
+        const first = page(yield* Fiber.join(work));
+        expect(first).toMatchObject({
+          status: "ok",
+          sourceRung: "render",
+          cacheEnvironmentId: bestia.environmentId,
+        });
+        expect(first.subpages).toHaveLength(1);
+        const child = first.subpages[0]!;
+        expect(child).toMatchObject({
+          status: "ok",
+          sourceRung: "render",
+          cacheEnvironmentId: bestia.environmentId,
+        });
+        expect(first.text.length + child.text.length).toBe(20_000);
+        const rest = page(
+          yield* f.b.call({
+            cacheId: child.cacheId,
+            cacheEnvironmentId: child.cacheEnvironmentId,
+            offset: child.nextOffset,
+          }),
+        );
+        expect(rest).toMatchObject({ rung: "cache", sourceRung: "render", nextOffset: null });
+        expect(child.text + rest.text).toContain("| Family | 4 |");
+        expect(page(yield* f.b.call({ url, subpagePattern: "ROOMS" })).subpages[0]).toMatchObject({
+          rung: "cache",
+          cacheId: child.cacheId,
+          sourceRung: "render",
+        });
+        const blocked = yield* Effect.forkScoped(f.b.call({ url, subpagePattern: "Conference" }));
+        yield* TestClock.adjust(3000);
+        expect(yield* Queue.take(f.requests)).toBe("/conference");
+        expect(page(yield* Fiber.join(blocked)).subpages[0]).toMatchObject({
+          status: "unsupported",
+          sourceRung: "render",
+          cacheEnvironmentId: bestia.environmentId,
+          text: "",
+        });
+        expect(yield* Queue.size(f.requests)).toBe(0);
+        expect(yield* Queue.size(f.a.localRequests)).toBe(0);
+        expect(yield* Queue.size(f.b.localRequests)).toBe(0);
+      }).pipe(Effect.provide(rendererLayer));
+    }).pipe(Effect.provide(testLayers)),
+);
 
 it.effect(
   "two isolated environments share one authenticated host fetch, TTL hit and continuation",
@@ -349,7 +570,9 @@ it.effect(
       yield* Deferred.succeed(f.release, undefined);
       const completed = yield* Deferred.make<void>();
       const read = yield* Effect.forkScoped(
-        f.a.call({ url }).pipe(Effect.onExit(() => Deferred.succeed(completed, undefined))),
+        f.a
+          .call({ url, followSubpages: false })
+          .pipe(Effect.onExit(() => Deferred.succeed(completed, undefined))),
       );
       expect(yield* Queue.take(f.requests)).toBe("/robots.txt");
       yield* TestClock.adjust("40 seconds");
@@ -371,7 +594,7 @@ it.effect("returns the host's transient queue refusal and permits an uncached re
   Effect.gen(function* () {
     const f = yield* fixture("User-agent: *\nAllow: /\nCrawl-delay: 75");
     yield* linkTo(f.a.links, f.host);
-    const read = yield* Effect.forkScoped(f.a.call({ url }));
+    const read = yield* Effect.forkScoped(f.a.call({ url, followSubpages: false }));
     expect(yield* Queue.take(f.requests)).toBe("/robots.txt");
     expect(page(yield* Fiber.join(read))).toMatchObject({
       status: "challenge",
@@ -380,7 +603,7 @@ it.effect("returns the host's transient queue refusal and permits an uncached re
     });
     expect(yield* Queue.size(f.requests)).toBe(0);
     yield* TestClock.adjust("75 seconds");
-    const retry = yield* Effect.forkScoped(f.a.call({ url }));
+    const retry = yield* Effect.forkScoped(f.a.call({ url, followSubpages: false }));
     expect(yield* Queue.take(f.requests)).toBe("/rooms");
     yield* Deferred.succeed(f.release, undefined);
     expect(page(yield* Fiber.join(retry))).toMatchObject({ status: "ok", rung: "http" });

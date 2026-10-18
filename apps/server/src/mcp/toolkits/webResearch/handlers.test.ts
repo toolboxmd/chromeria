@@ -345,7 +345,11 @@ describe("web_read at the registered MCP seam", () => {
             pendingSubpages: ["https://output.example/eventi"],
             unvisitedSubpages: 1,
           });
-          const rest = yield* read({ cacheId: child.cacheId, offset: child.nextOffset });
+          const rest = yield* read({
+            cacheId: child.cacheId,
+            cacheEnvironmentId: child.cacheEnvironmentId,
+            offset: child.nextOffset,
+          });
           expect(child.text + rest.text).toBe(fullText);
           expect(rest).toMatchObject({ rung: "cache", nextOffset: null, subpages: [] });
           expect(f.observed).toHaveLength(3);
@@ -771,6 +775,7 @@ describe("web_read at the registered MCP seam", () => {
         });
         const continuation = yield* read({
           cacheId: first.subpages[0]!.cacheId,
+          cacheEnvironmentId: first.subpages[0]!.cacheEnvironmentId,
           offset: first.subpages[0]!.nextOffset,
           maxChars: 100,
         });
@@ -791,7 +796,12 @@ describe("web_read at the registered MCP seam", () => {
         );
         expect(first).toMatchObject({ status: "ok", nextOffset: 20_000 });
         expect(first.text).toContain("[Rooms](https://dense-links.example/x)");
-        const continuation = yield* read({ cacheId: first.cacheId, offset: 20_000, maxChars: 200 });
+        const continuation = yield* read({
+          cacheId: first.cacheId,
+          cacheEnvironmentId: first.cacheEnvironmentId,
+          offset: 20_000,
+          maxChars: 200,
+        });
         expect(continuation.text).toHaveLength(200);
         expect(continuation.text).toContain("https://dense-links.example/x");
         const cached = yield* read({ url: "https://dense-links.example/" });
@@ -1622,7 +1632,10 @@ describe("web_read at the registered MCP seam", () => {
         );
         const restored = yield* Effect.scoped(
           Effect.gen(function* () {
-            const continuation = yield* read({ cacheId: saved.cacheId, cacheEnvironmentId: saved.cacheEnvironmentId });
+            const continuation = yield* read({
+              cacheId: saved.cacheId,
+              cacheEnvironmentId: saved.cacheEnvironmentId,
+            });
             const byUrl = yield* read({ url: "https://restart.example/" });
             expect(byUrl.cacheId).toBe(saved.cacheId);
             expect(byUrl.rung).toBe("cache");

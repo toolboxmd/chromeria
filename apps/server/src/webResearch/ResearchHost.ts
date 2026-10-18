@@ -11,7 +11,7 @@ import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as Settings from "../serverSettings.ts";
 import * as PageCache from "./PageCache.ts";
 import * as WebResearch from "./WebResearch.ts";
-import { WebReadInput, WebReadResult } from "./schemas.ts";
+import { WebReadInput, WebReadPage, WebReadResult } from "./schemas.ts";
 
 export const HostedWebReadInput = Schema.Struct({
   ...WebReadInput.fields,
@@ -20,9 +20,15 @@ export const HostedWebReadInput = Schema.Struct({
   }),
 });
 
+const HostedWebReadPage = Schema.Struct({
+  ...WebReadPage.fields,
+  cacheEnvironmentId: EnvironmentId,
+});
+
 export const HostedWebReadResult = Schema.Struct({
   ...WebReadResult.fields,
-  cacheEnvironmentId: EnvironmentId,
+  ...HostedWebReadPage.fields,
+  subpages: Schema.Array(HostedWebReadPage),
 });
 
 export class ResearchHostUnavailable extends Schema.TaggedError<ResearchHostUnavailable>()(
@@ -55,6 +61,7 @@ export class ResearchHost extends Context.Service<
     ) => Effect.Effect<
       typeof HostedWebReadResult.Type,
       | WebResearch.WebResearchInputError
+      | WebResearch.WebResearchBudgetError
       | PageCache.PageCacheError
       | ResearchHostUnavailable
       | ResearchCacheOwnerError
@@ -103,7 +110,11 @@ const make = Effect.gen(function* () {
 
     if (host === scope.environmentId) {
       const page = yield* research.read(input);
-      return { ...page, cacheEnvironmentId: host };
+      return {
+        ...page,
+        cacheEnvironmentId: host,
+        subpages: page.subpages.map((child) => ({ ...child, cacheEnvironmentId: host })),
+      };
     }
     // PeerForwarding already fences linked callers. Reject here as well so a
     // misconfigured host is a typed host failure and can never form a chain.
@@ -133,7 +144,10 @@ const make = Effect.gen(function* () {
             : cause,
         ),
       );
-    if (page.cacheEnvironmentId !== host)
+    if (
+      page.cacheEnvironmentId !== host ||
+      page.subpages.some((child) => child.cacheEnvironmentId !== host)
+    )
       return yield* new ResearchHostUnavailable({
         environmentId: host,
         reason: "invalid_response",
