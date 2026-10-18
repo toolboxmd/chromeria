@@ -98,6 +98,7 @@ export type CommandResult = typeof CommandResult.Type;
 
 export const CheckedRun = Schema.Struct({
   purpose: Schema.optional(ExecutionPurpose),
+  manualRequestId: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/))),
   id: TrimmedNonEmptyString,
   slot: IsoDateTime,
   /** The pinned outcome check of an agent run; command runs have none. */

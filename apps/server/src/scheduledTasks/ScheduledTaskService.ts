@@ -1,11 +1,16 @@
 import { SavedPurposeIntent, type ExecutionPurpose } from "@t3tools/contracts";
 import * as PurposeAdmission from "../orchestration-v2/ExecutionPurpose.ts";
+import * as MutationReceipts from "./mutationReceipts.ts";
+import * as CommandReceipts from "../orchestration-v2/CommandReceiptStore.ts";
+import { type RequestIdentity } from "../mcp/McpRequestReceipts.ts";
+import { BareReadGrant } from "../orchestration-v2/bareReadGrant.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
-import type { BareReadGrant } from "../orchestration-v2/bareReadGrant.ts";
 import { decodeScheduledBare, encodeScheduledBare, readScheduledBare } from "./bareState.ts";
 import {
   CommandId,
   MessageId,
+  McpManualRunReceipt,
+  McpScheduledMutationReceipt,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   OrchestrationV2LinkOrigin,
   ScheduledTask,
@@ -23,6 +28,7 @@ import {
   type ScheduledTaskWebhookDeliveryOutcome,
   type ScheduledTaskListResult,
   type ScheduledTaskMutationResult,
+  OrchestratorMcpFailure,
   type ScheduledTaskRunNowInput,
   type ScheduledTaskRunNowResult,
   type ScheduledTaskSetEnabledInput,
@@ -209,9 +215,17 @@ interface WebhookDeliveryRow {
   readonly error: string | null;
 }
 
+export type ManualOptions = {
+  readonly request: RequestIdentity;
+  readonly recheck?: Effect.Effect<void, OrchestratorMcpFailure>;
+};
+
 export class ScheduledTaskService extends Context.Service<
   ScheduledTaskService,
   {
+    readonly mutationReceipt?: (
+      request: RequestIdentity,
+    ) => Effect.Effect<Option.Option<McpScheduledMutationReceipt>, OrchestratorMcpFailure>;
     readonly list: () => Effect.Effect<ScheduledTaskListResult, ScheduledTaskError>;
     readonly subscribeList: () => Stream.Stream<ScheduledTaskListResult, ScheduledTaskError>;
     readonly upsert: (
@@ -224,9 +238,16 @@ export class ScheduledTaskService extends Context.Service<
     readonly delete: (
       input: ScheduledTaskDeleteInput,
     ) => Effect.Effect<ScheduledTaskDeleteResult, ScheduledTaskError>;
-    readonly runNow: (
-      input: ScheduledTaskRunNowInput,
-    ) => Effect.Effect<ScheduledTaskRunNowResult, ScheduledTaskError>;
+    readonly runNow: {
+      (
+        input: ScheduledTaskRunNowInput,
+      ): Effect.Effect<ScheduledTaskRunNowResult, ScheduledTaskError>;
+      (
+        input: ScheduledTaskRunNowInput,
+        options: ManualOptions,
+      ): Effect.Effect<ScheduledTaskRunNowResult, ScheduledTaskError | OrchestratorMcpFailure>;
+    };
+    /** Issues a new URL token for a webhook task; the old URL stops working at once. */
     readonly rotateWebhookToken: (
       input: ScheduledTaskRotateWebhookTokenInput,
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
@@ -391,6 +412,15 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const crypto = yield* Crypto.Crypto;
+    yield* MutationReceipts.schema.pipe(Effect.orDie);
+    const nativeReceipts = yield* Effect.serviceOption(CommandReceipts.CommandReceiptStoreV2);
+    // New authenticated admissions establish prospective ownership for imported
+    // tasks. A separate incarnation fences even same-id, same-timestamp recreation.
+    yield* sql`CREATE TABLE IF NOT EXISTS scheduled_task_request_incarnations (task_id TEXT PRIMARY KEY, incarnation TEXT NOT NULL, active_request_id TEXT)`;
+    yield* sql`CREATE TRIGGER IF NOT EXISTS scheduled_task_request_created AFTER INSERT ON scheduled_tasks BEGIN INSERT OR REPLACE INTO scheduled_task_request_incarnations VALUES (new.task_id,lower(hex(randomblob(16))),NULL); END`;
+    yield* sql`CREATE TRIGGER IF NOT EXISTS scheduled_task_request_deleted AFTER DELETE ON scheduled_tasks BEGIN DELETE FROM scheduled_task_request_incarnations WHERE task_id=old.task_id; END`;
+    yield* sql`CREATE TABLE IF NOT EXISTS scheduled_manual_requests (request_id TEXT PRIMARY KEY, generation TEXT NOT NULL, input_digest TEXT NOT NULL, task_id TEXT NOT NULL, incarnation TEXT NOT NULL, snapshot_json TEXT NOT NULL, started_at TEXT NOT NULL, stage TEXT NOT NULL, reference_json TEXT, result_json TEXT)`;
+
     const bareLaunch = yield* BareLaunch.BareLaunch;
     const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
     const threadManagement = yield* ThreadManagementService.ThreadManagementService;
@@ -643,7 +673,8 @@ export const layer = Layer.effect(
         );
 
     const markRunning = (id: ScheduledTaskId, startedAtIso: string) =>
-      sql<{ task_id: string }>`
+      sql.withTransaction(
+        sql<{ task_id: string }>`
         UPDATE scheduled_tasks
         SET updated_at = ${startedAtIso},
             last_run_at = ${startedAtIso},
@@ -652,11 +683,20 @@ export const layer = Layer.effect(
         WHERE task_id = ${id}
         RETURNING task_id
       `.pipe(
-        Effect.mapError((cause) =>
-          taskError("Could not mark schedule task as running.", { taskId: id, cause }),
-        ),
-        Effect.flatMap((rows) =>
-          rows.length > 0 ? Effect.void : taskError("Schedule task not found.", { taskId: id }),
+          Effect.mapError((cause) =>
+            taskError("Could not mark schedule task as running.", { taskId: id, cause }),
+          ),
+          // A task deleted after the re-read must not be dispatched from the stale snapshot.
+          Effect.flatMap((rows) =>
+            rows.length > 0
+              ? sql`UPDATE scheduled_task_request_incarnations SET active_request_id=NULL WHERE task_id=${id}`.pipe(
+                  Effect.asVoid,
+                  Effect.mapError((cause) =>
+                    taskError("Could not bind schedule run.", { taskId: id, cause }),
+                  ),
+                )
+              : taskError("Schedule task not found.", { taskId: id }),
+          ),
         ),
       );
 
@@ -749,6 +789,90 @@ export const layer = Layer.effect(
         }
       });
 
+    const dispatchTask = (
+      active: ScheduledTask,
+      commandId: CommandId,
+      messageId: MessageId,
+      prompt: string,
+      decision: import("../scheduledTaskChecks/DispatchPolicy.ts").ScheduledTaskDispatchDecision,
+      stableThreadId?: ThreadId,
+      bareReadGrantOverride?: BareReadGrant,
+    ) =>
+      Effect.gen(function* () {
+        const bareAuthority =
+          active.bare === undefined
+            ? undefined
+            : bareReadGrantOverride !== undefined
+              ? { readGrant: bareReadGrantOverride }
+              : yield* readScheduledBare(active.id).pipe(
+                  Effect.provideService(SqlClient.SqlClient, sql),
+                  Effect.mapError((cause) =>
+                    taskError("Could not read bare schedule authority.", {
+                      taskId: active.id,
+                      cause,
+                    }),
+                  ),
+                );
+        const resolvedPurpose = yield* PurposeAdmission.resolvePurposeIntent({ intent: active.purposeIntent });
+        const purposeSource: ExecutionPurpose = active.purposeIntent === undefined
+          ? resolvedPurpose.purpose
+          : { version: 1, scope: resolvedPurpose.purpose.scope, provenance: { type: "schedule", scheduledTaskId: active.id } };
+        return active.threadId === null
+          ? yield* Effect.exit(
+              dispatchVia(
+                decision,
+                threadLaunch.launch,
+              )({
+                commandId,
+                purposeSource,
+                ...(stableThreadId === undefined ? {} : { threadId: stableThreadId }),
+                ...(active.bare === undefined
+                  ? {}
+                  : {
+                      bare: active.bare,
+                      ...(bareAuthority === undefined
+                        ? {}
+                        : { bareReadGrant: bareAuthority.readGrant }),
+                    }),
+                projectId: active.projectId,
+                title: active.title,
+                modelSelection: active.modelSelection,
+                runtimeMode: active.runtimeMode,
+                interactionMode: active.interactionMode,
+                workspaceStrategy: active.workspaceStrategy,
+                initialMessage: {
+                  messageId,
+                  scheduledTaskId: active.id,
+                  text: prompt,
+                  attachments: [],
+                },
+                createdBy: active.createdBy,
+                creationSource: active.creationSource,
+                ...(active.linkOrigin === undefined ? {} : { linkOrigin: active.linkOrigin }),
+              }),
+            )
+          : yield* Effect.exit(
+              dispatchVia(
+                decision,
+                threadManagement.sendToThread,
+              )({
+                projectId: active.projectId,
+                commandId,
+                purposeSource,
+                threadId: ThreadId.make(active.threadId),
+                messageId,
+                scheduledTaskId: active.id,
+                text: prompt,
+                attachments: [],
+                modelSelection: active.modelSelection,
+                // Scheduled prompts must not interrupt tools in the bound thread.
+                mode: "queue",
+                createdBy: active.createdBy,
+                creationSource: active.creationSource,
+              }),
+            );
+      });
+
     const runTask = Effect.fn("ScheduledTaskService.runTask")(function* (
       task: ScheduledTask,
       trigger: "scheduled" | "manual" | "webhook",
@@ -833,82 +957,7 @@ export const layer = Layer.effect(
         // Effect.exit (not Effect.result) so defects and interruptions in the
         // dispatch are also captured and recorded as a failed run instead of
         // aborting before markCompleted.
-        const bareAuthority =
-          active.bare === undefined
-            ? undefined
-            : yield* readScheduledBare(active.id).pipe(
-                Effect.provideService(SqlClient.SqlClient, sql),
-                Effect.mapError((cause) =>
-                  taskError("Could not read bare schedule authority.", {
-                    taskId: active.id,
-                    cause,
-                  }),
-                ),
-              );
-        const resolvedPurpose = yield* PurposeAdmission.resolvePurposeIntent({
-          intent: active.purposeIntent,
-        });
-        const purposeSource: ExecutionPurpose =
-          active.purposeIntent === undefined
-            ? resolvedPurpose.purpose
-            : {
-                version: 1,
-                scope: resolvedPurpose.purpose.scope,
-                provenance: { type: "schedule", scheduledTaskId: active.id },
-              };
-        const result =
-          active.threadId === null
-            ? yield* Effect.exit(
-                dispatchVia(
-                  decision,
-                  threadLaunch.launch,
-                )({
-                  commandId,
-                  purposeSource,
-                  ...(active.bare === undefined
-                    ? {}
-                    : {
-                        bare: active.bare,
-                        ...(bareAuthority === undefined
-                          ? {}
-                          : { bareReadGrant: bareAuthority.readGrant }),
-                      }),
-                  projectId: active.projectId,
-                  title: active.title,
-                  modelSelection: active.modelSelection,
-                  runtimeMode: active.runtimeMode,
-                  interactionMode: active.interactionMode,
-                  workspaceStrategy: active.workspaceStrategy,
-                  initialMessage: {
-                    messageId,
-                    scheduledTaskId: active.id,
-                    text: prompt,
-                    attachments: [],
-                  },
-                  createdBy: active.createdBy,
-                  creationSource: active.creationSource,
-                  ...(active.linkOrigin === undefined ? {} : { linkOrigin: active.linkOrigin }),
-                }),
-              )
-            : yield* Effect.exit(
-                dispatchVia(
-                  decision,
-                  threadManagement.sendToThread,
-                )({
-                  projectId: active.projectId,
-                  commandId,
-                  purposeSource,
-                  threadId: ThreadId.make(active.threadId),
-                  messageId,
-                  scheduledTaskId: active.id,
-                  text: prompt,
-                  attachments: [],
-                  modelSelection: active.modelSelection,
-                  mode: "queue",
-                  createdBy: active.createdBy,
-                  creationSource: active.creationSource,
-                }),
-              );
+        const result = yield* dispatchTask(active, commandId, messageId, prompt, decision);
 
         const completedAt = yield* localNow;
         const runSucceeded = result._tag === "Success";
@@ -1003,7 +1052,18 @@ export const layer = Layer.effect(
     // would otherwise be skipped by the due-task filter forever.
     yield* Effect.gen(function* () {
       const rows = yield* selectAllRows();
-      const stuck = rows.filter((row) => row.last_run_status === "running");
+      // Keyed manual admissions have an exact native receipt recovery path.
+      // Generic restart recovery must not count that same action first.
+      const keyed = new Set(
+        (yield* sql<{
+          task_id: string;
+        }>`SELECT i.task_id FROM scheduled_task_request_incarnations i JOIN scheduled_manual_requests r ON r.request_id=i.active_request_id AND r.incarnation=i.incarnation WHERE r.result_json IS NULL`).map(
+          (row) => row.task_id,
+        ),
+      );
+      const stuck = rows.filter(
+        (row) => row.last_run_status === "running" && !keyed.has(row.task_id ?? ""),
+      );
       if (stuck.length === 0) return;
       const now = yield* localNow;
       yield* Effect.forEach(
@@ -1073,6 +1133,14 @@ export const layer = Layer.effect(
             "Choose an Issue, PR or deliberately unscoped purpose before saving this schedule.",
           );
         }
+        const mutation = yield* MutationReceipts.CurrentMutation;
+        if (mutation !== undefined) {
+          const receipt = yield* MutationReceipts.confirmed(mutation.request).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
+          if (Option.isSome(receipt))
+            return { task: yield* loadTask(receipt.value.scheduledTaskId) };
+        }
         const now = yield* localNow;
         const uuid =
           input.commandId === undefined
@@ -1089,134 +1157,151 @@ export const layer = Layer.effect(
           ScheduledTaskId.make(
             input.commandId ? `scheduled-task:${input.commandId}` : `scheduled-task:${uuid}`,
           );
-        // Look up by the *resolved* id so idempotent creates (commandId replays)
-        // keep their run history, and so real load failures propagate instead
-        // of silently resetting an existing row.
-        const existingTask = yield* findTask(id);
-        const bare = input.bare ?? existingTask?.bare;
-        const previousBare =
-          existingTask?.bare === undefined
-            ? undefined
-            : yield* readScheduledBare(id).pipe(
-                Effect.provideService(SqlClient.SqlClient, sql),
-                Effect.mapError((cause) =>
-                  taskError("Could not read bare schedule authority.", { taskId: id, cause }),
-                ),
-              );
-        const bareReadGrant =
-          bare === undefined
-            ? undefined
-            : ((input.bare === undefined ? previousBare?.readGrant : options?.bareReadGrant) ??
-              previousBare?.readGrant ??
-              (input.runtimeMode === "full-access"
-                ? { type: "all" as const }
-                : { type: "roots" as const, roots: [] }));
-        if (bare !== undefined)
-          yield* bareLaunch
-            .validate({
-              request: bare,
-              instanceId: input.modelSelection.instanceId,
-              readGrant: bareReadGrant,
-            })
-            .pipe(Effect.mapError((cause) => taskError(cause.message, { cause })));
-        const linkOrigin = existingTask === null ? input.linkOrigin : existingTask.linkOrigin;
-        yield* validateBinding({
-          ...(bare === undefined ? {} : { bare }),
+        return yield* MutationReceipts.accept(
           id,
-          threadId: input.threadId ?? null,
-          ...(linkOrigin === undefined ? {} : { linkOrigin }),
-        });
-        // Keep the existing next_run_at when the schedule itself is untouched:
-        // editing a title or prompt must not postpone (or resurrect) a due
-        // run — only schedule/enabled changes restart the clock.
-        const schedule: ScheduledTask["schedule"] =
-          input.schedule.type === "webhook"
-            ? {
-                type: "webhook",
-                signature:
-                  input.schedule.signature == null
-                    ? null
-                    : {
-                        header: input.schedule.signature.header.toLowerCase(),
-                        encoding: input.schedule.signature.encoding,
-                        prefix: input.schedule.signature.prefix,
-                      },
-                maxDeliveryAgeMinutes: input.schedule.maxDeliveryAgeMinutes ?? null,
-              }
-            : input.schedule;
-        const webhook =
-          input.schedule.type === "webhook"
-            ? yield* Effect.gen(function* () {
-                const existing = existingTask === null ? null : yield* findWebhookCredentials(id);
-                const token = existing?.token ?? (yield* newWebhookToken);
-                const signature =
-                  input.schedule.type === "webhook" ? input.schedule.signature : null;
-                // A secretRef is a value the user entered for an agent; this
-                // save consumes it, so it cannot be used again. A replay of a
-                // save that already used it keeps the secret that save stored.
-                const replay = input.commandId !== undefined && existing?.secret != null;
-                const fromRef =
-                  signature?.secretRef === undefined
-                    ? undefined
-                    : yield* secretRequests
-                        .consume({ ref: signature.secretRef, projectId: input.projectId })
-                        .pipe(
-                          Effect.catch((error) =>
-                            replay
-                              ? Effect.succeed(undefined)
-                              : Effect.fail(taskError(error.message, { taskId: id })),
-                          ),
-                        );
-                // A ref, when given, is the only source: a plain secret sent
-                // alongside it must not replace what a replayed save stored.
-                const provided = signature?.secretRef === undefined ? signature?.secret : fromRef;
-                const secret = signature == null ? null : (provided ?? existing?.secret ?? null);
-                const secretChanged =
-                  signature == null || provided !== undefined || existing === null;
-                if (signature != null && secret === null) {
-                  return yield* taskError("A webhook signature check needs a signing secret.", {
-                    taskId: id,
-                  });
-                }
-                return { token, secret, secretChanged };
-              })
-            : { token: null, secret: null, secretChanged: true };
-        const scheduleUnchanged =
-          existingTask !== null &&
-          existingTask.enabled === input.enabled &&
-          isSameSchedule(existingTask.schedule, schedule);
-        const task: ScheduledTask = {
-          purposeIntent: input.purposeIntent,
-          ...(bare === undefined ? {} : { bare }),
-          id,
-          title: input.title,
-          prompt: input.prompt,
-          enabled: input.enabled,
-          schedule,
-          projectId: input.projectId,
-          threadId: input.threadId ?? null,
-          workspaceStrategy: input.workspaceStrategy,
-          modelSelection: input.modelSelection,
-          runtimeMode: input.runtimeMode,
-          interactionMode: input.interactionMode,
-          createdBy: existingTask?.createdBy ?? input.createdBy ?? "user",
-          creationSource: input.creationSource ?? "web",
-          // Origin belongs to creation, not editable forms or later caller metadata.
-          ...(linkOrigin === undefined ? {} : { linkOrigin }),
-          createdAt: existingTask?.createdAt ?? iso(now),
-          updatedAt: iso(now),
-          nextRunAt: scheduleUnchanged
-            ? existingTask.nextRunAt
-            : nextRunAt({ enabled: input.enabled, schedule }, now),
-          lastRunAt: existingTask?.lastRunAt ?? null,
-          lastRunStatus: existingTask?.lastRunStatus ?? "never",
-          lastRunError: existingTask?.lastRunError ?? null,
-          runCount: existingTask?.runCount ?? 0,
-        };
-        yield* saveTask(task, input.requireExisting === true, webhook, bareReadGrant);
-        yield* notifyChanged;
-        return { task: (yield* findTask(id)) ?? task };
-      });
+          Effect.gen(function* () {
+            // Look up by the *resolved* id so idempotent creates (commandId replays)
+            // keep their run history, and so real load failures propagate instead
+            // of silently resetting an existing row.
+            const existingTask = yield* findTask(id);
+            const bare = input.bare ?? existingTask?.bare;
+            const previousBare =
+              existingTask?.bare === undefined
+                ? undefined
+                : yield* readScheduledBare(id).pipe(
+                    Effect.provideService(SqlClient.SqlClient, sql),
+                    Effect.mapError((cause) =>
+                      taskError("Could not read bare schedule authority.", { taskId: id, cause }),
+                    ),
+                  );
+            const bareReadGrant =
+              bare === undefined
+                ? undefined
+                : ((input.bare === undefined ? previousBare?.readGrant : options?.bareReadGrant) ??
+                  previousBare?.readGrant ??
+                  (input.runtimeMode === "full-access"
+                    ? { type: "all" as const }
+                    : { type: "roots" as const, roots: [] }));
+            if (bare !== undefined)
+              yield* bareLaunch
+                .validate({
+                  request: bare,
+                  instanceId: input.modelSelection.instanceId,
+                  readGrant: bareReadGrant,
+                })
+                .pipe(Effect.mapError((cause) => taskError(cause.message, { cause })));
+            const linkOrigin = existingTask === null ? input.linkOrigin : existingTask.linkOrigin;
+            yield* validateBinding({
+              ...(bare === undefined ? {} : { bare }),
+              id,
+              threadId: input.threadId ?? null,
+              ...(linkOrigin === undefined ? {} : { linkOrigin }),
+            });
+            // Keep the existing next_run_at when the schedule itself is untouched:
+            // editing a title or prompt must not postpone (or resurrect) a due
+            // run — only schedule/enabled changes restart the clock.
+            const schedule: ScheduledTask["schedule"] =
+              input.schedule.type === "webhook"
+                ? {
+                    type: "webhook",
+                    signature:
+                      input.schedule.signature == null
+                        ? null
+                        : {
+                            header: input.schedule.signature.header.toLowerCase(),
+                            encoding: input.schedule.signature.encoding,
+                            prefix: input.schedule.signature.prefix,
+                          },
+                    maxDeliveryAgeMinutes: input.schedule.maxDeliveryAgeMinutes ?? null,
+                  }
+                : input.schedule;
+            const webhook =
+              input.schedule.type === "webhook"
+                ? yield* Effect.gen(function* () {
+                    const existing =
+                      existingTask === null ? null : yield* findWebhookCredentials(id);
+                    // Saving a webhook task keeps its URL; only rotate changes it.
+                    const token = existing?.token ?? (yield* newWebhookToken);
+                    const signature =
+                      input.schedule.type === "webhook" ? input.schedule.signature : null;
+                    // A secretRef is a value the user entered for an agent; this
+                    // save consumes it, so it cannot be used again. A replay of a
+                    // save that already used it keeps the secret that save stored.
+                    const replay =
+                      mutation === undefined &&
+                      input.commandId !== undefined &&
+                      existing?.secret != null;
+                    const fromRef =
+                      signature?.secretRef === undefined
+                        ? undefined
+                        : yield* secretRequests
+                            .consume({ ref: signature.secretRef, projectId: input.projectId })
+                            .pipe(
+                              Effect.catch((error) =>
+                                replay
+                                  ? Effect.succeed(undefined)
+                                  : Effect.fail(taskError(error.message, { taskId: id })),
+                              ),
+                            );
+                    // A ref, when given, is the only source: a plain secret sent
+                    // alongside it must not replace what a replayed save stored.
+                    const provided =
+                      signature?.secretRef === undefined ? signature?.secret : fromRef;
+                    const secret =
+                      signature == null ? null : (provided ?? existing?.secret ?? null);
+                    const secretChanged =
+                      signature == null || provided !== undefined || existing === null;
+                    if (signature != null && secret === null) {
+                      return yield* taskError("A webhook signature check needs a signing secret.", {
+                        taskId: id,
+                      });
+                    }
+                    return { token, secret, secretChanged };
+                  })
+                : { token: null, secret: null, secretChanged: true };
+            const scheduleUnchanged =
+              existingTask !== null &&
+              existingTask.enabled === input.enabled &&
+              isSameSchedule(existingTask.schedule, schedule);
+            const task: ScheduledTask = {
+              ...(bare === undefined ? {} : { bare }),
+              id,
+              title: input.title,
+              prompt: input.prompt,
+              enabled: input.enabled,
+              schedule,
+              purposeIntent: input.purposeIntent,
+              projectId: input.projectId,
+              threadId: input.threadId ?? null,
+              workspaceStrategy: input.workspaceStrategy,
+              modelSelection: input.modelSelection,
+              runtimeMode: input.runtimeMode,
+              interactionMode: input.interactionMode,
+              createdBy: existingTask?.createdBy ?? input.createdBy ?? "user",
+              creationSource: input.creationSource ?? "web",
+              // Origin belongs to creation, not editable forms or later caller metadata.
+              ...(linkOrigin === undefined ? {} : { linkOrigin }),
+              createdAt: existingTask?.createdAt ?? iso(now),
+              updatedAt: iso(now),
+              nextRunAt: scheduleUnchanged
+                ? existingTask.nextRunAt
+                : nextRunAt({ enabled: input.enabled, schedule }, now),
+              lastRunAt: existingTask?.lastRunAt ?? null,
+              lastRunStatus: existingTask?.lastRunStatus ?? "never",
+              lastRunError: existingTask?.lastRunError ?? null,
+              runCount: existingTask?.runCount ?? 0,
+            };
+            yield* saveTask(task, input.requireExisting === true, webhook, bareReadGrant);
+            yield* notifyChanged;
+            return { task: (yield* findTask(id)) ?? task };
+          }),
+          loadTask(id).pipe(Effect.map((task) => ({ task }))),
+        ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      }).pipe(
+        Effect.catchTags({
+          OrchestratorMcpFailure: (cause) => Effect.fail(taskError(cause.message, { cause })),
+        }),
+      );
 
     const setEnabled: ScheduledTaskService["Service"]["setEnabled"] = (input) =>
       Effect.gen(function* () {
@@ -1253,26 +1338,332 @@ export const layer = Layer.effect(
       });
 
     const deleteTask: ScheduledTaskService["Service"]["delete"] = (input) =>
-      deleteRow(input.id).pipe(
-        Effect.andThen(
-          Effect.all([
-            Ref.update(webhookRateWindows, (windows) => {
-              const next = new Map(windows);
-              next.delete(input.id);
-              return next;
-            }),
-            Ref.update(webhookPermits, (permits) => {
-              const next = new Map(permits);
-              next.delete(input.id);
-              return next;
-            }),
-          ]),
+      MutationReceipts.accept(
+        input.id,
+        deleteRow(input.id).pipe(
+          Effect.andThen(
+            Effect.all([
+              Ref.update(webhookRateWindows, (windows) => {
+                const next = new Map(windows);
+                next.delete(input.id);
+                return next;
+              }),
+              Ref.update(webhookPermits, (permits) => {
+                const next = new Map(permits);
+                next.delete(input.id);
+                return next;
+              }),
+            ]),
+          ),
+          Effect.andThen(notifyChanged),
+          Effect.as({ id: input.id }),
         ),
-        Effect.andThen(notifyChanged),
-        Effect.as({ id: input.id }),
+        Effect.succeed({ id: input.id }),
+      ).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.catchTags({
+          OrchestratorMcpFailure: (cause) => Effect.fail(taskError(cause.message, { cause })),
+        }),
       );
 
-    const runNow: ScheduledTaskService["Service"]["runNow"] = (input: ScheduledTaskRunNowInput) =>
+    const ManualSnapshot = Schema.Struct({
+      task: ScheduledTask,
+      bareReadGrant: Schema.optional(BareReadGrant),
+    });
+    const encodeManualSnapshot = Schema.encodeEffect(Schema.fromJsonString(ManualSnapshot));
+    const encodeManualReference = Schema.encodeEffect(
+      Schema.fromJsonString(Schema.Struct({ runId: Schema.String, requestId: Schema.String })),
+    );
+    const encodeManualResult = Schema.encodeEffect(
+      Schema.fromJsonString(
+        Schema.Struct({ task: ScheduledTask, manualReceipt: McpManualRunReceipt }),
+      ),
+    );
+    const decodeManualSnapshot = Schema.decodeUnknownEffect(Schema.fromJsonString(ManualSnapshot));
+    const decodeManualResult = Schema.decodeUnknownEffect(
+      Schema.fromJsonString(
+        Schema.Struct({ task: ScheduledTask, manualReceipt: McpManualRunReceipt }),
+      ),
+    );
+    const manualUnavailable = (_cause: unknown) =>
+      new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message: "The manual request receipt is unavailable; no new action was authorized.",
+      });
+    const manualUnknown = (request: RequestIdentity) =>
+      new OrchestratorMcpFailure({
+        code: "outcome_unknown",
+        requestId: request.clientRequestId,
+        lastConfirmedStage: "dispatch_started",
+        message:
+          "This manual run may have started. Inspect its native destination before choosing a new request key.",
+      });
+    interface ManualRow {
+      request_id: string;
+      generation: string;
+      input_digest: string;
+      task_id: string;
+      incarnation: string;
+      snapshot_json: string;
+      started_at: string;
+      stage: string;
+      reference_json: string | null;
+      result_json: string | null;
+    }
+    const readManual = (request: RequestIdentity) =>
+      sql<ManualRow>`SELECT * FROM scheduled_manual_requests WHERE request_id=${request.id}`.pipe(
+        Effect.mapError(manualUnavailable),
+      );
+    const runManualNow = (input: ScheduledTaskRunNowInput, options: ManualOptions) =>
+      Effect.gen(function* () {
+        const request = options.request;
+        if (Option.isNone(nativeReceipts)) return yield* manualUnavailable(undefined);
+        const recheck = options.recheck ?? Effect.void;
+        const localFence = yield* MutationReceipts.captureResourceFence(input.id).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
+        yield* recheck;
+        // The owner freezes this exact intent and admission before any dispatch.
+        const admission = yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              yield* localFence;
+              const old = (yield* readManual(request))[0];
+              const current = yield* loadTask(input.id);
+              yield* sql`INSERT INTO scheduled_task_request_incarnations (task_id,incarnation)
+          SELECT task_id,lower(hex(randomblob(16))) FROM scheduled_tasks WHERE task_id=${input.id} ON CONFLICT DO NOTHING`;
+              const incarnation = (yield* sql<{
+                incarnation: string;
+                active_request_id: string | null;
+              }>`SELECT incarnation,active_request_id FROM scheduled_task_request_incarnations WHERE task_id=${input.id}`)[0];
+              if (incarnation === undefined) return yield* manualUnavailable(undefined);
+              if (old !== undefined) {
+                if (
+                  old.generation !== request.generation ||
+                  old.incarnation !== incarnation.incarnation
+                )
+                  return yield* new OrchestratorMcpFailure({
+                    code: "capability_denied",
+                    message:
+                      "This manual request belongs to its original grant and schedule incarnation.",
+                  });
+                if (old.input_digest !== request.inputDigest || old.task_id !== input.id)
+                  return yield* new OrchestratorMcpFailure({
+                    code: "invalid_request",
+                    message: "The manual request key was already bound to different input.",
+                  });
+                return { row: old, decision: undefined };
+              }
+              if (current.schedule.type === "webhook")
+                return yield* taskError("Webhook tasks run when their URL receives a request.", {
+                  taskId: input.id,
+                });
+              if (
+                incarnation.active_request_id !== null ||
+                (yield* Ref.get(activeRuns)).has(input.id)
+              )
+                return yield* taskError("Schedule task is already running.", { taskId: input.id });
+              yield* validateBinding(current);
+              const startedAt = yield* localNow;
+              const bareAuthority =
+                current.bare === undefined
+                  ? undefined
+                  : yield* readScheduledBare(current.id).pipe(
+                      Effect.provideService(SqlClient.SqlClient, sql),
+                      Effect.mapError(manualUnavailable),
+                    );
+              const snapshot = {
+                task: current,
+                ...(bareAuthority === undefined ? {} : { bareReadGrant: bareAuthority.readGrant }),
+              };
+              const decision = yield* dispatchPolicy
+                .decide({
+                  task: current,
+                  trigger: "manual",
+                  startedAt,
+                  manualRequestId: request.id,
+                })
+                .pipe(Effect.mapError((error) => taskError(error.message, { taskId: current.id })));
+              if (decision._tag === "fork" && decision.manualReceipt?.requestId !== request.id)
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message:
+                    "This existing scheduled action has no verified keyed manual admission. Use its existing recovery operation.",
+                });
+              const stage =
+                decision._tag === "skip"
+                  ? "skipped"
+                  : decision._tag === "fork"
+                    ? "admitted"
+                    : "prepared";
+              const encodedSnapshot = yield* encodeManualSnapshot(snapshot).pipe(
+                Effect.mapError(manualUnavailable),
+              );
+              const reference =
+                decision._tag === "fork"
+                  ? yield* encodeManualReference(decision.manualReceipt!).pipe(
+                      Effect.mapError(manualUnavailable),
+                    )
+                  : null;
+              yield* sql`INSERT INTO scheduled_manual_requests VALUES (${request.id},${request.generation},${request.inputDigest},${input.id},${incarnation.incarnation},${encodedSnapshot},${iso(startedAt)},${stage},${reference},NULL)`;
+              if (decision._tag !== "skip") {
+                yield* markRunning(input.id, iso(startedAt));
+                yield* sql`UPDATE scheduled_task_request_incarnations SET active_request_id=${request.id} WHERE task_id=${input.id}`;
+              }
+              return { row: (yield* readManual(request))[0]!, decision };
+            }),
+          )
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "OrchestratorMcpFailure" || error._tag === "ScheduledTaskError"
+                ? error
+                : manualUnavailable(error),
+            ),
+          );
+        const { row, decision } = admission;
+        const snapshot = yield* decodeManualSnapshot(row.snapshot_json).pipe(
+          Effect.mapError(manualUnavailable),
+        );
+        yield* validateBinding(snapshot.task);
+        yield* recheck;
+        const commandId = CommandId.make(`scheduled-task:manual:${request.id}`);
+        const messageId = MessageId.make(`scheduled-task-message:manual:${request.id}`);
+        const threadId = ThreadId.make(
+          snapshot.task.threadId ?? `scheduled-manual-thread:${request.id}`,
+        );
+        const readAccepted = Effect.gen(function* () {
+          const receipt = yield* nativeReceipts.value
+            .getByCommandId(
+              snapshot.task.threadId === null
+                ? CommandId.make(`${commandId}:initial-message`)
+                : commandId,
+            )
+            .pipe(Effect.mapError(manualUnavailable));
+          if (Option.isNone(receipt)) return false;
+          if (
+            receipt.value.status !== "accepted" ||
+            receipt.value.threadId !== threadId ||
+            receipt.value.commandType !== "message.dispatch"
+          )
+            return yield* manualUnknown(request);
+          return true;
+        });
+        const native = row.stage !== "admitted" && row.stage !== "skipped";
+        let accepted = native ? yield* readAccepted : false;
+        if (row.result_json !== null) {
+          if (native && !accepted) return yield* manualUnknown(request);
+          return yield* decodeManualResult(row.result_json).pipe(
+            Effect.mapError(manualUnavailable),
+          );
+        }
+        if (native && !accepted) {
+          // A launch can allocate a workspace before its first native receipt.
+          // Missing evidence in that window must never allocate a second workspace.
+          if (row.stage === "dispatching" && snapshot.task.threadId === null) {
+            const create = yield* nativeReceipts.value
+              .getByCommandId(commandId)
+              .pipe(Effect.mapError(manualUnavailable));
+            if (
+              Option.isNone(create) ||
+              create.value.status !== "accepted" ||
+              create.value.threadId !== threadId ||
+              create.value.commandType !== "thread.create"
+            )
+              return yield* manualUnknown(request);
+          }
+          const claimed =
+            yield* sql`UPDATE scheduled_manual_requests SET stage='dispatching' WHERE request_id=${request.id} AND stage='prepared' RETURNING request_id`.pipe(
+              Effect.mapError(manualUnavailable),
+            );
+          if (row.stage === "prepared" && claimed.length === 0)
+            return yield* manualUnknown(request);
+          yield* recheck;
+          yield* dispatchTask(
+            snapshot.task,
+            commandId,
+            messageId,
+            snapshot.task.prompt,
+            { _tag: "upstream" },
+            threadId,
+            snapshot.bareReadGrant,
+          );
+          accepted = yield* readAccepted;
+          if (!accepted) return yield* manualUnknown(request);
+        } else if (decision?._tag === "fork") {
+          // Exact policy admission is durable. A retry observes it without
+          // repeating a possibly external command; the policy owns its recovery.
+          yield* decision.dispatch.pipe(Effect.catch(() => Effect.void));
+        }
+        const receipt = {
+          requestId: request.clientRequestId,
+          operationId: request.id,
+          stage: native
+            ? ("native-accepted" as const)
+            : row.stage === "skipped"
+              ? ("skipped" as const)
+              : ("admitted" as const),
+        };
+        const result = yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const fresh = (yield* readManual(request))[0]!;
+              if (fresh.result_json !== null)
+                return yield* decodeManualResult(fresh.result_json).pipe(
+                  Effect.mapError(manualUnavailable),
+                );
+              const completedAt = yield* localNow;
+              const current = yield* loadTask(input.id);
+              const incarnation = (yield* sql<{
+                incarnation: string;
+                active_request_id: string | null;
+              }>`SELECT incarnation,active_request_id FROM scheduled_task_request_incarnations WHERE task_id=${input.id}`)[0];
+              if (incarnation?.incarnation !== row.incarnation)
+                return yield* new OrchestratorMcpFailure({
+                  code: "capability_denied",
+                  message: "The original scheduled task was replaced.",
+                });
+              if (row.stage !== "skipped") {
+                if (incarnation.active_request_id === request.id) {
+                  yield* sql`UPDATE scheduled_tasks SET run_count=run_count+1,last_run_status='succeeded',last_run_error=NULL,updated_at=${iso(completedAt)},next_run_at=${nextRunAt(current, completedAt)} WHERE task_id=${input.id}`;
+                  yield* sql`UPDATE scheduled_task_request_incarnations SET active_request_id=NULL WHERE task_id=${input.id} AND active_request_id=${request.id}`;
+                } else
+                  yield* sql`UPDATE scheduled_tasks SET run_count=run_count+1 WHERE task_id=${input.id}`;
+              }
+              const result = {
+                task: {
+                  ...snapshot.task,
+                  lastRunAt: row.started_at,
+                  ...(row.stage === "skipped"
+                    ? {}
+                    : {
+                        lastRunStatus: "succeeded" as const,
+                        lastRunError: null,
+                        runCount: snapshot.task.runCount + 1,
+                        updatedAt: iso(completedAt),
+                        nextRunAt: nextRunAt(snapshot.task, completedAt),
+                      }),
+                },
+                manualReceipt: receipt,
+              };
+              const encodedResult = yield* encodeManualResult(result).pipe(
+                Effect.mapError(manualUnavailable),
+              );
+              yield* sql`UPDATE scheduled_manual_requests SET result_json=${encodedResult} WHERE request_id=${request.id}`;
+              return result;
+            }),
+          )
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "OrchestratorMcpFailure" || error._tag === "ScheduledTaskError"
+                ? error
+                : manualUnavailable(error),
+            ),
+          );
+        yield* notifyChanged;
+        return result;
+      });
+
+    const runLocalNow = (input: ScheduledTaskRunNowInput) =>
       Effect.gen(function* () {
         const task = yield* loadTask(input.id);
         if (task.schedule.type === "webhook") {
@@ -1287,6 +1678,17 @@ export const layer = Layer.effect(
         );
         return { task: next };
       });
+
+    function runNow(
+      input: ScheduledTaskRunNowInput,
+    ): Effect.Effect<ScheduledTaskRunNowResult, ScheduledTaskError>;
+    function runNow(
+      input: ScheduledTaskRunNowInput,
+      options: ManualOptions,
+    ): Effect.Effect<ScheduledTaskRunNowResult, ScheduledTaskError | OrchestratorMcpFailure>;
+    function runNow(input: ScheduledTaskRunNowInput, options?: ManualOptions) {
+      return options === undefined ? runLocalNow(input) : runManualNow(input, options);
+    }
 
     const rotateWebhookToken: ScheduledTaskService["Service"]["rotateWebhookToken"] = (input) =>
       Effect.gen(function* () {
@@ -1767,6 +2169,8 @@ export const layer = Layer.effect(
       });
 
     return ScheduledTaskService.of({
+      mutationReceipt: (request) =>
+        MutationReceipts.confirmed(request).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       list,
       subscribeList,
       upsert,
