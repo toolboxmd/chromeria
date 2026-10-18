@@ -464,16 +464,52 @@ describe("Prism exact-source recovery history", () => {
     (variant) =>
       Effect.gen(function* () {
         const { sink, input, command, successor } = yield* prepareRetry;
+        if (variant === "existing_run_id") {
+          yield* persist("seed:existing-successor", [
+            event(
+              { ...successor, forkPrismContinuationSourceRunId: undefined },
+              "existing-successor",
+            ),
+          ]);
+        }
+        const projections = yield* Projection.ProjectionStoreV2;
+        const runsBefore = yield* projections.getThreadRecords(run.threadId, ["runs"]);
+        const historyBefore = yield* History.readRecoveryState(run.id);
+        const recoveryBefore = yield* (yield* Store.RecoveryStore).get(run.threadId);
         const wrong =
           variant === "wrong_source"
             ? { ...successor, forkPrismContinuationSourceRunId: RunId.make("wrong-source") }
-            : { ...successor, modelSelection: { ...successor.modelSelection, model: "different" } };
+            : variant === "wrong_model"
+              ? {
+                  ...successor,
+                  modelSelection: { ...successor.modelSelection, model: "different" },
+                }
+              : successor;
         const events = [event(wrong, variant)];
         const result = yield* sink
           .commitCommand({ ...input, events, forkPlans: [continuationAdmission(command, events)!] })
           .pipe(Effect.flip);
         assert.strictEqual(result._tag, "ForkCommitGuardRejected");
+        assert.propertyVal(result, "kind", "invalid_transition");
         assert.strictEqual((yield* History.readRecoveryOutcome(run.id))?.status, "pending");
+        assert.deepStrictEqual(
+          yield* projections.getThreadRecords(run.threadId, ["runs"]),
+          runsBefore,
+        );
+        assert.deepStrictEqual(yield* History.readRecoveryState(run.id), historyBefore);
+        assert.deepStrictEqual(
+          yield* (yield* Store.RecoveryStore).get(run.threadId),
+          recoveryBefore,
+        );
+        const sql = yield* SqlClient.SqlClient;
+        assert.lengthOf(
+          yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_id=${input.commandId}`,
+          0,
+        );
+        assert.lengthOf(
+          yield* sql`SELECT event_id FROM orchestration_events WHERE command_id=${input.commandId}`,
+          0,
+        );
       }).pipe(Effect.provide(dependencies)),
   );
 
