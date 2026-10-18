@@ -130,6 +130,7 @@ docs/user/updating.md
 knip.jsonc
 packages/client-runtime/src/rpc/client.ts
 packages/client-runtime/src/state/runtime.test.ts
+packages/client-runtime/src/state/threadDetail.ts
 packages/client-runtime/src/state/runtime.ts
 packages/contracts/src/clientRpcPermissions.ts
 packages/contracts/src/environment.ts

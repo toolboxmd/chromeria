@@ -869,15 +869,19 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "https://github.com/toolboxmd/chromeria/issues/168",
     "https://github.com/toolboxmd/chromeria/issues/269",
     "https://github.com/toolboxmd/chromeria/issues/264",
-    "https://github.com/toolboxmd/chromeria/issues/422"
+    "https://github.com/toolboxmd/chromeria/issues/422",
+    "https://github.com/toolboxmd/chromeria/issues/255"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/181",
     "https://github.com/toolboxmd/chromeria/pull/279",
     "https://github.com/toolboxmd/chromeria/pull/301",
-    "https://github.com/toolboxmd/chromeria/pull/431"
+    "https://github.com/toolboxmd/chromeria/pull/431",
+    "https://github.com/toolboxmd/chromeria/pull/413"
   ],
   "newFiles": [
+    "packages/client-runtime/src/state/restartCutPresentation.ts",
+    "packages/client-runtime/src/state/restartCutPresentation.test.ts",
     "apps/server/src/childThreads/ForkCommitPlan.ts",
     "apps/server/src/childThreads/crossProject.test.ts",
     "apps/server/src/childThreads/delegatedIntake.ts",
@@ -909,6 +913,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/restartContinuation/RestartPersistence.test.ts"
   ],
   "upstreamFiles": [
+    "packages/client-runtime/src/state/threadDetail.ts",
     "apps/server/src/mcp/OrchestratorMcpService.activity.test.ts",
     "apps/server/src/mcp/OrchestratorMcpService.test.ts",
     "apps/server/src/mcp/OrchestratorMcpService.ts",
