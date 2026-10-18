@@ -18,8 +18,8 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 /**
  * Wakes the parent of an app-owned delegated task when the task asks a question. The question
  * blocks the task until someone answers it, and the user rarely watches child threads, so the
- * parent agent is told to answer it or to ask the user. Only questions are routed: approvals
- * cannot be answered through the pending request tools.
+ * parent agent is told to answer it or to ask the user. Local request wake owns approval
+ * attention; remote observations reconcile qualified questions and approvals.
  */
 export class DelegatedTaskQuestionReactor extends Context.Service<
   DelegatedTaskQuestionReactor,

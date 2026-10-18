@@ -394,6 +394,8 @@ const layerMcpAppRequestsProvided = McpAppRequests.layer.pipe(
 );
 
 export const layer = Layer.mergeAll(
+  // Pending request reads share the runtime's native projection and SQL snapshot.
+  ProjectionStore.layer,
   // Transport lifecycle receipts and the worker share the same durable effect owner.
   EffectOutbox.layer,
   layerCommandReceiptStoreProvided,

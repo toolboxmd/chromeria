@@ -4,12 +4,14 @@ import {
   EnvironmentId,
   ThreadId,
   NodeId,
+  RuntimeRequestId,
   ProjectId,
   OrchestrationV2RemoteTaskLaunch,
   WS_METHODS,
   AuthOrchestrationOperateScope,
   type AuthSessionState,
   type PeerTaskView,
+  PeerTaskSnapshot,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { subagentChildTarget } from "./threadRelationships.ts";
@@ -25,6 +27,7 @@ import { AVAILABLE_CONNECTION_STATE } from "../connection/model.ts";
 import type { RpcSession } from "../rpc/session.ts";
 import { createRemoteTaskState, hasSourceRemoteTaskView } from "./remoteTasks.ts";
 
+const isPeerTaskSnapshot = Schema.is(PeerTaskSnapshot);
 const decodeRemoteTaskLaunch = Schema.decodeUnknownEffect(OrchestrationV2RemoteTaskLaunch);
 
 vi.mock("./session.ts", () => ({
@@ -106,6 +109,21 @@ it.effect(
               Effect.sync(() => {
                 requests.push({ method: WS_METHODS.remoteTaskView, input });
                 return view;
+              }),
+            [WS_METHODS.remoteTaskRequestRead]: (input: unknown) =>
+              Effect.sync(() => {
+                requests.push({ method: WS_METHODS.remoteTaskRequestRead, input });
+                return {
+                  kind: "user-input",
+                  requestId: RuntimeRequestId.make("B-question"),
+                  revision: 19,
+                  questions: [{ id: "color", header: "Color", question: "Choose", options: [] }],
+                };
+              }),
+            [WS_METHODS.remoteTaskRequest]: (input: unknown) =>
+              Effect.sync(() => {
+                requests.push({ method: WS_METHODS.remoteTaskRequest, input });
+                return { sequence: 20 };
               }),
             [WS_METHODS.remoteTaskStop]: (input: unknown) =>
               Effect.sync(() => {
@@ -194,8 +212,82 @@ it.effect(
           { method: WS_METHODS.remoteTaskView, input: { parentThreadId, taskId, after: 0 } },
           { method: WS_METHODS.remoteTaskStop, input: input.input },
         ]);
+        const requestBase = {
+          parentThreadId,
+          taskId,
+          requestId: RuntimeRequestId.make("B-question"),
+          requestTarget: { environmentId: destination, threadId: ThreadId.make("B-child") },
+        };
+        const readQuery = state.readRequest({
+          environmentId: source,
+          input: { ...requestBase, operation: { type: "read" } },
+        });
+        yield* AtomRegistry.mount(registry, readQuery);
+        expect(
+          yield* AtomRegistry.getResult(registry, readQuery, { suspendOnWaiting: true }),
+        ).toMatchObject({ kind: "user-input", revision: 19 });
+        for (const operation of [
+          {
+            type: "respond" as const,
+            clientRequestId: "source-answer",
+            expectedRevision: 19,
+            answers: { color: "Blue" },
+          },
+          { type: "dismiss" as const, clientRequestId: "source-dismiss", expectedRevision: 19 },
+        ]) {
+          registry.set(sessions(source), AsyncResult.success(session));
+          const action = { environmentId: source, input: { ...requestBase, operation } };
+          const count = requests.length;
+          expect((yield* Effect.promise(() => state.request.run(registry, action)))._tag).toBe(
+            "Failure",
+          );
+          expect(requests).toHaveLength(count);
+          registry.set(
+            sessions(source),
+            AsyncResult.success({
+              ...session,
+              scopes: [AuthOrchestrationOperateScope],
+              permissions: [AuthOrchestrationOperateScope],
+            }),
+          );
+          expect((yield* Effect.promise(() => state.request.run(registry, action)))._tag).toBe(
+            "Success",
+          );
+          expect(requests.at(-1)).toEqual({
+            method: WS_METHODS.remoteTaskRequest,
+            input: action.input,
+          });
+        }
         expect(accessed.every((id) => id === source)).toBe(true);
       }),
     ),
   10000,
 );
+
+it("accepts the pre-request-route snapshot but rejects a missing required request roster", () => {
+  const snapshot = {
+    sequence: 1,
+    observedAt: "2026-10-17T00:00:00Z",
+    title: "Historical negotiated task",
+    workState: "working",
+    pendingChildren: 0,
+    queuedRuns: 0,
+    recoveryWaiting: false,
+    incomplete: false,
+    executionSettled: false,
+    pendingQuestions: 1,
+    requestCount: 1,
+    requests: [
+      {
+        environmentId: "B",
+        threadId: "B-child",
+        requestId: "question",
+        revision: 1,
+        kind: "user_input",
+        responseType: "live",
+      },
+    ],
+  };
+  expect(isPeerTaskSnapshot(snapshot)).toBe(true);
+  expect(isPeerTaskSnapshot({ ...snapshot, requests: undefined })).toBe(false);
+});

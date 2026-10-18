@@ -430,3 +430,14 @@ apps/server/src/orchestration-v2/AttachmentClaims.ts
 apps/server/src/project/ManagedProjectFolders.test.ts
 apps/server/src/project/ManagedProjectFolders.ts
 apps/server/src/device/DeviceService.ts
+apps/mobile/src/features/threads/ThreadDetailScreen.tsx
+packages/client-runtime/src/state/models.ts
+packages/client-runtime/src/state/threadDetail.ts
+packages/client-runtime/src/state/threadShell.test.ts
+packages/client-runtime/src/state/threadShell.ts
+packages/shared/src/agentAwareness.test.ts
+packages/shared/src/agentAwareness.ts
+
+# Remote pending request shell and dismissal regression proof (#369).
+apps/server/src/orchestration-v2/WireProjection.test.ts
+packages/client-runtime/src/t3ToolSummary.test.ts

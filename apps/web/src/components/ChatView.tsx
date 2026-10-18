@@ -1,3 +1,4 @@
+import { useSubagentOpen } from "./chat/useSubagentOpen";
 import { BackgroundSubagentOpenButton } from "./chat/BackgroundSubagentOpenButton";
 import { usePromachosInlineCardHost } from "./promachos/PromachosChat";
 import { usePromachosPresentation } from "./promachos/promachosMode";
@@ -7323,11 +7324,49 @@ export default function ChatView(props: ChatViewProps) {
   };
   const onOpenRelatedThreadStable = useStableCallback(onOpenRelatedThread);
   const childThreadInputs = useChildThreadInputs(activeThreadRef);
+  const remoteInputTask =
+    serverProjection?.subagents.find(
+      (task) =>
+        task.remoteChild?.availability === "current" &&
+        task.remoteChild.stop === undefined &&
+        task.completionDelivery?.state !== "disposed" &&
+        task.remoteChild.snapshot?.requests.some(
+          (request) =>
+            request.responseType === "live" &&
+            request.kind !== "auth_refresh" &&
+            request.kind !== "dynamic_tool_call",
+        ),
+    ) ?? null;
+  const remoteInputOpen = useSubagentOpen(
+    activeThreadRef,
+    remoteInputTask,
+    onOpenRelatedThreadStable,
+  );
   const childInputBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
     const first = childThreadInputs[0];
     const parentAwaitingUser =
       activePendingApproval || activePendingUserInput || activeThreadShell?.hasPendingUserInput;
-    if (!first || parentAwaitingUser) return null;
+    if (parentAwaitingUser) return null;
+    if (!first && remoteInputTask !== null)
+      return {
+        id: `remote-input:${remoteInputTask.id}`,
+        variant: "info",
+        priority: "activity",
+        icon: <MessageCircleIcon />,
+        title: "Remote task needs input",
+        description: (
+          <>
+            {remoteInputTask.title ?? "Delegated task"}
+            {remoteInputOpen.viewer}
+          </>
+        ),
+        actions: (
+          <Button size="xs" variant="ghost" onClick={remoteInputOpen.open}>
+            Open request
+          </Button>
+        ),
+      };
+    if (!first) return null;
     return {
       id: `child-input:${first.id}`,
       variant: "info",
@@ -7353,6 +7392,8 @@ export default function ChatView(props: ChatViewProps) {
     };
   }, [
     childThreadInputs,
+    remoteInputTask,
+    remoteInputOpen,
     activePendingApproval,
     activePendingUserInput,
     activeThreadShell?.hasPendingUserInput,
