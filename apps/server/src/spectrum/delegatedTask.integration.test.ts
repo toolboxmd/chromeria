@@ -22,6 +22,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Events from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as Projection from "../orchestration-v2/ProjectionStore.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
@@ -553,5 +554,59 @@ it.effect("a Spectrum task of a scheduled run still holds that run until its rep
     const reportRun = caller.runs.find((run) => run.userMessageId === settled.report!.messageId)!;
     yield* ended(reportRun, "completed", "Report acknowledged.");
     assert.deepStrictEqual(yield* reportsFence("scheduler:run"), { kind: "released" });
+  }).pipe(Effect.provide(runtime)),
+);
+
+const reportReachedCaller = Effect.fn("test.SpectrumTask.reportReachedCaller")(function* (
+  threadId: ThreadId,
+) {
+  const delivered = yield* (yield* Reports.SpectrumReportService).deliver(threadId);
+  const caller = yield* (yield* Projection.ProjectionStoreV2).getThreadRecords(
+    input.callerThreadId,
+    ["runs"],
+  );
+  return caller.runs.some((run) => run.userMessageId === delivered.report!.messageId);
+});
+
+it.effect("task_cancel after the report settles stops nothing and keeps the report's wake", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    yield* initializeRecoveryHistory;
+    const state = yield* (yield* Launch.SpectrumLaunchService).register(agentStart);
+    const settled = yield* (yield* Reports.SpectrumReportService).settle(
+      state.threadId,
+      "Spectrum completed.\n\nThe answer.",
+    );
+    const service = yield* Mcp.OrchestratorMcpService;
+    const cancelled = yield* service.cancelTask(callerScope, { taskId: state.delegatedTaskId! });
+    assert.strictEqual(cancelled.status, "completed");
+    const after = yield* read(state.threadId);
+    assert.strictEqual(after.status, "settled");
+    assert.isTrue(after.outbox.some((command) => command.commandId === settled.report!.commandId));
+    assert.isTrue(yield* reportReachedCaller(state.threadId));
+  }).pipe(Effect.provide(runtime)),
+);
+
+it.effect("a Stop planned after the report settles still delivers that report", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    yield* initializeRecoveryHistory;
+    const state = yield* (yield* Launch.SpectrumLaunchService).register(agentStart);
+    yield* (yield* Reports.SpectrumReportService).settle(
+      state.threadId,
+      "Spectrum completed.\n\nThe answer.",
+    );
+    yield* (yield* Orchestrator.OrchestratorV2).dispatch({
+      type: "thread.stop",
+      threadId: state.threadId,
+      commandId: CommandId.make("late:stop"),
+    });
+    assert.strictEqual((yield* read(state.threadId)).status, "retired");
+    assert.isTrue(yield* reportReachedCaller(state.threadId));
+    const status = yield* (yield* Mcp.OrchestratorMcpService).taskStatus(
+      callerScope,
+      state.delegatedTaskId!,
+    );
+    assert.strictEqual(status.status, "completed");
   }).pipe(Effect.provide(runtime)),
 );

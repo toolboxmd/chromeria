@@ -20,16 +20,23 @@ export class SpectrumMcpInterrupt extends Context.Reference<{
     input: OrchestratorMcpThreadInterruptInput,
     commandId: CommandId,
   ) => Effect.Effect<OrchestratorMcpThreadInterruptResult | null, OrchestratorMcpFailure>;
-  /** Stops a Spectrum task's transcript, which has no run of its own; false for any other thread. */
+  /**
+   * Stops a Spectrum transcript, which has no run of its own; null for any other thread.
+   * With keepReported, a Spectrum that already has its report is left alone: nothing is left to cancel.
+   */
   readonly stop: (
     threads: Pick<ThreadManagementServiceShape, "dispatch">,
-    input: { readonly threadId: ThreadId; readonly reason?: string | undefined },
+    input: {
+      readonly threadId: ThreadId;
+      readonly reason?: string | undefined;
+      readonly keepReported?: boolean | undefined;
+    },
     commandId: CommandId,
-  ) => Effect.Effect<boolean, OrchestratorMcpFailure>;
+  ) => Effect.Effect<"stopped" | "reported" | null, OrchestratorMcpFailure>;
 }>("t3/spectrum/McpInterrupt", {
   defaultValue: () => ({
     interrupt: () => Effect.succeed(null),
-    stop: () => Effect.succeed(false),
+    stop: () => Effect.succeed(null),
   }),
 }) {}
 
@@ -44,21 +51,26 @@ export const layer = Layer.effect(
       });
     const stop = (
       threads: Pick<ThreadManagementServiceShape, "dispatch">,
-      input: { readonly threadId: ThreadId; readonly reason?: string | undefined },
+      input: {
+        readonly threadId: ThreadId;
+        readonly reason?: string | undefined;
+        readonly keepReported?: boolean | undefined;
+      },
       commandId: CommandId,
     ) =>
       Effect.gen(function* () {
         const found = yield* readSpectrum(input.threadId).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
         );
-        if (Option.isNone(found)) return false;
+        if (Option.isNone(found)) return null;
+        if (input.keepReported === true && found.value.report !== null) return "reported" as const;
         yield* threads.dispatch({
           type: "thread.stop",
           commandId,
           threadId: input.threadId,
           ...(input.reason === undefined ? {} : { reason: input.reason }),
         });
-        return true;
+        return "stopped" as const;
       }).pipe(Effect.mapError(failure));
     return {
       stop,
@@ -80,7 +92,7 @@ export const layer = Layer.effect(
                 "Spectrum transcript threads have no provider run. Omit runId to stop their Drafters.",
             });
           }
-          return (yield* stop(threads, { threadId: input.threadId }, commandId))
+          return (yield* stop(threads, { threadId: input.threadId }, commandId)) !== null
             ? ({ threadId: input.threadId, runId: null, status: "interrupt_requested" } as const)
             : null;
         }),

@@ -29,7 +29,6 @@ import { spectrumTaskUpdate } from "./delegatedTask.ts";
 import { readSpectrum } from "./store.ts";
 import {
   makeInitialReport,
-  dropUnsentReport,
   reportDrainProof,
   reportDrainedPlan,
   attemptOutcome,
@@ -92,14 +91,18 @@ const plan = Effect.fn("Spectrum.commandPlan")(function* (
               };
         }),
       );
-      next = dropUnsentReport({
+      // A settled report still owes the caller its only wake, so Stop keeps its pending send.
+      next = {
         ...state,
         status: "retired",
         generation: state.generation + 1,
         revision: state.revision + 1,
         round: null,
-        outbox: cancellations,
-      });
+        outbox: [
+          ...cancellations,
+          ...state.outbox.filter((pending) => pending.commandId === state.report?.commandId),
+        ],
+      };
       if (state.report === null) {
         next = makeInitialReport(next, "Spectrum stopped.", true);
         events.push(

@@ -2516,6 +2516,22 @@ const make = Effect.gen(function* () {
             }
           });
         yield* assertStoppable(childThreadId);
+        // Fork: a Spectrum task has no run of its own; its Stop cancels every Color. Once
+        // its report exists that report is the caller's wake, so nothing is stopped.
+        const spectrum = yield* (yield* SpectrumMcpInterrupt).stop(
+          threadManagement,
+          { threadId: childThreadId, reason: input.reason, keepReported: true },
+          stableCommandId({ scope, requestKey: key, operation: "cancel-task" }),
+        );
+        if (spectrum !== null) {
+          return {
+            taskId: input.taskId,
+            status:
+              spectrum === "reported" && isTerminalTaskStatus(current.status)
+                ? current.status
+                : "cancel_requested",
+          } satisfies OrchestratorMcpTaskCancelResult;
+        }
         const parentTask = parentProjection.subagents.find(
           (task) => task.id === input.taskId && task.origin === "app_owned",
         );
@@ -2602,16 +2618,6 @@ const make = Effect.gen(function* () {
             taskId: input.taskId,
             status: current.status,
           } satisfies OrchestratorMcpTaskCancelResult;
-        }
-        // Fork: a Spectrum task has no run of its own; its Stop cancels every Color.
-        if (
-          yield* (yield* SpectrumMcpInterrupt).stop(
-            threadManagement,
-            { threadId: childThreadId, reason: input.reason },
-            stableCommandId({ scope, requestKey: key, operation: "cancel-task" }),
-          )
-        ) {
-          return { taskId: input.taskId, status: "cancel_requested" };
         }
         // A task waiting on its own delegates has work to stop below it. One with neither
         // a running turn nor delegates (such as one awaiting a restart) keeps its delivery.
