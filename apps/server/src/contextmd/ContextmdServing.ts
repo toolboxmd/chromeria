@@ -299,6 +299,7 @@ const shownOutput = (row: {
 };
 
 const make = Effect.gen(function* () {
+  const serviceScope = yield* Effect.scope;
   const config = yield* ServerConfig.ServerConfig;
   const sql = yield* SqlClient.SqlClient;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -368,6 +369,10 @@ const make = Effect.gen(function* () {
   const clock = yield* Clock.Clock;
   const parsed: ParseCache = new Map();
   const startups = new Map<string, PendingStartup>();
+  const recovering = new Map<
+    string,
+    { readonly runId: string; readonly ready: Deferred.Deferred<void> }
+  >();
   // One client per Cue service URL, so its availability is shared by every moment on this machine.
   const cueClients = new Map<string, CueClient>();
   const cueClient = (url: string) => {
@@ -979,6 +984,7 @@ const make = Effect.gen(function* () {
   ): Effect.Effect<MomentResponse> =>
     Effect.gen(function* () {
       let startup: PendingStartup | undefined;
+      let waitedForRecovery = false;
       yield* Effect.addFinalizer(() =>
         startup === undefined ? Effect.void : Deferred.succeed(startup.finished, undefined),
       );
@@ -1083,7 +1089,7 @@ const make = Effect.gen(function* () {
                     return join;
                   const starting = yield* sql`SELECT 1 FROM orchestration_v2_projection_runs
                   WHERE status = 'starting' LIMIT 1`;
-                  if (starting.length === 0) return join;
+                  if (starting.length === 0) return yield* resolveRun(identity.session);
                   yield* pruneStartups(startedAt);
                   startup = startups.get(delivery);
                   if (startup === undefined) {
@@ -1123,6 +1129,15 @@ const make = Effect.gen(function* () {
                   return join;
                 }),
               );
+              // Registration returns before recovery. The first subsequent hook waits here,
+              // inside its own budget; neither the original hook nor recovery waits on itself.
+              if (mode.type === "hook" && startup === undefined && join.type === "run") {
+                const recovery = recovering.get(identity.session);
+                if (recovery?.runId === join.runId) {
+                  waitedForRecovery = true;
+                  yield* Deferred.await(recovery.ready);
+                }
+              }
               const directory =
                 join.type === "run"
                   ? yield* during("project_directory", threadDirectory(join.threadId))
@@ -1233,7 +1248,7 @@ const make = Effect.gen(function* () {
             selection = { ...selection, owners: { ...selection.owners, ...asked.owners } };
           }
         }
-        if (mode.type === "retained_startup" || startup !== undefined) {
+        if (mode.type === "retained_startup" || startup !== undefined || waitedForRecovery) {
           const current = yield* during("run_join", resolveRun(selection.moment.session));
           const now = yield* nowSeconds;
           if (
@@ -1300,7 +1315,7 @@ const make = Effect.gen(function* () {
       Effect.scoped,
     );
 
-  const nativeSessionRegistered: ContextmdServing["Service"]["nativeSessionRegistered"] = (input) =>
+  const recoverStartups: ContextmdServing["Service"]["nativeSessionRegistered"] = (input) =>
     Effect.gen(function* () {
       yield* pruneStartups(yield* nowSeconds);
       if (startups.size === 0) return;
@@ -1338,6 +1353,25 @@ const make = Effect.gen(function* () {
         Effect.logWarning("ContextMD startup registration failed", { cause }),
       ),
     );
+
+  const nativeSessionRegistered: ContextmdServing["Service"]["nativeSessionRegistered"] = (input) =>
+    Effect.gen(function* () {
+      if (![...startups.values()].some((entry) => entry.session === input.nativeSessionId)) return;
+      if (recovering.get(input.nativeSessionId)?.runId === input.runId) return;
+      const recovery = { runId: input.runId, ready: yield* Deferred.make<void>() };
+      // Publish the barrier synchronously, before dispatch can produce another hook.
+      recovering.set(input.nativeSessionId, recovery);
+      yield* recoverStartups(input).pipe(
+        Effect.ensuring(
+          Effect.gen(function* () {
+            if (recovering.get(input.nativeSessionId) === recovery)
+              recovering.delete(input.nativeSessionId);
+            yield* Deferred.succeed(recovery.ready, undefined);
+          }),
+        ),
+        Effect.forkIn(serviceScope),
+      );
+    });
 
   const settle: ContextmdServing["Service"]["settle"] = (delivery) =>
     Effect.gen(function* () {

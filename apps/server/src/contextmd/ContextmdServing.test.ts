@@ -366,9 +366,16 @@ describe("ContextMD startup run registration", () => {
     { harness: "claude", event: "SessionStart", late: true, nextEvent: "UserPromptSubmit" },
     { harness: "claude", event: "SessionStart", late: true, nextEvent: "SessionStart" },
     { harness: "claude", event: "SessionStart", late: true, nextEvent: "Stop" },
+    {
+      harness: "claude",
+      event: "UserPromptSubmit",
+      late: true,
+      nextEvent: "SessionStart",
+      nextSource: "compact",
+    },
   ])(
     "$harness $event joins on registration (over deadline: $late, next: $nextEvent)",
-    ({ harness, event, late, nextEvent }) =>
+    ({ harness, event, late, nextEvent, nextSource }) =>
       withNode(
         Effect.gen(function* () {
           const h = yield* startupHarness();
@@ -384,7 +391,6 @@ describe("ContextMD startup run registration", () => {
             nativeSessionId: "startup-session",
             runId: "startup-run",
           });
-          assert.deepEqual(h.joined(), { status: "ok", run_id: "startup-run" });
           const reply = yield* Fiber.join(pending);
           if (!late && harness === "claude") {
             assert.equal(reply.status, 200);
@@ -398,7 +404,7 @@ describe("ContextMD startup run registration", () => {
             const next = yield* h.moment(
               harness,
               "startup-session",
-              { hook_event_name: nextEvent ?? "PreToolUse" },
+              { hook_event_name: nextEvent ?? "PreToolUse", source: nextSource },
               false,
             );
             assert.equal(next.reply.status, 200);
@@ -406,6 +412,12 @@ describe("ContextMD startup run registration", () => {
               assert.include(
                 next.reply.body,
                 event === "SessionStart" ? "Public startup instructions." : h.index,
+              );
+            if (nextSource === "compact" && next.reply.status === 200)
+              assert.equal(
+                decodeBody(next.reply.body).hookSpecificOutput.additionalContext.split(h.index)
+                  .length - 1,
+                1,
               );
             yield* h.service.release(next.delivery);
             const retry = yield* h.moment(
@@ -434,6 +446,115 @@ describe("ContextMD startup run registration", () => {
             assert.deepEqual(row, { status: "ok", run_id: "startup-run" });
             assert.equal(h.db.prepare("SELECT count(*) AS n FROM carries").get()!.n, 0);
           }
+          assert.deepEqual(h.joined(), { status: "ok", run_id: "startup-run" });
+        }).pipe(Effect.scoped),
+      ),
+  );
+
+  it.effect(
+    "rechecks identity when the last starting run registers before waiter installation",
+    () =>
+      withNode(
+        Effect.gen(function* () {
+          const lookedUp = yield* Deferred.make<void>();
+          const proceed = yield* Deferred.make<void>();
+          let reads = 0;
+          const h = yield* makeHarness(undefined, false, (rows) =>
+            ++reads === 1 && rows.length === 0
+              ? Deferred.succeed(lookedUp, undefined).pipe(Effect.andThen(Deferred.await(proceed)))
+              : Effect.void,
+          );
+          const index = NodePath.join(h.config.baseDir, "library-index.md");
+          NodeFS.writeFileSync(index, "# Public Library\n");
+          NodeFS.writeFileSync(
+            h.configPath,
+            JSON.stringify({ exact_keys: [], great_library: index }),
+          );
+          yield* h.sql`INSERT INTO orchestration_v2_projection_runs
+      (run_id, thread_id, ordinal, provider, status, requested_at, payload_json)
+      VALUES ('startup-run', 'startup-thread', 1, 'custom-instance', 'starting', 'now', '{}')`;
+          const pending = yield* Effect.forkScoped(
+            h.service.moment({
+              authorized: Effect.succeed(true),
+              harness: "claude",
+              delivery: "registration-race",
+              contentLength: undefined,
+              body: Effect.succeed(
+                JSON.stringify({
+                  hook_event_name: "UserPromptSubmit",
+                  session_id: "startup-session",
+                }),
+              ),
+            }),
+          );
+          yield* Deferred.await(lookedUp);
+          yield* h.sql`INSERT INTO orchestration_v2_projection_run_attempts
+      (attempt_id, thread_id, run_id, attempt_ordinal, root_node_id, provider,
+        provider_instance_id, provider_thread_id, status, payload_json)
+      VALUES ('attempt', 'startup-thread', 'startup-run', 1, 'node', 'custom-instance',
+        'custom-instance', 'provider-thread', 'running', ${JSON.stringify({ nativeThreadId: "startup-session" })})`;
+          yield* h.sql`UPDATE orchestration_v2_projection_runs SET status = 'running'`;
+          yield* h.service.nativeSessionRegistered({
+            nativeSessionId: "startup-session",
+            runId: "startup-run",
+          });
+          yield* Deferred.succeed(proceed, undefined);
+          const reply = yield* Fiber.join(pending);
+          assert.equal(reply.status, 200);
+          if (reply.status === 200) assert.include(reply.body, index);
+        }).pipe(Effect.scoped),
+      ),
+  );
+
+  it.effect(
+    "returns the dispatch notification while recovery is blocked, then serves the first matched hook",
+    () =>
+      withNode(
+        Effect.gen(function* () {
+          const recovering = yield* Deferred.make<void>();
+          const proceed = yield* Deferred.make<void>();
+          const dispatched = yield* Deferred.make<void>();
+          yield* Effect.addFinalizer(() => Deferred.succeed(proceed, undefined));
+          const h = yield* startupHarness((fs) => ({
+            ...fs,
+            readFileString: (path, options) =>
+              fs
+                .readFileString(path, options)
+                .pipe(
+                  Effect.tap(() =>
+                    path.endsWith("/session-start.md")
+                      ? Deferred.succeed(recovering, undefined).pipe(
+                          Effect.andThen(Deferred.await(proceed)),
+                        )
+                      : Effect.void,
+                  ),
+                ),
+          }));
+          const pending = yield* Effect.forkScoped(h.request("claude", "SessionStart"));
+          yield* Queue.take(h.missing);
+          yield* TestClock.adjust("1300 millis");
+          yield* Fiber.join(pending);
+          yield* h.persist();
+          const notification = yield* Effect.forkScoped(
+            h.service
+              .nativeSessionRegistered({
+                nativeSessionId: "startup-session",
+                runId: "startup-run",
+              })
+              .pipe(Effect.andThen(Deferred.succeed(dispatched, undefined))),
+          );
+          yield* Deferred.await(recovering);
+          // This is the real callback awaited immediately before dispatch, not an immediate mock.
+          assert.isTrue(yield* Deferred.isDone(dispatched));
+          const firstHook = yield* Effect.forkScoped(
+            h.moment("claude", "startup-session", { hook_event_name: "PreToolUse" }, false),
+          );
+          yield* Deferred.succeed(proceed, undefined);
+          const first = yield* Fiber.join(firstHook);
+          assert.equal(first.reply.status, 200);
+          if (first.reply.status === 200)
+            assert.include(first.reply.body, "Public startup instructions.");
+          yield* Fiber.join(notification);
         }).pipe(Effect.scoped),
       ),
   );
@@ -505,10 +626,6 @@ describe("ContextMD startup run registration", () => {
           const last = `session-${count - 1}`;
           yield* h.persist(last, "startup-run", "running", 2);
           yield* h.service.nativeSessionRegistered({ nativeSessionId: last, runId: "startup-run" });
-          assert.deepEqual(h.joined(`delivery-${count - 1}`), {
-            status: "ok",
-            run_id: "startup-run",
-          });
           const first = yield* h.moment(
             "claude",
             "session-0",
@@ -520,6 +637,10 @@ describe("ContextMD startup run registration", () => {
           assert.equal(next.reply.status, 200);
           if (next.reply.status === 200)
             assert.include(next.reply.body, "Public startup instructions.");
+          assert.deepEqual(h.joined(`delivery-${count - 1}`), {
+            status: "ok",
+            run_id: "startup-run",
+          });
         }).pipe(Effect.scoped),
       ),
   );
@@ -576,7 +697,6 @@ describe("ContextMD startup run registration", () => {
           nativeSessionId: "startup-session",
           runId: "startup-run",
         });
-        assert.deepEqual(h.joined(), { status: "ok", run_id: "startup-run" });
         const next = yield* h.moment(
           "claude",
           "startup-session",
@@ -584,6 +704,7 @@ describe("ContextMD startup run registration", () => {
           false,
         );
         assert.equal(next.reply.status, 200);
+        assert.deepEqual(h.joined(), { status: "ok", run_id: "startup-run" });
       }).pipe(Effect.scoped),
     ),
   );

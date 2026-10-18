@@ -1804,7 +1804,10 @@ export class ServingState {
       this.writeClaims(delivery, sel.profile.harness, sel.moment.session, epoch, runId, carried);
       charged += carriedBytes;
     }
-    if (pointer !== null) {
+    if (
+      pointer !== null &&
+      !carried.some((claim) => claim.entry === pointer.entry && claim.version === pointer.version)
+    ) {
       const text = this.pointerText(sel, pointer);
       const bytes = utf8(text);
       if (bytes > this.budgetLeft(runId).serve) {
