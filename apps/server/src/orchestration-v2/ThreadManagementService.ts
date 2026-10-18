@@ -903,15 +903,36 @@ const make = Effect.gen(function* () {
         dispatchMode = { type: "queue_after_active" };
       } else if (input.mode === "steer" || input.mode === "restart") {
         if (steerableRun === undefined) {
-          return yield* new ThreadManagementNoSteerableRunError({
-            threadId: input.threadId,
-            mode: input.mode,
-          });
+          const receipt = yield* receipts.getByCommandId(input.commandId).pipe(
+            Effect.mapError(
+              (cause) =>
+                new Orchestrator.OrchestratorDispatchError({
+                  commandId: input.commandId,
+                  commandType: "message.dispatch",
+                  cause,
+                }),
+            ),
+          );
+          if (
+            Option.isNone(receipt) ||
+            receipt.value.status !== "accepted" ||
+            receipt.value.commandType !== "message.dispatch" ||
+            receipt.value.threadId !== input.threadId
+          ) {
+            return yield* new ThreadManagementNoSteerableRunError({
+              threadId: input.threadId,
+              mode: input.mode,
+            });
+          }
+          // Receipt replay ignores this mode and returns the original events.
+          // Replacement startup must not require a newly steerable target.
+          dispatchMode = { type: "start_immediately" };
+        } else {
+          dispatchMode = {
+            type: input.mode === "steer" ? "steer_active" : "restart_active",
+            targetRunId: steerableRun.id,
+          };
         }
-        dispatchMode = {
-          type: input.mode === "steer" ? "steer_active" : "restart_active",
-          targetRunId: steerableRun.id,
-        };
       } else if (input.mode === "auto" && steerableRun !== undefined) {
         dispatchMode = { type: "steer_active", targetRunId: steerableRun.id };
       } else {

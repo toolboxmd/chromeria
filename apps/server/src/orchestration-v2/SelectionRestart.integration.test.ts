@@ -17,6 +17,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -26,8 +27,12 @@ import * as Stream from "effect/Stream";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectWorker from "./EffectWorker.ts";
+import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as Orchestrator from "./Orchestrator.ts";
+import * as ThreadManagement from "./ThreadManagementService.ts";
+import * as CommandReceiptStore from "./CommandReceiptStore.ts";
+import * as Persistence from "../persistence/Sqlite.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
@@ -87,6 +92,7 @@ function makeRestartAdapter(
   state: Ref.Ref<RestartAdapterState>,
   sessionCapabilities: OrchestrationV2ProviderCapabilities = pooledCapabilities,
   providerInstanceId = initialSelection.instanceId,
+  replacementGate?: { entered: Deferred.Deferred<void>; release: Deferred.Deferred<void> },
 ): ProviderAdapter.ProviderAdapterV2["Service"] {
   return {
     instanceId: providerInstanceId,
@@ -260,6 +266,10 @@ function makeRestartAdapter(
           steerTurn: () => Effect.void,
           interruptTurn: () =>
             Effect.gen(function* () {
+              if (replacementGate !== undefined) {
+                yield* Deferred.succeed(replacementGate.entered, undefined);
+                yield* Deferred.await(replacementGate.release);
+              }
               const active = (yield* Ref.get(state)).activeTurn;
               if (active !== null) {
                 const updatedAt = yield* DateTime.now;
@@ -387,6 +397,124 @@ function makeCompletingHandoffAdapter(
       }),
   };
 }
+
+it.live("replays an accepted restart while replacement startup is held", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const cwd = yield* checkpointWorkspace("restart-receipt-replay");
+      const threadId = ThreadId.make("thread:restart-receipt-replay");
+      const projectId = ProjectId.make("project:restart-receipt-replay");
+      const state = yield* Ref.make<RestartAdapterState>({
+        activeTurn: null,
+        opened: [],
+        started: [],
+        closedSessionCount: 0,
+        failedReplacementOpen: false,
+      });
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const database = Persistence.layerMemory;
+      const layer = Layer.merge(
+        ProviderReplayHarness.layerWithRegistry(
+          { name: "restart-receipt-replay" },
+          ProviderAdapterRegistry.layerSingle(
+            makeRestartAdapter(state, pooledCapabilities, initialSelection.instanceId, {
+              entered,
+              release,
+            }),
+          ),
+          { databaseLayer: database },
+        ),
+        CommandReceiptStore.layer.pipe(Layer.provide(database)),
+      );
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const sink = yield* EventSink.EventSinkV2;
+        const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("restart-receipt:create"),
+          threadId,
+          projectId,
+          title: "Receipt replay",
+          modelSelection: initialSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: cwd,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const running = yield* sink
+          .stream({
+            threadId,
+            afterSequence: yield* sink.latestSequence({ threadId }),
+          })
+          .pipe(
+            Stream.filter(
+              ({ event }) =>
+                event.type === "provider-turn.updated" && event.payload.status === "running",
+            ),
+            Stream.take(1),
+            Stream.runDrain,
+            Effect.forkScoped,
+          );
+        yield* threads.sendToThread({
+          projectId,
+          threadId,
+          commandId: CommandId.make("restart-receipt:first"),
+          messageId: MessageId.make("restart-receipt:first"),
+          text: "First",
+          attachments: [],
+          mode: "auto",
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+        yield* Fiber.join(running);
+        yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
+        const input = {
+          projectId,
+          threadId,
+          commandId: CommandId.make("restart-receipt:restart"),
+          messageId: MessageId.make("restart-receipt:restart"),
+          text: "Restart",
+          attachments: [],
+          mode: "restart" as const,
+          createdBy: "agent" as const,
+          creationSource: "mcp" as const,
+        };
+        const accepted = yield* threads.sendToThread(input);
+        assert.equal(accepted.delivery, "restarted");
+        yield* Deferred.await(entered);
+        const before = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(before.runs[0]?.status, "starting");
+        const receipt = yield* receipts.getByCommandId(input.commandId);
+        assert.equal(receipt._tag, "Some");
+        const effects = yield* outbox.listByCommandId(input.commandId);
+        const replay = yield* threads.sendToThread(input);
+        assert.deepEqual(replay.dispatch, accepted.dispatch);
+        assert.deepEqual(replay.message, accepted.message);
+        assert.equal(replay.delivery, accepted.delivery);
+        assert.equal(replay.run.id, accepted.run.id);
+        const refused = yield* threads
+          .sendToThread({
+            ...input,
+            commandId: CommandId.make("restart-receipt:new"),
+            messageId: MessageId.make("restart-receipt:new"),
+          })
+          .pipe(Effect.flip);
+        assert.instanceOf(refused, ThreadManagement.ThreadManagementNoSteerableRunError);
+        assert.deepEqual(yield* receipts.getByCommandId(input.commandId), receipt);
+        assert.deepEqual(yield* orchestrator.getThreadProjection(threadId), before);
+        assert.deepEqual(yield* outbox.listByCommandId(input.commandId), effects);
+        assert.lengthOf((yield* Ref.get(state)).started, 1);
+        yield* Deferred.succeed(release, undefined);
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
+);
 
 it.live("retries a failed selection restart session open before completing", () =>
   Effect.scoped(
