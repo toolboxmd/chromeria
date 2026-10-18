@@ -80,7 +80,7 @@ flowchart TD
     %% RTL: #381 PR #392
     PGR --> RTL
     PAR["Peer attachments and request recovery"]
-    %% PAR: #382
+    %% PAR: #382 PR #410
     RTL --> PAR
     NR["Network routes"]
     %% NR: #292 #358
