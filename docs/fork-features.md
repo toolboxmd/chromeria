@@ -235,18 +235,20 @@ only when that file set changes; this is not an exhaustive history of follow-ups
 ```json
 {
   "id": "fork-maintenance",
-  "purpose": "Keep the fork stack small, checked and rebasable on GitHub-hosted CI.",
+  "purpose": "Keep the fork stack small, checked and rebasable on GitHub-hosted CI, including required upstream compatibility repairs.",
   "issues": [
     "https://github.com/toolboxmd/t3code/issues/6",
     "https://github.com/toolboxmd/t3code/issues/20",
     "https://github.com/toolboxmd/chromeria/issues/308",
-    "https://github.com/toolboxmd/chromeria/issues/370"
+    "https://github.com/toolboxmd/chromeria/issues/370",
+    "https://github.com/toolboxmd/chromeria/issues/411"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/9",
     "https://github.com/toolboxmd/t3code/pull/24",
     "https://github.com/toolboxmd/chromeria/pull/309",
-    "https://github.com/toolboxmd/chromeria/pull/373"
+    "https://github.com/toolboxmd/chromeria/pull/373",
+    "https://github.com/toolboxmd/chromeria/pull/419"
   ],
   "newFiles": [
     ".github/workflows/fork.yml",
@@ -271,7 +273,16 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/server/src/vcs/GitVcsDriverCore.test.ts",
     "knip.jsonc",
     "pnpm-lock.yaml",
-    "pnpm-workspace.yaml"
+    "pnpm-workspace.yaml",
+    "packages/source-control-github/graphql.config.ts",
+    "packages/source-control-github/src/server/GitHubPullRequestApi.test.ts",
+    "packages/source-control-github/src/server/GitHubPullRequestApi.ts",
+    "packages/source-control-github/src/server/gitHubPullRequestJson.test.ts",
+    "packages/source-control-github/src/server/gitHubPullRequestJson.ts",
+    "packages/source-control-github/src/server/pullRequestBatches.graphql",
+    "packages/source-control-github/src/server/pullRequestBatches.graphql.ts",
+    "packages/source-control-github/src/server/pullRequestListings.graphql",
+    "packages/source-control-github/src/server/pullRequestListings.graphql.ts"
   ],
   "sharedFiles": [],
   "keywords": [

@@ -420,3 +420,13 @@ apps/web/src/state/entities.ts
 apps/server/src/orchestration-v2/testkit/OrchestratorReplayRecovery.integration.test.ts
 apps/web/src/components/settings/ProviderSettingsPanel.environment.browser.test.tsx
 packages/client-runtime/src/state/presentation.test.ts
+
+packages/source-control-github/graphql.config.ts
+packages/source-control-github/src/server/GitHubPullRequestApi.test.ts
+packages/source-control-github/src/server/GitHubPullRequestApi.ts
+packages/source-control-github/src/server/gitHubPullRequestJson.test.ts
+packages/source-control-github/src/server/gitHubPullRequestJson.ts
+packages/source-control-github/src/server/pullRequestBatches.graphql
+packages/source-control-github/src/server/pullRequestBatches.graphql.ts
+packages/source-control-github/src/server/pullRequestListings.graphql
+packages/source-control-github/src/server/pullRequestListings.graphql.ts
