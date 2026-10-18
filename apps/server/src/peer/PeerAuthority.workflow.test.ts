@@ -1,3 +1,8 @@
+import * as Tracer from "effect/Tracer";
+import { DeviceStandardToolkit as LegacyDeviceToolkit } from "../device/testing/LegacyDeviceTools.fixture.ts";
+import * as LegacyDeviceHandlers from "../device/testing/LegacyDeviceHandlers.fixture.ts";
+import * as Crypto from "effect/Crypto";
+import * as Hex from "effect/encoding/Hex";
 import { clientHandlers as pendingRequestClientHandlers } from "../childThreads/PendingRequestIngress.ts";
 import * as RpcAuthorization from "../auth/RpcAuthorization.ts";
 import * as HttpRouter from "effect/http/HttpRouter";
@@ -49,7 +54,11 @@ import * as Sink from "effect/Sink";
 import * as ScheduledChecks from "../scheduledTaskChecks/ScheduledTaskChecks.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as AttachmentUpload from "../assets/AttachmentUpload.ts";
-import { PeerAttachmentReference } from "@t3tools/contracts";
+import {
+  PeerAttachmentReference,
+  DeviceCommandTarget,
+  DeviceCommandResult,
+} from "@t3tools/contracts";
 import * as SpectrumLaunch from "../spectrum/LaunchService.ts";
 import * as SpectrumMcp from "../spectrum/mcpToolkit.ts";
 import * as SpectrumStore from "../spectrum/store.ts";
@@ -211,6 +220,7 @@ const makeNode = (
     preferencesOwner = false,
     nativeOwners = false,
     deviceOwner = false,
+    legacyDeviceDomain = false,
     commandSpawner,
     ownerWorkspace,
   }: {
@@ -219,6 +229,7 @@ const makeNode = (
     readonly preferencesOwner?: boolean;
     readonly nativeOwners?: boolean;
     readonly deviceOwner?: boolean;
+    readonly legacyDeviceDomain?: boolean;
     readonly commandSpawner?: ChildProcessSpawner.ChildProcessSpawner["Service"];
     readonly ownerWorkspace?: string;
   } = {},
@@ -753,6 +764,36 @@ const makeNode = (
     const deviceAgentStarts = yield* Ref.make(0);
     const deviceConfigurations = yield* Ref.make(0);
     const loseDeviceConfiguration = yield* Ref.make(false);
+    const deviceProcessCalls: ProcessRunner.ProcessRunInput[] = [];
+    const deviceProcessHook = yield* Ref.make<
+      (input: ProcessRunner.ProcessRunInput) => Effect.Effect<void>
+    >(() => Effect.void);
+    const deviceSummaryHook = yield* Ref.make<Effect.Effect<void>>(Effect.void);
+    const deviceReadinessHook = yield* Ref.make<Effect.Effect<void>>(Effect.void);
+    const deviceObservedScope = yield* Ref.make<Option.Option<Invocation.McpThreadInvocationScope>>(
+      Option.none(),
+    );
+    const deviceMediaPaths = new Map<string, string>();
+    const deviceMediaOutside = yield* Ref.make(false);
+    const deviceScreenshotCalls = yield* Ref.make(0);
+    const deviceShutdownCalls = yield* Ref.make(0);
+    const deviceHubPlatform = yield* Ref.make<"android" | "ios">("android");
+    const deviceHubBooted = yield* Ref.make(true);
+    const deviceOldVersion = yield* Ref.make(false);
+    const deviceCapabilities = yield* Ref.make({
+      device: { id: "fixture-device382", platform: "android", target: "mobile", kind: "emulator" },
+      availableCommands: [
+        "open",
+        "snapshot",
+        "click",
+        "fill",
+        "screenshot",
+        "close",
+        "record",
+        "trace",
+        "install",
+      ],
+    });
     let fixtureDevice: NativeDevices.DeviceService["Service"] | undefined;
     const deviceLayer = deviceOwner
       ? yield* Effect.gen(function* () {
@@ -791,7 +832,8 @@ const makeNode = (
           const deviceFs: FileSystem.FileSystem = {
             ...fs,
             rename: (from, to) => {
-              if (to !== file) return fs.rename(from, to);
+              if (to !== file && !to.startsWith(`${config.stateDir}/device/sessions/`))
+                return fs.rename(from, to);
               return assertStarted.pipe(
                 Effect.andThen(fs.rename(from, to)),
                 Effect.tap(() =>
@@ -810,20 +852,85 @@ const makeNode = (
             },
           };
           const runner = ProcessRunner.ProcessRunner.of({
-            run: () =>
-              Effect.succeed({
-                code: ChildProcessSpawner.ExitCode(0),
-                stdout: '{"success":true,"data":{}}',
-                stderr: "",
-                timedOut: false,
-                stdoutTruncated: false,
-                stderrTruncated: false,
-                stdoutInvalidUtf8: false,
-                stderrInvalidUtf8: false,
+            run: (input) =>
+              Effect.gen(function* () {
+                yield* assertStarted;
+                const observed = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+                if (Option.isSome(observed) && observed.value.thread !== undefined)
+                  yield* Ref.set(
+                    deviceObservedScope,
+                    Option.some({ ...observed.value, thread: observed.value.thread }),
+                  );
+                deviceProcessCalls.push(input);
+                yield* (yield* Ref.get(deviceProcessHook))(input);
+                const family = input.args[1];
+                let data: unknown =
+                  family === "capabilities"
+                    ? yield* Ref.get(deviceCapabilities)
+                    : family === "snapshot"
+                      ? {
+                          nodes: [
+                            {
+                              index: 1,
+                              ref: "e1",
+                              role: "button",
+                              label: "Continue",
+                              privatePath: "/host/private",
+                            },
+                          ],
+                          config: "/host/private",
+                          token: "ISOLATED_DEVICE_TOKEN_382",
+                        }
+                      : {};
+                if (family === "record" || family === "trace") {
+                  const flags = input.args.slice(0, input.args.indexOf("--"));
+                  const positionals = input.args.slice(input.args.indexOf("--") + 1);
+                  const key = `${flags[flags.indexOf("--session") + 1]}:${family}`;
+                  if (positionals[0] === "start") deviceMediaPaths.set(key, positionals[1]!);
+                  const outPath = deviceMediaPaths.get(key)!;
+                  if (positionals[0] === "stop") {
+                    if (family === "record") {
+                      const bytes = new Uint8Array(24);
+                      new DataView(bytes.buffer).setUint32(4, 0x66747970);
+                      yield* fs.writeFile(outPath, bytes).pipe(Effect.orDie);
+                    } else
+                      yield* fs
+                        .writeFileString(
+                          outPath,
+                          "trace ISOLATED_DEVICE_TOKEN_382 http://device-agent382.invalid",
+                        )
+                        .pipe(Effect.orDie);
+                  }
+                  data = {
+                    [family === "record" ? "recording" : "trace"]:
+                      positionals[0] === "start" ? "started" : "stopped",
+                    outPath,
+                    artifacts: [
+                      {
+                        field: "outPath",
+                        localPath: (yield* Ref.get(deviceMediaOutside)) ? entryPath : outPath,
+                      },
+                    ],
+                    durationMs: 200,
+                    capturedDurationMs: 150,
+                    recorder: "unconfirmed",
+                    nativePathDisposition: "pending",
+                  };
+                }
+                return {
+                  code: ChildProcessSpawner.ExitCode(0),
+                  stdout: JSON.stringify({ success: true, data }),
+                  stderr: "",
+                  timedOut: false,
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                  stdoutInvalidUtf8: false,
+                  stderrInvalidUtf8: false,
+                };
               }),
           });
           const ready: DeviceHost.DeviceHostReady = {
-            nodePath: process.execPath,
+            nodePath: "/remote-host/node-must-never-execute",
             hub: { origin: "http://device382.invalid" },
             helpers: { serveSimAxSettings: null, serveSimCli: null },
             run: () => Effect.succeed({ code: 0, stdout: "", stderr: "" }),
@@ -831,30 +938,36 @@ const makeNode = (
           const host: DeviceHost.DeviceHost["Service"] = {
             id: LOCAL_DEVICE_HOST_ID,
             summary: Ref.get(devicePlatformAvailable).pipe(
-              Effect.map((available) => ({
-                id: LOCAL_DEVICE_HOST_ID,
-                kind: "local" as const,
-                label: "Isolated fixture",
-                platforms: [{ platform: "android" as const, available }],
-                hubInstalled: true,
-                agentDeviceInstalled: true,
-                tools: {
-                  agent: {
-                    requiredVersion: AGENT_DEVICE_VERSION,
-                    installedVersions: [AGENT_DEVICE_VERSION],
-                    runningVersion: AGENT_DEVICE_VERSION,
-                  },
-                  hub: {
-                    requiredVersion: DEVICE_HUB_VERSION,
-                    installedVersions: [DEVICE_HUB_VERSION],
-                    runningVersion: DEVICE_HUB_VERSION,
-                  },
-                },
-              })),
+              Effect.tap(() => Ref.get(deviceSummaryHook).pipe(Effect.flatten)),
+              Effect.flatMap((available) =>
+                Ref.get(deviceOldVersion).pipe(
+                  Effect.map((oldVersion) => ({
+                    id: LOCAL_DEVICE_HOST_ID,
+                    kind: "local" as const,
+                    label: "Isolated fixture",
+                    platforms: [{ platform: "android" as const, available }],
+                    hubInstalled: true,
+                    agentDeviceInstalled: true,
+                    tools: {
+                      agent: {
+                        requiredVersion: AGENT_DEVICE_VERSION,
+                        installedVersions: [oldVersion ? "0.21.12" : AGENT_DEVICE_VERSION],
+                        runningVersion: oldVersion ? "0.21.12" : AGENT_DEVICE_VERSION,
+                      },
+                      hub: {
+                        requiredVersion: DEVICE_HUB_VERSION,
+                        installedVersions: [DEVICE_HUB_VERSION],
+                        runningVersion: DEVICE_HUB_VERSION,
+                      },
+                    },
+                  })),
+                ),
+              ),
             ),
             platformAvailability: (platform) => Effect.succeed({ platform, available: true }),
             ensureReady: () =>
               Effect.gen(function* () {
+                yield* yield* Ref.get(deviceReadinessHook);
                 // A direct native UI setup call has no MCP request identity.
                 // Every registered action must be started before preparation.
                 if ((yield* RequestReceipts.CurrentRequest) !== undefined) yield* assertStarted;
@@ -887,24 +1000,62 @@ const makeNode = (
             stop: Effect.void,
           };
           const hub = HttpClient.make((request) =>
-            Effect.succeed(
-              HttpClientResponse.fromWeb(
+            Effect.gen(function* () {
+              if (request.url.endsWith("/grid/api/start")) {
+                yield* assertStarted;
+                return HttpClientResponse.fromWeb(request, Response.json({ ok: true }));
+              }
+              if (request.url.endsWith("/shutdown")) {
+                yield* assertStarted;
+                yield* Ref.update(deviceShutdownCalls, (n) => n + 1);
+                return HttpClientResponse.fromWeb(request, Response.json({ ok: true }));
+              }
+              if (request.url.includes("screenshot")) {
+                yield* assertStarted;
+                yield* Ref.update(deviceScreenshotCalls, (n) => n + 1);
+                return HttpClientResponse.fromWeb(
+                  request,
+                  new Response(
+                    Buffer.from(
+                      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==",
+                      "base64",
+                    ),
+                    { headers: { "content-type": "image/png" } },
+                  ),
+                );
+              }
+              return HttpClientResponse.fromWeb(
                 request,
                 Response.json({
-                  simulators: [],
-                  emulators: [
-                    {
-                      id: "fixture-device382",
-                      name: "Isolated Android",
-                      platform: "android",
-                      version: "fixture",
-                      booted: true,
-                      physical: false,
-                    },
-                  ],
+                  simulators:
+                    (yield* Ref.get(deviceHubPlatform)) === "ios"
+                      ? [
+                          {
+                            id: "fixture-device382",
+                            name: "Isolated iOS",
+                            platform: "ios",
+                            version: "fixture",
+                            booted: yield* Ref.get(deviceHubBooted),
+                            physical: false,
+                          },
+                        ]
+                      : [],
+                  emulators:
+                    (yield* Ref.get(deviceHubPlatform)) === "android"
+                      ? [
+                          {
+                            id: "fixture-device382",
+                            name: "Isolated Android",
+                            platform: "android",
+                            version: "fixture",
+                            booted: yield* Ref.get(deviceHubBooted),
+                            physical: false,
+                          },
+                        ]
+                      : [],
                 }),
-              ),
-            ),
+              );
+            }),
           );
           const service = yield* NativeDevices.make.pipe(
             Effect.provideService(DeviceHost.DeviceHost, host),
@@ -922,12 +1073,22 @@ const makeNode = (
     const toolsFor = (
       scheduleServices: typeof schedules,
       requests: typeof requestContext = requestContext,
+      nativeServices = services,
     ) =>
       Layer.mergeAll(
         McpHttpServer.layerProjectRegistration,
         McpHttpServer.layerOrchestratorToolkit,
         ...(preferencesOwner ? [McpHttpServer.layerEnvironmentToolkit] : []),
-        ...(deviceOwner ? [McpHttpServer.layerDeviceToolkit] : []),
+        ...(deviceOwner
+          ? [
+              legacyDeviceDomain
+                ? McpHttpServer.toolkitRegistration(
+                    LegacyDeviceToolkit,
+                    LegacyDeviceHandlers.layerStandard,
+                  )
+                : McpHttpServer.layerDeviceToolkit,
+            ]
+          : []),
         ...(attachmentRequests
           ? [
               McpHttpServer.toolkitRegistration(IssuesToolkit, IssueHandlers.layer).pipe(
@@ -969,7 +1130,7 @@ const makeNode = (
         Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
         Layer.provide(Layer.succeedContext(launches)),
         Layer.provide(Layer.succeedContext(runtime)),
-        Layer.provide(Layer.succeedContext(services)),
+        Layer.provide(Layer.succeedContext(nativeServices)),
         Layer.provide(projectLayer),
         Layer.provide(folders),
         Layer.provide(settings),
@@ -1033,43 +1194,62 @@ const makeNode = (
     const rebuildScheduler = Scope.close(scheduleScope, Exit.void).pipe(
       Effect.andThen(scheduleLayer.pipe(Layer.fresh, Layer.build)),
     );
-    const restartSchedulerTransport = Effect.gen(function* () {
-      const rebuilt = yield* rebuildScheduler;
-      const requests = attachmentRequests
-        ? yield* RequestRuntime.layer.pipe(
-            Layer.provide(db),
-            Layer.provide(nodeConfig),
-            Layer.provide(Layer.succeedContext(baseServices)),
-            Layer.fresh,
-            Layer.build,
-          )
-        : Context.empty();
-      const http = yield* NodeHttpServer.layerTest.pipe(Layer.fresh, Layer.build);
-      const renewed = yield* McpSessionRegistry.__testing
-        .make()
-        .pipe(
-          Effect.provideService(
-            PeerAuthority.PeerAuthority,
-            Context.get(baseServices, PeerAuthority.PeerAuthority),
-          ),
-          Effect.provide(Layer.merge(environment, Layer.succeedContext(http))),
-        );
-      const restarted = yield* servePeer(descriptor, toolsFor(rebuilt, requests), {
-        ...(attachmentRequests
-          ? { serverConfig: Context.get(nodeConfigContext, Config.ServerConfig) }
-          : {}),
-        database: db,
-        registry: renewed,
-        secretStore: Context.get(services, Secrets.ServerSecretStore),
-        authorityServices: Context.mergeAll(lifecycleContext, lifecycle, pendingRequests),
-      }).pipe(Effect.provide(Layer.succeedContext(http)));
-      return {
-        ...restarted,
-        registry: renewed,
-        scheduled: Context.get(rebuilt, ScheduledTasks.ScheduledTaskService),
-        requestContext: requests,
-      };
-    });
+    const restartSchedulerTransportWith = (durableRequests: boolean) =>
+      Effect.gen(function* () {
+        const rebuilt = yield* rebuildScheduler;
+        const requests = durableRequests
+          ? yield* RequestRuntime.layer.pipe(
+              Layer.provide(db),
+              Layer.provide(nodeConfig),
+              Layer.provide(Layer.succeedContext(baseServices)),
+              Layer.fresh,
+              Layer.build,
+            )
+          : Context.empty();
+        const http = yield* NodeHttpServer.layerTest.pipe(Layer.fresh, Layer.build);
+        const renewed = yield* McpSessionRegistry.__testing
+          .make()
+          .pipe(
+            Effect.provideService(
+              PeerAuthority.PeerAuthority,
+              Context.get(baseServices, PeerAuthority.PeerAuthority),
+            ),
+            Effect.provide(Layer.merge(environment, Layer.succeedContext(http))),
+          );
+        const nativeServices = durableRequests
+          ? services
+          : Context.omit(
+              RequestReceipts.McpRequestReceipts,
+              AttachmentStaging.AttachmentStaging,
+            )(services);
+        const currentAuthority = Context.mergeAll(lifecycleContext, lifecycle, pendingRequests);
+        const authorityServices = durableRequests
+          ? currentAuthority
+          : Context.omit(
+              RequestReceipts.McpRequestReceipts,
+              AttachmentStaging.AttachmentStaging,
+            )(currentAuthority);
+        const restarted = yield* servePeer(
+          descriptor,
+          toolsFor(rebuilt, requests, nativeServices),
+          {
+            ...(attachmentRequests
+              ? { serverConfig: Context.get(nodeConfigContext, Config.ServerConfig) }
+              : {}),
+            database: db,
+            registry: renewed,
+            secretStore: Context.get(services, Secrets.ServerSecretStore),
+            authorityServices,
+          },
+        ).pipe(Effect.provide(Layer.succeedContext(http)));
+        return {
+          ...restarted,
+          registry: renewed,
+          scheduled: Context.get(rebuilt, ScheduledTasks.ScheduledTaskService),
+          requestContext: requests,
+        };
+      });
+    const restartSchedulerTransport = restartSchedulerTransportWith(attachmentRequests);
     return {
       ...peer,
       pendingRequests: Context.get(pendingRequests, PendingRequests.PendingRequests),
@@ -1097,6 +1277,19 @@ const makeNode = (
       config: Context.get(nodeConfigContext, Config.ServerConfig),
       browser,
       fixtureDevice,
+      deviceProcessCalls,
+      deviceProcessHook,
+      deviceSummaryHook,
+      deviceReadinessHook,
+      deviceObservedScope,
+      deviceMediaPaths,
+      deviceMediaOutside,
+      deviceScreenshotCalls,
+      deviceShutdownCalls,
+      deviceHubPlatform,
+      deviceHubBooted,
+      deviceOldVersion,
+      deviceCapabilities,
       deviceHostStarts,
       devicePlatformAvailable,
       deviceAgentStarts,
@@ -1111,6 +1304,7 @@ const makeNode = (
       scheduled: Context.get(schedules, ScheduledTasks.ScheduledTaskService),
       rebuildScheduler,
       restartSchedulerTransport,
+      restartWithoutRequestsTransport: restartSchedulerTransportWith(false),
       scheduledChecks: Context.getOption(schedules, ScheduledChecks.ScheduledTaskChecks),
       holdManualLaunchReply,
       manualLaunchReplyHeld,
@@ -1740,6 +1934,1235 @@ it.live(
         expect(current.command?.run).toMatchObject({ stage: "needs-you", imported: false });
         expect(current.command?.run?.error).toBeTruthy();
         expect(current.runCount).toBe(1);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+// Finite #383 core proof: these cases require the parent-integrated typed device domain.
+// No service replacement: every intent enters the source's native MCP credential path.
+const decodeTyped383Open = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    target: Schema.Struct({
+      hostId: Schema.String,
+      deviceId: Schema.String,
+      toolSessionId: Schema.String,
+    }),
+    quickStart: Schema.String,
+  }),
+);
+const typed383Digest = (bytes: Uint8Array) =>
+  Effect.gen(function* () {
+    const crypto = yield* Crypto.Crypto;
+    return Hex.encode(yield* crypto.digest("SHA-256", bytes));
+  }).pipe(Effect.orDie);
+const decodeTyped383Command = Schema.decodeUnknownEffect(DeviceCommandResult);
+const decodeTyped383Upload = Schema.decodeUnknownEffect(PeerAttachmentUploadResult);
+const decodeTyped383Target = Schema.decodeUnknownEffect(
+  Schema.Struct({ target: DeviceCommandTarget }),
+);
+const decodeTyped383Artifact = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    type: Schema.Literal("artifact"),
+    artifact: PeerAttachmentReference,
+  }),
+);
+const assertTyped383SourceIdle = (source: Node) =>
+  Effect.gen(function* () {
+    expect(yield* Ref.get(source.deviceHostStarts)).toBe(0);
+    expect(yield* Ref.get(source.deviceAgentStarts)).toBe(0);
+    expect(yield* Ref.get(source.deviceConfigurations)).toBe(0);
+    expect(yield* Ref.get(source.deviceScreenshotCalls)).toBe(0);
+    expect(yield* Ref.get(source.deviceShutdownCalls)).toBe(0);
+    expect(source.deviceProcessCalls).toHaveLength(0);
+  });
+const typed383Pair = (id: string, legacyDeviceDomain = false, sourcePreferencesOwner = false) =>
+  Effect.gen(function* () {
+    const a = yield* makeNode(descriptorOf(`${id}-a`, "A", { peerAuthority: 1 }), "disk", {
+      productionKernel: true,
+      attachmentRequests: true,
+      preferencesOwner: sourcePreferencesOwner,
+      deviceOwner: true,
+    });
+    yield* Effect.addFinalizer(() => assertTyped383SourceIdle(a));
+    const b = yield* makeNode(descriptorOf(`${id}-b`, "B", { peerAuthority: 1 }), "disk", {
+      productionKernel: true,
+      attachmentRequests: true,
+      preferencesOwner: true,
+      legacyDeviceDomain,
+      deviceOwner: true,
+    });
+    yield* linkTo(a.links, b, "full-access");
+    const parent = ThreadId.make(`${id}-parent`);
+    yield* seedParent(a, parent);
+    const launched = yield* nativeCall(a, parent, "t3_thread_launch", {
+      environmentId: b.environmentId,
+      projectId: b.project.id,
+      title: id,
+      message: "Wait",
+      modelSelection: selection,
+      clientRequestId: `${id}-child`,
+    });
+    expect(launched.isError, json(launched)).not.toBe(true);
+    const child = (yield* decodeLaunchReceipt(launched.structuredContent)).threadId;
+    yield* activate(b, child);
+    const grant = (yield* b.authority.grants)[0]!;
+    yield* b.authority.setGrant({ ...grant, device: true });
+    const route = { environmentId: b.environmentId, contextThreadId: child };
+    const open = (key: string) =>
+      nativeCall(a, parent, "device_open", {
+        ...route,
+        deviceId: "fixture-device382",
+        platform: "android",
+        clientRequestId: key,
+      });
+    const footprint = () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const file = yield* agentDeviceConfigPath(b.config.stateDir, LOCAL_DEVICE_HOST_ID, path);
+        return {
+          host: yield* Ref.get(b.deviceHostStarts),
+          agent: yield* Ref.get(b.deviceAgentStarts),
+          config: yield* Ref.get(b.deviceConfigurations),
+          process: b.deviceProcessCalls.length,
+          screenshots: yield* Ref.get(b.deviceScreenshotCalls),
+          sessions: yield* b.fixtureDevice!.sessionsForThread(child),
+          configuration: (yield* fs.exists(file)) ? yield* fs.readFileString(file) : null,
+        };
+      });
+    return { a, b, parent, child, route, open, footprint };
+  });
+
+it.live(
+  "typed383-core: registered two-peer loop preserves private binding, PNG bytes and exact historical receipts",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, child, route, open, footprint } =
+          yield* typed383Pair("typed383-core");
+        const discovery = yield* nativeCall(a, parent, "device_commands", route);
+        expect(discovery.isError, json(discovery)).not.toBe(true);
+        expect(discovery.structuredContent).toMatchObject({
+          protocol: 1,
+          agentDeviceVersion: AGENT_DEVICE_VERSION,
+          deviceHubVersion: DEVICE_HUB_VERSION,
+          commands: expect.arrayContaining([
+            "open",
+            "snapshot",
+            "click",
+            "fill",
+            "screenshot",
+            "close",
+          ]),
+        });
+        const opened = yield* open("typed383-open");
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { target, quickStart } = yield* decodeTyped383Open(opened.structuredContent);
+        expect(target).toMatchObject({
+          hostId: "local",
+          deviceId: "fixture-device382",
+          toolSessionId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        });
+        expect(quickStart).toContain("device_commands");
+        expect(quickStart).toContain("device_execute");
+        for (const privateValue of [
+          "agentDevice",
+          "--config",
+          "ISOLATED_DEVICE_TOKEN_382",
+          b.config.stateDir,
+        ])
+          expect(json(opened.structuredContent)).not.toContain(privateValue);
+        const drive = (key: string, command: unknown) =>
+          nativeCall(a, parent, "device_execute", {
+            ...route,
+            target,
+            command,
+            clientRequestId: key,
+          });
+        expect(
+          (yield* drive("typed383-app", { type: "open", app: "com.example.app" }))
+            .structuredContent,
+        ).toEqual({ type: "action", target, status: "dispatched" });
+        const tree = yield* drive("typed383-tree", {
+          type: "snapshot",
+          interactiveOnly: true,
+          depth: 8,
+        });
+        expect(tree.structuredContent).toEqual({
+          type: "snapshot",
+          target,
+          nodes: [{ index: 1, ref: "e1", role: "button", label: "Continue" }],
+          truncated: false,
+        });
+        expect((yield* drive("typed383-click", { type: "click", ref: "@e1" })).isError).not.toBe(
+          true,
+        );
+        expect(
+          (yield* drive("typed383-fill", { type: "fill", ref: "@e1", text: "--config /evil\n" }))
+            .isError,
+        ).not.toBe(true);
+        const fs = yield* FileSystem.FileSystem;
+        const sessions = new Set<string>();
+        for (const call of b.deviceProcessCalls) {
+          expect(call.command).not.toBe("/remote-host/node-must-never-execute");
+          expect(call.args[0]).toBe(
+            `${b.config.baseDir}/tools/agent-device/${AGENT_DEVICE_VERSION}/node_modules/agent-device/bin/agent-device.mjs`,
+          );
+          const separator = call.args.indexOf("--");
+          expect(separator).toBeGreaterThan(1);
+          const flags = call.args.slice(0, separator);
+          for (const flag of ["--json", "--platform", "--serial", "--config", "--session"])
+            expect(flags).toContain(flag);
+          expect(flags[flags.indexOf("--platform") + 1]).toBe("android");
+          expect(flags[flags.indexOf("--serial") + 1]).toBe("fixture-device382");
+          const config = flags[flags.indexOf("--config") + 1]!;
+          expect(config).toBe(`${b.config.stateDir}/device/sessions/${target.toolSessionId}.json`);
+          expect(yield* fs.readFileString(config)).toContain("ISOLATED_DEVICE_TOKEN_382");
+          sessions.add(flags[flags.indexOf("--session") + 1]!);
+          if (call.args[1] === "fill") {
+            expect(call.stdin).toBe("--config /evil\n\r\n");
+            expect(call.args.slice(separator + 1)).toEqual(["@e1"]);
+          }
+        }
+        expect(sessions.size).toBe(1);
+        const pngInput = {
+          ...route,
+          target,
+          command: { type: "screenshot" },
+          clientRequestId: "typed383-png",
+        };
+        yield* Ref.set(a.dropCommittedToolReply, "device_execute");
+        const lost = yield* nativeCall(a, parent, "device_execute", pngInput);
+        expect(lost.isError).toBe(true);
+        expect(json(lost)).toContain("Isolated committed tool reply loss");
+        const beforeReplay = yield* footprint();
+        const rebuilt = { ...b, ...(yield* b.restartSchedulerTransport) };
+        yield* Context.get(
+          a.database,
+          SqlClient.SqlClient,
+        )`UPDATE peer_environment_links SET urls_json=${json([rebuilt.url])} WHERE environment_id=${b.environmentId}`;
+        const image = yield* nativeCall(a, parent, "device_execute", pngInput);
+        expect(image.isError, json(image)).not.toBe(true);
+        const { artifact } = yield* decodeTyped383Artifact(image.structuredContent);
+        const png = Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==",
+          "base64",
+        );
+        const digest = yield* typed383Digest(png);
+        expect(artifact).toMatchObject({
+          environmentId: b.environmentId,
+          mimeType: "image/png",
+          sizeBytes: png.length,
+          digest,
+        });
+        const file = resolveAttachmentPathById({
+          attachmentsDir: b.config.attachmentsDir,
+          attachmentId: artifact.attachmentId,
+        });
+        expect(file).not.toBeNull();
+        expect(Array.from(yield* fs.readFile(file!))).toEqual(Array.from(png));
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const rows = yield* sql<{
+          owner: string;
+          digest: string;
+          expected_digest: string;
+          manifest: string;
+        }>`SELECT owner,digest,expected_digest,manifest FROM attachment_staging WHERE id=${artifact.attachmentId}`;
+        expect(rows).toMatchObject([{ owner: artifact.owner, digest, expected_digest: digest }]);
+        expect(rows[0]!.manifest).toContain("image/png");
+        expect(rows[0]!.manifest).toContain(String(png.length));
+        expect(
+          (yield* nativeCall(a, parent, "device_execute", pngInput)).structuredContent,
+        ).toEqual(image.structuredContent);
+        expect(yield* footprint()).toEqual(beforeReplay);
+        expect(yield* Ref.get(b.deviceScreenshotCalls)).toBe(1);
+        expect(json(yield* sql`SELECT * FROM mcp_request_receipts`)).not.toContain(
+          "ISOLATED_DEVICE_TOKEN_382",
+        );
+        const close = {
+          ...route,
+          target,
+          command: { type: "close" },
+          clientRequestId: "typed383-close",
+        };
+        const closed = yield* nativeCall(a, parent, "device_execute", close);
+        expect(closed.structuredContent).toEqual({ type: "closed", target });
+        expect(yield* b.fixtureDevice!.sessionsForThread(child)).toHaveLength(0);
+        const reopened = yield* decodeTyped383Open(
+          (yield* open("typed383-reopen")).structuredContent,
+        );
+        expect(reopened.target.toolSessionId).not.toBe(target.toolSessionId);
+        const stable = yield* footprint();
+        expect((yield* nativeCall(a, parent, "device_execute", close)).structuredContent).toEqual(
+          closed.structuredContent,
+        );
+        expect((yield* drive("typed383-stale", { type: "click", ref: "@e1" })).isError).toBe(true);
+        expect(yield* footprint()).toEqual(stable);
+        expect((yield* b.fixtureDevice!.sessionsForThread(child))[0]?.toolSessionId).toBe(
+          reopened.target.toolSessionId,
+        );
+        const fresh = yield* nativeCall(a, parent, "device_execute", {
+          ...route,
+          target: reopened.target,
+          command: { type: "click", ref: "@e1" },
+          clientRequestId: "typed383-reopened-click",
+        });
+        expect(fresh.isError, json(fresh)).not.toBe(true);
+        const last = b.deviceProcessCalls.at(-1)!;
+        expect(last.args[last.args.indexOf("--session") + 1]).not.toBe([...sessions][0]);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+const decodeTyped383Example = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+);
+it.live(
+  "typed383-guidance: an A-only caller executes the returned snapshot example unchanged",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, open } = yield* typed383Pair("typed383-guidance");
+        const opened = yield* open("typed383-guidance-open");
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { target, quickStart } = yield* decodeTyped383Open(opened.structuredContent);
+        const discoveryExample = quickStart
+          .split("\n")
+          .find((line) => line.startsWith("device_commands "));
+        expect(discoveryExample).toBeDefined();
+        const discoveryArgs = yield* decodeTyped383Example(
+          discoveryExample!.slice("device_commands ".length),
+        );
+        const discovery = yield* nativeCall(a, parent, "device_commands", discoveryArgs);
+        expect(discovery.isError, json(discovery)).not.toBe(true);
+        expect(discovery.structuredContent).toMatchObject({ protocol: 1, hostId: "local" });
+        const example = quickStart
+          .split("\n")
+          .find((line) => line.startsWith("device_execute ") && line.includes('"type":"snapshot"'));
+        expect(example).toBeDefined();
+        const args = yield* decodeTyped383Example(example!.slice("device_execute ".length));
+        // No caller-supplied routing repair: follow the exact returned public example on A.
+        const result = yield* nativeCall(a, parent, "device_execute", args);
+        expect(result.isError, json(result)).not.toBe(true);
+        expect(result.structuredContent).toEqual({
+          type: "snapshot",
+          target,
+          nodes: [{ index: 1, ref: "e1", role: "button", label: "Continue" }],
+          truncated: false,
+        });
+        expect(b.deviceProcessCalls.filter((call) => call.args.includes("snapshot"))).toHaveLength(
+          1,
+        );
+        yield* assertTyped383SourceIdle(a);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  60_000,
+);
+
+it.live.each(["device_open", "device_execute"] as const)(
+  "typed383-preflight: %s rechecks the original grant after host inspection before replay or fresh effects",
+  (operation) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, route, open, footprint } = yield* typed383Pair(
+          `typed383-${operation}-preflight`,
+        );
+        const opened = yield* open("preflight-opening");
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { target } = yield* decodeTyped383Open(opened.structuredContent);
+        const invoke = (key: string) =>
+          operation === "device_open"
+            ? open(key)
+            : nativeCall(a, parent, "device_execute", {
+                ...route,
+                target,
+                command: { type: "snapshot" },
+                clientRequestId: key,
+              });
+        const key = operation === "device_open" ? "preflight-opening" : "preflight-snapshot";
+        const completed = yield* invoke(key);
+        expect(completed.isError, json(completed)).not.toBe(true);
+        const grant = (yield* b.authority.grants)[0]!;
+        const armed = yield* Ref.make(false);
+        yield* Ref.set(
+          b.deviceSummaryHook,
+          Effect.gen(function* () {
+            if ((yield* RequestReceipts.CurrentOperation)?.tool !== operation) return;
+            if (!(yield* Ref.getAndSet(armed, false))) return;
+            // External host inspection completes only after the real grant changes.
+            yield* b.authority.setGrant({ ...grant, device: false }).pipe(Effect.orDie);
+          }),
+        );
+        for (const nextKey of [key, `${key}-fresh`]) {
+          const before = yield* footprint();
+          yield* Ref.set(armed, true);
+          const denied = yield* invoke(nextKey);
+          expect(denied.isError, json(denied)).toBe(true);
+          expect(yield* Ref.get(armed)).toBe(false);
+          expect(yield* footprint()).toEqual(before);
+          yield* b.authority.setGrant({ ...grant, device: true });
+          expect((yield* invoke(key)).structuredContent).toEqual(completed.structuredContent);
+          expect(yield* footprint()).toEqual(before);
+        }
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "typed383-core: pure consent retries while actual config persistence remains unknown across transport reconstruction",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, route, open, footprint } = yield* typed383Pair("typed383-consent");
+        yield* b.fixtureSettings.updateSettings({ enableAgentDeviceAccess: false });
+        const untouched = yield* footprint();
+        const denied = yield* open("typed383-consent-open");
+        expect(denied.isError).toBe(true);
+        expect(json(denied)).not.toContain("outcome_unknown");
+        expect(yield* footprint()).toEqual(untouched);
+        yield* b.fixtureSettings.updateSettings({ enableAgentDeviceAccess: true });
+        expect((yield* open("typed383-consent-open")).isError).not.toBe(true);
+        const target = (yield* decodeTyped383Open(
+          (yield* open("typed383-current-open")).structuredContent,
+        )).target;
+        const input = {
+          ...route,
+          target,
+          command: { type: "click", ref: "@e1" },
+          clientRequestId: "typed383-config-unknown",
+        };
+        const before = yield* footprint();
+        yield* Ref.set(b.loseDeviceConfiguration, true);
+        const unknown = yield* nativeCall(a, parent, "device_execute", input);
+        expect(unknown.isError).toBe(true);
+        expect(json(unknown)).toContain("outcome_unknown");
+        const accepted = yield* footprint();
+        expect(accepted.config).toBeGreaterThan(before.config);
+        expect(accepted.process).toBe(before.process);
+        expect(accepted.configuration).toContain("ISOLATED_DEVICE_TOKEN_382");
+        const rebuilt = { ...b, ...(yield* b.restartSchedulerTransport) };
+        yield* Context.get(
+          a.database,
+          SqlClient.SqlClient,
+        )`UPDATE peer_environment_links SET urls_json=${json([rebuilt.url])} WHERE environment_id=${b.environmentId}`;
+        expect(json(yield* nativeCall(a, parent, "device_execute", input))).toContain(
+          "outcome_unknown",
+        );
+        expect(yield* footprint()).toEqual(accepted);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "typed383-core: current actor mode contributor host device and generation deny before leaves on fresh and replay keys",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, route, open, footprint } = yield* typed383Pair("typed383-authority");
+        const target = (yield* decodeTyped383Open(
+          (yield* open("typed383-authority-open")).structuredContent,
+        )).target;
+        const input = {
+          ...route,
+          target,
+          command: { type: "click", ref: "@e1" },
+          clientRequestId: "typed383-authority-click",
+        };
+        expect((yield* nativeCall(a, parent, "device_execute", input)).isError).not.toBe(true);
+        const stable = yield* footprint();
+        const rival = ThreadId.make("typed383-rival");
+        yield* seedParent(a, rival);
+        for (const key of [input.clientRequestId, "typed383-rival-fresh"])
+          expect(
+            (yield* nativeCall(a, rival, "device_execute", { ...input, clientRequestId: key }))
+              .isError,
+          ).toBe(true);
+        for (const changed of [
+          { hostId: "foreign-host" },
+          { deviceId: "foreign-device" },
+          { toolSessionId: "00000000-0000-4000-8000-000000000000" },
+        ])
+          expect(
+            (yield* nativeCall(a, parent, "device_execute", {
+              ...input,
+              target: { ...target, ...changed },
+              clientRequestId: `typed383-target-${Object.keys(changed)[0]}`,
+            })).isError,
+          ).toBe(true);
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("typed383-plan"),
+          threadId: parent,
+          runtimeMode: "auto",
+        });
+        for (const key of [input.clientRequestId, "typed383-plan-fresh"])
+          expect(
+            (yield* nativeCall(a, parent, "device_execute", { ...input, clientRequestId: key }))
+              .isError,
+          ).toBe(true);
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("typed383-restore"),
+          threadId: parent,
+          runtimeMode: "full-access",
+        });
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.auth.revokeSession(grant.sessionId);
+        for (const key of [input.clientRequestId, "typed383-revoked-fresh"])
+          expect(
+            (yield* nativeCall(a, parent, "device_execute", { ...input, clientRequestId: key }))
+              .isError,
+          ).toBe(true);
+        expect(yield* footprint()).toEqual(stable);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "typed383-wait: original source mode changes while the native command lock is held deny queued effects",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const queued = yield* Deferred.make<void>();
+        let invocations = 0;
+        const tracer = Tracer.make({
+          span: (options) => {
+            if (options.name === "DeviceService.executeCommand" && ++invocations === 2)
+              Deferred.doneUnsafe(queued, Effect.void);
+            return Tracer.nativeTracer.span(options);
+          },
+        });
+        yield* Effect.gen(function* () {
+          const { a, b, parent, route, open, footprint } = yield* typed383Pair("typed383-lock");
+          const { target } = yield* decodeTyped383Open(
+            (yield* open("lock-open")).structuredContent,
+          );
+          const held = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          yield* Ref.set(b.deviceProcessHook, (call) =>
+            call.args[1] === "click"
+              ? Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(release)))
+              : Effect.void,
+          );
+          const first = yield* nativeCall(a, parent, "device_execute", {
+            ...route,
+            target,
+            command: { type: "click", ref: "@e1" },
+            clientRequestId: "lock-click",
+          }).pipe(Effect.forkChild);
+          yield* Deferred.await(held);
+          const input = {
+            ...route,
+            target,
+            command: { type: "fill", ref: "@e1", text: "queued" },
+            clientRequestId: "lock-fill",
+          };
+          const second = yield* nativeCall(a, parent, "device_execute", input).pipe(
+            Effect.forkChild,
+          );
+          // Observe the real service span BEFORE its actual semaphore acquisition.
+          // No semaphore, service, authority or policy method is mocked or injected.
+          yield* Deferred.await(queued);
+          const before = yield* footprint();
+          yield* a.threads.dispatch({
+            type: "thread.runtime-mode.set",
+            commandId: CommandId.make("lock-source-plan"),
+            threadId: parent,
+            runtimeMode: "auto",
+          });
+          yield* Deferred.succeed(release, undefined);
+          expect((yield* Fiber.join(first)).isError).not.toBe(true);
+          const denied = yield* Fiber.join(second);
+          expect(denied.isError, json(denied)).toBe(true);
+          expect(yield* footprint()).toEqual(before);
+          expect(b.deviceProcessCalls.filter((call) => call.args[1] === "fill")).toHaveLength(0);
+          yield* a.threads.dispatch({
+            type: "thread.runtime-mode.set",
+            commandId: CommandId.make("lock-source-restore"),
+            threadId: parent,
+            runtimeMode: "full-access",
+          });
+          expect((yield* nativeCall(a, parent, "device_execute", input)).isError).not.toBe(true);
+          expect(b.deviceProcessCalls.filter((call) => call.args[1] === "fill")).toHaveLength(1);
+        }).pipe(Effect.withTracer(tracer), Effect.withTracerEnabled(true));
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "typed383-media: native batch input media claims and reconstruction preserve exact bytes and caller ownership",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, route, open, footprint } = yield* typed383Pair("typed383-media");
+        const { target } = yield* decodeTyped383Open((yield* open("media-open")).structuredContent);
+        const drive = (key: string, command: unknown) =>
+          nativeCall(a, parent, "device_execute", {
+            ...route,
+            target,
+            command,
+            clientRequestId: key,
+          });
+        const batch = {
+          type: "batch",
+          steps: [
+            { type: "snapshot", interactiveOnly: true },
+            { type: "click", ref: "@e1" },
+            { type: "fill", ref: "@e1", text: "--session rival\n" },
+          ],
+        };
+        const first = yield* drive("media-loop", batch);
+        expect(first.isError, json(first)).not.toBe(true);
+        expect(first.structuredContent).toMatchObject({
+          type: "batch",
+          target,
+          results: [
+            { type: "snapshot", nodes: [{ ref: "e1" }] },
+            { status: "dispatched" },
+            { status: "dispatched" },
+          ],
+        });
+        const calls = b.deviceProcessCalls.length;
+        expect((yield* drive("media-loop", batch)).structuredContent).toEqual(
+          first.structuredContent,
+        );
+        expect(b.deviceProcessCalls).toHaveLength(calls);
+        const beforeInvalid = yield* footprint();
+        for (const steps of [
+          [
+            { type: "click", ref: "@e1" },
+            { type: "fill", ref: "@e1", text: "safe", daemonAuthToken: "borrowed" },
+          ],
+          [{ type: "batch", steps: [{ type: "click", ref: "@e1" }] }],
+        ]) {
+          const raw = yield* nativeInvalidParams(a, parent, "device_execute", {
+            ...route,
+            target,
+            command: { type: "batch", steps },
+            clientRequestId: "invalid-native-batch",
+          });
+          expect(raw).toMatchObject({ jsonrpc: "2.0", id: 1, error: { code: -32602 } });
+        }
+        expect(yield* footprint()).toEqual(beforeInvalid);
+        const fs = yield* FileSystem.FileSystem;
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        for (const type of ["record", "trace"] as const) {
+          expect((yield* drive(`${type}-start`, { type, action: "start" })).isError).not.toBe(true);
+          if (type === "record") {
+            yield* Ref.set(a.dropCommittedToolReply, "device_execute");
+            const lost = yield* drive(`${type}-stop`, { type, action: "stop" });
+            expect(lost.isError).toBe(true);
+            expect(json(lost)).toContain("Isolated committed tool reply loss");
+            const count = b.deviceProcessCalls.length;
+            const rebuilt = { ...b, ...(yield* b.restartSchedulerTransport) };
+            yield* Context.get(
+              a.database,
+              SqlClient.SqlClient,
+            )`UPDATE peer_environment_links SET urls_json=${json([rebuilt.url])} WHERE environment_id=${b.environmentId}`;
+            const replay = yield* drive(`${type}-stop`, { type, action: "stop" });
+            expect(replay.isError, json(replay)).not.toBe(true);
+            expect(b.deviceProcessCalls).toHaveLength(count);
+          }
+          const stopped = yield* drive(`${type}-stop`, { type, action: "stop" });
+          expect(stopped.isError, json(stopped)).not.toBe(true);
+          const result = yield* decodeTyped383Command(stopped.structuredContent);
+          if (result.type !== "artifacts") throw new Error("Expected native media references");
+          expect(result.recording).toEqual({
+            durationMs: 200,
+            capturedDurationMs: 150,
+            recorder: "unconfirmed",
+            nativePathDisposition: "pending",
+          });
+          const reference = result.artifacts[0]!;
+          const file = resolveAttachmentPathById({
+            attachmentsDir: b.config.attachmentsDir,
+            attachmentId: reference.attachmentId,
+          })!;
+          const bytes = yield* fs.readFile(file);
+          const expected =
+            type === "record"
+              ? new Uint8Array([
+                  0, 0, 0, 0, 0x66, 0x74, 0x79, 0x70, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                  0,
+                ])
+              : new TextEncoder().encode("trace [private runtime] [private runtime]");
+          expect(Array.from(bytes)).toEqual(Array.from(expected));
+          expect(reference).toMatchObject({
+            environmentId: b.environmentId,
+            digest: yield* typed383Digest(expected),
+            sizeBytes: expected.length,
+          });
+          const rows = yield* sql<{
+            digest: string;
+            expected_digest: string;
+            manifest: string;
+            consumer: string | null;
+          }>`SELECT digest,expected_digest,manifest,consumer FROM attachment_staging WHERE id=${reference.attachmentId}`;
+          expect(rows[0]).toMatchObject({
+            digest: reference.digest,
+            expected_digest: reference.digest,
+            consumer: null,
+          });
+          expect(JSON.parse(rows[0]!.manifest)).toMatchObject({
+            sizeBytes: expected.length,
+            name: reference.name,
+            mimeType: reference.mimeType,
+          });
+          expect(json(stopped)).not.toMatch(
+            /ISOLATED_DEVICE_TOKEN|device-agent382|outPath|localPath/,
+          );
+          const stable = yield* footprint();
+          expect(
+            (yield* drive(`${type}-stop`, { type, action: "stop" })).structuredContent,
+          ).toEqual(stopped.structuredContent);
+          expect((yield* drive(`${type}-fresh-stop`, { type, action: "stop" })).isError).toBe(true);
+          expect(yield* footprint()).toEqual(stable);
+        }
+        // Public upload + real native staging. The qualified reference is read from
+        // its existing owner using an observed, genuinely verified invocation.
+        const metadata = {
+          type: "file" as const,
+          name: "app.apk",
+          mimeType: "application/vnd.android.package-archive",
+          sizeBytes: 4,
+        };
+        const packageBytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
+        const digest = yield* typed383Digest(packageBytes);
+        const prepared = yield* nativeCall(a, parent, "t3_attachment_prepare_upload", {
+          ...route,
+          upload: metadata,
+          digest,
+          clientRequestId: "media-package-upload",
+        });
+        expect(prepared.isError, json(prepared)).not.toBe(true);
+        const issued = yield* decodeTyped383Upload(prepared.structuredContent);
+        const http = yield* HttpClient.HttpClient;
+        expect(
+          (yield* http.execute(
+            HttpClientRequest.post(`${b.url}${issued.relativeUrl}`).pipe(
+              HttpClientRequest.setBody(HttpBody.uint8Array(packageBytes)),
+            ),
+          )).status,
+        ).toBe(204);
+        const observed = Option.getOrThrow(yield* Ref.get(b.deviceObservedScope));
+        const staging = Option.getOrThrow(
+          yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging).pipe(
+            Effect.provide(Layer.succeedContext(b.requestContext)),
+          ),
+        );
+        const nativeReference = yield* staging.verify(observed, {
+          ...metadata,
+          id: issued.attachmentId,
+        });
+        const reference = nativeReference.reference;
+        const beforePackages = yield* footprint();
+        for (const [index, artifact] of [
+          { ...reference, environmentId: a.environmentId },
+          { ...reference, owner: "0".repeat(64) },
+          { ...reference, digest: "0".repeat(64) },
+          { ...reference, name: "borrowed.apk" },
+        ].entries())
+          expect(
+            (yield* drive(`package-denied-${index}`, {
+              type: "install",
+              artifact,
+              app: "com.example.app",
+            })).isError,
+          ).toBe(true);
+        expect(yield* footprint()).toEqual(beforePackages);
+        const command = { type: "install", artifact: reference, app: "com.example.app" };
+        const installed = yield* drive("package-install", command);
+        expect(installed.isError, json(installed)).not.toBe(true);
+        const leaf = b.deviceProcessCalls.at(-1)!;
+        expect(leaf.args.slice(leaf.args.indexOf("--") + 1)).toEqual([
+          "com.example.app",
+          nativeReference.path,
+        ]);
+        expect(json(installed)).not.toContain(nativeReference.path);
+        const afterInstall = yield* footprint();
+        expect((yield* drive("package-install", command)).structuredContent).toEqual(
+          installed.structuredContent,
+        );
+        yield* fs.writeFile(nativeReference.path, new Uint8Array([1, 2, 3, 4]));
+        expect((yield* drive("package-mutated", command)).isError).toBe(true);
+        expect(yield* footprint()).toEqual(afterInstall);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "typed383-media: producer escape and changed package bytes remain unknown without publication or repeated effects",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, route, open, footprint } =
+          yield* typed383Pair("typed383-media-denial");
+        const { target } = yield* decodeTyped383Open(
+          (yield* open("escape-open")).structuredContent,
+        );
+        const drive = (key: string, command: unknown) =>
+          nativeCall(a, parent, "device_execute", {
+            ...route,
+            target,
+            command,
+            clientRequestId: key,
+          });
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const beforeRows = yield* sql`SELECT * FROM attachment_staging`;
+        expect((yield* drive("escape-start", { type: "trace", action: "start" })).isError).not.toBe(
+          true,
+        );
+        yield* Ref.set(b.deviceMediaOutside, true);
+        const escaped = yield* drive("escape-stop", { type: "trace", action: "stop" });
+        expect(escaped.isError).toBe(true);
+        expect(json(escaped)).toContain("outcome_unknown");
+        expect(yield* sql`SELECT * FROM attachment_staging`).toEqual(beforeRows);
+        const afterEscape = yield* footprint();
+        yield* Ref.set(b.deviceMediaOutside, false);
+        expect(json(yield* drive("escape-stop", { type: "trace", action: "stop" }))).toContain(
+          "outcome_unknown",
+        );
+        expect(yield* footprint()).toEqual(afterEscape);
+        const fs = yield* FileSystem.FileSystem;
+        for (const file of b.deviceMediaPaths.values()) expect(yield* fs.exists(file)).toBe(true);
+        const metadata = {
+          type: "file" as const,
+          name: "app.apk",
+          mimeType: "application/vnd.android.package-archive",
+          sizeBytes: 4,
+        };
+        const bytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
+        const digest = yield* typed383Digest(bytes);
+        const prepared = yield* nativeCall(a, parent, "t3_attachment_prepare_upload", {
+          ...route,
+          upload: metadata,
+          digest,
+          clientRequestId: "race-package-upload",
+        });
+        expect(prepared.isError, json(prepared)).not.toBe(true);
+        const issued = yield* decodeTyped383Upload(prepared.structuredContent);
+        const http = yield* HttpClient.HttpClient;
+        expect(
+          (yield* http.execute(
+            HttpClientRequest.post(`${b.url}${issued.relativeUrl}`).pipe(
+              HttpClientRequest.setBody(HttpBody.uint8Array(bytes)),
+            ),
+          )).status,
+        ).toBe(204);
+        const scope = Option.getOrThrow(yield* Ref.get(b.deviceObservedScope));
+        const staging = Option.getOrThrow(
+          yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging).pipe(
+            Effect.provide(Layer.succeedContext(b.requestContext)),
+          ),
+        );
+        const verified = yield* staging.verify(scope, { ...metadata, id: issued.attachmentId });
+        const input = { type: "install", app: "com.example.app", artifact: verified.reference };
+        yield* Ref.set(b.deviceProcessHook, (call) =>
+          call.args[1] === "capabilities"
+            ? fs.writeFile(verified.path, new Uint8Array([4, 3, 2, 1])).pipe(Effect.orDie)
+            : Effect.void,
+        );
+        const changed = yield* drive("race-package-install", input);
+        expect(changed.isError).toBe(true);
+        expect(json(changed)).toContain("outcome_unknown");
+        expect(b.deviceProcessCalls.filter((call) => call.args[1] === "install")).toHaveLength(0);
+        const afterChange = yield* footprint();
+        yield* fs.writeFile(verified.path, bytes);
+        yield* Ref.set(b.deviceProcessHook, () => Effect.void);
+        expect(json(yield* drive("race-package-install", input))).toContain("outcome_unknown");
+        expect(yield* footprint()).toEqual(afterChange);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "typed383-negotiation: requests-v1 with actual old device domain refuses before destination preparation",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { open, footprint } = yield* typed383Pair("typed383-legacy-domain", true);
+        const untouched = yield* footprint();
+        const response = yield* open("legacy-domain-open");
+        expect(response.isError, json(response)).toBe(true);
+        expect(json(response)).not.toContain("--config");
+        expect(json(response)).not.toContain("agent-device.mjs");
+        expect(yield* footprint()).toEqual(untouched);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "typed383-effects: native grant retirement after click prevents fill and uncertain replay never repeats work",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, route, open } = yield* typed383Pair("typed383-retire");
+        const opened = yield* open("retire-open");
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { target } = yield* decodeTyped383Target(opened.structuredContent);
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* Ref.set(b.deviceProcessHook, (call) =>
+          call.args[1] === "click"
+            ? b.authority.setGrant({ ...grant, device: false }).pipe(Effect.asVoid, Effect.orDie)
+            : Effect.void,
+        );
+        const input = {
+          ...route,
+          target,
+          command: {
+            type: "batch",
+            steps: [
+              { type: "click", ref: "@e1" },
+              { type: "fill", ref: "@e1", text: "must never dispatch" },
+            ],
+          },
+          clientRequestId: "retire-batch",
+        };
+        const failed = yield* nativeCall(a, parent, "device_execute", input);
+        expect(failed.isError, json(failed)).toBe(true);
+        expect(json(failed)).toContain("outcome_unknown");
+        expect(b.deviceProcessCalls.filter((call) => call.args[1] === "click")).toHaveLength(1);
+        expect(b.deviceProcessCalls.filter((call) => call.args[1] === "fill")).toHaveLength(0);
+        yield* b.authority.setGrant({ ...grant, device: true });
+        yield* Ref.set(b.deviceProcessHook, () => Effect.void);
+        const before = b.deviceProcessCalls.length;
+        const replay = yield* nativeCall(a, parent, "device_execute", input);
+        expect(replay.isError, json(replay)).toBe(true);
+        expect(json(replay)).toContain("outcome_unknown");
+        expect(b.deviceProcessCalls).toHaveLength(before);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "typed383-source-policy: actual originating project policy retirement prevents the next batch effect",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, route, open } = yield* typed383Pair(
+          "typed383-source-policy",
+          false,
+          true,
+        );
+        const opened = yield* open("source-policy-open");
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { target } = yield* decodeTyped383Open(opened.structuredContent);
+        const original = yield* a.fixtureSettings.getSettings;
+        yield* Ref.set(b.deviceProcessHook, (call) =>
+          call.args[1] === "click"
+            ? a.fixtureSettings
+                .updateSettings({
+                  projectSettingsOverrides: {
+                    ...original.projectSettingsOverrides,
+                    [a.project.id]: { enableAgentDeviceAccess: false },
+                  },
+                })
+                .pipe(Effect.asVoid, Effect.orDie)
+            : Effect.void,
+        );
+        const input = {
+          ...route,
+          target,
+          clientRequestId: "source-policy-batch",
+          command: {
+            type: "batch",
+            steps: [
+              { type: "click", ref: "@e1" },
+              { type: "fill", ref: "@e1", text: "must not dispatch" },
+            ],
+          },
+        };
+        const denied = yield* nativeCall(a, parent, "device_execute", input);
+        expect(denied.isError, json(denied)).toBe(true);
+        expect(json(denied)).toContain("outcome_unknown");
+        expect(b.deviceProcessCalls.filter((call) => call.args[1] === "click")).toHaveLength(1);
+        expect(b.deviceProcessCalls.filter((call) => call.args[1] === "fill")).toHaveLength(0);
+        expect(
+          (yield* a.fixtureSettings.getSettings).projectSettingsOverrides[a.project.id],
+        ).toMatchObject({ enableAgentDeviceAccess: false });
+        yield* a.fixtureSettings.updateSettings({
+          projectSettingsOverrides: original.projectSettingsOverrides,
+        });
+        yield* Ref.set(b.deviceProcessHook, () => Effect.void);
+        const before = b.deviceProcessCalls.length;
+        const replay = yield* nativeCall(a, parent, "device_execute", input);
+        expect(replay.isError, json(replay)).toBe(true);
+        expect(json(replay)).toContain("outcome_unknown");
+        expect(b.deviceProcessCalls).toHaveLength(before);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "typed383-core: wrong installed runtime or missing pin refuses without preparation",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, route, open, footprint } = yield* typed383Pair("typed383-version");
+        const target = (yield* decodeTyped383Open(
+          (yield* open("typed383-version-open")).structuredContent,
+        )).target;
+        const stable = yield* footprint();
+        yield* Ref.set(b.deviceOldVersion, true);
+        expect((yield* nativeCall(a, parent, "device_commands", route)).isError).toBe(true);
+        expect(
+          (yield* nativeCall(a, parent, "device_execute", {
+            ...route,
+            target,
+            command: { type: "click", ref: "@e1" },
+            clientRequestId: "typed383-old-version",
+          })).isError,
+        ).toBe(true);
+        expect(yield* footprint()).toEqual(stable);
+        yield* Ref.set(b.deviceOldVersion, false);
+        const fs = yield* FileSystem.FileSystem;
+        const sentinel = `${b.config.baseDir}/tools/agent-device/${AGENT_DEVICE_VERSION}/.install-complete`;
+        yield* fs.remove(sentinel);
+        expect((yield* nativeCall(a, parent, "device_commands", route)).isError).toBe(true);
+        expect((yield* open("typed383-missing-pin")).isError).toBe(true);
+        expect(yield* footprint()).toEqual(stable);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "typed383-core: closed inputs and actual capabilities cannot redirect or dispatch an unsupported action",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, route, open, footprint } = yield* typed383Pair("typed383-boundary");
+        const target = (yield* decodeTyped383Open(
+          (yield* open("typed383-boundary-open")).structuredContent,
+        )).target;
+        const input = {
+          ...route,
+          target,
+          command: { type: "click", ref: "@e1" },
+          clientRequestId: "typed383-invalid",
+        };
+        const stable = yield* footprint();
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const receipts = yield* sql`SELECT id,state FROM mcp_request_receipts ORDER BY id`;
+        for (const command of [
+          { type: "click", ref: "@e1", config: "/evil" },
+          { type: "fill", ref: "@e1", text: "x", session: "evil" },
+          { type: "snapshot", argv: ["--config", "/evil"] },
+          { type: "click", x: NaN, y: Infinity },
+          { type: "close", token: "evil" },
+        ]) {
+          expect(
+            (yield* nativeInvalidParams(a, parent, "device_execute", { ...input, command })).error
+              .code,
+          ).toBe(-32602);
+        }
+        for (const extra of [
+          { session: "evil" },
+          { config: "/evil" },
+          { token: "evil" },
+          { argv: [] },
+          { daemon: true },
+        ])
+          expect(
+            (yield* nativeInvalidParams(a, parent, "device_execute", { ...input, ...extra })).error
+              .code,
+          ).toBe(-32602);
+        expect(yield* footprint()).toEqual(stable);
+        expect(yield* sql`SELECT id,state FROM mcp_request_receipts ORDER BY id`).toEqual(receipts);
+        const supported = yield* Ref.get(b.deviceCapabilities);
+        for (const [index, device] of [
+          { ...supported.device, id: "rival" },
+          { ...supported.device, platform: "ios" },
+          { ...supported.device, kind: "physical" },
+        ].entries()) {
+          yield* Ref.set(b.deviceCapabilities, { ...supported, device });
+          const before = b.deviceProcessCalls.filter((call) => call.args[1] === "click").length;
+          expect(
+            (yield* nativeCall(a, parent, "device_execute", {
+              ...input,
+              clientRequestId: `typed383-capability-${index}`,
+            })).isError,
+          ).toBe(true);
+          expect(b.deviceProcessCalls.filter((call) => call.args[1] === "click")).toHaveLength(
+            before,
+          );
+        }
+        yield* Ref.set(b.deviceCapabilities, { ...supported, availableCommands: ["snapshot"] });
+        const before = b.deviceProcessCalls.filter((call) => call.args[1] === "click").length;
+        expect(
+          (yield* nativeCall(a, parent, "device_execute", {
+            ...input,
+            clientRequestId: "typed383-missing-command",
+          })).isError,
+        ).toBe(true);
+        expect(b.deviceProcessCalls.filter((call) => call.args[1] === "click")).toHaveLength(
+          before,
+        );
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "typed383-core: an old peer without durable requests cannot fall back to a destination launcher",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf("typed383-old-a", "A", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true, deviceOwner: true },
+        );
+        yield* Effect.addFinalizer(() => assertTyped383SourceIdle(a));
+        const b = yield* makeNode(
+          descriptorOf("typed383-old-b", "B", { peerAuthority: 1 }),
+          "disk",
+          {
+            productionKernel: true,
+            attachmentRequests: true,
+            preferencesOwner: true,
+            deviceOwner: true,
+          },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("typed383-old-parent");
+        yield* seedParent(a, parent);
+        const launch = yield* nativeCall(a, parent, "t3_thread_launch", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          title: "Old peer",
+          message: "Wait",
+          modelSelection: selection,
+        });
+        expect(launch.isError, json(launch)).not.toBe(true);
+        const child = (yield* decodeLaunchReceipt(launch.structuredContent)).threadId;
+        yield* activate(b, child);
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, device: true });
+        const sessions = yield* b.fixtureDevice!.sessionsForThread(child);
+        // Launch and pair were accepted by the modern owner. Reconstruct the actual
+        // same-database transport without request/staging owners before the device call.
+        // No auth/session/grant/pair is fabricated or weakened.
+        const old = { ...b, ...(yield* b.restartWithoutRequestsTransport) };
+        yield* Context.get(
+          a.database,
+          SqlClient.SqlClient,
+        )`UPDATE peer_environment_links SET urls_json=${json([old.url])} WHERE environment_id=${b.environmentId}`;
+        const unsupported = yield* Context.get(a.services, PeerMcpClient.PeerMcpClient)
+          .requireRequestProtocol!(b.environmentId).pipe(Effect.result);
+        expect(unsupported._tag).toBe("Failure");
+        const result = yield* nativeCall(a, parent, "device_open", {
+          environmentId: b.environmentId,
+          contextThreadId: child,
+          deviceId: "fixture-device382",
+          platform: "android",
+          clientRequestId: "typed383-old-peer-open",
+        });
+        expect(result.isError, json(result)).toBe(true);
+        expect(yield* Ref.get(b.deviceHostStarts)).toBe(0);
+        expect(yield* Ref.get(b.deviceAgentStarts)).toBe(0);
+        expect(yield* Ref.get(b.deviceConfigurations)).toBe(0);
+        expect(b.deviceProcessCalls).toHaveLength(0);
+        expect(yield* b.fixtureDevice!.sessionsForThread(child)).toEqual(sessions);
+        expect(json(result)).not.toContain("agent-device.mjs");
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "typed383-core: actual unlink and replacement grant fence old openings while a lawful new child can open",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, child, route, open, footprint } =
+          yield* typed383Pair("typed383-generation");
+        const oldTarget = (yield* decodeTyped383Open(
+          (yield* open("typed383-generation-open")).structuredContent,
+        )).target;
+        const original = {
+          ...route,
+          target: oldTarget,
+          command: { type: "click", ref: "@e1" },
+          clientRequestId: "typed383-generation-click",
+        };
+        expect((yield* nativeCall(a, parent, "device_execute", original)).isError).not.toBe(true);
+        const oldLink = yield* a.links.resolve(b.environmentId);
+        const oldGrant = (yield* b.authority.grants)[0]!;
+        const before = yield* footprint();
+        yield* a.links.unlink(b.environmentId);
+        yield* linkTo(a.links, b, "full-access");
+        const currentLink = yield* a.links.resolve(b.environmentId);
+        expect(currentLink.link.launchIdentity).not.toBe(oldLink.link.launchIdentity);
+        const enrolled = yield* nativeCall(a, parent, "t3_project_list", {
+          environmentId: b.environmentId,
+        });
+        expect(enrolled.isError, json(enrolled)).not.toBe(true);
+        const replacementGrant = (yield* b.authority.grants).find(
+          (grant) => grant.sessionId !== oldGrant.sessionId,
+        );
+        if (replacementGrant === undefined)
+          return yield* Effect.die("Expected a real newly paired grant");
+        yield* b.authority.setGrant({ ...replacementGrant, device: true });
+        // The old exact context and old completed action must fail under current link authority.
+        for (const key of [original.clientRequestId, "typed383-generation-old-fresh"])
+          expect(
+            (yield* nativeCall(a, parent, "device_execute", { ...original, clientRequestId: key }))
+              .isError,
+          ).toBe(true);
+        expect(yield* footprint()).toEqual(before);
+        const launch = yield* nativeCall(a, parent, "t3_thread_launch", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          title: "Replacement generation",
+          message: "Wait",
+          modelSelection: selection,
+          clientRequestId: "typed383-generation-child-new",
+        });
+        expect(launch.isError, json(launch)).not.toBe(true);
+        const newChild = (yield* decodeLaunchReceipt(launch.structuredContent)).threadId;
+        expect(newChild).not.toBe(child);
+        yield* activate(b, newChild);
+        const replacementRoute = { environmentId: b.environmentId, contextThreadId: newChild };
+        // A current lawful context cannot claim the old opening, even with the old key.
+        for (const key of [original.clientRequestId, "typed383-generation-new-context-old-target"])
+          expect(
+            (yield* nativeCall(a, parent, "device_execute", {
+              ...original,
+              ...replacementRoute,
+              clientRequestId: key,
+            })).isError,
+          ).toBe(true);
+        expect(yield* footprint()).toEqual(before);
+        expect(yield* b.fixtureDevice!.sessionsForThread(newChild)).toHaveLength(0);
+        const opened = yield* nativeCall(a, parent, "device_open", {
+          ...replacementRoute,
+          deviceId: "fixture-device382",
+          platform: "android",
+          clientRequestId: "typed383-generation-legitimate-open",
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const target = (yield* decodeTyped383Open(opened.structuredContent)).target;
+        expect(target.toolSessionId).not.toBe(oldTarget.toolSessionId);
+        const action = yield* nativeCall(a, parent, "device_execute", {
+          ...replacementRoute,
+          target,
+          command: { type: "click", ref: "@e1" },
+          clientRequestId: "typed383-generation-legitimate-click",
+        });
+        expect(action.structuredContent).toEqual({ type: "action", target, status: "dispatched" });
+        expect(b.deviceProcessCalls.filter((call) => call.args[1] === "click")).toHaveLength(2);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
   30_000,
@@ -3653,7 +5076,7 @@ const decodeCreatedThreads = Schema.decodeUnknownEffect(
 const decodeLaunchReceipt = Schema.decodeUnknownEffect(
   ProjectToolkit.tools.t3_thread_launch.successSchema,
 );
-const nativeCall = (
+const nativeRpcCall = (
   node: Node,
   threadId: ThreadId,
   tool: string,
@@ -3708,8 +5131,31 @@ const nativeCall = (
       sessionId,
     );
     const text = yield* result.text;
-    return (yield* sendResult(text.startsWith("data:") ? text.slice(5).trim() : text)).result;
+    return text.startsWith("data:") ? text.slice(5).trim() : text;
   }).pipe(Effect.provide(FetchHttpClient.layer));
+// Positive callers retain their original success-result decoder and fail on RPC errors.
+const nativeCall = (...input: Parameters<typeof nativeRpcCall>) =>
+  nativeRpcCall(...input).pipe(
+    Effect.flatMap(sendResult),
+    Effect.map((reply) => reply.result),
+  );
+const decodeNativeInvalidParams = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      jsonrpc: Schema.Literal("2.0"),
+      id: Schema.Literal(1),
+      error: Schema.Struct({
+        code: Schema.Literal(-32602),
+        message: Schema.String,
+        data: Schema.optionalKey(Schema.Unknown),
+      }),
+    }),
+  ),
+);
+// This observer accepts only the actual InvalidParams wire variant. It neither
+// invents a tool result nor maps another transport/parser error into a refusal.
+const nativeInvalidParams = (...input: Parameters<typeof nativeRpcCall>) =>
+  nativeRpcCall(...input).pipe(Effect.flatMap(decodeNativeInvalidParams));
 const decodeSend = Schema.decodeUnknownEffect(
   OrchestratorToolkit.tools.t3_thread_send.successSchema,
 );
@@ -12535,4 +13981,234 @@ it.live(
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   30000,
+);
+
+it.live(
+  "review383-read-capture: readonly capture rechecks after external readiness",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, route, open } = yield* typed383Pair("review383-read-capture");
+        const opened = yield* open("read-capture-open");
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { target } = yield* decodeTyped383Open(opened.structuredContent);
+        const held = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        yield* Ref.set(b.deviceProcessHook, (call) =>
+          call.args[1] === "click"
+            ? Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(release)))
+            : Effect.void,
+        );
+        const running = yield* nativeCall(a, parent, "device_execute", {
+          ...route,
+          target,
+          command: { type: "click", ref: "@e1" },
+          clientRequestId: "held-click",
+        }).pipe(Effect.forkChild);
+        yield* Deferred.await(held);
+        yield* Effect.gen(function* () {
+          const input = { ...route, hostId: "local", deviceId: "fixture-device382" };
+          const lawful = yield* nativeCall(a, parent, "device_screenshot", input);
+          expect(lawful.isError, json(lawful)).not.toBe(true);
+          const before = yield* Ref.get(b.deviceScreenshotCalls);
+          const grant = (yield* b.authority.grants)[0]!;
+          const armed = yield* Ref.make(true);
+          yield* Ref.set(
+            b.deviceReadinessHook,
+            Effect.gen(function* () {
+              if (!(yield* Ref.getAndSet(armed, false))) return;
+              yield* b.authority.setGrant({ ...grant, device: false }).pipe(Effect.orDie);
+            }),
+          );
+          const revoked = yield* nativeCall(a, parent, "device_screenshot", input);
+          expect(yield* Ref.get(armed)).toBe(false);
+          expect((yield* b.authority.grants)[0]!.device).toBe(false);
+          expect(revoked.isError, "revoked read must deny before capture").toBe(true);
+          expect(yield* Ref.get(b.deviceScreenshotCalls)).toBe(before);
+        }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
+        yield* Fiber.join(running);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "review383-local-auto: keyed local opening preserves existing capability policy",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const n = yield* makeNode(
+          descriptorOf("review383-local", "local", { peerAuthority: 1 }),
+          "disk",
+          {
+            productionKernel: true,
+            attachmentRequests: true,
+            preferencesOwner: true,
+            deviceOwner: true,
+          },
+        );
+        const parent = ThreadId.make("review383-local-parent");
+        yield* seedParent(n, parent);
+        const args = { deviceId: "fixture-device382", platform: "android" };
+        const full = yield* nativeCall(n, parent, "device_open", {
+          ...args,
+          clientRequestId: "full",
+        });
+        expect(full.isError, json(full)).not.toBe(true);
+        yield* n.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("review383-auto"),
+          threadId: parent,
+          runtimeMode: "auto",
+        });
+        const keyed = yield* nativeCall(n, parent, "device_open", {
+          ...args,
+          clientRequestId: "auto",
+        });
+        expect(keyed.isError, json(keyed)).not.toBe(true);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "typed383-literals: registered empty/CR fill and app deep link preserve exact bound intent",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, route, open, footprint } = yield* typed383Pair("typed383-literals");
+        const opened = yield* open("literal-open");
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { target } = yield* decodeTyped383Open(opened.structuredContent);
+        const texts = [
+          "",
+          "abc\r",
+          "\n",
+          "\r\n",
+          "first\nsecond",
+          "--config /rival",
+          '"quoted" Ω🦊',
+        ];
+        for (const [index, text] of texts.entries()) {
+          const input = {
+            ...route,
+            target,
+            command: { type: "fill", ref: "@e1", text },
+            clientRequestId: `literal-${index}`,
+          };
+          const reply = yield* nativeCall(a, parent, "device_execute", input);
+          expect(reply.structuredContent).toEqual({ type: "action", target, status: "dispatched" });
+          const call = b.deviceProcessCalls.at(-1)!;
+          expect(call.args[1]).toBe("fill");
+          const args = call.args.slice(call.args.indexOf("--") + 1);
+          expect(args).toEqual(text === "" ? ["@e1", ""] : ["@e1"]);
+          expect(call.stdin).toBe(text === "" ? undefined : text + "\r\n");
+          const beforeReplay = yield* footprint();
+          expect((yield* nativeCall(a, parent, "device_execute", input)).structuredContent).toEqual(
+            reply.structuredContent,
+          );
+          expect(yield* footprint()).toEqual(beforeReplay);
+        }
+        const command = { type: "open", app: "com.example.app", url: "example://settings?tab=one" };
+        const input = { ...route, target, command, clientRequestId: "deep-link" };
+        expect((yield* nativeCall(a, parent, "device_execute", input)).structuredContent).toEqual({
+          type: "action",
+          target,
+          status: "dispatched",
+        });
+        const call = b.deviceProcessCalls.at(-1)!;
+        expect(call.args[1]).toBe("open");
+        expect(call.args.slice(call.args.indexOf("--") + 1)).toEqual([command.app, command.url]);
+        const beforeInvalid = yield* footprint();
+        for (const url of ["--config", "example://bad\nlink", "x:" + "a".repeat(8192)])
+          expect(
+            (yield* nativeInvalidParams(a, parent, "device_execute", {
+              ...input,
+              command: { ...command, url },
+            })).error.code,
+          ).toBe(-32602);
+        expect(yield* footprint()).toEqual(beforeInvalid);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live.each(["android", "ios"] as const)(
+  "typed383-shutdown: %s readiness-time grant retirement denies shutdown outside stopped-device recovery",
+  (platform) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, route } = yield* typed383Pair(`typed383-shutdown-${platform}`);
+        yield* Ref.set(b.deviceHubPlatform, platform);
+        yield* Ref.update(b.deviceCapabilities, (c) => ({
+          ...c,
+          device: { ...c.device, platform, kind: platform === "ios" ? "simulator" : "emulator" },
+        }));
+        const open = (key: string) =>
+          nativeCall(a, parent, "device_open", {
+            ...route,
+            deviceId: "fixture-device382",
+            platform,
+            clientRequestId: key,
+          });
+        const close = (key: string) =>
+          nativeCall(a, parent, "device_close", {
+            ...route,
+            hostId: "local",
+            deviceId: "fixture-device382",
+            shutdown: true,
+            clientRequestId: key,
+          });
+        const firstOpen = yield* open("lawful-open");
+        expect(firstOpen.isError, json(firstOpen)).not.toBe(true);
+        const lawful = yield* close("lawful-close");
+        expect(lawful.isError, json(lawful)).not.toBe(true);
+        expect(yield* Ref.get(b.deviceShutdownCalls)).toBe(1);
+        const nextOpen = yield* open("revoked-open");
+        expect(nextOpen.isError, json(nextOpen)).not.toBe(true);
+        const grant = (yield* b.authority.grants)[0]!;
+        const armed = yield* Ref.make(true);
+        yield* Ref.set(
+          b.deviceReadinessHook,
+          Effect.gen(function* () {
+            if (!(yield* Ref.getAndSet(armed, false))) return;
+            yield* b.authority.setGrant({ ...grant, device: false }).pipe(Effect.orDie);
+            // A refusal caught by the iOS already-stopped fallback must not become success.
+            yield* Ref.set(b.deviceHubBooted, false);
+          }),
+        );
+        const revoked = yield* close("revoked-close");
+        expect(yield* Ref.get(armed)).toBe(false);
+        expect((yield* b.authority.grants)[0]!.device).toBe(false);
+        expect(
+          yield* Ref.get(b.deviceShutdownCalls),
+          "no new shutdown after observed grant retirement",
+        ).toBe(1);
+        expect(
+          revoked.isError,
+          "retired grant must deny shutdown even when the hub reports stopped",
+        ).toBe(true);
+        expect(json(revoked)).toContain("outcome_unknown");
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const unknown = yield* sql`SELECT id FROM mcp_request_receipts WHERE state='started'`;
+        expect(unknown.length).toBeGreaterThan(0);
+        yield* b.authority.setGrant({ ...grant, device: true });
+        expect(json(yield* close("revoked-close"))).toContain("outcome_unknown");
+        expect(yield* Ref.get(b.deviceShutdownCalls)).toBe(1);
+        yield* Ref.set(b.deviceHubBooted, true);
+        const later = yield* open("later-open");
+        expect(later.isError, json(later)).not.toBe(true);
+        const { target } = yield* decodeTyped383Open(later.structuredContent);
+        expect(json(yield* close("revoked-close"))).toContain("outcome_unknown");
+        expect(yield* Ref.get(b.deviceShutdownCalls)).toBe(1);
+        const click = yield* nativeCall(a, parent, "device_execute", {
+          ...route,
+          target,
+          command: { type: "click", ref: "@e1" },
+          clientRequestId: "later-click",
+        });
+        expect(click.isError, json(click)).not.toBe(true);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
 );

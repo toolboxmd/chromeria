@@ -273,6 +273,7 @@ apps/server/src/project/ProjectService.ts
 apps/server/src/project/ProjectSetupScriptRunner.test.ts
 apps/server/src/project/ProjectSetupScriptRunner.ts
 packages/shared/src/t3McpToolPresentation.ts
+packages/shared/src/t3McpToolPresentation.test.ts
 apps/server/src/cli/environment.ts
 apps/server/src/orchestration-v2/ProviderRuntimeRecoveryPerformance.test.ts
 apps/server/src/orchestration-v2/RestartContinuation.test.ts
@@ -602,3 +603,8 @@ packages/shared/src/agentAwareness.ts
 # Remote pending request shell and dismissal regression proof (#369).
 apps/server/src/orchestration-v2/WireProjection.test.ts
 packages/client-runtime/src/t3ToolSummary.test.ts
+
+# Typed native device commands and supported-runtime inspection (peer-links).
+apps/server/src/device/DeviceToolchain.ts
+apps/server/src/mcp/McpDeviceToolkit.test.ts
+packages/contracts/src/device.ts

@@ -10,6 +10,7 @@ import { requestNamespace } from "../mcp/requestIdentity.ts";
 import * as Predicate from "effect/Predicate";
 import {
   type EnvironmentId,
+  DeviceCommandCatalog,
   OrchestratorMcpFailure,
   type OrchestratorMcpEnvironmentLinksResult,
   OrchestratorMcpThreadInterruptInput,
@@ -404,6 +405,38 @@ const make = Effect.gen(function* () {
           destination.value.launchIdentity,
         );
         expectedLinkIdentity = destination.value.launchIdentity;
+      }
+      if (toolName === "device_open") {
+        if (Option.isNone(authority) || expectedLinkIdentity === undefined)
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "The destination cannot negotiate typed device commands before opening.",
+          });
+        // A distinct authenticated READ action, not the open action's payload or
+        // cached support. Both calls remain bound to the original grant generation.
+        const discoveryArgs = {
+          ...(args.hostId === undefined ? {} : { hostId: args.hostId }),
+          ...(args.contextThreadId === undefined ? {} : { contextThreadId: args.contextThreadId }),
+        };
+        const discoveryAuthority = yield* authority.value.prepare(
+          scope,
+          environmentId,
+          expectedLinkIdentity,
+          "device_commands",
+          discoveryArgs,
+          limits,
+          undefined,
+          true,
+        );
+        yield* peers.call({
+          environmentId,
+          tool: "device_commands",
+          arguments: discoveryArgs,
+          limits,
+          success: DeviceCommandCatalog,
+          authority: discoveryAuthority,
+          expectedLinkIdentity,
+        });
       }
       // Transfer explicitly source-owned bytes, never a source path or an unqualified foreign id.
       if (
