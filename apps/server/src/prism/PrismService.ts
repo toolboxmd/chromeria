@@ -6,6 +6,7 @@ import {
   prismRoleModels,
   type ModelSelection,
   type OrchestratorMcpTaskRole,
+  type PrismDelegateRole,
   type PrismLane,
   type PrismRole,
   type ProjectId,
@@ -86,13 +87,14 @@ export const validateLaunchSelection = Effect.fn("Prism.validateLaunchSelection"
   return { ...selection, model: model.slug };
 });
 
-export function delegatedPrismRole(role?: OrchestratorMcpTaskRole): PrismRole {
+export function delegatedPrismRole(role?: OrchestratorMcpTaskRole): PrismDelegateRole {
   switch (role) {
     case "review":
       return "reviewer";
     case "research":
+      return "researcher";
     case "design":
-      return "planner";
+      return "designer";
     default:
       return "worker";
   }

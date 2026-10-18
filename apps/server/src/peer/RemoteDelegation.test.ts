@@ -1,4 +1,5 @@
 import * as DocumentText from "../provider/DocumentText.ts";
+import * as DocumentText from "../provider/DocumentText.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -476,7 +477,211 @@ const boxToolkitLayer = (thread: BoxThread) => {
   return Layer.merge(
     McpHttpServer.layerOrchestratorToolkit.pipe(
       Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
-import * as DocumentText from "../provider/DocumentText.ts";
+    ),
+    McpHttpServer.layerProjectRegistration,
+  ).pipe(
+    Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
+    Layer.provide(NodeCrypto.layer),
+    Layer.provide(
+      Settings.layerTest({
+        prismRoles: {
+          worker: {
+            lanes: { medium: [modelSelection], hard: [{ instanceId, model: "box-prism" }] },
+          },
+          reviewer: { models: [modelSelection] },
+          roast: { models: [{ instanceId, model: "box-prism" }] },
+        },
+      }),
+    ),
+    Layer.provide(
+      actual === undefined
+        ? layerBoxThreads
+        : Layer.succeed(ThreadManagement.ThreadManagementService, actual.threads),
+    ),
+    Layer.provide(
+      actual === undefined
+        ? layerBoxLaunches
+        : Layer.succeed(ThreadLaunch.ThreadLaunchService, {
+            ...actual.launches,
+            launch: (input) =>
+              actual.launches.launch(input).pipe(
+                Effect.tap((result) =>
+                  Effect.gen(function* () {
+                    yield* Ref.set(thread.launched, result.threadId);
+                    yield* Ref.update(thread.launchIds, (ids) => [...ids, result.threadId]);
+                    yield* Deferred.succeed(thread.launchAccepted, undefined);
+                    if (yield* Ref.get(thread.holdLaunch))
+                      yield* Deferred.await(thread.releaseLaunch);
+                  }),
+                ),
+              ),
+          }),
+    ),
+    Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+    Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+    Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
+    Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+    Layer.provide(
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/p" }),
+    ),
+    Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+    Layer.provide(Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({})),
+    Layer.provide(
+      ServerConfig.layerTest(process.cwd(), { prefix: "t3-remote-delegation-box-" }).pipe(
+        Layer.provide(NodeServices.layer),
+      ),
+    ),
+    Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
+    Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
+    Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
+    Layer.provide(
+      Layer.mock(ProjectService.ProjectService)({
+        getById: () => Effect.succeedNone,
+        // More than a page, so finding the project with this repository pages.
+        listPage: ({ cursor, limit }) =>
+          Effect.succeed({
+            projects: boxProjects.slice(cursor, cursor + limit),
+            nextCursor: cursor + limit < boxProjects.length ? cursor + limit : null,
+          }),
+      }),
+    ),
+    Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+    Layer.provide(ServerSettings.layerTest()),
+    Layer.provide(NodeServices.layer),
+  );
+};
+
+const mcpClient = McpSchema.McpServerClient.of({
+  clientId: 1,
+  protocolVersion: "2025-06-18",
+  clientCapabilities: {},
+  clientInfo: { name: "remote-delegation", version: "1" },
+  initializePayload: {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "remote-delegation", version: "1" },
+  },
+  getClient: Effect.die("unused"),
+});
+
+const adapter = {
+  instanceId,
+  driver,
+  getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+  planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
+  openSession: () => Effect.die("No provider process needed"),
+} as ProviderAdapter.ProviderAdapterV2["Service"];
+
+/** Real destination receipts, launch and thread state; only provider execution is disabled. */
+const makeRealBox = Effect.gen(function* () {
+  const catalog = yield* layerLaunchCatalog.pipe(Layer.build);
+  const providers = yield* Context.get(catalog, ProviderRegistry.ProviderRegistry).getProviders;
+  const unavailable = yield* Ref.make<"catalog" | "headroom" | null>(null);
+  const catalogLayer = Layer.mock(ProviderRegistry.ProviderRegistry)({
+    getProviders: Ref.get(unavailable).pipe(
+      Effect.map((reason) =>
+        providers.map((provider) => ({
+          ...provider,
+          models: reason === "catalog" ? [] : provider.models,
+          ...(reason === "headroom"
+            ? {
+                usageLimits: {
+                  checkedAt: "2026-10-14T00:00:00Z",
+                  windows: [
+                    { id: "weekly", kind: "weekly" as const, label: "Weekly", usedPercent: 100 },
+                  ],
+                },
+              }
+            : {}),
+        })),
+      ),
+    ),
+  });
+  const databaseLayer = SqlitePersistence.layerMemory;
+  const runtime = ProviderReplayHarness.layerWithRegistry(
+    { name: "remote-delegation-real-box" },
+    ProviderAdapterRegistry.layerFromAdapters([adapter]),
+    { databaseLayer, runEffectWorker: false },
+  );
+  const dependencies = Layer.mergeAll(
+    runtime,
+    CommandReceiptStore.layer.pipe(Layer.provide(databaseLayer)),
+    IdAllocator.layer,
+    WorktreeSetupTracker.layer,
+    Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
+    Layer.mock(TerminalManager.TerminalManager)({ close: () => Effect.void }),
+    Layer.mock(GitWorkflow.GitWorkflowService)({}),
+    Layer.mock(TextGeneration.TextGeneration)({}),
+    Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
+      runForThread: () => Effect.succeed({ status: "no-script" as const }),
+    }),
+    Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+      namedProjectsRoot: "/p",
+      folderForThread: () => Effect.succeed(Option.none()),
+    }),
+    Layer.mock(ProjectService.ProjectService)({
+      getById: () => Effect.succeed(Option.some(boxProjects.at(-1)!)),
+    }),
+    Settings.layerTest({
+      providerInstances: { [instanceId]: { driver, enabled: true } },
+    }),
+    catalogLayer,
+  );
+  const services = yield* ThreadLaunch.layer.pipe(
+    Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+    Layer.provideMerge(dependencies),
+    Layer.build,
+  );
+  return {
+    launches: Context.get(services, ThreadLaunch.ThreadLaunchService),
+    threads: Context.get(services, ThreadManagement.ThreadManagementService),
+    sink: Context.get(services, EventSink.EventSinkV2),
+    catalogLayer: Layer.merge(catalogLayer, ProviderAdapterRegistry.layerFromAdapters([adapter])),
+    unavailable,
+  };
+});
+
+/**
+ * The laptop: a real orchestrator (in-memory SQLite) whose parent thread has
+ * a live run, the real orchestrator toolkit, and RemoteDelegation. Built in
+ * its own scope so a test can tear it down and build it again on the same
+ * database, as a restart does.
+ */
+const makeLaptop = (
+  database: Context.Context<SqlClient.SqlClient>,
+  offers: SubscriptionRef.SubscriptionRef<
+    ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+  >,
+  /** The laptop's links from before a restart, which keep their sessions there. */
+  kept?: Context.Context<Layer.Success<ReturnType<typeof layerLinkingEnvironment>>>,
+) =>
+  Effect.gen(function* () {
+    const linking = kept ?? (yield* layerLinkingEnvironment(laptop).pipe(Layer.build));
+    const layerDatabase = Layer.succeedContext(database);
+    const layerOrchestrator = Layer.mergeAll(
+      layerDatabase,
+      CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase)),
+      ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
+      ProviderReplayHarness.layerWithRegistry(
+        { name: "remote-delegation-laptop" },
+        ProviderAdapterRegistry.layerFromAdapters([adapter]),
+        { databaseLayer: layerDatabase, runEffectWorker: false },
+      ),
+    ).pipe(
+      Layer.provide(
+        Layer.succeed(ProviderContinuationRequests.ProviderContinuationRequests, {
+          offer: (request) => SubscriptionRef.update(offers, (seen) => [...seen, request]),
+          take: Effect.never,
+        }),
+      ),
+    );
+    const layerThreads = ThreadManagement.layer.pipe(
+      Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
+      Layer.provideMerge(Layer.merge(layerOrchestrator, ServerSettings.layerTest())),
+    );
+    const layerHere = McpHttpServer.layerOrchestratorToolkit.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+      Layer.provideMerge(McpServer.McpServer.layer),
       Layer.provideMerge(
         RemoteDelegation.layer.pipe(
           Layer.provideMerge(PeerForwarding.layer),
@@ -1335,7 +1540,7 @@ const recordPending = (
           linkIdentity: link.launchIdentity,
           projectId: boxProject,
           title: "Remote suite",
-          prismRole: "escalation",
+          prismRole: "roast",
           lane: "hard",
           workspaceStrategy: { type: "root", branch: "remote-root" },
           runtimeMode: "full-access",
@@ -1432,7 +1637,7 @@ it.effect.each([false, true])(
           expect(yield* Ref.get(thread.launchIds)).toHaveLength(1);
           const task = yield* taskResult(after, taskId);
           expect(task?.remoteChild?.launch).toMatchObject({
-            prismRole: "escalation",
+            prismRole: "roast",
             lane: "hard",
             workspaceStrategy: { type: "root", branch: "remote-root" },
           });

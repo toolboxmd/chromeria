@@ -6,7 +6,6 @@ import {
   type PrismRoleKits,
   type PrismRoleKitsPatch,
   type PrismLane,
-  type PrismSwitchableRole,
   type ProjectSettingsOverrides,
 } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -64,8 +63,7 @@ export type PrismRoleUpdate =
       kind: "models";
       role: Exclude<PrismRole, "worker">;
       models: readonly Color[];
-    }
-  | { kind: "enabled"; role: PrismSwitchableRole; enabled: boolean };
+    };
 
 function prismRolePatch(update: PrismRoleUpdate): PrismRoleKitsPatch {
   switch (update.kind) {
@@ -73,8 +71,6 @@ function prismRolePatch(update: PrismRoleUpdate): PrismRoleKitsPatch {
       return { worker: { lanes: { [update.lane]: update.models } } };
     case "models":
       return { [update.role]: { models: update.models } };
-    case "enabled":
-      return { [update.role]: { enabled: update.enabled } };
   }
 }
 

@@ -1,5 +1,5 @@
 import { BareLaunchRequest, BareSupport } from "./bareLaunch.ts";
-import { PrismLane, PrismRole } from "./prism.ts";
+import { PRISM_DELEGATE_ROLE_GUIDE, PrismDelegateRoleInput, PrismLane } from "./prism.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
@@ -175,7 +175,11 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   projectId: Schema.optional(ProjectId),
   workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
   lane: Schema.optional(PrismLane),
-  prismRole: Schema.optional(PrismRole),
+  prismRole: Schema.optional(
+    PrismDelegateRoleInput.annotate({
+      description: `Prism role kit: ${PRISM_DELEGATE_ROLE_GUIDE}. Omitted, \`role\` maps review to reviewer, research to researcher, design to designer, else worker. dispatcher, retry and escalation only retry a request an older build accepted.`,
+    }),
+  ),
   task: OrchestratorMcpPrompt,
   target: Schema.optional(OrchestratorMcpTarget),
   title: Schema.optional(OrchestratorMcpTitle),

@@ -72,6 +72,8 @@ import {
   resolveProjectProviderInstanceEnabled,
   SECRET_REQUEST_UNSAVED_NOTE,
   threadOwner,
+  admitDelegateRole,
+  PRISM_DELEGATE_ROLE_ERROR,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue } from "@t3tools/shared/model";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
@@ -2625,6 +2627,11 @@ const make = Effect.gen(function* () {
         operation: "delegate-task",
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
+      const prismRole =
+        input.prismRole === undefined
+          ? Prism.delegatedPrismRole(input.role)
+          : admitDelegateRole(input.prismRole, isRetryOfAcceptedDelegation);
+      if (prismRole === undefined) return yield* failure("invalid_request", PRISM_DELEGATE_ROLE_ERROR);
       const explicitTarget =
         input.target === undefined
           ? undefined
@@ -2639,7 +2646,7 @@ const make = Effect.gen(function* () {
       const target = yield* prism.resolve({
         bare: input.bare !== undefined,
         projectId: parent.thread.projectId,
-        role: input.prismRole ?? Prism.delegatedPrismRole(input.role),
+        role: prismRole,
         lane: input.lane,
         explicit: explicitTarget?.modelSelection,
         inherited: parent.thread.modelSelection,
