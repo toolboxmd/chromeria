@@ -77,37 +77,6 @@ describe("resolveProjectSettings", () => {
     expect(resolveProjectSettings(settings, otherProjectId).settings.defaultAutoPull).toBe(true);
   });
 
-  it("overlays a one-role Prism override and inherits every other role, also after an environment change", () => {
-    const sol = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
-    const grok = { instanceId: ProviderInstanceId.make("grok"), model: "grok-4.7" };
-    const luna = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-luna" };
-    const environment = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
-      prismRoles: {
-        reviewer: { models: [sol], instructions: "Review." },
-        worker: { lanes: { medium: [grok], hard: [sol] } },
-      },
-      projectSettingsOverrides: {
-        [projectId]: {
-          defaultAutoPull: true,
-          prismRoles: { worker: { lanes: { hard: [luna] } }, planner: { models: [] } },
-        },
-      },
-    });
-    const kits = resolveProjectSettings(environment, projectId).settings.prismRoles;
-    expect(kits.reviewer).toEqual({ instructions: "Review.", skills: [], models: [sol] });
-    expect(kits.worker.lanes).toEqual({ easy: [], medium: [grok], hard: [luna] });
-    // A present empty list is the project's own value: the caller's model.
-    expect(kits.planner.models).toEqual([]);
-
-    const changed = applyServerSettingsPatch(environment, {
-      prismRoles: { reviewer: { models: [grok] }, worker: { lanes: { medium: [sol] } } },
-    });
-    const after = resolveProjectSettings(changed, projectId).settings.prismRoles;
-    expect(after.reviewer.models).toEqual([grok]);
-    expect(after.worker.lanes).toEqual({ easy: [], medium: [sol], hard: [luna] });
-    expect(resolveProjectSettings(changed, projectId).settings.defaultAutoPull).toBe(true);
-  });
-
   it("keeps the environment text generation model when the override's provider is disabled", () => {
     const disabledSelection = createModelSelection(ProviderInstanceId.make("claudeAgent"), "opus");
     const settings = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {

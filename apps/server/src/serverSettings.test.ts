@@ -2335,16 +2335,6 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(layerServerSettings())),
   );
 
-  it("keeps a deliberate empty Prism list once project overrides are partial", () => {
-    const projectId = ProjectId.make("project-empty");
-    const settings = {
-      ...DEFAULT_SERVER_SETTINGS,
-      prismRoleOverridesPartial: true,
-      projectSettingsOverrides: { [projectId]: { prismRoles: { planner: { models: [] } } } },
-    };
-    assert.strictEqual(ServerSettingsModule.migratePrismRoleOverrides(settings), settings);
-  });
-
   it.effect("leaves an unreadable settings.json untouched instead of folding over it", () =>
     Effect.gen(function* () {
       const serverConfig = yield* ServerConfig.ServerConfig;

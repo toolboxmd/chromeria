@@ -8,12 +8,13 @@ import {
   type PrismLane,
   type PrismSwitchableRole,
   type ModelCapabilities,
+  type ProjectSettingsOverrides,
   type ProviderInstanceId,
 } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import type { ModelEsque } from "../chat/providerIconUtils";
-import { planProjectOverridesReset, planScopedSettingsPatch } from "./scopedSettings";
+import { planScopedSettingsClear, planScopedSettingsPatch } from "./scopedSettings";
 
 export function prismModelKey(entry: Pick<PrismModelPreference, "instanceId" | "model">) {
   return JSON.stringify([entry.instanceId, entry.model]);
@@ -99,13 +100,56 @@ function applyPrismRoleUpdate(kits: PrismRoleKits, update: PrismRoleUpdate): Pri
   return overlayPrismRoleKits(kits, prismRolePatch(update));
 }
 
+/** Rewrite each project entry of a scoped write; environment writes pass through. */
+function withProjectEntries(
+  plan: ReturnType<typeof planScopedSettingsPatch>,
+  environments: Parameters<typeof planScopedSettingsPatch>[1],
+  entry: (
+    written: ProjectSettingsOverrides | null,
+    stored: ProjectSettingsOverrides | undefined,
+  ) => ProjectSettingsOverrides | null,
+): ReturnType<typeof planScopedSettingsPatch> {
+  return {
+    ...plan,
+    serverWrites: plan.serverWrites.map((write) => {
+      const overrides = write.patch.projectSettingsOverrides;
+      const settings = environments.find((env) => env.environmentId === write.environmentId)
+        ?.serverConfig?.settings;
+      if (!overrides || !settings) return write;
+      return {
+        ...write,
+        patch: {
+          ...write.patch,
+          projectSettingsOverrides: Object.fromEntries(
+            Object.entries(overrides).map(([id, written]) => [
+              id,
+              entry(written, settings.projectSettingsOverrides[ProjectId.make(id)]),
+            ]),
+          ),
+        },
+      };
+    }),
+  };
+}
+
 /** One role edit; a project override stores only the edited role field or lane. */
 export function planPrismRolePatch(
   scope: Parameters<typeof planScopedSettingsPatch>[0],
   environments: Parameters<typeof planScopedSettingsPatch>[1],
   update: PrismRoleUpdate,
 ): ReturnType<typeof planScopedSettingsPatch> {
-  return planScopedSettingsPatch(scope, environments, { prismRoles: prismRolePatch(update) });
+  const patch = prismRolePatch(update);
+  // The generic planner completes object values from the effective kits;
+  // a project's Prism override keeps only what it set.
+  return withProjectEntries(
+    planScopedSettingsPatch(scope, environments, { prismRoles: patch }),
+    environments,
+    (written, stored) =>
+      written && {
+        ...written,
+        prismRoles: overlayPrismRoleKits(stored?.prismRoles ?? {}, patch),
+      },
+  );
 }
 
 /** "Use environment role settings": drop the project's role overrides, keeping its Promachos kit. */
@@ -113,13 +157,14 @@ export function planPrismRolesReset(
   scope: Parameters<typeof planScopedSettingsPatch>[0],
   environments: Parameters<typeof planScopedSettingsPatch>[1],
 ): ReturnType<typeof planScopedSettingsPatch> {
-  return planProjectOverridesReset(scope, environments, (current) => {
-    const { prismRoles, ...rest } = current;
-    const next = prismRoles?.promachos
-      ? { ...rest, prismRoles: { promachos: prismRoles.promachos } }
-      : rest;
-    return Object.keys(next).length === 0 ? null : next;
-  });
+  return withProjectEntries(
+    planScopedSettingsClear(scope, environments, ["prismRoles"]),
+    environments,
+    (written, stored) => {
+      const promachos = stored?.prismRoles?.promachos;
+      return promachos ? { ...written, prismRoles: { promachos } } : written;
+    },
+  );
 }
 
 export function prismModelChoices(

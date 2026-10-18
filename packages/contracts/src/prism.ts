@@ -248,5 +248,45 @@ export function overlayPrismRoleKits<Kits extends PrismRoleKits | PrismRoleKitsP
   return next as Kits;
 }
 
+/**
+ * Drop the empty lists, blank instructions and default `enabled` that a
+ * whole-kit Prism override carries for roles the project never set, so those
+ * roles inherit the environment. Set values are kept; `undefined` when
+ * nothing is left.
+ */
+function dropUnsetPrismRoleFields(kits: PrismProjectRoleKits): PrismProjectRoleKits | undefined {
+  const isSet = (key: string, value: unknown) =>
+    value !== undefined &&
+    value !== "" &&
+    !(Array.isArray(value) && value.length === 0) &&
+    !(key === "enabled" && value === true);
+  const next: Record<string, Record<string, unknown>> = {};
+  for (const [role, kit] of Object.entries(kits)) {
+    const fields: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(kit ?? {})) {
+      if (key !== "lanes") {
+        if (isSet(key, value)) fields[key] = value;
+        continue;
+      }
+      const lanes = Object.fromEntries(
+        Object.entries(value ?? {}).filter(([lane, models]) => isSet(lane, models)),
+      );
+      if (Object.keys(lanes).length > 0) fields.lanes = lanes;
+    }
+    if (Object.keys(fields).length > 0) next[role] = fields;
+  }
+  return Object.keys(next).length > 0 ? (next as PrismProjectRoleKits) : undefined;
+}
+
+/** A project override entry with its Prism kits reduced to the roles it actually set. */
+export function withoutUnsetPrismRoles<
+  Entry extends { readonly prismRoles?: PrismProjectRoleKits },
+>(entry: Entry): Entry {
+  if (entry.prismRoles === undefined) return entry;
+  const { prismRoles, ...rest } = entry;
+  const kits = dropUnsetPrismRoleFields(prismRoles);
+  return (kits === undefined ? rest : { ...rest, prismRoles: kits }) as Entry;
+}
+
 export const PrismStaleReason = Schema.Literals(["silence", "provider-dead", "provider-error"]);
 export type PrismStaleReason = typeof PrismStaleReason.Type;
