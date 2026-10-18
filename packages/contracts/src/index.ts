@@ -79,5 +79,7 @@ export * from "./wight.ts";
 export * from "./promachosHome.ts";
 
 export * from "./peerAuthority.ts";
+export * from "./peerAttachments.ts";
 
 export * from "./peerTask.ts";
+export * from "./mcpRequest.ts";

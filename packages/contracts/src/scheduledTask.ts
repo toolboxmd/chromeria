@@ -1,3 +1,4 @@
+import { McpManualRunReceipt } from "./mcpRequest.ts";
 import { BareLaunchRequest } from "./bareLaunch.ts";
 import * as Schema from "effect/Schema";
 
@@ -336,6 +337,7 @@ export type ScheduledTaskDeleteResult = typeof ScheduledTaskDeleteResult.Type;
 
 export const ScheduledTaskRunNowResult = Schema.Struct({
   task: ScheduledTask,
+  manualReceipt: Schema.optional(McpManualRunReceipt),
 });
 export type ScheduledTaskRunNowResult = typeof ScheduledTaskRunNowResult.Type;
 

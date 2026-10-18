@@ -299,6 +299,7 @@ export const layerProjectSetupScriptRunner = ProjectSetupScriptRunner.layer.pipe
 );
 const layerManagedProjectFoldersProvided = ManagedProjectFolders.layer.pipe(
   Layer.provide(layerProjectService),
+  Layer.provide(layerCommandReceiptStoreProvided),
 );
 const layerThreadLaunchProvided = ThreadLaunchService.layer.pipe(
   Layer.provide(
@@ -329,6 +330,7 @@ const layerScheduledTaskProvided = ScheduledTaskChecks.withOutcomeChecks(
       layerThreadLaunchProvided,
       layerThreadManagementProvided,
       layerSecretRequestsProvided,
+      layerCommandReceiptStoreProvided,
       ProjectionStore.layer,
       ProjectStore.layer,
       ProcessRunner.layer,
@@ -394,6 +396,7 @@ const layerMcpAppRequestsProvided = McpAppRequests.layer.pipe(
 export const layer = Layer.mergeAll(
   // Transport lifecycle receipts and the worker share the same durable effect owner.
   EffectOutbox.layer,
+  layerCommandReceiptStoreProvided,
   layerRecoveryWaitProvided,
   layerOrchestratorProvided,
   layerMcpAppRequestsProvided,
