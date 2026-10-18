@@ -1,4 +1,4 @@
-import { PRISM_ROLE_LABELS, PrismLane, type PrismModelPreference } from "@t3tools/contracts";
+import { type Color, PRISM_ROLE_LABELS, PrismLane } from "@t3tools/contracts";
 import {
   closestCenter,
   DndContext,
@@ -44,7 +44,6 @@ import { useThreadShells } from "../../state/entities";
 import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -58,16 +57,19 @@ import {
   movePrismPreference,
   planPrismRolePatch,
   planPrismRolesReset,
-  prismModelChoices,
-  prismModelKey,
   nextPrismEntryId,
   syncPrismDraft,
   type PrismDraftPreference,
   type PrismRoleUpdate,
   type PrismWriteExpectation,
 } from "./PrismSettings.logic";
-
-type ModelChoice = ReturnType<typeof prismModelChoices>[number];
+import { ColorPicker } from "./ColorPicker";
+import {
+  colorProviderChoices,
+  defaultColor,
+  findColorChoice,
+  type ColorProviderChoice,
+} from "./ColorPicker.logic";
 
 /** The planner is whoever submits the job; it is not configured here. */
 const PAGE_ROLES = [
@@ -117,7 +119,7 @@ const ROLE_DETAILS: Record<
 const LANE_LABELS: Record<PrismLane, string> = { easy: "Easy", medium: "Medium", hard: "Hard" };
 
 type DraftPreference = PrismDraftPreference;
-const editablePreference = (model: PrismModelPreference, entryId: number): DraftPreference => ({
+const editablePreference = (model: Color, entryId: number): DraftPreference => ({
   ...model,
   entryId,
 });
@@ -129,7 +131,7 @@ function ModelRow({
   index,
   count,
   title,
-  choice,
+  providers,
   disabled,
   onChange,
   onMove,
@@ -139,9 +141,9 @@ function ModelRow({
   index: number;
   count: number;
   title: string;
-  choice: ModelChoice | undefined;
+  providers: readonly ColorProviderChoice[];
   disabled: boolean;
-  onChange: (effort: string) => void;
+  onChange: (color: Color) => void;
   onMove: (direction: -1 | 1) => void;
   onRemove: () => void;
 }) {
@@ -149,8 +151,7 @@ function ModelRow({
     id: entry.entryId,
     disabled,
   });
-  const efforts = choice?.efforts ?? [];
-  const unknownEffort = entry.effort && !efforts.some((effort) => effort.id === entry.effort);
+  const available = findColorChoice(providers, entry).model !== undefined;
   return (
     <li
       ref={setNodeRef}
@@ -174,42 +175,20 @@ function ModelRow({
       <span className="w-16 shrink-0 text-xs text-muted-foreground">
         {index === 0 ? "Primary" : `Fallback ${index}`}
       </span>
-      <span className="min-w-0 flex-1 break-words text-sm">
-        {choice?.label ?? `${entry.instanceId} / ${entry.model}`}
-        {!choice && (
-          <span className="block text-xs text-muted-foreground">
+      <span className="min-w-0 flex-1">
+        <ColorPicker
+          value={entry}
+          providers={providers}
+          label={`${title} preference ${index + 1}`}
+          disabled={disabled}
+          onChange={onChange}
+        />
+        {!available && (
+          <span className="mt-1 block text-xs text-muted-foreground">
             Unavailable on one or more selected targets.
           </span>
         )}
       </span>
-      <Select
-        value={entry.effort ?? ""}
-        disabled={disabled || !choice}
-        onValueChange={(value) => {
-          if (value !== null) onChange(value);
-        }}
-      >
-        <SelectTrigger
-          size="sm"
-          className="w-fit"
-          aria-label={`${title} preference ${index + 1} effort`}
-        >
-          <SelectValue>{entry.effort ?? "Default effort"}</SelectValue>
-        </SelectTrigger>
-        <SelectPopup>
-          <SelectItem value="">Default effort</SelectItem>
-          {unknownEffort && (
-            <SelectItem value={entry.effort!} disabled>
-              {entry.effort} (unavailable)
-            </SelectItem>
-          )}
-          {efforts.map((effort) => (
-            <SelectItem key={effort.id} value={effort.id}>
-              {effort.label}
-            </SelectItem>
-          ))}
-        </SelectPopup>
-      </Select>
       <Button
         size="icon-sm"
         variant="ghost"
@@ -245,19 +224,19 @@ function ModelRow({
 export function ModelList({
   title,
   saved,
-  choices,
+  providers,
   mixed,
   disabled,
   saving,
   save,
 }: {
   title: string;
-  saved: readonly PrismModelPreference[];
-  choices: readonly ModelChoice[];
+  saved: readonly Color[];
+  providers: readonly ColorProviderChoice[];
   mixed: boolean;
   disabled: boolean;
   saving: boolean;
-  save: (models: readonly PrismModelPreference[]) => Promise<void>;
+  save: (models: readonly Color[]) => Promise<void>;
 }) {
   const [draft, setDraft] = useState<readonly DraftPreference[]>(() =>
     saved.map(editablePreference),
@@ -267,6 +246,9 @@ export function ModelList({
     const synced = syncPrismDraft(draft, saved);
     if (synced !== draft) setDraft(synced);
   }
+  // The Color being added; null follows the scope's first choice.
+  const [adding, setAdding] = useState<Color | null>(null);
+  const addColor = adding ?? defaultColor(providers);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -290,9 +272,7 @@ export function ModelList({
           Preferences differ across this scope. A change replaces this list on the selected targets.
         </p>
       )}
-      {draft.length === 0 && (
-        <p className="text-sm text-muted-foreground">No preferred models configured.</p>
-      )}
+      {draft.length === 0 && <p className="text-sm text-muted-foreground">No Colors configured.</p>}
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
@@ -311,21 +291,12 @@ export function ModelList({
                 index={index}
                 count={draft.length}
                 title={title}
-                choice={choices.find(
-                  (candidate) => prismModelKey(candidate.preference) === prismModelKey(entry),
-                )}
+                providers={providers}
                 disabled={disabled}
-                onChange={(effort) =>
+                onChange={(color) =>
                   commit(
                     draft.map((model, position) =>
-                      position === index
-                        ? {
-                            entryId: model.entryId,
-                            instanceId: model.instanceId,
-                            model: model.model,
-                            ...(effort ? { effort } : {}),
-                          }
-                        : model,
+                      position === index ? { ...color, entryId: model.entryId } : model,
                     ),
                   )
                 }
@@ -336,30 +307,30 @@ export function ModelList({
           </ol>
         </SortableContext>
       </DndContext>
-      <Select
-        value={null}
-        disabled={disabled || choices.length === 0}
-        onValueChange={(value) => {
-          const choice = choices.find((candidate) => prismModelKey(candidate.preference) === value);
-          if (choice)
-            commit([...draft, editablePreference(choice.preference, nextPrismEntryId(draft))]);
-        }}
-      >
-        <SelectTrigger size="sm" className="w-fit" aria-label={`Add ${title} model`}>
-          <SelectValue placeholder="Add model" />
-        </SelectTrigger>
-        <SelectPopup>
-          {choices.map((choice) => (
-            <SelectItem
-              key={prismModelKey(choice.preference)}
-              value={prismModelKey(choice.preference)}
-            >
-              {choice.label}
-            </SelectItem>
-          ))}
-        </SelectPopup>
-      </Select>
-      {choices.length === 0 && (
+      {addColor && (
+        <div className="flex flex-wrap items-center gap-2">
+          <ColorPicker
+            value={addColor}
+            providers={providers}
+            label={`New ${title} Color`}
+            disabled={disabled}
+            onChange={setAdding}
+          />
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={disabled || saving || !findColorChoice(providers, addColor).model}
+            onClick={() => {
+              commit([...draft, editablePreference(addColor, nextPrismEntryId(draft))]);
+              setAdding(null);
+            }}
+            aria-label={`Add ${title} Color`}
+          >
+            Add Color
+          </Button>
+        </div>
+      )}
+      {providers.length === 0 && (
         <p className="text-xs text-muted-foreground">
           Enable models in Providers for this scope to add preferences.
         </p>
@@ -477,7 +448,7 @@ export function PrismSettings() {
   );
   const options = getCustomModelOptionsByInstance(settings, providers);
   const disabledReason = useScopedModelDisabledReason(settings, entries);
-  const choices = prismModelChoices(entries, options, disabledReason);
+  const providerChoices = colorProviderChoices(entries, options, disabledReason);
   const threads = useThreadShells();
   const thread = threads
     .filter((candidate) =>
@@ -516,8 +487,8 @@ export function PrismSettings() {
         }
       >
         <p className="px-3 text-sm text-muted-foreground sm:px-4">
-          The first model in a list is primary; the rest are fallbacks. Only models enabled in
-          Providers for the selected scope are eligible. Changes save automatically.
+          The first Color in a list is primary; the rest are fallbacks. Only providers and models
+          enabled in Providers for the selected scope are offered. Changes save automatically.
         </p>
         {!target && (
           <p role="status" className="px-3 text-sm text-muted-foreground sm:px-4">
@@ -591,7 +562,7 @@ export function PrismSettings() {
                   key={`worker:${workerLane}`}
                   title={`Worker ${workerLane}`}
                   saved={settings.prismRoles.worker.lanes[workerLane]}
-                  choices={choices}
+                  providers={providerChoices}
                   disabled={!target}
                   saving={pendingWrite !== null}
                   mixed={targets.some(
@@ -609,7 +580,7 @@ export function PrismSettings() {
                 key={selectedRole}
                 title={PRISM_ROLE_LABELS[selectedRole]}
                 saved={settings.prismRoles[selectedRole].models}
-                choices={choices}
+                providers={providerChoices}
                 disabled={!target}
                 saving={pendingWrite !== null}
                 mixed={targets.some(
