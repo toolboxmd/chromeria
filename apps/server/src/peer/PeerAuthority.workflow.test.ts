@@ -9710,7 +9710,7 @@ it.live.each(["reserve", "discard"] as const)(
             clientRequestId: "race382-discard",
           });
           expect(discarded.isError, json(discarded)).not.toBe(true);
-          expect(yield* fs.exists(file)).toBe(false);
+          expect(Array.from(yield* fs.readFile(file))).toEqual([1, 2, 3, 4]);
           const proofSql = Context.get(node.database, SqlClient.SqlClient);
           expect(
             yield* proofSql`SELECT consumer FROM attachment_staging WHERE id=${attachment.id}`,
@@ -9728,7 +9728,7 @@ it.live.each(["reserve", "discard"] as const)(
           }>`SELECT discard_receipt,discard_cleanup FROM attachment_staging WHERE id=${attachment.id}`;
           expect(acceptance[0]?.discard_receipt).toContain('"inputDigest"');
           expect(acceptance[0]?.discard_receipt).toContain('"generation":"local"');
-          expect(acceptance[0]?.discard_cleanup).toBe("started");
+          expect(acceptance[0]?.discard_cleanup).toBe("retained");
           expect(
             (yield* nativeCall(reconstructed, parent, "t3_attachment_discard", {
               attachmentId: attachment.id,
@@ -9754,7 +9754,7 @@ it.live.each(["reserve", "discard"] as const)(
             Effect.ensuring(Effect.sync(() => paused.mockRestore())),
           );
           expect(refused.isError).toBe(true);
-          expect(yield* fs.exists(file)).toBe(false);
+          expect(Array.from(yield* fs.readFile(file))).toEqual([1, 2, 3, 4]);
           expect(
             (yield* node.threads.getThreadRecords(parent, ["messages"])).messages.filter(
               (message) => message.text === "Must not accept discarded bytes",
@@ -10690,11 +10690,11 @@ it.live(
         const lost = yield* nativeCall(a, parent, "t3_attachment_discard", input);
         expect(lost.isError).toBe(true);
         expect(json(lost)).toContain("Isolated committed tool reply loss");
-        expect(yield* fs.exists(path)).toBe(false);
+        expect(Array.from(yield* fs.readFile(path))).toEqual([1, 2, 3, 4]);
         const sql = Context.get(b.database, SqlClient.SqlClient);
         const accepted =
           yield* sql`SELECT consumer,discard_receipt,discard_cleanup FROM attachment_staging WHERE id=${issued.attachmentId}`;
-        expect(accepted).toMatchObject([{ consumer: "discarded", discard_cleanup: "started" }]);
+        expect(accepted).toMatchObject([{ consumer: "discarded", discard_cleanup: "retained" }]);
         const rebuilt = { ...b, ...(yield* b.restartSchedulerTransport) };
         yield* Context.get(
           a.database,
@@ -10706,7 +10706,7 @@ it.live(
         expect(
           yield* sql`SELECT consumer,discard_receipt,discard_cleanup FROM attachment_staging WHERE id=${issued.attachmentId}`,
         ).toEqual(accepted);
-        expect(yield* fs.exists(path)).toBe(false);
+        expect(Array.from(yield* fs.readFile(path))).toEqual([1, 2, 3, 4]);
         const rival = ThreadId.make("discard-s6-rival");
         yield* seedParent(a, rival);
         expect((yield* nativeCall(a, rival, "t3_attachment_discard", input)).isError).toBe(true);

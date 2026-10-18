@@ -47,7 +47,7 @@ const AttachmentUploadTool = Tool.make("t3_attachment_prepare_upload", {
 const AttachmentDiscardTool = Tool.make("t3_attachment_discard", {
   ...shared,
   description:
-    "Discard a pending upload. clientRequestId recovers the original discard acceptance; after interrupted cleanup it does not assert current file absence. Already-delivered thread attachments are never deleted by this operation.",
+    "Discard a pending upload. clientRequestId recovers the original discard acceptance and invalidates the upload without deleting its pending bytes; success does not assert current file absence. Already-delivered thread attachments are never deleted by this operation.",
   parameters: McpRouting.parameters(AttachmentDeleteInput),
   success: Schema.Struct({}),
 }).annotate(Tool.Destructive, true);

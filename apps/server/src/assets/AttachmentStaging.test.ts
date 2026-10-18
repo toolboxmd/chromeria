@@ -364,14 +364,9 @@ it.effect("Grok R1: a concurrent discard deletes bytes only if it wins against r
   ).pipe(Effect.provide(layer)),
 );
 
-it.effect.each([
-  "before-cleanup",
-  "before-cleanup-changed",
-  "after-claim",
-  "after-unlink",
-] as const)(
-  "S6: native discard acceptance survives %s interruption without unsafe cleanup replay",
-  (crash) =>
+it.effect.each(["fresh", "pending", "started", "removed"] as const)(
+  "S7: keyed discard retains bytes and exact acceptance across %s cleanup history",
+  (history) =>
     Effect.scoped(
       Effect.gen(function* () {
         const { claims, attachment } = yield* upload;
@@ -389,64 +384,28 @@ it.effect.each([
           attachmentsDir: (yield* Config.ServerConfig).attachmentsDir,
           attachment,
         })!;
-        const crashingFs = FileSystem.FileSystem.of({
-          ...fs,
-          readFile: (file) =>
-            fs
-              .readFile(file)
-              .pipe(
-                Effect.andThen((value) =>
-                  crash.startsWith("before-cleanup") && file === path
-                    ? Effect.interrupt
-                    : Effect.succeed(value),
-                ),
-              ),
-          remove: (file, options) =>
-            file !== path
-              ? fs.remove(file, options)
-              : (crash === "after-unlink" ? fs.remove(file, options) : Effect.void).pipe(
-                  Effect.andThen(Effect.interrupt),
-                ),
-        });
-        const crashing = Context.get(
-          yield* Layer.build(
-            Staging.layer.pipe(
-              Layer.provide(Layer.succeed(FileSystem.FileSystem, crashingFs)),
-              Layer.fresh,
-            ),
-          ),
-          Staging.AttachmentStaging,
-        );
-        const process = yield* crashing
-          .discard(scope, attachment.id, request)
-          .pipe(Effect.forkScoped);
-        yield* Fiber.await(process);
-        const sql = yield* SqlClient.SqlClient;
-        const accepted = yield* sql<{
-          consumer: string;
-          discard_receipt: string;
-          discard_cleanup: string;
-        }>`SELECT consumer,discard_receipt,discard_cleanup FROM attachment_staging WHERE id=${attachment.id}`;
-        expect(accepted).toHaveLength(1);
-        expect(accepted[0]?.consumer).toBe("discarded");
-        expect(JSON.parse(accepted[0]!.discard_receipt)).toEqual({
-          id: request.id,
-          generation: request.generation,
-          inputDigest: request.inputDigest,
-        });
-        expect(accepted[0]?.discard_cleanup).toBe(
-          crash.startsWith("before-cleanup") ? "pending" : "started",
-        );
-        expect(yield* fs.exists(path)).toBe(crash !== "after-unlink");
+        // A changed file before the first attempt also remains independent work.
+        if (history === "fresh") yield* fs.writeFile(path, new Uint8Array([9, 8, 7, 6]));
+        const retained = history === "fresh" ? [9, 8, 7, 6] : [1, 2, 3, 4];
+        let reads = 0;
         let removals = 0;
         const observed = FileSystem.FileSystem.of({
           ...fs,
+          readFile: (file) =>
+            fs.readFile(file).pipe(
+              Effect.flatMap((snapshot) => {
+                if (file !== path) return Effect.succeed(snapshot);
+                reads++;
+                // The original S7 interleaving: an independent write after the real read.
+                return fs.writeFile(path, new Uint8Array([9, 8, 7, 6])).pipe(Effect.as(snapshot));
+              }),
+            ),
           remove: (file, options) => {
             if (file === path) removals++;
             return fs.remove(file, options);
           },
         });
-        const rebuilt = Context.get(
+        const native = Context.get(
           yield* Layer.build(
             Staging.layer.pipe(
               Layer.provide(Layer.succeed(FileSystem.FileSystem, observed)),
@@ -455,27 +414,84 @@ it.effect.each([
           ),
           Staging.AttachmentStaging,
         );
-        if (crash === "before-cleanup-changed")
-          yield* fs.writeFile(path, new Uint8Array([9, 8, 7, 6]));
+        // A refusal before native commit leaves the upload available.
+        expect(
+          (yield* Effect.result(
+            native.discard(scope, attachment.id, {
+              ...request,
+              generation: "replacement",
+            }),
+          ))._tag,
+        ).toBe("Failure");
+        const sql = yield* SqlClient.SqlClient;
+        expect(
+          yield* sql`SELECT consumer,discard_receipt FROM attachment_staging WHERE id=${attachment.id}`,
+        ).toEqual([{ consumer: null, discard_receipt: null }]);
+        // Lose acknowledgement after the actual owner commits, then reconstruct.
+        const lost = yield* native
+          .discard(scope, attachment.id, request)
+          .pipe(Effect.andThen(Effect.interrupt), Effect.forkScoped);
+        expect((yield* Fiber.await(lost))._tag).toBe("Failure");
+        expect(reads).toBe(0);
+        expect(removals).toBe(0);
+        expect(Array.from(yield* fs.readFile(path))).toEqual(retained);
+        expect(
+          (yield* sql`SELECT discard_cleanup FROM attachment_staging WHERE id=${attachment.id}`)[0]
+            ?.discard_cleanup,
+        ).toBe("retained");
+        // Mixed-version fixture: change only the cleanup stage of a real verified
+        // native acceptance. Never invent its owner, generation, intent or receipt.
+        if (history !== "fresh") {
+          yield* sql`UPDATE attachment_staging SET discard_cleanup=${history === "removed" ? "started" : history} WHERE id=${attachment.id}`;
+          if (history === "removed") yield* fs.remove(path);
+        }
+        const accepted =
+          yield* sql`SELECT consumer,discard_receipt,discard_cleanup FROM attachment_staging WHERE id=${attachment.id}`;
+        expect(accepted[0]?.consumer).toBe("discarded");
+        expect(JSON.parse(String(accepted[0]?.discard_receipt))).toEqual({
+          id: request.id,
+          generation: request.generation,
+          inputDigest: request.inputDigest,
+        });
+        const rebuiltContext = yield* Layer.build(
+          Requests.layer.pipe(
+            Layer.provideMerge(Staging.layer),
+            Layer.provide(Layer.succeed(FileSystem.FileSystem, observed)),
+            Layer.fresh,
+          ),
+        );
+        const rebuilt = Context.get(rebuiltContext, Staging.AttachmentStaging);
         const renewed = {
           ...scope,
           thread: { ...scope.thread!, providerSessionId: "renewed-discard" },
         };
-        const same = yield* requests.identify(
+        const same = yield* Context.get(rebuiltContext, Requests.McpRequestReceipts).identify(
           renewed,
           "t3_attachment_discard",
           intent,
           intent.clientRequestId,
         );
+        expect(same).toEqual(request);
         yield* rebuilt.discard(renewed, attachment.id, same);
-        expect(removals).toBe(crash === "before-cleanup" ? 1 : 0);
-        expect(yield* fs.exists(path)).toBe(
-          crash === "after-claim" || crash === "before-cleanup-changed",
-        );
-        // A proven native tombstone does not grant permission to delete later bytes.
+        expect(yield* fs.exists(path)).toBe(history !== "removed");
+        if (history !== "removed") {
+          // An independent reader sees original bytes; its later writer changes
+          // them before replay. No destructive check can race that replacement.
+          expect(Array.from(yield* fs.readFile(path))).toEqual(retained);
+        }
         yield* fs.writeFile(path, new Uint8Array([9, 8, 7, 6]));
         yield* rebuilt.discard(renewed, attachment.id, same);
         expect(Array.from(yield* fs.readFile(path))).toEqual([9, 8, 7, 6]);
+        // A later removal/replacement also cannot be cleaned by historical replay.
+        yield* fs.remove(path);
+        yield* fs.writeFile(path, new Uint8Array([6, 7, 8, 9]));
+        yield* rebuilt.discard(renewed, attachment.id, same);
+        expect(Array.from(yield* fs.readFile(path))).toEqual([6, 7, 8, 9]);
+        expect(reads).toBe(0);
+        expect(removals).toBe(0);
+        expect(
+          yield* sql`SELECT consumer,discard_receipt,discard_cleanup FROM attachment_staging WHERE id=${attachment.id}`,
+        ).toEqual(accepted);
         expect(
           (yield* Effect.result(
             rebuilt.discard(renewed, attachment.id, { ...same, inputDigest: "changed" }),
@@ -486,8 +502,33 @@ it.effect.each([
             rebuilt.discard(renewed, attachment.id, { ...same, generation: "replacement" }),
           ))._tag,
         ).toBe("Failure");
+        expect(
+          (yield* Effect.result(
+            rebuilt.discard(
+              { ...renewed, thread: { ...renewed.thread!, threadId: ThreadId.make("rival") } },
+              attachment.id,
+              same,
+            ),
+          ))._tag,
+        ).toBe("Failure");
       }),
-    ).pipe(Effect.provide(keyedLayer)),
+    ).pipe(
+      Effect.provide(
+        Requests.layer.pipe(
+          Layer.provideMerge(
+            Staging.layer.pipe(
+              Layer.provideMerge(
+                Sqlite.layerConfig.pipe(
+                  Layer.provideMerge(Secrets.layer),
+                  Layer.provideMerge(Config.layerTest(process.cwd(), { prefix: "t3-discard-s7-" })),
+                  Layer.provideMerge(NodeServices.layer),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
 );
 
 it.effect("S6: imported/unkeyed tombstones cannot acquire a keyed receipt", () =>
@@ -515,7 +556,7 @@ it.effect("S6: imported/unkeyed tombstones cannot acquire a keyed receipt", () =
 );
 
 it.effect.each([false, true])(
-  "S6: concurrent discard rival keys=%s retain one native acceptance and cleanup",
+  "S6: concurrent discard rival keys=%s retain one native acceptance without destructive cleanup",
   (rival) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -561,8 +602,8 @@ it.effect.each([false, true])(
         );
         expect(results.filter((result) => result._tag === "Success")).toHaveLength(rival ? 1 : 2);
         expect(results.filter((result) => result._tag === "Failure")).toHaveLength(rival ? 1 : 0);
-        expect(removals).toBe(1);
-        expect(yield* fs.exists(path)).toBe(false);
+        expect(removals).toBe(0);
+        expect(Array.from(yield* fs.readFile(path))).toEqual([1, 2, 3, 4]);
         const sql = yield* SqlClient.SqlClient;
         const rows = yield* sql<{
           discard_receipt: string;

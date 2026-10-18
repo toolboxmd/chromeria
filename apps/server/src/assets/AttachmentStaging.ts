@@ -25,8 +25,6 @@ import {
   type AttachmentClaimPlan,
   attachmentFileExtension,
   toSafeThreadAttachmentSegment,
-  parseThreadSegmentFromAttachmentId,
-  PENDING_ATTACHMENT_THREAD_SEGMENT,
 } from "../attachmentStore.ts";
 import * as Invocation from "../mcp/McpInvocationContext.ts";
 import { requestGeneration, requestNamespace } from "../mcp/requestIdentity.ts";
@@ -547,11 +545,11 @@ const make = Effect.gen(function* () {
               });
         // Ownership and the one-use transition are one conditional write.
         // A stale pre-read cannot authorize deletion after a rival reserves it.
-        const accepted = yield* sql
+        yield* sql
           .withTransaction(
             Effect.gen(function* () {
               const won = yield* sql<Row>`UPDATE attachment_staging
-                SET consumer='discarded',discard_receipt=${binding},discard_cleanup='pending'
+                SET consumer='discarded',discard_receipt=${binding},discard_cleanup=${request === undefined ? "pending" : "retained"}
                 WHERE id=${id} AND owner=${owner(scope)} AND generation=${requestGeneration(scope)} AND consumer IS NULL RETURNING *`;
               const row = won[0] ?? (request === undefined ? undefined : yield* read(id));
               if (
@@ -559,10 +557,11 @@ const make = Effect.gen(function* () {
                 !owned(scope, row) ||
                 row.consumer !== "discarded" ||
                 row.discard_receipt !== binding ||
-                (row.discard_cleanup !== "pending" && row.discard_cleanup !== "started")
+                (row.discard_cleanup !== "pending" &&
+                  row.discard_cleanup !== "started" &&
+                  row.discard_cleanup !== "retained")
               )
                 return yield* denied();
-              return row;
             }),
           )
           .pipe(
@@ -570,37 +569,10 @@ const make = Effect.gen(function* () {
               error._tag === "OrchestratorMcpFailure" ? error : unavailable(error),
             ),
           );
-        // Legacy callers retain their existing separate, best-effort cleanup.
-        if (request === undefined || accepted.discard_cleanup === "started") return;
-        const path =
-          parseThreadSegmentFromAttachmentId(id) === PENDING_ATTACHMENT_THREAD_SEGMENT
-            ? resolveAttachmentPathById({ attachmentsDir: config.attachmentsDir, attachmentId: id })
-            : null;
-        const bytes =
-          path === null
-            ? undefined
-            : yield* fs.readFile(path).pipe(
-                Effect.catchIf(
-                  (error) => error.reason._tag === "NotFound",
-                  () => Effect.succeed(undefined),
-                ),
-                Effect.mapError(unavailable),
-              );
-        // One exact accepted request may attempt cleanup. A crash after this claim
-        // leaves cleanup uncertain; historical acceptance never unlinks again.
-        const cleanup = yield* sql`UPDATE attachment_staging SET discard_cleanup='started'
-          WHERE id=${id} AND owner=${owner(scope)} AND generation=${requestGeneration(scope)}
-          AND consumer='discarded' AND discard_receipt=${binding} AND discard_cleanup='pending' RETURNING id`.pipe(
-          Effect.mapError(unavailable),
-        );
-        if (
-          cleanup.length === 1 &&
-          path !== null &&
-          bytes !== undefined &&
-          accepted.digest !== null &&
-          Hex.encode(sha256(bytes)) === accepted.digest
-        )
-          yield* fs.remove(path, { force: true }).pipe(Effect.mapError(unavailable));
+        // Native acceptance does not prove ownership of the current path contents.
+        // A read/digest followed by unlink can delete an independent replacement.
+        // Keyed calls therefore retain bytes, including historical pending cleanup;
+        // legacy callers keep their existing separate best-effort cleanup.
       }),
   });
 });
