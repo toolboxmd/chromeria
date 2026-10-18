@@ -2067,6 +2067,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   lastErrorClass: Schema.optional(Schema.NullOr(OrchestrationV2ProviderFailureClass)),
   usageLimitResetAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   pendingRuntimeRequest: Schema.NullOr(OrchestrationV2PendingRuntimeRequestSummary),
+  remotePendingRequest: Schema.optional(Schema.NullOr(Schema.Literals(["approval", "user_input"]))),
   latestVisibleMessage: Schema.NullOr(OrchestrationV2LatestVisibleMessageSummary),
   latestUserMessageAt: Schema.NullOr(Schema.DateTimeUtc),
   /**
@@ -3179,6 +3180,7 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     requestId: RuntimeRequestId,
+    expectedRevision: Schema.optional(NonNegativeInt),
     decision: Schema.optional(ProviderApprovalDecision),
     answers: Schema.optional(ProviderUserInputAnswers),
     attachmentsByQuestionId: Schema.optional(UserInputAttachments),
@@ -3188,6 +3190,7 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     requestId: RuntimeRequestId,
+    expectedRevision: Schema.optional(NonNegativeInt),
   }),
   Schema.Struct({
     type: Schema.Literal("checkpoint.rollback"),
