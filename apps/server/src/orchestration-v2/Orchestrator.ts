@@ -11684,6 +11684,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               }),
             ),
             taskIds: pendingTaskIds,
+            // Resume still owns unread work when settlement runs after resume.
+            // A consumed wake must not grant that permission to later results.
+            ...(unconsumed && delivery.forkResumeCommandId !== undefined
+              ? { forkResumeCommandId: delivery.forkResumeCommandId }
+              : {}),
           }
         : null;
       if (nextDelivery !== null) {

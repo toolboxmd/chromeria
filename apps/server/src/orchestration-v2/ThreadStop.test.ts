@@ -562,6 +562,77 @@ it.effect.each(["queued", "starting"] as const)(
     }),
 );
 
+it.effect("keeps explicit resume eligibility when an unread wake finalizes after resume", () =>
+  Effect.gen(function* () {
+    const offers =
+      yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+    yield* Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const parentId = ThreadId.make("late-unread-finalization");
+      yield* createWatchingThread(parentId, 106);
+      yield* send(parentId, "delegate", "start_immediately");
+      const parentRun = (yield* orchestrator.getThreadProjection(parentId)).runs[0]!;
+      const childId = yield* delegate(parentId, "late finalization child");
+      const childRun = (yield* orchestrator.getThreadProjection(childId)).runs[0]!;
+      yield* completeRunWithoutProvider(parentId, parentRun.id, "late-parent-finished");
+      yield* completeRunWithoutProvider(childId, childRun.id, "late-child-finished");
+      yield* orchestrator.recoverDelegatedTask(childId, childRun.id);
+      const first = yield* Queue.take(offers);
+      yield* first.dispatchIfCurrent!(consumeCompletion(first));
+      yield* send(parentId, "held instructions", "queue_after_active");
+      // Runtime reconciliation's existing event marker defers terminal-listener
+      // settlement so explicit resume wins before the public recovery pass.
+      yield* orchestrator.dispatch({
+        type: "thread.stop",
+        threadId: parentId,
+        commandId: CommandId.make("command:runtime-reconcile:stop-before-late-finalization"),
+      });
+      yield* send(parentId, "resume unread result", "start_immediately");
+      const beforeFinalization = yield* orchestrator.getThreadProjection(parentId);
+      const delivery = beforeFinalization.runs.find((run) => run.id === parentRun.id)!
+        .delegatedCompletion!.delivery!;
+      assert.equal(delivery.messageId, first.delegatedCompletion!.messageId);
+      assert.isDefined(delivery.forkResumeCommandId);
+      yield* orchestrator.recoverDelegatedTasks;
+      const successor = yield* Queue.take(offers);
+      assert.notEqual(
+        successor.delegatedCompletion!.messageId,
+        first.delegatedCompletion!.messageId,
+      );
+      yield* successor.dispatchIfCurrent!(consumeCompletion(successor));
+      const resumed = yield* orchestrator.getThreadProjection(parentId);
+      const resumeRun = resumed.runs.find(
+        (run) => run.userMessageId === MessageId.make(`message:${parentId}:resume unread result`),
+      )!;
+      yield* completeRunWithoutProvider(parentId, resumeRun.id, "late-resume-finished");
+      yield* orchestrator.resumeQueuedRuns;
+      const scheduled = yield* orchestrator.getThreadProjection(parentId);
+      assert.equal(
+        scheduled.runs.find((run) => run.userMessageId === successor.delegatedCompletion!.messageId)
+          ?.status,
+        "starting",
+      );
+      assert.isTrue(
+        scheduled.runs.find(
+          (run) => run.userMessageId === MessageId.make(`message:${parentId}:held instructions`),
+        )?.queueHeld,
+      );
+      assert.lengthOf(
+        scheduled.runs.filter(
+          (run) => run.userMessageId === successor.delegatedCompletion!.messageId,
+        ),
+        1,
+      );
+    }).pipe(
+      Effect.provide(layerTest),
+      Effect.provideService(ProviderContinuationRequests.ProviderContinuationRequests, {
+        offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+        take: Effect.never,
+      }),
+    );
+  }),
+);
+
 it.effect.each(["thread", "ancestor"] as const)(
   "serializes an eligible consumer with a concurrent %s Stop without inheriting its lock into child fibers",
   (stopTarget) =>
