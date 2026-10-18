@@ -42,6 +42,74 @@ import {
 const decodeXAiAskUserQuestionRequest = Schema.decodeUnknownSync(XAiAskUserQuestionRequest);
 
 describe("xAiPromptCompleteFromSessionUpdate", () => {
+  it.effect("tracks task ends on shared session methods alongside subagent ends", () =>
+    Effect.gen(function* () {
+      const handlers = new Map<string, (notification: unknown) => Effect.Effect<void>>();
+      const baseRuntime = {
+        handleExtNotification: (
+          method: string,
+          schema: Schema.Codec<unknown>,
+          handler: (notification: unknown) => Effect.Effect<void>,
+        ) =>
+          Effect.sync(() => {
+            handlers.set(method, (notification) =>
+              Schema.decodeUnknownEffect(schema)(notification).pipe(
+                Effect.orDie,
+                Effect.flatMap(handler),
+              ),
+            );
+          }),
+      } as unknown as AcpSessionRuntime.AcpSessionRuntime["Service"];
+      const runtime = yield* makeXAiPromptCompletionRuntime(baseRuntime);
+      const tasks: Array<{ readonly taskId: string; readonly status: string }> = [];
+      const subagents: Array<{ readonly childSessionId: string }> = [];
+      yield* registerXAiBackgroundTaskTracking(runtime, (mutation) =>
+        Effect.sync(() => {
+          tasks.push(mutation);
+        }),
+      );
+      yield* registerXAiSubagentFinished(runtime, (notice) =>
+        Effect.sync(() => {
+          subagents.push(notice);
+        }),
+      );
+      for (const method of [
+        "x.ai/session_notification",
+        "_x.ai/session_notification",
+        "_x.ai/session/update",
+      ]) {
+        const handle = handlers.get(method);
+        if (handle === undefined) return yield* Effect.die(`missing ${method}`);
+        yield* handle({
+          sessionId: "root",
+          update: {
+            sessionUpdate: "task_completed",
+            task_snapshot: { task_id: "command-1", kind: "bash", exit_code: 0, output: "done" },
+          },
+        });
+        yield* handle({
+          sessionId: "root",
+          update: {
+            sessionUpdate: "subagent_finished",
+            child_session_id: "child-1",
+            status: "completed",
+            output: "done",
+          },
+        });
+      }
+      expect(tasks.map(({ taskId, status }) => [taskId, status])).toEqual([
+        ["command-1", "completed"],
+        ["command-1", "completed"],
+        ["command-1", "completed"],
+      ]);
+      expect(subagents.map(({ childSessionId }) => childSessionId)).toEqual([
+        "child-1",
+        "child-1",
+        "child-1",
+      ]);
+    }),
+  );
+
   it("maps live turn_completed snake_case payloads", () => {
     expect(
       xAiPromptCompleteFromSessionUpdate({
@@ -96,6 +164,26 @@ function parseRecordedToolCallUpdate(update: Record<string, unknown>): AcpToolCa
 }
 
 describe("XAiAcpExtension", () => {
+  it("does not treat a command quoting spawn subagents as a subagent launch", () => {
+    const command = "printf '%s\\n' 'Do not spawn subagents.'";
+    for (const status of ["inProgress", "completed"] as const) {
+      const tool = normalizeXAiAcpToolCallState(
+        parseRecordedToolCallUpdate({
+          sessionUpdate: "tool_call_update",
+          toolCallId: "command-with-quoted-instruction",
+          title: `[bg] ${command} (01a14eed)`,
+          status,
+          rawInput: { variant: "Bash", command, description: "Probe without subagents" },
+          rawOutput: {
+            type: "BackgroundTaskStarted",
+            task_id: "01a14eed-b0b2-7842-9fd2-c78e94e43f56",
+          },
+        }),
+      );
+      expect(extractXAiAcpSubagentUpdate(tool)).toBeUndefined();
+    }
+  });
+
   it("recognizes Grok Task starts as native subagents", () => {
     expect(
       extractXAiAcpSubagentUpdate({

@@ -72,6 +72,7 @@ import {
   extractXAiKilledBackgroundTasks,
   extractXAiMonitorTaskId,
   makeXAiPromptCompletionRuntime,
+  makeGrokAcpAdapterFlavor,
   normalizeXAiAcpToolCallState,
   registerXAiBackgroundTaskTracking,
   xAiBackgroundTaskLifecycleMutation,
@@ -116,6 +117,7 @@ const layerTest = Layer.mergeAll(
   layerHost,
 );
 const ACP_TEST_DRIVER = ProviderDriverKind.make("acp-test");
+const decodeGrokSettings = Schema.decodeEffect(GrokSettings);
 const decodeUnknownJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
 describe("acpProjectedCommandExitCode", () => {
@@ -10859,6 +10861,248 @@ describe("AcpAdapterV2", () => {
           1,
           "the late report and end notice add no second continuation",
         );
+      }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.effect.each(["background server", "command quoting spawn subagents"] as const)(
+    "Grok settles its reply with a %s (#435)",
+    (scenario) =>
+      Effect.gen(function* () {
+        const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const path = yield* Path.Path;
+        const selfInvocation = yield* resolveSelfInvocation();
+        const mockAgentPath = yield* path.fromFileUrl(
+          new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+        );
+        type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
+        let send: Parameters<RuntimeService["handleSessionUpdate"]>[0] | undefined;
+        const promptCalled = yield* Deferred.make<void>();
+        const secondPromptCalled = yield* Deferred.make<void>();
+        const promptGate = yield* Deferred.make<EffectAcpSchema.PromptResponse>();
+        const held = yield* Deferred.make<void>();
+        let promptCount = 0;
+        const extensionHandlers = new Map<
+          string,
+          (params: unknown) => Effect.Effect<void, EffectAcpErrors.AcpError>
+        >();
+        const instanceId = ProviderInstanceId.make("grok");
+        const makeRuntime = makeMockRuntime({
+          childProcessSpawner,
+          mockAgentPath,
+          environment: { T3_ACP_HANG_PROMPT_FOREVER: "1" },
+          wrapRuntime: (runtime) => ({
+            ...runtime,
+            handleSessionUpdate: (handler) =>
+              Effect.sync(() => {
+                send = handler;
+              }).pipe(Effect.andThen(runtime.handleSessionUpdate(handler))),
+            handleExtNotification: (method, schema, handler) =>
+              Effect.sync(() => {
+                extensionHandlers.set(method, (params) =>
+                  Schema.decodeUnknownEffect(schema)(params).pipe(
+                    Effect.orDie,
+                    Effect.flatMap(handler),
+                  ),
+                );
+              }),
+            prompt: () =>
+              Effect.gen(function* () {
+                promptCount += 1;
+                yield* Deferred.succeed(
+                  promptCount === 1 ? promptCalled : secondPromptCalled,
+                  undefined,
+                );
+                return yield* Deferred.await(promptGate);
+              }),
+          }),
+        });
+        const flavor = makeGrokAcpAdapterFlavor(
+          {
+            instanceId,
+            settings: yield* decodeGrokSettings({}),
+            environment: {},
+            hostPlatform: "linux",
+            selfInvocation,
+            makeRuntime: (input) =>
+              makeRuntime(input).pipe(Effect.flatMap(makeXAiPromptCompletionRuntime)),
+          },
+          "/home/test",
+        );
+        const adapter = yield* makeAcpAdapterV2({
+          instanceId,
+          flavor,
+          selfInvocation,
+          testHooks: {
+            afterPromptSettledWithBackgroundWork: () =>
+              Deferred.succeed(held, undefined).pipe(Effect.asVoid),
+          },
+        });
+        const threadId = ThreadId.make(`grok-settlement-${scenario}`);
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const modelSelection = { instanceId, model: "default" } as const;
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make(`provider-session-${scenario}`),
+          modelSelection,
+          runtimePolicy,
+        });
+        const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+        yield* runtime.events.pipe(
+          Stream.runForEach((event) => Queue.offer(events, event)),
+          Effect.forkScoped,
+        );
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const now = yield* DateTime.now;
+        yield* runtime.startTurn(
+          makeTurnInput({ threadId, providerThread, instanceId, runtimePolicy, now }),
+        );
+        yield* Deferred.await(promptCalled);
+        const notify = extensionHandlers.get("_x.ai/session_notification");
+        if (send === undefined || notify === undefined)
+          return yield* Effect.die("missing update handlers");
+        const sessionId = "mock-session-1";
+        const taskId = "01a14f36-1b68-7092-a0bd-62d0a91cb319";
+        const command =
+          scenario === "background server"
+            ? "node server.js"
+            : "printf '%s\\n' 'Do not spawn subagents.'";
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "command-1",
+            title: `Execute \`${command}\``,
+            kind: "execute",
+            status: "in_progress",
+            rawInput: { variant: "Bash", command, description: scenario },
+          },
+        });
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "command-1",
+            title: `[bg] ${command} (${taskId})`,
+            status: "completed",
+            rawOutput: {
+              type: "BackgroundTaskStarted",
+              task_id: taskId,
+              task_type: "bash",
+              status: "running",
+              command,
+            },
+          },
+        });
+        if (scenario === "command quoting spawn subagents") {
+          yield* notify({
+            sessionId,
+            update: {
+              sessionUpdate: "task_completed",
+              task_snapshot: {
+                task_id: taskId,
+                kind: "bash",
+                exit_code: 0,
+                output: "Do not spawn subagents.\n",
+              },
+            },
+          });
+        }
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "Finished." },
+          },
+        });
+        // Grok reported this turn complete while session/prompt stayed open.
+        yield* notify({
+          sessionId,
+          update: {
+            sessionUpdate: "turn_completed",
+            prompt_id: "t3-xai-prompt-1",
+            stop_reason: "end_turn",
+          },
+        });
+        const observed: Array<ProviderAdapter.ProviderAdapterV2Event> = [];
+        const terminal = Effect.gen(function* () {
+          while (true) {
+            const event = yield* Queue.take(events);
+            observed.push(event);
+            if (event.type === "turn.terminal") return event.status;
+          }
+        });
+        const outcome = yield* Effect.raceFirst(
+          terminal,
+          Deferred.await(held).pipe(Effect.as("held")),
+        );
+        assert.equal(outcome, "completed", "a finished reply must release the run");
+        assert.isFalse(observed.some((event) => event.type === "subagent.updated"));
+        const commands = observed.flatMap((event) =>
+          event.type === "turn_item.updated" && event.turnItem.type === "command_execution"
+            ? [event.turnItem]
+            : [],
+        );
+        assert.equal(
+          commands.at(-1)?.status,
+          scenario === "background server" ? "running" : "completed",
+        );
+        yield* runtime.startTurn(
+          makeTurnInput({ threadId, providerThread, instanceId, runtimePolicy, now, ordinal: 2 }),
+        );
+        yield* Deferred.await(secondPromptCalled);
+        yield* notify({
+          sessionId,
+          update: {
+            sessionUpdate: "turn_completed",
+            prompt_id: "t3-xai-prompt-2",
+            stop_reason: "end_turn",
+          },
+        });
+        const followUp = yield* terminal;
+        assert.equal(
+          followUp,
+          "completed",
+          "the follow-up must run without interrupting the first reply",
+        );
+        if (scenario === "background server") {
+          yield* notify({
+            sessionId,
+            update: {
+              sessionUpdate: "task_completed",
+              task_snapshot: {
+                task_id: taskId,
+                kind: "bash",
+                exit_code: 0,
+                output: "server stopped\n",
+              },
+            },
+          });
+          const endedCommand = yield* Effect.gen(function* () {
+            while (true) {
+              const event = yield* Queue.take(events);
+              if (
+                event.type === "turn_item.updated" &&
+                event.turnItem.type === "command_execution" &&
+                event.turnItem.status === "completed"
+              )
+                return event.turnItem;
+            }
+          });
+          assert.equal(
+            endedCommand.runId,
+            commands[0]?.runId,
+            "late command output belongs to the original run",
+          );
+          assert.equal(endedCommand.output, "server stopped\n");
+        }
       }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 

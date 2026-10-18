@@ -9,13 +9,12 @@ const GROK_BACKGROUND_BASH_KILLED_WAKE_LABEL =
 
 // The first command ends in the turn with a Grok 1.0.46 `KillTask` and no
 // `task_completed`, so the kill result alone must end it. The second command
-// outlives the turn and holds run 1 until its `task_completed`; Grok's own
-// reply to it is a continuation run.
+// outlives the completed root; Grok's reply to it is a continuation run.
 export function grokBackgroundBashKilledInput(): OrchestratorFixtureInput {
   return {
     steps: [
       { type: "message", text: GROK_BACKGROUND_BASH_KILLED_PROMPT },
-      { type: "finish_held_run", targetRunIndex: 1, status: "completed" },
+      { type: "await_run_status", targetRunIndex: 1, status: "completed" },
       { type: "release_replay_gate", label: GROK_BACKGROUND_BASH_KILLED_WAKE_LABEL },
       { type: "finish_held_run", targetRunIndex: 2, status: "completed" },
     ],

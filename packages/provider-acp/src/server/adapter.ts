@@ -1713,6 +1713,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           input.runtimePolicy;
         const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
         const activeTurn = yield* Ref.make<ActiveAcpTurn | null>(null);
+        // Non-blocking background tools keep their original run's projection
+        // after its reply settles, including while a later prompt is active.
+        const backgroundToolOwners = new Map<string, ActiveAcpTurn>();
         const activeSessionId = yield* Ref.make<string | null>(null);
         const contextUsageBySessionId = yield* Ref.make(
           new Map<string, ThreadTokenUsageSnapshot>(),
@@ -3160,6 +3163,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               context.persistentBackgroundTaskIds.add(backgroundTaskId);
             }
             const backgroundStatus = projectedStatus ?? toolStatus(toolCall.status);
+            const ownerKey = sessionScopedId(context.nativeThreadId, toolCall.toolCallId);
+            if (backgroundStatus !== "pending" && backgroundStatus !== "running") {
+              backgroundToolOwners.delete(ownerKey);
+            } else if (flavor.isPersistentBackgroundTool?.(toolCall) === true) {
+              backgroundToolOwners.set(ownerKey, context);
+            }
             yield* setBackgroundTaskRunning(
               backgroundTaskId,
               backgroundStatus === "pending" || backgroundStatus === "running",
@@ -3939,12 +3948,22 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         // agent may still read the end itself (TaskOutput or kill hydration);
         // until it does, the end keeps its post-finalize continuation offer.
         const finishRegisteredBackgroundTool = Effect.fnUntraced(function* (mutation: {
+          readonly sessionId: string;
           readonly taskId: string;
           readonly status: "completed" | "failed";
           readonly output?: string;
         }) {
-          const context = yield* Ref.get(activeTurn);
-          if (context === null || context.finalized) return;
+          const active = yield* Ref.get(activeTurn);
+          const context =
+            active?.nativeThreadId === mutation.sessionId &&
+            active.toolCallIdsByBackgroundTaskId.has(mutation.taskId)
+              ? active
+              : [...backgroundToolOwners.values()].find(
+                  (owner) =>
+                    owner.nativeThreadId === mutation.sessionId &&
+                    owner.toolCallIdsByBackgroundTaskId.has(mutation.taskId),
+                );
+          if (context === undefined || context === null) return;
           const toolCallId = context.toolCallIdsByBackgroundTaskId.get(mutation.taskId);
           const tool = toolCallId === undefined ? undefined : context.tools.get(toolCallId);
           if (tool === undefined) return;
@@ -4186,6 +4205,17 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         ) {
           const context = yield* Ref.get(activeTurn);
           const update = notification.update;
+          if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+            const owner = backgroundToolOwners.get(
+              sessionScopedId(notification.sessionId, update.toolCallId),
+            );
+            if (owner?.finalized === true) {
+              for (const event of parseSessionUpdateEvent(notification).events) {
+                if (event._tag === "ToolCallUpdated") yield* emitTool(owner, event.toolCall);
+              }
+              return;
+            }
+          }
           if (yield* projectAgentTerminalUpdate(notification, context)) return;
           if (
             update.sessionUpdate === "usage_update" ||
@@ -6069,6 +6099,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     yield* applyLateBackgroundMutation(mutation.sessionId, mutation);
                     if (mutation.status !== "running") {
                       yield* finishRegisteredBackgroundTool({
+                        sessionId: mutation.sessionId,
                         taskId: mutation.taskId,
                         status: mutation.status,
                         ...(mutation.output === undefined ? {} : { output: mutation.output }),
@@ -6705,6 +6736,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             Effect.gen(function* () {
               yield* Ref.update(continuationGeneration, (value) => value + 1);
               yield* Ref.set(stoppedRunQuarantine, true);
+              for (const owner of new Set(backgroundToolOwners.values())) {
+                if (owner.finalized) {
+                  yield* terminalizeOpenRunOwnedItems(owner, { terminalizeSubagents: false });
+                }
+              }
+              backgroundToolOwners.clear();
               yield* Ref.set(wakeBuffer, []);
               yield* Ref.set(wakeReports, noWakeReports);
               yield* Ref.set(continuationRequested, false);
@@ -7350,6 +7387,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                           ? "interrupted"
                           : "cancelled"
                         : "completed";
+                    context.promptSettled = true;
+                    context.promptSettledStatus = status;
                     // Grok monitors (and async subagents) keep working after the root
                     // prompt RPC returns. Defer finalize so their later updates and
                     // wake-turn traffic still project onto this run.
@@ -7358,8 +7397,6 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       !context.interrupted &&
                       hasDeferredBackgroundWork(context)
                     ) {
-                      context.promptSettled = true;
-                      context.promptSettledStatus = status;
                       // The agent finished this prompt's reply. Background work
                       // holds the run open, not the text it already sent.
                       yield* closeTextStreams(context);
