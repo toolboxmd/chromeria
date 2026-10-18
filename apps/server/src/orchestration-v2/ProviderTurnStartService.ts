@@ -1676,14 +1676,35 @@ export const layer: Layer.Layer<
                   source.nativeThreadId === runningProviderThread.nativeThreadRef?.nativeId,
               ),
           );
-        const missedText = missedItems
+        // A later accepted bare turn already carried all preceding missed input.
+        const recoveredThroughOrdinal = projection.runs.reduce(
+          (ordinal, source) =>
+            nativeInputRunIds.has(source.id) ? Math.max(ordinal, source.ordinal) : ordinal,
+          0,
+        );
+        const missedBareRuns = new Map(
+          missedRuns
+            .filter((source) => source.ordinal >= recoveredThroughOrdinal)
+            .map((source) => [source.id, source]),
+        );
+        const missedBareItems = missedItems.filter((item) => {
+          const source = item.runId === null ? undefined : missedBareRuns.get(item.runId);
+          // Restarts share a run, but each attempt owns a distinct root node.
+          return (
+            source !== undefined &&
+            (item.nodeId === null || item.nodeId === source.rootNodeId) &&
+            item.type !== "error" &&
+            item.type !== "run_interrupt_result"
+          );
+        });
+        const missedText = missedBareItems
           .filter((item) => item.type === "user_message")
           .map((item) => item.text)
           .join("\n\n");
         // This is the final adapter-facing boundary, after recovery selected the native thread.
         deliverySession = makeDeliverySession(session, (turnInput, compact) =>
           Effect.gen(function* () {
-            if (missedItems.some((item) => item.type !== "user_message"))
+            if (missedBareItems.some((item) => item.type !== "user_message"))
               return yield* new BareLaunchError({
                 reason: "bare history transfer unsupported: missed history is not user text",
               });
