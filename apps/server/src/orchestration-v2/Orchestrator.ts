@@ -694,7 +694,10 @@ function delegatedTaskTerminalStatus(
 function nextQueuedRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
 ): OrchestrationV2Run | undefined {
-  return queuedRunsInDeliveryOrder(projection)[0];
+  const queued = queuedRunsInDeliveryOrder(projection);
+  return queued.some((run) => run.queueHeld === true)
+    ? queued.find((run) => run.queueHeld !== true && isAutomaticCompletionRun(projection, run))
+    : queued[0];
 }
 
 function latestStableRun(
@@ -886,6 +889,13 @@ function lastDeliveredRunForProviderThread(
         projection.providerTurns.some((turn) => turn.runAttemptId === run.activeAttemptId)),
   );
 }
+
+// Only the same consumer fiber may reuse the lock it holds around an offered
+// completion. Child fibers and ordinary dispatch still acquire the thread lock.
+class CompletionDeliveryLock extends Context.Reference<
+  | { readonly threadId: ThreadId; readonly fiberId: number; readonly intent: "offer" | "resume" }
+  | undefined
+>("t3/orchestrationV2/CompletionDeliveryLock", { defaultValue: () => undefined }) {}
 
 const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(function* () {
   const forkSql = yield* SqlClient.SqlClient;
@@ -1163,7 +1173,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ? undefined
       : projection.messages.find((candidate) => candidate.id === delivery.messageId);
 
-  const offerDelegatedCompletionDelivery = (threadId: ThreadId, parentRunId: RunId) =>
+  const offerDelegatedCompletionDelivery = (
+    threadId: ThreadId,
+    parentRunId: RunId,
+    intent: "offer" | "resume" = "offer",
+  ) =>
     Effect.gen(function* () {
       const state = yield* retirement(threadId);
       if (state.retired || !state.complete) return;
@@ -1206,11 +1220,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         // Stop owns eligibility even after an offer has left the mailbox. The
         // worker uses this upstream hook before reading or dispatching it.
         dispatchIfCurrent: (effect) =>
-          Effect.gen(function* () {
-            const current = yield* retirement(threadId).pipe(Effect.orDie);
-            if (current.retired || !current.complete) return Option.none();
-            return Option.some(yield* effect);
-          }),
+          threadDispatch.withLock(
+            threadId,
+            Effect.gen(function* () {
+              const current = yield* retirement(threadId).pipe(Effect.orDie);
+              if (current.retired || !current.complete) return Option.none();
+              return yield* effect.pipe(
+                Effect.asSome,
+                Effect.provideService(CompletionDeliveryLock, {
+                  threadId,
+                  fiberId: yield* Effect.fiberId,
+                  intent,
+                }),
+              );
+            }),
+          ),
         delegatedCompletion: {
           parentRunId,
           generation: delivery.generation,
@@ -1219,7 +1243,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     });
 
-  const offerDelegatedCompletionDeliveries = (threadId: ThreadId) =>
+  const offerDelegatedCompletionDeliveries = (
+    threadId: ThreadId,
+    intent: "offer" | "resume" = "offer",
+  ) =>
     Effect.gen(function* () {
       const state = yield* retirement(threadId);
       if (state.retired || !state.complete) return;
@@ -1229,7 +1256,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           run.delegatedCompletion?.delivery !== undefined &&
           run.delegatedCompletion.delivery !== null
         ) {
-          yield* offerDelegatedCompletionDelivery(threadId, run.id);
+          yield* offerDelegatedCompletionDelivery(threadId, run.id, intent);
         }
       }
     });
@@ -1418,8 +1445,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (
         projection.thread.archivedAt !== null ||
         projection.thread.deletedAt !== null ||
-        projection.runs.some(isBlockingRun) ||
-        projection.runs.some((run) => run.status === "queued" && run.queueHeld === true)
+        projection.runs.some(isBlockingRun)
       ) {
         return;
       }
@@ -5372,6 +5398,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     }),
                 ),
               );
+        const deliveryLock = yield* CompletionDeliveryLock;
+        const resumingCompletion =
+          delegatedCompletion !== undefined &&
+          deliveryLock?.threadId === command.threadId &&
+          deliveryLock.fiberId === (yield* Effect.fiberId) &&
+          deliveryLock.intent === "resume";
         const run: OrchestrationV2Run = {
           id: runId,
           threadId: command.threadId,
@@ -5384,9 +5416,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           activeAttemptId: attemptId,
           status: "queued",
           ...(worktreeMissingRun !== undefined ||
-          projection.runs.some(
-            (candidate) => candidate.status === "queued" && candidate.queueHeld === true,
-          )
+          (!resumingCompletion &&
+            projection.runs.some(
+              (candidate) => candidate.status === "queued" && candidate.queueHeld === true,
+            ))
             ? { queueHeld: true }
             : {}),
           queuePosition:
@@ -11557,7 +11590,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (message?.delegatedCompletion === undefined) return;
       const projection = yield* projectionStore.getThreadRecords(
         threadId,
-        ["runs", "messages", "subagents"],
+        ["runs", "messages", "subagents", "attempts"],
         { messageRoles: ["user"] },
       );
       const deliveryRun = projection.runs.find((candidate) => candidate.id === runId);
@@ -11586,6 +11619,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
 
       const now = yield* DateTime.now;
+      const deliveryAttempt = projection.attempts.find(
+        (attempt) => attempt.id === deliveryRun.activeAttemptId,
+      );
+      const unconsumed =
+        deliveryRun.status === "cancelled" ||
+        (deliveryRun.status === "interrupted" && deliveryAttempt?.providerTurnId === null);
       const nextTaskStates = new Map<
         OrchestrationV2Subagent["id"],
         OrchestrationV2Subagent["completionDelivery"]
@@ -11600,7 +11639,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           continue;
         }
         nextTaskStates.set(task.id, {
-          state: deliveryRun.status === "cancelled" ? "pending" : "delivered",
+          state: unconsumed ? "pending" : "delivered",
           observedByRunId: null,
         });
       }
@@ -12183,7 +12222,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* mapDispatchError(command)(startNextQueuedRun(command.threadId));
       }
       if (command.type === "message.dispatch" && explicitMessage(command)) {
-        yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.threadId));
+        yield* mapDispatchError(command)(
+          offerDelegatedCompletionDeliveries(command.threadId, "resume"),
+        );
       }
       return {
         sequence: receipt.resultSequence,
@@ -12384,9 +12425,33 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     all.findIndex((candidate) => candidate.id === effect.id) === index,
                 )
               : planned.effects;
+          const resumedDeliveries: OrchestrationV2DomainEvent[] = [];
+          if (resume && state?.retired) {
+            const queued = yield* projectionStore
+              .getThreadRecords(thread.id, ["runs", "messages"], { messageRoles: ["user"] })
+              .pipe(mapDispatchError(command));
+            for (const run of queued.runs) {
+              if (
+                run.status !== "queued" ||
+                run.queueHeld !== true ||
+                !isAutomaticCompletionRun(queued, run)
+              )
+                continue;
+              resumedDeliveries.push(
+                yield* makeEvent(command, {
+                  type: "run.updated",
+                  threadId: thread.id,
+                  runId: run.id,
+                  providerInstanceId: run.providerInstanceId,
+                  occurredAt: now,
+                  payload: { ...run, queueHeld: false },
+                }),
+              );
+            }
+          }
           return {
             ...planned,
-            events: [...planned.events, event],
+            events: [...planned.events, ...resumedDeliveries, event],
             effects,
             forkPlans: [...(planned.forkPlans ?? []), ...forkPlans],
             ...(stopping
@@ -12538,7 +12603,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       yield* mapDispatchError(command)(startNextQueuedRun(command.threadId));
     }
     if (resume && state?.retired) {
-      yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.threadId));
+      yield* mapDispatchError(command)(
+        offerDelegatedCompletionDeliveries(command.threadId, "resume"),
+      );
     }
     if (command.type === "notification.delivery.accept") {
       yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.threadId));
@@ -12558,10 +12625,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const dispatchWithReceipt = (command: OrchestrationV2ServerCommand) =>
     Effect.gen(function* () {
-      const dispatch = threadDispatch.withLock(
-        commandThreadId(command),
-        dispatchWithReceiptEffect(command),
-      );
+      const owner = yield* CompletionDeliveryLock;
+      const dispatch =
+        owner?.threadId === commandThreadId(command) && owner.fiberId === (yield* Effect.fiberId)
+          ? dispatchWithReceiptEffect(command)
+          : threadDispatch.withLock(commandThreadId(command), dispatchWithReceiptEffect(command));
       if (
         command.type !== "message.dispatch" ||
         (command.createdBy !== "user" && command.creationSource !== "mcp")
