@@ -33,6 +33,7 @@ const blocks = new Set([
 ]);
 const omitted = new Set(["style", "template", "svg", "canvas", "noscript"]);
 const MAX_TEXT_CHARS = 4 * 1024 * 1024;
+const MAX_LINK_JSON_BYTES = 32 * 1024 * 1024;
 
 /** Full-document extraction: article-only readers lose venue tables and structured facts. */
 export const extract = (html: string, url: string) => {
@@ -41,6 +42,8 @@ export const extract = (html: string, url: string) => {
   let refresh: string | undefined;
   let password = false;
   const structured: Array<string> = [];
+  const links: Array<{ url: string; label: string }> = [];
+  let linkBytes = 2;
   const joinChildren = (node: Node, depth: number): string => {
     const parts: Array<string> = [];
     let length = 0;
@@ -90,12 +93,17 @@ export const extract = (html: string, url: string) => {
     if (tag === "a") {
       const href = attribute(node, "href");
       if (href) {
-        try {
-          const target = new URL(href, url);
-          if (["http:", "https:", "mailto:", "tel:"].includes(target.protocol))
-            return `[${inner.trim() || target.href}](${target.href})`;
-        } catch {
-          /* A malformed link is still readable as text. */
+        const target = URL.parse(href, url);
+        if (target && ["http:", "https:", "mailto:", "tel:"].includes(target.protocol)) {
+          if (["http:", "https:"].includes(target.protocol)) {
+            const link = { url: target.href, label: compact(inner).slice(0, 256) };
+            // Bound encoded metadata independently: nested anchors can repeat label text.
+            linkBytes += Buffer.byteLength(JSON.stringify(link), "utf8") + 1;
+            if (linkBytes > MAX_LINK_JSON_BYTES)
+              throw new RangeError("Research page links exceed the extraction limit.");
+            links.push(link);
+          }
+          return `[${inner.trim() || target.href}](${target.href})`;
         }
       }
     }
@@ -114,7 +122,7 @@ export const extract = (html: string, url: string) => {
     .join("\n\n");
   if (text.length > MAX_TEXT_CHARS)
     throw new RangeError("Research page text exceeds the extraction limit.");
-  return { title: title ?? "", text, refresh, password, visibleText: compact(rendered) };
+  return { title: title ?? "", text, refresh, password, visibleText: compact(rendered), links };
 };
 
 /** Classify the document itself, so a footer's login link is not mistaken for a wall. */
