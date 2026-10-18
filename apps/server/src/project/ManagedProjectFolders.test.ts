@@ -21,6 +21,7 @@ import * as ServerConfig from "../config.ts";
 import * as GitManager from "../git/GitManager.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as RuntimeLayer from "../orchestration-v2/runtimeLayer.ts";
+import * as NativeReceipts from "../orchestration-v2/CommandReceiptStore.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -56,6 +57,9 @@ const layerEnrichment = ProjectEnrichmentService.layer.pipe(
 const layerRealGit = GitVcsDriver.layer.pipe(Layer.provide(VcsProcess.layer));
 
 interface HarnessOptions {
+  readonly disk?: boolean;
+  readonly fileSystem?: (real: FileSystem.FileSystem) => FileSystem.FileSystem;
+  /** The processes repository detection runs, such as a machine with no Git. */
   readonly vcsProcess?: Layer.Layer<VcsProcess.VcsProcess>;
   readonly git?: Layer.Layer<GitVcsDriver.GitVcsDriver>;
   readonly projects?: (
@@ -65,6 +69,7 @@ interface HarnessOptions {
 
 const layer = (baseDir: string, options?: HarnessOptions) =>
   ManagedProjectFolders.layer.pipe(
+    Layer.provide(NativeReceipts.layer),
     Layer.provide(
       options?.projects === undefined
         ? Layer.empty
@@ -78,9 +83,19 @@ const layer = (baseDir: string, options?: HarnessOptions) =>
     Layer.provideMerge(WorkspacePaths.layer),
     Layer.provideMerge(layerGitWorkflow(options?.vcsProcess)),
     Layer.provideMerge(options?.git ?? layerRealGit),
-    Layer.provideMerge(SqlitePersistence.layerMemory),
+    Layer.provideMerge(
+      options?.disk ? SqlitePersistence.layerConfig : SqlitePersistence.layerMemory,
+    ),
     Layer.provideMerge(ServerSettings.layerTest()),
     Layer.provideMerge(ServerConfig.layerTest(baseDir, baseDir)),
+    Layer.provideMerge(
+      options?.fileSystem === undefined
+        ? Layer.empty
+        : Layer.effect(
+            FileSystem.FileSystem,
+            FileSystem.FileSystem.pipe(Effect.map(options.fileSystem)),
+          ),
+    ),
     Layer.provideMerge(NodeServices.layer),
   );
 
@@ -576,4 +591,138 @@ it.effect("removes the folder when the repository cannot be made", () =>
       }),
     },
   ),
+);
+
+it.effect(
+  "named382: recovers the same native project after its committed-create reply was lost",
+  () => {
+    let lose = true;
+    return withScratch(
+      ({ baseDir }) =>
+        Effect.gen(function* () {
+          const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+          const projects = yield* ProjectService.ProjectService;
+          const request = {
+            id: "a".repeat(64),
+            generation: "original-grant",
+            inputDigest: "b".repeat(64),
+            clientRequestId: "named-once",
+          };
+          const first = yield* Effect.result(
+            folders.createNamedProject({ name: "Exactly once", request }),
+          );
+          assert.equal(first._tag, "Failure");
+          const retried = yield* ManagedProjectFolders.ManagedProjectFolders.pipe(
+            Effect.flatMap((rebuilt) =>
+              rebuilt.createNamedProject({ name: "Exactly once", request }),
+            ),
+            Effect.provide(layer(baseDir, { disk: true })),
+          );
+          assert.equal((yield* projects.snapshot).projects.length, 1);
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          assert.deepEqual(yield* fs.readDirectory(path.join(baseDir, "projects")), [
+            "exactly-once",
+          ]);
+          const readme = path.join(retried.workspaceRoot, "README.md");
+          yield* fs.writeFileString(readme, "later independent local work");
+          const replay = yield* folders.createNamedProject({ name: "Exactly once", request });
+          assert.deepEqual(replay, retried);
+          assert.equal(yield* fs.readFileString(readme), "later independent local work");
+          const changed = yield* Effect.result(
+            folders.createNamedProject({
+              name: "Changed",
+              request: { ...request, inputDigest: "c".repeat(64) },
+            }),
+          );
+          assert.equal(changed._tag, "Failure");
+        }),
+      {
+        disk: true,
+        projects: (real) => ({
+          ...real,
+          create: (input) =>
+            real.create(input).pipe(
+              Effect.flatMap((project) => {
+                if (!lose) return Effect.succeed(project);
+                lose = false;
+                return Effect.fail(
+                  new ProjectService.ProjectOperationError({
+                    operation: "dispatch-project-command",
+                    projectId: input.projectId,
+                    cause: "Fixture lost the committed create reply",
+                  }),
+                );
+              }),
+            ),
+        }),
+      },
+    );
+  },
+);
+
+it.effect(
+  "named382: an ambiguous folder claim is retained and never scaffolded or allocated again",
+  () => {
+    let claims = 0;
+    return withScratch(
+      ({ baseDir }) =>
+        Effect.gen(function* () {
+          const folders = yield* ManagedProjectFolders.ManagedProjectFolders;
+          const projects = yield* ProjectService.ProjectService;
+          const fs = yield* FileSystem.FileSystem;
+          const request = {
+            id: "d".repeat(64),
+            generation: "original",
+            inputDigest: "e".repeat(64),
+            clientRequestId: "named-crash",
+          };
+          const first = yield* Effect.result(
+            folders.createNamedProject({ name: "Crash staged", request }),
+          );
+          assert.equal(first._tag, "Failure");
+          if (first._tag === "Failure") assert.equal(first.failure._tag, "OrchestratorMcpFailure");
+          assert.equal(claims, 1);
+          const rebuilt = yield* ManagedProjectFolders.ManagedProjectFolders.pipe(
+            Effect.flatMap((owner) => owner.createNamedProject({ name: "Crash staged", request })),
+            Effect.result,
+            Effect.provide(layer(baseDir, { disk: true })),
+          );
+          assert.equal(rebuilt._tag, "Failure");
+          if (rebuilt._tag === "Failure")
+            assert.equal(
+              rebuilt.failure._tag === "OrchestratorMcpFailure"
+                ? rebuilt.failure.code
+                : "wrong-error",
+              "outcome_unknown",
+            );
+          assert.equal(claims, 1);
+          assert.deepEqual(yield* fs.readDirectory(`${baseDir}/projects`), ["crash-staged"]);
+          assert.deepEqual(yield* fs.readDirectory(`${baseDir}/projects/crash-staged`), []);
+          assert.deepEqual((yield* projects.snapshot).projects, []);
+        }),
+      {
+        disk: true,
+        fileSystem: (real) => ({
+          ...real,
+          makeDirectory: (path, options) =>
+            real.makeDirectory(path, options).pipe(
+              Effect.tap(() => {
+                if (!path.endsWith("/projects/crash-staged") || options?.recursive === true)
+                  return Effect.void;
+                claims++;
+                return Effect.fail(
+                  PlatformError.systemError({
+                    _tag: "Unknown",
+                    module: "FileSystem",
+                    method: "makeDirectory",
+                    description: "Isolated failure after the real folder claim",
+                  }),
+                );
+              }),
+            ),
+        }),
+      },
+    );
+  },
 );

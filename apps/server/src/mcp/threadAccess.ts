@@ -15,6 +15,8 @@ import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
+import { CurrentRequest, CommandIndex } from "./McpRequestReceipts.ts";
+import * as Ref from "effect/Ref";
 
 export const unavailable = () =>
   new OrchestratorMcpFailure({
@@ -179,6 +181,12 @@ export const readThread = Effect.fn("mcp.readThread")(function* <
 });
 
 export const newCommandId = Effect.fn("mcp.newCommandId")(function* () {
+  const identity = yield* CurrentRequest;
+  const counter = yield* CommandIndex;
+  if (identity !== undefined && counter !== undefined)
+    return CommandId.make(
+      `mcp:request:${identity.id}:${yield* Ref.getAndUpdate(counter, (index) => index + 1)}`,
+    );
   const crypto = yield* Crypto.Crypto;
   return CommandId.make(`mcp:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`);
 });
