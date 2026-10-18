@@ -29,6 +29,7 @@ import * as Replay from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as WebResearch from "../webResearch/WebResearch.ts";
 import * as PageCache from "../webResearch/PageCache.ts";
 import * as PublicHttp from "../webResearch/PublicHttp.ts";
+import * as PublicRender from "../webResearch/PublicRender.ts";
 import { type CachedPage, WebReadResult } from "../webResearch/schemas.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as Invocation from "./McpInvocationContext.ts";
@@ -74,6 +75,11 @@ const fixture = Effect.fnUntraced(function* (
   );
   const reader = WebResearch.layer.pipe(
     Layer.provide(cacheLayer),
+    Layer.provide(
+      Layer.succeed(PublicRender.PublicRender, {
+        render: () => Effect.die("Usable HTTP pages must not render."),
+      }),
+    ),
     Layer.provide(
       Layer.succeed(PublicHttp.PublicHttp, {
         get: (url) =>

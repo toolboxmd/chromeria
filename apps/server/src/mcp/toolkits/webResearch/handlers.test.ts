@@ -20,6 +20,7 @@ import * as ServerConfig from "../../../config.ts";
 import * as WebResearch from "../../../webResearch/WebResearch.ts";
 import * as PageCache from "../../../webResearch/PageCache.ts";
 import * as PublicHttp from "../../../webResearch/PublicHttp.ts";
+import * as PublicRender from "../../../webResearch/PublicRender.ts";
 import { WebReadResult } from "../../../webResearch/schemas.ts";
 import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -98,6 +99,17 @@ const fixture = Effect.fnUntraced(function* (
   const resources = Layer.mergeAll(config, NodeServices.layer);
   const reader = WebResearch.layer.pipe(
     Layer.provide(cacheLayer),
+    Layer.provide(
+      Layer.succeed(PublicRender.PublicRender, {
+        render: (input) =>
+          Effect.succeed({
+            body: input.initial.body,
+            finalUrl: input.url.href,
+            httpStatus: input.initial.status,
+            headers: {},
+          }),
+      }),
+    ),
     Layer.provide(Layer.succeed(PublicHttp.PublicHttp, http)),
     Layer.provide(resources),
   );

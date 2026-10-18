@@ -2204,25 +2204,35 @@ sources and reasons.
 ```json
 {
   "id": "agent-web-research",
-  "purpose": "Read research pages through one caller-gated MCP service with full text, typed failures, a shared page cache, an origin limiter and provenance.",
+  "purpose": "Read research pages through one caller-gated MCP service with full text, typed failures, isolated headless rendering for thin/consent pages, a shared page cache, an origin limiter and provenance.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/423",
-    "https://github.com/toolboxmd/chromeria/issues/440"
+    "https://github.com/toolboxmd/chromeria/issues/440",
+    "https://github.com/toolboxmd/chromeria/issues/442"
   ],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/449"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/449",
+    "https://github.com/toolboxmd/chromeria/pull/453"
+  ],
   "newFiles": [
     "apps/server/src/mcp/WebResearch.integration.test.ts",
+    "apps/server/src/mcp/WebResearchRender.integration.test.ts",
     "apps/server/src/mcp/toolkits/webResearch/handlers.test.ts",
     "apps/server/src/mcp/toolkits/webResearch/handlers.ts",
     "apps/server/src/mcp/toolkits/webResearch/tools.ts",
     "apps/server/src/webResearch/PageCache.ts",
     "apps/server/src/webResearch/PublicHttp.test.ts",
     "apps/server/src/webResearch/PublicHttp.ts",
+    "apps/server/src/webResearch/PublicRender.test.ts",
+    "apps/server/src/webResearch/PublicRender.ts",
     "apps/server/src/webResearch/WebResearch.ts",
     "apps/server/src/webResearch/extract.ts",
     "apps/server/src/webResearch/schemas.ts"
   ],
-  "upstreamFiles": ["apps/server/src/htmlRender/publicProxy.ts"],
+  "upstreamFiles": [
+    "apps/server/src/htmlRender/publicProxy.ts",
+    "apps/server/src/preview/ServerBrowserContexts.ts"
+  ],
   "sharedFiles": [
     "GLOSSARY.md",
     "apps/server/package.json",

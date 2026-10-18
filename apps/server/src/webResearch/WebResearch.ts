@@ -18,6 +18,7 @@ import * as Semaphore from "effect/Semaphore";
 
 import * as PageCache from "./PageCache.ts";
 import * as PublicHttp from "./PublicHttp.ts";
+import * as PublicRender from "./PublicRender.ts";
 import { classify, extract } from "./extract.ts";
 import { type CachedPage, WebReadInput, WebReadPage, WebReadResult } from "./schemas.ts";
 
@@ -150,6 +151,8 @@ const acceptsOrigin = (page: CachedPage, requested: URL, sameOrigin?: string) =>
 const make = Effect.gen(function* () {
   const http = yield* PublicHttp.PublicHttp;
   const cache = yield* PageCache.PageCache;
+  const renderer = yield* PublicRender.PublicRender;
+  const renders = yield* Semaphore.make(2);
   const origins = new Map<
     string,
     {
@@ -294,6 +297,22 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const checkRobots = Effect.fnUntraced(function* (url: URL) {
+    const rules = yield* Cache.get(robotRules, url.origin);
+    if (rules.rules.isAllowed(url.href, "ChromeriaResearch") === false)
+      return yield* new ReadStopped({
+        status: "blocked_robots",
+        httpStatus: null,
+        retryAfterMs: null,
+      });
+    const state = originFor(url.origin);
+    const crawlDelay = rules.rules.getCrawlDelay("ChromeriaResearch");
+    if (crawlDelay !== undefined && Number.isFinite(crawlDelay)) {
+      state.spacing = Math.max(3000, crawlDelay * 1000);
+      state.nextStart = Math.max(state.nextStart, state.lastStart + state.spacing);
+    }
+  });
+
   const fetchPage = Effect.fnUntraced(function* (
     original: URL,
     sameOrigin?: string,
@@ -306,6 +325,84 @@ const make = Effect.gen(function* () {
     let retryAfterMs: number | null = null;
     let cacheable = true;
     let reusedTarget: CachedPage | undefined;
+    let sourceRung: "http" | "render" = "http";
+    const loadDocument = Effect.fnUntraced(
+      function* (target: URL) {
+        const url = parseUrl(target.href);
+        if (
+          !url ||
+          (sameOrigin !== undefined && url.origin !== sameOrigin) ||
+          /(^|\.)booking\.com$|(^|\.)airbnb\./i.test(url.hostname)
+        )
+          return yield* new PublicRender.PublicRenderError({
+            status: "unsupported",
+            httpStatus: null,
+            retryAfterMs: null,
+          });
+        yield* checkRobots(url);
+        const response = yield* request(url, delay, budget);
+        const type =
+          response.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase() ?? "text/html";
+        if (
+          ![301, 302, 303, 307, 308].includes(response.status) &&
+          !["text/html", "application/xhtml+xml"].includes(type)
+        )
+          return yield* new PublicRender.PublicRenderError({
+            status: "unsupported",
+            httpStatus: response.status,
+            retryAfterMs: null,
+          });
+        return response;
+      },
+      Effect.catchTags({
+        PublicNetworkBlockedError: (cause) =>
+          Effect.fail(
+            new PublicRender.PublicRenderError({
+              status: "blocked_local",
+              httpStatus: null,
+              retryAfterMs: null,
+              cause,
+            }),
+          ),
+        PublicHttpError: (cause) =>
+          Effect.fail(
+            new PublicRender.PublicRenderError({
+              status: "provider_error",
+              httpStatus: null,
+              retryAfterMs: null,
+              cause,
+            }),
+          ),
+        TimeoutError: (cause) =>
+          Effect.fail(
+            new PublicRender.PublicRenderError({
+              status: "timeout",
+              httpStatus: null,
+              retryAfterMs: null,
+              cause,
+            }),
+          ),
+        OriginQueueWaitError: (cause) =>
+          Effect.gen(function* () {
+            yield* Ref.update(delay, (ms) => ms + cause.delayMs);
+            return yield* new PublicRender.PublicRenderError({
+              status: "challenge",
+              httpStatus: null,
+              retryAfterMs: cause.retryAfterMs,
+              cause,
+            });
+          }),
+        ReadStopped: (cause) =>
+          Effect.fail(
+            new PublicRender.PublicRenderError({
+              status: cause.status,
+              httpStatus: cause.httpStatus,
+              retryAfterMs: cause.retryAfterMs,
+              cause,
+            }),
+          ),
+      }),
+    );
     const fetch = Effect.gen(function* () {
       let url = original;
       const visited = new Set<string>();
@@ -338,20 +435,7 @@ const make = Effect.gen(function* () {
             };
           }
         }
-        const rules = yield* Cache.get(robotRules, url.origin);
-        if (rules.rules.isAllowed(url.href, "ChromeriaResearch") === false)
-          return yield* new ReadStopped({
-            status: "blocked_robots",
-            httpStatus: null,
-            retryAfterMs: null,
-          });
-        const state = originFor(url.origin);
-        const crawlDelay = rules.rules.getCrawlDelay("ChromeriaResearch");
-        // Honour a site's longer Crawl-delay in addition to our baseline spacing.
-        if (crawlDelay !== undefined && Number.isFinite(crawlDelay)) {
-          state.spacing = Math.max(3000, crawlDelay * 1000);
-          state.nextStart = Math.max(state.nextStart, state.lastStart + state.spacing);
-        }
+        yield* checkRobots(url);
         const response = yield* request(url, delay, budget);
         httpStatus = response.status;
         const now = yield* Clock.currentTimeMillis;
@@ -367,7 +451,7 @@ const make = Effect.gen(function* () {
           response.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase() ?? "text/html";
         if (!["text/html", "application/xhtml+xml", "text/plain"].includes(contentType))
           return { status: "unsupported" as const, title: "", text: "" };
-        const page =
+        let page =
           contentType === "text/plain"
             ? {
                 title: "",
@@ -381,7 +465,7 @@ const make = Effect.gen(function* () {
                 try: () => extract(response.body, url.href),
                 catch: (cause) => new PageExtractionError({ cause }),
               });
-        const status = classify(page, response.status);
+        let status = classify(page, response.status);
         if (page.refresh !== undefined && (status === "ok" || status === "thin")) {
           const target = parseUrl(page.refresh, url.href);
           if (target && !visited.has(target.href)) {
@@ -389,11 +473,35 @@ const make = Effect.gen(function* () {
             continue;
           }
         }
+        if (status === "thin" || status === "consent") {
+          sourceRung = "render";
+          const queuedAt = yield* Clock.currentTimeMillis;
+          const rendered = yield* Effect.gen(function* () {
+            const enteredAt = yield* Clock.currentTimeMillis;
+            yield* Ref.update(delay, (ms) => ms + enteredAt - queuedAt);
+            return yield* renderer.render({ url, initial: response, loadDocument });
+          }).pipe(
+            renders.withPermits(1),
+            // Includes the permit wait; HTTP retains the core's separate active-time budget.
+            Effect.timeout("20 seconds"),
+          );
+          finalUrl = rendered.finalUrl;
+          httpStatus = rendered.httpStatus;
+          retryAfterMs =
+            retryDelay(rendered.headers["retry-after"], yield* Clock.currentTimeMillis) || null;
+          page = yield* Effect.try({
+            try: () => extract(rendered.body, rendered.finalUrl),
+            catch: (cause) => new PageExtractionError({ cause }),
+          });
+          status = classify(page, rendered.httpStatus);
+        }
+        const finalState = originFor(new URL(finalUrl).origin);
         if (status === "challenge") {
-          state.challenges++;
-          if (state.challenges >= 2 || response.status === 429)
-            state.blockedUntil = now + Math.max(60_000, retryAfterMs ?? 0);
-        } else if (status === "ok") state.challenges = 0;
+          finalState.challenges++;
+          if (finalState.challenges >= 2 || httpStatus === 429)
+            finalState.blockedUntil =
+              (yield* Clock.currentTimeMillis) + Math.max(60_000, retryAfterMs ?? 0);
+        } else if (status === "ok") finalState.challenges = 0;
         return {
           status,
           title: page.title,
@@ -419,6 +527,13 @@ const make = Effect.gen(function* () {
           return Ref.update(delay, (ms) => ms + error.delayMs).pipe(
             Effect.as({ status: "challenge" as const, title: "", text: "" }),
           );
+        },
+        PublicRenderError: (error) => {
+          // Only a queue refusal that fails the render prevents caching its result.
+          if (Schema.is(OriginQueueWaitError)(error.cause)) cacheable = false;
+          httpStatus = error.httpStatus;
+          retryAfterMs = error.retryAfterMs;
+          return Effect.succeed({ status: error.status, title: "", text: "" });
         },
         ReadStopped: (error) => {
           httpStatus = error.httpStatus;
@@ -447,7 +562,7 @@ const make = Effect.gen(function* () {
       cacheId: hash(
         `${original.href}\n${finalUrl}\n${completedAt}\n${content.status}\n${contentHash}\n${sameOrigin ?? ""}`,
       ),
-      sourceRung: "http",
+      sourceRung: reusedTarget?.sourceRung ?? sourceRung,
       ...content,
       httpStatus,
       contentHash,
