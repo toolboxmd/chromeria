@@ -1,4 +1,6 @@
 import {
+  ORCHESTRATION_PROTOCOL_VERSION,
+  type AuthRenewalLocalRecord,
   EnvironmentAuthInvalidError,
   EnvironmentInternalError,
   EnvironmentId,
@@ -11,7 +13,11 @@ import {
 import { createBrowserHistory } from "@tanstack/react-router";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Crypto from "effect/Crypto";
+import * as Layer from "effect/Layer";
 import { SessionRenewal } from "@t3tools/client-runtime/authorization";
+import { ConnectionTransientError, RenewalRecordStore } from "@t3tools/client-runtime/connection";
+import { layerRemoteHttpClient } from "@t3tools/client-runtime/rpc";
 import { HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -19,6 +25,7 @@ import { installEnvironmentHttpTest } from "../test/environmentHttpTest";
 import {
   __setPrimaryHttpRunnerForTests,
   __setRenewalRunnerForTests,
+  runRenewal,
   type PrimaryHttpEffectRunner,
 } from "./lib/runtime";
 
@@ -123,6 +130,7 @@ function createSignal() {
 let disposeHttpTest: (() => Promise<void>) | undefined;
 
 async function installAuthApi(input: {
+  readonly renewalLayer?: Layer.Layer<SessionRenewal.SessionRenewal>;
   readonly descriptor?: () => Effect.Effect<ExecutionEnvironmentDescriptor>;
   readonly renewal?: SessionRenewal.SessionRenewal["Service"]["ensure"];
   readonly session?: () => AuthSessionState;
@@ -138,6 +146,7 @@ async function installAuthApi(input: {
 }) {
   const testApi = await installEnvironmentHttpTest({
     descriptor: input.descriptor ?? (() => Effect.succeed(TEST_ENVIRONMENT)),
+    ...(input.renewalLayer ? { renewalLayer: input.renewalLayer } : {}),
     ...(input.renewal ? { renewal: input.renewal } : {}),
     ...(input.session ? { session: () => Effect.succeed(input.session!()) } : {}),
     ...(input.browserSession
@@ -203,6 +212,191 @@ describe("resolveInitialServerAuthGateState", () => {
     expect(keys).toEqual(["cookie:http://localhost"]);
     expect(testApi.calls.session).toBe(2);
   });
+  it.each(["network", "HTTP 500", "storage"])(
+    "retains renewal authority and recovers startup after a transient %s failure",
+    async (failure) => {
+      let unavailable = false;
+      let authenticated = false;
+      let record: AuthRenewalLocalRecord | null = null;
+      const readRecord = () => record;
+      const storage = Layer.succeed(RenewalRecordStore.RenewalRecordStore, {
+        read: () =>
+          unavailable && failure === "storage"
+            ? Effect.fail(
+                new ConnectionTransientError({ reason: "transport", detail: "Store unavailable" }),
+              )
+            : Effect.sync(() => record),
+        compareAndSet: (_key, revision, next) =>
+          Effect.sync(() => {
+            if ((record?.revision ?? null) !== revision) return false;
+            record = next;
+            return true;
+          }),
+      });
+      const http = layerRemoteHttpClient((input) => {
+        if (String(input).endsWith("/.well-known/t3/environment")) {
+          return Promise.resolve(
+            Response.json({
+              ...TEST_ENVIRONMENT,
+              orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
+            }),
+          );
+        }
+        if (unavailable) {
+          return failure === "network"
+            ? Promise.reject(new TypeError("Network unavailable"))
+            : Promise.resolve(new Response("Unavailable", { status: 500 }));
+        }
+        authenticated = true;
+        return Promise.resolve(
+          Response.json({ outcome: "current", generation: 0, expiresAt: 1000, renewAfter: 500 }),
+        );
+      });
+      const crypto = Layer.succeed(
+        Crypto.Crypto,
+        Crypto.make({
+          randomBytes: (size) => new Uint8Array(size).fill(1),
+          digest: (_algorithm, data) => Effect.succeed(data),
+        }),
+      );
+      const testApi = await installAuthApi({
+        renewalLayer: SessionRenewal.layer.pipe(
+          Layer.provide(Layer.mergeAll(storage, http, crypto)),
+        ),
+        session: () =>
+          authenticated
+            ? authenticatedSession(LOOPBACK_AUTH)
+            : unauthenticatedSession(LOOPBACK_AUTH),
+      });
+      const slot = await runRenewal(
+        SessionRenewal.SessionRenewal.pipe(
+          Effect.flatMap((renewal) =>
+            renewal.stage({
+              key: "cookie:http://localhost",
+              environmentId: TEST_ENVIRONMENT.environmentId,
+              origin: "http://localhost",
+              kind: "cookie",
+            }),
+          ),
+        ),
+      );
+      await runRenewal(
+        SessionRenewal.SessionRenewal.pipe(
+          Effect.flatMap((renewal) =>
+            renewal.complete("cookie:http://localhost", slot.epoch, { expiresAt: 1 }),
+          ),
+        ),
+      );
+      unavailable = true;
+      const { resolveInitialServerAuthGateState } = await import("./environments/primary/auth");
+      await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
+        status: "retryable",
+        retryAfterMs: 500,
+      });
+      expect(readRecord()?.active?.current).toBe(slot.current);
+      unavailable = false;
+      await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
+        status: "authenticated",
+      });
+      expect(testApi.calls.browserSession).toEqual([]);
+    },
+  );
+
+  it("requires pairing when the durable renewal secret is rejected", async () => {
+    await installAuthApi({
+      session: () => unauthenticatedSession(LOOPBACK_AUTH),
+      renewal: () => Effect.fail(new SessionRenewal.RenewalRejected({})),
+    });
+    const { resolveInitialServerAuthGateState } = await import("./environments/primary/auth");
+    await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
+      status: "requires-auth",
+      auth: LOOPBACK_AUTH,
+    });
+  });
+
+  it("shares a transient startup renewal attempt across concurrent callers", async () => {
+    let attempts = 0;
+    await installAuthApi({
+      session: () => unauthenticatedSession(LOOPBACK_AUTH),
+      renewal: () => {
+        attempts += 1;
+        return Effect.fail(
+          new ConnectionTransientError({ reason: "transport", detail: "Unavailable" }),
+        );
+      },
+    });
+    const { resolveInitialServerAuthGateState } = await import("./environments/primary/auth");
+    const results = await Promise.all([
+      resolveInitialServerAuthGateState(),
+      resolveInitialServerAuthGateState(),
+    ]);
+    expect(results).toEqual([
+      { status: "retryable", retryAfterMs: 500 },
+      { status: "retryable", retryAfterMs: 500 },
+    ]);
+    expect(attempts).toBe(1);
+    await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
+      status: "retryable",
+      retryAfterMs: 1000,
+    });
+  });
+
+  it("preserves explicit pairing intent while startup renewal is retryable", async () => {
+    let attempts = 0;
+    await installAuthApi({
+      session: () => unauthenticatedSession(LOOPBACK_AUTH),
+      renewal: () => {
+        attempts += 1;
+        return Effect.fail(
+          new ConnectionTransientError({ reason: "transport", detail: "Unavailable" }),
+        );
+      },
+    });
+    const testWindow = installTestBrowser("http://localhost/");
+    const { resolveInitialServerAuthGateState } = await import("./environments/primary/auth");
+    await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
+      status: "retryable",
+      retryAfterMs: 500,
+    });
+    testWindow.location = new URL("http://localhost/pair#token=replacement");
+    await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
+      status: "requires-auth",
+      auth: LOOPBACK_AUTH,
+    });
+    expect(testWindow.location.hash).toBe("#token=replacement");
+    expect(attempts).toBe(1);
+  });
+
+  it("caps startup retry backoff and stops retrying on definitive rejection", async () => {
+    let rejected = false;
+    await installAuthApi({
+      session: () => unauthenticatedSession(LOOPBACK_AUTH),
+      renewal: () =>
+        rejected
+          ? Effect.fail(new SessionRenewal.RenewalRejected({}))
+          : Effect.fail(
+              new ConnectionTransientError({ reason: "transport", detail: "Unavailable" }),
+            ),
+    });
+    const { resolveInitialServerAuthGateState } = await import("./environments/primary/auth");
+    for (const retryAfterMs of [500, 1000, 2000, 4000, 5000, 5000]) {
+      await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
+        status: "retryable",
+        retryAfterMs,
+      });
+    }
+    rejected = true;
+    await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
+      status: "requires-auth",
+      auth: LOOPBACK_AUTH,
+    });
+    rejected = false;
+    await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
+      status: "retryable",
+      retryAfterMs: 500,
+    });
+  });
+
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
@@ -325,6 +519,7 @@ describe("resolveInitialServerAuthGateState", () => {
 
   it("retries transient auth session bootstrap failures after restart", async () => {
     vi.useFakeTimers();
+    await installAuthApi({});
     let attempts = 0;
     const request = HttpClientRequest.get("http://localhost/api/auth/session");
     const response = HttpClientResponse.fromWeb(

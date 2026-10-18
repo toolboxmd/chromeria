@@ -30,7 +30,7 @@ function PairRouteView() {
   const router = useRouter();
   const { authGateState } = Route.useRouteContext();
 
-  if (!authGateState) {
+  if (!authGateState || authGateState.status === "retryable") {
     return null;
   }
 
