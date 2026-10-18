@@ -70,6 +70,15 @@ describe("summarizeT3ToolCalls", () => {
     ).toBe("Answered 2 pending question requests");
   });
 
+  it("summarizes dismissal as dismissal and deduplicates the request", () => {
+    expect(
+      summarizeT3ToolCalls("question-dismiss", [
+        completed({ requestId: "request-1" }),
+        completed({ requestId: "request-1" }),
+      ]).label,
+    ).toBe("Dismissed 1 pending question request");
+  });
+
   it("counts attachments in distinct messages and falls back when attachment counts are missing", () => {
     const first = completed(
       { threadId: "thread-1", attachments: [{ id: "one" }, { id: "two" }] },

@@ -7,6 +7,7 @@ import {
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
 import { reportLabel } from "@t3tools/provider-core/server/notification";
+import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
@@ -128,7 +129,14 @@ export const reconcileRemoteDelegatedTaskQuestions = Effect.fnUntraced(function*
     parent.thread.deletedAt === null;
   const pending = new Set<string>();
   for (const request of remote.snapshot.requests) {
-    if (request.kind !== "user_input" || !eligible) continue;
+    if (
+      !eligible ||
+      remote.availability !== "current" ||
+      request.kind === "auth_refresh" ||
+      request.kind === "dynamic_tool_call" ||
+      (request.kind !== "user_input" && request.responseType !== "live")
+    )
+      continue;
     if (
       task.completionWake === "settled_only" &&
       request.responseType === "live" &&
@@ -137,7 +145,7 @@ export const reconcileRemoteDelegatedTaskQuestions = Effect.fnUntraced(function*
       )
     )
       continue;
-    const key = `${task.id}:${request.environmentId}:${request.threadId}:${request.requestId}`;
+    const key = `${task.id}:${request.environmentId}:${request.threadId}:${request.requestId}:${request.revision}`;
     const messageId = MessageId.make(`message:remote-delegated-question:${key}`);
     pending.add(messageId);
     const receipts = yield* CommandReceiptStoreV2;
@@ -148,16 +156,28 @@ export const reconcileRemoteDelegatedTaskQuestions = Effect.fnUntraced(function*
       if (Option.isNone(receipt) || receipt.value.status === "accepted") break;
       commandId = CommandId.make(`server:remote-delegated-question-retry:${++attempt}:${key}`);
     }
+    const encode = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+    const targetText = yield* encode({
+      environmentId: request.environmentId,
+      threadId: request.threadId,
+    }).pipe(Effect.orDie);
+    const routeText = yield* encode([
+      { environmentId: remote.environmentId, threadId: remote.threadId },
+      ...(request.route ?? []),
+    ]).pipe(Effect.orDie);
     yield* dispatch({
       type: "message.dispatch",
       commandId,
       threadId: task.threadId,
       messageId,
-      text: `Delegated task ${task.id} has a pending question in ${remote.label}. Read the destination request with environmentId ${request.environmentId}, threadId ${request.threadId}, requestId ${request.requestId}. It may already have been answered or dismissed.`,
+      text: `Delegated task ${task.id} has a pending ${request.kind === "user_input" ? "question" : "approval"} in ${remote.label}. Use t3_pending_request_read with threadId ${task.threadId}, requestId ${request.requestId}, requestTarget ${targetText}, requestRoute ${routeText}. Answer with t3_pending_request_respond using the same qualified target and route, expectedRevision from the read, and one stable clientRequestId for that answer. It may already have been answered or dismissed.`,
       notification: {
         source: { kind: "delegated_task", taskIds: [task.id] },
         outcome: "updated",
-        summary: "Remote delegated task has a question",
+        summary:
+          request.kind === "user_input"
+            ? "Remote delegated task has a question"
+            : "Remote delegated task needs approval",
       },
       attachments: [],
       dispatchMode: { type: "queue_after_active" },

@@ -1565,6 +1565,17 @@ const make = Effect.gen(function* () {
               : terminalResult.text
             : null,
         latestTerminalResultContextTransferId: resultTransferForRun(terminalRun)?.id ?? null,
+        hasPendingApproval:
+          !isTerminalTaskStatus(status) &&
+          childControls.runtimeRequests.some(
+            (request) =>
+              request.status === "pending" &&
+              request.responseCapability.type === "live" &&
+              request.kind !== "user_input" &&
+              request.kind !== "auth_refresh" &&
+              request.kind !== "dynamic_tool_call",
+          ),
+        // A finished task has no question of its own; later child runs belong to other tasks.
         hasPendingQuestion:
           !isTerminalTaskStatus(status) &&
           childControls.runtimeRequests.some(
@@ -1737,6 +1748,16 @@ const make = Effect.gen(function* () {
           (task.remoteChild?.snapshot?.pendingChildren ?? 0) > 0 ||
           (task.remoteChild?.snapshot?.queuedRuns ?? 0) > 0 ||
           task.remoteChild?.snapshot?.recoveryWaiting === true,
+        hasPendingApproval:
+          task.remoteChild?.availability === "current" &&
+          (task.remoteChild.snapshot?.requests.some(
+            (request) =>
+              request.responseType === "live" &&
+              request.kind !== "user_input" &&
+              request.kind !== "auth_refresh" &&
+              request.kind !== "dynamic_tool_call",
+          ) ??
+            false),
         // Question counts come from qualified destination observations.
         hasPendingQuestion: (task.remoteChild?.snapshot?.pendingQuestions ?? 0) > 0,
         providerInstanceId: task.providerInstanceId,
@@ -1766,7 +1787,11 @@ const make = Effect.gen(function* () {
         .getThreadEventSequence(scope.thread.threadId)
         .pipe(Effect.mapError(streamError));
       const initial = yield* readTask(scope, taskId, false, true);
-      if (initial.hasPendingQuestion || isTerminalTaskStatus(initial.status)) {
+      if (
+        initial.hasPendingQuestion ||
+        initial.hasPendingApproval ||
+        isTerminalTaskStatus(initial.status)
+      ) {
         return Option.some(initial);
       }
       // One stream per event type, so transcript events never fill a buffer.
@@ -1789,7 +1814,12 @@ const make = Effect.gen(function* () {
       ).pipe(
         Stream.mapError(streamError),
         Stream.mapEffect(() => readTask(scope, taskId, false, true)),
-        Stream.filter((result) => result.hasPendingQuestion || isTerminalTaskStatus(result.status)),
+        Stream.filter(
+          (result) =>
+            result.hasPendingQuestion ||
+            result.hasPendingApproval === true ||
+            isTerminalTaskStatus(result.status),
+        ),
         Stream.runHead,
       );
     }).pipe(Effect.timeoutOption(Duration.millis(timeoutMs)), Effect.map(Option.flatten));

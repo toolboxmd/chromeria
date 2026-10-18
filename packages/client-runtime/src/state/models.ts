@@ -248,7 +248,7 @@ export function presentThreadShell(
       thread.pendingRuntimeRequest.kind !== "user_input" &&
       thread.pendingRuntimeRequest.kind !== "auth_refresh",
     hasPendingUserInput: thread.pendingRuntimeRequest?.kind === "user_input",
-    pendingSubagentRequest,
+    pendingSubagentRequest: pendingSubagentRequest ?? thread.remotePendingRequest ?? null,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
     pendingBackgroundTasks: thread.pendingBackgroundTasks ?? [],
     providerInstanceHistory: thread.providerInstanceHistory ?? [],

@@ -1,5 +1,6 @@
 import * as BrowserCookieMirror from "./preview/BrowserCookieMirror.ts";
 import * as CookieMirrorRoute from "./preview/CookieMirrorRoute.ts";
+import * as PendingRequestService from "./childThreads/PendingRequestService.ts";
 import * as PeerTaskLifecycle from "./peer/PeerTaskLifecycle.ts";
 import * as McpRequestRuntime from "./mcp/McpRequestRuntime.ts";
 import * as PeerLinkEvents from "./peer/PeerLinkEvents.ts";
@@ -1104,6 +1105,7 @@ const layerMakeServer = Layer.unwrap(
     return layerServerApplication.pipe(
       Layer.provide(CloudLink.layer),
       // The authenticated transport requires the runtime's real lifecycle dependencies.
+      Layer.provide(PendingRequestService.layer),
       Layer.provide(PeerTaskLifecycle.layer),
       // Source clients, MCP and startup recovery share one remote lifecycle owner.
       Layer.provide(

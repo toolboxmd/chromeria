@@ -101,6 +101,10 @@ flowchart TD
     PAR["Peer attachments and request recovery"]
     %% PAR: #382 PR #410
     RTL --> PAR
+    RPR["Remote descendant requests"]
+    %% RPR: #369 PR #416
+    RTL --> RPR
+    PAR --> RPR
     NR["Network routes"]
     %% NR: #292 #358 PR #498 PR #497
     EP["Execution purpose"]

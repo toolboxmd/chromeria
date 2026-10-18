@@ -275,7 +275,7 @@ const make = Effect.gen(function* () {
               const revisions = yield* sql<{
                 request_id: string;
                 revision: number;
-              }>`SELECT json_extract(payload_json, '$.id') AS request_id, MAX(sequence) AS revision FROM orchestration_events WHERE stream_id = ${pair.childThreadId} AND sequence <= ${sequence} AND event_type = 'runtime-request.updated' GROUP BY json_extract(payload_json, '$.id')`;
+              }>`SELECT CASE WHEN event_type='runtime-request.updated' THEN json_extract(payload_json, '$.id') ELSE json_extract(payload_json, '$.requestId') END AS request_id, MAX(sequence) AS revision FROM orchestration_events WHERE stream_id = ${pair.childThreadId} AND sequence <= ${sequence} AND (event_type = 'runtime-request.updated' OR (event_type='turn-item.updated' AND json_extract(payload_json,'$.requestId') IS NOT NULL)) GROUP BY request_id`;
               const revisionById = new Map(revisions.map((row) => [row.request_id, row.revision]));
               let pendingChildren = 0;
               let queuedRuns = child.runs.filter(
@@ -334,7 +334,18 @@ const make = Effect.gen(function* () {
                       queuedRuns += observed.queuedRuns;
                       recoveryWaiting ||= observed.recoveryWaiting;
                       if (!observed.executionSettled) executionSettled = false;
-                      requests.push(...observed.requests);
+                      requests.push(
+                        ...observed.requests.map((request) => ({
+                          ...request,
+                          route: [
+                            {
+                              environmentId: task.remoteChild!.environmentId,
+                              threadId: task.remoteChild!.threadId!,
+                            },
+                            ...(request.route ?? []),
+                          ],
+                        })),
+                      );
                       omittedRequests += Math.max(
                         0,
                         observed.requestCount - observed.requests.length,
@@ -389,7 +400,7 @@ const make = Effect.gen(function* () {
                 const nestedRevisions = yield* sql<{
                   request_id: string;
                   revision: number;
-                }>`SELECT json_extract(payload_json, '$.id') AS request_id, MAX(sequence) AS revision FROM orchestration_events WHERE stream_id = ${task.childThreadId} AND sequence <= ${sequence} AND event_type = 'runtime-request.updated' GROUP BY json_extract(payload_json, '$.id')`;
+                }>`SELECT CASE WHEN event_type='runtime-request.updated' THEN json_extract(payload_json, '$.id') ELSE json_extract(payload_json, '$.requestId') END AS request_id, MAX(sequence) AS revision FROM orchestration_events WHERE stream_id = ${task.childThreadId} AND sequence <= ${sequence} AND (event_type = 'runtime-request.updated' OR (event_type='turn-item.updated' AND json_extract(payload_json,'$.requestId') IS NOT NULL)) GROUP BY request_id`;
                 const nestedRevisionById = new Map(
                   nestedRevisions.map((row) => [row.request_id, row.revision]),
                 );
