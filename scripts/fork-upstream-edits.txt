@@ -80,6 +80,7 @@ apps/server/src/server.ts
 apps/server/src/serverRuntimeStartup.autoPull.test.ts
 apps/server/src/serverRuntimeStartup.ts
 apps/server/src/serverSettings.test.ts
+apps/server/src/serverSettings.ts
 apps/server/src/vcs/GitVcsDriver.test.ts
 apps/server/src/vcs/GitVcsDriver.ts
 apps/server/src/vcs/GitVcsDriverCore.test.ts
@@ -410,3 +411,4 @@ packages/client-runtime/src/work-log/itemDetail.test.ts
 packages/client-runtime/src/work-log/itemDetail.ts
 packages/shared/src/orchestrationV2PendingBackgroundWork.test.ts
 packages/shared/src/orchestrationV2PendingBackgroundWork.ts
+packages/shared/src/projectSettings.ts

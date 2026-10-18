@@ -41,6 +41,7 @@ import { runCachePersistence } from "./cachePersistence.ts";
 import {
   isRpcClientError,
   request,
+  requestGuarded,
   runStream,
   subscribe,
   subscribeDynamicWithSession,
@@ -989,6 +990,15 @@ export function createServerEnvironmentAtoms<R, E>(
   const updateSettings = createEnvironmentRpcCommand(runtime, {
     label: "environment-data:server:update-settings",
     tag: WS_METHODS.serverUpdateSettings,
+    // This client stores partial Prism project overrides; the server drops
+    // empty Prism lists from project override writes that do not say so.
+    execute: (input) =>
+      requestGuarded(
+        WS_METHODS.serverUpdateSettings,
+        input.patch.projectSettingsOverrides === undefined
+          ? input
+          : { ...input, patch: { ...input.patch, prismRoleOverridesPartial: true } },
+      ),
     scheduler: configScheduler,
     concurrency: configConcurrency,
   });
