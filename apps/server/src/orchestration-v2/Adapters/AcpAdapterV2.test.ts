@@ -10882,8 +10882,23 @@ describe("AcpAdapterV2", () => {
     "persistent monitor terminal wake",
     "legacy persistent monitor wake",
     "bounded background retention",
-  ] as const)("Grok settles its reply with a %s (#435)", (scenario) =>
+    "session release",
+    "background server with output before root completion",
+    "legacy persistent monitor wake with output before root completion",
+    "persistent monitor terminal wake with output before root completion",
+    "background server polled after end under cache pressure",
+    "nonpersistent monitor polled after end under cache pressure",
+    "background server frame after end under cache pressure",
+    "background server polled running after end under cache pressure",
+  ] as const)("Grok settles its reply with a %s (#435)", (caseName) =>
     Effect.gen(function* () {
+      const beforeRootTick = caseName.endsWith(" with output before root completion");
+      const cachePressure = caseName.endsWith(" under cache pressure");
+      const nonpersistentMonitor = caseName.startsWith("nonpersistent monitor");
+      const scenario = caseName
+        .replace("nonpersistent monitor", "background server")
+        .replace(" with output before root completion", "")
+        .replace(" under cache pressure", "");
       const isPolling = scenario.startsWith("background server polled");
       const isBuildWake = scenario.startsWith("background build wake");
       const isContinuation = isBuildWake || scenario === "persistent monitor terminal wake";
@@ -11007,12 +11022,17 @@ describe("AcpAdapterV2", () => {
         cwd: process.cwd(),
       });
       const modelSelection = { instanceId, model: "default" } as const;
-      const runtime = yield* adapter.openSession({
-        threadId,
-        providerSessionId: ProviderSessionId.make(`provider-session-${scenario}`),
-        modelSelection,
-        runtimePolicy,
-      });
+      const releaseScope = scenario === "session release" ? yield* Scope.make() : undefined;
+      if (releaseScope !== undefined)
+        yield* Effect.addFinalizer(() => Scope.close(releaseScope, Exit.void));
+      const runtime = yield* adapter
+        .openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make(`provider-session-${scenario}`),
+          modelSelection,
+          runtimePolicy,
+        })
+        .pipe(Effect.provideService(Scope.Scope, releaseScope ?? (yield* Scope.Scope)));
       const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
       yield* runtime.events.pipe(
         Stream.runForEach((event) => Queue.offer(events, event)),
@@ -11087,8 +11107,13 @@ describe("AcpAdapterV2", () => {
             kind: "execute",
             status: "in_progress",
             rawInput:
-              scenario === "persistent monitor terminal wake"
-                ? { variant: "Monitor", command, persistent: true, description: scenario }
+              scenario === "persistent monitor terminal wake" || nonpersistentMonitor
+                ? {
+                    variant: "Monitor",
+                    command,
+                    persistent: !nonpersistentMonitor,
+                    description: scenario,
+                  }
                 : { variant: "Bash", command, description: scenario },
           },
         });
@@ -11100,8 +11125,13 @@ describe("AcpAdapterV2", () => {
             title: `[bg] ${command} (${taskId})`,
             status: "completed",
             rawOutput:
-              scenario === "persistent monitor terminal wake"
-                ? { type: "Monitor", taskId, persistent: true, timeoutMs: 36000000 }
+              scenario === "persistent monitor terminal wake" || nonpersistentMonitor
+                ? {
+                    type: "Monitor",
+                    taskId,
+                    persistent: !nonpersistentMonitor,
+                    timeoutMs: 36000000,
+                  }
                 : {
                     type: "BackgroundTaskStarted",
                     task_id: taskId,
@@ -11109,6 +11139,23 @@ describe("AcpAdapterV2", () => {
                     status: "running",
                     command,
                   },
+          },
+        });
+      }
+      if (beforeRootTick) {
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "command-1",
+            status: "in_progress",
+            content: [{ type: "content", content: { type: "text", text: "in-turn output\n" } }],
+            rawOutput: {
+              type: "Bash",
+              output_for_prompt: "in-turn output\n",
+              exit_code: 0,
+              command,
+            },
           },
         });
       }
@@ -11161,6 +11208,15 @@ describe("AcpAdapterV2", () => {
           content: { type: "text", text: "Finished." },
         },
       });
+      if (nonpersistentMonitor) {
+        yield* notify({
+          sessionId,
+          update: {
+            sessionUpdate: "task_completed",
+            task_snapshot: { task_id: taskId, kind: "monitor", exit_code: 0 },
+          },
+        });
+      }
       // Grok reported this turn complete while session/prompt stayed open.
       yield* notify({
         sessionId,
@@ -11192,10 +11248,39 @@ describe("AcpAdapterV2", () => {
       if (scenario !== "legacy persistent monitor wake")
         assert.equal(
           commands.at(-1)?.status,
-          scenario === "command quoting spawn subagents" ? "completed" : "running",
+          scenario === "command quoting spawn subagents" || nonpersistentMonitor
+            ? "completed"
+            : "running",
         );
       const originalTerminal = observed.find((event) => event.type === "turn.terminal");
       if (originalTerminal === undefined) return yield* Effect.die("missing original terminal");
+      if (releaseScope !== undefined) {
+        if (runtime.hasPendingBackgroundWork === undefined)
+          return yield* Effect.die("missing background work state");
+        assert.isTrue(yield* runtime.hasPendingBackgroundWork);
+        yield* Scope.close(releaseScope, Exit.void);
+        assert.isFalse(
+          yield* runtime.hasPendingBackgroundWork,
+          "released sessions retain no live background state",
+        );
+        assert.lengthOf(retainedTools, 0, "session release clears background payloads");
+        return;
+      }
+
+      if (beforeRootTick) {
+        assert.equal(
+          commands.at(-1)?.status,
+          "running",
+          "root completion must not end a registered background task after its ACK is replaced",
+        );
+        if (runtime.hasPendingBackgroundWork === undefined)
+          return yield* Effect.die("missing background work state");
+        assert.isTrue(
+          yield* runtime.hasPendingBackgroundWork,
+          "the live task must still pin its native session after root completion",
+        );
+      }
+
       if (scenario === "legacy persistent monitor wake") {
         yield* send({
           sessionId,
@@ -11503,6 +11588,36 @@ describe("AcpAdapterV2", () => {
           },
         });
       }
+      if (cachePressure) {
+        for (let index = 0; index < 128; index += 1) {
+          const otherTaskId = `01a14f39-1b68-7092-a0bd-${String(index).padStart(12, "0")}`;
+          yield* originalSend({
+            sessionId,
+            update: {
+              sessionUpdate: "tool_call",
+              toolCallId: `pressure-${index}`,
+              title: "Execute true",
+              kind: "execute",
+              status: "completed",
+              rawInput: { variant: "Bash", command: "true" },
+              rawOutput: {
+                type: "BackgroundTaskStarted",
+                task_id: otherTaskId,
+                task_type: "bash",
+                status: "running",
+                command: "true",
+              },
+            },
+          });
+          yield* notify({
+            sessionId,
+            update: {
+              sessionUpdate: "task_completed",
+              task_snapshot: { task_id: otherTaskId, kind: "bash", exit_code: 0, output: "done" },
+            },
+          });
+        }
+      }
       if (scenario === "Stop after background end") {
         const stoppedTaskId = "01a14f39-1b68-7092-a0bd-62d0a91cb319";
         yield* originalSend({
@@ -11673,7 +11788,7 @@ describe("AcpAdapterV2", () => {
         assert.isAtMost(
           retainedTools.length,
           129,
-          "only live tasks plus 128 terminal hydration records survive",
+          "only live tasks plus 128 terminal tool payloads survive",
         );
         assert.isTrue(
           retainedTools.some((tool) => tool.toolCallId === "command-1"),
@@ -11812,6 +11927,12 @@ describe("AcpAdapterV2", () => {
           "straggler progress must not overwrite a terminal command's output",
         );
         assert.equal(originalCommands.at(-1)?.status, "completed");
+        if (cachePressure)
+          assert.equal(
+            originalCommands.at(-1)?.input,
+            command,
+            "hydration after payload eviction keeps the original command presentation",
+          );
         if (isPolling || scenario === "background server frame after end")
           assert.equal(
             originalCommands.at(-1)?.output,

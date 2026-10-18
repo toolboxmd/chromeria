@@ -130,7 +130,7 @@ export const ACP_PROTOCOL = "acp.ndjson-jsonrpc" as const;
  * wake. Longer floors (4–20s) only prolonged Working. No per-model carveouts.
  */
 const ACP_DEFERRED_FINALIZE_DEBOUNCE: Duration.Input = "3000 millis";
-const ACP_TERMINAL_BACKGROUND_TOOL_LIMIT = 128;
+const ACP_TERMINAL_BACKGROUND_PAYLOAD_LIMIT = 128;
 
 export interface AcpAdapterV2RuntimeInput {
   readonly newSessionRules?: string;
@@ -1166,7 +1166,7 @@ type AcpToolProjectionIdentity = Pick<
 interface BackgroundToolRecord {
   readonly taskId: string;
   readonly identity: AcpToolProjectionIdentity;
-  readonly tool: AcpToolCallState;
+  readonly toolIdentity: Pick<AcpToolCallState, "toolCallId" | "kind" | "title" | "command">;
   readonly status: ProjectedToolStatus;
   readonly wakePolicy: "progress" | "completion";
 }
@@ -1738,32 +1738,80 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           input.runtimePolicy;
         const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
         const activeTurn = yield* Ref.make<ActiveAcpTurn | null>(null);
-        // No turn contexts escape through background routing. Terminal records
-        // are a bounded window for notification-before-output hydration/stragglers.
+        // Identity and terminal facts last for the native runtime. Only payloads
+        // are evictable: late hydration/stragglers have no protocol expiry.
         const backgroundTools = new Map<string, BackgroundToolRecord>();
         const backgroundTaskByTool = new Map<string, string>();
-        const terminalBackgroundTools = new Set<string>();
+        const backgroundToolPayloads = new Map<string, AcpToolCallState>();
+        const terminalBackgroundPayloads = new Set<string>();
+        const backgroundToolIdentity = (
+          tool: AcpToolCallState,
+        ): BackgroundToolRecord["toolIdentity"] => {
+          const input = unknownRecord(tool.data.rawInput);
+          const output = unknownRecord(tool.data.rawOutput);
+          const command =
+            tool.command ??
+            (typeof input?.command === "string" ? input.command : undefined) ??
+            (typeof output?.command === "string" ? output.command : undefined);
+          const kind = command === undefined ? tool.kind : "execute";
+          // Keep only the presentation needed for a complete item after payload
+          // eviction, never raw arguments, output, detail, or a turn context.
+          return {
+            toolCallId: tool.toolCallId,
+            ...(kind === undefined ? {} : { kind }),
+            ...(tool.title === undefined ? {} : { title: tool.title }),
+            ...(command === undefined ? {} : { command }),
+          };
+        };
+        const backgroundToolState = (key: string, record: BackgroundToolRecord): AcpToolCallState =>
+          backgroundToolPayloads.get(key) ?? {
+            ...record.toolIdentity,
+            status:
+              record.status === "failed"
+                ? "failed"
+                : record.status === "running"
+                  ? "inProgress"
+                  : record.status === "pending"
+                    ? "pending"
+                    : "completed",
+            data: {},
+          };
         const forgetBackgroundTool = (key: string) => {
           const record = backgroundTools.get(key);
           if (record === undefined) return;
           backgroundTaskByTool.delete(
-            sessionScopedId(record.identity.nativeThreadId, record.tool.toolCallId),
+            sessionScopedId(record.identity.nativeThreadId, record.toolIdentity.toolCallId),
           );
           backgroundTools.delete(key);
-          terminalBackgroundTools.delete(key);
+          backgroundToolPayloads.delete(key);
+          terminalBackgroundPayloads.delete(key);
         };
-        const cacheBackgroundTool = (key: string, record: BackgroundToolRecord) => {
+        const cacheBackgroundTool = (
+          key: string,
+          record: BackgroundToolRecord,
+          tool: AcpToolCallState,
+        ) => {
           backgroundTools.set(key, record);
           backgroundTaskByTool.set(
-            sessionScopedId(record.identity.nativeThreadId, record.tool.toolCallId),
+            sessionScopedId(record.identity.nativeThreadId, record.toolIdentity.toolCallId),
             key,
           );
+          backgroundToolPayloads.set(key, tool);
           if (record.status === "pending" || record.status === "running") return;
-          terminalBackgroundTools.add(key);
-          while (terminalBackgroundTools.size > ACP_TERMINAL_BACKGROUND_TOOL_LIMIT) {
-            const oldest = terminalBackgroundTools.values().next().value;
-            if (oldest !== undefined) forgetBackgroundTool(oldest);
+          terminalBackgroundPayloads.add(key);
+          while (terminalBackgroundPayloads.size > ACP_TERMINAL_BACKGROUND_PAYLOAD_LIMIT) {
+            const oldest = terminalBackgroundPayloads.values().next().value;
+            if (oldest !== undefined) {
+              backgroundToolPayloads.delete(oldest);
+              terminalBackgroundPayloads.delete(oldest);
+            }
           }
+        };
+        const clearBackgroundTools = () => {
+          backgroundTools.clear();
+          backgroundTaskByTool.clear();
+          backgroundToolPayloads.clear();
+          terminalBackgroundPayloads.clear();
         };
         const activeSessionId = yield* Ref.make<string | null>(null);
         const contextUsageBySessionId = yield* Ref.make(
@@ -2302,9 +2350,16 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         let runtime!: AcpSessionRuntime.AcpSessionRuntime["Service"];
         let runtimeMcpBridge: AcpMcpOverAcpBridge | undefined;
         yield* Effect.addFinalizer(() =>
-          runtimeScope === undefined
+          (runtimeScope === undefined
             ? Effect.void
-            : Scope.close(runtimeScope, Exit.void).pipe(Effect.ignore),
+            : Scope.close(runtimeScope, Exit.void).pipe(Effect.ignore)
+          ).pipe(
+            Effect.ensuring(
+              Effect.sync(clearBackgroundTools).pipe(
+                Effect.andThen(Ref.set(runningBackgroundTaskIds, new Set())),
+              ),
+            ),
+          ),
         );
 
         const resolveItemOrdinal = (context: ActiveAcpTurn, nativeItemId: string) =>
@@ -3479,7 +3534,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           if (record === undefined) return;
           const ended = record.status !== "pending" && record.status !== "running";
           if (ended && (incoming.status === "inProgress" || incoming.status === "pending")) return;
-          const merged = mergeToolCallState(record.tool, incoming);
+          const merged = mergeToolCallState(backgroundToolState(key, record), incoming);
           const normalized = flavor.normalizeToolCall?.(merged) ?? merged;
           const authoritativeEnd =
             (yield* Ref.get(endedBackgroundTaskIds)).has(record.taskId) &&
@@ -3502,7 +3557,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     ? ("failed" as const)
                     : ("completed" as const),
           };
-          cacheBackgroundTool(key, { ...record, tool, status });
+          cacheBackgroundTool(key, { ...record, status }, tool);
           yield* setBackgroundTaskRunning(
             record.taskId,
             status === "running" || status === "pending",
@@ -3565,33 +3620,42 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             const backgroundStatus = projectedStatus ?? toolStatus(toolCall.status);
             const key = sessionScopedId(context.nativeThreadId, backgroundTaskId);
             const existing = backgroundTools.get(key);
+            // Polls can arrive after a non-persistent monitor ended its root.
             if (
               !context.interrupted &&
               context.finalizedStatus !== "interrupted" &&
               projectedStatus !== "interrupted" &&
-              (existing !== undefined || flavor.isPersistentBackgroundTool?.(toolCall) === true)
+              (existing !== undefined ||
+                flavor.extractBackgroundTaskCompletion !== undefined ||
+                flavor.isPersistentBackgroundTool?.(toolCall) === true)
             ) {
               const now = yield* DateTime.now;
-              cacheBackgroundTool(key, {
-                taskId: backgroundTaskId,
-                identity: existing?.identity ?? {
-                  threadId: context.input.threadId,
-                  runId: context.input.runId,
-                  rootNodeId: context.input.rootNodeId,
-                  providerThreadId: context.input.providerThread.id,
-                  providerTurnId: context.providerTurnId,
-                  nativeThreadId: context.nativeThreadId,
-                  ordinal: yield* resolveItemOrdinal(
-                    context,
-                    `${context.nativeThreadId}:tool:${toolCall.toolCallId}`,
-                  ),
-                  startedAt: context.toolStartedAt.get(toolCall.toolCallId) ?? now,
+              cacheBackgroundTool(
+                key,
+                {
+                  taskId: backgroundTaskId,
+                  identity: existing?.identity ?? {
+                    threadId: context.input.threadId,
+                    runId: context.input.runId,
+                    rootNodeId: context.input.rootNodeId,
+                    providerThreadId: context.input.providerThread.id,
+                    providerTurnId: context.providerTurnId,
+                    nativeThreadId: context.nativeThreadId,
+                    ordinal: yield* resolveItemOrdinal(
+                      context,
+                      `${context.nativeThreadId}:tool:${toolCall.toolCallId}`,
+                    ),
+                    startedAt: context.toolStartedAt.get(toolCall.toolCallId) ?? now,
+                  },
+                  toolIdentity: existing?.toolIdentity ?? backgroundToolIdentity(toolCall),
+                  status: backgroundStatus,
+                  wakePolicy:
+                    existing?.wakePolicy ??
+                    flavor.backgroundToolWakePolicy?.(toolCall) ??
+                    "progress",
                 },
-                tool: toolCall,
-                status: backgroundStatus,
-                wakePolicy:
-                  existing?.wakePolicy ?? flavor.backgroundToolWakePolicy?.(toolCall) ?? "progress",
-              });
+                toolCall,
+              );
             }
             yield* setBackgroundTaskRunning(
               backgroundTaskId,
@@ -3651,8 +3715,11 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               backgroundCompletion.taskId,
             );
             const target =
-              record?.tool ??
-              (targetToolCallId === undefined ? undefined : context.tools.get(targetToolCallId));
+              record !== undefined
+                ? backgroundToolState(key, record)
+                : targetToolCallId === undefined
+                  ? undefined
+                  : context.tools.get(targetToolCallId);
             if (target !== undefined) hydratedRegisteredMonitor = true;
             const targetStatus =
               record?.status ?? (target === undefined ? undefined : toolStatus(target.status));
@@ -3786,12 +3853,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           for (const [key, record] of backgroundTools) {
             if (record.identity.runId === active?.input.runId && !active.finalized) continue;
             if (record.status === "pending" || record.status === "running") {
-              yield* emitBackgroundTool(key, record.tool, "interrupted");
+              yield* emitBackgroundTool(key, backgroundToolState(key, record), "interrupted");
             }
           }
-          backgroundTools.clear();
-          backgroundTaskByTool.clear();
-          terminalBackgroundTools.clear();
+          clearBackgroundTools();
         });
 
         const emitPlan = Effect.fnUntraced(function* (
@@ -4151,7 +4216,11 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               : undefined;
           const toolCallId = context?.toolCallIdsByBackgroundTaskId.get(mutation.taskId);
           const tool =
-            record?.tool ?? (toolCallId === undefined ? undefined : context?.tools.get(toolCallId));
+            record !== undefined
+              ? backgroundToolState(key, record)
+              : toolCallId === undefined
+                ? undefined
+                : context?.tools.get(toolCallId);
           if (tool === undefined) return;
           const status = record?.status ?? toolStatus(tool.status);
           if (status !== "pending" && status !== "running") return;
@@ -6936,7 +7005,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         const terminalizeOpenForegroundTools = Effect.fnUntraced(function* (
           context: ActiveAcpTurn,
         ) {
+          const backgroundToolIds = new Set(context.toolCallIdsByBackgroundTaskId.values());
           for (const tool of context.tools.values()) {
+            // Output frames can replace the ACK that carried the task id.
+            if (backgroundToolIds.has(tool.toolCallId)) continue;
             if (!acpCompletedTurnShouldTerminalizeTool(tool, flavor)) continue;
             yield* emitTool(context, tool, "completed");
           }
@@ -7735,9 +7807,9 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             ? {
                 hasPendingBackgroundWork: Effect.gen(function* () {
                   yield* (
-                    options.testHooks?.onBackgroundToolRetention?.(
-                      [...backgroundTools.values()].map((record) => record.tool),
-                    ) ?? Effect.void
+                    options.testHooks?.onBackgroundToolRetention?.([
+                      ...backgroundToolPayloads.values(),
+                    ]) ?? Effect.void
                   );
                   if ((yield* Ref.get(wakeBuffer)).length > 0) return true;
                   if (yield* Ref.get(continuationRequested)) return true;
