@@ -216,7 +216,7 @@ const make = Effect.gen(function* () {
       yield* reserve;
       const delayMs = (yield* Clock.currentTimeMillis) - queuedAt;
       // Transport errors contain the authenticated request. Never retain them in domain errors.
-      const response = yield* client
+      const response = yield* HttpClient.withScope(client)
         .post(ENDPOINT, {
           headers: {
             "X-Treg-Token": token,
@@ -312,6 +312,7 @@ const make = Effect.gen(function* () {
         });
       return { page: document, finalUrl: final.href, callId, chargedMicro: 0 as const, delayMs };
     },
+    Effect.scoped,
     Effect.provideServiceEffect(
       Headers.CurrentRedactedNames,
       Effect.map(Headers.CurrentRedactedNames, (names) => [...names, "x-treg-token"]),

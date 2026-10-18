@@ -454,3 +454,23 @@ it.effect("HTML entity encoded credentials cannot reach extracted text or proven
     }).pipe(Effect.provide(f.layer));
   }).pipe(Effect.provide(base)),
 );
+
+it.effect.each([200, 402, 429, 503])(
+  "closes the authenticated response scope after HTTP %s, including unread errors",
+  (status) =>
+    Effect.gen(function* () {
+      let signal: AbortSignal | undefined;
+      const f = yield* fixture((r, abort) => {
+        signal = abort;
+        return Effect.succeed(
+          reply(r, status === 200 ? payload() : { error: "unread provider error" }, status),
+        );
+      });
+      yield* Effect.gen(function* () {
+        yield* f.provision;
+        yield* Effect.result(fetch());
+        expect(signal?.aborted).toBe(true);
+        expect(f.requests).toHaveLength(1);
+      }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.provide(base)),
+);
