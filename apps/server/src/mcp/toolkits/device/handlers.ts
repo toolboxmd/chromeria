@@ -8,6 +8,8 @@ import {
   type DeviceSummary,
   DeviceToolUnavailableError,
   LOCAL_DEVICE_HOST_ID,
+  type DeviceCommandTarget,
+  type DeviceAtomicCommand,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
@@ -62,6 +64,32 @@ export function agentDeviceQuickStart(
   ].join("\n");
 }
 
+/** Remote guidance contains public typed intent and this exact opening only. */
+function deviceCommandQuickStart(
+  target: DeviceCommandTarget,
+  scope: Pick<McpInvocationContext.McpThreadInvocationScope, "environmentId" | "thread">,
+): string {
+  const route = { environmentId: scope.environmentId, contextThreadId: scope.thread.threadId };
+  const call = (command: DeviceAtomicCommand) =>
+    JSON.stringify({
+      ...route,
+      target,
+      command,
+      clientRequestId: `${target.toolSessionId}:${command.type}:1`,
+    });
+  return [
+    "Call device_commands to inspect destination command support. Each example includes a session-specific clientRequestId. Increment its suffix for each new intent; retry the same intent with the exact same key and input.",
+    `device_commands ${JSON.stringify({ ...route, hostId: target.hostId })}`,
+    `device_execute ${call({ type: "open", app: "com.example.app" })}`,
+    `device_execute ${call({ type: "snapshot", interactiveOnly: true })}`,
+    `device_execute ${call({ type: "click", ref: "@e3" })}`,
+    `device_execute ${call({ type: "fill", ref: "@e5", text: "text" })}`,
+    `device_execute ${call({ type: "screenshot" })}`,
+    `device_execute ${call({ type: "close" })}`,
+    "Use refs from this session's snapshot. Dispatched does not mean verified: inspect the resulting screen. Fetch returned artifact references through the authenticated attachment owner. Reopening returns a new session target.",
+  ].join("\n");
+}
+
 const requireDeviceAccess = McpInvocationContext.requireThreadMcpCapability("device").pipe(
   Effect.mapError(
     () =>
@@ -85,7 +113,8 @@ const pickDevice = (
       const match = devices.find(
         (device) => device.hostId === hostId && device.id === input.deviceId,
       );
-      if (match) return match;
+      if (match && (input.platform === undefined || input.platform === match.platform))
+        return match;
       return yield* new DeviceToolUnavailableError({
         reason: `No device ${input.deviceId} on host ${hostId}. Call device_list for current ids.`,
       });
@@ -120,6 +149,22 @@ const toolError = (
 ) => error;
 
 const handlers = {
+  device_commands: McpToolAccess.readsAsCaller((input) =>
+    Effect.gen(function* () {
+      yield* requireDeviceAccess;
+      const devices = yield* DeviceService.DeviceService;
+      return yield* devices.commandCatalog(input.hostId);
+    }),
+  ),
+  device_execute: McpToolAccess.actsAsCaller(
+    (input) =>
+      Effect.gen(function* () {
+        yield* requireDeviceAccess;
+        const devices = yield* DeviceService.DeviceService;
+        return yield* devices.executeCommand({ target: input.target, command: input.command });
+      }),
+    "external-unknown",
+  ),
   device_list: McpToolAccess.readsAsCaller((input) =>
     Effect.gen(function* () {
       const scope = yield* requireDeviceAccess;
@@ -153,6 +198,12 @@ const handlers = {
         const scope = yield* requireDeviceAccess;
         const devices = yield* DeviceService.DeviceService;
         const request = yield* CurrentRequest;
+        if (request === undefined && scope.client?.linked === true)
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message:
+              "This peer has not negotiated durable typed device commands; no action was accepted.",
+          });
         if (request !== undefined) {
           if (devices.checkAgentAccess === undefined)
             return yield* new OrchestratorMcpFailure({
@@ -161,6 +212,7 @@ const handlers = {
                 "The native device consent preflight is unavailable; no device action was accepted.",
             });
           yield* devices.checkAgentAccess(input.hostId);
+          yield* devices.checkCommandAccess(input.hostId);
           const previous =
             yield* externalReplay<Tool.Success<typeof DeviceToolkit.tools.device_open>>();
           if (Option.isSome(previous)) return previous.value;
@@ -175,6 +227,11 @@ const handlers = {
               });
             }
             const target = yield* pickDevice(state.devices, input);
+            if (request !== undefined && target.physical)
+              return yield* new DeviceToolUnavailableError({
+                reason:
+                  "Typed execution currently uses the existing simulator/emulator capability. Physical-device consent and support must be established separately.",
+              });
             // Resolve consent and agent connectivity before booting or registering a session.
             const agentArgs = yield* devices.agentTarget({
               threadId: scope.thread.threadId,
@@ -193,6 +250,22 @@ const handlers = {
                 (candidate) =>
                   candidate.hostId === session.hostId && candidate.id === session.deviceId,
               ) ?? target;
+            if (request !== undefined) {
+              if (session.toolSessionId === undefined)
+                return yield* new DeviceToolUnavailableError({
+                  reason: "The native exact-session owner is unavailable.",
+                });
+              const commandTarget = {
+                hostId: session.hostId,
+                deviceId: session.deviceId,
+                toolSessionId: session.toolSessionId,
+              };
+              return {
+                device,
+                target: commandTarget,
+                quickStart: deviceCommandQuickStart(commandTarget, scope),
+              };
+            }
             const targetArgs = [...agentDeviceTargetArgs(device), ...agentArgs];
             const config = yield* ServerConfig.ServerConfig;
             const path = yield* Path.Path;

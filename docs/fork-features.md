@@ -1855,7 +1855,7 @@ sources and reasons.
 ```json
 {
   "id": "peer-links",
-  "purpose": "Port upstream server peer links and record-first remote delegation until absorption replaces the port; retain permanent pairing-code sessions, target Prism launch intent and recovery-aware waits. Extend routing to all MCP toolkit groups while retaining caller capabilities and link-mode narrowing. Own explicit peer consent, including its mobile settings entry and destination permission checks. Replay delegated lifecycle results durably and open qualified destination work through the source client connection. Bind negotiated requests to verified durable caller identity, transfer attachment bytes through destination staging, reconcile native acceptance and retain truthful unknown outcomes for unreconcilable effects. Surface qualified descendant questions and approvals through verified mixed ancestry and the authenticated source client, with native revision guards and receipt replay. Keep source viewers and question choices readable across clients, with exact transport diagnostics behind a disclosure. Align sparse remote follow-up selection with full projections so initial work appears once.",
+  "purpose": "Port upstream server peer links and record-first remote delegation until absorption replaces the port; retain permanent pairing-code sessions, target Prism launch intent and recovery-aware waits. Extend routing to all MCP toolkit groups while retaining caller capabilities and link-mode narrowing. Own explicit peer consent, including its mobile settings entry and destination permission checks. Replay delegated lifecycle results durably and open qualified destination work through the source client connection. Bind negotiated requests to verified durable caller identity, transfer attachment bytes through destination staging, reconcile native acceptance and retain truthful unknown outcomes for unreconcilable effects. Surface qualified descendant questions and approvals through verified mixed ancestry and the authenticated source client, with native revision guards and receipt replay. Keep source viewers and question choices readable across clients, with exact transport diagnostics behind a disclosure. Align sparse remote follow-up selection with full projections so initial work appears once. Execute typed device commands on their exact native session with current originating authority, pre-open authenticated command discovery and qualified native artifact output.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/164",
     "https://github.com/toolboxmd/chromeria/issues/302",
@@ -1863,7 +1863,8 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/issues/380",
     "https://github.com/toolboxmd/chromeria/issues/381",
     "https://github.com/toolboxmd/chromeria/issues/382",
-    "https://github.com/toolboxmd/chromeria/issues/369"
+    "https://github.com/toolboxmd/chromeria/issues/369",
+    "https://github.com/toolboxmd/chromeria/issues/383"
   ],
   "prs": [
     "https://github.com/pingdotgg/t3code/pull/16653",
@@ -1877,7 +1878,8 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/pull/391",
     "https://github.com/toolboxmd/chromeria/pull/410",
     "https://github.com/toolboxmd/chromeria/pull/416",
-    "https://github.com/toolboxmd/chromeria/pull/420"
+    "https://github.com/toolboxmd/chromeria/pull/420",
+    "https://github.com/toolboxmd/chromeria/pull/421"
   ],
   "newFiles": [
     "packages/contracts/src/peerTask.ts",
@@ -1917,7 +1919,12 @@ sources and reasons.
     "apps/mobile/src/features/threads/RemotePendingRequest.test.tsx",
     "apps/mobile/src/features/threads/RemotePendingRequest.tsx",
     "apps/web/src/components/chat/RemotePendingRequest.test.tsx",
-    "apps/web/src/components/chat/RemotePendingRequest.tsx"
+    "apps/web/src/components/chat/RemotePendingRequest.tsx",
+    "apps/server/src/device/AgentDeviceCommand.ts",
+    "apps/server/src/device/AgentDeviceCommand.test.ts",
+    "apps/server/src/device/DeviceCommands.registered.test.ts",
+    "apps/server/src/device/testing/LegacyDeviceTools.fixture.ts",
+    "apps/server/src/device/testing/LegacyDeviceHandlers.fixture.ts"
   ],
   "upstreamFiles": [
     "apps/web/src/state/entities.ts",
@@ -1947,6 +1954,7 @@ sources and reasons.
     "packages/client-runtime/src/t3ToolSummary.ts",
     "packages/shared/src/t3McpToolPresentation.ts",
     "apps/server/src/htmlRender/HtmlRender.ts",
+    "packages/shared/src/t3McpToolPresentation.test.ts",
     "apps/server/src/htmlRender/HtmlRender.test.ts",
     "apps/server/src/mcp/toolkits/html/handlers.ts",
     "apps/server/src/mcp/McpSessionRegistry.test.ts",
@@ -2006,7 +2014,10 @@ sources and reasons.
     "packages/shared/src/agentAwareness.ts",
     "apps/server/src/orchestration-v2/WireProjection.test.ts",
     "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
-    "packages/client-runtime/src/t3ToolSummary.test.ts"
+    "packages/client-runtime/src/t3ToolSummary.test.ts",
+    "apps/server/src/device/DeviceToolchain.ts",
+    "apps/server/src/mcp/McpDeviceToolkit.test.ts",
+    "packages/contracts/src/device.ts"
   ],
   "sharedFiles": [
     "apps/server/src/orchestration-v2/EffectWorker.ts",

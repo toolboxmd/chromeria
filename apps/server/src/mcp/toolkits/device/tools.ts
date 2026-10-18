@@ -8,6 +8,11 @@ import {
   DeviceToolOpenResult,
   DeviceToolScreenshotResult,
   DeviceToolTargetInput,
+  DeviceCommandInput,
+  DeviceCommandResult,
+  DeviceCommandCatalog,
+  DeviceHostId,
+  closedDeviceCommand,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as FileSystem from "effect/FileSystem";
@@ -51,7 +56,7 @@ const DeviceListTool = Tool.make("device_list", {
 
 const DeviceOpenTool = Tool.make("device_open", {
   description:
-    "Open a simulator or emulator for this thread: boots it if needed, starts its live stream, and shows it in the user's Device panel so they can watch. Returns the agent-device CLI invocation pinned to the device; drive the device with that CLI afterwards.",
+    "Open a simulator or emulator for this thread and show its Device panel. With durable requests, returns an exact session target for device_execute. Call device_commands first to check the destination's typed protocol and pinned runtime prerequisites.",
   parameters: McpRouting.parameters(DeviceToolOpenInput),
   success: DeviceToolOpenResult,
   failure: DeviceToolFailure,
@@ -65,7 +70,7 @@ const DeviceOpenTool = Tool.make("device_open", {
 
 export const DeviceScreenshotTool = Tool.make("device_screenshot", {
   description:
-    "Capture the current screen of an open device as a PNG image. Use it to see what the user sees; for taps and text use the agent-device CLI.",
+    "Capture the current screen of an open device as a PNG image. Use device_execute for typed taps/text and for a portable screenshot artifact reference.",
   parameters: McpRouting.parameters(DeviceToolTargetInput),
   success: DeviceToolScreenshotResult,
   failure: DeviceToolFailure,
@@ -93,7 +98,35 @@ const DeviceCloseTool = Tool.make("device_close", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, true);
 
-export const DeviceStandardToolkit = Toolkit.make(DeviceListTool, DeviceOpenTool, DeviceCloseTool);
+const DeviceCommandsTool = Tool.make("device_commands", {
+  description:
+    "Discover app-owned typed command support and check the installed destination runtime without starting helpers or touching a device. An older peer without this tool cannot execute typed commands.",
+  parameters: McpRouting.parameters(Schema.Struct({ hostId: Schema.optional(DeviceHostId) })),
+  success: DeviceCommandCatalog,
+  failure: DeviceToolFailure,
+  dependencies,
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.OpenWorld, false);
+
+const DeviceExecuteTool = Tool.make("device_execute", {
+  description:
+    "Execute typed intent on the exact host/device/session returned by device_open. Snapshot refs belong to that session. Results contain bounded nodes, dispatch status or owned artifact references. Use the same clientRequestId for a retry; outcome_unknown never authorizes re-execution.",
+  parameters: closedDeviceCommand(McpRouting.parameters(DeviceCommandInput).fields),
+  success: DeviceCommandResult,
+  failure: DeviceToolFailure,
+  dependencies,
+})
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.OpenWorld, true);
+
+export const DeviceStandardToolkit = Toolkit.make(
+  DeviceListTool,
+  DeviceOpenTool,
+  DeviceCloseTool,
+  DeviceCommandsTool,
+  DeviceExecuteTool,
+);
 
 export const DeviceScreenshotToolkit = Toolkit.make(DeviceScreenshotTool);
 
@@ -102,4 +135,6 @@ export const DeviceToolkit = Toolkit.make(
   DeviceOpenTool,
   DeviceScreenshotTool,
   DeviceCloseTool,
+  DeviceCommandsTool,
+  DeviceExecuteTool,
 );
