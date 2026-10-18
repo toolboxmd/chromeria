@@ -37,6 +37,7 @@ const agentFixture = Effect.fn("agentFixture")(function* (
   startup: (
     stateDir: string,
   ) => Effect.Effect<ProcessRunner.ProcessRunOutput, ProcessRunner.ProcessRunError>,
+  commandOutput?: ProcessRunner.ProcessRunOutput,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -79,7 +80,11 @@ const agentFixture = Effect.fn("agentFixture")(function* (
     ),
     Effect.provideService(ProcessRunner.ProcessRunner, {
       run: (input) =>
-        input.args.includes("devices") ? startup(stateDir) : Effect.succeed(processOutput(0)),
+        input.args.includes("devices")
+          ? startup(stateDir)
+          : Effect.succeed(
+              input.command === "emulator" && commandOutput ? commandOutput : processOutput(0),
+            ),
     }),
     Effect.provideService(
       HttpClient.HttpClient,
@@ -397,6 +402,24 @@ describe("Android SDK availability", () => {
     }),
   );
 });
+
+it.effect.each([
+  { timedOut: true, expectedCode: 124 },
+  { timedOut: false, expectedCode: 1 },
+])(
+  "normalizes missing local exit status through the runner (timedOut=$timedOut)",
+  ({ timedOut, expectedCode }) =>
+    Effect.gen(function* () {
+      const { host } = yield* agentFixture(
+        () => Effect.die("Agent startup is not needed for inventory"),
+        { ...processOutput(0, "partial-output", "", timedOut), code: null },
+      );
+      const ready = yield* host.ensureReady(() => Effect.void);
+      const result = yield* ready.run("emulator", ["-list-avds"]);
+      expect(result.code).toBe(expectedCode);
+      if (timedOut) expect(result.stderr).toContain("Timed out after 20000 ms.");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
 
 it.effect("puts detected Android tools on the helper PATH without losing existing commands", () =>
   Effect.gen(function* () {
