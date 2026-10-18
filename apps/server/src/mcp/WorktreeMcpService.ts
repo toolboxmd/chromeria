@@ -1,5 +1,8 @@
+import { CurrentRequest, externalDispatch, externalReplay } from "./McpRequestReceipts.ts";
+import * as CommandReceipts from "../orchestration-v2/CommandReceiptStore.ts";
 import {
   CommandId,
+  OrchestratorMcpFailure,
   MessageId,
   type ProjectId,
   WorktreeMcpFailure,
@@ -30,7 +33,7 @@ export class WorktreeMcpService extends Context.Service<
     readonly handoff: (
       scope: McpInvocationScope,
       input: WorktreeMcpHandoffInput,
-    ) => Effect.Effect<WorktreeMcpHandoffResult, WorktreeMcpFailure>;
+    ) => Effect.Effect<WorktreeMcpHandoffResult, WorktreeMcpFailure | OrchestratorMcpFailure>;
     readonly status: (
       scope: McpInvocationScope,
     ) => Effect.Effect<WorktreeMcpStatusResult, WorktreeMcpFailure>;
@@ -56,6 +59,8 @@ const asOperationFailed = (prefix: string) =>
 
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
+  const nativeReceipts = yield* Effect.serviceOption(CommandReceipts.CommandReceiptStoreV2);
+  const path = yield* Path.Path;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const projects = yield* ProjectService.ProjectService;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
@@ -124,25 +129,35 @@ const make = Effect.gen(function* () {
   );
 
   const handoffIds = (scope: McpThreadInvocationScope) =>
-    crypto.randomUUIDv4().pipe(
-      Effect.map((uuid) => {
-        const part = (kind: string, operation: string) =>
-          [kind, "mcp", encodeURIComponent(scope.thread.providerSessionId), operation, uuid].join(
-            ":",
-          );
+    Effect.gen(function* () {
+      const request = yield* CurrentRequest;
+      if (request !== undefined)
         return {
-          commandId: CommandId.make(part("command", "worktree-handoff")),
-          continuationCommandId: CommandId.make(part("command", "worktree-continuation")),
-          continuationMessageId: MessageId.make(part("message", "worktree-continuation")),
+          commandId: CommandId.make(`worktree-handoff:${request.id}`),
+          continuationCommandId: CommandId.make(`worktree-continuation:${request.id}`),
+          continuationMessageId: MessageId.make(`worktree-continuation:${request.id}`),
         };
-      }),
-      Effect.orDie,
-    );
+      return yield* crypto.randomUUIDv4().pipe(
+        Effect.map((uuid) => {
+          const part = (kind: string, operation: string) =>
+            [kind, "mcp", encodeURIComponent(scope.thread.providerSessionId), operation, uuid].join(
+              ":",
+            );
+          return {
+            commandId: CommandId.make(part("command", "worktree-handoff")),
+            continuationCommandId: CommandId.make(part("command", "worktree-continuation")),
+            continuationMessageId: MessageId.make(part("message", "worktree-continuation")),
+          };
+        }),
+        Effect.orDie,
+      );
+    });
 
   const performHandoff = Effect.fn("WorktreeMcpService.performHandoff")(function* (
     scope: McpThreadInvocationScope,
     input: WorktreeMcpHandoffInput,
   ) {
+    const request = yield* CurrentRequest;
     const alreadyInWorktree = (worktreePath: string) =>
       failure(
         "already_in_worktree",
@@ -209,121 +224,158 @@ const make = Effect.gen(function* () {
 
     const startFromOrigin = input.startFromOrigin ?? (yield* readDefaultStartFromOrigin);
 
-    let worktreeBaseRef = baseRef;
-    if (startFromOrigin) {
-      yield* gitWorkflow
-        .fetchRemote({ cwd: projectCwd, remoteName: "origin" })
-        .pipe(asOperationFailed("Unable to fetch origin"));
-      const resolvedRemoteBase = yield* gitWorkflow
-        .resolveRemoteTrackingCommit({
-          cwd: projectCwd,
-          refName: baseRef,
-          fallbackRemoteName: "origin",
-        })
-        .pipe(asOperationFailed(`Unable to resolve the remote-tracking commit of '${baseRef}'`));
-      worktreeBaseRef = resolvedRemoteBase.commitSha;
-    }
+    const dispatch = Effect.gen(function* () {
+      let worktreeBaseRef = baseRef;
+      if (startFromOrigin) {
+        yield* gitWorkflow
+          .fetchRemote({ cwd: projectCwd, remoteName: "origin" })
+          .pipe(asOperationFailed("Unable to fetch origin"));
+        const resolvedRemoteBase = yield* gitWorkflow
+          .resolveRemoteTrackingCommit({
+            cwd: projectCwd,
+            refName: baseRef,
+            fallbackRemoteName: "origin",
+          })
+          .pipe(asOperationFailed(`Unable to resolve the remote-tracking commit of '${baseRef}'`));
+        worktreeBaseRef = resolvedRemoteBase.commitSha;
+      }
 
-    const ids = yield* handoffIds(scope);
+      const ids = yield* handoffIds(scope);
 
-    // uninterruptibleMask: only the potentially slow worktree creation itself
-    // stays interruptible (restore). From the moment it succeeds, through the
-    // binding, continuation queue, setup script launch, and result
-    // construction, there is no interruptible gap: a client cancel can
-    // therefore neither orphan the created worktree before the rollback is
-    // armed, nor skip setting up a worktree the thread was just bound to
-    // (once the binding commits, the scheduled session detach can sever this
-    // request's connection and interrupt the fiber).
-    return yield* Effect.uninterruptibleMask((restore) =>
-      Effect.gen(function* () {
-        const worktree = yield* restore(
-          gitWorkflow
-            .createWorktree({
-              cwd: projectCwd,
-              refName: worktreeBaseRef,
-              newRefName: input.branch,
-              baseRefName: baseRef,
-              path: null,
-            })
-            .pipe(asOperationFailed("Unable to create the worktree")),
-        );
-        const worktreePath = worktree.worktree.path;
+      // uninterruptibleMask: only the potentially slow worktree creation itself
+      // stays interruptible (restore). From the moment it succeeds, through the
+      // binding, continuation queue, setup script launch, and result
+      // construction, there is no interruptible gap: a client cancel can
+      // therefore neither orphan the created worktree before the rollback is
+      // armed, nor skip setting up a worktree the thread was just bound to
+      // (once the binding commits, the scheduled session detach can sever this
+      // request's connection and interrupt the fiber).
+      return yield* Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const worktree = yield* restore(
+            gitWorkflow
+              .createWorktree({
+                cwd: projectCwd,
+                refName: worktreeBaseRef,
+                newRefName: input.branch,
+                baseRefName: baseRef,
+                path: null,
+              })
+              .pipe(asOperationFailed("Unable to create the worktree")),
+          );
+          const worktreePath = worktree.worktree.path;
 
-        const reportFailed = (logMessage: string) =>
-          Effect.catchCause((cause: Cause.Cause<unknown>) => {
-            const detail = errorMessage(Cause.squash(cause));
-            return Effect.logWarning(logMessage, {
-              threadId: scope.thread.threadId,
-              worktreePath,
-              detail,
-            }).pipe(Effect.as({ status: "failed", detail } as const));
-          });
+          // Shared shape for "the handoff already succeeded, so report the failure
+          // in the result instead of failing the call" (continuation, setup script).
+          const reportFailed = (logMessage: string) =>
+            Effect.catchCause((cause: Cause.Cause<unknown>) => {
+              const detail = errorMessage(Cause.squash(cause));
+              return Effect.logWarning(logMessage, {
+                threadId: scope.thread.threadId,
+                worktreePath,
+                detail,
+              }).pipe(Effect.as({ status: "failed", detail } as const));
+            });
 
-        const removeCreatedWorktree = Effect.suspend(() =>
-          gitWorkflow.removeWorktree({ cwd: projectCwd, path: worktreePath, force: true }).pipe(
-            Effect.andThen(
-              Effect.suspend(() =>
-                gitWorkflow.deleteLocalBranch({
-                  cwd: projectCwd,
-                  refName: worktree.worktree.refName,
-                  force: true,
-                }),
+          // suspend: build the rollback only if cleanup actually runs. Removing
+          // the worktree must succeed before deleting its freshly created branch;
+          // otherwise the branch may still be checked out there.
+          const removeCreatedWorktree = Effect.suspend(() =>
+            gitWorkflow.removeWorktree({ cwd: projectCwd, path: worktreePath, force: true }).pipe(
+              Effect.andThen(
+                Effect.suspend(() =>
+                  gitWorkflow.deleteLocalBranch({
+                    cwd: projectCwd,
+                    refName: worktree.worktree.refName,
+                    force: true,
+                  }),
+                ),
               ),
             ),
-          ),
-        ).pipe(Effect.ignoreCause({ log: true }));
+          ).pipe(Effect.ignoreCause({ log: true }));
 
-        const recheckAndBind = Effect.gen(function* () {
-          // The projection was read before the potentially slow git work
-          // above; a concurrent binding (for example from the UI) could have
-          // attached the thread in the meantime. Re-check before committing so
-          // the race cannot leave a second, untracked worktree.
-          const recheck = yield* loadThread(scope);
-          if (recheck.thread.worktreePath !== null) {
-            return yield* alreadyInWorktree(recheck.thread.worktreePath);
-          }
-          if (recheck.thread.archivedAt !== null) {
-            return yield* failure(
-              "invalid_request",
-              `Thread '${scope.thread.threadId}' was archived while the worktree was being created; the handoff was rolled back.`,
-            );
-          }
-          yield* threadManagement
-            .dispatch({
-              type: "thread.metadata.update",
-              commandId: ids.commandId,
-              threadId: scope.thread.threadId,
-              branch: worktree.worktree.refName,
-              worktreePath,
-              expectedWorktreePath: null,
-            })
-            .pipe(
-              Effect.catchCause((cause) =>
-                Cause.hasInterruptsOnly(cause)
-                  ? Effect.failCause(cause as Cause.Cause<never>)
-                  : Effect.fail(
-                      failure(
-                        "operation_failed",
-                        `Unable to re-point the thread at the worktree: ${errorMessage(Cause.squash(cause))}`,
+          let bindingDispatched = false;
+          const recheckAndBind = Effect.gen(function* () {
+            // The projection was read before the potentially slow git work
+            // above; a concurrent binding (for example from the UI) could have
+            // attached the thread in the meantime. Re-check before committing so
+            // the race cannot leave a second, untracked worktree.
+            const recheck = yield* loadThread(scope);
+            if (recheck.thread.worktreePath !== null) {
+              return yield* alreadyInWorktree(recheck.thread.worktreePath);
+            }
+            // Mirror the up-front archived check: the thread may have been
+            // archived during the slow git work, and an archived thread must
+            // not be bound to a fresh worktree it can never use.
+            if (recheck.thread.archivedAt !== null) {
+              return yield* failure(
+                "invalid_request",
+                `Thread '${scope.thread.threadId}' was archived while the worktree was being created; the handoff was rolled back.`,
+              );
+            }
+            bindingDispatched = true;
+            yield* threadManagement
+              .dispatch({
+                type: "thread.metadata.update",
+                commandId: ids.commandId,
+                threadId: scope.thread.threadId,
+                branch: worktree.worktree.refName,
+                worktreePath,
+                expectedWorktreePath: null,
+              })
+              .pipe(
+                Effect.catchCause((cause) =>
+                  // Interrupt-only causes propagate unchanged: whether the
+                  // dispatch committed is unknown, so neither a typed failure
+                  // nor a rollback would be correct. Failures and defects
+                  // (including mixed causes) map to a typed operation_failed.
+                  Cause.hasInterruptsOnly(cause)
+                    ? Effect.failCause(cause as Cause.Cause<never>)
+                    : Effect.fail(
+                        failure(
+                          "operation_failed",
+                          `Unable to re-point the thread at the worktree: ${errorMessage(Cause.squash(cause))}`,
+                        ),
                       ),
-                    ),
-              ),
-            );
-        }).pipe(
-          // Interrupt-only causes skip the removal: the binding may have
-          // committed, and force-deleting a worktree the thread now points at
-          // would be worse than leaking one.
-          Effect.onError((cause) =>
-            Cause.hasInterruptsOnly(cause) ? Effect.void : removeCreatedWorktree,
-          ),
-        );
+                ),
+              );
+          }).pipe(
+            // onError: the worktree was already created, so any failure between
+            // here and the committed binding (recheck read, recheck race,
+            // dispatch typed failure or defect) must remove it again so a failed
+            // handoff leaves nothing behind on disk. Interrupt-only causes skip
+            // the removal: the binding may have committed, and force-deleting a
+            // worktree the thread now points at would be worse than leaking one.
+            Effect.onError((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.void
+                : request === undefined || !bindingDispatched
+                  ? removeCreatedWorktree
+                  : Option.isNone(nativeReceipts)
+                    ? Effect.void
+                    : nativeReceipts.value.getByCommandId(ids.commandId).pipe(
+                        Effect.flatMap((receipt) =>
+                          Option.isSome(receipt) && receipt.value.status === "rejected"
+                            ? removeCreatedWorktree
+                            : Effect.void,
+                        ),
+                        Effect.catch(() => Effect.void),
+                      ),
+            ),
+          );
 
-        // Queue the continuation right after the binding commits: the detach
-        // that the metadata update schedules will terminate the calling
-        // session, and a durably queued message is what guarantees the thread
-        // re-launches inside the worktree.
-        const queueContinuation: Effect.Effect<WorktreeMcpContinuationStatus, WorktreeMcpFailure> =
-          Effect.suspend(() =>
+          // Queue the continuation right after the binding commits: the detach
+          // that the metadata update schedules will terminate the calling
+          // session, and a durably queued message is what guarantees the thread
+          // re-launches inside the worktree. When the dying run reaches a
+          // terminal state the orchestrator promotes the queued run, which
+          // derives its cwd from the updated projection.
+          // suspend: build the send effect only when the binding has succeeded,
+          // so a failed dispatch never even constructs the continuation call.
+          const queueContinuation: Effect.Effect<
+            WorktreeMcpContinuationStatus,
+            WorktreeMcpFailure
+          > = Effect.suspend(() =>
             input.continuationPrompt === undefined
               ? Effect.succeed<WorktreeMcpContinuationStatus>({ status: "skipped" })
               : threadManagement
@@ -347,63 +399,104 @@ const make = Effect.gen(function* () {
                   ),
           );
 
-        const continuation = yield* recheckAndBind.pipe(Effect.andThen(queueContinuation));
+          const continuation = yield* recheckAndBind.pipe(Effect.andThen(queueContinuation));
 
-        yield* vcsStatusBroadcaster
-          .refreshStatus(worktreePath)
-          .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach);
+          yield* vcsStatusBroadcaster
+            .refreshStatus(worktreePath)
+            .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach);
 
-        let setupScript: WorktreeMcpSetupScriptStatus = { status: "skipped" };
-        if (input.runSetupScript ?? true) {
-          setupScript = yield* setupScriptRunner
-            .runForThread({
-              threadId: scope.thread.threadId,
-              projectId: projection.thread.projectId,
-              projectCwd,
-              worktreePath,
-              project: {
-                id: project.id,
-                workspaceRoot: project.workspaceRoot,
-                scripts: project.scripts,
-              },
-            })
-            .pipe(
-              Effect.map((result): WorktreeMcpSetupScriptStatus =>
-                result.status === "started"
-                  ? {
-                      status: "started",
-                      scriptName: result.scriptName,
-                      terminalId: result.terminalId,
-                    }
-                  : result.status === "skipped-for-link"
-                    ? { status: "skipped" }
-                    : { status: "no-script" },
-              ),
-              reportFailed("worktree handoff setup script failed"),
-            );
-        }
+          let setupScript: WorktreeMcpSetupScriptStatus = { status: "skipped" };
+          if (input.runSetupScript ?? true) {
+            setupScript = yield* setupScriptRunner
+              .runForThread({
+                threadId: scope.thread.threadId,
+                projectId: projection.thread.projectId,
+                projectCwd,
+                worktreePath,
+                project: {
+                  id: project.id,
+                  workspaceRoot: project.workspaceRoot,
+                  scripts: project.scripts,
+                },
+              })
+              .pipe(
+                Effect.map((result): WorktreeMcpSetupScriptStatus =>
+                  result.status === "started"
+                    ? {
+                        status: "started",
+                        scriptName: result.scriptName,
+                        terminalId: result.terminalId,
+                      }
+                    : result.status === "skipped-for-link"
+                      ? { status: "skipped" }
+                      : { status: "no-script" },
+                ),
+                // catchCause via reportFailed: the thread is already re-pointed at the
+                // worktree, so even a defect in the setup runner must not fail the handoff.
+                reportFailed("worktree handoff setup script failed"),
+              );
+          }
 
-        const result: WorktreeMcpHandoffResult = {
-          worktreePath,
-          branch: worktree.worktree.refName,
-          baseRef,
-          startedFromOrigin: startFromOrigin,
-          setupScript,
-          continuation,
-          note:
-            continuation.status === "scheduled"
-              ? "Handoff recorded. Changing the workspace detaches this provider session, so the current turn ends shortly after this call; the queued continuation prompt then starts the next turn inside the worktree with the conversation preserved. The worktree is not removed automatically when the thread is deleted."
-              : "Handoff recorded. Changing the workspace detaches this provider session, so the current turn ends shortly after this call; the conversation continues inside the worktree when the thread receives its next message. Pass continuationPrompt to resume automatically. The worktree is not removed automatically when the thread is deleted.",
-        };
-        return result;
-      }),
-    );
+          const result: WorktreeMcpHandoffResult = {
+            worktreePath,
+            branch: worktree.worktree.refName,
+            baseRef,
+            startedFromOrigin: startFromOrigin,
+            setupScript,
+            continuation,
+            note:
+              continuation.status === "scheduled"
+                ? "Handoff recorded. Changing the workspace detaches this provider session, so the current turn ends shortly after this call; the queued continuation prompt then starts the next turn inside the worktree with the conversation preserved. The worktree is not removed automatically when the thread is deleted."
+                : "Handoff recorded. Changing the workspace detaches this provider session, so the current turn ends shortly after this call; the conversation continues inside the worktree when the thread receives its next message. Pass continuationPrompt to resume automatically. The worktree is not removed automatically when the thread is deleted.",
+          };
+          return result;
+        }),
+      );
+    });
+    return yield* externalDispatch(dispatch);
   });
 
   const handoff: WorktreeMcpService["Service"]["handoff"] = Effect.fn("WorktreeMcpService.handoff")(
     function* (callerScope, input) {
       yield* requireCapability(callerScope);
       const scope = yield* requireThreadScope(callerScope);
+      // Re-authorize the actual resource before returning historical acceptance.
+      if ((yield* CurrentRequest) !== undefined) {
+        if (Option.isNone(nativeReceipts))
+          return yield* new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "Native worktree receipts are unavailable; no new handoff was authorized.",
+          });
+        yield* loadThread(scope);
+      }
+      const previous = yield* externalReplay<WorktreeMcpHandoffResult>().pipe(
+        Effect.catch((error) =>
+          Effect.gen(function* () {
+            if (error.code !== "outcome_unknown" || Option.isNone(nativeReceipts))
+              return yield* error;
+            const request = yield* CurrentRequest;
+            if (request === undefined) return yield* error;
+            const receipt = yield* nativeReceipts.value
+              .getByCommandId(CommandId.make(`worktree-handoff:${request.id}`))
+              .pipe(Effect.catch(() => Effect.succeedNone));
+            if (
+              Option.isSome(receipt) &&
+              receipt.value.status === "accepted" &&
+              receipt.value.threadId === scope.thread.threadId &&
+              receipt.value.commandType === "thread.metadata.update"
+            )
+              return yield* new OrchestratorMcpFailure({
+                code: "outcome_unknown",
+                requestId: request.clientRequestId,
+                lastConfirmedStage: "native_binding_accepted",
+                message:
+                  "The native worktree binding was accepted; continuation or setup completion is unresolved. This request will not create another worktree or repeat setup.",
+              });
+            return yield* error;
+          }),
+        ),
+      );
+      if (Option.isSome(previous)) return previous.value;
       // uninterruptibleMask: the guard acquisition and the registration of the
       // releasing finalizer happen with no interruptible gap in between. An
       // interrupt landing between a bare add() and the start of an ensured

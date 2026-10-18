@@ -3,6 +3,7 @@ import { ThreadBare } from "@t3tools/contracts";
 import * as McpRouting from "../../McpRouting.ts";
 import {
   ScheduledTaskId,
+  McpManualRunReceipt,
   ScheduledTask,
   OrchestrationSearchThreadsInput,
   OrchestrationSearchThreadsResult,
@@ -309,10 +310,11 @@ const ThreadSearchTool = Tool.make("t3_thread_search", {
 const ScheduledTaskRunTool = Tool.make("run_scheduled_task_now", {
   ...commandTool,
   description:
-    "Run a scheduled task now through the existing scheduler. Requires a full-access/default caller. Each call is a new manual run; completion means dispatch/bookkeeping completed, not that the provider turn finished.",
+    "Run a scheduled task now through the existing scheduler. Requires a full-access/default caller. Calls without a clientRequestId are new manual runs. A negotiated request key recovers its original admission/native acceptance without dispatching again. The receipt stage describes admission or queued native acceptance, never provider completion.",
   parameters: McpRouting.parameters(Schema.Struct({ taskId: ScheduledTaskId })),
   success: Schema.Struct({
     taskId: ScheduledTaskId,
+    manualReceipt: Schema.optional(McpManualRunReceipt),
     threadId: ScheduledTask.fields.threadId,
     lastRunStatus: ScheduledTask.fields.lastRunStatus,
     runCount: NonNegativeInt,

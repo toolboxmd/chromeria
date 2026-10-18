@@ -1,3 +1,4 @@
+import { McpSavedSnapshotReceipt } from "@t3tools/contracts";
 import * as McpRouting from "../../McpRouting.ts";
 import {
   OrchestratorMcpFailure,
@@ -15,6 +16,7 @@ import {
   PreviewAutomationOpenInput,
   PreviewAutomationPressInput,
   PreviewAutomationRecordingArtifact,
+  PeerAttachmentReference,
   PreviewAutomationRecordingStatus,
   PreviewAutomationResizeInput,
   PreviewAutomationResizeResult,
@@ -144,7 +146,7 @@ const PreviewSetAppearanceTool = safeBrowserTool(
 export const PreviewSnapshotTool = safeBrowserTool(
   Tool.make("preview_snapshot", {
     description:
-      "Inspect a page before interacting. Pass tabId to inspect a specific tab, including one the user opened (see preview_status tabs), even while they control it; omit it to use this agent session's current tab, or the tab the user is viewing when you have none. Returns page state, semantic elements, diagnostics, action history, and screenshot dimensions. Server snapshots include an accessibilityTree with refs; pass locator=aria-ref=<ref> to target one exact element, including inside frames. Refresh refs after navigation, another snapshot, or human takeover. The text is capped near 20 KB and lists what it omitted; use preview_evaluate to read more. Set includeImage=true only when you need to see the page; the image stays in tool history. Set save=true to write the PNG to disk and get back only the url and screenshotPath. Embed that path in your reply as ![alt](screenshotPath) so the user sees it. This is the only way to show the user a screenshot; the image in the tool result is not saved anywhere.",
+      "Inspect a page before interacting. Pass tabId to inspect a specific tab, including one the user opened (see preview_status tabs), even while they control it; omit it to use this agent session's current tab, or the tab the user is viewing when you have none. Returns page state, semantic elements, diagnostics, action history, and screenshot dimensions. Server snapshots include an accessibilityTree with refs; pass locator=aria-ref=<ref> to target one exact element, including inside frames. Refresh refs after navigation, another snapshot, or human takeover. The text is capped near 20 KB and lists what it omitted; use preview_evaluate to read more. Set includeImage=true only when you need to see the page; the image stays in tool history. Negotiated keyed save calls return a bounded historical confirmed-operation receipt with artifact.screenshotPath, digest, MIME, size and environment. The receipt never stores page text or URL. Reusing that key returns the original saved artifact; current inspection uses save=false. Set save=true to write the PNG to disk and get back only the url and screenshotPath. Embed that path in your reply as ![alt](screenshotPath) so the user sees it. This is the only way to show the user a screenshot; the image in the tool result is not saved anywhere.",
     parameters: McpRouting.parameters(
       Schema.Struct({
         ...PreviewAutomationTabTargetInput.fields,
@@ -162,7 +164,7 @@ export const PreviewSnapshotTool = safeBrowserTool(
         ),
       }),
     ),
-    success: PreviewAutomationSnapshot,
+    success: Schema.Union([PreviewAutomationSnapshot, McpSavedSnapshotReceipt]),
     failure: PreviewToolFailure,
     dependencies,
   }).annotate(Tool.Title, "Inspect browser page"),
@@ -335,9 +337,19 @@ const PreviewRecordingStartTool = safeBrowserTool(
 const PreviewRecordingStopTool = safeBrowserTool(
   Tool.make("preview_recording_stop", {
     description:
-      "Stop recording the collaborative browser tab selected by tabId, or this agent session's current tab when omitted, and transfer the compressed recording once (up to 50 MiB) to an evidence file readable in this agent's environment. Returns its environment-local path after transfer succeeds.",
+      "Stop recording the collaborative browser tab selected by tabId, or this agent session's current tab when omitted, and transfer the compressed recording once (up to 50 MiB) to an evidence file readable in this agent's environment. Native/legacy calls return the local evidence path. Negotiated peer calls return a bounded environment-qualified resource with its name, owner, byte digest, MIME and size; use its attachmentId with the supported attachment send/launch inputs instead of interpreting it as a source path. Accepted native claims replay the original evidence without replacing later file edits; an unconfirmed durable publication reports outcome_unknown and is not repeated.",
     parameters: McpRouting.parameters(PreviewAutomationTabTargetInput),
-    success: Schema.Struct({ ...PreviewAutomationRecordingArtifact.fields, ...presentationFields }),
+    success: Schema.Union([
+      Schema.Struct({ ...PreviewAutomationRecordingArtifact.fields, ...presentationFields }),
+      Schema.Struct({
+        resource: PeerAttachmentReference,
+        tabId: PreviewAutomationRecordingArtifact.fields.tabId,
+        mimeType: Schema.String,
+        sizeBytes: Schema.Int,
+        createdAt: Schema.String,
+        ...presentationFields,
+      }),
+    ]),
     failure: PreviewToolFailure,
     dependencies: [...dependencies, FileSystem.FileSystem, ServerConfig.ServerConfig],
   }).annotate(Tool.Title, "Stop browser recording"),

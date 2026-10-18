@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -10,8 +10,36 @@ import {
   createPendingAttachmentId,
   parseThreadSegmentFromAttachmentId,
 } from "../../../attachmentStore.ts";
+import * as Sqlite from "../../../persistence/Sqlite.ts";
+import * as Secrets from "../../../auth/ServerSecretStore.ts";
+import * as Staging from "../../../assets/AttachmentStaging.ts";
+import * as Invocation from "../../McpInvocationContext.ts";
 import * as ServerConfig from "../../../config.ts";
 import { claimPreviewRecording, normalizePreviewOpenInput } from "./handlers.ts";
+
+const recordingScope: Invocation.McpInvocationScope = {
+  environmentId: EnvironmentId.make("preview-test"),
+  requestNamespace: "native-recording",
+  issuedAt: 0,
+  capabilities: new Set(["preview"]),
+  client: undefined,
+  thread: {
+    threadId: ThreadId.make("thread-1"),
+    providerSessionId: "native-recording",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+  },
+};
+const recordingLayer = Staging.layer.pipe(
+  Layer.provideMerge(
+    Sqlite.layerMemory.pipe(
+      Layer.provideMerge(Secrets.layer),
+      Layer.provideMerge(
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-preview-recording-" }),
+      ),
+      Layer.provideMerge(NodeServices.layer),
+    ),
+  ),
+);
 
 describe("normalizePreviewOpenInput", () => {
   it("leaves an unstated visibility for the client preference to decide", () => {
@@ -66,7 +94,7 @@ describe("claimPreviewRecording", () => {
       expect(first).toEqual(second);
       expect(yield* claim).toEqual(first);
       expect(yield* fileSystem.readFileString(first.path)).toBe("video!");
-      expect(yield* fileSystem.exists(pendingPath)).toBe(false);
+      expect(yield* fileSystem.exists(pendingPath)).toBe(true);
       const wrongThread = yield* claimPreviewRecording(ThreadId.make("thread-2"), response).pipe(
         Effect.result,
       );
@@ -78,8 +106,8 @@ describe("claimPreviewRecording", () => {
       expect(wrongPath._tag).toBe("Failure");
     }).pipe(
       Effect.provide(
-        ServerConfig.layerTest(process.cwd(), { prefix: "t3-preview-recording-" }).pipe(
-          Layer.provideMerge(NodeServices.layer),
+        recordingLayer.pipe(
+          Layer.provideMerge(Layer.succeed(Invocation.McpInvocationContext, recordingScope)),
         ),
       ),
     ),
@@ -114,7 +142,14 @@ describe("claimPreviewRecording", () => {
           expect(result.success.path).not.toBe(response.path);
           expect(parseThreadSegmentFromAttachmentId(result.success.id)).toBe("thread-1");
           expect(yield* fileSystem.readFileString(result.success.path)).toBe("video!");
-          expect(yield* fileSystem.exists(pendingPath)).toBe(false);
+          expect(yield* fileSystem.exists(pendingPath)).toBe(true);
+
+          yield* fileSystem.writeFileString(result.success.path, "later!");
+          const retry = yield* claimPreviewRecording(ThreadId.make("thread-1"), response).pipe(
+            Effect.result,
+          );
+          expect(retry._tag).toBe("Failure");
+          expect(yield* fileSystem.readFileString(result.success.path)).toBe("later!");
         } else {
           expect(result._tag).toBe("Failure");
           if (result._tag !== "Failure") return;

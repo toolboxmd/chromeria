@@ -27,6 +27,7 @@ import {
   type PreviewAutomationHostFocus,
   type PreviewAutomationResponse,
   type PreviewAutomationStreamEvent,
+  type OrchestratorMcpFailure,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Cause from "effect/Cause";
@@ -41,6 +42,7 @@ import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as McpInvocationContext from "./McpInvocationContext.ts";
+import { externalDispatch, externalReplay, confirmNotDispatched } from "./McpRequestReceipts.ts";
 
 const HOST_RESPONSE_GRACE_MS = 1_000;
 
@@ -72,7 +74,7 @@ export class PreviewAutomationBroker extends Context.Service<
     ) => Effect.Effect<void, PreviewAutomationError>;
     readonly invoke: <A = unknown>(
       request: PreviewAutomationInvokeInput,
-    ) => Effect.Effect<A, PreviewAutomationError>;
+    ) => Effect.Effect<A, PreviewAutomationError | OrchestratorMcpFailure>;
   }
 >()("t3/mcp/PreviewAutomationBroker") {}
 
@@ -504,7 +506,12 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
 
   const invoke = Effect.fn("PreviewAutomationBroker.invoke")(function* <A = unknown>(
     input: Parameters<PreviewAutomationBroker["Service"]["invoke"]>[0],
-  ): Effect.fn.Return<A, PreviewAutomationError> {
+  ): Effect.fn.Return<A, PreviewAutomationError | OrchestratorMcpFailure> {
+    const readOnly = ["status", "snapshot", "waitFor"].includes(input.operation);
+    if (!readOnly) {
+      const previous = yield* externalReplay<A>();
+      if (Option.isSome(previous)) return previous.value;
+    }
     const deferred = yield* Deferred.make<unknown, PreviewAutomationError>();
     const route = yield* SynchronizedRef.modify(state, (current) => {
       const assignments = new Map(
@@ -641,6 +648,9 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         }).pipe(Effect.map((offered) => [offered, current] as const));
       });
       if (!offered) {
+        // This request never entered a client queue. Only this delivery owner
+        // can return its exact winning attempt to retryable state.
+        yield* confirmNotDispatched;
         const completion = yield* Deferred.poll(deferred);
         if (Option.isSome(completion)) {
           return (yield* completion.value) as A;
@@ -667,7 +677,9 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         onSome: (value) => Effect.succeed(value as A),
       });
     });
-    const result = yield* awaitResponse().pipe(Effect.ensuring(removePending));
+    const result = yield* (readOnly ? awaitResponse() : externalDispatch(awaitResponse())).pipe(
+      Effect.ensuring(removePending),
+    );
     if (input.updateCurrentTab === false) return result;
     const responseTabId = readResultTabId(result);
     const resultTabId = responseTabId === undefined ? input.tabId : responseTabId;

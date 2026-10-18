@@ -95,6 +95,7 @@ it.effect.each([{ bare: {} }, { threads: [{ bare: {} }] }, { colors: [{ bare: {}
             NodeCrypto.layer,
             Layer.succeed(PeerMcpClient.PeerMcpClient, {
               start: Effect.void,
+              uploadAttachment: () => Effect.die("unused attachment transport"),
               call,
             }),
             Layer.mock(PeerLinks.PeerLinks)({}),
