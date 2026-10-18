@@ -144,100 +144,108 @@ function threadCreatedEvent(input: {
   };
 }
 
-it.effect("stores each command state once across batches and concurrent deliveries", () =>
-  Effect.gen(function* () {
-    const sink = yield* EventSink.EventSinkV2;
-    const projections = yield* ProjectionStore.ProjectionStoreV2;
-    const sql = yield* SqlClient.SqlClient;
-    const now = yield* DateTime.now;
-    const threadId = ThreadId.make("thread:foundation-item-redelivery");
-    const thread = makeThread(threadId, now);
-    yield* sink.write({
-      events: [threadCreatedEvent({ id: "event:item-redelivery:thread", thread, now })],
-    });
-    yield* sql`CREATE TEMP TABLE item_write_counts (writes INTEGER NOT NULL)`;
-    yield* sql`INSERT INTO item_write_counts VALUES (0)`;
-    yield* sql`CREATE TEMP TRIGGER count_item_insert AFTER INSERT ON orchestration_v2_projection_turn_items
-      BEGIN UPDATE item_write_counts SET writes = writes + 1; END`;
-    yield* sql`CREATE TEMP TRIGGER count_item_update AFTER UPDATE ON orchestration_v2_projection_turn_items
-      BEGIN UPDATE item_write_counts SET writes = writes + 1; END`;
-    const running = {
-      id: TurnItemId.make("turn-item:foundation-item-redelivery"),
-      threadId,
-      runId: null,
-      nodeId: null,
-      providerThreadId: null,
-      providerTurnId: null,
-      nativeItemRef: null,
-      parentItemId: null,
-      ordinal: 400,
-      type: "command_execution",
-      status: "running",
-      title: null,
-      input: "printf result",
-      startedAt: now,
-      completedAt: null,
-      updatedAt: now,
-    } satisfies OrchestrationV2TurnItem;
-    const completed = {
-      ...running,
-      status: "completed",
-      completedAt: now,
-      output: "result",
-      exitCode: 0,
-    } satisfies OrchestrationV2TurnItem;
-    const corrected = { ...completed, output: "corrected result" };
-    let nextEvent = 0;
-    const event = (payload: OrchestrationV2TurnItem): OrchestrationV2DomainEvent => ({
-      id: EventId.make(`event:item-redelivery:${nextEvent++}`),
-      type: "turn-item.updated",
-      threadId,
-      occurredAt: now,
-      payload,
-    });
-    const stored = yield* sink.write({
-      events: [
-        event(running),
-        event({ ...running, ordinal: 900 }),
-        event(completed),
-        event(running),
-        event(completed),
-        event(corrected),
-        event(corrected),
-      ],
-    });
-    assert.lengthOf(stored, 3);
-    const projection = yield* projections.getThreadProjection(threadId);
-    assert.lengthOf(projection.turnItems, 1);
-    assert.equal(projection.turnItems[0]?.ordinal, 1);
-    assert.deepEqual(projection.turnItems[0], { ...corrected, ordinal: 1 });
-    const duplicateWrites = yield* Effect.forEach(
-      Array.from({ length: 8 }),
-      () => sink.write({ events: [event({ ...corrected, ordinal: 800 })] }),
-      { concurrency: 8 },
-    );
-    assert.isTrue(duplicateWrites.every((writes) => writes.length === 0));
-    const counts = yield* sql<{ writes: number }>`SELECT writes FROM item_write_counts`;
-    assert.equal(counts[0]?.writes, 3, "duplicates must not rewrite the projection row");
-    // A real correction can return to an earlier value. This is not historical deduplication.
-    assert.lengthOf(yield* sink.write({ events: [event(completed)] }), 1);
-    const later = DateTime.makeUnsafe(DateTime.toEpochMillis(now) + 1);
-    const restarted = { ...running, updatedAt: later };
-    assert.lengthOf(yield* sink.write({ events: [event(restarted)] }), 1);
-    assert.lengthOf(
-      yield* sink.write({ events: [event({ ...completed, status: "failed", updatedAt: later })] }),
-      1,
-    );
-    assert.lengthOf(
+it.effect.each([0, -1])(
+  "stores changed command states and accepts null-provider-turn retry (clock offset %s)",
+  (offset) =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const sql = yield* SqlClient.SqlClient;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:foundation-item-redelivery");
+      const thread = makeThread(threadId, now);
       yield* sink.write({
-        events: [event({ ...completed, id: TurnItemId.make("turn-item:other-command") })],
-      }),
-      1,
-    );
-    const rows = yield* sql<{ events: number }>`SELECT count(*) AS events FROM orchestration_events
+        events: [threadCreatedEvent({ id: "event:item-redelivery:thread", thread, now })],
+      });
+      yield* sql`CREATE TEMP TABLE item_write_counts (writes INTEGER NOT NULL)`;
+      yield* sql`INSERT INTO item_write_counts VALUES (0)`;
+      yield* sql`CREATE TEMP TRIGGER count_item_insert AFTER INSERT ON orchestration_v2_projection_turn_items
+      BEGIN UPDATE item_write_counts SET writes = writes + 1; END`;
+      yield* sql`CREATE TEMP TRIGGER count_item_update AFTER UPDATE ON orchestration_v2_projection_turn_items
+      BEGIN UPDATE item_write_counts SET writes = writes + 1; END`;
+      const running = {
+        id: TurnItemId.make("turn-item:foundation-item-redelivery"),
+        threadId,
+        runId: null,
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 400,
+        type: "command_execution",
+        status: "running",
+        title: null,
+        input: "printf result",
+        startedAt: now,
+        completedAt: null,
+        updatedAt: now,
+      } satisfies OrchestrationV2TurnItem;
+      const completed = {
+        ...running,
+        status: "completed",
+        completedAt: now,
+        output: "result",
+        exitCode: 0,
+      } satisfies OrchestrationV2TurnItem;
+      const corrected = { ...completed, output: "corrected result" };
+      let nextEvent = 0;
+      const event = (payload: OrchestrationV2TurnItem): OrchestrationV2DomainEvent => ({
+        id: EventId.make(`event:item-redelivery:${nextEvent++}`),
+        type: "turn-item.updated",
+        threadId,
+        occurredAt: now,
+        payload,
+      });
+      const stored = yield* sink.write({
+        events: [
+          event(running),
+          event({ ...running, ordinal: 900 }),
+          event(completed),
+          event(completed),
+          event(corrected),
+          event(corrected),
+        ],
+      });
+      assert.lengthOf(stored, 3);
+      const projection = yield* projections.getThreadProjection(threadId);
+      assert.lengthOf(projection.turnItems, 1);
+      assert.equal(projection.turnItems[0]?.ordinal, 1);
+      assert.deepEqual(projection.turnItems[0], { ...corrected, ordinal: 1 });
+      const duplicateWrites = yield* Effect.forEach(
+        Array.from({ length: 8 }),
+        () => sink.write({ events: [event({ ...corrected, ordinal: 800 })] }),
+        { concurrency: 8 },
+      );
+      assert.isTrue(duplicateWrites.every((writes) => writes.length === 0));
+      const counts = yield* sql<{ writes: number }>`SELECT writes FROM item_write_counts`;
+      assert.equal(counts[0]?.writes, 3, "duplicates must not rewrite the projection row");
+      // A real correction can return to an earlier value. This is not historical deduplication.
+      assert.lengthOf(yield* sink.write({ events: [event(completed)] }), 1);
+      assert.lengthOf(
+        yield* sink.write({ events: [event({ ...completed, status: "failed" })] }),
+        1,
+      );
+      const retryTime = DateTime.makeUnsafe(DateTime.toEpochMillis(now) + offset);
+      const restarted = { ...running, updatedAt: retryTime };
+      assert.lengthOf(yield* sink.write({ events: [event(restarted)] }), 1);
+      assert.deepEqual(
+        (yield* projections.getThreadProjection(threadId)).turnItems[0],
+        { ...restarted, ordinal: 1 },
+        "a preparation retry must clear failed output even with a tied/backward clock",
+      );
+      assert.lengthOf(
+        yield* sink.write({
+          events: [event({ ...completed, id: TurnItemId.make("turn-item:other-command") })],
+        }),
+        1,
+      );
+      const rows = yield* sql<{
+        events: number;
+      }>`SELECT count(*) AS events FROM orchestration_events
       WHERE stream_id = ${threadId} AND event_type = 'turn-item.updated'`;
-    assert.equal(rows[0]?.events, 7);
-  }).pipe(Effect.provide(Layer.fresh(layerTest))),
+      assert.equal(rows[0]?.events, 7);
+    }).pipe(Effect.provide(Layer.fresh(layerTest))),
 );
 
 it.effect.each([

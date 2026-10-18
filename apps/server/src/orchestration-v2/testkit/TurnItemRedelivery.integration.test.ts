@@ -14,16 +14,14 @@ import { ORCHESTRATOR_REPLAY_FIXTURES } from "./fixtures/index.ts";
 import { materializeFixtureInput } from "./fixtures/shared.ts";
 import * as Layer from "effect/Layer";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
-import * as ThreadCommandExecutor from "../ThreadCommandExecutor.ts";
 import * as Stream from "effect/Stream";
 import * as EventStore from "../EventStore.ts";
 import * as ProjectionStore from "../ProjectionStore.ts";
-import * as ProviderEventIngestor from "../ProviderEventIngestor.ts";
 import { runOrchestratorV2Scenario } from "./OrchestratorScenario.ts";
 import { layerProviderReplay } from "./ProviderReplayHarness.ts";
 
 it.effect.each(["tool_call_workspace_never", "subagent_v2_nested"])(
-  "preserves the recorded transcript while dropping redelivered command states: %s",
+  "persists the recorded command states and complete transcript: %s",
   (name) =>
     Effect.gen(function* () {
       const fixture = ORCHESTRATOR_REPLAY_FIXTURES.find((f) => f.name === name)!;
@@ -57,29 +55,12 @@ it.effect.each(["tool_call_workspace_never", "subagent_v2_nested"])(
       return yield* Effect.gen(function* () {
         const result = yield* runOrchestratorV2Scenario(scenario);
         driver.assertOutput(result, transcript);
-        const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
         const eventStore = yield* EventStore.EventStoreV2;
         const projections = yield* ProjectionStore.ProjectionStoreV2;
         const commands = result.domainEvents.filter(
           (event) =>
             event.type === "turn-item.updated" && event.payload.type === "command_execution",
         );
-        // Model three delayed subscribers delivering the same recorded command states.
-        for (let copy = 0; copy < 3; copy++) {
-          for (const event of commands) {
-            if (event.type !== "turn-item.updated") continue;
-            const thread = result.projections.get(event.threadId)!;
-            const providerThread = thread.providerThreads.find(
-              (p) => p.id === event.payload.providerThreadId,
-            )!;
-            yield* ingestor.ingestNormalized({
-              providerSessionId: providerThread.providerSessionId!,
-              providerInstanceId: driver.modelSelection.instanceId,
-              threadId: event.threadId,
-              event: { type: "turn_item.updated", driver: driver.driver, turnItem: event.payload },
-            });
-          }
-        }
         const replayed = [];
         for (const threadId of new Set(commands.map((event) => event.threadId))) {
           const events = yield* eventStore
@@ -107,27 +88,19 @@ it.effect.each(["tool_call_workspace_never", "subagent_v2_nested"])(
           assert.equal(
             entry.count,
             2,
-            "redelivery must not append unchanged or superseded command states",
+            "the recorded command must keep its start and complete states",
           );
           assert.equal(entry.payloads.size, 2);
         }
         assert.isAbove(counts.size, 0);
       }).pipe(
         Effect.provide(
-          ProviderEventIngestor.layer.pipe(
-            Layer.provideMerge(
-              Layer.mergeAll(
-                IdAllocator.layer,
-                ThreadCommandExecutor.layer,
-                Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
-                  Layer.provide(SqlitePersistence.layerMemory),
-                ),
-              ),
-            ),
-            Layer.provideMerge(
-              layerProviderReplay(scenario, harness, {
-                databaseLayer: SqlitePersistence.layerMemory,
-              }),
+          Layer.mergeAll(
+            layerProviderReplay(scenario, harness, {
+              databaseLayer: SqlitePersistence.layerMemory,
+            }),
+            Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
+              Layer.provide(SqlitePersistence.layerMemory),
             ),
           ),
         ),

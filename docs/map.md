@@ -58,7 +58,7 @@ flowchart TD
     BR["Bounded event reads"]
     %% BR: #256
     TIW["Turn-item writes"]
-    %% TIW: #425
+    %% TIW: #425 PR #433
     PU["Provider updates"]
     %% PU: #263
     RS["Resume after restart"]

@@ -364,8 +364,8 @@ const layerBase: Layer.Layer<
             event.payload,
             event.payload.runId === null ? undefined : runOrdinals.get(event.payload.runId),
           );
-          // Compare after position allocation, inside the write transaction. Other
-          // run subscribers can deliver the same child item, including in this batch.
+          // Compare after position allocation, inside the write transaction.
+          // Independent deliveries and commands can repeat a stored snapshot.
           const previous =
             pendingItems.get(payload.id) ??
             (yield* projectionStore.getTurnItem({
@@ -376,17 +376,7 @@ const layerBase: Layer.Layer<
             const unchanged =
               (yield* ProjectionStore.encodeTurnItemPayload(previous)) ===
               (yield* ProjectionStore.encodeTurnItemPayload(payload));
-            // A delayed subscriber can replay a command's start after its completion.
-            // Keep later starts and corrections, but never rewind this settled snapshot.
-            const supersededStart =
-              payload.type === "command_execution" &&
-              previous.type === "command_execution" &&
-              previous.providerTurnId === payload.providerTurnId &&
-              previous.completedAt !== null &&
-              payload.completedAt === null &&
-              DateTime.toEpochMillis(payload.updatedAt) <=
-                DateTime.toEpochMillis(previous.updatedAt);
-            if (unchanged || supersededStart) continue;
+            if (unchanged) continue;
           }
           pendingItems.set(payload.id, payload);
           normalized.push({ ...event, payload });
