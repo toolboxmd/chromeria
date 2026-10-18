@@ -14,7 +14,7 @@ import {
   SendIcon,
   XIcon,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import { useOpenChangeRequestLink } from "~/lib/openPullRequestLink";
 import { cn } from "~/lib/utils";
@@ -84,10 +84,10 @@ export function IssueDetailPanel({
 }) {
   const result = useIssueDetail(environmentId, reference);
   const detail = AsyncResult.isSuccess(result) ? result.value : null;
-  const markdownContext = useMemo(
-    () => ({ repositoryUrl: `https://${reference.host}/${reference.repository}`, threadRef: null }),
-    [reference.host, reference.repository],
-  );
+  const markdownContext = {
+    repositoryUrl: `https://${reference.host}/${reference.repository}`,
+    threadRef: null,
+  };
   return (
     <aside
       aria-label={`${reference.repository}#${reference.number}`}
@@ -220,10 +220,7 @@ function IssueLinkedWork({
   linkedPullRequests: ReadonlyMap<string, IssuePullRequest>;
   onOpenThread: (thread: IssueRowThread) => void;
 }) {
-  const lookup = useMemo(
-    () => [{ ...reference, closingPullRequests }],
-    [closingPullRequests, reference],
-  );
+  const lookup = [{ ...reference, closingPullRequests }];
   const { threadsByIssue } = useIssueRowThreads(lookup, linkEnvironments);
   const threads = threadsByIssue.get(issueKey(reference)) ?? [];
   const pullRequests = issuePanelPullRequests(closingPullRequests, threads, linkedPullRequests);

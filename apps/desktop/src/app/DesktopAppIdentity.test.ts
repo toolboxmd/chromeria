@@ -204,7 +204,7 @@ describe("DesktopAppIdentity", () => {
         assert.match(runtimeName.replaceAll(" ", ""), /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/);
         assert.equal(
           calls.setAboutPanelOptions[0]?.applicationName,
-          stage === "Alpha" ? "Chromeria" : `Chromeria (${stage})`,
+          stage === "Beta" ? "Chromeria" : `Chromeria (${stage})`,
         );
       }),
       { calls, environment },

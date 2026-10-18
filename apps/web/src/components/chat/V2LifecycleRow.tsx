@@ -570,7 +570,8 @@ function SubagentTimelineTooltip(
   // The popup only mounts while open, so the full provider list is read here
   // instead of in every timeline row.
   const providers =
-    useAtomValue(serverEnvironment.providersValueAtom(childEnvironmentId)) ?? EMPTY_SERVER_PROVIDERS;
+    useAtomValue(serverEnvironment.providersValueAtom(childEnvironmentId)) ??
+    EMPTY_SERVER_PROVIDERS;
   const parent = useThreadShell(props.parentRef)?.source;
   const child = useThreadShell(
     props.threadId ? scopeThreadRef(childEnvironmentId, props.threadId) : null,

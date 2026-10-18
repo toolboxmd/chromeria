@@ -1,5 +1,4 @@
 import type { EnvironmentId, IssueKey, IssueLinkedThread } from "@t3tools/contracts";
-import { useMemo } from "react";
 
 import { useProjects } from "~/state/entities";
 import { useEnvironments } from "~/state/environments";
@@ -34,11 +33,8 @@ export function usePaletteIssueThreads(query: string): ReadonlyArray<{
   const projects = useProjects();
   const { environments } = useEnvironments();
   const source = useIssuePaletteSource();
-  const loaded = useMemo(
-    () => new Map((source?.entries ?? []).map((entry) => [issueKey(entry), entry] as const)),
-    [source],
-  );
-  const detailTargets = useMemo(() => {
+  const loaded = new Map((source?.entries ?? []).map((entry) => [issueKey(entry), entry] as const));
+  const detailTargets = (() => {
     const target = paletteIssueDetailTarget(
       settled,
       projects,
@@ -46,9 +42,9 @@ export function usePaletteIssueThreads(query: string): ReadonlyArray<{
       (issue) => loaded.has(issueKey(issue)),
     );
     return target === null ? [] : [target];
-  }, [environments, loaded, projects, settled]);
+  })();
   const detail = useIssueDetailQuery(detailTargets);
-  const targets = useMemo(() => {
+  const targets = (() => {
     const read = detail.values[0]?.[1] ?? null;
     const closingPullRequestsOf = (issue: IssueKey) =>
       loaded.get(issueKey(issue))?.closingPullRequests ??
@@ -59,9 +55,9 @@ export function usePaletteIssueThreads(query: string): ReadonlyArray<{
       environmentIdsWithCapability(environments, "issueLinks"),
       closingPullRequestsOf,
     );
-  }, [detail.values, environments, loaded, projects, settled]);
+  })();
   const result = useThreadsForIssuesQuery(targets);
-  return useMemo(() => {
+  return (() => {
     // Stale answers for an earlier query never show under a new one.
     if (settled !== query) return [];
     const byEnvironment = new Map<EnvironmentId, Map<string, IssueLinkedThread>>();
@@ -75,5 +71,5 @@ export function usePaletteIssueThreads(query: string): ReadonlyArray<{
     return [...byEnvironment]
       .filter(([, threads]) => threads.size > 0)
       .map(([environmentId, threads]) => ({ environmentId, threads: [...threads.values()] }));
-  }, [query, result.values, settled]);
+  })();
 }

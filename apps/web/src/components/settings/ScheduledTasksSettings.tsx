@@ -1500,10 +1500,10 @@ function ScheduledTaskEditorForm({
             {/* Wraps the toggle below the label when both don't fit, as on phones. */}
             <div className="flex flex-wrap items-center justify-between gap-2">
               <Label>Schedule</Label>
-                <ScheduledTaskFork.PreservedScheduleNote schedule={draft.preservedSchedule} />
+              <ScheduledTaskFork.PreservedScheduleNote schedule={draft.preservedSchedule} />
               <ToggleGroup
                 disabled={draft.preservedSchedule !== null}
-                  aria-label="Schedule type"
+                aria-label="Schedule type"
                 value={[draft.scheduleMode]}
                 onValueChange={(values) => {
                   const mode = values[0] as ScheduleMode | undefined;

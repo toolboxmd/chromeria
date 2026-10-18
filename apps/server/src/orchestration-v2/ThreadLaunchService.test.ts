@@ -1259,13 +1259,15 @@ it.effect.each(["fails", "is interrupted"] as const)(
           });
         }
 
-        yield* threads.streamStoredEventsFrom({ threadId: launched.threadId, afterSequence: 0 }).pipe(
-          Stream.filter(
-            (stored) =>
-              stored.event.type === "run.updated" && stored.event.payload.queueHeld === true,
-          ),
-          Stream.runHead,
-        );
+        yield* threads
+          .streamStoredEventsFrom({ threadId: launched.threadId, afterSequence: 0 })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "run.updated" && stored.event.payload.queueHeld === true,
+            ),
+            Stream.runHead,
+          );
         const projection = yield* threads.getThreadProjection(launched.threadId);
         assert.equal(projection.runs.at(-1)?.status, "queued");
         assert.equal(projection.thread.worktreePath, null);

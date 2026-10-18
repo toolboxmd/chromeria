@@ -170,7 +170,15 @@ export function RightPanelSurfaceContent(props: {
     case "pull-requests":
       return <ThreadLinksPanel threadRef={threadRef} issueLinks={props.pullRequest.issueLinks} />;
     case "map":
-      return <FeatureMapPanel environmentId={props.environmentId} projectId={props.pullRequest.projectId} threadRef={threadRef} supported={props.map.supported} theme={props.map.theme} />;
+      return (
+        <FeatureMapPanel
+          environmentId={props.environmentId}
+          projectId={props.pullRequest.projectId}
+          threadRef={threadRef}
+          supported={props.map.supported}
+          theme={props.map.theme}
+        />
+      );
     case "issue":
       return <ThreadIssuePanel environmentId={surface.environmentId} url={surface.url} />;
     case "device":

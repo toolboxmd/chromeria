@@ -93,10 +93,10 @@ apps/web/src/bundledDev.test.ts
 apps/web/src/components/ChatMarkdown.tsx
 apps/web/src/components/ChatView.tsx
 apps/web/src/components/CommandPalette.tsx
-apps/web/src/components/RightPanelTabs.keyboard.test.tsx
+apps/web/src/components/RightPanelTabs.keyboard.browser.test.tsx
 apps/web/src/components/RightPanelTabs.tsx
 apps/web/src/components/T3Wordmark.tsx
-apps/web/src/components/chat/MessagesTimeline.test.tsx
+apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
 apps/web/src/components/chat/MessagesTimeline.tsx
 apps/web/src/components/onboarding/WelcomeWizard.tsx
 apps/web/src/components/pullRequest/PullRequestListFilters.tsx
@@ -166,7 +166,7 @@ packages/provider-core/src/server/runtimeInstructions.ts
 packages/provider-core/src/server/orchestrationInstructions.ts
 apps/web/src/components/settings/SettingsSidebarNav.tsx
 apps/web/src/routeTree.gen.ts
-apps/web/src/components/settings/SettingsPanels.restore.test.tsx
+apps/web/src/components/settings/SettingsPanels.restore.browser.test.tsx
 apps/server/src/orchestration-v2/testkit/ReplayRuntimeInstructions.ts
 
 # Attempt-owned stream observation before presentation buffering (#172)
@@ -194,8 +194,8 @@ apps/mobile/src/features/settings/SettingsScheduledTasksRouteScreen.tsx
 apps/mobile/src/features/settings/scheduledTaskDraft.ts
 apps/server/src/scheduledTasks/Schedule.ts
 apps/server/src/scheduledTasks/ScheduledTaskService.ts
-apps/web/src/components/ThreadNotificationCoordinator.badge.test.tsx
-apps/web/src/components/ThreadNotificationCoordinator.test.tsx
+apps/web/src/components/ThreadNotificationCoordinator.badge.browser.test.tsx
+apps/web/src/components/ThreadNotificationCoordinator.browser.test.tsx
 apps/web/src/components/ThreadNotificationCoordinator.tsx
 apps/web/src/components/settings/ScheduledTasksSettings.tsx
 apps/web/src/components/settings/scheduledTasksSettings.logic.ts
@@ -231,7 +231,7 @@ packages/provider-grok/src/testing.ts
 
 # Issue links in inline and expanded HTML documents.
 apps/web/src/components/files/BrowserDocumentFrame.tsx
-apps/web/src/components/chat/HtmlRenderDialog.test.tsx
+apps/web/src/components/chat/HtmlRenderDialog.browser.test.tsx
 
 # Peer links: upstream port and fork hooks (#164)
 apps/server/src/auth/McpOAuth.ts
@@ -391,13 +391,13 @@ packages/client-runtime/src/connection/registry.ts
 packages/client-runtime/src/relay/discovery.test.ts
 packages/client-runtime/src/relay/discovery.ts
 packages/client-runtime/src/state/threads-atoms.test.ts
-apps/web/src/components/cloud/CloudEnvironmentConnectList.test.tsx
+apps/web/src/components/cloud/CloudEnvironmentConnectList.browser.test.tsx
 apps/mobile/src/features/threads/SubagentRow.tsx
 apps/mobile/src/features/threads/ThreadAgentsSheet.tsx
 apps/mobile/src/features/threads/thread-subagent-group.tsx
 apps/mobile/src/features/threads/threadAgentsPresentation.test.ts
 apps/mobile/src/features/threads/threadAgentsPresentation.ts
-apps/web/src/components/chat/ThreadRelationshipsControl.agents.test.tsx
+apps/web/src/components/chat/ThreadRelationshipsControl.agents.browser.test.tsx
 apps/web/src/components/chat/ThreadRelationshipsControl.tsx
 apps/web/src/components/chat/V2ItemInspector.tsx
 apps/web/src/components/chat/V2LifecycleRow.tsx
@@ -410,3 +410,10 @@ packages/client-runtime/src/work-log/itemDetail.test.ts
 packages/client-runtime/src/work-log/itemDetail.ts
 packages/shared/src/orchestrationV2PendingBackgroundWork.test.ts
 packages/shared/src/orchestrationV2PendingBackgroundWork.ts
+
+apps/server/src/persistence/Migrations.ts
+apps/server/src/persistence/Migrations/063_DropUnusedV1Projections.test.ts
+packages/source-control-github/package.json
+apps/server/src/sourceControl/builtInDrivers.ts
+apps/web/src/components/chat/RightPanelSurfaceContent.tsx
+apps/web/src/state/entities.ts

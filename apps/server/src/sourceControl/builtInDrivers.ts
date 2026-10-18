@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
 
 import * as ServerSourceControlHost from "./ServerSourceControlHost.ts";
 import { BUILT_IN_SOURCE_CONTROL_DRIVER_LIST } from "./sourceControlDefinitions.ts";
+import * as IssueGitHubApi from "../issues/IssueGitHubApi.ts";
 
 export interface SourceControlDriverEntry {
   readonly driver: Pick<SourceControlDriver, "kind" | "definition">;
@@ -25,7 +26,12 @@ const make = Effect.forEach(BUILT_IN_SOURCE_CONTROL_DRIVER_LIST, (driver) =>
   driver.make.pipe(Effect.map((instance) => ({ driver, instance }))),
 );
 
-export const layer = Layer.effect(SourceControlDrivers, make).pipe(
+export const layer = Layer.merge(
+  Layer.effect(SourceControlDrivers, make),
+  // Fork: GitHub Issue and map reads. Drivers own their services, so this reader builds its own
+  // REST client on the shared source-control host and rate-limit pause.
+  IssueGitHubApi.layerWithDependencies,
+).pipe(
   Layer.provideMerge(ServerSourceControlHost.layer),
   Layer.provideMerge(SourceControlRateLimit.layer),
 );

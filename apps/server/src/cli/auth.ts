@@ -1,9 +1,4 @@
-import {
-  AuthAdministrativeScopes,
-  AuthSessionId,
-  AuthRenewalCommitment,
-  AuthStandardClientScopes,
-} from "@t3tools/contracts";
+import { AuthSessionId, AuthRenewalCommitment, AuthStandardClientScopes } from "@t3tools/contracts";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";

@@ -15,7 +15,7 @@ import {
   aliasedGraphQlDocument,
   type GraphQlDocument,
   type GraphQlVariables,
-} from "@t3tools/source-control-github/server/githubGraphQl";
+} from "./gitHubDocuments.ts";
 
 /** GitHub's ceiling on a search page. */
 export const ISSUE_SEARCH_MAX_ROWS = 100;

@@ -7,7 +7,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { UsersIcon } from "lucide-react";
-import { useMemo } from "react";
+
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 
@@ -44,9 +44,7 @@ export function ThreadSharingControl({
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
 }) {
-  const thread = useThreadShell(
-    useMemo(() => scopeThreadRef(environmentId, threadId), [environmentId, threadId]),
-  );
+  const thread = useThreadShell(scopeThreadRef(environmentId, threadId));
   const person = useEnvironmentPerson(environmentId);
   useRefreshDevicePeopleOnFocus();
   const dispatch = useAtomCommand(threadSharingCommand);

@@ -399,15 +399,31 @@ export function ThreadRelationshipsPanel(props: {
   const projected = projection?.subagents ?? [];
   const runtimeSubagents = projectedSubagentsToRuntime(projected);
   const byId = new Map(runtimeSubagents.map((agent) => [agent.id, agent]));
-  const subagentsByThreadId = new Map(projected.flatMap((subagent) => {
-    const target = subagentChildTarget(subagent);
-    return target === null ? [] : [[threadRelationshipNodeKey(target.threadId, target.environmentId), {
-      ...byId.get(subagent.id)!, id: subagent.id, threadId: subagent.threadId, runId: subagent.runId,
-      nativeTaskRef: subagent.nativeTaskRef, nativeStatus: subagent.status, driver: subagent.driver,
-      providerInstanceId: subagent.providerInstanceId, origin: subagent.origin,
-      modelSelection: subagent.modelSelection, remoteChild: subagent.remoteChild,
-    }] as const];
-  }));
+  const subagentsByThreadId = new Map(
+    projected.flatMap((subagent) => {
+      const target = subagentChildTarget(subagent);
+      return target === null
+        ? []
+        : [
+            [
+              threadRelationshipNodeKey(target.threadId, target.environmentId),
+              {
+                ...byId.get(subagent.id)!,
+                id: subagent.id,
+                threadId: subagent.threadId,
+                runId: subagent.runId,
+                nativeTaskRef: subagent.nativeTaskRef,
+                nativeStatus: subagent.status,
+                driver: subagent.driver,
+                providerInstanceId: subagent.providerInstanceId,
+                origin: subagent.origin,
+                modelSelection: subagent.modelSelection,
+                remoteChild: subagent.remoteChild,
+              },
+            ] as const,
+          ];
+    }),
+  );
   const workflowGroupsById = new Map(
     deriveWorkflowGroups(runtimeSubagents).map((group) => [group.workflow.id, group]),
   );

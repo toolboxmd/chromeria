@@ -7,7 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { GhostIcon } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { useEnvironmentSettings, useUpdateEnvironmentSettings } from "~/hooks/useSettings";
 import { useThreadShell } from "~/state/entities";
@@ -45,9 +45,7 @@ export function WightModeControl({
 }) {
   const mode = useEnvironmentSettings(environmentId, (settings) => settings.wightModes[threadId]);
   const update = useUpdateEnvironmentSettings(environmentId);
-  const thread = useThreadShell(
-    useMemo(() => scopeThreadRef(environmentId, threadId), [environmentId, threadId]),
-  );
+  const thread = useThreadShell(scopeThreadRef(environmentId, threadId));
   const instanceId = thread?.providerInstanceId;
   const canWrite = useEnvironmentScope(environmentId, AuthSettingsWriteScope);
   const limit = useEnvironmentSettings(environmentId, (settings) =>

@@ -1,4 +1,4 @@
-import { AuthAdministrativeScopes } from "@t3tools/contracts";
+import { AuthStandardClientScopes } from "@t3tools/contracts";
 import * as Sessions from "../auth/SessionStore.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -108,7 +108,7 @@ it.effect("browser-approved peer links keep the 30-day expiry", () =>
     const sessions = yield* Sessions.SessionStore;
     const browser = yield* sessions.issue({
       method: "browser-session-cookie",
-      scopes: AuthAdministrativeScopes,
+      scopes: AuthStandardClientScopes,
     });
     const browserRequest = HttpServerRequest.fromWeb(
       new Request("http://localhost/mcp", {

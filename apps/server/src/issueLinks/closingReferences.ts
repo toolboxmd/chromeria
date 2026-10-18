@@ -8,7 +8,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import * as GitHubApi from "@t3tools/source-control-github/server/GitHubApi";
+import * as GitHubApi from "../issues/IssueGitHubApi.ts";
 import { repositoryParts } from "../issues/gitHubIssues.ts";
 
 /** A pull request, as the host-level key closing references are read for. */
@@ -86,7 +86,7 @@ const UNVERSIONED_TTL = Duration.minutes(1);
 const VERSIONED_TTL = Duration.minutes(30);
 
 const make = Effect.gen(function* () {
-  const api = yield* GitHubApi.GitHubApi;
+  const api = yield* GitHubApi.IssueGitHubApi;
 
   /**
    * Reads under the credential the key names, so an entry never holds what another account saw;

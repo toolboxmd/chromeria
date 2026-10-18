@@ -25,7 +25,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as ServerSourceControlHost from "../sourceControl/ServerSourceControlHost.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
-import * as GitHubApi from "@t3tools/source-control-github/server/GitHubApi";
+import * as GitHubApi from "./IssueGitHubApi.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as IssueService from "./IssueService.ts";
 

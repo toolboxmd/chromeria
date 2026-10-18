@@ -4,7 +4,7 @@ import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 
-import * as GitHubApi from "@t3tools/source-control-github/server/GitHubApi";
+import * as GitHubApi from "../issues/IssueGitHubApi.ts";
 import * as ClosingReferences from "./closingReferences.ts";
 
 const pullRequest = { host: "github.com", repository: "acme/web", number: 7 };
@@ -26,7 +26,7 @@ const answerFor = (account: string) =>
 const harness = Effect.gen(function* () {
   const account = yield* Ref.make("a");
   const reads = yield* Ref.make<ReadonlyArray<string | null>>([]);
-  const api = Layer.mock(GitHubApi.GitHubApi)({
+  const api = Layer.mock(GitHubApi.IssueGitHubApi)({
     credential: () =>
       Ref.get(account).pipe(
         Effect.map((name) => ({ token: Redacted.make(`token-${name}`), fingerprint: name })),

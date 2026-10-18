@@ -1,7 +1,6 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { type EnvironmentId, type IssuePullRequest, parseIssueUrl } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
-import { useMemo } from "react";
 
 import { useProjects } from "~/state/entities";
 import { useEnvironments } from "~/state/environments";
@@ -23,10 +22,7 @@ export function ThreadIssuePanel({ environmentId, url }: { environmentId: string
   const projects = useProjects();
   const { environments } = useEnvironments();
   const { resolve: resolveStart, start: startFromIssue } = useStartThreadFromIssue();
-  const linkEnvironments = useMemo(
-    () => new Set(environmentIdsWithCapability(environments, "issueLinks")),
-    [environments],
-  );
+  const linkEnvironments = new Set(environmentIdsWithCapability(environments, "issueLinks"));
   const reference = parseIssueUrl(url);
   // Read through the thread's server when it reads Issues, else the one the Issues page would use.
   const readEnvironmentId =

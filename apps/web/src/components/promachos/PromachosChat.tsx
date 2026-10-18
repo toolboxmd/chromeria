@@ -1,5 +1,5 @@
 import type { MaintainScrollAtEndOptions } from "@legendapp/list/react";
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import { ComposerBanner } from "../chat/ComposerBanner";
@@ -73,11 +73,8 @@ export function usePromachosInlineCardHost(input: {
   const [host, setHost] = useState<{ threadKey: string | null; element: HTMLDivElement } | null>(
     null,
   );
-  const timelineHostRef = useCallback(
-    (element: HTMLDivElement | null) =>
-      setHost(element === null ? null : { threadKey: displayedThreadKey, element }),
-    [displayedThreadKey],
-  );
+  const timelineHostRef = (element: HTMLDivElement | null) =>
+    setHost(element === null ? null : { threadKey: displayedThreadKey, element });
   const composerHost =
     enabled && host !== null && host.threadKey !== null && host.threadKey === activeThreadKey
       ? host.element
@@ -91,14 +88,10 @@ export function usePromachosScrollFollow(
   normal: MaintainScrollAtEndOptions,
   smooth: MaintainScrollAtEndOptions,
 ) {
-  return useMemo(
-    () =>
-      enabled
-        ? {
-            normal: { ...normal, on: { ...normal.on, footerLayout: true } },
-            smooth: { ...smooth, on: { ...smooth.on, footerLayout: true } },
-          }
-        : { normal, smooth },
-    [enabled, normal, smooth],
-  );
+  return enabled
+    ? {
+        normal: { ...normal, on: { ...normal.on, footerLayout: true } },
+        smooth: { ...smooth, on: { ...smooth.on, footerLayout: true } },
+      }
+    : { normal, smooth };
 }

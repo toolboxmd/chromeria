@@ -110,7 +110,8 @@ const DAYS = [
 
 function describeSchedule(task: ScheduledTask): string {
   if (task.schedule.type === "webhook") return "On webhook";
-  if (isForkScheduledTaskSchedule(task.schedule)) return ScheduledTaskFork.forkScheduleLabel(task.schedule);
+  if (isForkScheduledTaskSchedule(task.schedule))
+    return ScheduledTaskFork.forkScheduleLabel(task.schedule);
   if (task.schedule.type === "interval") return formatScheduledTaskInterval(task.schedule.everyMs);
   const days = task.schedule.weekdays?.length ? repeatLabel(task.schedule.weekdays) : "Every day";
   return `${days} at ${formatTime(task.schedule.timeOfDay)}`;
@@ -1417,6 +1418,7 @@ function EnvironmentTasks({
                   tintColorClassName="accent-icon"
                   type="monochrome"
                 />
+                <ScheduledTaskFork.ForkTaskSummaryText task={task} />
               </Pressable>
             </Menu>
           </View>

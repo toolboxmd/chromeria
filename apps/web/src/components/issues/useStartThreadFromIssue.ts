@@ -1,6 +1,5 @@
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, IssueKey } from "@t3tools/contracts";
-import { useCallback, useMemo } from "react";
 
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { useEnvironments } from "~/state/environments";
@@ -22,33 +21,26 @@ export function useStartThreadFromIssue() {
   const link = useAtomCommand(issueLinkEnvironment.link, { reportFailure: true });
   const { environments } = useEnvironments();
   // A project on a server that keeps Issue links, when there is one, so the thread links at once.
-  const preferred = useMemo(() => {
+  const preferred = (() => {
     const keepsLinks = new Set(environmentIdsWithCapability(environments, "issueLinks"));
     return (project: { readonly environmentId: EnvironmentId }) =>
       keepsLinks.has(project.environmentId);
-  }, [environments]);
+  })();
 
-  const resolve = useCallback(
-    (issue: IssueKey) => resolveIssueProject(projects, issue, preferred),
-    [preferred, projects],
-  );
+  const resolve = (issue: IssueKey) => resolveIssueProject(projects, issue, preferred);
 
-  const start = useCallback(
-    (issue: StartableIssue) =>
-      startThreadFromIssue(issue, {
-        projects,
-        preferred,
-        openDraft: (project) => newThread(scopeProjectRef(project.environmentId, project.id)),
-        writePrompt: (draftId, prompt) =>
-          useComposerDraftStore.getState().setPrompt(draftId, prompt),
-        link: (project, threadId, url) =>
-          link({
-            environmentId: project.environmentId,
-            input: { threadId, target: { url }, source: "started" },
-          }),
-      }),
-    [link, newThread, preferred, projects],
-  );
+  const start = (issue: StartableIssue) =>
+    startThreadFromIssue(issue, {
+      projects,
+      preferred,
+      openDraft: (project) => newThread(scopeProjectRef(project.environmentId, project.id)),
+      writePrompt: (draftId, prompt) => useComposerDraftStore.getState().setPrompt(draftId, prompt),
+      link: (project, threadId, url) =>
+        link({
+          environmentId: project.environmentId,
+          input: { threadId, target: { url }, source: "started" },
+        }),
+    });
 
   return { resolve, start };
 }

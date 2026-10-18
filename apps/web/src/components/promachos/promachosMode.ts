@@ -9,7 +9,7 @@
  */
 import { ScopedProjectRef } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import { useMemo } from "react";
+
 import { promachosMultipleModelSelections } from "./promachosStart";
 
 import { useLocalStorage } from "../../hooks/useLocalStorage";
@@ -42,10 +42,7 @@ export function usePromachosHomeRefs(
 ): ReadonlyArray<ScopedProjectRef> {
   const projects = useProjects();
   const groupingSettings = useClientSettings(selectProjectGroupingSettings);
-  return useMemo(
-    () => (home === null ? [] : promachosHomeRefs(projects, home, groupingSettings)),
-    [groupingSettings, home, projects],
-  );
+  return home === null ? [] : promachosHomeRefs(projects, home, groupingSettings);
 }
 
 /** Whether a thread in `projectRef` renders as a Promachos chat right now. */

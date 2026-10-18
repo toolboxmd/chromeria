@@ -52,7 +52,7 @@ flowchart TD
     OB["OpenBot: Bots, Channels, Computer"]
     %% OB: context
     UA["Upstream absorption"]
-    %% UA: #370 #166
+    %% UA: #411 #166
     MI["Mobile identity"]
     %% MI: #205
     BR["Bounded event reads"]

@@ -33,6 +33,12 @@ import type { CitedHistory } from "./citationProcedure";
 import type { TimelineNavigation } from "./timelineViewport";
 import { rememberTimelinePosition } from "./timelineScrollAnchoring";
 
+const remoteConnection = vi.hoisted(() => ({ connected: true }));
+vi.mock(import("../../state/entities"), async (original) => ({
+  ...(await original()),
+  useServerConfigs: (() =>
+    remoteConnection.connected ? new Map([["environment-cavallo", {}]]) : new Map()) as never,
+}));
 const environmentQuery = vi.hoisted(() => ({
   error: "Pull request not found",
   data: null as unknown,
@@ -120,6 +126,34 @@ function message(
       ...overrides,
     },
   };
+}
+
+function v2Item(type: string, fields: Record<string, unknown>) {
+  const id = (fields.id as string | undefined) ?? type;
+  return {
+    position: 0,
+    visibility: "local",
+    sourceThreadId: "thread-1",
+    sourceItemId: id,
+    item: {
+      id,
+      threadId: "thread-1",
+      runId: "run-1",
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 0,
+      status: "completed",
+      title: null,
+      startedAt: null,
+      completedAt: null,
+      updatedAt: {},
+      type,
+      ...fields,
+    },
+  } as never;
 }
 
 async function renderElement(element: ReactElement, options: { router?: false } = {}) {
@@ -995,6 +1029,51 @@ it("renders automatic compaction as one live divider that finishes with its reas
     .toBeVisible();
   expect(container.querySelectorAll('[role="separator"]')).toHaveLength(1);
   expect(container.textContent).not.toContain("Compacting before");
+
+});
+
+it("opens a remote child in its environment and disables the link after disconnect", async () => {
+  const onOpenThread = vi.fn();
+  const entries = [
+    {
+      id: "subagent-remote",
+      kind: "event",
+      createdAt: CREATED_AT,
+      projectedItem: v2Item("subagent", {
+        id: "subagent-remote",
+        subagentId: "node-subagent-remote",
+        title: "Remote roast",
+        origin: "app_owned",
+        driver: "cursor",
+        providerInstanceId: "cursor",
+        childThreadId: null,
+        remoteChild: {
+          environmentId: "environment-cavallo",
+          threadId: "thread-remote-child",
+          label: "cavallo",
+        },
+        prompt: "Roast the draft",
+        progress: "Reading the draft",
+        result: null,
+      }),
+    },
+  ] as unknown as ReadonlyArray<Entry>;
+  {
+    await using screen = await renderTimeline(entries, { onOpenThread });
+    await vi.waitFor(() => expect(screen.buttons("Open Remote roast")).toHaveLength(1));
+    await click(screen.button("Open Remote roast"));
+    expect(onOpenThread).toHaveBeenCalledWith("thread-remote-child", "environment-cavallo");
+  }
+  remoteConnection.connected = false;
+  onOpenThread.mockClear();
+  try {
+    await using screen = await renderTimeline(entries, { onOpenThread });
+    await vi.waitFor(() => expect(screen.text()).toContain("Remote roast"));
+    expect(screen.buttons("Open Remote roast")).toHaveLength(0);
+    expect(onOpenThread).not.toHaveBeenCalled();
+  } finally {
+    remoteConnection.connected = true;
+  }
 });
 
 it("keeps concurrent approvals actionable outside collapsed work and restores settled rows", async () => {
