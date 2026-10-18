@@ -80,6 +80,10 @@ export class PeerMcpClient extends Context.Service<
       readonly sizeBytes: number;
     }) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly start: Effect.Effect<void, never, Scope.Scope>;
+    readonly requirePendingRequests?: (
+      environmentId: EnvironmentId,
+      generation?: string,
+    ) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly requireTaskLifecycle?: (
       environmentId: EnvironmentId,
       generation?: string,
@@ -599,6 +603,7 @@ const make = Effect.gen(function* () {
     environmentId: EnvironmentId,
     generation?: string,
     input?: Omit<PeerTaskLifecycleRequest, "environmentId" | "generation">,
+    pendingRequests = false,
   ) =>
     Effect.gen(function* () {
       const resolved = yield* links.resolve(environmentId).pipe(Effect.mapError(fromLinkError));
@@ -619,7 +624,9 @@ const make = Effect.gen(function* () {
       if (input?.operation.type === "stop") yield* ensureChannel(resolved, self);
       const request =
         input === undefined
-          ? HttpClientRequest.get(`${resolved.url}/mcp/peer-control/tasks`)
+          ? HttpClientRequest.get(
+              `${resolved.url}/mcp/peer-control/${pendingRequests ? "pending-requests" : "tasks"}`,
+            )
           : HttpClientRequest.post(`${resolved.url}/mcp/peer-control/tasks`).pipe(
               HttpClientRequest.setBody(
                 HttpBody.text(json({ ...peer, ...input }), "application/json"),
@@ -631,8 +638,9 @@ const make = Effect.gen(function* () {
       if (response.status === 404 || response.status === 409)
         return yield* new OrchestratorMcpFailure({
           code: "invalid_request",
-          message:
-            "The destination does not support delegated lifecycle v1. Update both environments; no lifecycle operation was accepted.",
+          message: pendingRequests
+            ? "The destination does not support verified pending request actions. Update both environments; no request action was accepted."
+            : "The destination does not support delegated lifecycle v1. Update both environments; no lifecycle operation was accepted.",
         });
       if (response.status !== 200)
         return yield* new OrchestratorMcpFailure({
@@ -902,6 +910,19 @@ const make = Effect.gen(function* () {
   return PeerMcpClient.of({
     call,
     start,
+    requirePendingRequests: (environmentId, generation) =>
+      lifecycleRequest(environmentId, generation, undefined, true).pipe(
+        Effect.flatMap(decodeLifecycleVersion),
+        Effect.asVoid,
+        Effect.mapError((error) =>
+          error._tag === "OrchestratorMcpFailure"
+            ? error
+            : new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "The peer does not support verified pending request actions.",
+              }),
+        ),
+      ),
     requireTaskLifecycle,
     taskLifecycle,
     uploadAttachment,

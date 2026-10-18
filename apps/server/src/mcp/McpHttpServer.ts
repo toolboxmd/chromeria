@@ -1,3 +1,4 @@
+import { PendingRequests } from "../childThreads/PendingRequestService.ts";
 import { PeerSavedPreviewAuthorizationRequest } from "@t3tools/contracts";
 import * as McpRouting from "./McpRouting.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
@@ -1371,9 +1372,19 @@ const layerPeerControl = Layer.unwrap(
       }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 403 })))),
     );
     const lifecycle = yield* Effect.serviceOption(PeerTaskLifecycle.PeerTaskLifecycle);
+    const pendingRequests = yield* Effect.serviceOption(PendingRequests);
     const requests = yield* Effect.serviceOption(RequestReceipts.McpRequestReceipts);
     const attachments = yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging);
     if (Option.isNone(authority)) return Layer.merge(post, streaming);
+    const pendingRequestProtocol = HttpRouter.add(
+      "GET",
+      "/mcp/peer-control/pending-requests",
+      Effect.succeed(
+        Option.isSome(pendingRequests)
+          ? HttpServerResponse.jsonUnsafe({ version: 1 })
+          : HttpServerResponse.empty({ status: 409 }),
+      ),
+    );
     const tasks = Layer.merge(
       HttpRouter.add(
         "GET",
@@ -1407,7 +1418,7 @@ const layerPeerControl = Layer.unwrap(
           : HttpServerResponse.empty({ status: 409 }),
       ),
     );
-    return Layer.mergeAll(post, streaming, tasks, requestProtocol);
+    return Layer.mergeAll(post, streaming, tasks, requestProtocol, pendingRequestProtocol);
   }),
 );
 

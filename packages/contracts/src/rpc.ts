@@ -1,3 +1,4 @@
+import { RemotePendingRequestInput, RemotePendingRequestResult } from "./peerTask.ts";
 import { PeerTaskView, PeerTaskResource } from "./peerTask.ts";
 import { ThreadId, NodeId } from "./baseSchemas.ts";
 import { OrchestratorMcpTaskCancelResult } from "./orchestratorMcp.ts";
@@ -496,6 +497,8 @@ export const WS_METHODS = {
   peerLinksLink: "peerLinks.link",
   peerLinksUnlink: "peerLinks.unlink",
   remoteTaskView: "remoteTasks.view",
+  remoteTaskRequest: "remoteTasks.request",
+  remoteTaskRequestRead: "remoteTasks.requestRead",
   remoteTaskStop: "remoteTasks.stop",
   peerGrantsList: "peerGrants.list",
   peerGrantsUpdate: "peerGrants.update",
@@ -779,6 +782,19 @@ const WsRemoteTaskViewRpc = Rpc.make(WS_METHODS.remoteTaskView, {
     textOffset: Schema.optional(NonNegativeInt),
   }),
   success: PeerTaskView,
+  error: Schema.Union([OrchestratorMcpFailure, EnvironmentAuthorizationError]),
+});
+const WsRemoteTaskRequestReadRpc = Rpc.make(WS_METHODS.remoteTaskRequestRead, {
+  payload: RemotePendingRequestInput.mapFields((fields) => ({
+    ...fields,
+    operation: Schema.Struct({ type: Schema.Literal("read") }),
+  })),
+  success: RemotePendingRequestResult,
+  error: Schema.Union([OrchestratorMcpFailure, EnvironmentAuthorizationError]),
+});
+const WsRemoteTaskRequestRpc = Rpc.make(WS_METHODS.remoteTaskRequest, {
+  payload: RemotePendingRequestInput,
+  success: RemotePendingRequestResult,
   error: Schema.Union([OrchestratorMcpFailure, EnvironmentAuthorizationError]),
 });
 const WsRemoteTaskStopRpc = Rpc.make(WS_METHODS.remoteTaskStop, {
@@ -1925,6 +1941,11 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
   { error: EnvironmentAuthorizationError },
 ) {}
 
+export const PendingRequestClientRpcGroup = RpcGroup.make(
+  WsRemoteTaskRequestReadRpc,
+  WsRemoteTaskRequestRpc,
+).middleware(RpcScopeAuthorization);
+
 export const WsRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
   WsServerGetConfigRpc,
@@ -1957,6 +1978,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerUpdateSettingsRpc,
   WsRemoteTaskViewRpc,
   WsRemoteTaskStopRpc,
+  WsRemoteTaskRequestRpc,
+  WsRemoteTaskRequestReadRpc,
   WsPeerGrantsListRpc,
   WsPeerGrantsUpdateRpc,
   WsPeerLinksListRpc,

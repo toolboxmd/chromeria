@@ -27,6 +27,8 @@ export const Authority = Schema.Struct({
   ceiling: PeerCeiling,
   envelope: PeerAuthorityEnvelope,
   tool: Schema.String,
+  requestActorThreadId: Schema.optionalKey(Schema.NullOr(ThreadId)),
+  requestClientSessionId: Schema.optionalKey(AuthSessionId),
   readOnly: Schema.Boolean,
   originRunId: Schema.NullOr(RunId),
   pair: Schema.optionalKey(Schema.Struct({ parentThreadId: ThreadId, taskId: NodeId })),
