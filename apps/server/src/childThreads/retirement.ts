@@ -51,7 +51,7 @@ export function retirementState(
   };
 }
 
-export const readRetirementState = Effect.fn("childThreads.readRetirementState")(function* (
+const readRetirementChain = Effect.fn("childThreads.readRetirementChain")(function* (
   threadId: ThreadId,
 ) {
   const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -76,7 +76,22 @@ export const readRetirementState = Effect.fn("childThreads.readRetirementState")
     current = parent.value;
     ancestors.set(current.id, current);
   }
+  return { thread, ancestors };
+});
+
+export const readRetirementState = Effect.fn("childThreads.readRetirementState")(function* (
+  threadId: ThreadId,
+) {
+  const { thread, ancestors } = yield* readRetirementChain(threadId);
   return retirementState(thread, ancestors);
+});
+
+/** Lock these owners from the root down before consuming work whose eligibility they own. */
+export const readRetirementThreadIds = Effect.fn("childThreads.readRetirementThreadIds")(function* (
+  threadId: ThreadId,
+) {
+  const { thread, ancestors } = yield* readRetirementChain(threadId);
+  return [thread.id, ...ancestors.keys()].toReversed();
 });
 
 export const isThreadRetired = Effect.fn("childThreads.isThreadRetired")(function* (
