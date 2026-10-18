@@ -2626,31 +2626,36 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               if (cutIn !== undefined) break;
               if (terminalizedNativeTurns.has(ancestor.nativeTurnId)) {
                 const nativeThreadId = yield* getNativeThreadId(subagent.providerThread);
-                const interrupted = yield* client
+                // The reply is parsed by this same reader, so awaiting it here
+                // would block every native frame until the timeout. Starting the
+                // fork immediately still writes the interrupt before later I/O.
+                yield* client
                   .request("turn/interrupt", {
                     threadId: nativeThreadId,
                     turnId: turn.nativeTurnId,
                   })
                   .pipe(
-                    Effect.as(true),
                     Effect.catch((cause) =>
                       Effect.logWarning("orchestration-v2.codex-late-subagent-interrupt-failed", {
                         nativeThreadId,
                         nativeTurnId: turn.nativeTurnId,
                         cause,
-                      }).pipe(Effect.as(false)),
+                      }),
                     ),
                     Effect.timeoutOption("10 seconds"),
+                    Effect.flatMap((answered) =>
+                      Option.isNone(answered)
+                        ? Effect.logWarning(
+                            "orchestration-v2.codex-late-subagent-interrupt-timeout",
+                            {
+                              nativeThreadId,
+                              nativeTurnId: turn.nativeTurnId,
+                            },
+                          )
+                        : Effect.void,
+                    ),
+                    Effect.forkIn(scope, { startImmediately: true }),
                   );
-                if (Option.isNone(interrupted)) {
-                  yield* Effect.logWarning(
-                    "orchestration-v2.codex-late-subagent-interrupt-timeout",
-                    {
-                      nativeThreadId,
-                      nativeTurnId: turn.nativeTurnId,
-                    },
-                  );
-                }
                 return;
               }
               ancestor = ancestor.subagent?.parentContext;

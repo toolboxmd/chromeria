@@ -9307,4 +9307,33 @@ describe("CodexAdapterV2 cut-in cohort", () => {
         );
       }).pipe(Effect.scoped, Effect.provide(layers)),
   );
+
+  it.effect("keeps reading native frames while a late child's interrupt awaits its reply", () =>
+    Effect.gen(function* () {
+      const lateChildTurnId = "r7-late-child-turn";
+      const h = yield* makeBoundary();
+      yield* h.start();
+      yield* h.child;
+      yield* h.end(nativeThreadId, rootTurnId, "failed");
+      yield* h.notify("turn/started", {
+        threadId: childThreadId,
+        turn: makeCodexReplayTurn({ id: lateChildTurnId, status: "inProgress" }),
+      });
+      const interrupt = yield* h.take("turn/interrupt");
+      assert.equal(interrupt.params.turnId, lateChildTurnId);
+      // The reply is parsed by the same reader that delivered turn/started, so
+      // a frame behind the unanswered interrupt must pass with no clock advance.
+      yield* h.barrier;
+      yield* h.reply(interrupt);
+      yield* h.end(childThreadId, lateChildTurnId, "interrupted");
+      assert.lengthOf(h.turnUpdates(lateChildTurnId), 0);
+      assert.lengthOf(
+        h.requests.filter(
+          (request) =>
+            request.method === "turn/interrupt" && request.params.turnId === lateChildTurnId,
+        ),
+        1,
+      );
+    }).pipe(Effect.scoped, Effect.provide(layers)),
+  );
 });
