@@ -843,7 +843,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/181",
     "https://github.com/toolboxmd/chromeria/pull/279",
-    "https://github.com/toolboxmd/chromeria/pull/301"
+    "https://github.com/toolboxmd/chromeria/pull/301",
+    "https://github.com/toolboxmd/chromeria/pull/431"
   ],
   "newFiles": [
     "apps/server/src/childThreads/ForkCommitPlan.ts",
