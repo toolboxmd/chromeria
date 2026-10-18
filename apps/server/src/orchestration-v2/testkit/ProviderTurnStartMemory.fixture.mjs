@@ -84,9 +84,14 @@ const dependencies = Layer.mergeAll(
         throw new Error("full transcript read");
       }),
     hasUnpairedRunInterruptRequest: () => Effect.succeed(false),
-    getThreadRecords: (threadId, fields) =>
+    getThreadRecords: (threadId, fields, filter) =>
       Effect.sync(() => {
         NodeAssert.equal(threadId, current.thread.id);
+        if (fields.includes("runs")) {
+          NodeAssert.deepEqual(fields, ["runs"]);
+          NodeAssert.deepEqual(filter?.runIds, [current.runs[0].id]);
+          return { thread: current.thread, runs: current.runs };
+        }
         NodeAssert.deepEqual(fields, []);
         threadReads++;
         return { thread: current.thread };

@@ -450,7 +450,8 @@ function harness(
           getTurnStartContext: () => Effect.succeed({ ...projection, hasConversation: true }),
           getRuntimeRecoveryProjection: () => Effect.succeed(projection),
           getTurnStartHistory: () => Effect.succeed(projection.turnItems),
-          getThreadRecords: () => Effect.succeed(source),
+          getThreadRecords: (requestedThreadId) =>
+            Effect.succeed(requestedThreadId === threadId ? projection : source),
         }),
         Layer.mock(RunExecution.RunExecutionServiceV2)({
           startRootRun: (input) =>
