@@ -3,6 +3,8 @@ import {
   CommandId,
   EventId,
   type OrchestrationV2Run,
+  type OrchestrationV2TurnItem,
+  type TurnItemId,
   OrchestrationV2RunJson,
   OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
@@ -350,19 +352,47 @@ const layerBase: Layer.Layer<
             : [],
         ),
       );
-      return Effect.forEach(
-        events,
-        (event): Effect.Effect<OrchestrationV2DomainEvent, unknown> =>
-          event.type === "turn-item.updated"
-            ? turnItemPositions
-                .normalize(
-                  event.payload,
-                  event.payload.runId === null ? undefined : runOrdinals.get(event.payload.runId),
-                )
-                .pipe(Effect.map((payload) => ({ ...event, payload })))
-            : Effect.succeed(event),
-        { concurrency: 1 },
-      );
+      return Effect.gen(function* () {
+        const normalized: Array<OrchestrationV2DomainEvent> = [];
+        const pendingItems = new Map<TurnItemId, OrchestrationV2TurnItem>();
+        for (const event of events) {
+          if (event.type !== "turn-item.updated") {
+            normalized.push(event);
+            continue;
+          }
+          const payload = yield* turnItemPositions.normalize(
+            event.payload,
+            event.payload.runId === null ? undefined : runOrdinals.get(event.payload.runId),
+          );
+          // Compare after position allocation, inside the write transaction. Other
+          // run subscribers can deliver the same child item, including in this batch.
+          const previous =
+            pendingItems.get(payload.id) ??
+            (yield* projectionStore.getTurnItem({
+              threadId: payload.threadId,
+              itemId: payload.id,
+            }));
+          if (previous !== null && previous !== undefined) {
+            const unchanged =
+              (yield* ProjectionStore.encodeTurnItemPayload(previous)) ===
+              (yield* ProjectionStore.encodeTurnItemPayload(payload));
+            // A delayed subscriber can replay a command's start after its completion.
+            // Keep later starts and corrections, but never rewind this settled snapshot.
+            const supersededStart =
+              payload.type === "command_execution" &&
+              previous.type === "command_execution" &&
+              previous.providerTurnId === payload.providerTurnId &&
+              previous.completedAt !== null &&
+              payload.completedAt === null &&
+              DateTime.toEpochMillis(payload.updatedAt) <=
+                DateTime.toEpochMillis(previous.updatedAt);
+            if (unchanged || supersededStart) continue;
+          }
+          pendingItems.set(payload.id, payload);
+          normalized.push({ ...event, payload });
+        }
+        return normalized;
+      });
     };
 
     const applyStoredEvents = (storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>) =>
