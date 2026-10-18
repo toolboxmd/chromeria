@@ -12358,20 +12358,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         state?.retired
       )
         return yield* dispatchOnce(command);
-      // Refuse before feature planning, while retaining the same guards at commit.
-      for (const guard of retirementPlan?.guards ?? []) {
-        yield* guard.pipe(
-          Effect.provideService(SqlClient.SqlClient, forkSql),
-          Effect.provideService(ProjectionStoreV2, projectionStore),
-          Effect.mapError(
-            (cause) =>
-              new OrchestratorCommandRejectedError({
-                commandId: command.commandId,
-                commandType: command.type,
-                cause: cause.message,
-              }),
-          ),
-        );
+      // Only messages need admission before Spectrum/Wight interception. Other
+      // commands retain core planning and commit-time retirement admission.
+      if (command.type === "message.dispatch") {
+        for (const guard of retirementPlan?.guards ?? []) {
+          yield* guard.pipe(
+            Effect.provideService(SqlClient.SqlClient, forkSql),
+            Effect.provideService(ProjectionStoreV2, projectionStore),
+            Effect.mapError(
+              (cause) =>
+                new OrchestratorCommandRejectedError({
+                  commandId: command.commandId,
+                  commandType: command.type,
+                  cause: cause.message,
+                }),
+            ),
+          );
+        }
       }
       if (command.type === "message.dispatch" && !(yield* wightAdmission.permits(command)))
         return yield* new OrchestratorDispatchError({
@@ -12529,13 +12532,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
       Effect.catch((cause) =>
         Effect.gen(function* () {
-          // Refused messages can be retried after the user lowers the thread.
-          // Other commands retain their durable rejection receipt, including a
-          // prepared launch's release when Stop wins during workspace setup.
+          // Retirement refusals stay retryable after the thread resumes.
           if (
             cause._tag === "OrchestratorThreadAboveModeLimitError" ||
-            (cause._tag === "OrchestratorCommandRejectedError" &&
-              command.type === "message.dispatch")
+            cause._tag === "OrchestratorCommandRejectedError"
           )
             return yield* cause;
           const rejectedAt = yield* DateTime.now;

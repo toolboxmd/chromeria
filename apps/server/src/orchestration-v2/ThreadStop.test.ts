@@ -2929,3 +2929,42 @@ it.effect("review r4: provider-failure queue hold is inherited by a later comple
     );
   }),
 );
+
+it.effect("queue resume refused by Stop remains retryable with the same command id", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const sql = yield* SqlClient.SqlClient;
+    const threadId = ThreadId.make("stop-retry-queue");
+    yield* createWatchingThread(threadId, 501);
+    yield* send(threadId, "first", "start_immediately");
+    yield* send(threadId, "held", "queue_after_active");
+    yield* orchestrator.dispatch({
+      type: "thread.stop",
+      commandId: CommandId.make("stop-retry-queue:stop"),
+      threadId,
+    });
+    const command = {
+      type: "queue.resume" as const,
+      commandId: CommandId.make("stop-retry-queue:resume"),
+      threadId,
+    };
+    yield* orchestrator.dispatch(command).pipe(Effect.flip);
+    assert.deepEqual(
+      yield* sql`SELECT status FROM orchestration_command_receipts WHERE command_id = ${command.commandId}`,
+      [],
+    );
+    yield* send(threadId, "explicit resume", "start_immediately");
+    yield* orchestrator.dispatch(command);
+    const queued = (yield* orchestrator.getThreadProjection(threadId)).runs.filter(
+      (run) => run.status === "queued",
+    );
+    assert.deepEqual(
+      queued.map((run) => run.queueHeld),
+      [false],
+    );
+    assert.deepEqual(
+      yield* sql`SELECT status FROM orchestration_command_receipts WHERE command_id = ${command.commandId}`,
+      [{ status: "accepted" }],
+    );
+  }).pipe(Effect.provide(layerTest)),
+);
