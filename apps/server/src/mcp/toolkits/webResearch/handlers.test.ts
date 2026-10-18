@@ -748,6 +748,52 @@ describe("web_read at the registered MCP seam", () => {
     }),
   );
 
+  it.effect("keeps the root and siblings when nested anchors exceed the extraction budget", () =>
+    Effect.gen(function* () {
+      const nested = `<html><head><title>Nested anchors</title></head><body>${`<math>${"<a href=x>".repeat(256)}${"\u0001".repeat(256)}</math>`.repeat(270)}</body></html>`;
+      const f = yield* fixture((url) =>
+        Effect.succeed(
+          response(
+            url.pathname === "/"
+              ? html.replace(
+                  "</body>",
+                  '<a href="/camere">Camere</a><a href="/rooms-nested">Rooms</a><a href="/eventi">Events</a></body>',
+                )
+              : url.pathname === "/rooms-nested"
+                ? nested
+                : html,
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const result = yield* finish(read({ url: "https://nested-links.example/" }), f.requests, 4);
+        expect(result).toMatchObject({
+          status: "ok",
+          subpages: [
+            { url: "https://nested-links.example/camere", status: "ok" },
+            {
+              url: "https://nested-links.example/rooms-nested",
+              status: "provider_error",
+              text: "",
+            },
+            { url: "https://nested-links.example/eventi", status: "ok" },
+          ],
+          truncated: false,
+          pendingSubpages: [],
+        });
+        expect(result.text).toContain("eight guest rooms");
+        expect(result.subpages[0]!.text).toContain("eight guest rooms");
+        expect(result.subpages[2]!.text).toContain("eight guest rooms");
+        const cached = yield* read({ url: "https://nested-links.example/" });
+        expect(cached.subpages.map((page) => page.cacheId)).toEqual(
+          result.subpages.map((page) => page.cacheId),
+        );
+        expect(cached.subpages.every((page) => page.rung === "cache")).toBe(true);
+        expect(f.observed).toHaveLength(5);
+      }).pipe(Effect.provide(f.layer));
+    }),
+  );
+
   it.effect(
     "keeps a recovered alias cached when its reused target body predates an expired failure",
     () =>

@@ -33,6 +33,7 @@ const blocks = new Set([
 ]);
 const omitted = new Set(["style", "template", "svg", "canvas", "noscript"]);
 const MAX_TEXT_CHARS = 4 * 1024 * 1024;
+const MAX_LINK_CHARS = 4 * 1024 * 1024;
 
 /** Full-document extraction: article-only readers lose venue tables and structured facts. */
 export const extract = (html: string, url: string) => {
@@ -42,6 +43,7 @@ export const extract = (html: string, url: string) => {
   let password = false;
   const structured: Array<string> = [];
   const links: Array<{ url: string; label: string }> = [];
+  let linkChars = 0;
   const joinChildren = (node: Node, depth: number): string => {
     const parts: Array<string> = [];
     let length = 0;
@@ -91,15 +93,17 @@ export const extract = (html: string, url: string) => {
     if (tag === "a") {
       const href = attribute(node, "href");
       if (href) {
-        try {
-          const target = new URL(href, url);
-          if (["http:", "https:", "mailto:", "tel:"].includes(target.protocol)) {
-            if (["http:", "https:"].includes(target.protocol))
-              links.push({ url: target.href, label: compact(inner).slice(0, 256) });
-            return `[${inner.trim() || target.href}](${target.href})`;
+        const target = URL.parse(href, url);
+        if (target && ["http:", "https:", "mailto:", "tel:"].includes(target.protocol)) {
+          if (["http:", "https:"].includes(target.protocol)) {
+            const label = compact(inner).slice(0, 256);
+            // Nested anchors repeat label text; account for each entry and its JSON overhead.
+            linkChars += target.href.length + label.length + 32;
+            if (linkChars > MAX_LINK_CHARS)
+              throw new RangeError("Research page links exceed the extraction limit.");
+            links.push({ url: target.href, label });
           }
-        } catch {
-          /* A malformed link is still readable as text. */
+          return `[${inner.trim() || target.href}](${target.href})`;
         }
       }
     }
