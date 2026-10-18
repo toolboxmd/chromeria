@@ -81,6 +81,8 @@ flowchart TD
     %% NR: #292 #358
     PRN["Paired session renewal"]
     %% PRN: #323
+    WR["Agent web research"]
+    %% WR: #423 PR #449
 
     T3P --- PZ
     T3T --- VT
@@ -105,6 +107,7 @@ flowchart TD
     T3R --- XM
     T3R --- NR
     T3R --- PRN
+    T3M --- WR
 
     PZ --> PM --> WG
     PZ --> DR --> VT --> XM
