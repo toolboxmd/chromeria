@@ -2474,8 +2474,12 @@ export class ServingState {
           outcome: "cut_budget",
           reason: out.overLimit(w.text, startup) ? "moment" : "turn",
         });
-        // A carry larger than this seam can never succeed on retry. Finish it as cut.
-        if (out.exceedsLimitAlone(w.text, startup)) {
+        // Startup files have no heading of their own. Other hook content can only defer them.
+        if (
+          startup
+            ? utf8(w.text) + 2 > sel.profile.session_start_limit_bytes
+            : out.exceedsLimitAlone(w.text)
+        ) {
           this.run("UPDATE carries SET state = 'cut_budget' WHERE id = ?", w.id);
           this.run(
             "UPDATE candidates SET outcome = 'cut_budget', reason = 'moment' WHERE id = (SELECT candidate_id FROM carries WHERE id = ?)",

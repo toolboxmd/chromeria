@@ -92,6 +92,7 @@ interface Fire {
   readonly delivery?: string;
   readonly settle?: boolean;
   readonly deliveryMode?: "retained_startup";
+  readonly greatLibrary?: Candidate;
   readonly readChecks?: ReadonlyArray<{ readonly toolUseId: string; readonly ok: boolean | null }>;
   readonly toolUseId?: string | null;
   readonly cue?: CueMoment;
@@ -133,6 +134,7 @@ const makeHarness = (file = ":memory:") => {
                   : null,
           reads: f.reads ?? [],
         },
+        ...(f.greatLibrary === undefined ? {} : { greatLibrary: f.greatLibrary }),
         candidates: f.candidates ?? [],
         notes: [],
         owners: { "/store": "abc123" },
@@ -1171,6 +1173,24 @@ describe("ServingState epochs and carries", () => {
       h.fire({ kind: "tool_result", candidates: [entry("later", "r".repeat(1500))] }).status,
       200,
     );
+  });
+
+  it("keeps a near-limit startup carry waiting when the prompt prints an owed pointer", () => {
+    const h = makeHarness();
+    const pack = entry("pack", "p".repeat(9490), { matcher: "session_start" });
+    h.fire({ kind: "session_start", candidates: [pack], deliveryMode: "retained_startup" });
+    const library = entry("library", "Read /library/INDEX.md in full.", {
+      matcher: "great_library",
+    });
+    const prompt = h.fire({ kind: "user_message", greatLibrary: library });
+    assert.equal(prompt.status, 200);
+    assert.include(h.text(prompt)!, library.text);
+    assert.deepEqual(h.db.prepare("SELECT state FROM carries").get(), { state: "waiting" });
+    const next = h.fire({ kind: "pre_tool" });
+    assert.equal(next.status, 200);
+    assert.include(h.text(next)!, pack.text);
+    assert.deepEqual(h.db.prepare("SELECT state FROM carries").get(), { state: "printed" });
+    assert.equal(h.fire({ kind: "pre_tool" }).status, 204);
   });
 
   it("cuts a startup carry larger than its original session-start limit", () => {
