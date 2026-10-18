@@ -2,6 +2,8 @@ import { it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Logger from "effect/Logger";
+import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import { describe, expect } from "vite-plus/test";
 
@@ -112,6 +114,56 @@ describe("xAiPromptCompleteFromSessionUpdate", () => {
         ]);
       }),
   );
+
+  it.effect("logs once when every shared-method consumer rejects without exposing payloads", () => {
+    const logs: unknown[] = [];
+    const logger = Logger.make(({ message }) => {
+      logs.push(message);
+    });
+    return Effect.gen(function* () {
+      const handlers = new Map<string, (params: unknown) => Effect.Effect<void>>();
+      const baseRuntime = {
+        handleExtNotification: (
+          method: string,
+          _schema: unknown,
+          handler: (params: unknown) => Effect.Effect<void>,
+        ) =>
+          Effect.sync(() => {
+            handlers.set(method, handler);
+          }),
+      } as unknown as AcpSessionRuntime.AcpSessionRuntime["Service"];
+      const runtime = yield* makeXAiPromptCompletionRuntime(baseRuntime);
+      yield* registerXAiBackgroundTaskTracking(runtime, () => Effect.void);
+      yield* registerXAiSubagentFinished(runtime, () => Effect.void);
+      const handle = handlers.get("_x.ai/session_notification");
+      if (handle === undefined) return yield* Effect.die("missing shared handler");
+      yield* handle({
+        sessionId: "root",
+        update: {
+          sessionUpdate: "task_completed",
+          child_session_id: 123,
+          description: 123,
+          task_snapshot: "secret-malformed-payload",
+        },
+      });
+      expect(logs).toHaveLength(1);
+      expect(JSON.stringify(logs)).toContain("rejected by all consumers");
+      expect(JSON.stringify(logs)).not.toContain("secret-malformed-payload");
+      yield* handle({
+        sessionId: "root",
+        update: {
+          sessionUpdate: "subagent_finished",
+          child_session_id: "child",
+          status: "completed",
+          description: 123,
+        },
+      });
+      expect(logs).toHaveLength(1);
+    }).pipe(
+      Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
+      Effect.provideService(References.MinimumLogLevel, "Debug"),
+    );
+  });
 
   it("maps live turn_completed snake_case payloads", () => {
     expect(

@@ -1645,7 +1645,7 @@ export const makeXAiPromptCompletionRuntime = Effect.fn("makeXAiPromptCompletion
     // passes each notification to the lifecycle handlers registered on the wrapper.
     const sessionNotificationHandlers = new Map<
       string,
-      ReadonlyArray<(params: unknown) => Effect.Effect<void, EffectAcpErrors.AcpError>>
+      ReadonlyArray<(params: unknown) => Effect.Effect<boolean, EffectAcpErrors.AcpError>>
     >();
     let nextPromptFallbackId = 0;
     const allocatePromptFallbackId = Effect.sync(() => {
@@ -1679,22 +1679,23 @@ export const makeXAiPromptCompletionRuntime = Effect.fn("makeXAiPromptCompletion
       xAiSessionNotificationMethods,
       (method) =>
         runtime.handleExtNotification(method, Schema.Unknown, (params) =>
-          decodeXAiSessionUpdateNotification(params).pipe(
-            Effect.flatMap((notification) => {
-              const complete = xAiPromptCompleteFromSessionUpdate(notification);
-              return complete === null ? Effect.void : settleFromPromptComplete(complete);
-            }),
-            Effect.ignore,
-            Effect.andThen(
-              Effect.suspend(() =>
-                Effect.forEach(
-                  sessionNotificationHandlers.get(method) ?? [],
-                  (handler) => handler(params),
-                  { concurrency: 1, discard: true },
-                ),
-              ),
-            ),
-          ),
+          Effect.gen(function* () {
+            const complete = yield* decodeXAiSessionUpdateNotification(params).pipe(
+              Effect.map(xAiPromptCompleteFromSessionUpdate),
+              Effect.catch(() => Effect.succeed(null)),
+            );
+            if (complete !== null) yield* settleFromPromptComplete(complete);
+            const accepted = yield* Effect.forEach(
+              sessionNotificationHandlers.get(method) ?? [],
+              (handler) => handler(params),
+              { concurrency: 1 },
+            );
+            if (complete === null && !accepted.some(Boolean)) {
+              yield* Effect.logDebug("Grok shared session notification rejected by all consumers", {
+                method,
+              });
+            }
+          }),
         ),
       { discard: true },
     );
@@ -1710,8 +1711,8 @@ export const makeXAiPromptCompletionRuntime = Effect.fn("makeXAiPromptCompletion
                   Schema.decodeUnknownEffect(payload)(params).pipe(
                     Effect.matchEffect({
                       // A different consumer may accept this shared-method payload.
-                      onFailure: () => Effect.void,
-                      onSuccess: handler,
+                      onFailure: () => Effect.succeed(false),
+                      onSuccess: (value) => handler(value).pipe(Effect.as(true)),
                     }),
                   ),
               ]);
