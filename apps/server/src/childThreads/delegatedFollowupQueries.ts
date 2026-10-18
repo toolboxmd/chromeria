@@ -182,6 +182,7 @@ export const pendingDelegatedChildQuery = (
   WHERE task.thread_id IN ${sql.in(parentThreadIds)}
     AND task.child_thread_id IS NULL
     AND json_extract(task.payload_json, '$.origin') = 'app_owned'
+    AND json_extract(task.payload_json, '$.result') IS NOT NULL
     AND json_extract(task.payload_json, '$.remoteChild.threadId') IS NOT NULL
     AND json_extract(task.payload_json, '$.remoteChild.snapshot.workState') IN ('working','waiting_for_children')
     AND json_extract(task.payload_json, '$.remoteChild.stop') IS NULL
