@@ -42,72 +42,75 @@ import {
 const decodeXAiAskUserQuestionRequest = Schema.decodeUnknownSync(XAiAskUserQuestionRequest);
 
 describe("xAiPromptCompleteFromSessionUpdate", () => {
-  it.effect("tracks task ends on shared session methods alongside subagent ends", () =>
-    Effect.gen(function* () {
-      const handlers = new Map<string, (notification: unknown) => Effect.Effect<void>>();
-      const baseRuntime = {
-        handleExtNotification: (
-          method: string,
-          schema: Schema.Codec<unknown>,
-          handler: (notification: unknown) => Effect.Effect<void>,
-        ) =>
+  it.effect.each(["valid metadata", "malformed task metadata"] as const)(
+    "tracks task ends on shared session methods alongside subagent ends: %s",
+    (scenario) =>
+      Effect.gen(function* () {
+        const handlers = new Map<string, (notification: unknown) => Effect.Effect<void>>();
+        const baseRuntime = {
+          handleExtNotification: (
+            method: string,
+            schema: Schema.Codec<unknown>,
+            handler: (notification: unknown) => Effect.Effect<void>,
+          ) =>
+            Effect.sync(() => {
+              handlers.set(method, (notification) =>
+                Schema.decodeUnknownEffect(schema)(notification).pipe(
+                  Effect.orDie,
+                  Effect.flatMap(handler),
+                ),
+              );
+            }),
+        } as unknown as AcpSessionRuntime.AcpSessionRuntime["Service"];
+        const runtime = yield* makeXAiPromptCompletionRuntime(baseRuntime);
+        const tasks: Array<{ readonly taskId: string; readonly status: string }> = [];
+        const subagents: Array<{ readonly childSessionId: string }> = [];
+        yield* registerXAiBackgroundTaskTracking(runtime, (mutation) =>
           Effect.sync(() => {
-            handlers.set(method, (notification) =>
-              Schema.decodeUnknownEffect(schema)(notification).pipe(
-                Effect.orDie,
-                Effect.flatMap(handler),
-              ),
-            );
+            tasks.push(mutation);
           }),
-      } as unknown as AcpSessionRuntime.AcpSessionRuntime["Service"];
-      const runtime = yield* makeXAiPromptCompletionRuntime(baseRuntime);
-      const tasks: Array<{ readonly taskId: string; readonly status: string }> = [];
-      const subagents: Array<{ readonly childSessionId: string }> = [];
-      yield* registerXAiBackgroundTaskTracking(runtime, (mutation) =>
-        Effect.sync(() => {
-          tasks.push(mutation);
-        }),
-      );
-      yield* registerXAiSubagentFinished(runtime, (notice) =>
-        Effect.sync(() => {
-          subagents.push(notice);
-        }),
-      );
-      for (const method of [
-        "x.ai/session_notification",
-        "_x.ai/session_notification",
-        "_x.ai/session/update",
-      ]) {
-        const handle = handlers.get(method);
-        if (handle === undefined) return yield* Effect.die(`missing ${method}`);
-        yield* handle({
-          sessionId: "root",
-          update: {
-            sessionUpdate: "task_completed",
-            task_snapshot: { task_id: "command-1", kind: "bash", exit_code: 0, output: "done" },
-          },
-        });
-        yield* handle({
-          sessionId: "root",
-          update: {
-            sessionUpdate: "subagent_finished",
-            child_session_id: "child-1",
-            status: "completed",
-            output: "done",
-          },
-        });
-      }
-      expect(tasks.map(({ taskId, status }) => [taskId, status])).toEqual([
-        ["command-1", "completed"],
-        ["command-1", "completed"],
-        ["command-1", "completed"],
-      ]);
-      expect(subagents.map(({ childSessionId }) => childSessionId)).toEqual([
-        "child-1",
-        "child-1",
-        "child-1",
-      ]);
-    }),
+        );
+        yield* registerXAiSubagentFinished(runtime, (notice) =>
+          Effect.sync(() => {
+            subagents.push(notice);
+          }),
+        );
+        for (const method of [
+          "x.ai/session_notification",
+          "_x.ai/session_notification",
+          "_x.ai/session/update",
+        ]) {
+          const handle = handlers.get(method);
+          if (handle === undefined) return yield* Effect.die(`missing ${method}`);
+          yield* handle({
+            sessionId: "root",
+            update: {
+              sessionUpdate: "task_completed",
+              task_snapshot: { task_id: "command-1", kind: "bash", exit_code: 0, output: "done" },
+            },
+          });
+          yield* handle({
+            sessionId: "root",
+            update: {
+              sessionUpdate: "subagent_finished",
+              child_session_id: "child-1",
+              status: "completed",
+              output: "done",
+              ...(scenario === "malformed task metadata" ? { description: 123 } : {}),
+            },
+          });
+        }
+        expect(tasks.map(({ taskId, status }) => [taskId, status])).toEqual([
+          ["command-1", "completed"],
+          ["command-1", "completed"],
+          ["command-1", "completed"],
+        ]);
+        expect(subagents.map(({ childSessionId }) => childSessionId)).toEqual([
+          "child-1",
+          "child-1",
+          "child-1",
+        ]);
+      }),
   );
 
   it("maps live turn_completed snake_case payloads", () => {

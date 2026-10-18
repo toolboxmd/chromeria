@@ -62,6 +62,7 @@ import {
   extractXAiKilledBackgroundTasks,
   extractXAiMonitorTaskId,
   isXAiNonBlockingBackgroundTool,
+  isXAiMonitorTool,
   extractXAiExitPlanMarkdown,
   registerXAiSubagentFinished,
   makeXAiAskUserQuestionCancelledResponse,
@@ -413,6 +414,8 @@ export function makeGrokAcpAdapterFlavor(
       ...extractXAiKilledBackgroundTasks(toolCall),
     ],
     isPersistentBackgroundTool: isXAiNonBlockingBackgroundTool,
+    backgroundToolWakePolicy: (toolCall) =>
+      isXAiMonitorTool(toolCall) ? "progress" : "completion",
     extractNativePromptId: (notification) => {
       const update = notification.update;
       if (update.sessionUpdate !== "user_message_chunk") return undefined;

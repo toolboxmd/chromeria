@@ -1708,14 +1708,11 @@ export const makeXAiPromptCompletionRuntime = Effect.fn("makeXAiPromptCompletion
                 ...(sessionNotificationHandlers.get(method) ?? []),
                 (params) =>
                   Schema.decodeUnknownEffect(payload)(params).pipe(
-                    Effect.mapError((error) =>
-                      EffectAcpErrors.AcpProtocolParseError.fromSchemaError(
-                        "decode-notification-payload",
-                        method,
-                        error,
-                      ),
-                    ),
-                    Effect.flatMap(handler),
+                    Effect.matchEffect({
+                      // A different consumer may accept this shared-method payload.
+                      onFailure: () => Effect.void,
+                      onSuccess: handler,
+                    }),
                   ),
               ]);
             })
