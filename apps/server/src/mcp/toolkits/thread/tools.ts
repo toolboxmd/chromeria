@@ -154,7 +154,7 @@ const QueuePromoteTool = Tool.make("t3_queue_promote_to_steer", {
 }).annotate(Tool.Destructive, true);
 
 export const pendingRequest = PendingRequestContent;
-export const PendingRequestListTool = Tool.make("t3_pending_request_list", {
+const PendingRequestListTool = Tool.make("t3_pending_request_list", {
   ...commandTool,
   description: "List pending questions and descendant approvals. Omit threadId for this thread.",
   parameters: McpRouting.parameters(Schema.Struct({ threadId: Schema.optional(ThreadId) })),
