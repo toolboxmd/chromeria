@@ -2224,7 +2224,8 @@ sources and reasons.
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/449",
     "https://github.com/toolboxmd/chromeria/pull/453",
-    "https://github.com/toolboxmd/chromeria/pull/455"
+    "https://github.com/toolboxmd/chromeria/pull/455",
+    "https://github.com/toolboxmd/chromeria/pull/502"
   ],
   "newFiles": [
     "apps/server/src/mcp/WebResearch.integration.test.ts",
