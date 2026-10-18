@@ -1,3 +1,4 @@
+import * as Search from "../../../webResearch/Search.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
@@ -102,6 +103,7 @@ const fixture = Effect.fnUntraced(function* (
   ).pipe(Layer.provide(NodeServices.layer));
   const resources = Layer.mergeAll(config, NodeServices.layer);
   const reader = WebResearch.layer.pipe(
+    Layer.provide(Layer.mock(Search.Search)({})),
     Layer.provide(Layer.succeed(TinyFish.TinyFish, { fetch: () => Effect.succeed(undefined) })),
     Layer.provide(cacheLayer),
     Layer.provide(

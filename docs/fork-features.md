@@ -2213,13 +2213,14 @@ sources and reasons.
 ```json
 {
   "id": "agent-web-research",
-  "purpose": "Read research pages through one caller-gated MCP service with full text, typed failures, isolated headless rendering for thin/consent pages, a shared page cache, an origin limiter and provenance; optionally share one linked environment's reader with caller limits and cache ownership preserved; use a pinned zero-charge TinyFish fallback with shared quotas and bounded, nonpersistent hosted continuation.",
+  "purpose": "Read research pages through one caller-gated MCP service with full text, typed failures, isolated headless rendering for thin/consent pages, a shared page cache, an origin limiter and provenance; optionally share one linked environment's reader with caller limits and cache ownership preserved; use a pinned zero-charge TinyFish fallback with shared quotas and bounded, nonpersistent hosted continuation; fan out locale/site discovery through SearXNG and pinned TinyFish search with per-engine health, shared spacing and budgets, and no stored SERPs.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/423",
     "https://github.com/toolboxmd/chromeria/issues/440",
     "https://github.com/toolboxmd/chromeria/issues/442",
     "https://github.com/toolboxmd/chromeria/issues/443",
-    "https://github.com/toolboxmd/chromeria/issues/444"
+    "https://github.com/toolboxmd/chromeria/issues/444",
+    "https://github.com/toolboxmd/chromeria/issues/445"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/449",
@@ -2228,6 +2229,10 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/pull/502"
   ],
   "newFiles": [
+    "apps/server/src/webResearch/Search.ts",
+    "apps/server/src/webResearch/WebSearchHost.test.ts",
+    "apps/server/src/mcp/WebSearch.integration.test.ts",
+    "packages/contracts/src/webResearch.ts",
     "apps/server/src/mcp/WebResearch.integration.test.ts",
     "apps/server/src/mcp/WebResearchRender.integration.test.ts",
     "apps/server/src/mcp/toolkits/webResearch/handlers.test.ts",
@@ -2265,11 +2270,19 @@ sources and reasons.
     "docs/map.md",
     "docs/user/remote-access.md",
     "packages/contracts/src/settings.ts",
+    "packages/contracts/src/index.ts",
     "packages/contracts/src/orchestratorMcp.ts",
     "packages/provider-core/src/server/orchestrationInstructions.ts",
     "pnpm-lock.yaml"
   ],
-  "keywords": ["web_read", "WebResearch", "ResearchHost", "web-cache", "ChromeriaResearch"]
+  "keywords": [
+    "web_read",
+    "web_search",
+    "WebResearch",
+    "ResearchHost",
+    "web-cache",
+    "ChromeriaResearch"
+  ]
 }
 ```
 

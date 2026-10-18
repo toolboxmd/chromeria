@@ -17,6 +17,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
+import * as Search from "./Search.ts";
 import * as PageCache from "./PageCache.ts";
 import * as PublicHttp from "./PublicHttp.ts";
 import * as PublicRender from "./PublicRender.ts";
@@ -67,6 +68,7 @@ export class WebResearchBudgetError extends Schema.TaggedError<WebResearchBudget
 export class WebResearch extends Context.Service<
   WebResearch,
   {
+    readonly search: Search.Search["Service"]["search"];
     readonly read: (
       input: typeof WebReadInput.Type,
     ) => Effect.Effect<
@@ -157,6 +159,7 @@ const acceptsOrigin = (page: CachedPage, requested: URL, sameOrigin?: string) =>
     : page.restrictedToOrigin === sameOrigin || parseUrl(page.finalUrl)?.origin === sameOrigin;
 
 const make = Effect.gen(function* () {
+  const { search } = yield* Search.Search;
   const http = yield* PublicHttp.PublicHttp;
   const cache = yield* PageCache.PageCache;
   const renderer = yield* PublicRender.PublicRender;
@@ -900,7 +903,7 @@ const make = Effect.gen(function* () {
       unvisitedSubpages: candidates.length - completed,
     };
   });
-  return WebResearch.of({ read });
+  return WebResearch.of({ read, search });
 });
 
 export const layer = Layer.effect(WebResearch, make);
