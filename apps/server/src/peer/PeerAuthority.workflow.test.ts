@@ -11767,6 +11767,88 @@ it.live(
         });
         expect(self.isError).toBe(true);
         expect(callbacks).toHaveLength(1);
+        const stoppingRequest = yield* seedPending369(b, child.childId, "live-stop");
+        const stoppingRecords = yield* b.threads.getThreadRecords(child.childId, [
+          "nodes",
+          "runtimeRequests",
+          "turnItems",
+        ]);
+        const stoppedRunId = (yield* b.threads.getThreadShell(child.childId))?.activeRunId;
+        if (stoppedRunId == null)
+          return yield* Effect.die("Expected a live native run before Stop");
+        const stoppingNode = stoppingRecords.nodes.find(
+          (node) => node.runtimeRequestId === stoppingRequest,
+        )!;
+        const stoppingRuntimeRequest = stoppingRecords.runtimeRequests.find(
+          (request) => request.id === stoppingRequest,
+        )!;
+        const stoppingItem = stoppingRecords.turnItems.find(
+          (item) => item.type === "user_input_request" && item.requestId === stoppingRequest,
+        );
+        if (stoppingItem?.type !== "user_input_request")
+          return yield* Effect.die("Expected live question item");
+        const stopNow = yield* DateTime.now;
+        yield* b.sink.write({
+          events: [
+            {
+              id: EventId.make("pending369-live-stop-node"),
+              type: "node.updated",
+              threadId: child.childId,
+              runId: stoppedRunId,
+              nodeId: stoppingNode.id,
+              occurredAt: stopNow,
+              payload: { ...stoppingNode, runId: stoppedRunId },
+            },
+            {
+              id: EventId.make("pending369-live-stop-request"),
+              type: "runtime-request.updated",
+              threadId: child.childId,
+              runId: stoppedRunId,
+              nodeId: stoppingNode.id,
+              occurredAt: stopNow,
+              payload: {
+                ...stoppingRuntimeRequest,
+                responseCapability: { type: "live", providerSessionId },
+              },
+            },
+            {
+              id: EventId.make("pending369-live-stop-item"),
+              type: "turn-item.updated",
+              threadId: child.childId,
+              runId: stoppedRunId,
+              nodeId: stoppingNode.id,
+              occurredAt: stopNow,
+              payload: { ...stoppingItem, runId: stoppedRunId, responseMode: undefined },
+            },
+          ],
+        });
+        const stopArgs = { ...args, requestId: stoppingRequest };
+        const stopRead = yield* decodePending369Content(
+          (yield* nativeCall(a, parent, "t3_pending_request_read", stopArgs)).structuredContent,
+        );
+        const stopped = yield* nativeCall(a, parent, "t3_thread_interrupt", {
+          environmentId: b.environmentId,
+          threadId: child.childId,
+          clientRequestId: "pending369-stop-before-answer",
+        });
+        expect(stopped.isError, json(stopped.content)).not.toBe(true);
+        const tooLate = yield* nativeCall(a, parent, "t3_pending_request_respond", {
+          ...stopArgs,
+          expectedRevision: stopRead.revision,
+          answers: { color: "Late" },
+          clientRequestId: "pending369-after-stop",
+        });
+        expect(tooLate.isError, json(tooLate.content)).toBe(true);
+        const stopSql = Context.get(b.database, SqlClient.SqlClient);
+        const previousEffects = yield* stopSql<{
+          count: number;
+        }>`SELECT COUNT(*) AS count FROM orchestration_v2_effect_outbox WHERE effect_type='runtime-request.respond' AND json_extract(payload_json,'$.requestId')=${requestId}`;
+        expect(previousEffects[0]?.count).toBe(1);
+        const lateEffects = yield* stopSql<{
+          count: number;
+        }>`SELECT COUNT(*) AS count FROM orchestration_v2_effect_outbox WHERE effect_type='runtime-request.respond' AND json_extract(payload_json,'$.requestId')=${stoppingRequest}`;
+        expect(lateEffects[0]?.count).toBe(0);
+        expect(callbacks).toHaveLength(1);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
 );
