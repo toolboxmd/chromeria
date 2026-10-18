@@ -82,7 +82,10 @@ const external = (commands: Queue.Queue<OrchestrationV2ServerCommand>, wake = Ef
       dispatch: (command) =>
         Queue.offer(commands, command).pipe(Effect.as({ sequence: 0, storedEvents: [] })),
     }),
-    Layer.mock(Orchestrator.OrchestratorV2)({ recoverDelegatedTasks: wake }),
+    Layer.mock(Orchestrator.OrchestratorV2)({
+      recoverDelegatedTasks: wake,
+      recoverDelegatedTask: () => wake,
+    }),
   );
 const withReactor = <A, E, R>(
   work: Effect.Effect<A, E, R | Reactor.RecoveryReactor>,

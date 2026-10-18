@@ -1,9 +1,14 @@
 import { assert, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
+import * as Deferred from "effect/Deferred";
+import * as Queue from "effect/Queue";
 import {
   CommandId,
   EventId,
   MessageId,
   ProjectId,
+  RunId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
@@ -32,7 +37,7 @@ import * as Coordinator from "./RecoveryCoordinator.ts";
 import * as History from "./RecoveryHistory.ts";
 import * as Reactor from "./RecoveryReactor.ts";
 import { limitRecoveryCommand } from "../orchestration-v2/UsageLimitRecoveryWorker.ts";
-import { errorFor } from "./recovery.testkit.ts";
+import { errorFor, threadFor } from "./recovery.testkit.ts";
 
 const instanceId = ProviderInstanceId.make("codex");
 const selection = {
@@ -512,4 +517,205 @@ it.effect(
       yield* (yield* Reactor.RecoveryReactor).sweep;
       assert.lengthOf((yield* orchestrator.getThreadProjection(childId)).runs, 1);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("live run recovery finalizes its child without reading settled children", () =>
+  Effect.gen(function* () {
+    const { orchestrator, childId, run } = yield* setup;
+    const projections = yield* Projection.ProjectionStoreV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const settled = new Set<ThreadId>();
+    for (let index = 0; index < 64; index++) {
+      const id = ThreadId.make(`settled:${index}`);
+      settled.add(id);
+      const source = { ...run, id: RunId.make(`settled-run:${index}`), threadId: id };
+      yield* projections.apply({
+        id: EventId.make(`settled-thread:${index}`),
+        type: "thread.created",
+        threadId: id,
+        occurredAt: run.requestedAt,
+        payload: {
+          ...threadFor(source),
+          archivedAt: run.requestedAt,
+          lineage: {
+            parentThreadId: parentId,
+            relationshipToParent: "subagent",
+            rootThreadId: parentId,
+          },
+        },
+      });
+      yield* projections.apply({
+        id: EventId.make(`settled-run:${index}`),
+        type: "run.created",
+        threadId: id,
+        occurredAt: run.requestedAt,
+        payload: { ...source, status: "completed", completedAt: run.requestedAt },
+      });
+    }
+    const records = vi.spyOn(projections, "getThreadRecords");
+    const snapshot = vi.spyOn(projections, "getShellSnapshot");
+    const recovered = yield* Deferred.make<void>();
+    const wake = Effect.andThen(Deferred.succeed(recovered, undefined).pipe(Effect.asVoid));
+    const overrides = Layer.mergeAll(
+      Layer.succeed(ServerActivation, undefined),
+      Layer.succeed(Orchestrator.OrchestratorV2, {
+        ...orchestrator,
+        recoverDelegatedTasks: orchestrator.recoverDelegatedTasks.pipe(wake),
+        recoverDelegatedTask: (threadId, sourceRunId) =>
+          orchestrator.recoverDelegatedTask(threadId, sourceRunId).pipe(wake),
+      }),
+    );
+    yield* Effect.gen(function* () {
+      yield* finish(run, null);
+      const ended = (yield* orchestrator.getThreadProjection(childId)).runs[0]!;
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("active-child:completed"),
+            type: "run.updated",
+            threadId: childId,
+            occurredAt: ended.completedAt!,
+            payload: ended,
+          },
+        ],
+      });
+      yield* Deferred.await(recovered);
+      assert.strictEqual(snapshot.mock.calls.length, 0);
+      assert.deepStrictEqual(
+        records.mock.calls.filter(([id]) => settled.has(id)),
+        [],
+      );
+      const parent = yield* orchestrator.getThreadProjection(parentId);
+      assert.strictEqual(
+        parent.contextTransfers.filter((item) => item.type === "subagent_result").length,
+        1,
+      );
+    }).pipe(
+      Effect.provide(Reactor.layer.pipe(Layer.provide(Layer.merge(dependencies, overrides)))),
+      Effect.ensuring(
+        Effect.sync(() => {
+          records.mockRestore();
+          snapshot.mockRestore();
+        }),
+      ),
+    );
+  }).pipe(Effect.provide(dependencies)),
+);
+
+it.effect.each(["fresh", "decided-history"] as const)(
+  "%s updates preserve the first retryable failure's retry",
+  (scenario) =>
+    Effect.gen(function* () {
+      const { orchestrator, childId, run } = yield* setup;
+      const sink = yield* EventSink.EventSinkV2;
+      const observed = yield* Queue.unbounded<void>();
+      const overrides = Layer.mergeAll(
+        Layer.succeed(ServerActivation, undefined),
+        Layer.succeed(Orchestrator.OrchestratorV2, {
+          ...orchestrator,
+          recoverDelegatedTask: (threadId, sourceRunId) =>
+            orchestrator
+              .recoverDelegatedTask(threadId, sourceRunId)
+              .pipe(
+                Effect.andThen(
+                  threadId === childId ? Queue.offer(observed, undefined) : Effect.void,
+                ),
+                Effect.asVoid,
+              ),
+        }),
+      );
+      yield* Effect.gen(function* () {
+        const running = {
+          ...run,
+          status: "running" as const,
+          startedAt: run.requestedAt,
+          ordinal: scenario === "decided-history" ? 2 : run.ordinal,
+        };
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("first-retry:running"),
+              type: "run.updated",
+              threadId: childId,
+              occurredAt: run.requestedAt,
+              payload: running,
+            },
+          ],
+        });
+        // Finish observing the nonterminal event before the failure can mask it.
+        yield* Queue.take(observed);
+        if (scenario === "decided-history") {
+          const old = {
+            ...running,
+            id: RunId.make("decided:old-run"),
+            ordinal: 1,
+            userMessageId: MessageId.make("decided:old-message"),
+            status: "failed" as const,
+            completedAt: run.requestedAt,
+          };
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make("decided:old-created"),
+                type: "run.created",
+                threadId: childId,
+                occurredAt: old.requestedAt,
+                payload: old,
+              },
+            ],
+          });
+          yield* History.writeRecoveryOutcome({
+            sourceRunId: old.id,
+            threadId: childId,
+            status: "decided",
+            outcome: "not_retryable",
+            reason: "exhausted",
+          });
+          // A late delegated-completion update must not reopen this decided source
+          // and initialize the newer running run's controller as closed.
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make("decided:old-updated"),
+                type: "run.updated",
+                threadId: childId,
+                occurredAt: old.completedAt,
+                payload: old,
+              },
+            ],
+          });
+          yield* Queue.take(observed);
+        }
+        yield* finish(running, failure);
+        const failed = (yield* orchestrator.getThreadProjection(childId)).runs.find(
+          (candidate) => candidate.id === run.id,
+        )!;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("first-retry:failed"),
+              type: "run.updated",
+              threadId: childId,
+              occurredAt: failed.completedAt!,
+              payload: failed,
+            },
+          ],
+        });
+        yield* Queue.take(observed);
+        const child = yield* orchestrator.getThreadProjection(childId);
+        const retries = child.runs.filter(
+          (candidate) => candidate.forkPrismContinuationSourceRunId === run.id,
+        );
+        assert.lengthOf(retries, 1);
+        assert.deepStrictEqual(retries[0]!.modelSelection, run.modelSelection);
+        assert.lengthOf(
+          (yield* orchestrator.getThreadProjection(parentId)).contextTransfers.filter(
+            (item) => item.type === "subagent_result",
+          ),
+          0,
+        );
+      }).pipe(
+        Effect.provide(Reactor.layer.pipe(Layer.provide(Layer.merge(dependencies, overrides)))),
+      );
+    }).pipe(Effect.provide(dependencies)),
 );

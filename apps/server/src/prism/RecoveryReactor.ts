@@ -24,6 +24,22 @@ export class RecoveryReactor extends Context.Service<
   }
 >()("t3/prism/RecoveryReactor") {}
 
+/** Shared eligibility for scheduled catch-up and indexed per-thread event recovery. */
+export const recoveryCandidates = (sql: SqlClient.SqlClient, threadId?: ThreadId) => sql<{
+  thread_id: string;
+  source_run_id: string;
+}>`
+  SELECT r.thread_id,r.run_id AS source_run_id FROM orchestration_v2_projection_runs r
+  LEFT JOIN fork_prism_recovery_outcomes h ON h.source_run_id=r.run_id
+  WHERE h.source_run_id IS NULL AND (r.status='failed' OR
+    (r.status IN ('interrupted','cancelled','rolled_back') AND json_extract(r.payload_json,'$.forkPrismContinuationSourceRunId') IS NOT NULL))
+    ${threadId === undefined ? sql`` : sql`AND r.thread_id=${threadId}`}
+  UNION SELECT thread_id,source_run_id FROM fork_prism_recovery_outcomes WHERE status='pending'
+    ${threadId === undefined ? sql`` : sql`AND thread_id=${threadId}`}
+  UNION SELECT thread_id,source_run_id FROM fork_prism_recovery WHERE state <> 'closed'
+    ${threadId === undefined ? sql`` : sql`AND thread_id=${threadId}`}
+`;
+
 export const layer = Layer.effect(
   RecoveryReactor,
   Effect.gen(function* () {
@@ -36,56 +52,53 @@ export const layer = Layer.effect(
     const scheduler = yield* Scheduler.Scheduler;
     const permit = yield* Semaphore.make(1);
     const afterRunId = yield* Ref.make("");
+    const reconcileSource = (threadId: ThreadId, sourceRunId: RunId) =>
+      Effect.gen(function* () {
+        const latest = yield* sql<{
+          run_id: string;
+        }>`SELECT run_id FROM orchestration_v2_projection_runs
+            WHERE thread_id=${threadId} AND status <> 'queued'
+              AND NOT (status='cancelled' AND json_extract(payload_json,'$.startedAt') IS NULL)
+            ORDER BY (completed_at IS NULL) DESC,completed_at DESC,ordinal DESC,run_id DESC LIMIT 1`;
+        const runIds = [
+          sourceRunId,
+          ...(latest[0] === undefined ? [] : [RunId.make(latest[0].run_id)]),
+        ];
+        const projection = yield* readRecoveryProjection(threadId, runIds).pipe(
+          Effect.provideService(Projection.ProjectionStoreV2, projections),
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
+        const retirement = yield* readRetirementState(threadId).pipe(
+          Effect.provideService(Projection.ProjectionStoreV2, projections),
+        );
+        const record = yield* coordinator.observe(
+          projection,
+          retirement.retired || !retirement.complete,
+        );
+        if (record === null) return;
+        const command = retryCommand(record);
+        // Source eligibility and ancestry are rechecked by the composed commit plans.
+        if (command !== null) yield* threads.dispatch(command);
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("prism.recovery.reconcile-failed", { threadId, cause }),
+        ),
+      );
     const reconcile = Effect.gen(function* () {
       // A fair keyset batch covers every unresolved exact source, including old/non-MCP failures.
       // Neither a pending controller nor a newer thread run can starve historical decisions.
       const after = yield* Ref.get(afterRunId);
       const candidates = yield* sql<{ thread_id: string; source_run_id: string }>`
-      SELECT thread_id,source_run_id FROM (
-        SELECT r.thread_id,r.run_id AS source_run_id FROM orchestration_v2_projection_runs r
-        LEFT JOIN fork_prism_recovery_outcomes h ON h.source_run_id=r.run_id
-        WHERE h.source_run_id IS NULL AND (r.status='failed' OR
-          (r.status IN ('interrupted','cancelled','rolled_back') AND json_extract(r.payload_json,'$.forkPrismContinuationSourceRunId') IS NOT NULL))
-        UNION SELECT thread_id,source_run_id FROM fork_prism_recovery_outcomes WHERE status='pending'
-        UNION SELECT thread_id,source_run_id FROM fork_prism_recovery WHERE state <> 'closed'
-      ) WHERE source_run_id > ${after} ORDER BY source_run_id LIMIT 128`;
+      SELECT thread_id,source_run_id FROM (${recoveryCandidates(sql)})
+      WHERE source_run_id > ${after} ORDER BY source_run_id LIMIT 128`;
       yield* Ref.set(afterRunId, candidates.length === 128 ? candidates.at(-1)!.source_run_id : "");
+      const changedThreads = new Set<ThreadId>();
       for (const candidate of candidates) {
         const threadId = ThreadId.make(candidate.thread_id);
-        yield* Effect.gen(function* () {
-          const latest = yield* sql<{
-            run_id: string;
-          }>`SELECT run_id FROM orchestration_v2_projection_runs
-            WHERE thread_id=${threadId} AND status <> 'queued'
-              AND NOT (status='cancelled' AND json_extract(payload_json,'$.startedAt') IS NULL)
-            ORDER BY (completed_at IS NULL) DESC,completed_at DESC,ordinal DESC,run_id DESC LIMIT 1`;
-          const runIds = [
-            RunId.make(candidate.source_run_id),
-            ...(latest[0] === undefined ? [] : [RunId.make(latest[0].run_id)]),
-          ];
-          const projection = yield* readRecoveryProjection(threadId, runIds).pipe(
-            Effect.provideService(Projection.ProjectionStoreV2, projections),
-            Effect.provideService(SqlClient.SqlClient, sql),
-          );
-          const retirement = yield* readRetirementState(threadId).pipe(
-            Effect.provideService(Projection.ProjectionStoreV2, projections),
-          );
-          const record = yield* coordinator.observe(
-            projection,
-            retirement.retired || !retirement.complete,
-          );
-          if (record === null) return;
-          const command = retryCommand(record);
-          // Source eligibility and ancestry are rechecked by the composed commit plans.
-          if (command !== null) yield* threads.dispatch(command);
-        }).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("prism.recovery.reconcile-failed", { threadId, cause }),
-          ),
-        );
+        yield* reconcileSource(threadId, RunId.make(candidate.source_run_id));
+        changedThreads.add(threadId);
       }
-      // Closing Stop/reset/retry state releases upstream's eventual result transfer.
-      if (candidates.length > 0) yield* orchestrator.recoverDelegatedTasks;
+      for (const threadId of changedThreads) yield* orchestrator.recoverDelegatedTask(threadId);
     });
     const sweep = reconcile.pipe(
       permit.withPermits(1),
@@ -103,7 +116,27 @@ export const layer = Layer.effect(
               (stored.event.payload.forkRetirement !== undefined ||
                 stored.event.payload.limitRecovery !== undefined)),
         ),
-        Stream.runForEach(() => sweep.pipe(Effect.andThen(orchestrator.recoverDelegatedTasks))),
+        // Coalesce signals already buffered by the event stream, without another scheduler.
+        Stream.chunks,
+        Stream.runForEach((storedEvents) =>
+          Effect.gen(function* () {
+            const changed = new Set(storedEvents.map((stored) => stored.event.threadId));
+            for (const threadId of changed) {
+              // Use the sweep's full eligibility, including immutable outcomes and
+              // pending controllers. A stale decided event must not observe newer work.
+              const candidates = yield* recoveryCandidates(sql, threadId);
+              for (const candidate of candidates)
+                yield* reconcileSource(threadId, RunId.make(candidate.source_run_id));
+              // Closing Stop/reset/retry state releases only this child's eventual result.
+              yield* orchestrator.recoverDelegatedTask(threadId);
+            }
+          }).pipe(
+            permit.withPermits(1),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("prism.recovery.reconcile-failed", { cause }),
+            ),
+          ),
+        ),
         Effect.catchCause((cause) =>
           Effect.logWarning("prism.recovery.observer-failed", { cause }),
         ),
