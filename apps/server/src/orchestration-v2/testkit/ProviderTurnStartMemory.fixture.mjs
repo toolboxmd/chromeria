@@ -66,7 +66,10 @@ const session = {
   compactThread: () => Effect.void,
 };
 const dependencies = Layer.mergeAll(
-  Layer.mock(Contextmd.ContextmdServing)({ releaseSessionInstructions: () => Effect.void }),
+  Layer.mock(Contextmd.ContextmdServing)({
+    releaseSessionInstructions: () => Effect.void,
+    nativeSessionRegistered: () => Effect.void,
+  }),
   Layer.mock(Bare.BareLaunch)({}),
   Layer.mock(Handoff.ContextHandoffServiceV2)({}),
   Id.layer,
