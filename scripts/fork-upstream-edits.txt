@@ -444,3 +444,9 @@ apps/web/src/components/device/DeviceHostUpdates.tsx
 apps/web/src/components/device/DeviceSetup.test.ts
 apps/web/src/components/device/DeviceSetup.tsx
 packages/contracts/src/device.ts
+
+
+# Grok root settlement and background command ownership (#435).
+apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash/input.ts
+apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash/output.ts
+apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash_fast_wake/input.ts
