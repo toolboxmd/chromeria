@@ -342,14 +342,18 @@ export const make = Effect.gen(function* () {
       const bufferedMessageIds = new Set(
         queuedMessages.filter(isBufferedProviderNotification).map((message) => message.id),
       );
-      // Buffered wakes lost their output with the process. Durable queued messages
-      // keep their execution identities and order until the user resumes them.
+      // Buffered wakes lost their output with the process. Hold user work for
+      // explicit resume; durable mailbox completions remain independently runnable.
       for (const run of queuedRuns) {
         if (bufferedMessageIds.has(run.userMessageId)) {
           runs.push(run);
           continue;
         }
-        if (run.queueHeld === true) continue;
+        const completion = queuedMessages.some(
+          (message) =>
+            message.id === run.userMessageId && message.delegatedCompletion !== undefined,
+        );
+        if (run.queueHeld === !completion) continue;
         events.push({
           id: yield* allocateEventId(),
           type: "run.updated",
@@ -357,7 +361,7 @@ export const make = Effect.gen(function* () {
           runId: run.id,
           providerInstanceId: run.providerInstanceId,
           occurredAt: now,
-          payload: { ...run, queueHeld: true },
+          payload: { ...run, queueHeld: !completion },
         });
       }
       for (const request of requests) {

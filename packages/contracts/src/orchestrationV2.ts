@@ -556,10 +556,6 @@ export const OrchestrationV2DelegatedCompletionDelivery = Schema.Struct({
   generation: PositiveInt,
   messageId: MessageId,
   taskIds: Schema.Array(NodeId),
-  // Fork: resume belongs to the durable delivery, independent of which offer is consumed first.
-  forkResumeCommandId: Schema.optional(CommandId),
-  // Only these already-unread tasks inherit resume permission in a successor.
-  forkResumeTaskIds: Schema.optional(Schema.Array(NodeId)),
 });
 export type OrchestrationV2DelegatedCompletionDelivery =
   typeof OrchestrationV2DelegatedCompletionDelivery.Type;

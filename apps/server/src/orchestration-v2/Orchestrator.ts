@@ -1539,7 +1539,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const now = yield* DateTime.now;
         yield* writeSystemEvents(
           projection.runs
-            .filter((run) => run.status === "queued")
+            .filter((run) => run.status === "queued" && !isAutomaticCompletionRun(projection, run))
             .map((run) => ({
               type: "run.updated" as const,
               threadId,
@@ -2251,8 +2251,46 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return;
       }
 
-      const remainingTaskIds = delivery.taskIds.filter((taskId) => taskId !== task.id);
       const deliveryRun = completionDeliveryRun(projection, delivery);
+      const pendingTasks =
+        deliveryRun === undefined ||
+        deliveryRun.status === "queued" ||
+        (deliveryRun.startedAt === null &&
+          (deliveryRun.status === "cancelled" ||
+            (deliveryRun.status === "interrupted" &&
+              projection.attempts.find((attempt) => attempt.id === deliveryRun.activeAttemptId)
+                ?.providerTurnId === null)))
+          ? projection.subagents.filter(
+              (candidate) =>
+                candidate.id !== task.id &&
+                candidate.origin === "app_owned" &&
+                candidate.runId === parentRun.id &&
+                candidate.completionDelivery?.state === "pending" &&
+                isTerminalDelegatedTaskStatus(candidate.status) &&
+                (!hasLiveRun({ runs: [parentRun] }) || candidate.completionWake === "always"),
+            )
+          : [];
+      const remainingTaskIds = [
+        ...new Set([
+          ...delivery.taskIds.filter((taskId) => taskId !== task.id),
+          ...pendingTasks.map((candidate) => candidate.id),
+        ]),
+      ];
+      for (const pending of pendingTasks)
+        yield* emitEvent({
+          type: "subagent.updated",
+          threadId: command.parentThreadId,
+          ...(pending.runId === null ? {} : { runId: pending.runId }),
+          nodeId: pending.id,
+          driver: pending.driver,
+          providerInstanceId: pending.providerInstanceId,
+          occurredAt: now,
+          payload: {
+            ...pending,
+            completionDelivery: { state: "claimed", observedByRunId: null },
+            updatedAt: now,
+          },
+        });
       const clearDelivery =
         remainingTaskIds.length === 0 &&
         (deliveryRun === undefined || deliveryRun.status === "queued");
@@ -5421,13 +5459,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     }),
                 ),
               );
-        const resumingCompletion =
-          delegatedCompletion !== undefined &&
-          projection.runs.some(
-            (run) =>
-              run.id === delegatedCompletion.parentRunId &&
-              run.delegatedCompletion?.delivery?.forkResumeCommandId !== undefined,
-          );
         const run: OrchestrationV2Run = {
           id: runId,
           threadId: command.threadId,
@@ -5439,8 +5470,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           rootNodeId,
           activeAttemptId: attemptId,
           status: "queued",
-          ...(worktreeMissingRun !== undefined ||
-          (!resumingCompletion &&
+          ...(delegatedCompletion === undefined &&
+          (worktreeMissingRun !== undefined ||
             projection.runs.some(
               (candidate) => candidate.status === "queued" && candidate.queueHeld === true,
             ))
@@ -9687,18 +9718,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const emitEvent = emit(input.events, input.command);
       const { thread, runs } = input.projection;
       const queuedRuns = runs.filter((run) => run.status === "queued");
-      const queuedMessages =
+      const queuedProjection =
         queuedRuns.length === 0
-          ? []
-          : (yield* projectionStore
-              .getThreadRecords(thread.id, ["messages"], {
+          ? { messages: [], nodes: [], attempts: [] }
+          : yield* projectionStore
+              .getThreadRecords(thread.id, ["messages", "nodes", "attempts"], {
                 messageIds: queuedRuns.map((run) => run.userMessageId),
               })
               .pipe(
                 Effect.mapError(
                   (cause) => new OrchestratorProjectionError({ threadId: thread.id, cause }),
                 ),
-              )).messages;
+              );
+      const queuedMessages = queuedProjection.messages;
       const bufferedMessageIds = new Set(
         queuedMessages.filter(isBufferedProviderNotification).map((message) => message.id),
       );
@@ -9723,6 +9755,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             },
             input.events,
           );
+          continue;
+        }
+        if (
+          queuedMessages.some(
+            (message) =>
+              message.id === run.userMessageId && message.delegatedCompletion !== undefined,
+          )
+        ) {
+          yield* emitQueuedRunCancellation({ ...input, projection: queuedProjection, run });
           continue;
         }
         if (run.queueHeld === true) continue;
@@ -10959,14 +11000,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const delivery = cohort?.delivery?.taskIds.length === 0 ? null : (cohort?.delivery ?? null);
     const deliveryRun = completionDeliveryRun(input.parentProjection, delivery);
     if (delivery !== null) {
-      const outsideResumeSnapshot =
-        delivery.forkResumeCommandId !== undefined &&
-        !(delivery.forkResumeTaskIds ?? delivery.taskIds).includes(input.task.id);
-      if (
-        !outsideResumeSnapshot &&
-        deliveryRun?.status === "queued" &&
-        deliveryRun.userMessageId === delivery?.messageId
-      ) {
+      if (deliveryRun?.status === "queued" && deliveryRun.userMessageId === delivery.messageId) {
         const taskIds = Array.from(new Set([...delivery.taskIds, input.task.id]));
         const message = completionDeliveryMessage(input.parentProjection, delivery);
         const nextCohort = {
@@ -11004,7 +11038,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           offer: false,
         };
       }
-      if (outsideResumeSnapshot || (deliveryRun !== undefined && isBlockingRun(deliveryRun))) {
+      if (deliveryRun !== undefined && isBlockingRun(deliveryRun)) {
         return {
           task: {
             ...input.updatedTask,
@@ -11643,6 +11677,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cohort === undefined ||
         delivery === null ||
         delivery === undefined ||
+        deliveryMessage?.runId !== runId ||
         delivery.messageId !== deliveryRun.userMessageId ||
         delivery.generation !== messageOwnership.generation
       ) {
@@ -11656,6 +11691,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const unconsumed =
         deliveryRun.status === "cancelled" ||
         (deliveryRun.status === "interrupted" && deliveryAttempt?.providerTurnId === null);
+      const retrySameIdentity = unconsumed && deliveryRun.startedAt === null;
       const nextTaskStates = new Map<
         OrchestrationV2Subagent["id"],
         OrchestrationV2Subagent["completionDelivery"]
@@ -11674,7 +11710,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           observedByRunId: null,
         });
       }
-      const allPendingTaskIds = projection.subagents
+      const pendingTaskIds = projection.subagents
         .filter(
           (task) =>
             task.origin === "app_owned" &&
@@ -11684,16 +11720,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               nextTaskStates.get(task.id)?.state === "pending"),
         )
         .map((task) => task.id);
-      const resumeTaskIds = delivery.forkResumeTaskIds ?? (unconsumed ? delivery.taskIds : []);
-      const resumedTaskIds =
-        delivery.forkResumeCommandId === undefined
-          ? []
-          : allPendingTaskIds.filter((taskId) => resumeTaskIds.includes(taskId));
-      // Release the resume snapshot first. Results arriving later must retain
-      // ordinary queue holds instead of borrowing an earlier task's receipt.
-      const pendingTaskIds = resumedTaskIds.length > 0 ? resumedTaskIds : allPendingTaskIds;
-      // Each child becomes pending once, so the cohort's successors remain
-      // bounded by its children even when the resume snapshot goes first.
       const canReserveFollowUp =
         cohort.disposition === "open" &&
         projection.thread.archivedAt === null &&
@@ -11701,23 +11727,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         pendingTaskIds.length > 0;
       const nextDelivery = canReserveFollowUp
         ? {
-            generation: cohort.nextGeneration,
-            messageId: yield* mapDelegatedCompletionError(
-              idAllocator.allocate.message({
-                threadId,
-                ordinal:
-                  (yield* mapDelegatedCompletionError(
-                    projectionStore.getMessageCount(projection.thread.id),
-                  )) + 1,
-              }),
-            ),
+            generation: retrySameIdentity ? delivery.generation : cohort.nextGeneration,
+            messageId: retrySameIdentity
+              ? delivery.messageId
+              : yield* mapDelegatedCompletionError(
+                  idAllocator.allocate.message({
+                    threadId,
+                    ordinal:
+                      (yield* mapDelegatedCompletionError(
+                        projectionStore.getMessageCount(projection.thread.id),
+                      )) + 1,
+                  }),
+                ),
             taskIds: pendingTaskIds,
-            ...(resumedTaskIds.length > 0
-              ? {
-                  forkResumeCommandId: delivery.forkResumeCommandId,
-                  forkResumeTaskIds: resumedTaskIds,
-                }
-              : {}),
           }
         : null;
       if (nextDelivery !== null) {
@@ -11732,7 +11754,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...parentRun,
         delegatedCompletion: {
           ...cohort,
-          nextGeneration: nextDelivery === null ? cohort.nextGeneration : cohort.nextGeneration + 1,
+          nextGeneration:
+            nextDelivery === null || retrySameIdentity
+              ? cohort.nextGeneration
+              : cohort.nextGeneration + 1,
           delivery: nextDelivery,
         },
       };
@@ -11805,7 +11830,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     // settled_only tasks defer only to a blocking wait in their spawning run.
     const parentIsLive = hasLiveRun({ runs: [parentRun] });
-    const allPendingTaskIds =
+    const pendingTaskIds =
       projection.thread.archivedAt === null && projection.thread.deletedAt === null
         ? projection.subagents
             .filter(
@@ -11818,11 +11843,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             )
             .map((task) => task.id)
         : [];
-    const resumedTaskIds =
-      delivery.forkResumeCommandId === undefined
-        ? []
-        : allPendingTaskIds.filter((taskId) => delivery.forkResumeTaskIds?.includes(taskId));
-    const pendingTaskIds = resumedTaskIds.length > 0 ? resumedTaskIds : allPendingTaskIds;
     const nextDelivery =
       pendingTaskIds.length === 0
         ? null
@@ -11838,12 +11858,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               }),
             ),
             taskIds: pendingTaskIds,
-            ...(resumedTaskIds.length > 0
-              ? {
-                  forkResumeCommandId: delivery.forkResumeCommandId,
-                  forkResumeTaskIds: resumedTaskIds,
-                }
-              : {}),
           };
     const acceptedIds = new Set(delivery.taskIds);
     const pendingIds = new Set(pendingTaskIds);
@@ -12478,75 +12492,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     all.findIndex((candidate) => candidate.id === effect.id) === index,
                 )
               : planned.effects;
-          const resumedDeliveries: OrchestrationV2DomainEvent[] = [];
-          if (resume && state?.retired) {
-            const queued = yield* projectionStore
-              .getThreadRecords(thread.id, ["runs", "messages", "subagents"], {
-                messageRoles: ["user"],
-              })
-              .pipe(mapDispatchError(command));
-            for (const run of queued.runs) {
-              let current = run;
-              for (const pending of planned.events) {
-                if (
-                  (pending.type === "run.created" || pending.type === "run.updated") &&
-                  pending.payload.id === run.id
-                )
-                  current = pending.payload;
-              }
-              let updated = current;
-              if (
-                current.status === "queued" &&
-                current.queueHeld === true &&
-                isAutomaticCompletionRun(queued, current)
-              )
-                updated = { ...updated, queueHeld: false };
-              const cohort = current.delegatedCompletion;
-              if (
-                cohort?.disposition === "open" &&
-                cohort.delivery != null &&
-                cohort.delivery.taskIds.length > 0
-              ) {
-                updated = {
-                  ...updated,
-                  delegatedCompletion: {
-                    ...cohort,
-                    delivery: {
-                      ...cohort.delivery,
-                      forkResumeCommandId: command.commandId,
-                      forkResumeTaskIds: [
-                        ...new Set([
-                          ...cohort.delivery.taskIds,
-                          ...queued.subagents
-                            .filter(
-                              (task) =>
-                                task.origin === "app_owned" &&
-                                task.runId === run.id &&
-                                task.completionDelivery?.state === "pending",
-                            )
-                            .map((task) => task.id),
-                        ]),
-                      ],
-                    },
-                  },
-                };
-              }
-              if (updated === current) continue;
-              resumedDeliveries.push(
-                yield* makeEvent(command, {
-                  type: "run.updated",
-                  threadId: thread.id,
-                  runId: run.id,
-                  providerInstanceId: run.providerInstanceId,
-                  occurredAt: now,
-                  payload: updated,
-                }),
-              );
-            }
-          }
           return {
             ...planned,
-            events: [...planned.events, ...resumedDeliveries, event],
+            events: [...planned.events, event],
             effects,
             forkPlans: [...(planned.forkPlans ?? []), ...forkPlans],
             ...(stopping
@@ -12706,6 +12654,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     if (command.type === "notification.delivery.accept") {
       yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.threadId));
+    }
+    if (command.type === "delegated_task.completion-delivery.acknowledge") {
+      yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.parentThreadId));
     }
     if (
       command.type === "delegated_task.wake-policy" ||
