@@ -1745,7 +1745,8 @@ sources and reasons.
     "apps/server/src/mcp/toolkits/worktree/handlers.ts",
     "apps/server/src/orchestration-v2/AttachmentClaims.ts",
     "apps/server/src/project/ManagedProjectFolders.test.ts",
-    "apps/server/src/project/ManagedProjectFolders.ts"
+    "apps/server/src/project/ManagedProjectFolders.ts",
+    "apps/server/src/device/DeviceService.ts"
   ],
   "sharedFiles": [
     "apps/server/src/orchestration-v2/EffectWorker.ts",
@@ -1755,7 +1756,6 @@ sources and reasons.
     "apps/server/src/orchestration-v2/DelegatedTaskQuestions.ts",
     "packages/contracts/src/clientRpcPermissions.ts",
     "docs/user/remote-access.md",
-
     "apps/server/src/mcp/toolkits/orchestrator/tools.test.ts",
     "apps/server/src/auth/EnvironmentAuth.ts",
     "apps/server/src/auth/RpcAuthorization.ts",
@@ -1809,8 +1809,7 @@ sources and reasons.
     "apps/server/src/mcp/toolkits/thread/handlers.ts",
     "apps/server/src/mcp/toolkits/thread/tools.ts",
     "apps/server/src/orchestration-v2/ThreadMessageIntake.ts",
-    "apps/server/src/scheduledTaskChecks/DispatchPolicy.ts",
-    "apps/server/src/device/DeviceService.ts"
+    "apps/server/src/scheduledTaskChecks/DispatchPolicy.ts"
   ],
   "keywords": [
     "peer_environment_links",

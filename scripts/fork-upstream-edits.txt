@@ -428,3 +428,4 @@ apps/server/src/mcp/toolkits/worktree/handlers.ts
 apps/server/src/orchestration-v2/AttachmentClaims.ts
 apps/server/src/project/ManagedProjectFolders.test.ts
 apps/server/src/project/ManagedProjectFolders.ts
+apps/server/src/device/DeviceService.ts
