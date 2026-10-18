@@ -10,6 +10,7 @@ import * as Schema from "effect/Schema";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as ElectronDialog from "../electron/ElectronDialog.ts";
+import { chromeUserAgent } from "./ChromeUserAgent.ts";
 
 const PREVIEW_PARTITION_PREFIX = "persist:t3code-preview-";
 /**
@@ -275,11 +276,9 @@ export const make = Effect.gen(function* BrowserSessionMake() {
       return Effect.try({
         try: () => {
           const browserSession = session.fromPartition(partition);
-          // The guest keeps Electron's native User-Agent. Rewriting it in any
-          // form — even variants that keep the Electron token — makes Cloudflare
-          // Turnstile fail its integrity check with error 600010 and recreate
-          // the challenge every few seconds, so logins behind it never complete
-          // (#5002).
+          // New guests inherit this UA and Electron's native Chromium client hints,
+          // whose brands and versions come from the engine, not the app name.
+          browserSession.setUserAgent(chromeUserAgent(browserSession.getUserAgent()));
           browserSession.setPermissionRequestHandler(
             (webContents, permission, callback, details) => {
               if (permission === "openExternal") {

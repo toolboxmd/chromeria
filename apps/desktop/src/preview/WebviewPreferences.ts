@@ -6,4 +6,4 @@
  *   third-party page in the preview full Node + IPC access to the host.
  */
 export const PREVIEW_WEBVIEW_PREFERENCES =
-  "contextIsolation=false,sandbox=true,nodeIntegration=false";
+  "contextIsolation=false,sandbox=true,nodeIntegration=false,disableBlinkFeatures=AutomationControlled,plugins=true";

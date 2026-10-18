@@ -2460,3 +2460,26 @@ sources and reasons.
   "keywords": ["launcher fixture ownership", "spawnedChildren", "serviceLauncher.test.ts"]
 }
 ```
+
+## preview-chrome-identity
+
+```json
+{
+  "id": "preview-chrome-identity",
+  "purpose": "Present desktop preview sessions as Chrome while retaining native Chromium client hints and host browser capabilities.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/460"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...fix/460-preview-chrome-identity"],
+  "newFiles": [
+    "apps/desktop/src/preview/ChromeUserAgent.ts",
+    "apps/desktop/src/preview/ChromeUserAgent.test.ts"
+  ],
+  "upstreamFiles": [
+    "apps/desktop/src/preview/BrowserSession.ts",
+    "apps/desktop/src/preview/BrowserSession.test.ts",
+    "apps/desktop/src/preview/WebviewPreferences.ts",
+    "apps/desktop/src/preview/WebviewPreferences.test.ts"
+  ],
+  "sharedFiles": [],
+  "keywords": ["preview user agent", "ChromeUserAgent", "AutomationControlled"]
+}
+```
