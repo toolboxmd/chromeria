@@ -958,8 +958,9 @@ function makeLocalCommandHarness(input: {
     Effect.succeed({} as never),
   );
   const getThreadRecords = vi.fn<ProjectionStore.ProjectionStoreV2Shape["getThreadRecords"]>((id) =>
-    Effect.succeed(id === parentThreadId ? parentRecords : projection),
+    Effect.as(failReadIfRunning, id === parentThreadId ? parentRecords : projection),
   );
+  const getRuntimeRecoveryProjection = vi.fn(() => Effect.as(failReadIfRunning, { ...projection, hasConversation: projection.messages.some((m) => m.role === "user" && (m.text.trim().toLowerCase() !== "/compact" || m.attachments.length > 0)) }));
   const getTurnStartContext = vi.fn(() =>
     Effect.succeed({
       ...projection,
@@ -1056,15 +1057,7 @@ function makeLocalCommandHarness(input: {
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getThreadRecords,
           getTurnStartContext,
-          getRuntimeRecoveryProjection: () =>
-            Effect.as(failReadIfRunning, {
-              ...projection,
-              hasConversation: projection.messages.some(
-                (m) =>
-                  m.role === "user" &&
-                  (m.text.trim().toLowerCase() !== "/compact" || m.attachments.length > 0),
-              ),
-            }),
+          getRuntimeRecoveryProjection,
           getTurnStartHistory: () =>
             input.sideChat !== undefined
               ? Effect.succeed([])
@@ -1104,6 +1097,7 @@ function makeLocalCommandHarness(input: {
   return {
     settledRuns,
     getThreadRecords,
+    getRuntimeRecoveryProjection,
     getTurnStartContext,
     setProjection: (next: OrchestrationV2ThreadProjection) => {
       projection = next;
@@ -1898,6 +1892,48 @@ effectIt.effect("fails the run instead of replacing a native thread another clie
         failure: { class: "provider_error", message: detail },
       },
     ]);
+  }),
+);
+
+effectIt.effect("checks live run status without reloading recovery state", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "Continue", grokInstructions: { calls: [] } });
+
+    yield* harness.start;
+
+    expect(harness.projection().runs.at(-1)?.status).toBe("running");
+    expect(harness.startRootRun).toHaveBeenCalledOnce();
+    // Recovery is still needed once to select inherited background work.
+    expect(harness.getRuntimeRecoveryProjection).toHaveBeenCalledOnce();
+    harness.getRuntimeRecoveryProjection.mockClear();
+    const controls = harness.startRootRun.mock.calls[0]![0];
+    const projection = harness.projection();
+    for (const status of ["starting", "running", "completed", "interrupted", "failed"] as const) {
+      harness.setProjection({
+        ...projection,
+        runs: projection.runs.map((run) => ({ ...run, status })),
+      });
+      expect(yield* controls.shouldStartProviderTurn!()).toBe(status === "running");
+      expect(yield* controls.shouldFinalizeRun!()).toBe(
+        status === "starting" || status === "running",
+      );
+    }
+    harness.setProjection({
+      ...projection,
+      runs: projection.runs.map((run) => ({
+        ...run,
+        activeAttemptId: RunAttemptId.make("superseding-attempt"),
+      })),
+    });
+    expect(yield* controls.shouldStartProviderTurn!()).toBe(false);
+    expect(yield* controls.shouldFinalizeRun!()).toBe(false);
+    harness.setProjection({ ...projection, runs: [] });
+    expect(yield* controls.shouldStartProviderTurn!()).toBe(false);
+    expect(yield* controls.shouldFinalizeRun!()).toBe(false);
+    expect(harness.getRuntimeRecoveryProjection).not.toHaveBeenCalled();
+    expect(harness.getThreadRecords).toHaveBeenCalledWith(projection.thread.id, ["runs"], {
+      runIds: [projection.runs[0]!.id],
+    });
   }),
 );
 
