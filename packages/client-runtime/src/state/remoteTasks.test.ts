@@ -11,6 +11,7 @@ import {
   AuthOrchestrationOperateScope,
   type AuthSessionState,
   type PeerTaskView,
+  PeerTaskSnapshot,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { subagentChildTarget } from "./threadRelationships.ts";
@@ -26,6 +27,7 @@ import { AVAILABLE_CONNECTION_STATE } from "../connection/model.ts";
 import type { RpcSession } from "../rpc/session.ts";
 import { createRemoteTaskState, hasSourceRemoteTaskView } from "./remoteTasks.ts";
 
+const isPeerTaskSnapshot = Schema.is(PeerTaskSnapshot);
 const decodeRemoteTaskLaunch = Schema.decodeUnknownEffect(OrchestrationV2RemoteTaskLaunch);
 
 vi.mock("./session.ts", () => ({
@@ -261,3 +263,31 @@ it.effect(
     ),
   10000,
 );
+
+it("accepts the pre-request-route snapshot but rejects a missing required request roster", () => {
+  const snapshot = {
+    sequence: 1,
+    observedAt: "2026-10-17T00:00:00Z",
+    title: "Historical negotiated task",
+    workState: "working",
+    pendingChildren: 0,
+    queuedRuns: 0,
+    recoveryWaiting: false,
+    incomplete: false,
+    executionSettled: false,
+    pendingQuestions: 1,
+    requestCount: 1,
+    requests: [
+      {
+        environmentId: "B",
+        threadId: "B-child",
+        requestId: "question",
+        revision: 1,
+        kind: "user_input",
+        responseType: "live",
+      },
+    ],
+  };
+  expect(isPeerTaskSnapshot(snapshot)).toBe(true);
+  expect(isPeerTaskSnapshot({ ...snapshot, requests: undefined })).toBe(false);
+});
