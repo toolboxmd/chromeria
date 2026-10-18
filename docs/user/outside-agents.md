@@ -73,8 +73,10 @@ new key. If a tool reports `outcome_unknown`, inspect its destination before
 starting another action: the original action may already have happened.
 
 A keyed snapshot save returns its original PNG artifact receipt; its qualified
-path is in `artifact.screenshotPath`. Ordinary snapshot inspection remains
-available separately. A confirmed-operation receipt describes the original acceptance. Read current
+path is in `artifact.screenshotPath`. For a remote saved snapshot, its server
+must remain reachable and your access must still permit that preview. Its
+renderer can be disconnected; update both servers if the renderer-free replay
+check is unsupported. Ordinary snapshot inspection remains available separately. A confirmed-operation receipt describes the original acceptance. Read current
 preferences with `t3_environment_read`, scheduled tasks with
 `list_scheduled_tasks`, and links with their list tools. For a new timer, report
 the current cadence and next run time from that list. For a webhook, read its

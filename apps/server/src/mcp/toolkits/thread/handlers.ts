@@ -71,13 +71,30 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         });
       yield* assertSameLink(yield* readCaller(), selected);
       const request = yield* CurrentRequest;
-      const context = yield* Effect.context<Effect.Services<typeof check>>();
+      // The native owner captures its local binding fence before this live check.
+      // Re-authorize the actual current target, not the handler's earlier snapshot.
+      const recheck = check.pipe(
+        Effect.andThen(
+          Effect.gen(function* () {
+            const current = (yield* scheduler.list().pipe(Effect.mapError(unavailable))).tasks.find(
+              (task) => task.id === input.taskId,
+            );
+            if (current === undefined)
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "The scheduled task was not found.",
+              });
+            yield* assertSameLink(yield* readCaller(), current);
+          }),
+        ),
+      );
+      const context = yield* Effect.context<Effect.Services<typeof recheck>>();
       const operation =
         request === undefined
           ? scheduler.runNow({ id: input.taskId })
           : scheduler.runNow(
               { id: input.taskId },
-              { request, recheck: check.pipe(Effect.provideContext(context), Effect.asVoid) },
+              { request, recheck: recheck.pipe(Effect.provideContext(context), Effect.asVoid) },
             );
       const { task, manualReceipt } = yield* operation.pipe(
         Effect.mapError((error) =>

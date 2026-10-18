@@ -90,6 +90,13 @@ export class McpRequestReceipts extends Context.Service<
       input: unknown,
       key?: string,
     ) => Effect.Effect<RequestIdentity, OrchestratorMcpFailure>;
+    readonly destination: (
+      identity: RequestIdentity,
+      operation: string,
+    ) => Effect.Effect<
+      Option.Option<{ environmentId: string; generation: string }>,
+      OrchestratorMcpFailure
+    >;
     readonly bindDestination: (
       identity: RequestIdentity,
       operation: string,
@@ -366,7 +373,26 @@ const make = Effect.gen(function* () {
         }),
       )
       .pipe(Effect.catchIf(isSqlError, (error) => Effect.fail(unavailable(error))));
-  return McpRequestReceipts.of({ identify, replay, external, sqlMutation, bindDestination });
+  const destination: McpRequestReceipts["Service"]["destination"] = (identity, operation) =>
+    Effect.gen(function* () {
+      const rows = yield* sql<{
+        environment_id: string;
+        generation: string;
+      }>`SELECT d.environment_id,d.generation FROM mcp_request_destinations d JOIN mcp_request_receipts r ON r.id=d.request_id WHERE r.id=${identity.id} AND r.generation=${identity.generation} AND r.input_digest=${identity.inputDigest} AND d.operation=${operation}`.pipe(
+        Effect.mapError(unavailable),
+      );
+      return rows[0] === undefined
+        ? Option.none()
+        : Option.some({ environmentId: rows[0].environment_id, generation: rows[0].generation });
+    });
+  return McpRequestReceipts.of({
+    identify,
+    replay,
+    external,
+    sqlMutation,
+    bindDestination,
+    destination,
+  });
 });
 
 export const layer = Layer.effect(McpRequestReceipts, make);

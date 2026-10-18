@@ -1790,6 +1790,144 @@ it.live(
           "base64",
         );
         let reads = 0;
+        const input = {
+          environmentId: b.environmentId,
+          contextThreadId: child,
+          save: true,
+          includeImage: true,
+          clientRequestId: "png382-saved",
+        };
+        const first = yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* Stream.runForEach(
+              yield* b.browser.connect({
+                clientId: "png382-renderer",
+                environmentId: b.environmentId,
+              }),
+              (event) =>
+                event.type === "connected"
+                  ? Deferred.succeed(connected, undefined)
+                  : Effect.gen(function* () {
+                      reads++;
+                      yield* b.browser.respond({
+                        clientId: "png382-renderer",
+                        connectionId: event.connectionId,
+                        requestId: event.request.requestId,
+                        ok: true,
+                        result: {
+                          url: "https://isolated-png.example.test/private?fixture=DO_NOT_CACHE_PAGE_URL_382",
+                          title: "Isolated page",
+                          loading: false,
+                          visibleText: "DO_NOT_CACHE_PAGE_TEXT_382",
+                          interactiveElements: [],
+                          accessibilityTree: {},
+                          consoleEntries: [],
+                          networkEntries: [],
+                          actionTimeline: [],
+                          screenshot: {
+                            mimeType: "image/png",
+                            data: png.toString("base64"),
+                            width: 1,
+                            height: 1,
+                          },
+                        },
+                      });
+                    }),
+            ).pipe(Effect.forkScoped);
+            yield* Deferred.await(connected);
+            return yield* nativeCall(a, parent, "preview_snapshot", input);
+          }),
+        );
+
+        expect(first.isError, json(first)).not.toBe(true);
+        const receipt = yield* decodeSavedPngReceipt(first.structuredContent);
+        expect(receipt.artifact.environmentId).toBe(a.environmentId);
+        expect(receipt.artifact.sizeBytes).toBe(png.byteLength);
+        expect(receipt.artifact.digest).toBe(
+          "2640059609118b695c139804676372eca75c30d30e5906775902d13e44f5356c",
+        );
+        const fs = yield* FileSystem.FileSystem;
+        expect(Array.from(yield* fs.readFile(receipt.artifact.screenshotPath))).toEqual(
+          Array.from(png),
+        );
+        expect(receipt.artifact.screenshotPath.startsWith(a.config.browserArtifactsDir)).toBe(true);
+        expect(yield* fs.exists(b.config.browserArtifactsDir)).toBe(false);
+        expect(first.content.some((item) => item.type === "image")).toBe(true);
+        expect((yield* nativeCall(a, parent, "preview_snapshot", input)).structuredContent).toEqual(
+          receipt,
+        );
+        expect(yield* fs.readDirectory(a.config.browserArtifactsDir)).toHaveLength(1);
+        const sql = Context.get(a.database, SqlClient.SqlClient);
+        expect(json(yield* sql`SELECT * FROM mcp_request_receipts`)).not.toContain(
+          "DO_NOT_CACHE_PAGE_",
+        );
+        expect(reads).toBe(1);
+        // Existing confirmed PNGs can reconcile their exact original forwarding ledger.
+        yield* sql`DELETE FROM mcp_request_destinations WHERE request_id=${receipt.operationId} AND operation='saved-preview-authorization'`;
+        expect((yield* nativeCall(a, parent, "preview_snapshot", input)).structuredContent).toEqual(
+          receipt,
+        );
+        const revokedPreview = { ...grant, preview: false };
+        yield* b.authority.setGrant(revokedPreview);
+        expect((yield* nativeCall(a, parent, "preview_snapshot", input)).isError).toBe(true);
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        expect((yield* nativeCall(a, parent, "preview_snapshot", input)).structuredContent).toEqual(
+          receipt,
+        );
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("png382-narrow-current"),
+          threadId: parent,
+          runtimeMode: "auto",
+        });
+        expect((yield* nativeCall(a, parent, "preview_snapshot", input)).isError).toBe(true);
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("png382-restore-current"),
+          threadId: parent,
+          runtimeMode: "full-access",
+        });
+        const unrelated = ThreadId.make("png382-unrelated-context");
+        yield* seedParent(b, unrelated);
+        const outside = yield* nativeCall(a, parent, "preview_snapshot", {
+          ...input,
+          contextThreadId: unrelated,
+          clientRequestId: "png382-outside-context",
+        });
+        expect(outside.isError).toBe(true);
+        expect(json(outside)).toContain("resource scope");
+        yield* b.setSavedPreviewTransport("unsupported");
+        const older = yield* nativeCall(a, parent, "preview_snapshot", input);
+        expect(older.isError).toBe(true);
+        expect(json(older)).toContain("does not support saved-preview authorization");
+        const unsupportedNewSave = yield* nativeCall(a, parent, "preview_snapshot", {
+          ...input,
+          clientRequestId: "png382-old-peer-new-save",
+        });
+        expect(unsupportedNewSave.isError).toBe(true);
+        expect(json(unsupportedNewSave)).toContain("does not support saved-preview authorization");
+        expect(yield* fs.readDirectory(a.config.browserArtifactsDir)).toHaveLength(1);
+        yield* b.setSavedPreviewTransport("unavailable");
+        const unavailableAuthority = yield* nativeCall(a, parent, "preview_snapshot", input);
+        expect(unavailableAuthority.isError).toBe(true);
+        expect(json(unavailableAuthority)).toContain("authority is unavailable");
+        yield* b.setSavedPreviewTransport("supported");
+        expect((yield* nativeCall(a, parent, "preview_snapshot", input)).structuredContent).toEqual(
+          receipt,
+        );
+        expect(reads).toBe(1);
+        yield* fs.writeFileString(
+          receipt.artifact.screenshotPath,
+          "Later independent PNG path edit",
+        );
+        const replay = yield* nativeCall(a, parent, "preview_snapshot", input);
+        expect(replay.structuredContent).toEqual(receipt);
+        expect(replay.content.some((item) => item.type === "image")).toBe(false);
+        expect(yield* fs.readFileString(receipt.artifact.screenshotPath)).toBe(
+          "Later independent PNG path edit",
+        );
+        expect(reads).toBeGreaterThan(0);
+        // Ordinary inspection remains available independently of historical saves.
         yield* Stream.runForEach(
           yield* b.browser.connect({ clientId: "png382-renderer", environmentId: b.environmentId }),
           (event) =>
@@ -1823,56 +1961,38 @@ it.live(
                 }),
         ).pipe(Effect.forkScoped);
         yield* Deferred.await(connected);
-        const input = {
-          environmentId: b.environmentId,
-          contextThreadId: child,
-          save: true,
-          includeImage: true,
-          clientRequestId: "png382-saved",
-        };
-        const first = yield* nativeCall(a, parent, "preview_snapshot", input);
-        expect(first.isError, json(first)).not.toBe(true);
-        const receipt = yield* decodeSavedPngReceipt(first.structuredContent);
-        expect(receipt.artifact.environmentId).toBe(a.environmentId);
-        expect(receipt.artifact.sizeBytes).toBe(png.byteLength);
-        expect(receipt.artifact.digest).toBe(
-          "2640059609118b695c139804676372eca75c30d30e5906775902d13e44f5356c",
-        );
-        const fs = yield* FileSystem.FileSystem;
-        expect(Array.from(yield* fs.readFile(receipt.artifact.screenshotPath))).toEqual(
-          Array.from(png),
-        );
-        expect(receipt.artifact.screenshotPath.startsWith(a.config.browserArtifactsDir)).toBe(true);
-        expect(yield* fs.exists(b.config.browserArtifactsDir)).toBe(false);
-        expect(first.content.some((item) => item.type === "image")).toBe(true);
-        expect((yield* nativeCall(a, parent, "preview_snapshot", input)).structuredContent).toEqual(
-          receipt,
-        );
-        expect(yield* fs.readDirectory(a.config.browserArtifactsDir)).toHaveLength(1);
-        const sql = Context.get(a.database, SqlClient.SqlClient);
-        expect(json(yield* sql`SELECT * FROM mcp_request_receipts`)).not.toContain(
-          "DO_NOT_CACHE_PAGE_",
-        );
-        yield* fs.writeFileString(
-          receipt.artifact.screenshotPath,
-          "Later independent PNG path edit",
-        );
-        const replay = yield* nativeCall(a, parent, "preview_snapshot", input);
-        expect(replay.structuredContent).toEqual(receipt);
-        expect(replay.content.some((item) => item.type === "image")).toBe(false);
-        expect(yield* fs.readFileString(receipt.artifact.screenshotPath)).toBe(
-          "Later independent PNG path edit",
-        );
-        expect(reads).toBeGreaterThan(0);
-        // Ordinary inspection remains available independently of historical saves.
+        yield* b.setSavedPreviewTransport("unsupported");
         const inspect = yield* nativeCall(a, parent, "preview_snapshot", {
           environmentId: b.environmentId,
           contextThreadId: child,
         });
         expect(inspect.isError, json(inspect)).not.toBe(true);
         expect(inspect.structuredContent).not.toHaveProperty("type");
+        yield* b.setSavedPreviewTransport("supported");
+        yield* b.auth.revokeSession(grant.sessionId);
+        const revoked = yield* nativeCall(a, parent, "preview_snapshot", input);
+        expect(revoked.isError).toBe(true);
+        expect(revoked.content.some((item) => item.type === "image")).toBe(false);
         yield* a.links.unlink(b.environmentId);
         expect((yield* nativeCall(a, parent, "preview_snapshot", input)).isError).toBe(true);
+        yield* linkTo(a.links, b, "full-access");
+        yield* a.forwarding.call(
+          caller(a, parent),
+          ProjectToolkit.tools.t3_project_list,
+          b.environmentId,
+          {},
+        );
+        const replacementGrant = (yield* b.authority.grants).find(
+          (item) => item.sessionId !== grant.sessionId,
+        )!;
+        yield* b.authority.setGrant({
+          ...replacementGrant,
+          preview: true,
+          resourceScope: "environment-resources",
+        });
+        const replaced = yield* nativeCall(a, parent, "preview_snapshot", input);
+        expect(replaced.isError).toBe(true);
+        expect(json(replaced)).toContain("original destination grant generation");
         expect(yield* fs.readFileString(receipt.artifact.screenshotPath)).toBe(
           "Later independent PNG path edit",
         );
@@ -9862,4 +9982,560 @@ it.live(
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
   60000,
+);
+
+it.live(
+  "reviewer382-r2: saved PNG replays through registered transport without its renderer",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf("reviewer382-r2-png", "PNG", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const parent = ThreadId.make("reviewer382-r2-png-parent");
+        yield* seedParent(node, parent);
+        const input = { save: true, includeImage: true, clientRequestId: "reviewer382-r2-save" };
+        let screenshots = 0;
+        const first = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const ready = yield* Deferred.make<void>();
+            yield* Stream.runForEach(
+              yield* node.browser.connect({
+                clientId: "reviewer382-r2-renderer",
+                environmentId: node.environmentId,
+              }),
+              (event) =>
+                event.type === "connected"
+                  ? Deferred.succeed(ready, undefined)
+                  : Effect.sync(() => {
+                      screenshots++;
+                    }).pipe(
+                      Effect.andThen(
+                        node.browser.respond({
+                          clientId: "reviewer382-r2-renderer",
+                          connectionId: event.connectionId,
+                          requestId: event.request.requestId,
+                          ok: true,
+                          result: {
+                            url: "https://isolated.example.test/",
+                            title: "Fixture",
+                            loading: false,
+                            visibleText: "Fixture",
+                            interactiveElements: [],
+                            accessibilityTree: {},
+                            consoleEntries: [],
+                            networkEntries: [],
+                            actionTimeline: [],
+                            screenshot: {
+                              mimeType: "image/png",
+                              data: Buffer.from([112, 110, 103]).toString("base64"),
+                              width: 1,
+                              height: 1,
+                            },
+                          },
+                        }),
+                      ),
+                    ),
+            ).pipe(Effect.forkScoped);
+            yield* Deferred.await(ready);
+            return yield* nativeCall(node, parent, "preview_snapshot", input);
+          }),
+        );
+        expect(first.isError, json(first)).not.toBe(true);
+        const receipt = yield* decodeSavedPngReceipt(first.structuredContent);
+        const fs = yield* FileSystem.FileSystem;
+        expect(Array.from(yield* fs.readFile(receipt.artifact.screenshotPath))).toEqual([
+          112, 110, 103,
+        ]);
+        const sql = Context.get(node.database, SqlClient.SqlClient);
+        expect(
+          yield* sql`SELECT state FROM mcp_request_receipts WHERE id=${receipt.operationId}`,
+        ).toEqual([{ state: "completed" }]);
+        const active = { ...node, ...(yield* node.restartSchedulerTransport) };
+        const replay = yield* nativeCall(active, parent, "preview_snapshot", input);
+        expect(replay.isError, json(replay)).not.toBe(true);
+        expect(replay.structuredContent).toEqual(first.structuredContent);
+        expect(replay.content.some((item) => item.type === "image")).toBe(true);
+        expect(screenshots).toBe(1);
+        const persisted = (yield* sql<{
+          result_json: string;
+        }>`SELECT result_json FROM mcp_request_receipts WHERE id=${receipt.operationId}`)[0]!;
+        // A malformed imported binding is not a grant to read its stored path.
+        yield* sql`UPDATE mcp_request_receipts SET result_json=json_set(result_json,'$.value.artifact.owner',${"f".repeat(64)}) WHERE id=${receipt.operationId}`;
+        const unproved = yield* nativeCall(active, parent, "preview_snapshot", input);
+        expect(unproved.isError).toBe(true);
+        expect(unproved.content.some((item) => item.type === "image")).toBe(false);
+        yield* sql`UPDATE mcp_request_receipts SET result_json=${persisted.result_json} WHERE id=${receipt.operationId}`;
+        expect(
+          (yield* nativeCall(active, parent, "preview_snapshot", input)).structuredContent,
+        ).toEqual(first.structuredContent);
+        const conflict = yield* nativeCall(active, parent, "preview_snapshot", {
+          ...input,
+          includeImage: false,
+        });
+        expect(conflict.isError).toBe(true);
+        expect(json(conflict)).toContain("different input");
+        yield* fs.writeFileString(receipt.artifact.screenshotPath, "Later independent bytes");
+        const changed = yield* nativeCall(active, parent, "preview_snapshot", input);
+        expect(changed.structuredContent).toEqual(first.structuredContent);
+        expect(changed.content.some((item) => item.type === "image")).toBe(false);
+        expect(yield* fs.readFileString(receipt.artifact.screenshotPath)).toBe(
+          "Later independent bytes",
+        );
+        yield* fs.remove(receipt.artifact.screenshotPath);
+        const missing = yield* nativeCall(active, parent, "preview_snapshot", input);
+        expect(missing.structuredContent).toEqual(first.structuredContent);
+        expect(missing.content.some((item) => item.type === "image")).toBe(false);
+        expect(yield* fs.exists(receipt.artifact.screenshotPath)).toBe(false);
+        const narrowed = yield* nativeCall(
+          active,
+          parent,
+          "preview_snapshot",
+          input,
+          new Set(["orchestration"]),
+        );
+        expect(narrowed.isError).toBe(true);
+        expect(json(narrowed)).not.toContain(receipt.artifact.screenshotPath);
+        expect(screenshots).toBe(1);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30000,
+);
+
+it.live(
+  "reviewer382-r2: manual admission rechecks a replacement schedule target",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const options = { productionKernel: true, attachmentRequests: true };
+        const a = yield* makeNode(
+          descriptorOf("reviewer382-r2-ma", "A", { peerAuthority: 1 }),
+          "disk",
+          options,
+        );
+        const b = yield* makeNode(
+          descriptorOf("reviewer382-r2-mb", "B", { peerAuthority: 1 }),
+          "disk",
+          options,
+        );
+        const c = yield* makeNode(
+          descriptorOf("reviewer382-r2-mc", "C", { peerAuthority: 1 }),
+          "disk",
+          options,
+        );
+        yield* linkTo(a.links, b, "full-access");
+        yield* linkTo(c.links, b, "full-access");
+        const parent = ThreadId.make("reviewer382-r2-ma-parent"),
+          other = ThreadId.make("reviewer382-r2-mc-parent"),
+          local = ThreadId.make("reviewer382-r2-mb-parent");
+        yield* seedParent(a, parent);
+        yield* seedParent(c, other);
+        yield* seedParent(b, local);
+        const fields = {
+          title: "Original",
+          prompt: "Do nothing",
+          enabled: false,
+          schedule: { type: "interval", everyMs: 3600000 },
+        };
+        const created = yield* nativeCall(b, local, "schedule_task", {
+          ...fields,
+          bindToCurrentThread: false,
+          clientRequestId: "reviewer382-r2-local-create",
+        });
+        expect(created.isError, json(created)).not.toBe(true);
+        const receipt = yield* Schema.decodeUnknownEffect(McpScheduledMutationReceipt)(
+          created.structuredContent,
+        );
+        const foreign = yield* nativeCall(c, other, "schedule_task", {
+          ...fields,
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          clientRequestId: "reviewer382-r2-foreign-create",
+        });
+        expect(foreign.isError, json(foreign)).not.toBe(true);
+        const foreignReceipt = yield* Schema.decodeUnknownEffect(McpScheduledMutationReceipt)(
+          foreign.structuredContent,
+        );
+        const replacement = (yield* b.scheduled.list()).tasks.find(
+          (t) => t.id === foreignReceipt.scheduledTaskId,
+        )!;
+        expect(replacement.linkOrigin).toBeDefined();
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const acceptedBefore =
+          yield* sql`SELECT command_id FROM orchestration_command_receipts ORDER BY command_id`;
+        const entered = yield* Deferred.make<void>(),
+          release = yield* Deferred.make<void>();
+        const actual = b.scheduled.runNow;
+        const observer = vi
+          .spyOn(b.scheduled, "runNow")
+          .mockImplementation((...args: Parameters<typeof actual>) =>
+            Effect.gen(function* () {
+              yield* Deferred.succeed(entered, undefined);
+              yield* Deferred.await(release);
+              return yield* actual(...args);
+            }),
+          );
+        const pending = yield* nativeCall(a, parent, "run_scheduled_task_now", {
+          environmentId: b.environmentId,
+          taskId: receipt.scheduledTaskId,
+          clientRequestId: "reviewer382-r2-manual",
+        }).pipe(Effect.forkScoped);
+        yield* Deferred.await(entered);
+        yield* b.scheduled.delete({ id: receipt.scheduledTaskId });
+        yield* b.scheduled.upsert({ ...replacement, id: receipt.scheduledTaskId });
+        yield* Deferred.succeed(release, undefined);
+        const result = yield* Fiber.join(pending).pipe(
+          Effect.ensuring(Effect.sync(() => observer.mockRestore())),
+        );
+        expect(result.isError, json(result)).toBe(true);
+        expect(
+          (yield* b.scheduled.list()).tasks.find((t) => t.id === receipt.scheduledTaskId)?.runCount,
+        ).toBe(0);
+        expect(
+          yield* sql`SELECT command_id FROM orchestration_command_receipts ORDER BY command_id`,
+        ).toEqual(acceptedBefore);
+        expect(yield* sql`SELECT request_id FROM scheduled_manual_requests`).toHaveLength(0);
+        const fresh = yield* nativeCall(a, parent, "run_scheduled_task_now", {
+          environmentId: b.environmentId,
+          taskId: receipt.scheduledTaskId,
+          clientRequestId: "reviewer382-r2-fresh-manual",
+        });
+        expect(fresh.isError).toBe(true);
+        expect(json(fresh)).toContain("resource scope");
+        expect(yield* sql`SELECT request_id FROM scheduled_manual_requests`).toHaveLength(0);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30000,
+);
+
+it.live(
+  "manual382-S4: replacement after live target validation cannot cross the native fence",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const options = { productionKernel: true, attachmentRequests: true };
+        const a = yield* makeNode(
+          descriptorOf("reviewer382-r2-ma", "A", { peerAuthority: 1 }),
+          "disk",
+          options,
+        );
+        const b = yield* makeNode(
+          descriptorOf("reviewer382-r2-mb", "B", { peerAuthority: 1 }),
+          "disk",
+          options,
+        );
+        const c = yield* makeNode(
+          descriptorOf("reviewer382-r2-mc", "C", { peerAuthority: 1 }),
+          "disk",
+          options,
+        );
+        yield* linkTo(a.links, b, "full-access");
+        yield* linkTo(c.links, b, "full-access");
+        const parent = ThreadId.make("reviewer382-r2-ma-parent"),
+          other = ThreadId.make("reviewer382-r2-mc-parent"),
+          local = ThreadId.make("reviewer382-r2-mb-parent");
+        yield* seedParent(a, parent);
+        yield* seedParent(c, other);
+        yield* seedParent(b, local);
+        const fields = {
+          title: "Original",
+          prompt: "Do nothing",
+          enabled: false,
+          schedule: { type: "interval", everyMs: 3600000 },
+        };
+        const created = yield* nativeCall(b, local, "schedule_task", {
+          ...fields,
+          bindToCurrentThread: false,
+          clientRequestId: "reviewer382-r2-local-create",
+        });
+        expect(created.isError, json(created)).not.toBe(true);
+        const receipt = yield* Schema.decodeUnknownEffect(McpScheduledMutationReceipt)(
+          created.structuredContent,
+        );
+        const foreign = yield* nativeCall(c, other, "schedule_task", {
+          ...fields,
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          clientRequestId: "reviewer382-r2-foreign-create",
+        });
+        expect(foreign.isError, json(foreign)).not.toBe(true);
+        const foreignReceipt = yield* Schema.decodeUnknownEffect(McpScheduledMutationReceipt)(
+          foreign.structuredContent,
+        );
+        const replacement = (yield* b.scheduled.list()).tasks.find(
+          (t) => t.id === foreignReceipt.scheduledTaskId,
+        )!;
+        expect(replacement.linkOrigin).toBeDefined();
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const acceptedBefore =
+          yield* sql`SELECT command_id FROM orchestration_command_receipts ORDER BY command_id`;
+        const entered = yield* Deferred.make<void>(),
+          release = yield* Deferred.make<void>();
+        const actual = b.authority.checkTarget;
+        let targetChecks = 0;
+        const observer = vi
+          .spyOn(b.authority, "checkTarget")
+          .mockImplementation((...args: Parameters<typeof actual>) =>
+            Effect.gen(function* () {
+              yield* actual(...args);
+              if (
+                args[1].type === "schedule" &&
+                args[1].taskId === receipt.scheduledTaskId &&
+                ++targetChecks === 2
+              ) {
+                yield* Deferred.succeed(entered, undefined);
+                yield* Deferred.await(release);
+              }
+            }),
+          );
+        const pending = yield* nativeCall(a, parent, "run_scheduled_task_now", {
+          environmentId: b.environmentId,
+          taskId: receipt.scheduledTaskId,
+          clientRequestId: "reviewer382-r2-manual",
+        }).pipe(Effect.forkScoped);
+        yield* Deferred.await(entered);
+        yield* b.scheduled.delete({ id: receipt.scheduledTaskId });
+        yield* b.scheduled.upsert({ ...replacement, id: receipt.scheduledTaskId });
+        yield* Deferred.succeed(release, undefined);
+        const result = yield* Fiber.join(pending).pipe(
+          Effect.ensuring(Effect.sync(() => observer.mockRestore())),
+        );
+        expect(result.isError, json(result)).toBe(true);
+        expect(json(result)).toContain("binding changed");
+        expect(
+          (yield* b.scheduled.list()).tasks.find((t) => t.id === receipt.scheduledTaskId)?.runCount,
+        ).toBe(0);
+        expect(
+          yield* sql`SELECT command_id FROM orchestration_command_receipts ORDER BY command_id`,
+        ).toEqual(acceptedBefore);
+        expect(yield* sql`SELECT request_id FROM scheduled_manual_requests`).toHaveLength(0);
+        const fresh = yield* nativeCall(a, parent, "run_scheduled_task_now", {
+          environmentId: b.environmentId,
+          taskId: receipt.scheduledTaskId,
+          clientRequestId: "reviewer382-r2-fresh-manual",
+        });
+        expect(fresh.isError).toBe(true);
+        expect(json(fresh)).toContain("resource scope");
+        expect(yield* sql`SELECT request_id FROM scheduled_manual_requests`).toHaveLength(0);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30000,
+);
+
+it.live(
+  "png382-authority: renderer-free remote replay retains its original source contributor",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const options = { productionKernel: true, attachmentRequests: true };
+        const c = yield* makeNode(
+          descriptorOf("png-chain382-c", "C", { peerAuthority: 1 }),
+          "disk",
+          options,
+        );
+        const a = yield* makeNode(
+          descriptorOf("png-chain382-a", "A", { peerAuthority: 1 }),
+          "disk",
+          options,
+        );
+        const b = yield* makeNode(
+          descriptorOf("png-chain382-b", "B", { peerAuthority: 1 }),
+          "disk",
+          options,
+        );
+        yield* linkTo(c.links, a, "full-access");
+        yield* linkTo(a.links, b, "full-access");
+        const root = ThreadId.make("png-chain382-root");
+        yield* seedParent(c, root);
+        yield* c.forwarding.call(
+          caller(c, root),
+          ProjectToolkit.tools.t3_project_list,
+          a.environmentId,
+          {},
+        );
+        const sourceGrant = (yield* a.authority.grants)[0]!;
+        yield* a.authority.setGrant({
+          ...sourceGrant,
+          preview: true,
+          onward: true,
+          resourceScope: "environment-resources",
+        });
+        const first = yield* nativeCall(c, root, "delegate_task", {
+          task: "Isolated PNG source",
+          target: {
+            environmentId: a.environmentId,
+            projectId: a.project.id,
+            providerInstanceId: instanceId,
+            model: "gpt-5.4",
+          },
+          mode: "async",
+          clientRequestId: "png-chain382-first",
+        });
+        expect(first.isError, json(first)).not.toBe(true);
+        const parent = yield* attachedChild(
+          c,
+          root,
+          (yield* decodeTaskReceipt(first.structuredContent)).taskId,
+        );
+        yield* activate(a, parent);
+        yield* a.forwarding.call(
+          caller(a, parent),
+          ProjectToolkit.tools.t3_project_list,
+          b.environmentId,
+          {},
+        );
+        const destinationGrant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({
+          ...destinationGrant,
+          preview: true,
+          resourceScope: "environment-resources",
+        });
+        const second = yield* nativeCall(a, parent, "delegate_task", {
+          task: "Isolated PNG context",
+          target: {
+            environmentId: b.environmentId,
+            projectId: b.project.id,
+            providerInstanceId: instanceId,
+            model: "gpt-5.4",
+          },
+          mode: "async",
+          clientRequestId: "png-chain382-second",
+        });
+        expect(second.isError, json(second)).not.toBe(true);
+        const context = yield* attachedChild(
+          a,
+          parent,
+          (yield* decodeTaskReceipt(second.structuredContent)).taskId,
+        );
+        yield* activate(b, context);
+        const input = {
+          environmentId: b.environmentId,
+          contextThreadId: context,
+          save: true,
+          includeImage: true,
+          clientRequestId: "png-chain382-save",
+        };
+        let snapshots = 0;
+        const saved = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const connected = yield* Deferred.make<void>();
+            yield* Stream.runForEach(
+              yield* b.browser.connect({
+                clientId: "png-chain382-renderer",
+                environmentId: b.environmentId,
+              }),
+              (event) =>
+                event.type === "connected"
+                  ? Deferred.succeed(connected, undefined)
+                  : Effect.gen(function* () {
+                      snapshots++;
+                      yield* b.browser.respond({
+                        clientId: "png-chain382-renderer",
+                        connectionId: event.connectionId,
+                        requestId: event.request.requestId,
+                        ok: true,
+                        result: {
+                          url: "https://isolated-chain.example.test/",
+                          title: "Fixture",
+                          loading: false,
+                          visibleText: "Isolated fixture",
+                          interactiveElements: [],
+                          accessibilityTree: {},
+                          consoleEntries: [],
+                          networkEntries: [],
+                          actionTimeline: [],
+                          screenshot: {
+                            mimeType: "image/png",
+                            data: Buffer.from([112, 110, 103]).toString("base64"),
+                            width: 1,
+                            height: 1,
+                          },
+                        },
+                      });
+                    }),
+            ).pipe(Effect.forkScoped);
+            yield* Deferred.await(connected);
+            return yield* nativeCall(a, parent, "preview_snapshot", input);
+          }),
+        );
+        expect(saved.isError, json(saved)).not.toBe(true);
+        const receipt = yield* decodeSavedPngReceipt(saved.structuredContent);
+        expect((yield* nativeCall(a, parent, "preview_snapshot", input)).structuredContent).toEqual(
+          receipt,
+        );
+        yield* a.auth.revokeSession(sourceGrant.sessionId);
+        const denied = yield* nativeCall(a, parent, "preview_snapshot", input);
+        expect(denied.isError).toBe(true);
+        expect(denied.content.some((item) => item.type === "image")).toBe(false);
+        expect(snapshots).toBe(1);
+        const fs = yield* FileSystem.FileSystem;
+        expect(Array.from(yield* fs.readFile(receipt.artifact.screenshotPath))).toEqual([
+          112, 110, 103,
+        ]);
+        expect(yield* fs.readDirectory(a.config.browserArtifactsDir)).toHaveLength(1);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  60000,
+);
+
+it.live(
+  "png382-authority: absent destination registration and unauthenticated contexts fail before rendering",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf("png-minimal382-a", "A", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const b = yield* makeNode(
+          descriptorOf("png-minimal382-b", "B", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("png-minimal382-parent"),
+          context = ThreadId.make("png-minimal382-context");
+        yield* seedParent(a, parent);
+        yield* seedParent(b, context);
+        const unsupported = yield* nativeCall(a, parent, "preview_snapshot", {
+          environmentId: b.environmentId,
+          contextThreadId: context,
+          save: true,
+          clientRequestId: "png-minimal382-save",
+        });
+        expect(unsupported.isError).toBe(true);
+        expect(json(unsupported)).toContain("does not support saved-preview authorization");
+        const fs = yield* FileSystem.FileSystem;
+        expect(yield* fs.exists(a.config.browserArtifactsDir)).toBe(false);
+        const http = yield* HttpClient.HttpClient;
+        expect(
+          (yield* http.execute(HttpClientRequest.get(`${a.url}/mcp/peer-control/saved-preview`)))
+            .status,
+        ).toBe(401);
+        const credential = yield* a.registry.issue({
+          threadId: parent,
+          providerInstanceId: instanceId,
+        });
+        const body = {
+          version: 1,
+          purpose: "saved-preview-authorization",
+          environmentId: a.environmentId,
+          generation: "f".repeat(64),
+          contextThreadId: parent,
+          operationId: "a".repeat(64),
+        };
+        const refused = yield* http.execute(
+          HttpClientRequest.post(`${a.url}/mcp/peer-control/saved-preview`).pipe(
+            HttpClientRequest.setHeader("authorization", credential.config.authorizationHeader),
+            HttpClientRequest.setBody(HttpBody.text(json(body), "application/json")),
+          ),
+        );
+        expect(refused.status).toBe(403);
+        expect(yield* fs.exists(a.config.browserArtifactsDir)).toBe(false);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30000,
 );

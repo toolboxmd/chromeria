@@ -139,6 +139,12 @@ create another acceptance; replacing a grant cannot replay protected old work.
 Imported receipts without verifiable ownership remain unsupported for automatic
 replay. See [request ownership](../../apps/server/src/mcp/McpRequestReceipts.ts).
 
+Saved remote PNGs remain subject to the original outgoing generation and current
+source and destination preview/context authority. Their negotiated authorization
+path calls the same preview owner without a renderer; the destination server
+must still answer. Missing feature support refuses replay before a new snapshot
+or save. Accepted source files never become bearer authority for a remote context.
+
 Recovery follows the actual effect owner. Attachment claims record the consuming
 command and complete manifest before publishing files; native command acceptance
 proves consumption even after pending files expire. A scheduler confirmation

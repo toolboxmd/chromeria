@@ -1,3 +1,4 @@
+import type { PreviewSnapshotTool } from "../mcp/toolkits/preview/tools.ts";
 import { toolEffect } from "../mcp/McpToolEffects.ts";
 import { McpAttachmentInput } from "../mcp/toolkits/attachment/input.ts";
 import { requestNamespace } from "../mcp/requestIdentity.ts";
@@ -64,6 +65,12 @@ type Scope = McpInvocationContext.McpInvocationScope;
 export class PeerForwarding extends Context.Service<
   PeerForwarding,
   {
+    readonly authorizeSavedPreview: (
+      scope: Scope,
+      environmentId: EnvironmentId,
+      parameters: Tool.Parameters<typeof PreviewSnapshotTool>,
+      request: RequestReceipts.RequestIdentity,
+    ) => Effect.Effect<void, OrchestratorMcpFailure>;
     /** Runs `tool` in the linked environment `environmentId` with `params`. */
     readonly call: <T extends Tool.Any>(
       scope: Scope,
@@ -573,7 +580,85 @@ const make = Effect.gen(function* () {
       })),
     );
 
+  const authorizeSavedPreview: PeerForwarding["Service"]["authorizeSavedPreview"] = (
+    scope,
+    environmentId,
+    parameters,
+    request,
+  ) =>
+    Effect.gen(function* () {
+      if (
+        Option.isNone(authority) ||
+        Option.isNone(requestOwner) ||
+        peers.authorizeSavedPreview === undefined ||
+        parameters.contextThreadId === undefined ||
+        !scope.capabilities.has("preview")
+      )
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message:
+            "Saved-preview authorization needs its verified source, preview capability and destination context.",
+        });
+      const limits = yield* callerLimits(scope);
+      const link = yield* links.get(environmentId).pipe(Effect.mapError(unavailable));
+      if (Option.isNone(link))
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "The original saved-preview link is no longer available.",
+        });
+      const receipts = requestOwner.value;
+      const operation = "saved-preview-authorization";
+      const recorded = yield* receipts.destination(request, operation);
+      if (Option.isNone(recorded) && Option.isSome(yield* receipts.replay(request))) {
+        // A pre-path accepted save can use only its exact existing forwarding proof.
+        // Missing proof is unsupported, never bound to today's replacement grant.
+        const root = yield* receipts.identify(
+          scope,
+          "preview_snapshot",
+          { ...parameters, environmentId, contextCapabilities: [...scope.capabilities] },
+          request.clientRequestId,
+        );
+        const original = yield* receipts.destination(
+          root,
+          RequestReceipts.requestDigest(["preview_snapshot", request.clientRequestId]),
+        );
+        if (Option.isNone(original))
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message:
+              "The saved preview has no verified original destination binding; automatic replay is unsupported.",
+          });
+        yield* receipts.bindDestination(
+          request,
+          operation,
+          original.value.environmentId,
+          original.value.generation,
+        );
+      }
+      yield* receipts.bindDestination(request, operation, environmentId, link.value.launchIdentity);
+      const input = {
+        version: 1 as const,
+        purpose: "saved-preview-authorization" as const,
+        environmentId,
+        generation: link.value.launchIdentity,
+        contextThreadId: parameters.contextThreadId,
+        operationId: request.id,
+      };
+      const envelope = yield* authority.value.prepare(
+        scope,
+        environmentId,
+        link.value.launchIdentity,
+        "preview_snapshot",
+        input,
+        limits,
+        undefined,
+        true,
+        true,
+      );
+      yield* peers.authorizeSavedPreview({ request: input, authority: envelope, limits });
+    });
   return PeerForwarding.of({
+    authorizeSavedPreview,
     call,
     route,
     readThread,

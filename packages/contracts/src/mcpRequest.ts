@@ -1,4 +1,4 @@
-import { EnvironmentId, ScheduledTaskId } from "./baseSchemas.ts";
+import { EnvironmentId, ScheduledTaskId, ThreadId } from "./baseSchemas.ts";
 import * as Schema from "effect/Schema";
 
 /** A historical mutation confirmation, not a projection of the current resource. */
@@ -38,3 +38,22 @@ export const McpSavedSnapshotReceipt = Schema.Struct({
   }),
 });
 export type McpSavedSnapshotReceipt = typeof McpSavedSnapshotReceipt.Type;
+
+/** Renderer-free authority for this one historical preview purpose, never a tool proxy. */
+export const PeerSavedPreviewAuthorizationSupport = Schema.Struct({
+  version: Schema.Literal(1),
+  purpose: Schema.Literal("saved-preview-authorization"),
+});
+export const PeerSavedPreviewAuthorizationRequest = Schema.Struct({
+  ...PeerSavedPreviewAuthorizationSupport.fields,
+  environmentId: EnvironmentId.check(Schema.isMaxLength(2048)),
+  generation: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(2048)),
+  contextThreadId: ThreadId.check(Schema.isMaxLength(4096)),
+  operationId: McpConfirmedOperation.fields.operationId,
+});
+export type PeerSavedPreviewAuthorizationRequest = typeof PeerSavedPreviewAuthorizationRequest.Type;
+export const PeerSavedPreviewAuthorizationResult = Schema.Struct({
+  ...PeerSavedPreviewAuthorizationRequest.fields,
+  authorized: Schema.Literal(true),
+});
+export type PeerSavedPreviewAuthorizationResult = typeof PeerSavedPreviewAuthorizationResult.Type;

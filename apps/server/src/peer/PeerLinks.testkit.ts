@@ -90,6 +90,9 @@ export const servePeer = <E, R>(
     const descriptor = yield* Ref.make(initial);
     const bearers = yield* Ref.make<ReadonlyArray<string>>([]);
     const probes = yield* Ref.make(0);
+    const savedPreviewTransport = yield* Ref.make<"supported" | "unsupported" | "unavailable">(
+      "supported",
+    );
     const layerEnvironment = Layer.succeed(ServerEnvironment.ServerEnvironment, {
       getEnvironmentId: Ref.get(descriptor).pipe(Effect.map((current) => current.environmentId)),
       getDescriptor: Ref.get(descriptor),
@@ -147,6 +150,11 @@ export const servePeer = <E, R>(
       (httpEffect) =>
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
+          if (request.url === "/mcp/peer-control/saved-preview") {
+            const transport = yield* Ref.get(savedPreviewTransport);
+            if (transport !== "supported")
+              return HttpServerResponse.empty({ status: transport === "unsupported" ? 404 : 503 });
+          }
           if (
             options?.controlStreamUnavailable === true &&
             request.url === "/mcp/peer-control/stream"
@@ -201,6 +209,8 @@ export const servePeer = <E, R>(
     const auth = Context.get(authContext, EnvironmentAuth.EnvironmentAuth);
     return {
       url,
+      setSavedPreviewTransport: (mode: "supported" | "unsupported" | "unavailable") =>
+        Ref.set(savedPreviewTransport, mode),
       auth,
       authorityContext,
       peerAuthority:

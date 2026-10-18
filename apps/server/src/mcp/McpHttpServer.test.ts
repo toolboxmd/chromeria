@@ -1371,3 +1371,26 @@ it.effect(
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
+
+it.effect("reviewer382-r2: confirmed PNG receipt survives renderer disconnection", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const input = { save: true, includeImage: true, clientRequestId: "reviewer382-r2-png" };
+      const receipt = yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* serveSnapshots("reviewer382-r2-renderer", snapshotResult);
+          const first = yield* callSnapshot(input);
+          expect(first.isError).toBe(false);
+          return yield* decodeSavedSnapshotReceipt(first.structuredContent);
+        }),
+      );
+      const fs = yield* FileSystem.FileSystem;
+      expect(Array.from(yield* fs.readFile(receipt.artifact.screenshotPath))).toEqual([
+        112, 110, 103,
+      ]);
+      const replay = yield* callSnapshot(input);
+      expect(replay.isError, JSON.stringify(replay)).toBe(false);
+      expect(replay.structuredContent).toEqual(receipt);
+    }),
+  ).pipe(Effect.provide(layerTest)),
+);

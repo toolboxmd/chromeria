@@ -1,3 +1,5 @@
+import { loadCaller } from "../../threadAccess.ts";
+import { assertSameLink } from "../../linkOrigin.ts";
 import * as Option from "effect/Option";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -193,6 +195,21 @@ export const claimPreviewRecording = Effect.fn("PreviewToolkit.claimRecording")(
   return { ...recording, id: finalId, path: finalPath };
 });
 
+/** Snapshot access is independent of any renderer, page or tab state. */
+export const authorizeSnapshot = McpInvocationContext.requireThreadMcpCapability("preview").pipe(
+  Effect.andThen(loadCaller()),
+  Effect.flatMap((caller) =>
+    caller.caller === undefined
+      ? Effect.fail(
+          new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "Snapshot access needs its authorized calling thread.",
+          }),
+        )
+      : assertSameLink(caller, caller.caller),
+  ),
+);
+
 const handlers = {
   preview_dialog: McpToolAccess.actsAsCaller(
     (input) => invokeTargeted<PreviewAutomationStatus>("dialog", input),
@@ -221,7 +238,9 @@ const handlers = {
     (input) => {
       // Output selection and saving are MCP-only; the browser still produces a complete snapshot.
       const { includeImage: _includeImage, save: _save, ...operationInput } = input ?? {};
-      return invokeTargeted<PreviewAutomationSnapshot>("snapshot", operationInput);
+      return authorizeSnapshot.pipe(
+        Effect.andThen(invokeTargeted<PreviewAutomationSnapshot>("snapshot", operationInput)),
+      );
     },
     (input) =>
       typeof input === "object" && input !== null && "save" in input && input.save === true
