@@ -5,6 +5,7 @@ import { wightAdmissionPlan } from "../wight/admission.ts";
 import {
   reconcileChildRequests,
   reconcilePendingChildRequests,
+  reconcileSubtreeChildRequests,
 } from "../childThreads/requestWake.ts";
 import {
   delegatedTaskRuns,
@@ -12528,6 +12529,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     if (resume && state?.retired) {
       yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.threadId));
+      // The resumed tokens persist on the thread, so only this commit marks the
+      // transition. The wake takes ancestor locks, so it cannot run under ours.
+      yield* requestWake(command.threadId, "subtree").pipe(Effect.forkIn(requestWakeScope));
     }
     if (command.type === "notification.delivery.accept") {
       yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.threadId));
@@ -12631,13 +12635,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
 
-  const requestWake = (threadId?: ThreadId) =>
+  const requestWake = (threadId?: ThreadId, scope: "thread" | "subtree" = "thread") =>
     (threadId === undefined
       ? reconcilePendingChildRequests(dispatchWithReceiptEffect, (task, request) =>
           reconcileDelegatedTaskQuestionWithParentLockHeld(task, request.id),
         )
-      : reconcileChildRequests(threadId, dispatchWithReceiptEffect, (task, request) =>
-          reconcileDelegatedTaskQuestionWithParentLockHeld(task, request.id),
+      : (scope === "subtree" ? reconcileSubtreeChildRequests : reconcileChildRequests)(
+          threadId,
+          dispatchWithReceiptEffect,
+          (task, request) => reconcileDelegatedTaskQuestionWithParentLockHeld(task, request.id),
         )
     ).pipe(
       Effect.provideService(ProjectionStoreV2, projectionStore),
@@ -12725,9 +12731,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       stored.event.type === "runtime-request.updated"
         ? requestWake(stored.event.threadId)
         : stored.event.type === "thread.metadata-updated" &&
-            (stored.event.payload.forkRetirement?.token === stored.commandId ||
-              (stored.event.payload.forkResumedRetirements?.length ?? 0) > 0)
-          ? requestWake()
+            stored.event.payload.forkRetirement?.token === stored.commandId
+          ? requestWake(stored.event.threadId, "subtree")
           : Effect.void,
     ),
     Effect.forkIn(requestWakeScope),

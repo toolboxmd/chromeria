@@ -336,7 +336,7 @@ it.effect("live pending-request listener wakes an ancestor without invoking reco
   ),
 );
 
-it.effect("committed ancestor resume delivers one previously suppressed live request", () =>
+it.effect("committed ancestor resume wakes only its subtree, once", () =>
   Effect.gen(function* () {
     const orchestrator = yield* OrchestratorV2;
     const sink = yield* EventSinkV2;
@@ -346,7 +346,9 @@ it.effect("committed ancestor resume delivers one previously suppressed live req
     const child = ThreadId.make("resume-child");
     const controlRoot = ThreadId.make("control-root");
     const controlChild = ThreadId.make("control-child");
-    for (const id of [root, child, controlRoot, controlChild]) {
+    const unrelatedRoot = ThreadId.make("unrelated-root");
+    const unrelatedChild = ThreadId.make("unrelated-child");
+    for (const id of [root, child, controlRoot, controlChild, unrelatedRoot, unrelatedChild]) {
       yield* orchestrator.dispatch({
         type: "thread.create",
         commandId: CommandId.make(`create:${id}`),
@@ -362,9 +364,35 @@ it.effect("committed ancestor resume delivers one previously suppressed live req
         creationSource: "web",
       });
     }
+    // Pending before it becomes a subagent, so only an environment-wide sweep
+    // would ever deliver it to its parent.
+    const unrelatedRequestId = RuntimeRequestId.make("unrelated-approval");
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make(`request:${unrelatedRequestId}`),
+          type: "runtime-request.updated",
+          threadId: unrelatedChild,
+          providerInstanceId: instanceId,
+          occurredAt: now,
+          payload: {
+            id: unrelatedRequestId,
+            nodeId: NodeId.make(`node:${unrelatedRequestId}`),
+            providerTurnId: null,
+            nativeRequestRef: null,
+            kind: "command",
+            status: "pending",
+            responseCapability: { type: "message" },
+            createdAt: now,
+            resolvedAt: null,
+          },
+        },
+      ],
+    });
     for (const [id, parentId] of [
       [child, root],
       [controlChild, controlRoot],
+      [unrelatedChild, unrelatedRoot],
     ] as const) {
       const projection = yield* orchestrator.getThreadProjection(id);
       yield* sink.write({
@@ -451,13 +479,43 @@ it.effect("committed ancestor resume delivers one previously suppressed live req
     yield* pending(child, requestId);
     yield* drainListener("suppressed");
     assert.isTrue(Option.isNone(yield* receipts.getByCommandId(wakeCommandId)));
+    const delivered = yield* sink.stream({ afterSequence: yield* sink.latestSequence() }).pipe(
+      Stream.filter(
+        (stored) => stored.commandId === wakeCommandId && stored.event.type === "message.updated",
+      ),
+      Stream.runHead,
+      Effect.forkChild,
+    );
     yield* resume(root, "root");
-    yield* drainListener("resumed");
+    assert.isTrue(Option.isSome(yield* Fiber.join(delivered)));
     const receipt = yield* receipts.getByCommandId(wakeCommandId);
     assert.isTrue(Option.isSome(receipt));
     if (Option.isSome(receipt)) assert.equal(receipt.value.status, "accepted");
     yield* resume(root, "root-again");
+    // The resumed tokens stay on the thread; a later metadata update is not a resume.
+    const resumed = yield* orchestrator.getThreadProjection(root);
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("later-metadata"),
+          type: "thread.metadata-updated",
+          threadId: root,
+          providerInstanceId: instanceId,
+          occurredAt: now,
+          payload: { ...resumed.thread, title: "Renamed" },
+        },
+      ],
+    });
     yield* drainListener("deduplicated");
+    assert.isTrue(
+      Option.isNone(
+        yield* receipts.getByCommandId(
+          CommandId.make(
+            `command:child-request:${unrelatedChild}:${unrelatedRequestId}:${unrelatedRoot}:0`,
+          ),
+        ),
+      ),
+    );
     const projection = yield* orchestrator.getThreadProjection(root);
     assert.lengthOf(
       projection.messages.filter(
