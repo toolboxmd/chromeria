@@ -154,6 +154,237 @@ function threadCreatedEvent(input: {
   };
 }
 
+it.effect.each([0, -1])(
+  "stores changed command states and accepts null-provider-turn retry (clock offset %s)",
+  (offset) =>
+    Effect.gen(function* () {
+      const sink = yield* EventSink.EventSinkV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const sql = yield* SqlClient.SqlClient;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:foundation-item-redelivery");
+      const thread = makeThread(threadId, now);
+      yield* sink.write({
+        events: [threadCreatedEvent({ id: "event:item-redelivery:thread", thread, now })],
+      });
+      yield* sql`CREATE TEMP TABLE item_write_counts (writes INTEGER NOT NULL)`;
+      yield* sql`INSERT INTO item_write_counts VALUES (0)`;
+      yield* sql`CREATE TEMP TRIGGER count_item_insert AFTER INSERT ON orchestration_v2_projection_turn_items
+      BEGIN UPDATE item_write_counts SET writes = writes + 1; END`;
+      yield* sql`CREATE TEMP TRIGGER count_item_update AFTER UPDATE ON orchestration_v2_projection_turn_items
+      BEGIN UPDATE item_write_counts SET writes = writes + 1; END`;
+      const running = {
+        id: TurnItemId.make("turn-item:foundation-item-redelivery"),
+        threadId,
+        runId: null,
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 400,
+        type: "command_execution",
+        status: "running",
+        title: null,
+        input: "printf result",
+        startedAt: now,
+        completedAt: null,
+        updatedAt: now,
+      } satisfies OrchestrationV2TurnItem;
+      const completed = {
+        ...running,
+        status: "completed",
+        completedAt: now,
+        output: "result",
+        exitCode: 0,
+      } satisfies OrchestrationV2TurnItem;
+      const corrected = { ...completed, output: "corrected result" };
+      let nextEvent = 0;
+      const event = (payload: OrchestrationV2TurnItem): OrchestrationV2DomainEvent => ({
+        id: EventId.make(`event:item-redelivery:${nextEvent++}`),
+        type: "turn-item.updated",
+        threadId,
+        occurredAt: now,
+        payload,
+      });
+      const stored = yield* sink.write({
+        events: [
+          event(running),
+          event({ ...running, ordinal: 900 }),
+          event(completed),
+          event(completed),
+          event(corrected),
+          event(corrected),
+        ],
+      });
+      assert.lengthOf(stored, 3);
+      const projection = yield* projections.getThreadProjection(threadId);
+      assert.lengthOf(projection.turnItems, 1);
+      assert.equal(projection.turnItems[0]?.ordinal, 1);
+      assert.deepEqual(projection.turnItems[0], { ...corrected, ordinal: 1 });
+      const duplicateWrites = yield* Effect.forEach(
+        Array.from({ length: 8 }),
+        () => sink.write({ events: [event({ ...corrected, ordinal: 800 })] }),
+        { concurrency: 8 },
+      );
+      assert.isTrue(duplicateWrites.every((writes) => writes.length === 0));
+      const counts = yield* sql<{ writes: number }>`SELECT writes FROM item_write_counts`;
+      assert.equal(counts[0]?.writes, 3, "duplicates must not rewrite the projection row");
+      // A real correction can return to an earlier value. This is not historical deduplication.
+      assert.lengthOf(yield* sink.write({ events: [event(completed)] }), 1);
+      assert.lengthOf(
+        yield* sink.write({ events: [event({ ...completed, status: "failed" })] }),
+        1,
+      );
+      const retryTime = DateTime.makeUnsafe(DateTime.toEpochMillis(now) + offset);
+      const restarted = { ...running, updatedAt: retryTime };
+      assert.lengthOf(yield* sink.write({ events: [event(restarted)] }), 1);
+      assert.deepEqual(
+        (yield* projections.getThreadProjection(threadId)).turnItems[0],
+        { ...restarted, ordinal: 1 },
+        "a preparation retry must clear failed output even with a tied/backward clock",
+      );
+      assert.lengthOf(
+        yield* sink.write({
+          events: [event({ ...completed, id: TurnItemId.make("turn-item:other-command") })],
+        }),
+        1,
+      );
+      const rows = yield* sql<{
+        events: number;
+      }>`SELECT count(*) AS events FROM orchestration_events
+      WHERE stream_id = ${threadId} AND event_type = 'turn-item.updated'`;
+      assert.equal(rows[0]?.events, 7);
+    }).pipe(Effect.provide(Layer.fresh(layerTest))),
+);
+
+it.effect.each([
+  { withEffects: false, withForkPlan: false },
+  { withEffects: true, withForkPlan: false },
+  { withEffects: false, withForkPlan: true },
+  { withEffects: true, withForkPlan: true },
+])("accepts an all-filtered command and preserves its receipt and effects: %j", (variant) => {
+  const notifications: Array<number> = [];
+  const layerObservedOutbox = Layer.effect(
+    EffectOutbox.EffectOutboxV2,
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      return EffectOutbox.EffectOutboxV2.of({
+        ...outbox,
+        notifyAvailable: (count = 1) =>
+          Effect.sync(() => {
+            notifications.push(count);
+          }),
+      });
+    }),
+  ).pipe(Layer.provide(layerEffectOutboxProvided));
+  const layerObservedSink = EventSink.layerFromStores.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerStoresProvided,
+        layerObservedOutbox,
+        layerCommandReceiptStoreProvided,
+        ProjectStore.layer.pipe(Layer.provide(layerDatabase)),
+        TurnItemPositionStore.layer.pipe(Layer.provide(layerDatabase)),
+      ),
+    ),
+  );
+  return Effect.gen(function* () {
+    const sink = yield* EventSink.EventSinkV2;
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make("thread:filtered-command");
+    const commandId = CommandId.make("command:filtered-command");
+    const item = {
+      id: TurnItemId.make("turn-item:filtered-command"),
+      threadId,
+      runId: null,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 900,
+      type: "command_execution",
+      status: "completed",
+      title: null,
+      input: "printf result",
+      output: "result",
+      exitCode: 0,
+      startedAt: now,
+      completedAt: now,
+      updatedAt: now,
+    } satisfies OrchestrationV2TurnItem;
+    yield* sink.write({
+      events: [
+        threadCreatedEvent({
+          id: "event:filtered-command:thread",
+          thread: makeThread(threadId, now),
+          now,
+        }),
+        {
+          id: EventId.make("event:filtered-command:item"),
+          type: "turn-item.updated",
+          threadId,
+          occurredAt: now,
+          payload: item,
+        },
+      ],
+    });
+    const beforeSequence = yield* sink.latestSequence({ threadId });
+    const input = {
+      commandId,
+      threadId,
+      commandType: "prepared-run.progress",
+      acceptedAt: now,
+      events: [
+        {
+          id: EventId.make("event:filtered-command:duplicate"),
+          type: "turn-item.updated" as const,
+          threadId,
+          occurredAt: now,
+          payload: item,
+        },
+      ],
+      effects: variant.withEffects
+        ? [
+            {
+              id: "effect:filtered-command",
+              commandId,
+              threadId,
+              request: { type: "terminal.cleanup" as const },
+            },
+          ]
+        : [],
+      ...(variant.withForkPlan ? { forkPlans: [{ guards: [], mutations: [] }] } : {}),
+    };
+    const result = yield* sink.commitCommand(input);
+    assert.isTrue(result.committed);
+    assert.lengthOf(result.storedEvents, 0);
+    assert.equal(result.receipt.status, "accepted");
+    assert.equal(result.receipt.resultSequence, beforeSequence);
+    const saved = yield* receipts.getByCommandId(commandId);
+    assert.isTrue(Option.isSome(saved));
+    if (Option.isSome(saved)) assert.deepEqual(saved.value, result.receipt);
+    assert.lengthOf(yield* outbox.listByCommandId(commandId), variant.withEffects ? 1 : 0);
+    assert.deepEqual(notifications, variant.withEffects ? [1] : []);
+    assert.equal(yield* sink.latestSequence({ threadId }), beforeSequence);
+    const retry = yield* sink.commitCommand(input);
+    assert.isFalse(retry.committed);
+    assert.deepEqual(retry.receipt, result.receipt);
+    assert.lengthOf(retry.storedEvents, 0);
+    assert.lengthOf(yield* outbox.listByCommandId(commandId), variant.withEffects ? 1 : 0);
+    assert.deepEqual(notifications, variant.withEffects ? [1] : []);
+  }).pipe(
+    Effect.provide(
+      Layer.fresh(
+        Layer.mergeAll(layerObservedSink, layerObservedOutbox, layerCommandReceiptStoreProvided),
+      ),
+    ),
+  );
+});
+
 it.effect("rebuilds event history one bounded page at a time", () =>
   Effect.gen(function* () {
     const eventStore = yield* EventStore.EventStoreV2;

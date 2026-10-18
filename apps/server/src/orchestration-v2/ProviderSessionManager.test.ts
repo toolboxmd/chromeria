@@ -1,3 +1,6 @@
+import * as CheckpointService from "./CheckpointService.ts";
+import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
+import * as RunExecutionService from "./RunExecutionService.ts";
 import * as ForkProviderStartAdmission from "../provider/forkProviderStartAdmission.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as NetAddress from "effect/net/NetAddress";
@@ -6,6 +9,18 @@ import { assert, it } from "@effect/vitest";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import {
   EnvironmentId,
+  CommandId,
+  CheckpointScopeId,
+  MessageId,
+  NodeId,
+  RunId,
+  RunAttemptId,
+  ProviderTurnId,
+  TurnItemId,
+  type OrchestrationV2Run,
+  type OrchestrationV2RunAttempt,
+  type OrchestrationV2ExecutionNode,
+  type OrchestrationV2CheckpointScope,
   type BareSupport,
   type ModelSelection,
   type OrchestrationV2AppThread,
@@ -485,6 +500,11 @@ function layerTest(input: {
     readonly providerSessionId: ProviderSessionId;
     readonly initialProviderItemIdentityVersion?: 2;
   }) => Effect.Effect<void>;
+  readonly observeIngest?: (
+    input: Parameters<
+      ProviderEventIngestor.ProviderEventIngestorV2["Service"]["ingestNormalized"]
+    >[0],
+  ) => Effect.Effect<void>;
   readonly failReleaseEventWrites?: boolean;
   readonly flakyReleaseWrites?: FlakyReleaseWrites;
   readonly pauseAttachWrite?: Parameters<typeof layerPausingAttachEventSink>[0];
@@ -546,7 +566,7 @@ function layerTest(input: {
     input.pauseResolve === undefined
       ? layerTestMcpRegistry
       : layerPausingMcpRegistry(input.pauseResolve);
-  const layerProviderEventIngestorTest = ProviderEventIngestor.layer.pipe(
+  const layerProviderEventIngestorBase = ProviderEventIngestor.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
@@ -563,7 +583,22 @@ function layerTest(input: {
       ),
     ),
   );
+  const layerProviderEventIngestorTest =
+    input.observeIngest === undefined
+      ? layerProviderEventIngestorBase
+      : Layer.effect(
+          ProviderEventIngestor.ProviderEventIngestorV2,
+          Effect.gen(function* () {
+            const delegate = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+            return ProviderEventIngestor.ProviderEventIngestorV2.of({
+              ...delegate,
+              ingestNormalized: (event) =>
+                input.observeIngest!(event).pipe(Effect.andThen(delegate.ingestNormalized(event))),
+            });
+          }),
+        ).pipe(Layer.provide(layerProviderEventIngestorBase));
   return Layer.mergeAll(
+    layerProviderEventIngestorTest,
     layerTestStores,
     layerConfiguredEventSink,
     IdAllocator.layer,
@@ -3880,4 +3915,199 @@ it.effect("bare session opens recheck support and refuse cached process sharing"
       yield* manager.close(providerSessionId);
     }).pipe(Effect.provide(layerTest({ state, bareSupport, idleTimeoutMs: 60_000 })));
   }),
+);
+
+it.effect.each([
+  { runless: false, deliveries: 1 },
+  { runless: true, deliveries: 1 },
+  { runless: false, deliveries: 2 },
+  { runless: true, deliveries: 2 },
+])(
+  "ingests each shared-child delivery once with overlapping subscribers: %j",
+  ({ runless, deliveries }) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const calls: Array<{ subscriber: ThreadId; status: string }> = [];
+      const childThreadId = ThreadId.make("thread:fanout:child");
+      const itemId = TurnItemId.make("item:fanout:command");
+      const base = layerTest({
+        state,
+        idleTimeoutMs: 60_000,
+        observeIngest: (input) =>
+          Effect.sync(() => {
+            if (input.event.type === "turn_item.updated" && input.event.turnItem.id === itemId)
+              calls.push({ subscriber: input.threadId, status: input.event.turnItem.status });
+          }),
+      });
+      const layer = RunExecutionService.layer.pipe(
+        Layer.provideMerge(
+          Layer.mergeAll(
+            base,
+            McpAppModelContext.layerEmpty,
+            ServerSettings.layerTest(),
+            Layer.mock(CheckpointService.CheckpointServiceV2)({
+              captureBaseline: () => Effect.void,
+            }),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const allocator = yield* IdAllocator.IdAllocatorV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const execution = yield* RunExecutionService.RunExecutionServiceV2;
+        const now = yield* DateTime.now;
+        const threadIds = [
+          ThreadId.make("thread:fanout:parent"),
+          runless ? ThreadId.make("thread:fanout:other-parent") : childThreadId,
+        ];
+        for (const threadId of new Set([...threadIds, childThreadId]))
+          yield* sink.write({
+            events: [yield* makeThreadCreatedEvent({ idAllocator: allocator, threadId, now })],
+          });
+        const sessionId = yield* allocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId: threadIds[0]!,
+        });
+        const runtime = yield* manager.open({
+          providerSessionId: sessionId,
+          threadId: threadIds[0]!,
+          modelSelection,
+          runtimePolicy,
+        });
+        const queue = (yield* Ref.get(state)).eventQueues.get(String(sessionId))!;
+        const closes = [];
+        const turns = [];
+        for (const [index, threadId] of threadIds.entries()) {
+          const closed = yield* Deferred.make<void>();
+          closes.push(closed);
+          const providerThread = makeProviderThread({
+            idAllocator: allocator,
+            threadId,
+            providerSessionId: sessionId,
+            now,
+            nativeThreadId: `fanout-${index}`,
+          });
+          const turnId = ProviderTurnId.make(`turn:fanout:${index}`);
+          turns.push({ providerThreadId: providerThread.id, turnId });
+          const runId = RunId.make(`run:fanout:${index}`);
+          const attemptId = RunAttemptId.make(`attempt:fanout:${index}`);
+          yield* execution.startRootRun({
+            commandId: CommandId.make(`command:fanout:${index}`),
+            appThread: yield* projections.getThread(threadId),
+            providerSessionId: sessionId,
+            session: {
+              ...runtime,
+              subscribeEvents: runtime.subscribeEvents!.pipe(
+                Effect.map((subscription) => ({
+                  ...subscription,
+                  events: subscription.events.pipe(
+                    Stream.ensuring(Deferred.succeed(closed, undefined)),
+                  ),
+                })),
+              ),
+            },
+            run: {
+              id: runId,
+              threadId,
+              ordinal: 1,
+              providerInstanceId: modelSelection.instanceId,
+            } as OrchestrationV2Run,
+            rootNode: { id: NodeId.make(`node:fanout:${index}`) } as OrchestrationV2ExecutionNode,
+            checkpointScope: {
+              id: CheckpointScopeId.make(`scope:fanout:${index}`),
+            } as OrchestrationV2CheckpointScope,
+            providerThread,
+            attempt: { id: attemptId, providerTurnId: turnId } as OrchestrationV2RunAttempt,
+            attemptId,
+            providerTurnOrdinal: 1,
+            relatedThreadIds: [childThreadId],
+            shouldFinalizeRun: () => Effect.succeed(false),
+            message: {
+              messageId: MessageId.make(`message:fanout:${index}`),
+              text: "work",
+              attachments: [],
+              createdBy: "user",
+              creationSource: "web",
+            },
+            modelSelection,
+            runtimePolicy,
+          });
+        }
+        const command = {
+          id: itemId,
+          threadId: childThreadId,
+          runId: runless ? null : RunId.make("run:fanout:1"),
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          type: "command_execution" as const,
+          status: "running" as const,
+          title: null,
+          input: "printf result",
+          startedAt: now,
+          completedAt: null,
+          updatedAt: now,
+        };
+        const running = {
+          type: "turn_item.updated" as const,
+          driver: CODEX_DRIVER,
+          turnItem: command,
+        };
+        const completed = {
+          ...running,
+          turnItem: {
+            ...command,
+            status: "completed" as const,
+            completedAt: now,
+            output: "result",
+            exitCode: 0,
+          },
+        };
+        // Reusing the objects for a separate emission must not suppress a real
+        // transition back to running, even with the same provider-turn/time.
+        for (let delivery = 0; delivery < deliveries; delivery++) {
+          yield* Queue.offer(queue, running);
+          yield* Queue.offer(queue, completed);
+        }
+        for (const turn of turns)
+          yield* Queue.offer(queue, {
+            type: "turn.terminal",
+            driver: CODEX_DRIVER,
+            providerThreadId: turn.providerThreadId,
+            providerTurnId: turn.turnId,
+            runOrdinal: 1,
+            status: "completed",
+            failure: null,
+            threadDisposition: "reusable",
+          });
+        for (const close of closes) yield* Deferred.await(close);
+        const store = yield* EventStore.EventStoreV2;
+        const stored = yield* store
+          .read({ threadId: childThreadId, eventType: "turn-item.updated" })
+          .pipe(Stream.runCollect);
+        const items = stored.flatMap(({ event }) =>
+          event.type === "turn-item.updated" && event.payload.id === itemId ? [event.payload] : [],
+        );
+        assert.deepEqual(
+          calls.map((call) => call.status),
+          Array.from({ length: deliveries }, () => ["running", "completed"]).flat(),
+          JSON.stringify({
+            calls,
+            stored: items.length,
+            distinctPayloads: new Set(items.map((item) => JSON.stringify(item))).size,
+          }),
+        );
+        assert.equal(items.length, 2 * deliveries);
+        assert.equal(new Set(items.map((item) => JSON.stringify(item))).size, 2);
+        assert.equal(
+          (yield* projections.getThreadProjection(childThreadId)).turnItems.at(-1)?.status,
+          "completed",
+        );
+      }).pipe(Effect.provide(layer), Effect.scoped);
+    }),
 );

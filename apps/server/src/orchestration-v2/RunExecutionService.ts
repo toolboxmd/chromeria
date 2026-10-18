@@ -20,6 +20,7 @@ import {
   type OrchestrationV2RunAttempt,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
+  type OrchestrationV2StoredEvent,
   type ProviderSessionId,
   type ProviderThreadId,
   type ProviderTurnId,
@@ -31,6 +32,7 @@ import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
+import * as Semaphore from "effect/Semaphore";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -671,6 +673,33 @@ export const layer: Layer.Layer<
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
     const finalizationObserver = yield* RunFinalizationService.RunFinalizationObserver;
     const streamClock = yield* StreamClock.StreamClockHooks;
+
+    // Run observers share one ingestion per session delivery. Awaiting the same
+    // result also keeps a slow ancestor from replaying earlier child states.
+    // Weak keys release the result after every observer consumes the delivery.
+    const itemIngestions = new WeakMap<
+      ProviderAdapter.ProviderAdapterV2Event,
+      Effect.Effect<
+        ReadonlyArray<OrchestrationV2StoredEvent>,
+        ProviderEventIngestor.ProviderEventIngestorV2Error
+      >
+    >();
+    const itemIngestionLock = yield* Semaphore.make(1);
+    const ingestProviderEvent = (
+      event: ProviderAdapter.ProviderAdapterV2Event,
+      input: Parameters<
+        ProviderEventIngestor.ProviderEventIngestorV2["Service"]["ingestNormalized"]
+      >[0],
+    ) => {
+      if (event.type !== "turn_item.updated") return providerEventIngestor.ingestNormalized(input);
+      return Effect.gen(function* () {
+        const previous = itemIngestions.get(event);
+        if (previous !== undefined) return previous;
+        const ingest = yield* Effect.cached(providerEventIngestor.ingestNormalized(input));
+        itemIngestions.set(event, ingest);
+        return ingest;
+      }).pipe(itemIngestionLock.withPermits(1), Effect.flatten);
+    };
 
     const writeFinalRunEvents = Effect.fn("RunExecutionService.writeFinalRunEvents")(
       function* (input: {
@@ -1533,7 +1562,7 @@ export const layer: Layer.Layer<
                 const isRootProviderThreadUpdate =
                   event.type === "provider_thread.updated" &&
                   event.providerThread.id === input.providerThread.id;
-                const storedEvents = yield* providerEventIngestor.ingestNormalized({
+                const storedEvents = yield* ingestProviderEvent(event, {
                   analyticsContext: {
                     modelSelection: input.modelSelection,
                     runtimeMode: input.runtimePolicy.runtimeMode,

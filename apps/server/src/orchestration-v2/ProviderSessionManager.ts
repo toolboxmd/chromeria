@@ -1960,7 +1960,12 @@ export const layerWithOptions = (
                     }).pipe(entry.requestEventPermit.withPermits(1));
                     return;
                   }
-                  yield* publishToSubscribers(entry.eventSubscribers, { type: "event", event });
+                  // Each emission has its own delivery identity, even if an adapter
+                  // reuses an object. All run observers share that delivery.
+                  yield* publishToSubscribers(entry.eventSubscribers, {
+                    type: "event",
+                    event: { ...event },
+                  });
                   yield* releaseLiveOutput;
                 }),
               ),
