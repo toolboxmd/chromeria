@@ -602,65 +602,120 @@ it.effect("live run recovery finalizes its child without reading settled childre
   }).pipe(Effect.provide(dependencies)),
 );
 
-it.effect("a nonterminal run update preserves the first retryable failure's retry", () =>
-  Effect.gen(function* () {
-    const { orchestrator, childId, run } = yield* setup;
-    const sink = yield* EventSink.EventSinkV2;
-    const observed = yield* Queue.unbounded<void>();
-    const overrides = Layer.mergeAll(
-      Layer.succeed(ServerActivation, undefined),
-      Layer.succeed(Orchestrator.OrchestratorV2, {
-        ...orchestrator,
-        recoverDelegatedTask: (threadId, sourceRunId) =>
-          orchestrator
-            .recoverDelegatedTask(threadId, sourceRunId)
-            .pipe(
-              Effect.andThen(threadId === childId ? Queue.offer(observed, undefined) : Effect.void),
-              Effect.asVoid,
-            ),
-      }),
-    );
-    yield* Effect.gen(function* () {
-      const running = { ...run, status: "running" as const, startedAt: run.requestedAt };
-      yield* sink.write({
-        events: [
-          {
-            id: EventId.make("first-retry:running"),
-            type: "run.updated",
-            threadId: childId,
-            occurredAt: run.requestedAt,
-            payload: running,
-          },
-        ],
-      });
-      // Finish observing the nonterminal event before the failure can mask it.
-      yield* Queue.take(observed);
-      yield* finish(running, failure);
-      const failed = (yield* orchestrator.getThreadProjection(childId)).runs[0]!;
-      yield* sink.write({
-        events: [
-          {
-            id: EventId.make("first-retry:failed"),
-            type: "run.updated",
-            threadId: childId,
-            occurredAt: failed.completedAt!,
-            payload: failed,
-          },
-        ],
-      });
-      yield* Queue.take(observed);
-      const child = yield* orchestrator.getThreadProjection(childId);
-      assert.lengthOf(child.runs, 2);
-      assert.strictEqual(child.runs[1]!.forkPrismContinuationSourceRunId, run.id);
-      assert.deepStrictEqual(child.runs[1]!.modelSelection, run.modelSelection);
-      assert.lengthOf(
-        (yield* orchestrator.getThreadProjection(parentId)).contextTransfers.filter(
-          (item) => item.type === "subagent_result",
-        ),
-        0,
+it.effect.each(["fresh", "decided-history"] as const)(
+  "%s updates preserve the first retryable failure's retry",
+  (scenario) =>
+    Effect.gen(function* () {
+      const { orchestrator, childId, run } = yield* setup;
+      const sink = yield* EventSink.EventSinkV2;
+      const observed = yield* Queue.unbounded<void>();
+      const overrides = Layer.mergeAll(
+        Layer.succeed(ServerActivation, undefined),
+        Layer.succeed(Orchestrator.OrchestratorV2, {
+          ...orchestrator,
+          recoverDelegatedTask: (threadId, sourceRunId) =>
+            orchestrator
+              .recoverDelegatedTask(threadId, sourceRunId)
+              .pipe(
+                Effect.andThen(
+                  threadId === childId ? Queue.offer(observed, undefined) : Effect.void,
+                ),
+                Effect.asVoid,
+              ),
+        }),
       );
-    }).pipe(
-      Effect.provide(Reactor.layer.pipe(Layer.provide(Layer.merge(dependencies, overrides)))),
-    );
-  }).pipe(Effect.provide(dependencies)),
+      yield* Effect.gen(function* () {
+        const running = {
+          ...run,
+          status: "running" as const,
+          startedAt: run.requestedAt,
+          ordinal: scenario === "decided-history" ? 2 : run.ordinal,
+        };
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("first-retry:running"),
+              type: "run.updated",
+              threadId: childId,
+              occurredAt: run.requestedAt,
+              payload: running,
+            },
+          ],
+        });
+        // Finish observing the nonterminal event before the failure can mask it.
+        yield* Queue.take(observed);
+        if (scenario === "decided-history") {
+          const old = {
+            ...running,
+            id: RunId.make("decided:old-run"),
+            ordinal: 1,
+            userMessageId: MessageId.make("decided:old-message"),
+            status: "failed" as const,
+            completedAt: run.requestedAt,
+          };
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make("decided:old-created"),
+                type: "run.created",
+                threadId: childId,
+                occurredAt: old.requestedAt,
+                payload: old,
+              },
+            ],
+          });
+          yield* History.writeRecoveryOutcome({
+            sourceRunId: old.id,
+            threadId: childId,
+            status: "decided",
+            outcome: "not_retryable",
+            reason: "exhausted",
+          });
+          // A late delegated-completion update must not reopen this decided source
+          // and initialize the newer running run's controller as closed.
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make("decided:old-updated"),
+                type: "run.updated",
+                threadId: childId,
+                occurredAt: old.completedAt,
+                payload: old,
+              },
+            ],
+          });
+          yield* Queue.take(observed);
+        }
+        yield* finish(running, failure);
+        const failed = (yield* orchestrator.getThreadProjection(childId)).runs.find(
+          (candidate) => candidate.id === run.id,
+        )!;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make("first-retry:failed"),
+              type: "run.updated",
+              threadId: childId,
+              occurredAt: failed.completedAt!,
+              payload: failed,
+            },
+          ],
+        });
+        yield* Queue.take(observed);
+        const child = yield* orchestrator.getThreadProjection(childId);
+        const retries = child.runs.filter(
+          (candidate) => candidate.forkPrismContinuationSourceRunId === run.id,
+        );
+        assert.lengthOf(retries, 1);
+        assert.deepStrictEqual(retries[0]!.modelSelection, run.modelSelection);
+        assert.lengthOf(
+          (yield* orchestrator.getThreadProjection(parentId)).contextTransfers.filter(
+            (item) => item.type === "subagent_result",
+          ),
+          0,
+        );
+      }).pipe(
+        Effect.provide(Reactor.layer.pipe(Layer.provide(Layer.merge(dependencies, overrides)))),
+      );
+    }).pipe(Effect.provide(dependencies)),
 );

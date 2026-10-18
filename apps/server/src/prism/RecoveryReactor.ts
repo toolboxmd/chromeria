@@ -24,6 +24,22 @@ export class RecoveryReactor extends Context.Service<
   }
 >()("t3/prism/RecoveryReactor") {}
 
+/** Shared eligibility for scheduled catch-up and indexed per-thread event recovery. */
+export const recoveryCandidates = (sql: SqlClient.SqlClient, threadId?: ThreadId) => sql<{
+  thread_id: string;
+  source_run_id: string;
+}>`
+  SELECT r.thread_id,r.run_id AS source_run_id FROM orchestration_v2_projection_runs r
+  LEFT JOIN fork_prism_recovery_outcomes h ON h.source_run_id=r.run_id
+  WHERE h.source_run_id IS NULL AND (r.status='failed' OR
+    (r.status IN ('interrupted','cancelled','rolled_back') AND json_extract(r.payload_json,'$.forkPrismContinuationSourceRunId') IS NOT NULL))
+    ${threadId === undefined ? sql`` : sql`AND r.thread_id=${threadId}`}
+  UNION SELECT thread_id,source_run_id FROM fork_prism_recovery_outcomes WHERE status='pending'
+    ${threadId === undefined ? sql`` : sql`AND thread_id=${threadId}`}
+  UNION SELECT thread_id,source_run_id FROM fork_prism_recovery WHERE state <> 'closed'
+    ${threadId === undefined ? sql`` : sql`AND thread_id=${threadId}`}
+`;
+
 export const layer = Layer.effect(
   RecoveryReactor,
   Effect.gen(function* () {
@@ -73,14 +89,8 @@ export const layer = Layer.effect(
       // Neither a pending controller nor a newer thread run can starve historical decisions.
       const after = yield* Ref.get(afterRunId);
       const candidates = yield* sql<{ thread_id: string; source_run_id: string }>`
-      SELECT thread_id,source_run_id FROM (
-        SELECT r.thread_id,r.run_id AS source_run_id FROM orchestration_v2_projection_runs r
-        LEFT JOIN fork_prism_recovery_outcomes h ON h.source_run_id=r.run_id
-        WHERE h.source_run_id IS NULL AND (r.status='failed' OR
-          (r.status IN ('interrupted','cancelled','rolled_back') AND json_extract(r.payload_json,'$.forkPrismContinuationSourceRunId') IS NOT NULL))
-        UNION SELECT thread_id,source_run_id FROM fork_prism_recovery_outcomes WHERE status='pending'
-        UNION SELECT thread_id,source_run_id FROM fork_prism_recovery WHERE state <> 'closed'
-      ) WHERE source_run_id > ${after} ORDER BY source_run_id LIMIT 128`;
+      SELECT thread_id,source_run_id FROM (${recoveryCandidates(sql)})
+      WHERE source_run_id > ${after} ORDER BY source_run_id LIMIT 128`;
       yield* Ref.set(afterRunId, candidates.length === 128 ? candidates.at(-1)!.source_run_id : "");
       const changedThreads = new Set<ThreadId>();
       for (const candidate of candidates) {
@@ -110,34 +120,13 @@ export const layer = Layer.effect(
         Stream.chunks,
         Stream.runForEach((storedEvents) =>
           Effect.gen(function* () {
-            const changed = new Map<ThreadId, Set<RunId>>();
-            for (const stored of storedEvents) {
-              const sources = changed.get(stored.event.threadId) ?? new Set<RunId>();
-              if (stored.event.type === "run.updated") {
-                const run = stored.event.payload;
-                // Match the sweep's source eligibility. Observing a fresh nonterminal
-                // run would initialize a closed controller and consume its first retry.
-                if (
-                  run.status === "failed" ||
-                  (run.forkPrismContinuationSourceRunId !== undefined &&
-                    (run.status === "interrupted" ||
-                      run.status === "cancelled" ||
-                      run.status === "rolled_back"))
-                ) {
-                  sources.add(run.id);
-                  if (run.forkPrismContinuationSourceRunId !== undefined)
-                    sources.add(run.forkPrismContinuationSourceRunId);
-                }
-              }
-              changed.set(stored.event.threadId, sources);
-            }
-            for (const [threadId, sources] of changed) {
-              // Stop/reset can close a controller even when no run changed.
-              const pending = yield* sql<{ source_run_id: string }>`
-                SELECT source_run_id FROM fork_prism_recovery WHERE thread_id=${threadId} AND state <> 'closed'
-                UNION SELECT source_run_id FROM fork_prism_recovery_outcomes WHERE thread_id=${threadId} AND status='pending'`;
-              for (const row of pending) sources.add(RunId.make(row.source_run_id));
-              for (const sourceRunId of sources) yield* reconcileSource(threadId, sourceRunId);
+            const changed = new Set(storedEvents.map((stored) => stored.event.threadId));
+            for (const threadId of changed) {
+              // Use the sweep's full eligibility, including immutable outcomes and
+              // pending controllers. A stale decided event must not observe newer work.
+              const candidates = yield* recoveryCandidates(sql, threadId);
+              for (const candidate of candidates)
+                yield* reconcileSource(threadId, RunId.make(candidate.source_run_id));
               // Closing Stop/reset/retry state releases only this child's eventual result.
               yield* orchestrator.recoverDelegatedTask(threadId);
             }

@@ -10,6 +10,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
@@ -170,5 +171,19 @@ it.effect("buffered run updates coalesce recovery without sweeping settled child
       yield* Deferred.await(recovered);
       assert.deepStrictEqual(touched, [run.threadId, marker.threadId]);
     }).pipe(Effect.provide(Reactor.layer.pipe(Layer.provide(external))));
+  }).pipe(Effect.provide(dependencies)),
+);
+
+it.effect("thread-scoped recovery candidates use indexed searches", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const [query, parameters] = Reactor.recoveryCandidates(sql, run.threadId).compile();
+    const plan = yield* sql.unsafe<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`, parameters);
+    const steps = plan.map((row) => row.detail);
+    assert.isTrue(steps.some((step) => step.startsWith("SEARCH r ")));
+    assert.deepStrictEqual(
+      steps.filter((step) => step.startsWith("SCAN ")),
+      [],
+    );
   }).pipe(Effect.provide(dependencies)),
 );
