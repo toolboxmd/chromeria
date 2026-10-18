@@ -1,8 +1,11 @@
 // @effect-diagnostics nodeBuiltinImport:off -- The process fixture runs real shell commands with isolated config files.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
 import * as Logger from "effect/Logger";
 import * as PlatformError from "effect/PlatformError";
 import * as Sink from "effect/Sink";
@@ -70,7 +73,7 @@ function runShellEnvironment(input: {
   readonly userShell?: string;
   readonly handler: (
     command: ChildProcess.Command,
-  ) => string | { output: string; exitCode: number };
+  ) => string | { output: string; exitCode?: number; delay?: Duration.Duration };
   readonly failure?: PlatformError.PlatformError;
 }) {
   const layerEnvironment = Layer.succeed(
@@ -84,11 +87,10 @@ function runShellEnvironment(input: {
     ChildProcessSpawner.make((command) => {
       if (input.failure !== undefined) return Effect.fail(input.failure);
       const result = input.handler(command);
-      return Effect.succeed(
-        typeof result === "string"
-          ? makeProcess(result)
-          : makeProcess(result.output, result.exitCode),
-      );
+      const output = typeof result === "string" ? result : result.output;
+      const exitCode = typeof result === "string" ? 0 : (result.exitCode ?? 0);
+      const delay = typeof result === "string" ? Duration.zero : (result.delay ?? Duration.zero);
+      return Effect.sleep(delay).pipe(Effect.as(makeProcess(output, exitCode)));
     }),
   );
 
@@ -267,7 +269,7 @@ describe("DesktopShellEnvironment", () => {
       };
       const commands: string[] = [];
 
-      yield* runShellEnvironment({
+      const prepared = yield* runShellEnvironment({
         env,
         platform: "darwin",
         handler: (command) => {
@@ -279,6 +281,54 @@ describe("DesktopShellEnvironment", () => {
 
       assert.deepEqual(commands, ["/opt/homebrew/bin/nu", "/bin/zsh", "/bin/launchctl"]);
       assert.equal(env.PATH, "/opt/homebrew/bin:/usr/bin");
+      // launchctl can keep the process usable, but the login shell did not
+      // answer, so the server still gets a chance to capture it.
+      assert.isFalse(prepared);
+    }),
+  );
+
+  it.effect("keeps a login-shell PATH that arrives after the old five second cap", () =>
+    Effect.gen(function* () {
+      const env: NodeJS.ProcessEnv = { SHELL: "/bin/zsh", PATH: "/usr/bin" };
+      const commands: string[] = [];
+      const fiber = yield* Effect.forkChild(
+        runShellEnvironment({
+          env,
+          platform: "darwin",
+          userShell: "/bin/zsh",
+          handler: (command) => {
+            if (command._tag !== "StandardCommand") return "";
+            commands.push(command.command);
+            return {
+              output: envOutput({ PATH: "/opt/homebrew/bin:/usr/bin" }),
+              delay: Duration.seconds(6),
+            };
+          },
+        }),
+      );
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(Duration.seconds(20));
+      const prepared = yield* Fiber.join(fiber);
+
+      assert.isTrue(prepared);
+      assert.deepEqual(commands, ["/bin/zsh"]);
+      assert.equal(env.PATH, "/opt/homebrew/bin:/usr/bin");
+    }),
+  );
+
+  it.effect("does not claim a prepared environment when the login shell returns no PATH", () =>
+    Effect.gen(function* () {
+      const env: NodeJS.ProcessEnv = { SHELL: "/bin/zsh", PATH: "/usr/bin" };
+
+      const prepared = yield* runShellEnvironment({
+        env,
+        platform: "linux",
+        userShell: "/bin/zsh",
+        handler: () => "",
+      }).pipe(Effect.provide(Logger.layer([])));
+
+      assert.isFalse(prepared);
+      assert.equal(env.PATH, "/usr/bin");
     }),
   );
 

@@ -1,4 +1,9 @@
 # Carried upstream edits, one primary owner in docs/fork-features.md.
+apps/desktop/src/shell/DesktopShellEnvironment.test.ts
+apps/desktop/src/shell/DesktopShellEnvironment.ts
+apps/server/src/os-jank.test.ts
+packages/shared/src/shell.test.ts
+packages/shared/src/shell.ts
 .github/workflows/ci.yml
 .github/workflows/mobile-fingerprint-check.yml
 AGENTS.md
