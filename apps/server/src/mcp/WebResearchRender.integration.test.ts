@@ -29,6 +29,7 @@ import * as PreviewBrowser from "../preview/PreviewBrowser.ts";
 import * as PageCache from "../webResearch/PageCache.ts";
 import * as PublicHttp from "../webResearch/PublicHttp.ts";
 import * as PublicRender from "../webResearch/PublicRender.ts";
+import * as TinyFish from "../webResearch/TinyFish.ts";
 import * as WebResearch from "../webResearch/WebResearch.ts";
 import { HostedWebReadResult } from "../webResearch/ResearchHost.ts";
 import * as Settings from "../serverSettings.ts";
@@ -106,6 +107,7 @@ const fixture = Effect.fnUntraced(function* (
     { runEffectWorker: false },
   );
   const reader = WebResearch.layer.pipe(
+    Layer.provide(Layer.succeed(TinyFish.TinyFish, { fetch: () => Effect.succeed(undefined) })),
     Layer.provide(PageCache.layer),
     Layer.provide(Layer.succeed(PublicRender.PublicRender, { render })),
     Layer.provide(

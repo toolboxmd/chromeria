@@ -39,6 +39,7 @@ import * as Settings from "../serverSettings.ts";
 import * as PageCache from "./PageCache.ts";
 import * as PublicHttp from "./PublicHttp.ts";
 import * as PublicRender from "./PublicRender.ts";
+import * as TinyFish from "./TinyFish.ts";
 import * as WebResearch from "./WebResearch.ts";
 import { HostedWebReadResult } from "./ResearchHost.ts";
 
@@ -82,6 +83,7 @@ const readerLayer = (
     Effect.die("A forwarding source or plain HTTP fixture must not render locally."),
 ) =>
   WebResearch.layer.pipe(
+    Layer.provide(Layer.succeed(TinyFish.TinyFish, { fetch: () => Effect.succeed(undefined) })),
     Layer.provide(PageCache.layer),
     Layer.provide(Layer.succeed(PublicHttp.PublicHttp, { get })),
     Layer.provide(Layer.succeed(PublicRender.PublicRender, { render })),

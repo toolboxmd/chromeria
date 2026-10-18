@@ -10,6 +10,7 @@ import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as Settings from "../serverSettings.ts";
 import * as PageCache from "./PageCache.ts";
+import * as TinyFish from "./TinyFish.ts";
 import * as WebResearch from "./WebResearch.ts";
 import { WebReadInput, WebReadPage, WebReadResult } from "./schemas.ts";
 
@@ -62,7 +63,10 @@ export class ResearchHost extends Context.Service<
       typeof HostedWebReadResult.Type,
       | WebResearch.WebResearchInputError
       | WebResearch.WebResearchBudgetError
+      | TinyFish.TinyFishBudgetError
+      | TinyFish.TinyFishProviderError
       | PageCache.PageCacheError
+      | PageCache.PageContinuationExpired
       | ResearchHostUnavailable
       | ResearchCacheOwnerError
       | OrchestratorMcpFailure,

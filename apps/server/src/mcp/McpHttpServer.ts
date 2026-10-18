@@ -73,6 +73,9 @@ import * as ResearchHost from "../webResearch/ResearchHost.ts";
 import * as PageCache from "../webResearch/PageCache.ts";
 import * as PublicHttp from "../webResearch/PublicHttp.ts";
 import * as PublicRender from "../webResearch/PublicRender.ts";
+import * as TinyFish from "../webResearch/TinyFish.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 
 const mcpResourceMetadataUrl = (request: HttpServerRequest.HttpServerRequest) =>
   HttpServerRequest.toURL(request).pipe(
@@ -906,6 +909,12 @@ const layerWebResearch = layerWebResearchToolkit.pipe(
       Layer.provide(PageCache.layer),
       Layer.provide(PublicHttp.layer),
       Layer.provide(PublicRender.layer),
+      Layer.provide(
+        TinyFish.layer.pipe(
+          Layer.provide(NodeHttpClient.layerNodeHttp),
+          Layer.provide(ServerSecretStore.layer),
+        ),
+      ),
     ),
   ),
 );

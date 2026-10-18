@@ -82,7 +82,10 @@ flowchart TD
     PRN["Paired session renewal"]
     %% PRN: #323
     WR["Agent web research"]
-    %% WR: #423 PR #455
+    %% WR: #423
+    WRF["Zero-charge hosted fallback"]
+    %% WRF: #444
+    WR --- WRF
     WRR["Headless page rendering"]
     %% WRR: #442
     WR --- WRR

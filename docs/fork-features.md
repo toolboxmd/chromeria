@@ -2213,12 +2213,13 @@ sources and reasons.
 ```json
 {
   "id": "agent-web-research",
-  "purpose": "Read research pages through one caller-gated MCP service with full text, typed failures, isolated headless rendering for thin/consent pages, a shared page cache, an origin limiter and provenance; optionally share one linked environment's reader with caller limits and cache ownership preserved.",
+  "purpose": "Read research pages through one caller-gated MCP service with full text, typed failures, isolated headless rendering for thin/consent pages, a shared page cache, an origin limiter and provenance; optionally share one linked environment's reader with caller limits and cache ownership preserved; use a pinned zero-charge TinyFish fallback with shared quotas and bounded, nonpersistent hosted continuation.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/423",
     "https://github.com/toolboxmd/chromeria/issues/440",
     "https://github.com/toolboxmd/chromeria/issues/442",
-    "https://github.com/toolboxmd/chromeria/issues/443"
+    "https://github.com/toolboxmd/chromeria/issues/443",
+    "https://github.com/toolboxmd/chromeria/issues/444"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/449",
@@ -2232,6 +2233,10 @@ sources and reasons.
     "apps/server/src/mcp/toolkits/webResearch/handlers.ts",
     "apps/server/src/mcp/toolkits/webResearch/tools.ts",
     "apps/server/src/webResearch/PageCache.ts",
+    "apps/server/src/webResearch/PageCache.test.ts",
+    "apps/server/src/webResearch/TinyFish.ts",
+    "apps/server/src/webResearch/TinyFish.test.ts",
+    "apps/server/src/mcp/WebResearchTinyFish.integration.test.ts",
     "apps/server/src/webResearch/PublicHttp.test.ts",
     "apps/server/src/webResearch/PublicHttp.ts",
     "apps/server/src/webResearch/PublicRender.test.ts",

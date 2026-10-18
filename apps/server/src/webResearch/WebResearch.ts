@@ -19,6 +19,7 @@ import * as Semaphore from "effect/Semaphore";
 import * as PageCache from "./PageCache.ts";
 import * as PublicHttp from "./PublicHttp.ts";
 import * as PublicRender from "./PublicRender.ts";
+import * as TinyFish from "./TinyFish.ts";
 import { classify, extract } from "./extract.ts";
 import { type CachedPage, WebReadInput, WebReadPage, WebReadResult } from "./schemas.ts";
 
@@ -69,7 +70,12 @@ export class WebResearch extends Context.Service<
       input: typeof WebReadInput.Type,
     ) => Effect.Effect<
       typeof WebReadResult.Type,
-      WebResearchInputError | WebResearchBudgetError | PageCache.PageCacheError
+      | WebResearchInputError
+      | WebResearchBudgetError
+      | PageCache.PageCacheError
+      | PageCache.PageContinuationExpired
+      | TinyFish.TinyFishBudgetError
+      | TinyFish.TinyFishProviderError
     >;
   }
 >()("t3/webResearch/WebResearch") {}
@@ -152,6 +158,7 @@ const make = Effect.gen(function* () {
   const http = yield* PublicHttp.PublicHttp;
   const cache = yield* PageCache.PageCache;
   const renderer = yield* PublicRender.PublicRender;
+  const tinyfish = yield* TinyFish.TinyFish;
   const renders = yield* Semaphore.make(2);
   const origins = new Map<
     string,
@@ -325,7 +332,9 @@ const make = Effect.gen(function* () {
     let retryAfterMs: number | null = null;
     let cacheable = true;
     let reusedTarget: CachedPage | undefined;
-    let sourceRung: "http" | "render" = "http";
+    let sourceRung: CachedPage["sourceRung"] = "http";
+    let renderAttempted = false;
+    let providerCall: CachedPage["providerCall"];
     const loadDocument = Effect.fnUntraced(
       function* (target: URL) {
         const url = parseUrl(target.href);
@@ -475,6 +484,7 @@ const make = Effect.gen(function* () {
         }
         if (status === "thin" || status === "consent") {
           sourceRung = "render";
+          renderAttempted = true;
           const queuedAt = yield* Clock.currentTimeMillis;
           const rendered = yield* Effect.gen(function* () {
             const enteredAt = yield* Clock.currentTimeMillis;
@@ -511,7 +521,7 @@ const make = Effect.gen(function* () {
       }
       return { status: "origin_error" as const, title: "", text: "" };
     });
-    const content = yield* fetch.pipe(
+    let content = yield* fetch.pipe(
       Effect.catchTags({
         PublicNetworkBlockedError: () =>
           Effect.succeed({ status: "blocked_local" as const, title: "", text: "" }),
@@ -542,6 +552,38 @@ const make = Effect.gen(function* () {
         },
       }),
     );
+    if (
+      renderAttempted &&
+      cacheable &&
+      ["thin", "consent", "challenge", "origin_error", "provider_error", "timeout"].includes(
+        content.status,
+      )
+    ) {
+      const hosted = yield* tinyfish.fetch({
+        url: new URL(finalUrl),
+        ...(sameOrigin === undefined ? {} : { sameOrigin }),
+      });
+      if (hosted !== undefined) {
+        sourceRung = "tinyfish";
+        finalUrl = hosted.finalUrl;
+        httpStatus = null;
+        retryAfterMs = null;
+        providerCall = {
+          endpoint: "tinyfish.web.fetch",
+          callId: hosted.callId,
+          chargedMicro: hosted.chargedMicro,
+        };
+        yield* Ref.update(delay, (ms) => ms + hosted.delayMs);
+        const page = hosted.page;
+        const status = classify(page, 200);
+        content = {
+          status,
+          title: page.title,
+          text: status === "ok" ? page.text : "",
+          links: status === "ok" ? page.links : [],
+        };
+      }
+    }
     const completedAt = yield* Clock.currentTimeMillis;
     const fetchedAt = reusedTarget?.fetchedAt ?? completedAt;
     const contentHash = hash(content.text);
@@ -552,17 +594,22 @@ const make = Effect.gen(function* () {
       expiresAt:
         reusedTarget?.expiresAt ??
         fetchedAt +
-          (content.status === "ok"
-            ? 7 * 24 * 3600_000
-            : content.status === "login" ||
-                content.status === "consent" ||
-                content.status === "thin"
-              ? 300_000
-              : 60_000),
-      cacheId: hash(
-        `${original.href}\n${finalUrl}\n${completedAt}\n${content.status}\n${contentHash}\n${sameOrigin ?? ""}`,
-      ),
+          (sourceRung === "tinyfish"
+            ? PageCache.HOSTED_CONTINUATION_TTL_MS
+            : content.status === "ok"
+              ? 7 * 24 * 3600_000
+              : content.status === "login" ||
+                  content.status === "consent" ||
+                  content.status === "thin"
+                ? 300_000
+                : 60_000),
+      cacheId:
+        (sourceRung === "tinyfish" ? "tinyfish:" : "") +
+        hash(
+          `${original.href}\n${finalUrl}\n${completedAt}\n${content.status}\n${contentHash}\n${sameOrigin ?? ""}${providerCall === undefined ? "" : `\n${providerCall.callId}`}`,
+        ),
       sourceRung: reusedTarget?.sourceRung ?? sourceRung,
+      ...(providerCall === undefined ? {} : { providerCall }),
       ...content,
       httpStatus,
       contentHash,
@@ -657,6 +704,9 @@ const make = Effect.gen(function* () {
       fetchedAt: DateTime.formatIso(DateTime.makeUnsafe(page.fetchedAt)),
       rung: reused ? ("cache" as const) : page.sourceRung,
       sourceRung: page.sourceRung,
+      cacheStorage: page.sourceRung === "tinyfish" ? "memory" : "persistent",
+      cacheExpiresAt: DateTime.formatIso(DateTime.makeUnsafe(page.expiresAt)),
+      ...(page.providerCall === undefined ? {} : { providerCall: page.providerCall }),
       status: page.status,
       httpStatus: page.httpStatus,
       title: page.title,
