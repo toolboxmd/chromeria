@@ -1904,7 +1904,10 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/issues/323",
     "https://github.com/toolboxmd/chromeria/issues/330"
   ],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/334"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/334",
+    "https://github.com/toolboxmd/chromeria/pull/504"
+  ],
   "newFiles": [
     "apps/desktop/src/app/DesktopRenewalStore.test.ts",
     "apps/desktop/src/app/DesktopRenewalStore.ts",
