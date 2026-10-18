@@ -98,7 +98,10 @@ const page = (result: McpSchema.CallToolResult) => {
   return decodePage(result.structuredContent);
 };
 
-const fixture = Effect.fnUntraced(function* (robots = "User-agent: *\nAllow: /") {
+const fixture = Effect.fnUntraced(function* (
+  robots = "User-agent: *\nAllow: /",
+  respond = (_target: URL) => response(body),
+) {
   const requests = yield* Queue.unbounded<string>();
   const callers = yield* Queue.unbounded<Invocation.McpInvocationScope>();
   const release = yield* Deferred.make<void>();
@@ -120,7 +123,7 @@ const fixture = Effect.fnUntraced(function* (robots = "User-agent: *\nAllow: /")
             if (Option.isSome(invocation)) yield* Queue.offer(callers, invocation.value);
             if (target.pathname === "/robots.txt") return response(robots);
             yield* Deferred.await(release);
-            return response(body);
+            return respond(target);
           }),
         ),
       ),
@@ -329,21 +332,58 @@ it.effect("rejects configured forwarding chains before a second link is used", (
   }).pipe(Effect.provide(testLayers)),
 );
 
-it.effect("keeps a healthy host read pending through a long robots crawl delay", () =>
+it.effect(
+  "keeps a healthy redirect read pending beyond 60 seconds across bounded queue waits",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture("User-agent: *\nAllow: /\nCrawl-delay: 40", (target: URL) =>
+        target.pathname === "/rooms"
+          ? {
+              ...response(""),
+              status: 302,
+              headers: { "content-type": "text/html", location: "/final" },
+            }
+          : response(body),
+      );
+      yield* linkTo(f.a.links, f.host);
+      yield* Deferred.succeed(f.release, undefined);
+      const completed = yield* Deferred.make<void>();
+      const read = yield* Effect.forkScoped(
+        f.a.call({ url }).pipe(Effect.onExit(() => Deferred.succeed(completed, undefined))),
+      );
+      expect(yield* Queue.take(f.requests)).toBe("/robots.txt");
+      yield* TestClock.adjust("40 seconds");
+      expect(yield* Queue.take(f.requests)).toBe("/rooms");
+      yield* TestClock.adjust("21 seconds");
+      expect(yield* Deferred.isDone(completed)).toBe(false);
+      yield* TestClock.adjust("19 seconds");
+      expect(yield* Queue.take(f.requests)).toBe("/final");
+      expect(page(yield* Fiber.join(read))).toMatchObject({
+        status: "ok",
+        delayMs: 80_000,
+        finalUrl: "https://venue.example/final",
+      });
+      expect(yield* Queue.size(f.a.localRequests)).toBe(0);
+    }).pipe(Effect.provide(testLayers)),
+);
+
+it.effect("returns the host's transient queue refusal and permits an uncached retry", () =>
   Effect.gen(function* () {
     const f = yield* fixture("User-agent: *\nAllow: /\nCrawl-delay: 75");
     yield* linkTo(f.a.links, f.host);
-    const completed = yield* Deferred.make<void>();
-    const read = yield* Effect.forkScoped(
-      f.a.call({ url }).pipe(Effect.onExit(() => Deferred.succeed(completed, undefined))),
-    );
+    const read = yield* Effect.forkScoped(f.a.call({ url }));
     expect(yield* Queue.take(f.requests)).toBe("/robots.txt");
-    yield* TestClock.adjust("61 seconds");
-    expect(yield* Deferred.isDone(completed)).toBe(false);
-    yield* TestClock.adjust("14 seconds");
+    expect(page(yield* Fiber.join(read))).toMatchObject({
+      status: "challenge",
+      retryAfterMs: 75_000,
+      text: "",
+    });
+    expect(yield* Queue.size(f.requests)).toBe(0);
+    yield* TestClock.adjust("75 seconds");
+    const retry = yield* Effect.forkScoped(f.a.call({ url }));
     expect(yield* Queue.take(f.requests)).toBe("/rooms");
     yield* Deferred.succeed(f.release, undefined);
-    expect(page(yield* Fiber.join(read))).toMatchObject({ status: "ok", delayMs: 75_000 });
+    expect(page(yield* Fiber.join(retry))).toMatchObject({ status: "ok", rung: "http" });
     expect(yield* Queue.size(f.a.localRequests)).toBe(0);
   }).pipe(Effect.provide(testLayers)),
 );
