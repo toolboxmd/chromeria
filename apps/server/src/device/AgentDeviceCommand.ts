@@ -302,6 +302,7 @@ export const run = Effect.fn("AgentDeviceCommand.run")(function* (input: {
   switch (command.type) {
     case "open":
       positionals.push(command.app);
+      if (command.url !== undefined) positionals.push(command.url);
       break;
     case "click":
     case "press":
@@ -309,9 +310,13 @@ export const run = Effect.fn("AgentDeviceCommand.run")(function* (input: {
       break;
     case "fill":
       positionals.push(...element(command));
-      args.push("--text-stdin");
-      // The pinned CLI removes one trailing newline from stdin.
-      stdin = command.text + "\n";
+      if (command.text === "") positionals.push("");
+      else {
+        args.push("--text-stdin");
+        // The pinned reader strips CRLF as a unit. Empty stdin is rejected,
+        // so clearing uses its supported empty positional after `--` instead.
+        stdin = command.text + "\r\n";
+      }
       break;
     case "snapshot":
       if (command.interactiveOnly) args.push("-i");

@@ -140,6 +140,7 @@ const decodeCommandInput = Schema.decodeUnknownEffect(DeviceCommandInput, {
   onExcessProperty: "error",
 });
 const encodeCommandJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeCommandJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
 export class DeviceService extends Context.Service<
   DeviceService,
@@ -236,8 +237,8 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
   const crypto = yield* Crypto.Crypto;
   const commandLock = yield* Semaphore.make(1);
   const recheckAction = Effect.gen(function* () {
-    const request = yield* CurrentRequest;
-    if (request === undefined) return; // Native UI and existing unkeyed local lifecycle keep their owner.
+    // Reads have verified invocation authority too, without a mutation receipt.
+    // Direct native UI calls retain their existing owner when there is no MCP scope.
     const invocation = yield* Effect.serviceOption(Invocation.McpInvocationContext);
     if (Option.isNone(invocation) || invocation.value.thread === undefined) return;
     const original = yield* Invocation.requireThreadScope(invocation.value, "Device action");
@@ -1559,10 +1560,9 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
                         configured,
                       ];
                       if (extension === "json") {
-                        const value = yield* Effect.try({
-                          try: () => JSON.parse(text) as unknown,
-                          catch: () => commandUnavailable(session.hostId),
-                        });
+                        const value = yield* decodeCommandJson(text).pipe(
+                          Effect.mapError(() => commandUnavailable(session.hostId)),
+                        );
                         text = yield* encodeCommandJson(
                           AgentDeviceCommand.diagnosticDocument(command.type, value, privateValues),
                         ).pipe(Effect.orDie);

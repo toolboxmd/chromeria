@@ -91,18 +91,41 @@ it.effect(
 );
 
 it.effect(
-  "fill preserves empty input and trailing newlines without exposing the value in argv",
+  "fill clears empty input and preserves CR and LF endings at the pinned stdin boundary",
   () =>
     Effect.gen(function* () {
       const f = fixture();
-      for (const text of ["", "\n", " --config /rival\n\n"]) {
+      for (const text of ["", "abc\r", "\n", " --config /rival\n\n"]) {
         yield* f.run({ type: "fill", ref: "@e12", text });
         const call = f.calls.at(-1);
-        expect(call?.stdin).toBe(text + "\n");
-        expect(call?.args).toContain("--text-stdin");
-        expect(call?.args.at(-1)).toBe("@e12");
+        if (text === "") {
+          expect(call?.stdin).toBeUndefined();
+          expect(call?.args).not.toContain("--text-stdin");
+          expect(call?.args.slice(-3)).toEqual(["--", "@e12", ""]);
+        } else {
+          expect(call?.stdin).toBe(text + "\r\n");
+          expect(call?.args).toContain("--text-stdin");
+          expect(call?.args.at(-1)).toBe("@e12");
+          expect(call?.args).not.toContain(text);
+        }
       }
     }),
+);
+
+it.effect("open retains a bounded app deep link as data after the private binding", () =>
+  Effect.gen(function* () {
+    const command = {
+      type: "open",
+      app: "com.example.app",
+      url: "example://settings?tab=one",
+    } as const;
+    expect(decodeCommandExit(command)._tag).toBe("Success");
+    const f = fixture();
+    yield* f.run(command);
+    expect(f.calls[0]?.args.slice(-3)).toEqual(["--", command.app, command.url]);
+    for (const url of ["--config", "example://bad\nlink", "x:" + "a".repeat(8192)])
+      expect(decodeCommandExit({ ...command, url })._tag).toBe("Failure");
+  }),
 );
 
 it.effect(
@@ -329,7 +352,7 @@ it.effect("coordinate and selector variants stay literal under the same qualifie
       ["10", "20", "800"],
       ["--config", "100"],
     ]);
-    expect(f.calls[1]?.stdin).toBe("--session rival\n");
+    expect(f.calls[1]?.stdin).toBe("--session rival\r\n");
     expect(
       decodeCommandExit({
         type: "click",

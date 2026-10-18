@@ -577,6 +577,12 @@ export const DeviceAtomicCommand = Schema.Union([
       Schema.isMaxLength(256),
       Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/),
     ),
+    url: Schema.optional(
+      Schema.String.check(
+        Schema.isMaxLength(8_192),
+        Schema.isPattern(/^[a-zA-Z][a-zA-Z0-9+.-]*:[^\s\u0000-\u001f\u007f]+$/),
+      ),
+    ),
   }),
   closedDeviceCommand({
     type: Schema.Literal("snapshot"),

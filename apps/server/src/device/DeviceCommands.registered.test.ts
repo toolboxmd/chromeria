@@ -299,8 +299,7 @@ const fixture = Effect.gen(function* () {
     Effect.provideService(DeviceHost.DeviceHost, host),
     Effect.provideService(HttpClient.HttpClient, hub),
     Effect.provideService(ProcessRunner.ProcessRunner, runner),
-    Effect.provide(configLayer),
-    Effect.provide(Layer.succeedContext(settingsContext)),
+    Effect.provide(Layer.mergeAll(configLayer, Layer.succeedContext(settingsContext))),
   );
   const serverContext = yield* McpHttpServer.layerDeviceToolkit.pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
@@ -411,7 +410,7 @@ it.effect(
         const result = yield* execute(key, command);
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
       }
-      expect(f.calls.find((call) => call.args[1] === "fill")?.stdin).toBe("--config /evil\n\n");
+      expect(f.calls.find((call) => call.args[1] === "fill")?.stdin).toBe("--config /evil\n\r\n");
       expect(
         f.calls.every(
           (call) => call.args.includes("--serial") && call.args.includes("emulator-383"),
@@ -452,7 +451,7 @@ it.effect(
       expect(later.isError, JSON.stringify(later)).not.toBe(true);
       const stale = yield* execute("stale-click", { type: "click", ref: "@e1" });
       expect(stale.isError).toBe(true);
-    }).pipe(Effect.scoped, Effect.provide(Net.layer), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(Net.layer, NodeServices.layer))),
 );
 
 it.effect(
@@ -487,7 +486,7 @@ it.effect(
       f.oldVersion();
       expect((yield* execute("old-version", { type: "snapshot" })).isError).toBe(true);
       expect(f.preparations()).toBe(preparedBefore + 1);
-    }).pipe(Effect.scoped, Effect.provide(Net.layer), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(Net.layer, NodeServices.layer))),
 );
 
 it.effect(
@@ -528,7 +527,7 @@ it.effect(
       expect(wrongPlatform.isError).toBe(true);
       expect(f.preparations()).toBe(preparedBefore);
       expect(f.calls).toHaveLength(0);
-    }).pipe(Effect.scoped, Effect.provide(Net.layer), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(Net.layer, NodeServices.layer))),
 );
 
 it.effect(
@@ -549,7 +548,7 @@ it.effect(
         expect(JSON.stringify(result)).not.toMatch(/PRIVATE_TOKEN_383|\/host\/path/);
       }
       expect(f.calls).toHaveLength(1);
-    }).pipe(Effect.scoped, Effect.provide(Net.layer), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(Net.layer, NodeServices.layer))),
 );
 
 it.effect(
@@ -628,7 +627,7 @@ it.effect(
         expect(f.calls).toHaveLength(count);
       }
       expect((yield* f.sql`SELECT id FROM attachment_staging`).length).toBe(2);
-    }).pipe(Effect.scoped, Effect.provide(Net.layer), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(Net.layer, NodeServices.layer))),
 );
 
 it.effect(
@@ -655,7 +654,7 @@ it.effect(
       expect(mismatch.isError).toBe(true);
       expect(f.calls.at(-1)?.args[1]).toBe("capabilities");
       expect(f.calls.filter((call) => call.args[1] === "click")).toHaveLength(0);
-    }).pipe(Effect.scoped, Effect.provide(Net.layer), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(Net.layer, NodeServices.layer))),
 );
 
 it.effect(
@@ -715,7 +714,7 @@ it.effect(
       );
       expect(f.calls).toHaveLength(4);
       expect(f.preparations()).toBe(prepared + 1);
-    }).pipe(Effect.scoped, Effect.provide(Net.layer), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(Net.layer, NodeServices.layer))),
 );
 
 it.effect(
@@ -743,7 +742,7 @@ it.effect(
       const repeated = yield* f.call("device_execute", input);
       expect(JSON.stringify(repeated)).toContain("outcome_unknown");
       expect(f.calls).toHaveLength(2);
-    }).pipe(Effect.scoped, Effect.provide(Net.layer), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(Net.layer, NodeServices.layer))),
 );
 
 it.effect(
@@ -784,7 +783,7 @@ it.effect(
       yield* f.fs.writeFile(path, new Uint8Array([1, 2, 3, 4]));
       expect((yield* execute("changed-package", reference)).isError).toBe(true);
       expect(f.calls).toHaveLength(count);
-    }).pipe(Effect.scoped, Effect.provide(Net.layer), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(Net.layer, NodeServices.layer))),
 );
 
 it.effect(
@@ -827,7 +826,7 @@ it.effect(
       });
       expect(f.preparations()).toBe(0);
       expect(f.calls).toHaveLength(0);
-    }).pipe(Effect.scoped, Effect.provide(Net.layer), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(Net.layer, NodeServices.layer))),
 );
 
 it.effect(
@@ -897,5 +896,5 @@ it.effect(
       const rows =
         yield* f.sql`SELECT result_json FROM mcp_request_receipts WHERE state='completed'`;
       expect(rows.every((row) => String(row.result_json).length <= 64_000)).toBe(true);
-    }).pipe(Effect.scoped, Effect.provide(Net.layer), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(Net.layer, NodeServices.layer))),
 );

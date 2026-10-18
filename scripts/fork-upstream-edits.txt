@@ -259,6 +259,7 @@ apps/server/src/project/ProjectService.ts
 apps/server/src/project/ProjectSetupScriptRunner.test.ts
 apps/server/src/project/ProjectSetupScriptRunner.ts
 packages/shared/src/t3McpToolPresentation.ts
+packages/shared/src/t3McpToolPresentation.test.ts
 apps/server/src/cli/environment.ts
 apps/server/src/orchestration-v2/ProviderRuntimeRecoveryPerformance.test.ts
 apps/server/src/orchestration-v2/RestartContinuation.test.ts

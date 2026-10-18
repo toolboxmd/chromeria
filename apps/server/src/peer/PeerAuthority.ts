@@ -1703,11 +1703,7 @@ const make = Effect.gen(function* () {
           return yield* denied("The original caller no longer owns a live run.");
         modes = Invocation.intersectModes(caller, modes);
       } else modes = Invocation.intersectModes(Invocation.clientModeCeiling(scope.client), modes);
-      if (
-        modes.runtimeMode !== "full-access" ||
-        modes.interactionMode !== "default" ||
-        exceededDispatchModeLimit(modes, target.thread) !== undefined
-      )
+      if (exceededDispatchModeLimit(modes, target.thread) !== undefined)
         return yield* denied(
           "The device or browser action exceeds current originating or destination modes.",
         );

@@ -1715,6 +1715,7 @@ sources and reasons.
     "packages/client-runtime/src/t3ToolSummary.ts",
     "packages/shared/src/t3McpToolPresentation.ts",
     "apps/server/src/htmlRender/HtmlRender.ts",
+    "packages/shared/src/t3McpToolPresentation.test.ts",
     "apps/server/src/htmlRender/HtmlRender.test.ts",
     "apps/server/src/mcp/toolkits/html/handlers.ts",
     "apps/server/src/mcp/McpSessionRegistry.test.ts",

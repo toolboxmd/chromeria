@@ -1,7 +1,8 @@
 import * as Tracer from "effect/Tracer";
 import { DeviceStandardToolkit as LegacyDeviceToolkit } from "../device/testing/LegacyDeviceTools.fixture.ts";
 import * as LegacyDeviceHandlers from "../device/testing/LegacyDeviceHandlers.fixture.ts";
-import * as NodeCrypto from "node:crypto";
+import * as Crypto from "effect/Crypto";
+import * as Hex from "effect/encoding/Hex";
 import { clientHandlers as pendingRequestClientHandlers } from "../childThreads/PendingRequestIngress.ts";
 import * as RpcAuthorization from "../auth/RpcAuthorization.ts";
 import * as HttpRouter from "effect/http/HttpRouter";
@@ -768,6 +769,7 @@ const makeNode = (
       (input: ProcessRunner.ProcessRunInput) => Effect.Effect<void>
     >(() => Effect.void);
     const deviceSummaryHook = yield* Ref.make<Effect.Effect<void>>(Effect.void);
+    const deviceReadinessHook = yield* Ref.make<Effect.Effect<void>>(Effect.void);
     const deviceObservedScope = yield* Ref.make<Option.Option<Invocation.McpThreadInvocationScope>>(
       Option.none(),
     );
@@ -962,6 +964,7 @@ const makeNode = (
             platformAvailability: (platform) => Effect.succeed({ platform, available: true }),
             ensureReady: () =>
               Effect.gen(function* () {
+                yield* yield* Ref.get(deviceReadinessHook);
                 // A direct native UI setup call has no MCP request identity.
                 // Every registered action must be started before preparation.
                 if ((yield* RequestReceipts.CurrentRequest) !== undefined) yield* assertStarted;
@@ -1250,6 +1253,7 @@ const makeNode = (
       deviceProcessCalls,
       deviceProcessHook,
       deviceSummaryHook,
+      deviceReadinessHook,
       deviceObservedScope,
       deviceMediaPaths,
       deviceMediaOutside,
@@ -1917,6 +1921,11 @@ const decodeTyped383Open = Schema.decodeUnknownEffect(
     quickStart: Schema.String,
   }),
 );
+const typed383Digest = (bytes: Uint8Array) =>
+  Effect.gen(function* () {
+    const crypto = yield* Crypto.Crypto;
+    return Hex.encode(yield* crypto.digest("SHA-256", bytes));
+  }).pipe(Effect.orDie);
 const decodeTyped383Command = Schema.decodeUnknownEffect(DeviceCommandResult);
 const decodeTyped383Upload = Schema.decodeUnknownEffect(PeerAttachmentUploadResult);
 const decodeTyped383Target = Schema.decodeUnknownEffect(
@@ -2081,7 +2090,7 @@ it.live(
           expect(yield* fs.readFileString(config)).toContain("ISOLATED_DEVICE_TOKEN_382");
           sessions.add(flags[flags.indexOf("--session") + 1]!);
           if (call.args[1] === "fill") {
-            expect(call.stdin).toBe("--config /evil\n\n");
+            expect(call.stdin).toBe("--config /evil\n\r\n");
             expect(call.args.slice(separator + 1)).toEqual(["@e1"]);
           }
         }
@@ -2109,7 +2118,7 @@ it.live(
           "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==",
           "base64",
         );
-        const digest = NodeCrypto.createHash("sha256").update(png).digest("hex");
+        const digest = yield* typed383Digest(png);
         expect(artifact).toMatchObject({
           environmentId: b.environmentId,
           mimeType: "image/png",
@@ -2555,7 +2564,7 @@ it.live(
           expect(Array.from(bytes)).toEqual(Array.from(expected));
           expect(reference).toMatchObject({
             environmentId: b.environmentId,
-            digest: NodeCrypto.createHash("sha256").update(expected).digest("hex"),
+            digest: yield* typed383Digest(expected),
             sizeBytes: expected.length,
           });
           const rows = yield* sql<{
@@ -2593,7 +2602,7 @@ it.live(
           sizeBytes: 4,
         };
         const packageBytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
-        const digest = NodeCrypto.createHash("sha256").update(packageBytes).digest("hex");
+        const digest = yield* typed383Digest(packageBytes);
         const prepared = yield* nativeCall(a, parent, "t3_attachment_prepare_upload", {
           ...route,
           upload: metadata,
@@ -2699,7 +2708,7 @@ it.live(
           sizeBytes: 4,
         };
         const bytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
-        const digest = NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+        const digest = yield* typed383Digest(bytes);
         const prepared = yield* nativeCall(a, parent, "t3_attachment_prepare_upload", {
           ...route,
           upload: metadata,
@@ -13941,4 +13950,154 @@ it.live(
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   30000,
+);
+
+it.live(
+  "review383-read-capture: readonly capture rechecks after external readiness",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, route, open } = yield* typed383Pair("review383-read-capture");
+        const opened = yield* open("read-capture-open");
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { target } = yield* decodeTyped383Open(opened.structuredContent);
+        const held = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        yield* Ref.set(b.deviceProcessHook, (call) =>
+          call.args[1] === "click"
+            ? Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(release)))
+            : Effect.void,
+        );
+        const running = yield* nativeCall(a, parent, "device_execute", {
+          ...route,
+          target,
+          command: { type: "click", ref: "@e1" },
+          clientRequestId: "held-click",
+        }).pipe(Effect.forkChild);
+        yield* Deferred.await(held);
+        yield* Effect.gen(function* () {
+          const input = { ...route, hostId: "local", deviceId: "fixture-device382" };
+          const lawful = yield* nativeCall(a, parent, "device_screenshot", input);
+          expect(lawful.isError, json(lawful)).not.toBe(true);
+          const before = yield* Ref.get(b.deviceScreenshotCalls);
+          const grant = (yield* b.authority.grants)[0]!;
+          const armed = yield* Ref.make(true);
+          yield* Ref.set(
+            b.deviceReadinessHook,
+            Effect.gen(function* () {
+              if (!(yield* Ref.getAndSet(armed, false))) return;
+              yield* b.authority.setGrant({ ...grant, device: false }).pipe(Effect.orDie);
+            }),
+          );
+          const revoked = yield* nativeCall(a, parent, "device_screenshot", input);
+          expect(yield* Ref.get(armed)).toBe(false);
+          expect((yield* b.authority.grants)[0]!.device).toBe(false);
+          expect(revoked.isError, "revoked read must deny before capture").toBe(true);
+          expect(yield* Ref.get(b.deviceScreenshotCalls)).toBe(before);
+        }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
+        yield* Fiber.join(running);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "review383-local-auto: keyed local opening preserves existing capability policy",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const n = yield* makeNode(
+          descriptorOf("review383-local", "local", { peerAuthority: 1 }),
+          "disk",
+          {
+            productionKernel: true,
+            attachmentRequests: true,
+            preferencesOwner: true,
+            deviceOwner: true,
+          },
+        );
+        const parent = ThreadId.make("review383-local-parent");
+        yield* seedParent(n, parent);
+        const args = { deviceId: "fixture-device382", platform: "android" };
+        const full = yield* nativeCall(n, parent, "device_open", {
+          ...args,
+          clientRequestId: "full",
+        });
+        expect(full.isError, json(full)).not.toBe(true);
+        yield* n.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("review383-auto"),
+          threadId: parent,
+          runtimeMode: "auto",
+        });
+        const keyed = yield* nativeCall(n, parent, "device_open", {
+          ...args,
+          clientRequestId: "auto",
+        });
+        expect(keyed.isError, json(keyed)).not.toBe(true);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "typed383-literals: registered empty/CR fill and app deep link preserve exact bound intent",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, route, open, footprint } = yield* typed383Pair("typed383-literals");
+        const opened = yield* open("literal-open");
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { target } = yield* decodeTyped383Open(opened.structuredContent);
+        const texts = [
+          "",
+          "abc\r",
+          "\n",
+          "\r\n",
+          "first\nsecond",
+          "--config /rival",
+          '"quoted" Ω🦊',
+        ];
+        for (const [index, text] of texts.entries()) {
+          const input = {
+            ...route,
+            target,
+            command: { type: "fill", ref: "@e1", text },
+            clientRequestId: `literal-${index}`,
+          };
+          const reply = yield* nativeCall(a, parent, "device_execute", input);
+          expect(reply.structuredContent).toEqual({ type: "action", target, status: "dispatched" });
+          const call = b.deviceProcessCalls.at(-1)!;
+          expect(call.args[1]).toBe("fill");
+          const args = call.args.slice(call.args.indexOf("--") + 1);
+          expect(args).toEqual(text === "" ? ["@e1", ""] : ["@e1"]);
+          expect(call.stdin).toBe(text === "" ? undefined : text + "\r\n");
+          const beforeReplay = yield* footprint();
+          expect((yield* nativeCall(a, parent, "device_execute", input)).structuredContent).toEqual(
+            reply.structuredContent,
+          );
+          expect(yield* footprint()).toEqual(beforeReplay);
+        }
+        const command = { type: "open", app: "com.example.app", url: "example://settings?tab=one" };
+        const input = { ...route, target, command, clientRequestId: "deep-link" };
+        expect((yield* nativeCall(a, parent, "device_execute", input)).structuredContent).toEqual({
+          type: "action",
+          target,
+          status: "dispatched",
+        });
+        const call = b.deviceProcessCalls.at(-1)!;
+        expect(call.args[1]).toBe("open");
+        expect(call.args.slice(call.args.indexOf("--") + 1)).toEqual([command.app, command.url]);
+        const beforeInvalid = yield* footprint();
+        for (const url of ["--config", "example://bad\nlink", "x:" + "a".repeat(8192)])
+          expect(
+            (yield* nativeInvalidParams(a, parent, "device_execute", {
+              ...input,
+              command: { ...command, url },
+            })).error.code,
+          ).toBe(-32602);
+        expect(yield* footprint()).toEqual(beforeInvalid);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
 );
