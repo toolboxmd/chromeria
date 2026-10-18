@@ -1446,11 +1446,15 @@ export const layer = Layer.effect(
         const request = options.request;
         if (Option.isNone(nativeReceipts)) return yield* manualUnavailable(undefined);
         const recheck = options.recheck ?? Effect.void;
+        const localFence = yield* MutationReceipts.captureResourceFence(input.id).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
         yield* recheck;
         // The owner freezes this exact intent and admission before any dispatch.
         const admission = yield* sql
           .withTransaction(
             Effect.gen(function* () {
+              yield* localFence;
               const old = (yield* readManual(request))[0];
               const current = yield* loadTask(input.id);
               yield* sql`INSERT INTO scheduled_task_request_incarnations (task_id,incarnation)
@@ -1487,7 +1491,6 @@ export const layer = Layer.effect(
               )
                 return yield* taskError("Schedule task is already running.", { taskId: input.id });
               yield* validateBinding(current);
-              yield* recheck;
               const startedAt = yield* localNow;
               const bareAuthority =
                 current.bare === undefined

@@ -55,6 +55,17 @@ export class CurrentOperation extends Context.Reference<
   { readonly tool: string; readonly input: unknown } | undefined
 >("t3/mcp/CurrentOperation", { defaultValue: () => undefined }) {}
 
+const NotDispatched = Context.Reference<Effect.Effect<void> | undefined>("t3/mcp/NotDispatched", {
+  defaultValue: () => undefined,
+});
+/** Only an actual delivery owner may prove that this attempt reached no adapter.
+ * The callback is scoped to the winning attempt, never decoded from public errors.
+ */
+export const confirmNotDispatched = Effect.gen(function* () {
+  const confirm = yield* NotDispatched;
+  if (confirm !== undefined) yield* confirm;
+});
+
 const unavailable = (_cause: unknown) =>
   new OrchestratorMcpFailure({
     code: "orchestration_error",
@@ -105,7 +116,13 @@ const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   yield* sql`CREATE TABLE IF NOT EXISTS mcp_request_receipts (
     id TEXT PRIMARY KEY, generation TEXT NOT NULL, input_digest TEXT NOT NULL,
-    state TEXT NOT NULL, result_json TEXT)`.pipe(Effect.orDie);
+    state TEXT NOT NULL, result_json TEXT, attempt_id TEXT)`.pipe(Effect.orDie);
+  if (
+    !(yield* sql<{ name: string }>`PRAGMA table_info(mcp_request_receipts)`).some(
+      (column) => column.name === "attempt_id",
+    )
+  )
+    yield* sql`ALTER TABLE mcp_request_receipts ADD COLUMN attempt_id TEXT`.pipe(Effect.orDie);
   yield* sql`CREATE TABLE IF NOT EXISTS mcp_request_destinations (request_id TEXT NOT NULL, operation TEXT NOT NULL, environment_id TEXT NOT NULL, generation TEXT NOT NULL, PRIMARY KEY(request_id,operation))`.pipe(
     Effect.orDie,
   );
@@ -117,7 +134,7 @@ const make = Effect.gen(function* () {
       (row) => row.name,
     ),
   );
-  const legacyConflict = (tool: string, key: string) =>
+  const legacyConflict = (scope: McpInvocationScope, tool: string, input: unknown, key: string) =>
     Effect.gen(function* () {
       const encoded = encodeURIComponent(key);
       if (tables.has("orchestration_command_receipts")) {
@@ -134,26 +151,48 @@ const make = Effect.gen(function* () {
         };
         for (const { command_id: id } of candidates) {
           const parts = id.split(":");
-          if (
+          const launch =
             tool === "t3_thread_launch" &&
             parts[0] === "mcp" &&
             parts[1] === "launch" &&
-            parts[3] === encoded
-          )
-            return true;
-          if (
+            parts[3] === encoded;
+          const spectrum =
             tool === "start_spectrum" &&
             parts[0] === "spectrum" &&
             parts[2] === encoded &&
-            parts[3] === "register"
-          )
-            return true;
-          if (
+            parts[3] === "register";
+          const target =
+            typeof input === "object" &&
+            input !== null &&
+            "threadId" in input &&
+            typeof input.threadId === "string"
+              ? input.threadId
+              : scope.thread?.threadId;
+          const metadata =
+            target !== undefined &&
+            parts[4] === encodeURIComponent(target) &&
+            tool === "t3_thread_update" &&
+            parts[0] === "command" &&
+            parts[1] === "mcp" &&
+            parts[3] === "thread-update" &&
+            parts[6] === encoded;
+          const command =
             parts[0] === "command" &&
             parts[1] === "mcp" &&
             parts[4] === encoded &&
-            operations[tool]?.includes(parts[3]!)
-          )
+            operations[tool]?.includes(parts[3]!);
+          if (!launch && !spectrum && !metadata && !command) continue;
+          const namespace = parts[spectrum ? 1 : 2]!;
+          // A verified modern caller owns its namespace, never this raw key in
+          // every other namespace. Missing ownership remains safe unsupported.
+          let decoded: string;
+          try {
+            decoded = decodeURIComponent(namespace);
+          } catch {
+            return true;
+          }
+          const modernId = requestDigest([decoded, tool, key]);
+          if ((yield* sql`SELECT id FROM mcp_request_receipts WHERE id=${modernId}`).length === 0)
             return true;
         }
       }
@@ -161,12 +200,17 @@ const make = Effect.gen(function* () {
         const rows = yield* sql<{
           task_id: string;
         }>`SELECT task_id FROM scheduled_tasks WHERE instr(task_id,${`:${key}`}) > 0 OR instr(task_id,${`:${encoded}`}) > 0`;
-        if (
-          rows.some(
-            ({ task_id: id }) => id.endsWith(`:${key}`) || id.endsWith(`:schedule-task:${encoded}`),
-          )
-        )
-          return true;
+        for (const { task_id: id } of rows) {
+          if (!id.endsWith(`:${key}`) && !id.endsWith(`:schedule-task:${encoded}`)) continue;
+          const hasScheduleReceipts =
+            tables.has("scheduled_mutation_receipts") ||
+            (yield* sql`SELECT name FROM sqlite_master WHERE type='table' AND name='scheduled_mutation_receipts'`)
+              .length > 0;
+          const owned = hasScheduleReceipts
+            ? yield* sql`SELECT r.id FROM scheduled_mutation_receipts s JOIN mcp_request_receipts r ON r.id=s.request_id WHERE s.task_id=${id} AND s.stage='confirmed'`
+            : [];
+          if (owned.length === 0) return true;
+        }
       }
       return false;
     });
@@ -189,7 +233,7 @@ const make = Effect.gen(function* () {
         ),
       };
       const existing = yield* sql`SELECT id FROM mcp_request_receipts WHERE id=${id}`;
-      if (existing.length === 0 && (yield* legacyConflict(tool, clientRequestId)))
+      if (existing.length === 0 && (yield* legacyConflict(scope, tool, input, clientRequestId)))
         return yield* new OrchestratorMcpFailure({
           code: "invalid_request",
           message:
@@ -244,7 +288,10 @@ const make = Effect.gen(function* () {
     perform: Effect.Effect<A, E, R>,
   ): Effect.Effect<A, E | OrchestratorMcpFailure, R> =>
     Effect.gen(function* () {
-      const changed = yield* sql`UPDATE mcp_request_receipts SET state='started'
+      const attempt = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+      const notDispatched = yield* Ref.make(false);
+      const changed =
+        yield* sql`UPDATE mcp_request_receipts SET state='started',attempt_id=${attempt}
         WHERE id=${identity.id} AND generation=${identity.generation} AND input_digest=${identity.inputDigest}
           AND state='bound' RETURNING id`.pipe(Effect.mapError(unavailable));
       if (changed.length === 0) {
@@ -252,7 +299,19 @@ const make = Effect.gen(function* () {
         return Option.isSome(result) ? result.value : yield* unknownOutcome(identity);
       }
       const result = yield* perform.pipe(
-        Effect.catchCause(() => Effect.fail(unknownOutcome(identity))),
+        Effect.provideService(NotDispatched, Ref.set(notDispatched, true)),
+        Effect.catchCause((cause) =>
+          Effect.gen(function* () {
+            if (yield* Ref.get(notDispatched)) {
+              const reset =
+                yield* sql`UPDATE mcp_request_receipts SET state='bound',attempt_id=NULL WHERE id=${identity.id} AND generation=${identity.generation} AND input_digest=${identity.inputDigest} AND state='started' AND attempt_id=${attempt} RETURNING id`.pipe(
+                  Effect.mapError(() => unknownOutcome(identity)),
+                );
+              if (reset.length === 1) return yield* Effect.failCause(cause);
+            }
+            return yield* unknownOutcome(identity);
+          }),
+        ),
       );
       const encoded = json({ value: result });
       // Large media remains at its artifact owner, never in a generic receipt row.

@@ -523,12 +523,13 @@ const make = Effect.gen(function* () {
     reserve,
     discard: (scope, id) =>
       Effect.gen(function* () {
-        const row = yield* read(id);
-        if (!owned(scope, row) || row!.consumer !== null) return yield* denied();
-        // A durable tombstone prevents a previously issued URL from resurrecting discarded bytes.
-        yield* sql`UPDATE attachment_staging SET consumer='discarded' WHERE id=${id} AND consumer IS NULL`.pipe(
-          Effect.mapError(unavailable),
-        );
+        // Ownership and the one-use transition are one conditional write.
+        // A stale pre-read cannot authorize deletion after a rival reserves it.
+        const won =
+          yield* sql`UPDATE attachment_staging SET consumer='discarded' WHERE id=${id} AND owner=${owner(scope)} AND generation=${requestGeneration(scope)} AND consumer IS NULL RETURNING id`.pipe(
+            Effect.mapError(unavailable),
+          );
+        if (won.length !== 1) return yield* denied();
       }),
   });
 });

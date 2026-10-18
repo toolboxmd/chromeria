@@ -41,7 +41,7 @@ import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as McpInvocationContext from "./McpInvocationContext.ts";
-import { externalDispatch, externalReplay } from "./McpRequestReceipts.ts";
+import { externalDispatch, externalReplay, confirmNotDispatched } from "./McpRequestReceipts.ts";
 
 const HOST_RESPONSE_GRACE_MS = 1_000;
 
@@ -654,6 +654,9 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         }).pipe(Effect.map((offered) => [offered, current] as const));
       });
       if (!offered) {
+        // This request never entered a client queue. Only this delivery owner
+        // can return its exact winning attempt to retryable state.
+        yield* confirmNotDispatched;
         const completion = yield* Deferred.poll(deferred);
         if (Option.isSome(completion)) {
           return (yield* completion.value) as A;

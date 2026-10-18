@@ -1,3 +1,6 @@
+import * as ScheduleReceipts from "../scheduledTasks/mutationReceipts.ts";
+import type { RequestIdentity } from "../mcp/McpRequestReceipts.ts";
+import type { McpScheduledMutationReceipt } from "@t3tools/contracts";
 import { Authority, PeerSession, intersect } from "./PeerAuthorityRecord.ts";
 export { Authority, PeerSession } from "./PeerAuthorityRecord.ts";
 import { readStopDescendants } from "../childThreads/stopDescendants.ts";
@@ -48,7 +51,10 @@ export type ResourceTarget =
   | { readonly type: "environment" };
 type ResourceBinding =
   | { readonly type: "thread"; readonly thread: OrchestrationV2ThreadShell }
-  | { readonly type: "schedule"; readonly linkOrigin: OrchestrationV2LinkOrigin | undefined }
+  | {
+      readonly type: "schedule";
+      readonly linkOrigin: Pick<OrchestrationV2LinkOrigin, "sessionId"> | undefined;
+    }
   | { readonly type: "environment" };
 
 export const AUTHORITY_HEADER = "t3-peer-authority";
@@ -128,6 +134,11 @@ const unavailable = () =>
 export class PeerAuthority extends Context.Service<
   PeerAuthority,
   {
+    readonly historicalScheduleReceipt: (
+      scope: Invocation.McpInvocationScope,
+      request: RequestIdentity,
+      expectedProjectId?: string,
+    ) => Effect.Effect<Option.Option<McpScheduledMutationReceipt>, OrchestratorMcpFailure>;
     readonly checkRecord: (id: string) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly authorizeStopEffect: (
       effectId: string,
@@ -1396,6 +1407,54 @@ const make = Effect.gen(function* () {
           "The destination effect exceeds the current originating authority ceiling.",
         );
     });
+  const checkBinding = (
+    scope: Invocation.McpInvocationScope,
+    bindingEffect: Effect.Effect<ResourceBinding, OrchestratorMcpFailure>,
+  ) =>
+    Effect.gen(function* () {
+      const record =
+        scope.client === undefined && scope.thread !== undefined
+          ? yield* checkThread(scope.thread.threadId)
+          : scope.authority === undefined
+            ? undefined
+            : yield* read(scope.authority.id);
+      const migrated =
+        record === undefined && scope.thread !== undefined
+          ? yield* legacy(scope.thread.threadId)
+          : undefined;
+      const sessionId =
+        migrated?.sessionId ?? (scope.client?.linked === true ? scope.client.sessionId : undefined);
+      if (record === undefined && sessionId === undefined)
+        return scope.client === undefined ? undefined : Invocation.clientModeCeiling(scope.client);
+      const binding = yield* bindingEffect;
+      const ceiling = record === undefined ? undefined : yield* validate(record);
+      if (record === undefined) {
+        if (sessionId === undefined) return yield* unavailable();
+        yield* activeSession(sessionId);
+      }
+      const modes =
+        scope.client === undefined && ceiling !== undefined
+          ? ceiling
+          : Invocation.intersectModes(Invocation.clientModeCeiling(scope.client), ceiling);
+      const directFull =
+        scope.thread === undefined &&
+        scope.client?.linked === true &&
+        record?.envelope.descendant !== true &&
+        modes.runtimeMode === "full-access" &&
+        modes.interactionMode === "default";
+      // Preserve the legacy direct exception for environment operations and
+      // unstamped schedules. It never covers descendants or other-link threads.
+      if (
+        directFull &&
+        (binding.type === "environment" ||
+          (binding.type === "schedule" && binding.linkOrigin === undefined))
+      )
+        return modes;
+      if (record !== undefined && ceiling !== undefined)
+        yield* checkResource(record, ceiling, binding);
+      else if (sessionId !== undefined) yield* checkCreated(sessionId, binding);
+      return modes;
+    });
   return PeerAuthority.of({
     checkRecord: (id) => Effect.flatMap(read(id), validate).pipe(Effect.asVoid),
     authorizeTaskStop: (scope, input) =>
@@ -1484,49 +1543,62 @@ const make = Effect.gen(function* () {
     checkPayload,
     bind,
     forThread,
-    checkTarget: (scope, target) =>
+    checkTarget: (scope, target) => checkBinding(scope, loadResource(target)).pipe(Effect.asVoid),
+    historicalScheduleReceipt: (scope, request, expectedProjectId) =>
       Effect.gen(function* () {
-        const record =
-          scope.client === undefined && scope.thread !== undefined
-            ? yield* checkThread(scope.thread.threadId)
-            : scope.authority === undefined
-              ? undefined
-              : yield* read(scope.authority.id);
-        const migrated =
-          record === undefined && scope.thread !== undefined
-            ? yield* legacy(scope.thread.threadId)
-            : undefined;
-        const sessionId =
-          migrated?.sessionId ??
-          (scope.client?.linked === true ? scope.client.sessionId : undefined);
-        if (record === undefined && sessionId === undefined) return;
-        const binding = yield* loadResource(target);
-        const ceiling = record === undefined ? undefined : yield* validate(record);
-        if (record === undefined) {
-          if (sessionId === undefined) return yield* unavailable();
-          yield* activeSession(sessionId);
-        }
-        const modes = Invocation.intersectModes(
-          Invocation.clientModeCeiling(scope.client),
-          ceiling,
+        const accepted = yield* ScheduleReceipts.acceptance(request).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
         );
-        const directFull =
-          scope.thread === undefined &&
-          scope.client?.linked === true &&
-          record?.envelope.descendant !== true &&
-          modes.runtimeMode === "full-access" &&
-          modes.interactionMode === "default";
-        // Preserve the legacy direct exception for environment operations and
-        // unstamped schedules. It never covers descendants or other-link threads.
+        if (Option.isNone(accepted)) return Option.none<McpScheduledMutationReceipt>();
+        const { receipt, resource } = accepted.value;
         if (
-          directFull &&
-          (binding.type === "environment" ||
-            (binding.type === "schedule" && binding.linkOrigin === undefined))
+          resource.owner !== requestNamespace(scope) ||
+          request.generation !== requestGeneration(scope) ||
+          !scope.capabilities.has("orchestration") ||
+          (expectedProjectId !== undefined && expectedProjectId !== resource.projectId)
         )
-          return;
-        if (record !== undefined && ceiling !== undefined)
-          yield* checkResource(record, ceiling, binding);
-        else if (sessionId !== undefined) yield* checkCreated(sessionId, binding);
+          return yield* denied(
+            "Historical scheduler acceptance belongs to its original authenticated owner and project.",
+          );
+        const binding: ResourceBinding = {
+          type: "schedule",
+          linkOrigin:
+            resource.linkSessionId === undefined
+              ? undefined
+              : { sessionId: resource.linkSessionId },
+        };
+        let modes = yield* checkBinding(scope, Effect.succeed(binding));
+        if (scope.thread !== undefined) {
+          const caller = yield* threads
+            .getThreadShell(scope.thread.threadId)
+            .pipe(Effect.mapError(unavailable));
+          if (
+            caller === null ||
+            caller.deletedAt !== null ||
+            caller.archivedAt !== null ||
+            caller.activeRunId === null
+          )
+            return yield* denied("The historical receipt's caller is no longer eligible.");
+          modes = modes === undefined ? caller : Invocation.intersectModes(modes, caller);
+        }
+        if (modes === undefined)
+          return yield* denied("An authenticated historical receipt caller is required.");
+        if (resource.authorityRecordId !== undefined) {
+          const original = yield* read(resource.authorityRecordId);
+          const current = yield* validate(original);
+          if (!current.capabilities.includes("orchestration"))
+            return yield* denied(
+              "The original scheduler authority no longer permits receipt access.",
+            );
+          yield* checkResource(original, current, binding);
+          modes = Invocation.intersectModes(modes, current);
+        }
+        for (const acceptedMode of resource.runModes)
+          if (exceededDispatchModeLimit(modes, acceptedMode) !== undefined)
+            return yield* denied(
+              "Historical scheduler acceptance exceeds the caller's current modes.",
+            );
+        return Option.some(receipt);
       }),
     returnNotice,
     registerPair,

@@ -1,3 +1,9 @@
+import * as AttachmentStaging from "../assets/AttachmentStaging.ts";
+import * as AttachmentClaims from "../orchestration-v2/AttachmentClaims.ts";
+import * as Invocation from "../mcp/McpInvocationContext.ts";
+import { PeerAttachmentUploadResult } from "@t3tools/contracts";
+import * as Queue from "effect/Queue";
+import { dual } from "effect/Function";
 import * as Path from "effect/Path";
 import * as NativeDevices from "../device/DeviceService.ts";
 import * as DeviceHost from "../device/DeviceHost.ts";
@@ -69,6 +75,9 @@ import * as RecoveryHistory from "../prism/RecoveryHistory.ts";
 import * as RecoverySignals from "./recoveryWaitSignals.ts";
 import { PeerDispatchAuthority } from "./peerEffectAuthority.ts";
 import { vi } from "vite-plus/test";
+
+// Preserve real queue execution while observing the external delivery boundary.
+vi.mock("effect/Queue", { spy: true });
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
 import { ProviderTurnId } from "@t3tools/contracts";
 import { assertNotLinked } from "../mcp/linkOrigin.ts";
@@ -721,6 +730,8 @@ const makeNode = (
       Layer.provide(previewBrowser),
     );
 
+    const deviceHostStarts = yield* Ref.make(0);
+    const devicePlatformAvailable = yield* Ref.make(true);
     const deviceAgentStarts = yield* Ref.make(0);
     const deviceConfigurations = yield* Ref.make(0);
     const loseDeviceConfiguration = yield* Ref.make(false);
@@ -746,16 +757,29 @@ const makeNode = (
           };
           const host: DeviceHost.DeviceHost["Service"] = {
             id: LOCAL_DEVICE_HOST_ID,
-            summary: Effect.succeed({
-              id: LOCAL_DEVICE_HOST_ID,
-              kind: "local",
-              label: "Isolated fixture",
-              platforms: [{ platform: "android", available: true }],
-              hubInstalled: true,
-              agentDeviceInstalled: true,
-            }),
+            summary: Ref.get(devicePlatformAvailable).pipe(
+              Effect.map((available) => ({
+                id: LOCAL_DEVICE_HOST_ID,
+                kind: "local" as const,
+                label: "Isolated fixture",
+                platforms: [{ platform: "android" as const, available }],
+                hubInstalled: true,
+                agentDeviceInstalled: true,
+              })),
+            ),
             platformAvailability: (platform) => Effect.succeed({ platform, available: true }),
-            ensureReady: () => Effect.succeed(ready),
+            ensureReady: () =>
+              Ref.update(deviceHostStarts, (n) => n + 1).pipe(
+                Effect.andThen(
+                  fs
+                    .writeFileString(
+                      `${config.stateDir}/fixture-device-host-started`,
+                      "Isolated native preparation footprint",
+                    )
+                    .pipe(Effect.orDie),
+                ),
+                Effect.as(ready),
+              ),
             ensureAgentReady: () =>
               Ref.update(deviceAgentStarts, (n) => n + 1).pipe(
                 Effect.as({
@@ -993,6 +1017,8 @@ const makeNode = (
       config: Context.get(nodeConfigContext, Config.ServerConfig),
       browser,
       fixtureDevice,
+      deviceHostStarts,
+      devicePlatformAvailable,
       deviceAgentStarts,
       deviceConfigurations,
       loseDeviceConfiguration,
@@ -1124,9 +1150,8 @@ it.live(
           checkReason: "Second edit",
           clientRequestId: "history382-edit2",
         };
-        expect((yield* nativeCall(node, parent, "update_scheduled_task", edit1)).isError).not.toBe(
-          true,
-        );
+        const firstEdit = yield* nativeCall(node, parent, "update_scheduled_task", edit1);
+        expect(firstEdit.isError, json(firstEdit)).not.toBe(true);
         expect((yield* nativeCall(node, parent, "update_scheduled_task", edit2)).isError).not.toBe(
           true,
         );
@@ -1214,13 +1239,15 @@ it.live(
         const remove = { scheduledTaskId: id, clientRequestId: "history382-delete" };
         const deleted = yield* nativeCall(active, parent, "delete_scheduled_task", remove);
         expect(deleted.isError, json(deleted)).not.toBe(true);
-        expect((yield* nativeCall(active, parent, "schedule_task", create)).isError).toBe(true);
-        expect((yield* nativeCall(active, parent, "update_scheduled_task", edit1)).isError).toBe(
-          true,
-        );
-        expect((yield* nativeCall(active, parent, "delete_scheduled_task", remove)).isError).toBe(
-          true,
-        );
+        expect(
+          (yield* nativeCall(active, parent, "schedule_task", create)).structuredContent,
+        ).toEqual(receipt);
+        expect(
+          (yield* nativeCall(active, parent, "update_scheduled_task", edit1)).structuredContent,
+        ).toEqual(firstEdit.structuredContent);
+        expect(
+          (yield* nativeCall(active, parent, "delete_scheduled_task", remove)).structuredContent,
+        ).toEqual(deleted.structuredContent);
         // Deliberate unkeyed local replacement keeps the visible id but gets a new native incarnation.
         yield* active.scheduled.upsert({
           ...current,
@@ -3354,7 +3381,9 @@ const nativeCall = (
     });
     const sessionId = initialized.headers["mcp-session-id"];
     if (sessionId === undefined)
-      return yield* Effect.die(`Native initialization failed: ${initialized.status}`);
+      return yield* Effect.die(
+        `Native initialization failed: ${initialized.status}; credential origin=${new URL(issued.config.endpoint).origin}; bound origin=${node.url}`,
+      );
     yield* post({ jsonrpc: "2.0", method: "notifications/initialized" }, sessionId);
     const result = yield* post(
       { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args } },
@@ -8868,4 +8897,969 @@ it.live(
       }),
     ).pipe(Effect.provide(Layer.merge(FetchHttpClient.layer, NodeServices.layer))),
   30_000,
+);
+it.live(
+  "reviewer382: separate callers may reuse a local request key",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf("reviewer382", "Review", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const one = ThreadId.make("reviewer382-one"),
+          two = ThreadId.make("reviewer382-two");
+        yield* seedParent(node, one);
+        yield* seedParent(node, two);
+        const args = {
+          message: "isolated request",
+          mode: "queue",
+          clientRequestId: "reviewer-shared-key",
+        };
+        const first = yield* nativeCall(node, one, "t3_thread_send", { ...args, threadId: one });
+        expect(first.isError, json(first)).not.toBe(true);
+        const second = yield* nativeCall(node, two, "t3_thread_send", { ...args, threadId: two });
+        expect(second.isError, json(second)).not.toBe(true);
+        for (const thread of [one, two]) {
+          const renamed = yield* nativeCall(node, thread, "t3_thread_update", {
+            action: "rename",
+            title: `Independent ${thread}`,
+            clientRequestId: "reviewer-shared-key",
+          });
+          expect(renamed.isError, json(renamed)).not.toBe(true);
+          const scheduled = yield* nativeCall(node, thread, "schedule_task", {
+            title: "Independent task",
+            prompt: "Independent prompt",
+            bindToCurrentThread: true,
+            enabled: false,
+            schedule: { type: "interval", everyMs: 3600000 },
+            clientRequestId: "reviewer-shared-key",
+          });
+          expect(scheduled.isError, json(scheduled)).not.toBe(true);
+        }
+        expect((yield* node.scheduled.list()).tasks).toHaveLength(2);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30000,
+);
+
+it.live(
+  "reviewer382: legacy metadata replay preserves later title",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf("reviewer382-import", "Import", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const parent = ThreadId.make("reviewer382-import-parent");
+        yield* seedParent(node, parent);
+        const oldCommand = CommandId.make(
+          [
+            "command",
+            "mcp",
+            "pre-upgrade-credential",
+            "thread-update",
+            encodeURIComponent(parent),
+            "rename",
+            "old-rename",
+          ].join(":"),
+        );
+        yield* node.threads.dispatch({
+          type: "thread.metadata.update",
+          commandId: oldCommand,
+          threadId: parent,
+          title: "Original title",
+        });
+        const later = yield* nativeCall(node, parent, "t3_thread_update", {
+          action: "rename",
+          title: "Later independent title",
+          clientRequestId: "later-edit",
+        });
+        expect(later.isError, json(later)).not.toBe(true);
+        const replay = yield* nativeCall(node, parent, "t3_thread_update", {
+          action: "rename",
+          title: "Original title",
+          clientRequestId: "old-rename",
+        });
+        const shell = yield* node.threads.getThreadShell(parent);
+        expect(shell?.title, json(replay)).toBe("Later independent title");
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30000,
+);
+
+it.live(
+  "reviewer382: concurrent keyed field edits retain both intents",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf("reviewer382-rivals", "Rivals", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const parent = ThreadId.make("reviewer382-rivals-parent");
+        yield* seedParent(node, parent);
+        const created = yield* nativeCall(node, parent, "schedule_task", {
+          prompt: "Original prompt",
+          title: "Original title",
+          schedule: { type: "interval", everyMs: 60000 },
+          clientRequestId: "reviewer-rival-create",
+        });
+        expect(created.isError, json(created)).not.toBe(true);
+        const receipt = yield* Schema.decodeUnknownEffect(McpScheduledMutationReceipt)(
+          created.structuredContent,
+        );
+        const bothRead = yield* Deferred.make<void>();
+        let reads = 0;
+        const realList = node.scheduled.list;
+        const spy = vi.spyOn(node.scheduled, "list").mockImplementation(() =>
+          realList().pipe(
+            Effect.tap(() =>
+              Effect.gen(function* () {
+                reads++;
+                if (reads === 2) yield* Deferred.succeed(bothRead, undefined);
+                if (reads <= 2) yield* Deferred.await(bothRead);
+              }),
+            ),
+          ),
+        );
+        const results = yield* Effect.all(
+          [
+            nativeCall(node, parent, "update_scheduled_task", {
+              scheduledTaskId: receipt.scheduledTaskId,
+              title: "Title A",
+              clientRequestId: "reviewer-rival-a",
+            }),
+            nativeCall(node, parent, "update_scheduled_task", {
+              scheduledTaskId: receipt.scheduledTaskId,
+              prompt: "Prompt B",
+              clientRequestId: "reviewer-rival-b",
+            }),
+          ],
+          { concurrency: "unbounded" },
+        ).pipe(Effect.ensuring(Effect.sync(() => spy.mockRestore())));
+        expect(
+          results.every((r) => r.isError !== true),
+          json(results),
+        ).toBe(true);
+        const current = (yield* realList()).tasks.find((t) => t.id === receipt.scheduledTaskId)!;
+        expect({ title: current.title, prompt: current.prompt }).toEqual({
+          title: "Title A",
+          prompt: "Prompt B",
+        });
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30000,
+);
+
+it.live(
+  "runtime382-F1: remote scheduler validation leaves SQLite free for reverse control",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(descriptorOf("runtime382-a", "A", { peerAuthority: 1 }), "disk", {
+          productionKernel: true,
+          attachmentRequests: true,
+        });
+        const b = yield* makeNode(descriptorOf("runtime382-b", "B", { peerAuthority: 1 }), "disk", {
+          productionKernel: true,
+          attachmentRequests: true,
+        });
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("runtime382-parent");
+        yield* seedParent(a, parent);
+        const input = {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          title: "Original title",
+          prompt: "Disabled fixture",
+          enabled: false,
+          schedule: { type: "interval", everyMs: 3600000 },
+          clientRequestId: "runtime382-create",
+        };
+        const created = yield* nativeCall(a, parent, "schedule_task", input);
+        expect(created.isError, json(created)).not.toBe(true);
+        const receipt = yield* Schema.decodeUnknownEffect(McpScheduledMutationReceipt)(
+          created.structuredContent,
+        );
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        let transactionalValidations = 0;
+        const actual = b.authority.checkTarget;
+        const observer = vi.spyOn(b.authority, "checkTarget").mockImplementation((...args) =>
+          Effect.gen(function* () {
+            if (Option.isSome(yield* Effect.serviceOption(sql.transactionService)))
+              transactionalValidations++;
+            return yield* actual(...args);
+          }),
+        );
+        const update = yield* nativeCall(a, parent, "update_scheduled_task", {
+          environmentId: b.environmentId,
+          scheduledTaskId: receipt.scheduledTaskId,
+          title: "Later independent title",
+          clientRequestId: "runtime382-update",
+        }).pipe(Effect.ensuring(Effect.sync(() => observer.mockRestore())));
+        expect.soft(transactionalValidations).toBe(0);
+        expect(update.isError, json(update)).not.toBe(true);
+        expect(
+          (yield* b.scheduled.list()).tasks.find((t) => t.id === receipt.scheduledTaskId),
+        ).toMatchObject({
+          title: "Later independent title",
+          enabled: false,
+          runCount: 0,
+          nextRunAt: null,
+        });
+        const replay = yield* nativeCall(a, parent, "schedule_task", input);
+        expect(replay.structuredContent).toEqual(created.structuredContent);
+        expect(
+          (yield* b.scheduled.list()).tasks.find((t) => t.id === receipt.scheduledTaskId)?.title,
+        ).toBe("Later independent title");
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  90000,
+);
+
+it.live(
+  "runtime382-F1: remote keyed manual admission validates outside SQL and replays native acceptance",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf("manual-runtime382-a", "A", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const b = yield* makeNode(
+          descriptorOf("manual-runtime382-b", "B", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("manual-runtime382-source"),
+          target = ThreadId.make("manual-runtime382-target");
+        yield* seedParent(a, parent);
+        yield* seedParent(b, target);
+        const created = yield* nativeCall(b, target, "schedule_task", {
+          title: "Manual target",
+          prompt: "One queued message",
+          bindToCurrentThread: true,
+          enabled: false,
+          schedule: { type: "interval", everyMs: 3600000 },
+          clientRequestId: "manual-runtime382-create",
+        });
+        expect(created.isError, json(created)).not.toBe(true);
+        const receipt = yield* Schema.decodeUnknownEffect(McpScheduledMutationReceipt)(
+          created.structuredContent,
+        );
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        let transactionalValidations = 0;
+        const actual = b.authority.checkTarget;
+        const observer = vi.spyOn(b.authority, "checkTarget").mockImplementation((...args) =>
+          Effect.gen(function* () {
+            if (Option.isSome(yield* Effect.serviceOption(sql.transactionService)))
+              transactionalValidations++;
+            return yield* actual(...args);
+          }),
+        );
+        const input = {
+          environmentId: b.environmentId,
+          taskId: receipt.scheduledTaskId,
+          clientRequestId: "manual-runtime382-run",
+        };
+        const first = yield* nativeCall(a, parent, "run_scheduled_task_now", input);
+        const again = yield* nativeCall(a, parent, "run_scheduled_task_now", input).pipe(
+          Effect.ensuring(Effect.sync(() => observer.mockRestore())),
+        );
+        expect(first.isError, json(first)).not.toBe(true);
+        expect(again.structuredContent).toEqual(first.structuredContent);
+        expect(transactionalValidations).toBe(0);
+        expect(
+          (yield* b.scheduled.list()).tasks.find((t) => t.id === receipt.scheduledTaskId)?.runCount,
+        ).toBe(1);
+        expect(yield* sql`SELECT * FROM scheduled_manual_requests`).toHaveLength(1);
+        const removed = yield* nativeCall(a, parent, "delete_scheduled_task", {
+          environmentId: b.environmentId,
+          scheduledTaskId: receipt.scheduledTaskId,
+          clientRequestId: "manual-runtime382-delete",
+        });
+        expect(removed.isError, json(removed)).not.toBe(true);
+        expect((yield* b.scheduled.list()).tasks).toHaveLength(0);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  90000,
+);
+
+it.live(
+  "migration382-S2: each legacy metadata action is target-scoped and never becomes a fresh command",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf("migration382-metadata", "Metadata", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const parent = ThreadId.make("migration382-metadata-parent"),
+          other = ThreadId.make("migration382-metadata-other");
+        yield* seedParent(node, parent);
+        yield* seedParent(node, other);
+        const sql = Context.get(node.database, SqlClient.SqlClient);
+        const pullRequest = {
+          repository: "isolated/repository",
+          number: 382,
+          url: "https://github.com/isolated/repository/pull/382",
+        };
+        for (const action of [
+          "rename",
+          "regenerate_title",
+          "link_pull_request",
+          "unlink_pull_request",
+        ] as const) {
+          const key = `old:${action}:key`,
+            commandId = CommandId.make(
+              [
+                "command",
+                "mcp",
+                "pre-upgrade-credential",
+                "thread-update",
+                encodeURIComponent(parent),
+                action,
+                encodeURIComponent(key),
+              ].join(":"),
+            );
+          yield* node.threads.dispatch({
+            type: "thread.metadata.update",
+            commandId,
+            threadId: parent,
+            ...(action === "rename"
+              ? { title: "Original title" }
+              : action === "regenerate_title"
+                ? { regenerateTitle: true }
+                : {
+                    linkedPullRequest:
+                      action === "link_pull_request"
+                        ? { projectId: node.project.id, ...pullRequest }
+                        : null,
+                  }),
+          });
+          const later = yield* nativeCall(node, parent, "t3_thread_update", {
+            action: "rename",
+            title: "Later independent title",
+            clientRequestId: `later:${action}`,
+          });
+          expect(later.isError, json(later)).not.toBe(true);
+          const before = yield* sql`SELECT command_id FROM orchestration_command_receipts`;
+          const replay = yield* nativeCall(node, parent, "t3_thread_update", {
+            action,
+            ...(action === "rename"
+              ? { title: "Original title" }
+              : action === "link_pull_request"
+                ? { pullRequest }
+                : {}),
+            clientRequestId: key,
+          });
+          expect(replay.isError).toBe(true);
+          expect(json(replay)).toContain("legacy operation");
+          expect(yield* sql`SELECT command_id FROM orchestration_command_receipts`).toEqual(before);
+          expect((yield* node.threads.getThreadShell(parent))?.title).toBe(
+            "Later independent title",
+          );
+          const unrelated = yield* nativeCall(node, other, "t3_thread_update", {
+            action: "rename",
+            title: "Independent other caller",
+            clientRequestId: key,
+          });
+          expect(unrelated.isError, json(unrelated)).not.toBe(true);
+        }
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30000,
+);
+
+it.live(
+  "runtime382-F1: a local binding change during live authorization cannot cross the commit guard",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf("fence382", "Fence", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const parent = ThreadId.make("fence382-parent");
+        yield* seedParent(node, parent);
+        const created = yield* nativeCall(node, parent, "schedule_task", {
+          title: "Original title",
+          prompt: "Original prompt",
+          enabled: false,
+          schedule: { type: "interval", everyMs: 3600000 },
+          clientRequestId: "fence382-create",
+        });
+        expect(created.isError, json(created)).not.toBe(true);
+        const receipt = yield* Schema.decodeUnknownEffect(McpScheduledMutationReceipt)(
+          created.structuredContent,
+        );
+        const entered = yield* Deferred.make<void>(),
+          release = yield* Deferred.make<void>();
+        const actual = node.authority.checkTarget;
+        const observer = vi.spyOn(node.authority, "checkTarget").mockImplementation((...args) =>
+          Effect.gen(function* () {
+            yield* actual(...args);
+            if ((yield* ScheduleMutation.CurrentMutation) !== undefined) {
+              yield* Deferred.succeed(entered, undefined);
+              yield* Deferred.await(release);
+            }
+          }),
+        );
+        const pending = yield* nativeCall(node, parent, "update_scheduled_task", {
+          scheduledTaskId: receipt.scheduledTaskId,
+          title: "Must not overwrite",
+          clientRequestId: "fence382-update",
+        }).pipe(Effect.forkScoped);
+        yield* Deferred.await(entered);
+        const current = (yield* node.scheduled.list()).tasks.find(
+          (t) => t.id === receipt.scheduledTaskId,
+        )!;
+        yield* node.scheduled.upsert({ ...current, runtimeMode: "approval-required" });
+        yield* Deferred.succeed(release, undefined);
+        const refused = yield* Fiber.join(pending).pipe(
+          Effect.ensuring(Effect.sync(() => observer.mockRestore())),
+        );
+        expect(refused.isError, json(refused)).toBe(true);
+        expect(json(refused)).toContain("binding changed");
+        expect(
+          (yield* node.scheduled.list()).tasks.find((t) => t.id === receipt.scheduledTaskId),
+        ).toMatchObject({ title: "Original title", runtimeMode: "approval-required" });
+        const sql = Context.get(node.database, SqlClient.SqlClient);
+        expect(yield* sql`SELECT * FROM scheduled_mutation_receipts`).toHaveLength(1);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30000,
+);
+
+it.live(
+  "Grok382-G1: owner-proved preview nondelivery leaves the same key retryable",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf("nondelivery382", "Nondelivery", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const parent = ThreadId.make("nondelivery382-parent");
+        yield* seedParent(node, parent);
+        let clicks = 0;
+        const connect = (clientId: string) =>
+          Effect.gen(function* () {
+            const connected = yield* Deferred.make<void>();
+            yield* Stream.runForEach(
+              yield* node.browser.connect({ clientId, environmentId: node.environmentId }),
+              (event) =>
+                event.type === "connected"
+                  ? Deferred.succeed(connected, undefined)
+                  : Effect.gen(function* () {
+                      if (event.request.operation === "click") clicks++;
+                      yield* node.browser.respond({
+                        clientId,
+                        connectionId: event.connectionId,
+                        requestId: event.request.requestId,
+                        ok: true,
+                        result:
+                          event.request.operation === "status"
+                            ? {
+                                available: true,
+                                visible: true,
+                                tabId: null,
+                                url: null,
+                                title: null,
+                                loading: false,
+                              }
+                            : {},
+                      });
+                    }),
+            ).pipe(Effect.forkScoped);
+            yield* Deferred.await(connected);
+          });
+        yield* connect("before-closure");
+        const originalOffer = (yield* Effect.promise(() =>
+          vi.importActual<typeof import("effect/Queue")>("effect/Queue"),
+        )).offer;
+        let closed = false;
+        const closeFirstAction: typeof Queue.offer = dual(
+          2,
+          <A, E>(queue: Queue.Enqueue<A, E>, value: A) => {
+            if (
+              !closed &&
+              typeof value === "object" &&
+              value !== null &&
+              "type" in value &&
+              value.type === "request" &&
+              "request" in value &&
+              typeof value.request === "object" &&
+              value.request !== null &&
+              "operation" in value.request &&
+              value.request.operation === "click"
+            ) {
+              closed = true;
+              // Fault only the actual external delivery queue; do not fake its result.
+              Queue.shutdownUnsafe(queue);
+            }
+            return originalOffer(queue, value);
+          },
+        );
+        const delivery = vi.spyOn(Queue, "offer").mockImplementation(closeFirstAction);
+        const input = {
+          locator: "role=button[name='Send']",
+          clientRequestId: "nondelivery382-click",
+        };
+        const failed = yield* nativeCall(node, parent, "preview_click", input).pipe(
+          Effect.ensuring(Effect.sync(() => delivery.mockRestore())),
+        );
+        expect(closed).toBe(true);
+        expect(failed.isError).toBe(true);
+        expect(json(failed)).not.toContain("outcome_unknown");
+        expect(clicks).toBe(0);
+        const sql = Context.get(node.database, SqlClient.SqlClient);
+        expect(
+          yield* sql<{
+            state: string;
+            attempt_id: string | null;
+          }>`SELECT state,attempt_id FROM mcp_request_receipts`,
+        ).toEqual([{ state: "bound", attempt_id: null }]);
+        const active = { ...node, ...(yield* node.restartSchedulerTransport) };
+        yield* connect("after-closure");
+        const accepted = yield* nativeCall(active, parent, "preview_click", input);
+        expect(accepted.isError, json(accepted)).not.toBe(true);
+        const replay = yield* nativeCall(active, parent, "preview_click", input);
+        expect(replay.structuredContent).toEqual(accepted.structuredContent);
+        expect(clicks).toBe(1);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30000,
+);
+
+it.live.each(["reserve", "discard"] as const)(
+  "Grok382-G2: registered discard and native claim retain the %s winner",
+  (winner) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf(`discard-race382-${winner}`, "Discard race", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const parent = ThreadId.make(`discard-race382-${winner}`);
+        yield* seedParent(node, parent);
+        const metadata = {
+          type: "file" as const,
+          name: "race.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 4,
+        };
+        const prepared = yield* nativeCall(node, parent, "t3_attachment_prepare_upload", {
+          upload: metadata,
+          digest: "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a",
+          clientRequestId: "race382-upload",
+        });
+        expect(prepared.isError, json(prepared)).not.toBe(true);
+        const issued = yield* Schema.decodeUnknownEffect(PeerAttachmentUploadResult)(
+          prepared.structuredContent,
+        );
+        const http = yield* HttpClient.HttpClient;
+        expect(
+          (yield* http.execute(
+            HttpClientRequest.post(`${node.url}${issued.relativeUrl}`).pipe(
+              HttpClientRequest.setBody(HttpBody.uint8Array(new Uint8Array([1, 2, 3, 4]))),
+            ),
+          )).status,
+        ).toBe(204);
+        const attachment = { ...metadata, id: issued.attachmentId };
+        const staging = Option.getOrThrow(
+          yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging).pipe(
+            Effect.provide(Layer.succeedContext(node.requestContext)),
+          ),
+        );
+        const entered = yield* Deferred.make<void>(),
+          release = yield* Deferred.make<void>();
+        const file = resolveAttachmentPathById({
+          attachmentsDir: node.config.attachmentsDir,
+          attachmentId: attachment.id,
+        })!;
+        const fs = yield* FileSystem.FileSystem;
+        if (winner === "reserve") {
+          const actual = staging.discard;
+          const paused = vi
+            .spyOn(staging, "discard")
+            .mockImplementation((...args) =>
+              Deferred.succeed(entered, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+                Effect.andThen(actual(...args)),
+              ),
+            );
+          const pending = yield* nativeCall(node, parent, "t3_attachment_discard", {
+            attachmentId: attachment.id,
+            clientRequestId: "race382-discard",
+          }).pipe(Effect.forkScoped);
+          yield* Deferred.await(entered);
+          yield* staging.reserve(
+            caller(node, parent),
+            "race382-native-command",
+            parent,
+            attachment,
+          );
+          yield* Deferred.succeed(release, undefined);
+          const refused = yield* Fiber.join(pending).pipe(
+            Effect.ensuring(Effect.sync(() => paused.mockRestore())),
+          );
+          expect(refused.isError).toBe(true);
+          expect(Array.from(yield* fs.readFile(file))).toEqual([1, 2, 3, 4]);
+          const claimed = yield* AttachmentClaims.claimPendingAttachments({
+            commandId: "race382-native-command",
+            threadId: parent,
+            attachments: [attachment],
+          }).pipe(
+            Effect.provideService(Invocation.McpInvocationContext, caller(node, parent)),
+            Effect.provide(
+              Layer.mergeAll(
+                Layer.succeedContext(node.requestContext),
+                Layer.succeed(Config.ServerConfig, node.config),
+              ),
+            ),
+          );
+          const deliveredFile = resolveAttachmentPathById({
+            attachmentsDir: node.config.attachmentsDir,
+            attachmentId: claimed.attachments[0]!.id,
+          })!;
+          expect(Array.from(yield* fs.readFile(deliveredFile))).toEqual([1, 2, 3, 4]);
+          yield* node.threads.sendToThread({
+            projectId: node.project.id,
+            commandId: CommandId.make("race382-native-command"),
+            threadId: parent,
+            messageId: MessageId.make("race382-message"),
+            text: "Reserved original bytes",
+            attachments: claimed.attachments,
+            mode: "queue",
+            modelSelection: selection,
+            createdBy: "agent",
+            creationSource: "mcp",
+          });
+          const sql = Context.get(node.database, SqlClient.SqlClient);
+          expect(
+            yield* sql`SELECT status FROM orchestration_command_receipts WHERE command_id='race382-native-command'`,
+          ).toEqual([{ status: "accepted" }]);
+        } else {
+          const actual = staging.bindConsumption;
+          const paused = vi
+            .spyOn(staging, "bindConsumption")
+            .mockImplementation((...args) =>
+              Deferred.succeed(entered, undefined).pipe(
+                Effect.andThen(Deferred.await(release)),
+                Effect.andThen(actual(...args)),
+              ),
+            );
+          const pending = yield* nativeCall(node, parent, "t3_thread_send_attachments", {
+            threadId: parent,
+            message: "Must not accept discarded bytes",
+            attachments: [attachment],
+            clientRequestId: "race382-send",
+          }).pipe(Effect.forkScoped);
+          yield* Deferred.await(entered);
+          const discarded = yield* nativeCall(node, parent, "t3_attachment_discard", {
+            attachmentId: attachment.id,
+            clientRequestId: "race382-discard",
+          });
+          expect(discarded.isError, json(discarded)).not.toBe(true);
+          yield* Deferred.succeed(release, undefined);
+          const refused = yield* Fiber.join(pending).pipe(
+            Effect.ensuring(Effect.sync(() => paused.mockRestore())),
+          );
+          expect(refused.isError).toBe(true);
+          expect(yield* fs.exists(file)).toBe(false);
+          expect(
+            (yield* node.threads.getThreadRecords(parent, ["messages"])).messages.filter(
+              (message) => message.text === "Must not accept discarded bytes",
+            ),
+          ).toHaveLength(0);
+        }
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30000,
+);
+
+it.live(
+  "Grok382-G1: native device pure refusals retry, but selection after host preparation stays unknown",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const options = {
+          productionKernel: true,
+          attachmentRequests: true,
+          preferencesOwner: true,
+          deviceOwner: true,
+        };
+        const node = yield* makeNode(
+          descriptorOf("device-preflight382", "Preflight", { peerAuthority: 1 }),
+          "disk",
+          options,
+        );
+        const parent = ThreadId.make("device-preflight382-parent");
+        yield* seedParent(node, parent);
+        const input = {
+          deviceId: "fixture-device382",
+          platform: "android",
+          clientRequestId: "device-preflight382-open",
+        };
+        yield* node.fixtureSettings.updateSettings({ enableDeviceSupport: false });
+        const disabled = yield* nativeCall(node, parent, "device_open", input);
+        expect(disabled.isError).toBe(true);
+        expect(json(disabled)).not.toContain("outcome_unknown");
+        yield* node.fixtureSettings.updateSettings({ enableDeviceSupport: true });
+        yield* Ref.set(node.devicePlatformAvailable, false);
+        const unsupported = yield* nativeCall(node, parent, "device_open", input);
+        expect(unsupported.isError).toBe(true);
+        expect(json(unsupported)).not.toContain("outcome_unknown");
+        expect(yield* Ref.get(node.deviceHostStarts)).toBe(0);
+        expect(yield* Ref.get(node.deviceAgentStarts)).toBe(0);
+        const sql = Context.get(node.database, SqlClient.SqlClient);
+        expect(yield* sql`SELECT state FROM mcp_request_receipts`).toEqual([{ state: "bound" }]);
+        yield* Ref.set(node.devicePlatformAvailable, true);
+        const accepted = yield* nativeCall(node, parent, "device_open", input);
+        expect(accepted.isError, json(accepted)).not.toBe(true);
+        const count = yield* Ref.get(node.deviceHostStarts);
+        expect((yield* nativeCall(node, parent, "device_open", input)).structuredContent).toEqual(
+          accepted.structuredContent,
+        );
+        expect(yield* Ref.get(node.deviceHostStarts)).toBe(count);
+        expect(yield* Ref.get(node.deviceAgentStarts)).toBe(1);
+        const other = yield* makeNode(
+          descriptorOf("device-selection382", "Selection", { peerAuthority: 1 }),
+          "disk",
+          options,
+        );
+        const otherParent = ThreadId.make("device-selection382-parent");
+        yield* seedParent(other, otherParent);
+        const missing = {
+          deviceId: "not-discovered",
+          platform: "android",
+          clientRequestId: "device-selection382-open",
+        };
+        const unknown = yield* nativeCall(other, otherParent, "device_open", missing);
+        expect(json(unknown)).toContain("outcome_unknown");
+        const fs = yield* FileSystem.FileSystem;
+        expect(
+          yield* fs.readFileString(`${other.config.stateDir}/fixture-device-host-started`),
+        ).toBe("Isolated native preparation footprint");
+        const prepared = yield* Ref.get(other.deviceHostStarts);
+        expect(prepared).toBeGreaterThan(0);
+        expect(yield* Ref.get(other.deviceAgentStarts)).toBe(0);
+        expect(json(yield* nativeCall(other, otherParent, "device_open", missing))).toContain(
+          "outcome_unknown",
+        );
+        expect(yield* Ref.get(other.deviceHostStarts)).toBe(prepared);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30000,
+);
+
+it.live(
+  "Grok382-G3: historical receipts survive deletion with current owner, generation and mode checks",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const options = { productionKernel: true, attachmentRequests: true };
+        const a = yield* makeNode(
+          descriptorOf("history-access382-a", "A", { peerAuthority: 1 }),
+          "disk",
+          options,
+        );
+        const b = yield* makeNode(
+          descriptorOf("history-access382-b", "B", { peerAuthority: 1 }),
+          "disk",
+          options,
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("history-access382-parent"),
+          other = ThreadId.make("history-access382-other");
+        yield* seedParent(a, parent);
+        yield* seedParent(a, other);
+        const create = {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          title: "Original",
+          prompt: "ISOLATED_G3_PRIVATE_PROMPT_382",
+          enabled: false,
+          schedule: { type: "interval" as const, everyMs: 3600000 },
+          clientRequestId: "history-access382-create",
+        };
+        const first = yield* nativeCall(a, parent, "schedule_task", create);
+        expect(first.isError, json(first)).not.toBe(true);
+        const receipt = yield* Schema.decodeUnknownEffect(McpScheduledMutationReceipt)(
+          first.structuredContent,
+        );
+        const edit = {
+          environmentId: b.environmentId,
+          scheduledTaskId: receipt.scheduledTaskId,
+          title: "Later",
+          clientRequestId: "history-access382-edit",
+        };
+        const edited = yield* nativeCall(a, parent, "update_scheduled_task", edit);
+        expect(edited.isError, json(edited)).not.toBe(true);
+        const remove = {
+          environmentId: b.environmentId,
+          scheduledTaskId: receipt.scheduledTaskId,
+          clientRequestId: "history-access382-delete",
+        };
+        const deleted = yield* nativeCall(a, parent, "delete_scheduled_task", remove);
+        expect(deleted.isError, json(deleted)).not.toBe(true);
+        const replay = () => nativeCall(a, parent, "schedule_task", create);
+        expect((yield* replay()).structuredContent).toEqual(first.structuredContent);
+        expect(
+          (yield* nativeCall(a, parent, "update_scheduled_task", edit)).structuredContent,
+        ).toEqual(edited.structuredContent);
+        expect(
+          (yield* nativeCall(a, parent, "delete_scheduled_task", remove)).structuredContent,
+        ).toEqual(deleted.structuredContent);
+        expect((yield* nativeCall(a, other, "update_scheduled_task", edit)).isError).toBe(true);
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("history-access382-narrow"),
+          threadId: parent,
+          runtimeMode: "auto",
+        });
+        expect((yield* replay()).isError).toBe(true);
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("history-access382-restore"),
+          threadId: parent,
+          runtimeMode: "full-access",
+        });
+        expect((yield* replay()).structuredContent).toEqual(first.structuredContent);
+        // Native credentials always include orchestration. Exercise a genuinely
+        // narrowed server-side forwarding scope rather than an ignored issue option.
+        const deniedCapability = yield* Effect.result(
+          a.forwarding.call(
+            { ...caller(a, parent), capabilities: new Set(["preview"]) },
+            OrchestratorToolkit.tools.schedule_task,
+            b.environmentId,
+            create,
+          ),
+        );
+        expect(deniedCapability._tag).toBe("Failure");
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const evidence = yield* sql<{
+          request_id: string;
+          resource_json: string;
+        }>`SELECT request_id,resource_json FROM scheduled_mutation_receipts`;
+        expect(evidence).toHaveLength(3);
+        expect(json(evidence)).not.toContain(create.prompt);
+        expect((yield* b.scheduled.list()).tasks).toHaveLength(0);
+        // An imported confirmation lacks historical proof; never backfill from absence or replacement.
+        const original = evidence.find((row) => row.request_id === receipt.operationId)!;
+        yield* sql`UPDATE scheduled_mutation_receipts SET resource_json=NULL WHERE request_id=${original.request_id}`;
+        const unsupported = yield* replay();
+        expect(unsupported.isError).toBe(true);
+        expect(json(unsupported)).toContain("unsupported");
+        yield* sql`UPDATE scheduled_mutation_receipts SET resource_json='{}' WHERE request_id=${original.request_id}`;
+        expect((yield* replay()).isError).toBe(true);
+        yield* sql`UPDATE scheduled_mutation_receipts SET resource_json=${original.resource_json} WHERE request_id=${original.request_id}`;
+        expect((yield* replay()).structuredContent).toEqual(first.structuredContent);
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.auth.revokeSession(grant.sessionId);
+        expect((yield* replay()).isError).toBe(true);
+        yield* a.links.unlink(b.environmentId);
+        yield* linkTo(a.links, b, "full-access");
+        expect((yield* replay()).isError).toBe(true);
+        expect(yield* sql`SELECT request_id FROM scheduled_mutation_receipts`).toHaveLength(3);
+        expect((yield* b.scheduled.list()).tasks).toHaveLength(0);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  60000,
+);
+
+it.live(
+  "Grok382-G3: deleted native acceptance retains every original downstream contributor",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const options = { productionKernel: true, attachmentRequests: true };
+        const a = yield* makeNode(
+          descriptorOf("history-chain382-a", "A", { peerAuthority: 1 }),
+          "disk",
+          options,
+        );
+        const b = yield* makeNode(
+          descriptorOf("history-chain382-b", "B", { peerAuthority: 1 }),
+          "disk",
+          options,
+        );
+        const c = yield* makeNode(
+          descriptorOf("history-chain382-c", "C", { peerAuthority: 1 }),
+          "disk",
+          options,
+        );
+        yield* linkTo(a.links, b, "full-access");
+        yield* linkTo(b.links, c, "full-access");
+        const parent = ThreadId.make("history-chain382-parent");
+        yield* seedParent(a, parent);
+        yield* a.forwarding.call(
+          caller(a, parent),
+          ProjectToolkit.tools.t3_project_list,
+          b.environmentId,
+          {},
+        );
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({
+          ...grant,
+          onward: true,
+          resourceScope: "environment-resources",
+        });
+        const first = yield* delegate(a, b, parent, "history-chain382-a-b");
+        yield* activate(b, first.childId);
+        yield* b.forwarding.call(
+          caller(b, first.childId),
+          ProjectToolkit.tools.t3_project_list,
+          c.environmentId,
+          {},
+        );
+        const onwardGrant = (yield* c.authority.grants)[0]!;
+        yield* c.authority.setGrant({ ...onwardGrant, resourceScope: "environment-resources" });
+        const second = yield* delegate(b, c, first.childId, "history-chain382-b-c");
+        yield* activate(c, second.childId);
+        const create = {
+          title: "Original downstream acceptance",
+          prompt: "Isolated chain fixture",
+          enabled: false,
+          schedule: { type: "interval", everyMs: 3600000 },
+          clientRequestId: "history-chain382-create",
+        };
+        const accepted = yield* nativeCall(c, second.childId, "schedule_task", create);
+        expect(accepted.isError, json(accepted)).not.toBe(true);
+        const receipt = yield* Schema.decodeUnknownEffect(McpScheduledMutationReceipt)(
+          accepted.structuredContent,
+        );
+        const removed = yield* nativeCall(c, second.childId, "delete_scheduled_task", {
+          scheduledTaskId: receipt.scheduledTaskId,
+          clientRequestId: "history-chain382-delete",
+        });
+        expect(removed.isError, json(removed)).not.toBe(true);
+        expect(
+          (yield* nativeCall(c, second.childId, "schedule_task", create)).structuredContent,
+        ).toEqual(accepted.structuredContent);
+        const sql = Context.get(c.database, SqlClient.SqlClient);
+        const rows = yield* sql<{
+          resource_json: string;
+        }>`SELECT resource_json FROM scheduled_mutation_receipts`;
+        expect(rows).toHaveLength(2);
+        expect(rows.every((row) => row.resource_json.includes("authorityRecordId"))).toBe(true);
+        yield* b.auth.revokeSession(grant.sessionId);
+        expect((yield* nativeCall(c, second.childId, "schedule_task", create)).isError).toBe(true);
+        expect((yield* c.scheduled.list()).tasks).toHaveLength(0);
+        expect(yield* sql`SELECT request_id FROM scheduled_mutation_receipts`).toHaveLength(2);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  60000,
 );

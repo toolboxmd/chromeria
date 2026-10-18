@@ -322,3 +322,42 @@ it.effect("reserves a complete manifest atomically against an opposite-order riv
     }),
   ).pipe(Effect.provide(layer)),
 );
+
+it.effect("Grok R1: a concurrent discard deletes bytes only if it wins against reservation", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const staging = yield* Staging.AttachmentStaging;
+      const { claims, attachment } = yield* upload;
+      yield* Upload.storeAttachmentUpload(claims, bytes);
+      const results = yield* Effect.all(
+        [
+          Effect.result(staging.reserve(scope, "reserved-command", "destination", attachment)),
+          Effect.result(
+            staging
+              .discard(scope, attachment.id)
+              .pipe(Effect.andThen(Upload.deletePendingAttachment(attachment.id))),
+          ),
+        ],
+        { concurrency: "unbounded" },
+      );
+      expect(results.filter((result) => result._tag === "Success")).toHaveLength(1);
+      const sql = yield* SqlClient.SqlClient;
+      const row = (yield* sql<{
+        consumer: string;
+      }>`SELECT consumer FROM attachment_staging WHERE id=${attachment.id}`)[0]!;
+      const file = resolveAttachmentPath({
+        attachmentsDir: (yield* Config.ServerConfig).attachmentsDir,
+        attachment,
+      })!;
+      const fs = yield* FileSystem.FileSystem;
+      if (row.consumer === "reserved-command") {
+        expect(results[1]._tag).toBe("Failure");
+        expect(Array.from(yield* fs.readFile(file))).toEqual([1, 2, 3, 4]);
+      } else {
+        expect(row.consumer).toBe("discarded");
+        expect(results[0]._tag).toBe("Failure");
+        expect(yield* fs.exists(file)).toBe(false);
+      }
+    }),
+  ).pipe(Effect.provide(layer)),
+);

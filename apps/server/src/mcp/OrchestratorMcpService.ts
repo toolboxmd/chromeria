@@ -1865,6 +1865,19 @@ const make = Effect.gen(function* () {
           ),
         )
       : scheduledTasks.mutationReceipt(request);
+  const scheduleReplay = (
+    scope: McpInvocationScope,
+    request: RequestReceipts.RequestIdentity,
+    projectId?: ProjectId,
+  ) =>
+    Option.isSome(peerAuthority)
+      ? peerAuthority.value.historicalScheduleReceipt(scope, request, projectId)
+      : Effect.fail(
+          failure(
+            "capability_denied",
+            "Historical scheduler authority is unavailable; automatic replay is unsupported.",
+          ),
+        );
   const scheduleRecheck = (scope: McpInvocationScope, taskId?: ScheduledTask["id"]) =>
     Effect.gen(function* () {
       const caller = yield* loadCaller(scope);
@@ -1892,19 +1905,10 @@ const make = Effect.gen(function* () {
         const project = yield* requireProject(projectId);
         const request = yield* scheduleRequest(scope);
         if (request !== undefined) {
-          const prior = yield* scheduleReceipt(request);
-          if (Option.isSome(prior)) {
-            const current = yield* loadScheduledTask(prior.value.scheduledTaskId, limits);
-            yield* assertSameLink({ scope, caller: parent?.thread }, current);
-            yield* assertLiveCallerForOtherProject(scope, parent, current.projectId);
-            if (current.projectId !== projectId)
-              return yield* failure(
-                "capability_denied",
-                "The historical schedule belongs to its original project.",
-              );
-            return prior.value;
-          }
+          const prior = yield* scheduleReplay(scope, request, projectId);
+          if (Option.isSome(prior)) return prior.value;
         }
+
         // Binding means "wake this thread", which only a thread caller in that project has.
         const bindToCurrentThread =
           input.bindToCurrentThread ??
@@ -2028,14 +2032,14 @@ const make = Effect.gen(function* () {
     updateScheduledTask: (scope, input) =>
       Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope);
+        const request = yield* scheduleRequest(scope);
+        if (request !== undefined) {
+          const prior = yield* scheduleReplay(scope, request);
+          if (Option.isSome(prior)) return prior.value;
+        }
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
         yield* assertSameLink({ scope, caller: parent?.thread }, existing);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
-        const request = yield* scheduleRequest(scope);
-        if (request !== undefined) {
-          const prior = yield* scheduleReceipt(request);
-          if (Option.isSome(prior)) return prior.value;
-        }
         if (
           input.bindToCurrentThread === true &&
           (parent === undefined || parent.thread.projectId !== existing.projectId)
@@ -2118,14 +2122,14 @@ const make = Effect.gen(function* () {
     deleteScheduledTask: (scope, input) =>
       Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope);
+        const request = yield* scheduleRequest(scope);
+        if (request !== undefined) {
+          const prior = yield* scheduleReplay(scope, request);
+          if (Option.isSome(prior)) return prior.value;
+        }
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
         yield* assertSameLink({ scope, caller: parent?.thread }, existing);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
-        const request = yield* scheduleRequest(scope);
-        if (request !== undefined) {
-          const prior = yield* scheduleReceipt(request);
-          if (Option.isSome(prior)) return prior.value;
-        }
         yield* forkTasks
           .delete(
             { existing, parent },

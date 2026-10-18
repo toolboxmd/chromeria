@@ -7,6 +7,7 @@ import {
   type ModelSelection,
   type ScheduledTask,
   type ScheduledTaskOutcomeCheckUpdate,
+  type OrchestratorMcpUpdateScheduledTaskInput,
   type ScheduledTaskSchedule,
   type ScheduledTaskUpsertInput,
   type ScheduledTaskRunNowInput,
@@ -108,9 +109,7 @@ export class ScheduledTaskChecks extends Context.Service<
      */
     readonly update: <A, E, R>(
       hook: {
-        readonly input: ScheduledTaskOutcomeCheckUpdate & {
-          readonly schedule?: { readonly type: ScheduledTaskSchedule["type"] } | undefined;
-        };
+        readonly input: OrchestratorMcpUpdateScheduledTaskInput;
         readonly existing: ScheduledTask;
         readonly threadId: ThreadId | null;
         readonly parent: Caller;
@@ -778,18 +777,58 @@ const checksLayer = Layer.effect(
                 existing.id,
                 sql.withTransaction(
                   Effect.gen(function* () {
+                    // Merge the caller's delta against current state under this same
+                    // task lock/transaction, never the handler's earlier projection.
+                    const current = (yield* inner.list()).tasks.find(
+                      (task) => task.id === existing.id,
+                    );
+                    if (current === undefined)
+                      return yield* new ScheduledTaskError({
+                        message: "Scheduled task not found.",
+                        taskId: existing.id,
+                      });
+                    if (
+                      fields.bindToCurrentThread === true &&
+                      existing.projectId !== current.projectId
+                    )
+                      return yield* new ScheduledTaskError({
+                        message: "The schedule project changed before rebinding.",
+                        taskId: current.id,
+                      });
+                    const boundThread =
+                      fields.bindToCurrentThread === undefined ? current.threadId : threadId;
+                    const updated: ScheduledTaskUpsertInput = {
+                      ...input,
+                      bare: fields.bare ?? current.bare,
+                      title: fields.title ?? current.title,
+                      prompt: fields.prompt ?? current.prompt,
+                      enabled: fields.enabled ?? current.enabled,
+                      schedule: fields.schedule ?? current.schedule,
+                      projectId: current.projectId,
+                      threadId: boundThread,
+                      workspaceStrategy:
+                        fields.bindToCurrentThread === undefined
+                          ? current.workspaceStrategy
+                          : input.workspaceStrategy,
+                      modelSelection: current.modelSelection,
+                      runtimeMode: current.runtimeMode,
+                      interactionMode: current.interactionMode,
+                      createdBy: current.createdBy,
+                      creationSource: current.creationSource,
+                      requireExisting: true,
+                    };
                     yield* withSql(
                       runs.saveUnlocked({
-                        taskId: existing.id,
-                        projectId: existing.projectId,
-                        threadId,
-                        schedule: fields.schedule ?? existing.schedule,
+                        taskId: current.id,
+                        projectId: current.projectId,
+                        threadId: boundThread,
+                        schedule: updated.schedule,
                         fields,
                         actor: parent?.thread.id ?? "agent",
                         actorThreadId: parent?.thread.id ?? null,
                       }),
-                    ).pipe(Effect.mapError(toToolError(existing.id)));
-                    return yield* save(input);
+                    ).pipe(Effect.mapError(toToolError(current.id)));
+                    return yield* save(updated);
                   }),
                 ),
                 save(input),
