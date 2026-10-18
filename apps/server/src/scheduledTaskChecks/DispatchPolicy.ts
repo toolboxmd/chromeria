@@ -15,7 +15,11 @@ import * as Effect from "effect/Effect";
 export type ScheduledTaskDispatchDecision =
   | { readonly _tag: "upstream" }
   | { readonly _tag: "skip" }
-  | { readonly _tag: "fork"; readonly dispatch: Effect.Effect<void, ScheduledTaskDispatchFailed> };
+  | {
+      readonly _tag: "fork";
+      readonly dispatch: Effect.Effect<void, ScheduledTaskDispatchFailed>;
+      readonly manualReceipt?: { readonly runId: string; readonly requestId: string };
+    };
 
 export class ScheduledTaskDispatchRefused extends Data.TaggedError("ScheduledTaskDispatchRefused")<{
   readonly message: string;
@@ -30,6 +34,7 @@ export interface ScheduledTaskDispatchPolicyShape {
     readonly task: ScheduledTask;
     readonly trigger: "scheduled" | "manual" | "webhook";
     readonly startedAt: DateTime.DateTime;
+    readonly manualRequestId?: string;
   }) => Effect.Effect<ScheduledTaskDispatchDecision, ScheduledTaskDispatchRefused>;
 }
 

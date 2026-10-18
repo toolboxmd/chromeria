@@ -1,3 +1,4 @@
+import { ownedSqlMutation } from "../mcp/McpRequestReceipts.ts";
 import {
   type IssueKey,
   type IssueLinkChange,
@@ -583,33 +584,37 @@ const make = Effect.gen(function* () {
     readonly source: IssueLinkWriteSource;
   }) {
     const target = yield* resolveTarget(input.threadId, input.target);
-    const { url, ...key } = target;
-    const touched: IssueKey[] = [];
-    if (input.source === "started") {
-      // A draft starts from one Issue. A reused draft drops the Issue it was started from before.
-      const previous = yield* sql<StoredRow>`
+    return yield* ownedSqlMutation(
+      Effect.gen(function* () {
+        const { url, ...key } = target;
+        const touched: IssueKey[] = [];
+        if (input.source === "started") {
+          // A draft starts from one Issue. A reused draft drops the Issue it was started from before.
+          const previous = yield* sql<StoredRow>`
         DELETE FROM fork_thread_issue_links
         WHERE thread_id = ${input.threadId} AND source = 'started'
           AND NOT (host = ${key.host} AND repository = ${key.repository} AND number = ${key.number})
         RETURNING host, repository, number, url, source, linked_at AS "linkedAt"
       `;
-      touched.push(...previous.map((row) => storedOf(row).key));
-    }
-    const alreadyLinked = (yield* currentLinks(input.threadId)).some((current) =>
-      issueKeysEqual(current, key),
-    );
-    if (!alreadyLinked) {
-      const linkedAt = DateTime.formatIso(yield* DateTime.now);
-      yield* sql`
+          touched.push(...previous.map((row) => storedOf(row).key));
+        }
+        const alreadyLinked = (yield* currentLinks(input.threadId)).some((current) =>
+          issueKeysEqual(current, key),
+        );
+        if (!alreadyLinked) {
+          const linkedAt = DateTime.formatIso(yield* DateTime.now);
+          yield* sql`
         INSERT OR REPLACE INTO fork_thread_issue_links
           (thread_id, host, repository, number, url, source, linked_at)
         VALUES (${input.threadId}, ${key.host}, ${key.repository}, ${key.number},
           ${url}, ${input.source}, ${linkedAt})
       `;
-      touched.push(key);
-    }
-    if (touched.length > 0) yield* notify(input.threadId, touched);
-    return { link: key, alreadyLinked };
+          touched.push(key);
+        }
+        if (touched.length > 0) yield* notify(input.threadId, touched);
+        return { link: key, alreadyLinked };
+      }),
+    );
   }, failWith("Could not link the Issue."));
 
   const unlink = Effect.fn("IssueLinks.unlink")(function* (input: {
@@ -617,20 +622,24 @@ const make = Effect.gen(function* () {
     readonly issue: IssueKey;
   }) {
     const issue = normalizeIssueKey(input.issue);
-    const wasLinked = (yield* currentLinks(input.threadId)).some((current) =>
-      issueKeysEqual(current, issue),
-    );
-    // Always a tombstone, not a delete, and written even when nothing looked linked: a branch or
-    // closing reference (possibly unreadable right now) would otherwise put the link back.
-    const linkedAt = DateTime.formatIso(yield* DateTime.now);
-    yield* sql`
+    return yield* ownedSqlMutation(
+      Effect.gen(function* () {
+        const wasLinked = (yield* currentLinks(input.threadId)).some((current) =>
+          issueKeysEqual(current, issue),
+        );
+        // Always a tombstone, not a delete, and written even when nothing looked linked: a branch or
+        // closing reference (possibly unreadable right now) would otherwise put the link back.
+        const linkedAt = DateTime.formatIso(yield* DateTime.now);
+        yield* sql`
       INSERT OR REPLACE INTO fork_thread_issue_links
         (thread_id, host, repository, number, url, source, linked_at)
       VALUES (${input.threadId}, ${issue.host}, ${issue.repository}, ${issue.number},
         ${issueUrlFor(issue)}, 'dismissed', ${linkedAt})
     `;
-    yield* notify(input.threadId, [issue]);
-    return { wasLinked };
+        yield* notify(input.threadId, [issue]);
+        return { wasLinked };
+      }),
+    );
   }, failWith("Could not unlink the Issue."));
 
   return IssueLinks.of({

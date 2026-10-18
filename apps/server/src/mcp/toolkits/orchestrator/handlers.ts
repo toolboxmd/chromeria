@@ -48,12 +48,14 @@ const handlers = {
       return yield* service.delegateTaskOrRunGroup(scope, input);
     }),
   ),
-  task_status: McpToolAccess.actsAsCaller(({ taskId }) =>
-    Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.McpInvocationContext;
-      const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-      return yield* service.taskOrRunGroupStatus(scope, taskId);
-    }),
+  task_status: McpToolAccess.actsAsCaller(
+    ({ taskId }) =>
+      Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        return yield* service.taskOrRunGroupStatus(scope, taskId);
+      }),
+    "read",
   ),
   task_cancel: McpToolAccess.actsAsCaller((input) =>
     Effect.gen(function* () {

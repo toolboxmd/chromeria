@@ -1,4 +1,5 @@
 import { LEGACY_EXECUTION_PURPOSE, purposeScopeOfSavedIntent } from "@t3tools/contracts";
+import * as MutationReceipts from "../scheduledTasks/mutationReceipts.ts";
 import { readScheduledBare } from "../scheduledTasks/bareState.ts";
 import {
   CommandId,
@@ -493,7 +494,12 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
       ),
     );
 
-  const newRun = (state: CheckState, task: ScheduledTask, slot: string): CheckedRun => ({
+  const newRun = (
+    state: CheckState,
+    task: ScheduledTask,
+    slot: string,
+    manualRequestId?: string,
+  ): CheckedRun => ({
     purpose:
       task.purposeIntent === undefined
         ? LEGACY_EXECUTION_PURPOSE
@@ -502,10 +508,21 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
             scope: purposeScopeOfSavedIntent(task.purposeIntent),
             provenance: { type: "schedule", scheduledTaskId: task.id },
           },
-    id: `${task.id}:${slot}`,
+
+    id:
+      manualRequestId === undefined ? `${task.id}:${slot}` : `${task.id}:manual:${manualRequestId}`,
+    ...(manualRequestId === undefined ? {} : { manualRequestId }),
     slot,
     checkVersion: state.kind === "agent" ? activeCheck(state).version : null,
-    threadId: state.kind === "agent" ? runThreadId(task, `${task.id}:${slot}`) : null,
+    threadId:
+      state.kind === "agent"
+        ? runThreadId(
+            task,
+            manualRequestId === undefined
+              ? `${task.id}:${slot}`
+              : `${task.id}:manual:${manualRequestId}`,
+          )
+        : null,
     checkCwd: null,
     stage: "running",
     attempt: 0,
@@ -520,6 +537,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
     readonly task: ScheduledTask;
     readonly trigger: "scheduled" | "manual" | "webhook";
     readonly startedAt: DateTime.DateTime;
+    readonly manualRequestId?: string;
   }): Effect.Effect<
     ScheduledTaskDispatchDecision,
     ScheduledTaskDispatchRefused,
@@ -535,7 +553,13 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
             // The dispatch runs later, after upstream marks the task running.
             const fork = (
               dispatch: Effect.Effect<void, { readonly message: string }, SqlClient.SqlClient>,
+              run?: CheckedRun,
             ): ScheduledTaskDispatchDecision => ({
+              ...(input.manualRequestId === undefined || run === undefined
+                ? {}
+                : {
+                    manualReceipt: { runId: run.id, requestId: input.manualRequestId },
+                  }),
               _tag: "fork",
               dispatch: dispatch.pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
@@ -546,6 +570,14 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
             });
             const state = yield* readCheckState(task.id);
             if (state === null) return upstreamDecision;
+            // A retry observes its original admitted job. It never resumes a
+            // different needs-you run or starts another command/provider action.
+            if (input.manualRequestId !== undefined) {
+              const original = state.runs.find(
+                (run) => run.manualRequestId === input.manualRequestId,
+              );
+              if (original !== undefined) return fork(Effect.void, original);
+            }
             // An edit committed since upstream read this task: act on the stored definition
             // instead. A scheduled fire is not consumed, so the next poll fires it fresh.
             if (!(yield* isCurrentTask(task))) {
@@ -594,9 +626,10 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
                 observation.threadMissing,
               );
               return resumed._tag === "refused"
-                ? fork(Effect.fail(resumed.error))
+                ? fork(Effect.fail(resumed.error), current)
                 : fork(
                     deliverAdmitted(task.id, resumed.run.id, resumed.send, admit(resumed.run.id)),
+                    resumed.run,
                   );
             }
             // A scheduled fork trigger is identified by its slot, so a replayed fire is the same run.
@@ -608,17 +641,20 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
               }
               return skipDecision;
             }
-            const run = newRun(state, task, slot);
+            const run = newRun(state, task, slot, input.manualRequestId);
             const withRun: CheckState = { ...state, runs: [...state.runs, run] };
             if (state.kind === "command") {
               // Stored as running before anything is spawned: a restart never runs it twice.
               yield* store(state, withRun);
-              return fork(launchCommand(task, run, state.command!, admit(run.id)));
+              return fork(launchCommand(task, run, state.command!, admit(run.id)), run);
             }
             const started = yield* startSend(task, withRun, run, now);
             return started._tag === "refused"
-              ? fork(Effect.fail(started.error))
-              : fork(deliverAdmitted(task.id, started.run.id, started.send, admit(started.run.id)));
+              ? fork(Effect.fail(started.error), run)
+              : fork(
+                  deliverAdmitted(task.id, started.run.id, started.send, admit(started.run.id)),
+                  started.run,
+                );
           }),
         ).pipe(
           Effect.catchTags({
@@ -943,24 +979,28 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
   ) =>
     locked(
       taskId,
-      sql
-        .withTransaction(
-          Effect.gen(function* () {
-            const state = yield* readCheckState(taskId);
-            yield* judgedGuard(state, actorThreadId);
-            const deleted = yield* deleteUpstream;
-            yield* deleteCheckState(taskId);
-            yield* deps.changed;
-            return { deleted, runs: state?.runs ?? [] };
-          }),
-        )
-        .pipe(
-          // Once committed, its runs' admissions end: no admitted send, command or result follows.
-          Effect.map(({ deleted, runs }) => {
-            for (const run of runs) admissions.delete(run.id);
-            return deleted;
-          }),
-        ),
+      MutationReceipts.accept(
+        taskId,
+        sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const state = yield* readCheckState(taskId);
+              yield* judgedGuard(state, actorThreadId);
+              const deleted = yield* deleteUpstream;
+              yield* deleteCheckState(taskId);
+              yield* deps.changed;
+              return { deleted, runs: state?.runs ?? [] };
+            }),
+          )
+          .pipe(
+            // Once committed, its runs' admissions end: no admitted send, command or result follows.
+            Effect.map(({ deleted, runs }) => {
+              for (const run of runs) admissions.delete(run.id);
+              return deleted;
+            }),
+          ),
+        deleteUpstream,
+      ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
     );
 
   /** Completes when every command this engine started has recorded its result. */

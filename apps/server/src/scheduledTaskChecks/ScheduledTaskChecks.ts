@@ -1,3 +1,4 @@
+import * as MutationReceipts from "../scheduledTasks/mutationReceipts.ts";
 import {
   isForkScheduledTaskSchedule,
   OrchestrationV2RunJson,
@@ -6,8 +7,12 @@ import {
   type ModelSelection,
   type ScheduledTask,
   type ScheduledTaskOutcomeCheckUpdate,
+  type OrchestratorMcpUpdateScheduledTaskInput,
   type ScheduledTaskSchedule,
   type ScheduledTaskUpsertInput,
+  type ScheduledTaskRunNowInput,
+  type ScheduledTaskRunNowResult,
+  OrchestratorMcpFailure,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -94,7 +99,9 @@ export class ScheduledTaskChecks extends Context.Service<
         readonly scope: { readonly requestNamespace: string };
       },
       save: (input: ScheduledTaskUpsertInput) => Effect.Effect<A, E, R>,
-    ) => (input: ScheduledTaskUpsertInput) => Effect.Effect<A, E | ScheduledTaskError, R>;
+    ) => (
+      input: ScheduledTaskUpsertInput,
+    ) => Effect.Effect<A, E | ScheduledTaskError | OrchestratorMcpFailure, R>;
     /**
      * Wraps `update_scheduled_task`'s save the same way, under the task's lock
      * so no fire sees the new fork fields with the old definition. Refuses a
@@ -102,15 +109,15 @@ export class ScheduledTaskChecks extends Context.Service<
      */
     readonly update: <A, E, R>(
       hook: {
-        readonly input: ScheduledTaskOutcomeCheckUpdate & {
-          readonly schedule?: { readonly type: ScheduledTaskSchedule["type"] } | undefined;
-        };
+        readonly input: OrchestratorMcpUpdateScheduledTaskInput;
         readonly existing: ScheduledTask;
         readonly threadId: ThreadId | null;
         readonly parent: Caller;
       },
       save: (input: ScheduledTaskUpsertInput) => Effect.Effect<A, E, R>,
-    ) => (input: ScheduledTaskUpsertInput) => Effect.Effect<A, E | ScheduledTaskError, R>;
+    ) => (
+      input: ScheduledTaskUpsertInput,
+    ) => Effect.Effect<A, E | ScheduledTaskError | OrchestratorMcpFailure, R>;
     /**
      * Wraps `delete_scheduled_task`'s delete: a judged thread cannot delete its
      * own task. The guard runs inside the decorated delete, under the task's lock.
@@ -118,7 +125,7 @@ export class ScheduledTaskChecks extends Context.Service<
     readonly delete: <I, A, E, R>(
       hook: { readonly existing: ScheduledTask; readonly parent: Caller },
       remove: (input: I) => Effect.Effect<A, E, R>,
-    ) => (input: I) => Effect.Effect<A, E | ScheduledTaskError, R>;
+    ) => (input: I) => Effect.Effect<A, E | ScheduledTaskError | OrchestratorMcpFailure, R>;
     /** Advances every unfinished fork run one step; the shared scheduler runs it each tick. */
     readonly reconcile: Effect.Effect<void, ScheduledTaskError>;
   }
@@ -566,6 +573,24 @@ const decoratedLayer = Layer.effect(
     const refused = (message: string, taskId: ScheduledTaskId | undefined) =>
       new ScheduledTaskError({ message, ...(taskId === undefined ? {} : { taskId }) });
 
+    function runNow(
+      input: ScheduledTaskRunNowInput,
+    ): Effect.Effect<ScheduledTaskRunNowResult, ScheduledTaskError>;
+    function runNow(
+      input: ScheduledTaskRunNowInput,
+      options: ScheduledTaskService.ManualOptions,
+    ): Effect.Effect<ScheduledTaskRunNowResult, ScheduledTaskError | OrchestratorMcpFailure>;
+    function runNow(input: ScheduledTaskRunNowInput, options?: ScheduledTaskService.ManualOptions) {
+      // A keyed result is the original owner's historical receipt. Decorating it
+      // with current fork state would silently change that accepted intent.
+      return options === undefined
+        ? inner.runNow(input).pipe(
+            Effect.flatMap((result) => attach(result.task)),
+            Effect.map((task) => ({ task })),
+          )
+        : inner.runNow(input, options);
+    }
+
     return ScheduledTaskService.ScheduledTaskService.of({
       ...inner,
       list: () => inner.list().pipe(Effect.flatMap(attachList)),
@@ -579,6 +604,16 @@ const decoratedLayer = Layer.effect(
         ),
       upsert: (input, options) =>
         Effect.gen(function* () {
+          const mutation = yield* MutationReceipts.CurrentMutation;
+          if (
+            mutation !== undefined &&
+            Option.isSome(
+              yield* MutationReceipts.confirmed(mutation.request).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              ),
+            )
+          )
+            return yield* inner.upsert(input, options);
           const now = yield* Clock.currentTimeMillis;
           const { tasks } = yield* inner.list();
           const existing =
@@ -613,7 +648,12 @@ const decoratedLayer = Layer.effect(
           }
           const result = yield* inner.upsert({ ...input, schedule }, options);
           return { task: yield* attach(result.task) };
-        }),
+        }).pipe(
+          Effect.catchTags({
+            OrchestratorMcpFailure: (cause) =>
+              Effect.fail(new ScheduledTaskError({ message: cause.message, cause })),
+          }),
+        ),
       setEnabled: (input) =>
         inner.setEnabled(input).pipe(
           Effect.flatMap((result) => attach(result.task)),
@@ -622,19 +662,27 @@ const decoratedLayer = Layer.effect(
       // The guard, upstream's delete and the fork state share the task's lock and one transaction.
       delete: (input) =>
         Effect.gen(function* () {
+          const mutation = yield* MutationReceipts.CurrentMutation;
+          if (
+            mutation !== undefined &&
+            Option.isSome(
+              yield* MutationReceipts.confirmed(mutation.request).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              ),
+            )
+          )
+            return { id: input.id };
           const actorThreadId = yield* ScheduledTaskDeleteActor;
           return yield* runs.removeTask(input.id, actorThreadId, inner.delete(input));
         }).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.mapError((error) =>
-            error._tag === "ScheduledTaskError" ? error : toTaskError(input.id)(error),
+            error._tag === "ScheduledTaskError"
+              ? error
+              : new ScheduledTaskError({ message: error.message, taskId: input.id, cause: error }),
           ),
         ),
-      runNow: (input) =>
-        inner.runNow(input).pipe(
-          Effect.flatMap((result) => attach(result.task)),
-          Effect.map((task) => ({ task })),
-        ),
+      runNow,
       rotateWebhookToken: (input) =>
         inner.rotateWebhookToken(input).pipe(
           Effect.flatMap((result) => attach(result.task)),
@@ -699,23 +747,27 @@ const checksLayer = Layer.effect(
             const id = ScheduledTaskId.make(`scheduled-task:${key}`);
             return yield* runs.withTaskLock(
               id,
-              sql.withTransaction(
-                Effect.gen(function* () {
-                  yield* withSql(
-                    runs.saveUnlocked({
-                      taskId: id,
-                      projectId,
-                      threadId:
-                        bindToCurrentThread && parent !== undefined ? parent.thread.id : null,
-                      schedule: fields.schedule,
-                      fields,
-                      actor: parent?.thread.id ?? "agent",
-                      actorThreadId: null,
-                    }),
-                  ).pipe(Effect.mapError(toToolError(id)));
-                  return yield* save({ ...input, id });
-                }),
-              ),
+              MutationReceipts.accept(
+                id,
+                sql.withTransaction(
+                  Effect.gen(function* () {
+                    yield* withSql(
+                      runs.saveUnlocked({
+                        taskId: id,
+                        projectId,
+                        threadId:
+                          bindToCurrentThread && parent !== undefined ? parent.thread.id : null,
+                        schedule: fields.schedule,
+                        fields,
+                        actor: parent?.thread.id ?? "agent",
+                        actorThreadId: null,
+                      }),
+                    ).pipe(Effect.mapError(toToolError(id)));
+                    return yield* save({ ...input, id });
+                  }),
+                ),
+                save({ ...input, id }),
+              ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
             );
           }).pipe(rethrowSql),
       update:
@@ -724,22 +776,66 @@ const checksLayer = Layer.effect(
           runs
             .withTaskLock(
               existing.id,
-              sql.withTransaction(
-                Effect.gen(function* () {
-                  yield* withSql(
-                    runs.saveUnlocked({
-                      taskId: existing.id,
-                      projectId: existing.projectId,
-                      threadId,
-                      schedule: fields.schedule ?? existing.schedule,
-                      fields,
-                      actor: parent?.thread.id ?? "agent",
-                      actorThreadId: parent?.thread.id ?? null,
-                    }),
-                  ).pipe(Effect.mapError(toToolError(existing.id)));
-                  return yield* save(input);
-                }),
-              ),
+              MutationReceipts.accept(
+                existing.id,
+                sql.withTransaction(
+                  Effect.gen(function* () {
+                    // Merge the caller's delta against current state under this same
+                    // task lock/transaction, never the handler's earlier projection.
+                    const current = (yield* inner.list()).tasks.find(
+                      (task) => task.id === existing.id,
+                    );
+                    if (current === undefined)
+                      return yield* new ScheduledTaskError({
+                        message: "Scheduled task not found.",
+                        taskId: existing.id,
+                      });
+                    if (
+                      fields.bindToCurrentThread === true &&
+                      existing.projectId !== current.projectId
+                    )
+                      return yield* new ScheduledTaskError({
+                        message: "The schedule project changed before rebinding.",
+                        taskId: current.id,
+                      });
+                    const boundThread =
+                      fields.bindToCurrentThread === undefined ? current.threadId : threadId;
+                    const updated: ScheduledTaskUpsertInput = {
+                      ...input,
+                      bare: fields.bare ?? current.bare,
+                      title: fields.title ?? current.title,
+                      prompt: fields.prompt ?? current.prompt,
+                      enabled: fields.enabled ?? current.enabled,
+                      schedule: fields.schedule ?? current.schedule,
+                      projectId: current.projectId,
+                      threadId: boundThread,
+                      workspaceStrategy:
+                        fields.bindToCurrentThread === undefined
+                          ? current.workspaceStrategy
+                          : input.workspaceStrategy,
+                      modelSelection: current.modelSelection,
+                      runtimeMode: current.runtimeMode,
+                      interactionMode: current.interactionMode,
+                      createdBy: current.createdBy,
+                      creationSource: current.creationSource,
+                      requireExisting: true,
+                    };
+                    yield* withSql(
+                      runs.saveUnlocked({
+                        taskId: current.id,
+                        projectId: current.projectId,
+                        threadId: boundThread,
+                        schedule: updated.schedule,
+                        fields,
+                        actor: parent?.thread.id ?? "agent",
+                        actorThreadId: parent?.thread.id ?? null,
+                      }),
+                    ).pipe(Effect.mapError(toToolError(current.id)));
+                    return yield* save(updated);
+                  }),
+                ),
+                save(input),
+              ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
             )
             .pipe(rethrowSql),
       delete:
