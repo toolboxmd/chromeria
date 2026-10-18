@@ -1639,7 +1639,8 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/pull/304",
     "https://github.com/toolboxmd/chromeria/pull/368",
     "https://github.com/toolboxmd/chromeria/pull/391",
-    "https://github.com/toolboxmd/chromeria/pull/410"
+    "https://github.com/toolboxmd/chromeria/pull/410",
+    "https://github.com/toolboxmd/chromeria/pull/416"
   ],
   "newFiles": [
     "packages/contracts/src/peerTask.ts",
