@@ -466,3 +466,6 @@ apps/server/src/preview/ServerBrowserContexts.ts
 # Legacy terminal-label boundaries (#345).
 packages/shared/src/composerContextLegacy.test.ts
 packages/shared/src/composerContextLegacy.ts
+
+# Launcher test fixture ownership (#157)
+apps/server/src/serviceLauncher.test.ts
