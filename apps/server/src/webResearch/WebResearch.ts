@@ -2,6 +2,7 @@
 import * as NodeCrypto from "node:crypto";
 import robotsParser from "robots-parser";
 import * as Cache from "effect/Cache";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -92,6 +93,16 @@ class PageExtractionError extends Schema.TaggedError<PageExtractionError>()("Pag
   cause: Schema.Defect(),
 }) {}
 
+class ReadFreshness extends Context.Service<
+  ReadFreshness,
+  { readonly previousCacheId: string | undefined; readonly maxAgeHours: number | undefined }
+>()("t3/webResearch/WebResearch/ReadFreshness") {}
+
+const isFresh = (page: CachedPage, maxAgeHours: number | undefined, now: number) =>
+  page.expiresAt > now &&
+  (maxAgeHours === undefined ||
+    (maxAgeHours > 0 && now - page.fetchedAt <= maxAgeHours * 3600_000));
+
 const make = Effect.gen(function* () {
   const http = yield* PublicHttp.PublicHttp;
   const cache = yield* PageCache.PageCache;
@@ -122,24 +133,45 @@ const make = Effect.gen(function* () {
     return state;
   };
 
-  const request = Effect.fnUntraced(function* (url: URL, delay: Ref.Ref<number>) {
+  const request = Effect.fnUntraced(function* (
+    url: URL,
+    delay: Ref.Ref<number>,
+    budget: Ref.Ref<number>,
+  ) {
     const state = originFor(url.origin);
     const queuedAt = yield* Clock.currentTimeMillis;
     return yield* Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
-      if (state.blockedUntil > now)
+      if (state.blockedUntil > now) {
+        yield* Ref.update(delay, (ms) => ms + now - queuedAt);
         return yield* new ReadStopped({
           status: "challenge",
           httpStatus: null,
           retryAfterMs: state.blockedUntil - now,
         });
+      }
       const spacing = Math.max(0, state.nextStart - now);
       if (spacing) yield* Effect.sleep(spacing);
       const startedAt = yield* Clock.currentTimeMillis;
       yield* Ref.update(delay, (ms) => ms + startedAt - queuedAt);
       state.lastStart = startedAt;
       state.nextStart = startedAt + state.spacing;
-      const response = yield* http.get(url).pipe(Effect.timeout("10 seconds"));
+      const remaining = yield* Ref.get(budget);
+      if (remaining <= 0) return yield* new Cause.TimeoutError();
+      const activeStartedAt = yield* Clock.monotonicTimeNanos;
+      // Only active HTTP time consumes the fetch budget, never origin queue/spacing time.
+      const response = yield* http
+        .get(url)
+        .pipe(
+          Effect.timeout(Math.min(10_000, remaining)),
+          Effect.ensuring(
+            Clock.monotonicTimeNanos.pipe(
+              Effect.flatMap((finishedAt) =>
+                Ref.update(budget, (ms) => ms - Number(finishedAt - activeStartedAt) / 1_000_000),
+              ),
+            ),
+          ),
+        );
       const after = yield* Clock.currentTimeMillis;
       state.nextStart = Math.max(
         state.nextStart,
@@ -154,11 +186,12 @@ const make = Effect.gen(function* () {
     Effect.fnUntraced(function* (origin: string) {
       let url = new URL("/robots.txt", origin);
       const delay = yield* Ref.make(0);
+      const budget = yield* Ref.make(30_000);
       const visited = new Set<string>();
       for (let hop = 0; hop < 6; hop++) {
         if (visited.has(url.href)) break;
         visited.add(url.href);
-        const response = yield* request(url, delay);
+        const response = yield* request(url, delay, budget);
         if ([301, 302, 303, 307, 308].includes(response.status)) {
           const target = response.headers.location
             ? parseUrl(response.headers.location, url.href)
@@ -200,6 +233,7 @@ const make = Effect.gen(function* () {
 
   const fetchPage = Effect.fnUntraced(function* (original: URL) {
     const delay = yield* Ref.make(0);
+    const budget = yield* Ref.make(30_000);
     let finalUrl = original.href;
     let httpStatus: number | null = null;
     let retryAfterMs: number | null = null;
@@ -226,7 +260,7 @@ const make = Effect.gen(function* () {
           state.spacing = Math.max(3000, crawlDelay * 1000);
           state.nextStart = Math.max(state.nextStart, state.lastStart + state.spacing);
         }
-        const response = yield* request(url, delay);
+        const response = yield* request(url, delay, budget);
         httpStatus = response.status;
         const now = yield* Clock.currentTimeMillis;
         retryAfterMs = retryDelay(response.headers["retry-after"], now) || null;
@@ -257,8 +291,7 @@ const make = Effect.gen(function* () {
         const status = classify(page, response.status);
         if (page.refresh !== undefined && (status === "ok" || status === "thin")) {
           const target = parseUrl(page.refresh, url.href);
-          if (!target) return { status: "origin_error" as const, title: "", text: "" };
-          if (!visited.has(target.href)) {
+          if (target && !visited.has(target.href)) {
             url = target;
             continue;
           }
@@ -273,7 +306,6 @@ const make = Effect.gen(function* () {
       return { status: "origin_error" as const, title: "", text: "" };
     });
     const content = yield* fetch.pipe(
-      Effect.timeout("30 seconds"),
       Effect.catchTags({
         PublicNetworkBlockedError: () =>
           Effect.succeed({ status: "blocked_local" as const, title: "", text: "" }),
@@ -316,10 +348,22 @@ const make = Effect.gen(function* () {
 
   // Effect Cache owns pending work and cancels it only when all readers leave.
   // Zero TTL leaves completed-page freshness solely with the persistent cache.
-  const flights = yield* Cache.makeWith((href: string) => fetchPage(new URL(href)), {
-    capacity: Infinity,
-    timeToLive: () => 0,
-  });
+  const flights = yield* Cache.makeWith(
+    Effect.fnUntraced(function* (href: string) {
+      const intent = yield* ReadFreshness;
+      // A previous flight may finish between the caller's cache miss and joining here.
+      const stored = yield* cache.get({ url: href });
+      const now = yield* Clock.currentTimeMillis;
+      if (
+        stored &&
+        stored.cacheId !== intent.previousCacheId &&
+        isFresh(stored, intent.maxAgeHours === 0 ? undefined : intent.maxAgeHours, now)
+      )
+        return { page: stored, fromCache: true };
+      return { page: yield* fetchPage(new URL(href)), fromCache: false };
+    }),
+    { capacity: Infinity, timeToLive: () => 0, requireServicesAt: "lookup" },
+  );
 
   const read = Effect.fn("WebResearch.read")(function* (raw: typeof WebReadInput.Type) {
     const input = yield* decodeInput(raw).pipe(
@@ -341,21 +385,22 @@ const make = Effect.gen(function* () {
       const url = parseUrl(input.url!);
       if (!url) return yield* new WebResearchInputError({ reason: "invalid_url" });
       const stored = yield* cache.get({ url: url.href });
-      if (
-        stored &&
-        stored.expiresAt > now &&
-        (input.maxAgeHours === undefined ||
-          (input.maxAgeHours > 0 && now - stored.fetchedAt <= input.maxAgeHours * 3600_000))
-      )
-        page = stored;
+      if (stored && isFresh(stored, input.maxAgeHours, now)) page = stored;
       else {
-        const active = yield* Cache.getOption(flights, url.href);
-        if (Option.isSome(active)) page = active.value;
-        else {
+        const flight = yield* Effect.gen(function* () {
+          const active = yield* Cache.getOption(flights, url.href);
+          if (Option.isSome(active)) return active.value;
           reused = false;
-          page = yield* Cache.get(flights, url.href);
-        }
-        delayMs = page.delayMs;
+          return yield* Cache.get(flights, url.href);
+        }).pipe(
+          Effect.provideService(ReadFreshness, {
+            previousCacheId: stored?.cacheId,
+            maxAgeHours: input.maxAgeHours,
+          }),
+        );
+        page = flight.page;
+        reused ||= flight.fromCache;
+        delayMs = flight.fromCache ? 0 : page.delayMs;
       }
     }
     const offset = input.offset ?? 0;
