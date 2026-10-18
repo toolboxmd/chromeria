@@ -48,7 +48,9 @@ export function RemotePendingRequest(props: {
       return (
         question.required === false ||
         question.initialAnswer !== undefined ||
-        (typeof answer === "string" && answer.trim().length > 0) ||
+        (typeof answer === "string" &&
+          (answer.trim().length > 0 ||
+            question.options.some((option) => (option.value ?? option.label) === answer))) ||
         (Array.isArray(answer) && answer.length > 0)
       );
     });

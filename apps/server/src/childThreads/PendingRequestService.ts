@@ -1,3 +1,4 @@
+import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import {
   OrchestratorMcpFailure,
   ThreadId,
@@ -82,11 +83,14 @@ const make = Effect.gen(function* () {
   const environment = yield* Effect.serviceOption(ServerEnvironment);
   const receipts = yield* Effect.serviceOption(McpRequestReceipts);
   const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
+  const projections = yield* Effect.serviceOption(ProjectionStoreV2);
   const authority = yield* Effect.serviceOption(PeerAuthority);
   let dependencies = Context.make(ThreadManagementService, threads).pipe(
     Context.add(Crypto.Crypto, crypto),
   );
   if (Option.isSome(sql)) dependencies = Context.add(dependencies, SqlClient.SqlClient, sql.value);
+  if (Option.isSome(projections))
+    dependencies = Context.add(dependencies, ProjectionStoreV2, projections.value);
   if (Option.isSome(authority))
     dependencies = Context.add(dependencies, PeerAuthority, authority.value);
   // Resolve only real native subagent edges below this root. No foreign local shell.

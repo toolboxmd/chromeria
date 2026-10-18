@@ -8411,7 +8411,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               values === undefined ||
               (question.required !== false &&
                 question.initialAnswer === undefined &&
-                !values.some((value) => value.trim().length > 0))
+                !values.some(
+                  (value) =>
+                    value.trim().length > 0 ||
+                    question.options.some((option) => (option.value ?? option.label) === value),
+                ))
             )
               return yield* invalid();
             if (

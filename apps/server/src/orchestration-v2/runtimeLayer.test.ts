@@ -1507,6 +1507,47 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
 });
 
 it.layer(layerLegacyImportTest)("OrchestrationV2 legacy import", (it) => {
+  it.effect(
+    "exports the native request read owner from the production runtime without injection",
+    () =>
+      Effect.gen(function* () {
+        const owner = yield* Effect.serviceOption(ProjectionStore.ProjectionStoreV2);
+        assert.isTrue(Option.isSome(owner));
+        if (Option.isNone(owner)) return;
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const threadId = ThreadId.make("production-pending-read-owner");
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make("production-pending-read-owner-create"),
+          threadId,
+          projectId: ProjectId.make("production-pending-read-owner-project"),
+          title: "Native request read owner",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+        });
+        const sql = yield* SqlClient.SqlClient;
+        const snapshot = yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const records = yield* owner.value.getThreadRecords(threadId, [
+              "runtimeRequests",
+              "turnItems",
+            ]);
+            const rows = yield* sql<{
+              revision: number;
+            }>`SELECT MAX(sequence) AS revision FROM orchestration_events WHERE stream_id=${threadId}`;
+            return { records, revision: rows[0]?.revision };
+          }),
+        );
+        assert.equal(snapshot.records.thread.id, threadId);
+        assert.isAbove(snapshot.revision!, 0);
+      }),
+  );
+
   it.effect("hydrates imported transcripts before commands and propagates hydration failures", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

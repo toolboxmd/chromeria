@@ -2,6 +2,7 @@ import { OrchestratorMcpFailure, type ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
+import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import { PeerAuthority } from "../peer/PeerAuthority.ts";
 
 import { readThread, unavailable, type Caller } from "../mcp/threadAccess.ts";
@@ -39,7 +40,33 @@ export const readPendingRequest = Effect.fn("childThreads.readPendingRequest")(f
   },
   includeResolved = false,
 ) {
-  const context = yield* readThread(input.threadId, ["runtimeRequests", "turnItems"]);
+  // Caller/target resolution and legacy transcript preparation may do work outside
+  // the native store. Never use that earlier content with a later event revision.
+  const initial = yield* readThread(input.threadId, ["runtimeRequests", "turnItems"]);
+  const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
+  const snapshot = yield* Effect.gen(function* () {
+    if (Option.isNone(sql)) return { projection: initial.projection };
+    const store = yield* Effect.serviceOption(ProjectionStoreV2);
+    if (Option.isNone(store)) return yield* unavailable();
+    return yield* sql.value
+      .withTransaction(
+        Effect.gen(function* () {
+          const projection = yield* store.value.getThreadRecords(
+            initial.projection.thread.id,
+            ["runtimeRequests", "turnItems"],
+            { turnItemTypes: ["user_input_request", "approval_request"] },
+          );
+          const rows = yield* sql.value<{
+            revision: number;
+          }>`SELECT COALESCE(MAX(sequence),0) AS revision FROM orchestration_events WHERE stream_id=${projection.thread.id} AND ((event_type='runtime-request.updated' AND json_extract(payload_json,'$.id')=${input.requestId}) OR (event_type='turn-item.updated' AND json_extract(payload_json,'$.requestId')=${input.requestId}))`;
+          const row = rows[0];
+          if (row === undefined) return yield* unavailable();
+          return { projection, revision: row.revision };
+        }),
+      )
+      .pipe(Effect.mapError(unavailable));
+  });
+  const context = { ...initial, projection: snapshot.projection };
   const request = context.projection.runtimeRequests.find(
     (request) =>
       request.id === input.requestId && (includeResolved || request.status === "pending"),
@@ -68,18 +95,10 @@ export const readPendingRequest = Effect.fn("childThreads.readPendingRequest")(f
       message: "Only an ancestor thread may answer a descendant approval.",
     });
   }
-  const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
-  const rows = Option.isSome(sql)
-    ? yield* sql.value<{
-        revision: number;
-      }>`SELECT COALESCE(MAX(sequence),0) AS revision FROM orchestration_events WHERE stream_id=${context.projection.thread.id} AND ((event_type='runtime-request.updated' AND json_extract(payload_json,'$.id')=${input.requestId}) OR (event_type='turn-item.updated' AND json_extract(payload_json,'$.requestId')=${input.requestId}))`.pipe(
-        Effect.mapError(unavailable),
-      )
-    : [];
   return {
     ...context,
     request,
     item,
-    ...(rows[0] === undefined ? {} : { revision: rows[0].revision }),
+    ...("revision" in snapshot ? { revision: snapshot.revision } : {}),
   };
 });
