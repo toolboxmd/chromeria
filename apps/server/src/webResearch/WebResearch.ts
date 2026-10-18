@@ -319,7 +319,7 @@ const make = Effect.gen(function* () {
         if (/(^|\.)booking\.com$|(^|\.)airbnb\./i.test(url.hostname))
           return { status: "unsupported" as const, title: "", text: "" };
         if (sameOrigin !== undefined && url.href !== original.href) {
-          const stored = yield* cache.get({ url: url.href, sameOrigin });
+          const stored = yield* cache.get({ redirectTarget: url.href, sameOrigin });
           const now = yield* Clock.currentTimeMillis;
           if (
             stored &&

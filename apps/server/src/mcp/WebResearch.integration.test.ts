@@ -49,7 +49,9 @@ const memoryCache = (pages: Map<string, CachedPage>) => {
         Effect.sync(() =>
           "url" in key
             ? (pages.get(key.url) ?? null)
-            : ([...pages.values()].find((page) => page.cacheId === key.cacheId) ?? null),
+            : "cacheId" in key
+              ? ([...pages.values()].find((page) => page.cacheId === key.cacheId) ?? null)
+              : null,
         ),
       put: (page) =>
         Effect.sync(() => {

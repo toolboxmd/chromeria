@@ -614,6 +614,140 @@ describe("web_read at the registered MCP seam", () => {
     }),
   );
 
+  it.effect("reuses final URLs reached only through root and child redirect aliases", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture((url) =>
+        Effect.succeed(
+          url.pathname === "/start"
+            ? response("", 302, { location: "/home/" })
+            : url.pathname === "/home/"
+              ? response(
+                  html.replace(
+                    "</body>",
+                    '<a href="/rooms-home">Rooms home</a><a href="/rooms-a">Rooms A</a><a href="/rooms-b">Rooms B</a><a href="/eventi">Events</a></body>',
+                  ),
+                )
+              : url.pathname === "/rooms-home"
+                ? response("", 302, { location: "/home/" })
+                : url.pathname === "/rooms-a" || url.pathname === "/rooms-b"
+                  ? response("", 302, { location: "/camere/" })
+                  : response(),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const fiber = yield* Effect.forkScoped(read({ url: "https://final-alias.example/start" }));
+        let last = "";
+        for (let i = 0; i < 10; i++) {
+          last = new URL((yield* Queue.take(f.requests)).url).pathname;
+          if (last === "/eventi") break;
+          yield* TestClock.adjust(3000);
+        }
+        expect(last).toBe("/eventi");
+        const result = yield* Fiber.join(fiber);
+        expect(result).toMatchObject({
+          url: "https://final-alias.example/start",
+          finalUrl: "https://final-alias.example/home/",
+          subpages: [
+            {
+              url: "https://final-alias.example/rooms-a",
+              finalUrl: "https://final-alias.example/camere/",
+            },
+            { url: "https://final-alias.example/eventi" },
+          ],
+          truncated: false,
+        });
+        expect(f.observed.map((request) => new URL(request.url).pathname)).toEqual([
+          "/robots.txt",
+          "/start",
+          "/home/",
+          "/rooms-home",
+          "/rooms-a",
+          "/camere/",
+          "/rooms-b",
+          "/eventi",
+        ]);
+        const alias = yield* read({
+          url: "https://final-alias.example/rooms-b",
+          followSubpages: false,
+        });
+        expect(alias).toMatchObject({
+          rung: "cache",
+          finalUrl: "https://final-alias.example/camere/",
+          fetchedAt: result.subpages[0]!.fetchedAt,
+          contentHash: result.subpages[0]!.contentHash,
+        });
+      }).pipe(Effect.provide(f.layer));
+    }),
+  );
+
+  it.effect("never reuses a different site's refused redirect as a fetched final URL", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture((url) =>
+        Effect.succeed(
+          url.hostname === "foreign-parent.example"
+            ? url.pathname === "/camere"
+              ? response("", 302, { location: "https://final-target.example/target" })
+              : response(html.replace("</body>", '<a href="/camere">Camere</a></body>'))
+            : url.pathname === "/"
+              ? response(html.replace("</body>", '<a href="/rooms">Rooms</a></body>'))
+              : url.pathname === "/rooms"
+                ? response("", 302, { location: "/target" })
+                : response(),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const foreign = yield* finish(
+          read({ url: "https://foreign-parent.example/" }),
+          f.requests,
+          3,
+        );
+        expect(foreign.subpages[0]!.status).toBe("unsupported");
+        const own = yield* finish(read({ url: "https://final-target.example/" }), f.requests, 3);
+        expect(own.subpages[0]).toMatchObject({
+          status: "ok",
+          finalUrl: "https://final-target.example/target",
+        });
+        expect(f.observed.map((request) => request.url)).toContain(
+          "https://final-target.example/target",
+        );
+      }).pipe(Effect.provide(f.layer));
+    }),
+  );
+
+  it.effect("rereads cached subpages whose escaped link metadata exceeds 32 MiB", () =>
+    Effect.gen(function* () {
+      const body = `<html><head><title>Rooms</title></head><body>${`<a href="/">${"\u0001".repeat(256)}</a>`.repeat(11_000)}</body></html>`;
+      const f = yield* fixture((url) =>
+        Effect.succeed(
+          response(
+            url.pathname === "/"
+              ? html.replace("</body>", '<a href="/camere">Camere</a></body>')
+              : body,
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const first = yield* finish(read({ url: "https://large-links.example/" }), f.requests, 3);
+        expect(first.subpages[0]).toMatchObject({ status: "ok", rung: "http" });
+        expect(first.subpages[0]!.nextOffset).not.toBeNull();
+        const cached = yield* read({ url: "https://large-links.example/" });
+        expect(cached.subpages[0]).toMatchObject({
+          rung: "cache",
+          cacheId: first.subpages[0]!.cacheId,
+          contentHash: first.subpages[0]!.contentHash,
+          text: first.subpages[0]!.text,
+        });
+        const continuation = yield* read({
+          cacheId: first.subpages[0]!.cacheId,
+          offset: first.subpages[0]!.nextOffset,
+          maxChars: 100,
+        });
+        expect(continuation.text).toHaveLength(100);
+        expect(f.observed).toHaveLength(3);
+      }).pipe(Effect.provide(f.layer));
+    }),
+  );
+
   it.effect(
     "keeps a recovered alias cached when its reused target body predates an expired failure",
     () =>
@@ -1357,9 +1491,11 @@ describe("web_read at the registered MCP seam", () => {
           Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient;
             yield* sql`DROP INDEX pages_url_indexed`;
+            yield* sql`DROP INDEX pages_final_url`;
             yield* sql`ALTER TABLE pages DROP COLUMN indexed_at`;
             yield* sql`ALTER TABLE pages DROP COLUMN restriction_origin`;
             yield* sql`ALTER TABLE pages DROP COLUMN final_origin`;
+            yield* sql`ALTER TABLE pages DROP COLUMN final_url`;
           }).pipe(
             Effect.provide(
               NodeSqliteClient.layer({
@@ -1373,7 +1509,13 @@ describe("web_read at the registered MCP seam", () => {
           directory,
         );
         const restored = yield* Effect.scoped(
-          read({ cacheId: saved.cacheId }).pipe(Effect.provide(second.layer)),
+          Effect.gen(function* () {
+            const continuation = yield* read({ cacheId: saved.cacheId });
+            const byUrl = yield* read({ url: "https://restart.example/" });
+            expect(byUrl.cacheId).toBe(saved.cacheId);
+            expect(byUrl.rung).toBe("cache");
+            return continuation;
+          }).pipe(Effect.provide(second.layer)),
         );
         expect(restored).toMatchObject({
           rung: "cache",
