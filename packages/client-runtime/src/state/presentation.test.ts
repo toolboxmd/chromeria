@@ -54,6 +54,45 @@ function harness() {
 }
 
 describe("environment summary subscriptions", () => {
+  it("removes disabled remote navigation targets while retaining cached provider details", () => {
+    const h = harness();
+    const stop = h.registry.subscribe(h.full.serverConfigsAtom, () => {});
+    try {
+      const cached = { ...config(), providers: [] } as ServerConfig;
+      h.registry.set(h.configs(SECOND), cached);
+      expect(h.registry.get(h.full.serverConfigsAtom).has(SECOND)).toBe(true);
+
+      h.registry.set(h.catalog, {
+        isReady: true,
+        entries: new Map([
+          [FIRST, entry(FIRST)],
+          [SECOND, { ...entry(SECOND), enabled: false }],
+        ]),
+      });
+      expect(h.registry.get(h.full.serverConfigsAtom).has(SECOND)).toBe(false);
+      expect(h.registry.get(h.full.providersByEnvironmentAtom).get(SECOND)).toBe(cached.providers);
+      expect(h.registry.get(h.full.presentationsAtom).get(SECOND)?.entry.enabled).toBe(false);
+
+      h.registry.set(h.catalog, {
+        isReady: true,
+        entries: new Map([
+          [FIRST, entry(FIRST)],
+          [SECOND, entry(SECOND)],
+        ]),
+      });
+      expect(h.registry.get(h.full.serverConfigsAtom).has(SECOND)).toBe(true);
+      expect(h.registry.get(h.full.providersByEnvironmentAtom).get(SECOND)).toBe(cached.providers);
+
+      h.registry.set(h.configs(SECOND), null);
+      expect(h.registry.get(h.full.serverConfigsAtom).has(SECOND)).toBe(false);
+      expect(h.registry.get(h.full.providersByEnvironmentAtom).has(SECOND)).toBe(false);
+      expect(h.registry.get(h.full.serverConfigsAtom).has(FIRST)).toBe(true);
+    } finally {
+      stop();
+      h.registry.dispose();
+    }
+  });
+
   it("tracks loaded configs across environments, config loss and removal", () => {
     const h = harness();
     const stop = h.registry.subscribe(h.pullRequestsSupportedAtom, () => {});

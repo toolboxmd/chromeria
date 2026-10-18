@@ -19,6 +19,7 @@ const state = vi.hoisted(() => ({
   shells: [] as unknown[],
   projects: [] as unknown[],
   configs: new Map<string, unknown>(),
+  disabledEnvironments: new Set<string>(),
   showTooltips: false,
   command: vi.fn().mockResolvedValue({ _tag: "Success" }),
   workflowCommand: vi.fn().mockResolvedValue({ _tag: "Success" }),
@@ -35,8 +36,12 @@ vi.mock(import("../../state/entities"), async (original) => ({
   useThreadRelationshipShells: ((ref: { readonly environmentId: string }) =>
     (
       state.shells as ReadonlyArray<{ readonly environmentId: string; readonly source: unknown }>
-    ).map((shell) => (shell.environmentId === ref.environmentId ? shell.source : shell))) as never,
+    ).map(({ environmentId, source }) =>
+      environmentId === ref.environmentId ? source : { environmentId, shell: source },
+    )) as never,
   useProjects: (() => state.projects) as never,
+  useServerConfigs: (() =>
+    new Map([...state.configs].filter(([id]) => !state.disabledEnvironments.has(id)))) as never,
 }));
 vi.mock(import("../../state/environments"), async (original) => ({
   ...(await original()),
@@ -147,6 +152,7 @@ afterEach(async () => {
   state.shells = [];
   state.projects = [];
   state.configs.clear();
+  state.disabledEnvironments.clear();
   state.showTooltips = false;
   state.navigate.mockClear();
   state.command.mockClear();
@@ -231,14 +237,37 @@ it("shows a child delegated to a linked environment and opens it there", async (
     params: { environmentId: "cavallo", threadId: "remote-child" },
   });
 
-  // Without a client connection to cavallo the same row renders disabled.
+  // Disabling a saved connection retains its cached providers.
   state.navigate.mockClear();
-  state.configs.delete("cavallo");
+  state.disabledEnvironments.add("cavallo");
   await update();
   const disabledRowButton = buttons().find((button) =>
     button.textContent?.includes("Remote roast thread"),
   );
   expect(disabledRowButton).toBeDefined();
   expect(disabledRowButton!.disabled).toBe(true);
+  await click(disabledRowButton!);
+  expect(state.navigate).not.toHaveBeenCalled();
+
+  state.disabledEnvironments.delete("cavallo");
+  await update();
+  const enabledRowButton = buttons().find((button) =>
+    button.textContent?.includes("Remote roast thread"),
+  )!;
+  expect(enabledRowButton.disabled).toBe(false);
+  await click(enabledRowButton);
+  expect(state.navigate).toHaveBeenCalledExactlyOnceWith({
+    to: "/$environmentId/$threadId",
+    params: { environmentId: "cavallo", threadId: "remote-child" },
+  });
+
+  state.navigate.mockClear();
+  state.configs.delete("cavallo");
+  await update();
+  const disconnectedRowButton = buttons().find((button) =>
+    button.textContent?.includes("Remote roast thread"),
+  )!;
+  expect(disconnectedRowButton.disabled).toBe(true);
+  await click(disconnectedRowButton);
   expect(state.navigate).not.toHaveBeenCalled();
 });
