@@ -817,6 +817,7 @@ const makeGrokBoundary = Effect.fn("makeGrokUrgentRestartBoundary")(function* ()
     readonly isRunning: ChildProcessSpawner.ChildProcessHandle["isRunning"];
   }> = [];
   const loadedHistory: string[] = [];
+  const loadReplayOrder: string[] = [];
   const recorded = yield* fixture("message_steering", "grok_transcript.ndjson");
   const firstPromptIndex = recorded.entries.findIndex(
     (entry) => entry.type === "expect_outbound" && record(entry.frame).method === "session/prompt",
@@ -1026,7 +1027,7 @@ const makeGrokBoundary = Effect.fn("makeGrokUrgentRestartBoundary")(function* ()
                       cwd: "<workspace>",
                       mcpServers: "<any>",
                     }),
-                    acpReply("session/load", loadResponse),
+                    // ACP completes load only after its history has been replayed.
                     acpIn("session/update", {
                       sessionId: nativeThreadId,
                       update: {
@@ -1034,6 +1035,7 @@ const makeGrokBoundary = Effect.fn("makeGrokUrgentRestartBoundary")(function* ()
                         content: { type: "text", text: "Start the original action." },
                       },
                     }),
+                    acpReply("session/load", loadResponse),
                     prompt(),
                     cancel(),
                     acpReply("session/prompt", { stopReason: "cancelled" }),
@@ -1058,6 +1060,7 @@ const makeGrokBoundary = Effect.fn("makeGrokUrgentRestartBoundary")(function* ()
           cancelMeta: GROK_ACP_CANCEL_META,
           initializeMeta: GROK_ACP_INITIALIZE_META,
         });
+        let loadRequestId: unknown;
         const replayInput = {
           ...input,
           ...grokAcpRuntimeProcessOwnership(hostPlatform),
@@ -1069,12 +1072,23 @@ const makeGrokBoundary = Effect.fn("makeGrokUrgentRestartBoundary")(function* ()
                 if (event.stage !== "raw" || typeof event.payload !== "string") return;
                 for (const line of event.payload.trim().split("\n")) {
                   const frame = record(decodeJson(line));
-                  if (event.direction === "outgoing" && typeof frame.method === "string")
+                  if (event.direction === "outgoing" && typeof frame.method === "string") {
                     observer.capture({ method: frame.method, params: frame.params });
+                    if (frame.method === "session/load") loadRequestId = frame.id;
+                  }
+                  if (
+                    event.direction === "incoming" &&
+                    loadRequestId !== undefined &&
+                    frame.id === loadRequestId &&
+                    "result" in frame
+                  )
+                    loadReplayOrder.push("response");
                   if (event.direction === "incoming" && frame.method === "session/update") {
                     const content = record(record(frame.params).update);
-                    if (content.sessionUpdate === "user_message_chunk")
+                    if (content.sessionUpdate === "user_message_chunk") {
                       loadedHistory.push(String(record(content.content).text));
+                      loadReplayOrder.push("history");
+                    }
                   }
                 }
               }),
@@ -1108,6 +1122,7 @@ const makeGrokBoundary = Effect.fn("makeGrokUrgentRestartBoundary")(function* ()
     childId,
     processes,
     loadedHistory,
+    loadReplayOrder,
     registry: observedRegistry(adapter, nativeEvents),
     modelSelection: { instanceId: adapter.instanceId, model: "grok-build" },
     ready: (event: OrchestrationV2DomainEvent) =>
@@ -2467,6 +2482,11 @@ const grokRestart = (delivery: Delivery, carryover = false) =>
             boundary.requests.indexOf(load!),
             boundary.requests.indexOf(prompts.at(-1)!),
           );
+          assert.deepEqual(
+            boundary.loadReplayOrder,
+            ["history", "response"],
+            "ACP history replay must precede the session/load response.",
+          );
           assert.include(boundary.loadedHistory, "Start the original action.");
           assert.lengthOf(
             after.messages.filter(
@@ -2611,6 +2631,11 @@ const grokExistingStop = () =>
           assert.lengthOf(boundary.processes, 2);
           const load = boundary.requests.find((request) => request.method === "session/load");
           assert.equal(record(load?.params).sessionId, boundary.nativeThreadId);
+          assert.deepEqual(
+            boundary.loadReplayOrder,
+            ["history", "response"],
+            "ACP history replay must precede the session/load response.",
+          );
           assert.include(boundary.loadedHistory, "Start the original action.");
           assert.isBelow(
             boundary.requests.indexOf(load!),
