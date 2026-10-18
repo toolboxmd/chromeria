@@ -25,6 +25,7 @@ import {
 } from "../fork/ForkProviderlessMessages.ts";
 import { ownedActiveRuns, ownedThreads, ownedRunsDrainedPlan } from "./cancellationPlan.ts";
 import { lifecycleEvents } from "./lifecycle.ts";
+import { spectrumTaskUpdate } from "./delegatedTask.ts";
 import { readSpectrum } from "./store.ts";
 import {
   makeInitialReport,
@@ -99,7 +100,17 @@ const plan = Effect.fn("Spectrum.commandPlan")(function* (
         round: null,
         outbox: cancellations,
       });
-      if (state.report === null) next = makeInitialReport(next, "Spectrum stopped.", true);
+      if (state.report === null) {
+        next = makeInitialReport(next, "Spectrum stopped.", true);
+        events.push(
+          ...(yield* spectrumTaskUpdate(
+            next,
+            { status: "cancelled", result: "Spectrum stopped." },
+            command.commandId,
+            now,
+          )),
+        );
+      }
     } else {
       const resume = command.type === "thread.unsettle" || explicitMessage(command);
       if (state.status !== "active") {
@@ -164,6 +175,10 @@ const plan = Effect.fn("Spectrum.commandPlan")(function* (
           report: null,
           reportAbandonment: null,
         };
+        // The reopened Spectrum is working again; its next report settles the row anew.
+        events.push(
+          ...(yield* spectrumTaskUpdate(next, { status: "running" }, command.commandId, now)),
+        );
         for (const color of state.participants) {
           const child = yield* projections.getThread(color.threadId);
           const retirement = yield* readRetirementState(child.id);

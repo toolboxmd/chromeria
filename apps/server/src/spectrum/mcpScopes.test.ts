@@ -196,6 +196,7 @@ it.effect(
                 ? { threadId: spectrumId, runId: null, status: "interrupt_requested" as const }
                 : null;
             }),
+          stop: () => Effect.succeed(false),
         }),
         Effect.provideService(SpectrumMcpSend, {
           send: (_threads, input, _commandId, messageId, senderThreadId) =>

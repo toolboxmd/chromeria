@@ -2603,6 +2603,16 @@ const make = Effect.gen(function* () {
             status: current.status,
           } satisfies OrchestratorMcpTaskCancelResult;
         }
+        // Fork: a Spectrum task has no run of its own; its Stop cancels every Color.
+        if (
+          yield* (yield* SpectrumMcpInterrupt).stop(
+            threadManagement,
+            { threadId: childThreadId, reason: input.reason },
+            stableCommandId({ scope, requestKey: key, operation: "cancel-task" }),
+          )
+        ) {
+          return { taskId: input.taskId, status: "cancel_requested" };
+        }
         // A task waiting on its own delegates has work to stop below it. One with neither
         // a running turn nor delegates (such as one awaiting a restart) keeps its delivery.
         const child = yield* loadProjection(childThreadId);
