@@ -1794,7 +1794,16 @@ export class ServingState {
     const carryOutput = new Composer("", limit, Math.max(this.budgetLeft(runId).serve, 0));
     let charged = 0;
     const carried: Claim[] = [];
-    this.appendCarries(sel.profile.harness, sel, epoch, momentId, runId, carryOutput, carried);
+    this.appendCarries(
+      sel.profile.harness,
+      sel,
+      epoch,
+      momentId,
+      runId,
+      carryOutput,
+      carried,
+      delivering ? sel.candidates.filter((c) => c.matcher === "session_start") : [],
+    );
     const carriedBytes = utf8(carryOutput.text() ?? "");
     if (carriedBytes > 0) {
       this.charge(runId, carriedBytes, 0);
@@ -1853,14 +1862,27 @@ export class ServingState {
         outcome: "reserved",
         bytes: utf8(c.text),
       });
-      out.add(c.text, {
+      const carry = this.get<{ id: number }>(
+        "SELECT id FROM carries WHERE harness = ? AND session = ? AND run_id = ? AND entry = ? AND version = ? AND state = 'waiting'",
+        sel.profile.harness,
+        sel.moment.session,
+        runId,
+        c.entry,
+        c.version,
+      );
+      const claim: Claim = {
         kind: "start",
         entry: c.entry,
         version: c.version,
         rule: null,
         whole: true,
         candidateId: id,
-      });
+        ...(carry === undefined ? {} : { carryId: carry.id }),
+      };
+      out.add(c.text, claim);
+      // Use the fresh file's exemption and the existing carry reservation/release lifecycle.
+      if (carry !== undefined)
+        this.writeClaims(delivery, sel.profile.harness, sel.moment.session, epoch, runId, [claim]);
     }
     const text = out.text();
     if (text === null) return [{ status: 204 }];
@@ -2384,6 +2406,7 @@ export class ServingState {
     runId: string,
     out: Composer,
     claims: Claim[],
+    freshFiles: ReadonlyArray<Candidate> = [],
   ) {
     const waiting = this.all<{
       id: number;
@@ -2399,6 +2422,7 @@ export class ServingState {
       runId,
     );
     for (const w of waiting) {
+      if (freshFiles.some((c) => c.entry === w.entry && c.version === w.version)) continue;
       if (claims.some((c) => c.entry === w.entry && c.version === w.version)) continue;
       if (
         this.settledIn(runId, epoch, w.entry, w.version) ||

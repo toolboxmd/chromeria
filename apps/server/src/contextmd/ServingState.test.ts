@@ -1118,6 +1118,28 @@ describe("ServingState epochs and carries", () => {
     assert.equal(h.db.prepare("SELECT serve_used FROM budgets").get()!.serve_used, 100);
   });
 
+  it("serves an identical fresh session-start file once without charging its carry", () => {
+    const h = makeHarness();
+    const pack = entry("pack", "p".repeat(7000), { matcher: "session_start" });
+    h.fire({ kind: "session_start", candidates: [pack], deliveryMode: "retained_startup" });
+    const reply = h.fire({ kind: "session_start", candidates: [pack], settle: false });
+    assert.equal(reply.status, 200);
+    assert.equal(h.text(reply), pack.text);
+    assert.equal(
+      h.db.prepare("SELECT coalesce(sum(serve_used), 0) AS used FROM budgets").get()!.used,
+      0,
+    );
+    assert.deepEqual(h.db.prepare("SELECT state FROM carries").get(), { state: "reserved" });
+    h.state.releaseReservation(reply.delivery);
+    assert.deepEqual(h.db.prepare("SELECT state FROM carries").get(), { state: "waiting" });
+    h.fire({ kind: "session_start", candidates: [pack] });
+    assert.deepEqual(h.db.prepare("SELECT state FROM carries").get(), { state: "printed" });
+    assert.equal(
+      h.fire({ kind: "tool_result", candidates: [entry("later", "r".repeat(1500))] }).status,
+      200,
+    );
+  });
+
   it("cuts a startup carry that cannot fit the next hook instead of leaving it waiting", () => {
     const h = makeHarness();
     h.fire({
