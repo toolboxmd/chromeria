@@ -22,7 +22,9 @@ import * as Stream from "effect/Stream";
 import * as Option from "effect/Option";
 
 import * as SqlClient from "effect/sql/SqlClient";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as SessionRenewal from "./SessionRenewal.ts";
+import { watchCrossProcessRevocations } from "./forkCrossProcessRevocation.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
@@ -576,6 +578,29 @@ export const make = Effect.gen(function* () {
       type: "clientRemoved",
       sessionId,
     }).pipe(Effect.asVoid);
+
+  // Reads run on the WAL reader so a lock held by another process cannot stall the writer.
+  yield* watchCrossProcessRevocations({
+    source: {
+      dataVersion: sql<{ readonly data_version: number }>`PRAGMA data_version`.pipe(
+        Effect.map((rows) => rows[0]?.data_version ?? 0),
+        NodeSqliteClient.readOnly,
+      ),
+      listActive: (sessionIds) =>
+        sql<{ readonly sessionId: AuthSessionId }>`
+          SELECT session_id AS "sessionId"
+          FROM auth_sessions
+          WHERE ${sql.in("session_id", sessionIds)} AND revoked_at IS NULL
+        `.pipe(
+          Effect.map((rows) => rows.map((row) => row.sessionId)),
+          NodeSqliteClient.readOnly,
+        ),
+    },
+    openSessionIds: Ref.get(connectedSessionsRef).pipe(
+      Effect.map((connected) => Array.from(connected.keys())),
+    ),
+    invalidate: emitRemoved,
+  }).pipe(Effect.forkScoped);
 
   const loadActiveSession = (sessionId: AuthSessionId) =>
     Effect.gen(function* () {

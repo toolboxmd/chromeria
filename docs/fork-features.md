@@ -1944,11 +1944,13 @@ sources and reasons.
   "purpose": "Keep paired desktop, web and mobile sessions active through rotating device-held renewal authority, with headless approval for existing devices.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/323",
-    "https://github.com/toolboxmd/chromeria/issues/330"
+    "https://github.com/toolboxmd/chromeria/issues/330",
+    "https://github.com/toolboxmd/chromeria/issues/325"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/334",
-    "https://github.com/toolboxmd/chromeria/pull/504"
+    "https://github.com/toolboxmd/chromeria/pull/504",
+    "https://github.com/toolboxmd/chromeria/pull/490"
   ],
   "newFiles": [
     "apps/desktop/src/app/DesktopRenewalStore.test.ts",
@@ -1956,6 +1958,8 @@ sources and reasons.
     "apps/mobile/src/connection/renewalStorage.ts",
     "apps/server/src/auth/BrowserRenewalCommitments.test.ts",
     "apps/server/src/auth/BrowserRenewalCommitments.ts",
+    "apps/server/src/auth/forkCrossProcessRevocation.test.ts",
+    "apps/server/src/auth/forkCrossProcessRevocation.ts",
     "apps/server/src/auth/SessionRenewal.test.ts",
     "apps/server/src/auth/SessionRenewal.ts",
     "apps/web/src/connection/renewalStorage.ts",
@@ -2000,7 +2004,13 @@ sources and reasons.
     "packages/contracts/src/environmentHttp.ts",
     "packages/shared/package.json"
   ],
-  "keywords": ["SessionRenewal", "renewal_commitment", "renewal-commitments", "awaitInvalidation"]
+  "keywords": [
+    "SessionRenewal",
+    "renewal_commitment",
+    "renewal-commitments",
+    "awaitInvalidation",
+    "data_version"
+  ]
 }
 ```
 

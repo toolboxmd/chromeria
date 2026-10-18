@@ -4,6 +4,7 @@ import { expect, it } from "@effect/vitest";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -22,6 +23,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
 import * as SessionRenewal from "./SessionRenewal.ts";
 import * as SessionStore from "./SessionStore.ts";
+import { CROSS_PROCESS_REVOCATION_POLL_INTERVAL } from "./forkCrossProcessRevocation.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
 import { base64UrlDecodeUtf8, base64UrlEncode, signPayload } from "./utils.ts";
 
@@ -187,6 +189,37 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
       expect(moved).toBe(original);
       expect(other).not.toBe(original);
     }),
+  );
+
+  it.effect("invalidates a connection when another process revokes its session", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cross-process-revoke-" });
+      const storeLayer = yield* makeDiskSessionStoreLayer(baseDir);
+      const server = Context.get(yield* Layer.build(storeLayer), SessionStore.SessionStore);
+      const cli = Context.get(yield* Layer.build(storeLayer), SessionStore.SessionStore);
+      const owner = yield* server.issue({ subject: "owner" });
+      const client = yield* server.issue(relaySessionInput);
+      yield* server.markConnected(owner.sessionId);
+      yield* server.markConnected(client.sessionId);
+      const ownerInvalidated = yield* Deferred.make<void>();
+      yield* server
+        .awaitInvalidation(owner.sessionId)
+        .pipe(
+          Effect.andThen(Deferred.succeed(ownerInvalidated, undefined)),
+          Effect.forkScoped({ startImmediately: true }),
+        );
+      const watcher = yield* server
+        .awaitInvalidation(client.sessionId)
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+
+      expect(yield* cli.revoke(client.sessionId)).toBe(true);
+      yield* TestClock.adjust(CROSS_PROCESS_REVOCATION_POLL_INTERVAL);
+      yield* Fiber.join(watcher);
+      expect(yield* Deferred.isDone(ownerInvalidated)).toBe(false);
+      const reconnect = yield* server.verify(client.token).pipe(Effect.flip);
+      expect(reconnect._tag).toBe("SessionTokenRevokedError");
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
   it.effect("keeps reusable dev auth local across disk-backed stores and restarts", () =>
