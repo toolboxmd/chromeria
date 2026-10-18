@@ -1,6 +1,61 @@
+import * as Path from "effect/Path";
+import * as NativeDevices from "../device/DeviceService.ts";
+import * as DeviceHost from "../device/DeviceHost.ts";
+import { writeAgentDeviceConfig } from "../device/AgentDeviceTarget.ts";
+import { LOCAL_DEVICE_HOST_ID, DeviceId, DeviceOperationError } from "@t3tools/contracts";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
+import * as PullRequestReviewGuideService from "../pullRequest/PullRequestReviewGuideService.ts";
+import {
+  McpSavedSnapshotReceipt,
+  McpScheduledMutationReceipt,
+  SecretRef,
+  SecretRequestError,
+} from "@t3tools/contracts";
+import * as ScheduleMutation from "../scheduledTasks/mutationReceipts.ts";
+import { IssuesToolkit } from "../mcp/toolkits/issues/tools.ts";
+import * as IssueHandlers from "../mcp/toolkits/issues/handlers.ts";
+import * as IssueLinks from "../issueLinks/IssueLinks.ts";
+import * as ClosingReferences from "../issueLinks/closingReferences.ts";
+import * as WorktreeMcp from "../mcp/WorktreeMcpService.ts";
+import { WorktreeToolkit } from "../mcp/toolkits/worktree/tools.ts";
+import * as WorktreeHandlers from "../mcp/toolkits/worktree/handlers.ts";
+import * as VcsStatus from "../vcs/VcsStatusBroadcaster.ts";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as Sink from "effect/Sink";
+import * as ScheduledChecks from "../scheduledTaskChecks/ScheduledTaskChecks.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import * as AttachmentUpload from "../assets/AttachmentUpload.ts";
+import { PeerAttachmentReference } from "@t3tools/contracts";
+import * as SpectrumLaunch from "../spectrum/LaunchService.ts";
+import * as SpectrumMcp from "../spectrum/mcpToolkit.ts";
+import * as SpectrumStore from "../spectrum/store.ts";
+import * as CheckStore from "../scheduledTaskChecks/store.ts";
+import * as Prism from "../prism/PrismService.ts";
+import * as HtmlRender from "../htmlRender/HtmlRender.ts";
+import * as PreviewBrowser from "../preview/PreviewBrowser.ts";
+import { resolveAttachmentPathById } from "../attachmentStore.ts";
+import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
+import * as ProjectEnrichment from "../project/ProjectEnrichmentService.ts";
+import * as ProjectFavicon from "../project/ProjectFaviconResolver.ts";
+import * as GitManager from "../git/GitManager.ts";
+import * as VcsRegistry from "../vcs/VcsDriverRegistry.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
+import * as Fiber from "effect/Fiber";
+import * as ThreadSearch from "../orchestration-v2/ThreadSearch.ts";
+import { ThreadToolkit } from "../mcp/toolkits/thread/tools.ts";
+import * as RequestReceipts from "../mcp/McpRequestReceipts.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as SourceProviders from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as ProductionRuntime from "../orchestration-v2/runtimeLayer.ts";
+import * as RequestRuntime from "../mcp/McpRequestRuntime.ts";
+import * as AttachmentHandlers from "../mcp/toolkits/attachment/handlers.ts";
+import { AttachmentToolkit } from "../mcp/toolkits/attachment/tools.ts";
+import * as ServerHttp from "../http.ts";
+import { resolveAttachmentPath } from "../attachmentStore.ts";
+import * as FileSystem from "effect/FileSystem";
+import * as PlatformError from "effect/PlatformError";
+import { EnvironmentToolkit } from "../mcp/toolkits/environment/tools.ts";
+import * as BrowserBroker from "../mcp/PreviewAutomationBroker.ts";
 import * as Instances from "../provider/ProviderInstanceRegistry.ts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -103,6 +158,7 @@ import type { McpThreadInvocationScope } from "../mcp/McpInvocationContext.ts";
 const instanceId = ProviderInstanceId.make("codex");
 const driver = ProviderDriverKind.make("codex");
 const selection = { instanceId, model: "gpt-5.4" };
+const decodeSavedPngReceipt = Schema.decodeUnknownEffect(McpSavedSnapshotReceipt);
 const decodeScheduledTaskList = Schema.decodeUnknownEffect(
   OrchestratorToolkit.tools.list_scheduled_tasks.successSchema,
 );
@@ -122,7 +178,23 @@ const graphConnections = new WeakMap<Scope.Scope, Set<Scope.Closeable>>();
 const makeNode = (
   descriptor: ExecutionEnvironmentDescriptor,
   storage: "memory" | "disk" = "memory",
-  productionKernel = false,
+  {
+    productionKernel = false,
+    attachmentRequests = false,
+    preferencesOwner = false,
+    nativeOwners = false,
+    deviceOwner = false,
+    commandSpawner,
+    ownerWorkspace,
+  }: {
+    readonly productionKernel?: boolean;
+    readonly attachmentRequests?: boolean;
+    readonly preferencesOwner?: boolean;
+    readonly nativeOwners?: boolean;
+    readonly deviceOwner?: boolean;
+    readonly commandSpawner?: ChildProcessSpawner.ChildProcessSpawner["Service"];
+    readonly ownerWorkspace?: string;
+  } = {},
 ) =>
   Effect.gen(function* () {
     const graphScope = yield* Scope.Scope;
@@ -149,7 +221,7 @@ const makeNode = (
     const project: Project = {
       id: ProjectId.make(`project:${descriptor.environmentId}`),
       title: descriptor.label,
-      workspaceRoot: process.cwd(),
+      workspaceRoot: ownerWorkspace ?? process.cwd(),
       repositoryIdentity: null,
       defaultModelSelection: selection,
       scripts: [],
@@ -157,20 +229,80 @@ const makeNode = (
       updatedAt: "2026-10-16T00:00:00Z",
       deletedAt: null,
     };
-    const projectLayer = Layer.mock(Projects.ProjectService)({
-      getById: () => Effect.succeed(Option.some(project)),
-      listPage: () => Effect.succeed({ projects: [project], nextCursor: null }),
-    });
     const environment = Layer.succeed(Environment.ServerEnvironment, {
       getEnvironmentId: Effect.succeed(descriptor.environmentId),
       getDescriptor: Effect.succeed(descriptor),
     });
-    const nodeConfig = Config.layerTest(process.cwd(), {
+    const nodeConfigContext = yield* Config.layerTest(process.cwd(), {
       prefix: `peer-authority-${descriptor.label}-`,
-    });
-    const settings = Settings.layerTest({
-      providerInstances: { [instanceId]: { driver, enabled: true } },
-    });
+    }).pipe(Layer.fresh, Layer.build);
+    const nodeConfig = Layer.succeedContext(nodeConfigContext);
+    const settingsWrites = yield* Ref.make(0);
+    const loseSettingsConfirmation = yield* Ref.make(false);
+    const actualFs = yield* FileSystem.FileSystem;
+    const settingsPath = Context.get(nodeConfigContext, Config.ServerConfig).settingsPath;
+    const settingsFs = {
+      ...actualFs,
+      rename: (from: string, to: string) =>
+        actualFs.rename(from, to).pipe(
+          Effect.tap(() =>
+            Effect.gen(function* () {
+              if (to !== settingsPath) return;
+              yield* Ref.update(settingsWrites, (n) => n + 1);
+              if (yield* Ref.getAndSet(loseSettingsConfirmation, false))
+                return yield* PlatformError.systemError({
+                  _tag: "Unknown",
+                  module: "FileSystem",
+                  method: "rename",
+                  description: "Isolated confirmation loss after settings replacement",
+                });
+            }),
+          ),
+        ),
+    };
+    const realSettingsLayer = Settings.layer.pipe(
+      Layer.provide(Secrets.layer.pipe(Layer.provide(nodeConfig))),
+      Layer.provide(db),
+      Layer.provide(nodeConfig),
+      Layer.provide(Layer.succeed(FileSystem.FileSystem, settingsFs)),
+    );
+    const settingsContext = preferencesOwner
+      ? yield* realSettingsLayer.pipe(Layer.fresh, Layer.build)
+      : yield* Settings.layerTest({
+          providerInstances: { [instanceId]: { driver, enabled: true } },
+        }).pipe(Layer.fresh, Layer.build);
+    const settings = Layer.succeedContext(settingsContext);
+    const enrichment = ProjectEnrichment.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(RepositoryIdentity.RepositoryIdentityResolver, {
+            resolve: () => Effect.succeed(null),
+          }),
+          Layer.succeed(ProjectFavicon.ProjectFaviconResolver, {
+            resolvePath: () => Effect.succeed(null),
+          }),
+        ),
+      ),
+    );
+    const projectLayer = nativeOwners
+      ? ProductionRuntime.layerProjectService.pipe(
+          Layer.provide(enrichment),
+          Layer.provide(WorkspacePaths.layer),
+          Layer.provide(nodeConfig),
+          Layer.provide(settings),
+          Layer.provide(db),
+        )
+      : Layer.mock(Projects.ProjectService)({
+          getById: () => Effect.succeed(Option.some(project)),
+          listPage: () => Effect.succeed({ projects: [project], nextCursor: null }),
+        });
+    const actualGit = Git.layer.pipe(Layer.provide(VcsProcess.layer));
+    const namedGitWorkflow = GitWorkflow.layer.pipe(
+      Layer.provide(VcsRegistry.layer.pipe(Layer.provide(VcsProcess.layer))),
+      // Named folders only use repository detection; no GitManager method runs.
+      Layer.provide(Layer.mock(GitManager.GitManager)({})),
+      Layer.provide(actualGit),
+    );
     const testInstance = {
       instanceId,
       driverKind: driver,
@@ -243,10 +375,21 @@ const makeNode = (
           },
         }),
       ).pipe(Effect.provide(ProjectStore.layer.pipe(Layer.provide(db))));
-    const folders = Layer.mock(Folders.ManagedProjectFolders)({
-      namedProjectsRoot: "/unused",
-      folderForThread: () => Effect.succeed(Option.none()),
-    });
+    const folders = nativeOwners
+      ? Folders.layer.pipe(
+          Layer.provide(projectLayer),
+          Layer.provide(Receipts.layer),
+          Layer.provide(namedGitWorkflow),
+          Layer.provide(actualGit),
+          Layer.provide(WorkspacePaths.layer),
+          Layer.provide(nodeConfig),
+          Layer.provide(settings),
+          Layer.provide(db),
+        )
+      : Layer.mock(Folders.ManagedProjectFolders)({
+          namedProjectsRoot: "/unused",
+          folderForThread: () => Effect.succeed(Option.none()),
+        });
     const noticeFailure = yield* Deferred.make<unknown>();
     const noticeDelivery = Layer.effect(
       PeerNoticeDelivery.PeerNoticeDelivery,
@@ -271,7 +414,17 @@ const makeNode = (
       Layer.fresh,
       Layer.build,
     );
+    const requestContext = attachmentRequests
+      ? yield* RequestRuntime.layer.pipe(
+          Layer.provide(db),
+          Layer.provide(nodeConfig),
+          Layer.provide(Layer.succeedContext(baseServices)),
+          Layer.build,
+        )
+      : Context.empty();
     const holdLaunchReply = yield* Ref.make(false);
+    const dropLaunchResponses = yield* Ref.make(0);
+    const dropCommittedToolReply = yield* Ref.make<string | undefined>(undefined);
     const launchReplyHeld = yield* Deferred.make<void>();
     const releaseLaunchReply = yield* Deferred.make<void>();
     const dropAckResponses = yield* Ref.make(0);
@@ -287,6 +440,23 @@ const makeNode = (
           peers.call(input).pipe(
             Effect.tap(() =>
               Effect.gen(function* () {
+                if ((yield* Ref.get(dropCommittedToolReply)) === input.tool) {
+                  yield* Ref.set(dropCommittedToolReply, undefined);
+                  return yield* new OrchestratorMcpFailure({
+                    code: "orchestration_error",
+                    message: "Isolated committed tool reply loss",
+                  });
+                }
+                if (
+                  input.tool === "t3_thread_launch" &&
+                  (yield* Ref.get(dropLaunchResponses)) > 0
+                ) {
+                  yield* Ref.update(dropLaunchResponses, (count) => count - 1);
+                  return yield* new OrchestratorMcpFailure({
+                    code: "orchestration_error",
+                    message: "Fixture lost accepted launch reply.",
+                  });
+                }
                 if (input.tool === "t3_thread_launch" && (yield* Ref.get(holdLaunchReply))) {
                   yield* Deferred.succeed(launchReplyHeld, undefined);
                   yield* Deferred.await(releaseLaunchReply);
@@ -335,11 +505,15 @@ const makeNode = (
           ),
         );
         const services = yield* RemoteDelegation.layer.pipe(
-          Layer.provideMerge(PeerForwarding.layer),
+          Layer.provideMerge(
+            attachmentRequests ? RequestRuntime.layerForwarding : PeerForwarding.layer,
+          ),
           Layer.provideMerge(faultablePeers),
           Layer.provideMerge(Layer.succeedContext(baseServices)),
+          Layer.provideMerge(Layer.succeedContext(requestContext)),
           Layer.provide(Layer.succeedContext(runtime)),
           Layer.provide(db),
+          Layer.provide(nodeConfig),
           Layer.provide(projectLayer),
           Layer.provide(Layer.mock(RepositoryIdentity.RepositoryIdentityResolver)({})),
           Layer.provide(environment),
@@ -379,7 +553,65 @@ const makeNode = (
       Layer.fresh,
       Layer.build,
     );
-    const schedules = yield* ScheduledTasks.layer.pipe(
+    const holdManualLaunchReply = yield* Ref.make(false);
+    const manualLaunchReplyHeld = yield* Deferred.make<void>();
+    const actualLaunch = Context.get(launches, ThreadLaunch.ThreadLaunchService);
+    const scheduledLaunch = Layer.succeed(ThreadLaunch.ThreadLaunchService, {
+      ...actualLaunch,
+      launch: (input) =>
+        actualLaunch.launch(input).pipe(
+          Effect.tap(() =>
+            Effect.gen(function* () {
+              if (
+                !input.commandId.startsWith("scheduled-task:manual:") ||
+                !(yield* Ref.get(holdManualLaunchReply))
+              )
+                return;
+              yield* Deferred.succeed(manualLaunchReplyHeld, undefined);
+              return yield* Effect.never;
+            }),
+          ),
+        ),
+    });
+    const secretConsumes = yield* Ref.make(0);
+    const loseSecretConfirmation = yield* Ref.make(false);
+    const nativeSecrets = SecretRequests.layer.pipe(
+      Layer.provide(
+        Layer.succeed(Secrets.ServerSecretStore, Context.get(services, Secrets.ServerSecretStore)),
+      ),
+      Layer.provide(Layer.succeedContext(runtime)),
+    );
+    const scheduleSecrets = attachmentRequests
+      ? Layer.effect(
+          SecretRequests.SecretRequests,
+          Effect.gen(function* () {
+            const actual = yield* SecretRequests.SecretRequests;
+            return {
+              ...actual,
+              consume: (input: Parameters<typeof actual.consume>[0]) =>
+                Effect.gen(function* () {
+                  const rows = yield* Context.get(
+                    database,
+                    SqlClient.SqlClient,
+                  )`SELECT request_id FROM scheduled_mutation_receipts WHERE stage='secret-started'`.pipe(
+                    Effect.orDie,
+                  );
+                  expect(rows.length).toBeGreaterThan(0);
+                  yield* Ref.update(secretConsumes, (n) => n + 1);
+                  const secret = yield* actual.consume(input);
+                  if (yield* Ref.getAndSet(loseSecretConfirmation, false))
+                    return yield* new SecretRequestError({ reason: "consume_failed" });
+                  return secret;
+                }),
+            };
+          }),
+        ).pipe(Layer.provide(nativeSecrets))
+      : Layer.mock(SecretRequests.SecretRequests)({});
+    const scheduleLayer = (
+      attachmentRequests
+        ? ScheduledChecks.withOutcomeChecks(ScheduledTasks.layer)
+        : ScheduledTasks.layer
+    ).pipe(
       Layer.provide(
         Layer.succeed(
           ScheduledTasks.ScheduledTaskWebhookOrigin,
@@ -387,29 +619,279 @@ const makeNode = (
         ),
       ),
       Layer.provide(Scheduler.layer),
-      Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
-      Layer.provide(Layer.succeedContext(launches)),
+      Layer.provide(scheduleSecrets),
+      Layer.provide(scheduledLaunch),
+      Layer.provide(Prism.layer.pipe(Layer.provide(settings), Layer.provide(layerLaunchCatalog))),
+      Layer.provide(ProcessRunner.layer),
+      Layer.provide(
+        commandSpawner === undefined
+          ? Layer.empty
+          : Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, commandSpawner),
+      ),
+      Layer.provide(ProjectStore.layer.pipe(Layer.provide(db))),
       Layer.provide(launchDependencies),
-      Layer.fresh,
-      Layer.build,
     );
-    const tools = Layer.merge(
-      McpHttpServer.layerProjectRegistration,
-      McpHttpServer.layerOrchestratorToolkit,
-    ).pipe(
-      Layer.provide(Layer.succeedContext(schedules)),
-      Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
-      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
-      Layer.provide(Layer.succeedContext(launches)),
-      Layer.provide(Layer.succeedContext(runtime)),
-      Layer.provide(Layer.succeedContext(services)),
-      Layer.provide(projectLayer),
-      Layer.provide(folders),
-      Layer.provide(settings),
+    const scheduleScope = yield* Scope.make();
+    yield* Effect.addFinalizer(() => Scope.close(scheduleScope, Exit.void));
+    const schedules = yield* scheduleLayer.pipe(Layer.fresh, Layer.buildWithScope(scheduleScope));
+    if (attachmentRequests) {
+      yield* SpectrumStore.ensureSpectrumSchema.pipe(Effect.provide(db));
+      yield* CheckStore.ensureCheckSchema.pipe(Effect.provide(db));
+    }
+    const spectrumLayer = SpectrumLaunch.layer.pipe(
+      Layer.provide(Prism.layer.pipe(Layer.provide(settings), Layer.provide(layerLaunchCatalog))),
+      Layer.provide(ProjectStore.layer.pipe(Layer.provide(db))),
+      Layer.provide(launchDependencies),
+    );
+    const loseWorktreeReply = yield* Ref.make(false);
+    const worktreeThreads = {
+      ...Context.get(runtime, Threads.ThreadManagementService),
+      dispatch: (input: Parameters<Threads.ThreadManagementService["Service"]["dispatch"]>[0]) =>
+        Context.get(runtime, Threads.ThreadManagementService)
+          .dispatch(input)
+          .pipe(
+            Effect.flatMap((result) =>
+              Effect.gen(function* () {
+                if (
+                  input.type === "thread.metadata.update" &&
+                  input.commandId.startsWith("worktree-handoff:") &&
+                  (yield* Ref.getAndSet(loseWorktreeReply, false))
+                )
+                  return yield* new Orchestrator.OrchestratorDispatchError({
+                    commandId: input.commandId,
+                    commandType: input.type,
+                    cause: "Isolated committed native binding reply loss",
+                  });
+                return result;
+              }),
+            ),
+          ),
+    };
+    const handoffGitManager = GitManager.layer.pipe(
+      Layer.provide(actualGit),
+      Layer.provide(
+        Layer.mock(SourceProviders.SourceControlProviderRegistry)({
+          resolveLink: () => Effect.die("No external repository host in this fixture"),
+        }),
+      ),
+      Layer.provide(Layer.mock(TextGeneration.TextGeneration)({})),
       Layer.provide(layerLaunchCatalog),
-      Layer.provide(Layer.mock(Git.GitVcsDriver)({})),
-      Layer.provide(Layer.mock(Repositories.SourceControlRepositoryService)({})),
+      Layer.provide(Layer.succeedContext(runtime)),
+      Layer.provide(ProjectStore.layer.pipe(Layer.provide(db))),
+      Layer.provide(settings),
+      Layer.provide(Layer.mock(SetupScripts.ProjectSetupScriptRunner)({})),
     );
+    const handoffGit = GitWorkflow.layer.pipe(
+      Layer.provide(handoffGitManager),
+      Layer.provide(actualGit),
+      Layer.provide(VcsRegistry.layer.pipe(Layer.provide(VcsProcess.layer))),
+    );
+    const handoff =
+      ownerWorkspace === undefined
+        ? Layer.empty
+        : yield* Effect.gen(function* () {
+            const gitContext = yield* handoffGit.pipe(
+              Layer.provide(nodeConfig),
+              Layer.fresh,
+              Layer.build,
+            );
+            const service = WorktreeMcp.layer.pipe(
+              Layer.provide(Layer.succeed(Threads.ThreadManagementService, worktreeThreads)),
+              Layer.provide(Layer.succeedContext(gitContext)),
+              Layer.provide(
+                Layer.mock(VcsStatus.VcsStatusBroadcaster)({
+                  refreshStatus: (cwd) =>
+                    Context.get(gitContext, GitWorkflow.GitWorkflowService).status({ cwd }),
+                }),
+              ),
+              Layer.provide(launchDependencies),
+            );
+            return McpHttpServer.toolkitRegistration(WorktreeToolkit, WorktreeHandlers.layer).pipe(
+              Layer.provide(service),
+              Layer.provide(Layer.succeedContext(gitContext)),
+            );
+          });
+    const browser = yield* BrowserBroker.make;
+    const previewBrowser = Layer.succeed(PreviewBrowser.PreviewBrowser, {
+      installed: Effect.succeedNone,
+      executable: Effect.die("This isolated fixture cannot launch a browser"),
+    });
+    const htmlLayer = HtmlRender.layer.pipe(
+      Layer.provide(nodeConfig),
+      Layer.provide(previewBrowser),
+    );
+
+    const deviceAgentStarts = yield* Ref.make(0);
+    const deviceConfigurations = yield* Ref.make(0);
+    const loseDeviceConfiguration = yield* Ref.make(false);
+    let fixtureDevice: NativeDevices.DeviceService["Service"] | undefined;
+    const deviceLayer = deviceOwner
+      ? yield* Effect.gen(function* () {
+          const settingsService = Context.get(settingsContext, Settings.ServerSettingsService);
+          yield* settingsService.updateSettings({
+            enableDeviceSupport: true,
+            enableAgentDeviceAccess: true,
+          });
+          const config = Context.get(nodeConfigContext, Config.ServerConfig);
+          const file = `${config.stateDir}/fixture-device-agent.json`;
+          const entryPath = `${config.stateDir}/fixture-device-agent.js`;
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          yield* fs.writeFileString(entryPath, "// Isolated adapter fixture, never executed.\n");
+          const ready: DeviceHost.DeviceHostReady = {
+            nodePath: process.execPath,
+            hub: { origin: "http://device382.invalid" },
+            helpers: { serveSimAxSettings: null, serveSimCli: null },
+            run: () => Effect.succeed({ code: 0, stdout: "", stderr: "" }),
+          };
+          const host: DeviceHost.DeviceHost["Service"] = {
+            id: LOCAL_DEVICE_HOST_ID,
+            summary: Effect.succeed({
+              id: LOCAL_DEVICE_HOST_ID,
+              kind: "local",
+              label: "Isolated fixture",
+              platforms: [{ platform: "android", available: true }],
+              hubInstalled: true,
+              agentDeviceInstalled: true,
+            }),
+            platformAvailability: (platform) => Effect.succeed({ platform, available: true }),
+            ensureReady: () => Effect.succeed(ready),
+            ensureAgentReady: () =>
+              Ref.update(deviceAgentStarts, (n) => n + 1).pipe(
+                Effect.as({
+                  ...ready,
+                  agentDevice: {
+                    baseUrl: "http://device-agent382.invalid",
+                    token: "ISOLATED_DEVICE_TOKEN_382",
+                    entryPath,
+                  },
+                }),
+              ),
+            current: Effect.succeed(null),
+            stopAgent: Effect.void,
+            stop: Effect.void,
+          };
+          const hub = HttpClient.make((request) =>
+            Effect.succeed(
+              HttpClientResponse.fromWeb(
+                request,
+                Response.json({
+                  simulators: [],
+                  emulators: [
+                    {
+                      id: "fixture-device382",
+                      name: "Isolated Android",
+                      platform: "android",
+                      version: "fixture",
+                      booted: true,
+                      physical: false,
+                    },
+                  ],
+                }),
+              ),
+            ),
+          );
+          const service = yield* NativeDevices.makeWithHosts(
+            new Map([[host.id, host]]),
+            undefined,
+            (_id, ready) =>
+              Effect.gen(function* () {
+                const sql = Context.get(database, SqlClient.SqlClient);
+                expect(
+                  (yield* sql`SELECT id FROM mcp_request_receipts WHERE state='started'`.pipe(
+                    Effect.orDie,
+                  )).length,
+                ).toBeGreaterThan(0);
+                yield* writeAgentDeviceConfig(file, ready.agentDevice).pipe(
+                  Effect.provideService(FileSystem.FileSystem, fs),
+                  Effect.provideService(Path.Path, path),
+                  Effect.mapError(
+                    (cause) =>
+                      new DeviceOperationError({
+                        operation: "configure agent",
+                        reason: "settings_failed",
+                        cause,
+                      }),
+                  ),
+                );
+                yield* Ref.update(deviceConfigurations, (n) => n + 1);
+                if (yield* Ref.getAndSet(loseDeviceConfiguration, false))
+                  return yield* new DeviceOperationError({
+                    operation: "configure agent",
+                    reason: "settings_failed",
+                    cause: "Isolated reply loss after actual native config persistence",
+                  });
+                return file;
+              }),
+          ).pipe(
+            Effect.provideService(HttpClient.HttpClient, hub),
+            Effect.provideService(Settings.ServerSettingsService, settingsService),
+          );
+          fixtureDevice = { ...service, agentCli: Effect.succeed(entryPath) };
+          return Layer.succeed(NativeDevices.DeviceService, fixtureDevice);
+        })
+      : Layer.mock(NativeDevices.DeviceService)({});
+
+    const toolsFor = (
+      scheduleServices: typeof schedules,
+      requests: typeof requestContext = requestContext,
+    ) =>
+      Layer.mergeAll(
+        McpHttpServer.layerProjectRegistration,
+        McpHttpServer.layerOrchestratorToolkit,
+        ...(preferencesOwner ? [McpHttpServer.layerEnvironmentToolkit] : []),
+        ...(deviceOwner ? [McpHttpServer.layerDeviceToolkit] : []),
+        ...(attachmentRequests
+          ? [
+              McpHttpServer.toolkitRegistration(IssuesToolkit, IssueHandlers.layer).pipe(
+                Layer.provide(
+                  IssueLinks.layer.pipe(
+                    Layer.provide(
+                      Layer.succeed(ClosingReferences.IssueClosingReferences, {
+                        issuesClosedBy: () => Effect.succeed([]),
+                      }),
+                    ),
+                  ),
+                ),
+              ),
+              McpHttpServer.layerPullRequestsToolkit,
+              McpHttpServer.toolkitRegistration(AttachmentToolkit, AttachmentHandlers.layer),
+              ServerHttp.layerAttachmentUploadRoute,
+              McpHttpServer.layerPreviewToolkit,
+              McpHttpServer.layerThreadToolkit,
+              McpHttpServer.layerHtmlToolkit,
+              handoff,
+              McpHttpServer.toolkitRegistration(SpectrumMcp.SpectrumToolkit, SpectrumMcp.layer),
+            ]
+          : []),
+      ).pipe(
+        Layer.provide(Layer.mergeAll(spectrumLayer, htmlLayer, previewBrowser)),
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
+            deviceLayer,
+          ),
+        ),
+        Layer.provide(ThreadSearch.layer.pipe(Layer.provide(db))),
+        Layer.provide(Layer.succeed(BrowserBroker.PreviewAutomationBroker, browser)),
+        Layer.provide(Layer.succeedContext(requests)),
+        Layer.provide(nodeConfig),
+        Layer.provide(Layer.succeedContext(baseServices)),
+        Layer.provide(Layer.succeedContext(scheduleServices)),
+        Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+        Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+        Layer.provide(Layer.succeedContext(launches)),
+        Layer.provide(Layer.succeedContext(runtime)),
+        Layer.provide(Layer.succeedContext(services)),
+        Layer.provide(projectLayer),
+        Layer.provide(folders),
+        Layer.provide(settings),
+        Layer.provide(attachmentRequests ? Adapters.layerFromAdapters([adapter]) : Layer.empty),
+        Layer.provide(layerLaunchCatalog),
+        Layer.provide(Layer.mock(Git.GitVcsDriver)({})),
+        Layer.provide(Layer.mock(Repositories.SourceControlRepositoryService)({})),
+      );
+    const tools = toolsFor(schedules);
     const serverContext = yield* NodeHttpServer.layerTest.pipe(Layer.fresh, Layer.build);
     const registry = yield* McpSessionRegistry.__testing
       .make()
@@ -431,6 +913,9 @@ const makeNode = (
       Layer.build,
     );
     const peer = yield* servePeer(descriptor, tools, {
+      ...(attachmentRequests
+        ? { serverConfig: Context.get(nodeConfigContext, Config.ServerConfig) }
+        : {}),
       database: db,
       registry,
       secretStore: Context.get(services, Secrets.ServerSecretStore),
@@ -442,10 +927,54 @@ const makeNode = (
         discard: true,
       }),
     );
+    const rebuildScheduler = Scope.close(scheduleScope, Exit.void).pipe(
+      Effect.andThen(scheduleLayer.pipe(Layer.fresh, Layer.build)),
+    );
+    const restartSchedulerTransport = Effect.gen(function* () {
+      const rebuilt = yield* rebuildScheduler;
+      const requests = attachmentRequests
+        ? yield* RequestRuntime.layer.pipe(
+            Layer.provide(db),
+            Layer.provide(nodeConfig),
+            Layer.provide(Layer.succeedContext(baseServices)),
+            Layer.fresh,
+            Layer.build,
+          )
+        : Context.empty();
+      const http = yield* NodeHttpServer.layerTest.pipe(Layer.fresh, Layer.build);
+      const renewed = yield* McpSessionRegistry.__testing
+        .make()
+        .pipe(
+          Effect.provideService(
+            PeerAuthority.PeerAuthority,
+            Context.get(baseServices, PeerAuthority.PeerAuthority),
+          ),
+          Effect.provide(Layer.merge(environment, Layer.succeedContext(http))),
+        );
+      const restarted = yield* servePeer(descriptor, toolsFor(rebuilt, requests), {
+        ...(attachmentRequests
+          ? { serverConfig: Context.get(nodeConfigContext, Config.ServerConfig) }
+          : {}),
+        database: db,
+        registry: renewed,
+        secretStore: Context.get(services, Secrets.ServerSecretStore),
+        authorityServices: Context.merge(lifecycleContext, lifecycle),
+      }).pipe(Effect.provide(Layer.succeedContext(http)));
+      return {
+        ...restarted,
+        registry: renewed,
+        scheduled: Context.get(rebuilt, ScheduledTasks.ScheduledTaskService),
+        requestContext: requests,
+      };
+    });
     return {
       ...peer,
       noticeFailure,
       holdLaunchReply,
+      dropLaunchResponses,
+      dropCommittedToolReply,
+      secretConsumes,
+      loseSecretConfirmation,
       launchReplyHeld,
       releaseLaunchReply,
       dropAckResponses,
@@ -460,9 +989,26 @@ const makeNode = (
       lifecycleRecovery,
       signals,
       runtime,
+      requestContext,
+      config: Context.get(nodeConfigContext, Config.ServerConfig),
+      browser,
+      fixtureDevice,
+      deviceAgentStarts,
+      deviceConfigurations,
+      loseDeviceConfiguration,
+      fixtureSettings: Context.get(settingsContext, Settings.ServerSettingsService),
+      settingsWrites,
+      loseSettingsConfirmation,
+      rebuildSettings: realSettingsLayer.pipe(Layer.fresh, Layer.build),
       services,
       registry,
       scheduled: Context.get(schedules, ScheduledTasks.ScheduledTaskService),
+      rebuildScheduler,
+      restartSchedulerTransport,
+      scheduledChecks: Context.getOption(schedules, ScheduledChecks.ScheduledTaskChecks),
+      holdManualLaunchReply,
+      manualLaunchReplyHeld,
+      loseWorktreeReply,
       stopConnections: connection.stop,
       reconnect: connect,
       serverContext,
@@ -477,6 +1023,2123 @@ const makeNode = (
     };
   });
 type Node = Effect.Success<ReturnType<typeof makeNode>>;
+
+it.live(
+  "scheduler-replay382: replayed creation preserves later independent schedule edits",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf("scheduler-replay382", "Scheduler", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const parent = ThreadId.make("scheduler-replay382-parent");
+        yield* seedParent(node, parent);
+        const input = {
+          prompt: "Original isolated schedule intent",
+          title: "Original title",
+          schedule: { type: "interval", everyMs: 60_000 },
+          clientRequestId: "scheduler-replay382-create",
+        };
+        const first = yield* nativeCall(node, parent, "schedule_task", input);
+        expect(first.isError, json(first)).not.toBe(true);
+        const result = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ scheduledTaskId: Schema.String }),
+        )(first.structuredContent);
+        const later = yield* nativeCall(node, parent, "update_scheduled_task", {
+          scheduledTaskId: result.scheduledTaskId,
+          title: "Later independent title",
+          clientRequestId: "scheduler-replay382-later-edit",
+        });
+        expect(later.isError, json(later)).not.toBe(true);
+        const replay = yield* nativeCall(node, parent, "schedule_task", input);
+        expect(replay.isError, json(replay)).not.toBe(true);
+        expect(
+          (yield* node.scheduled.list()).tasks.find((task) => task.id === result.scheduledTaskId)
+            ?.title,
+        ).toBe("Later independent title");
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "scheduler-replay382: native acceptance survives edits, reconstruction and schedule incarnation replacement",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf("scheduler-history382", "Scheduler history", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const parent = ThreadId.make("scheduler-history382-parent");
+        yield* seedParent(node, parent);
+        const firstPrivate = "ISOLATED_SCHEDULE_PROMPT_382_ALPHA_NEVER_IN_RECEIPTS";
+        const changedPrivate = "ISOLATED_SCHEDULE_PROMPT_382_BETA_CHANGED_INPUT";
+        const create = {
+          prompt: firstPrivate,
+          title: "Original",
+          schedule: { type: "interval", everyMs: 60_000 },
+          checkCommand: "test -f isolated-original",
+          checkReason: "Original isolated proof",
+          bindToCurrentThread: false,
+          clientRequestId: "history382-create",
+        };
+        const initialRivals = yield* Effect.all(
+          [
+            nativeCall(node, parent, "schedule_task", create),
+            nativeCall(node, parent, "schedule_task", create),
+          ],
+          { concurrency: "unbounded" },
+        );
+        const first = initialRivals[0]!;
+        expect(initialRivals[1]?.structuredContent).toEqual(first.structuredContent);
+        expect(first.isError, json(first)).not.toBe(true);
+        const receipt = yield* Schema.decodeUnknownEffect(McpScheduledMutationReceipt)(
+          first.structuredContent,
+        );
+        expect(Object.keys(receipt).sort()).toEqual([
+          "applied",
+          "operationId",
+          "requestId",
+          "scheduledTaskId",
+          "stage",
+          "type",
+        ]);
+        const id = receipt.scheduledTaskId;
+        const edit1 = {
+          scheduledTaskId: id,
+          title: "First edit",
+          prompt: "Independent prompt",
+          checkCommand: "test -f isolated-first",
+          checkReason: "First edit",
+          clientRequestId: "history382-edit1",
+        };
+        const edit2 = {
+          scheduledTaskId: id,
+          title: "Second edit",
+          checkCommand: "test -f isolated-second",
+          checkReason: "Second edit",
+          clientRequestId: "history382-edit2",
+        };
+        expect((yield* nativeCall(node, parent, "update_scheduled_task", edit1)).isError).not.toBe(
+          true,
+        );
+        expect((yield* nativeCall(node, parent, "update_scheduled_task", edit2)).isError).not.toBe(
+          true,
+        );
+        expect(
+          (yield* nativeCall(node, parent, "schedule_task", create)).structuredContent,
+        ).toEqual(receipt);
+        expect((yield* nativeCall(node, parent, "update_scheduled_task", edit1)).isError).not.toBe(
+          true,
+        );
+        let current = (yield* node.scheduled.list()).tasks.find((task) => task.id === id)!;
+        expect(current.title).toBe("Second edit");
+        expect(current.prompt).toBe("Independent prompt");
+        expect(current.outcomeCheck?.command).toBe("test -f isolated-second");
+        const changed = yield* nativeCall(node, parent, "schedule_task", {
+          ...create,
+          prompt: changedPrivate,
+        });
+        expect(changed.isError).toBe(true);
+        const sql = Context.get(node.database, SqlClient.SqlClient);
+        const before = yield* sql`SELECT * FROM scheduled_mutation_receipts ORDER BY request_id`;
+        expect(before).toHaveLength(3);
+        for (const rows of [before, yield* sql`SELECT * FROM mcp_request_receipts`]) {
+          expect(json(rows)).not.toContain(firstPrivate);
+          expect(json(rows)).not.toContain(changedPrivate);
+          expect(json(rows)).not.toContain("isolated-second");
+        }
+        const reopened = yield* node.reopenDatabase;
+        const original = (yield* sql<{
+          request_id: string;
+          generation: string;
+          input_digest: string;
+        }>`SELECT * FROM scheduled_mutation_receipts WHERE request_id=${receipt.operationId}`)[0]!;
+        const recovered = yield* ScheduleMutation.confirmed({
+          id: original.request_id,
+          generation: original.generation,
+          inputDigest: original.input_digest,
+          clientRequestId: create.clientRequestId,
+        }).pipe(Effect.provide(Layer.succeedContext(reopened)));
+        expect(Option.getOrThrow(recovered)).toEqual(receipt);
+        const active = { ...node, ...(yield* node.restartSchedulerTransport) };
+        const transportRecovered = yield* nativeCall(active, parent, "schedule_task", create);
+        expect(transportRecovered.isError, json(transportRecovered)).not.toBe(true);
+        expect(transportRecovered.structuredContent).toEqual(receipt);
+        expect((yield* active.scheduled.list()).tasks.find((task) => task.id === id)?.title).toBe(
+          "Second edit",
+        );
+        const concurrent = yield* Effect.all(
+          [
+            nativeCall(active, parent, "schedule_task", create),
+            nativeCall(active, parent, "schedule_task", create),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(concurrent.map((result) => result.structuredContent)).toEqual([receipt, receipt]);
+        expect(yield* sql`SELECT * FROM scheduled_mutation_receipts ORDER BY request_id`).toEqual(
+          before,
+        );
+        const rivalEdits = yield* Effect.all(
+          [
+            nativeCall(active, parent, "update_scheduled_task", {
+              scheduledTaskId: id,
+              title: "Rival A",
+              clientRequestId: "history382-rival-a",
+            }),
+            nativeCall(active, parent, "update_scheduled_task", {
+              scheduledTaskId: id,
+              prompt: "ISOLATED_RIVAL_PRIVATE_PROMPT_382",
+              clientRequestId: "history382-rival-b",
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(rivalEdits.every((result) => result.isError !== true)).toBe(true);
+        const rivalTask = (yield* active.scheduled.list()).tasks.find((task) => task.id === id);
+        expect(rivalTask?.title).toBe("Rival A");
+        expect(rivalTask?.prompt).toBe("ISOLATED_RIVAL_PRIVATE_PROMPT_382");
+        expect(yield* sql`SELECT * FROM scheduled_mutation_receipts`).toHaveLength(5);
+        const failure = yield* nativeCall(active, parent, "update_scheduled_task", {
+          scheduledTaskId: id,
+          schedule: { type: "once", at: "2000-01-01T00:00:00.000Z" },
+          clientRequestId: "history382-before-commit",
+        });
+        expect(failure.isError).toBe(true);
+        expect(yield* sql`SELECT * FROM scheduled_mutation_receipts`).toHaveLength(5);
+        const remove = { scheduledTaskId: id, clientRequestId: "history382-delete" };
+        const deleted = yield* nativeCall(active, parent, "delete_scheduled_task", remove);
+        expect(deleted.isError, json(deleted)).not.toBe(true);
+        expect((yield* nativeCall(active, parent, "schedule_task", create)).isError).toBe(true);
+        expect((yield* nativeCall(active, parent, "update_scheduled_task", edit1)).isError).toBe(
+          true,
+        );
+        expect((yield* nativeCall(active, parent, "delete_scheduled_task", remove)).isError).toBe(
+          true,
+        );
+        // Deliberate unkeyed local replacement keeps the visible id but gets a new native incarnation.
+        yield* active.scheduled.upsert({
+          ...current,
+          title: "Replacement incarnation",
+          prompt: "Replacement private prompt",
+          requireExisting: false,
+        });
+        const replacement = (yield* active.scheduled.list()).tasks.find((task) => task.id === id)!;
+        for (const [tool, input] of [
+          ["schedule_task", create],
+          ["update_scheduled_task", edit1],
+          ["delete_scheduled_task", remove],
+        ] as const) {
+          const historical = yield* nativeCall(active, parent, tool, input);
+          expect(historical.isError, json(historical)).not.toBe(true);
+        }
+        current = (yield* active.scheduled.list()).tasks.find((task) => task.id === id)!;
+        expect(current).toEqual(replacement);
+        const nativeRows = yield* sql<{
+          incarnation: string;
+        }>`SELECT incarnation FROM scheduled_task_request_incarnations WHERE task_id=${id}`;
+        const acceptedRows = yield* sql<{
+          incarnation: string;
+        }>`SELECT incarnation FROM scheduled_mutation_receipts WHERE request_id=${receipt.operationId}`;
+        expect(nativeRows[0]?.incarnation).not.toBe(acceptedRows[0]?.incarnation);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "scheduler-secret382: committed native replay consumes once, while consume-to-commit uncertainty never consumes again",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf("scheduler-secret-a382", "A", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const b = yield* makeNode(
+          descriptorOf("scheduler-secret-b382", "B", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("scheduler-secret382-parent");
+        yield* seedParent(a, parent);
+        const store = Context.get(b.services, Secrets.ServerSecretStore);
+        const seed = (hex: string) =>
+          Clock.currentTimeMillis.pipe(
+            Effect.flatMap((savedAt) =>
+              store.set(
+                `secret-request-${hex}`,
+                new TextEncoder().encode(
+                  json({ projectId: b.project.id, value: `ISOLATED_SECRET_382_${hex}`, savedAt }),
+                ),
+              ),
+            ),
+          );
+        const firstHex = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        yield* seed(firstHex);
+        const input = {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          title: "Webhook",
+          prompt: "ISOLATED_WEBHOOK_PROMPT_382",
+          schedule: {
+            type: "webhook",
+            signature: {
+              header: "x-fixture-signature",
+              encoding: "hex",
+              prefix: "sha256=",
+              secretRef: SecretRef.make(`secret-ref:${firstHex}`),
+            },
+          },
+          clientRequestId: "secret382-committed",
+        };
+        yield* Ref.set(a.dropCommittedToolReply, "schedule_task");
+        const lost = yield* nativeCall(a, parent, "schedule_task", input);
+        expect(lost.isError, json(lost)).toBe(true);
+        expect(yield* Ref.get(b.secretConsumes)).toBe(1);
+        expect(Option.isNone(yield* store.get(`secret-request-${firstHex}`))).toBe(true);
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const rows = yield* sql<{
+          result_json: string;
+        }>`SELECT result_json FROM scheduled_mutation_receipts WHERE stage='confirmed'`;
+        expect(rows).toHaveLength(1);
+        const receipt = yield* Schema.decodeUnknownEffect(
+          Schema.fromJsonString(McpScheduledMutationReceipt),
+        )(rows[0]!.result_json);
+        const beforeRoute = Option.getOrThrow(yield* a.links.get(b.environmentId));
+        const resumed = { ...b, ...(yield* b.restartSchedulerTransport) };
+        // Only isolated transport location changes. Existing session, grant and
+        // generation stay untouched; the real resolver probes the new server.
+        yield* Context.get(
+          a.database,
+          SqlClient.SqlClient,
+        )`UPDATE peer_environment_links SET urls_json=${json([resumed.url])} WHERE environment_id=${b.environmentId}`;
+        expect(Option.getOrThrow(yield* a.links.get(b.environmentId)).launchIdentity).toBe(
+          beforeRoute.launchIdentity,
+        );
+        const replay = yield* nativeCall(a, parent, "schedule_task", input);
+        expect(replay.isError, json(replay)).not.toBe(true);
+        expect(replay.structuredContent).toEqual(receipt);
+        expect(yield* Ref.get(b.secretConsumes)).toBe(1);
+        const listed = yield* nativeCall(a, parent, "list_scheduled_tasks", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+        });
+        const projection = yield* decodeScheduledTaskList(listed.structuredContent);
+        expect(projection.tasks[0]?.schedule.type).toBe("webhook");
+        expect(
+          decodeURIComponent(new URL(projection.tasks[0]!.webhookUrl!).pathname.split("/").at(-2)!),
+        ).toBe(receipt.scheduledTaskId);
+        const secondHex = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        yield* seed(secondHex);
+        yield* Ref.set(b.loseSecretConfirmation, true);
+        const uncertain = {
+          ...input,
+          clientRequestId: "secret382-uncertain",
+          schedule: {
+            ...input.schedule,
+            signature: {
+              ...input.schedule.signature,
+              secretRef: SecretRef.make(`secret-ref:${secondHex}`),
+            },
+          },
+        };
+        const failed = yield* nativeCall(a, parent, "schedule_task", uncertain);
+        expect(failed.isError, json(failed)).toBe(true);
+        expect(json(failed)).toContain("outcome_unknown");
+        expect(yield* Ref.get(b.secretConsumes)).toBe(2);
+        expect(Option.isNone(yield* store.get(`secret-request-${secondHex}`))).toBe(true);
+        const reconstructed = { ...b, ...(yield* b.restartSchedulerTransport) };
+        yield* Context.get(
+          a.database,
+          SqlClient.SqlClient,
+        )`UPDATE peer_environment_links SET urls_json=${json([reconstructed.url])} WHERE environment_id=${b.environmentId}`;
+        const native = reconstructed.scheduled;
+        expect((yield* native.list()).tasks).toHaveLength(1);
+        const again = yield* nativeCall(a, parent, "schedule_task", uncertain);
+        expect(json(again)).toContain("outcome_unknown");
+        expect(yield* Ref.get(b.secretConsumes)).toBe(2);
+        for (const records of [
+          yield* sql`SELECT * FROM scheduled_mutation_receipts`,
+          yield* sql`SELECT * FROM mcp_request_receipts`,
+        ]) {
+          expect(json(records)).not.toContain("ISOLATED_SECRET_382_");
+          expect(json(records)).not.toContain(input.prompt);
+          expect(json(records)).not.toContain("https://hooks.");
+        }
+        yield* a.links.unlink(b.environmentId);
+        yield* linkTo(a.links, b, "full-access");
+        const replaced = yield* nativeCall(a, parent, "schedule_task", input);
+        expect(replaced.isError).toBe(true);
+        expect(yield* Ref.get(b.secretConsumes)).toBe(2);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "links382: registered SQL and native command link receipts cannot undo later independent links",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf("links382", "Links", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true, nativeOwners: true },
+        );
+        const parent = ThreadId.make("links382-parent");
+        yield* seedParent(node, parent);
+        const caps = new Set<
+          McpThreadInvocationScope["capabilities"] extends ReadonlySet<infer A> ? A : never
+        >(["orchestration", "pull-requests"]);
+        const call = (tool: string, args: Record<string, unknown>) =>
+          nativeCall(node, parent, tool, args, caps);
+        for (const [link, unlink, list, url] of [
+          [
+            "link_issue",
+            "unlink_issue",
+            "list_thread_issues",
+            "https://github.com/fixture/repo/issues/382",
+          ],
+          [
+            "link_pull_request",
+            "unlink_pull_request",
+            "list_thread_pull_requests",
+            "https://github.com/fixture/repo/pull/382",
+          ],
+        ]) {
+          const initial = { url, clientRequestId: `${link}-original` };
+          const first = yield* call(link!, initial);
+          expect(first.isError, json(first)).not.toBe(true);
+          const removed = yield* call(unlink!, { url, clientRequestId: `${unlink}-first` });
+          expect(removed.isError, json(removed)).not.toBe(true);
+          expect((yield* call(link!, initial)).structuredContent).toEqual(first.structuredContent);
+          const absent = yield* call(list!, {});
+          expect(json(absent.structuredContent)).not.toContain('"number":382');
+          const later = yield* call(link!, { url, clientRequestId: `${link}-later` });
+          expect(later.isError, json(later)).not.toBe(true);
+          expect(
+            (yield* call(unlink!, { url, clientRequestId: `${unlink}-first` })).structuredContent,
+          ).toEqual(removed.structuredContent);
+          const present = yield* call(list!, {});
+          expect(json(present.structuredContent)).toContain('"number":382');
+          const noOpLink = { url, clientRequestId: `${link}-original-no-op` };
+          const noOp = yield* call(link!, noOpLink);
+          expect(noOp.isError, json(noOp)).not.toBe(true);
+          expect(
+            (yield* call(unlink!, { url, clientRequestId: `${unlink}-independent` })).isError,
+          ).not.toBe(true);
+          expect((yield* call(link!, noOpLink)).structuredContent).toEqual(noOp.structuredContent);
+          expect(json((yield* call(list!, {})).structuredContent)).not.toContain('"number":382');
+          const noOpUnlink = { url, clientRequestId: `${unlink}-original-no-op` };
+          const noOpRemoved = yield* call(unlink!, noOpUnlink);
+          expect(noOpRemoved.isError, json(noOpRemoved)).not.toBe(true);
+          expect(
+            (yield* call(link!, { url, clientRequestId: `${link}-after-no-op` })).isError,
+          ).not.toBe(true);
+          expect((yield* call(unlink!, noOpUnlink)).structuredContent).toEqual(
+            noOpRemoved.structuredContent,
+          );
+          expect(json((yield* call(list!, {})).structuredContent)).toContain('"number":382');
+        }
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "worktree382: native worktree acceptance preserves files and bounds unresolved follow-up effects",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "worktree382-native-" });
+        const git = (args: ReadonlyArray<string>) =>
+          ProcessRunner.ProcessRunner.pipe(
+            Effect.flatMap((runner) => runner.run({ command: "git", args: ["-C", root, ...args] })),
+            Effect.provide(ProcessRunner.layer),
+          );
+        expect((yield* git(["init", "--quiet", "--initial-branch=main"])).code).toBe(0);
+        yield* fs.writeFileString(`${root}/README.md`, "Isolated repository");
+        expect((yield* git(["add", "README.md"])).code).toBe(0);
+        expect(
+          (yield* git([
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "Fixture baseline",
+          ])).code,
+        ).toBe(0);
+        const node = yield* makeNode(
+          descriptorOf("worktree382", "Worktree", { peerAuthority: 1 }),
+          "disk",
+          {
+            productionKernel: true,
+            attachmentRequests: true,
+            nativeOwners: true,
+            ownerWorkspace: root,
+          },
+        );
+        const parent = ThreadId.make("worktree382-parent");
+        yield* seedParent(node, parent);
+        const capabilities = new Set(["orchestration", "worktree"] as const);
+        const input = {
+          branch: "worktree382-accepted",
+          path: `${root}/accepted`,
+          baseRef: "main",
+          startFromOrigin: false,
+          runSetupScript: false,
+          clientRequestId: "worktree382-once",
+        };
+        const first = yield* nativeCall(node, parent, "t3_worktree_handoff", input, capabilities);
+        expect(first.isError, json(first)).not.toBe(true);
+        yield* fs.writeFileString(`${root}/accepted/README.md`, "Later independent edit");
+        const replay = yield* nativeCall(node, parent, "t3_worktree_handoff", input, capabilities);
+        expect(replay.isError, json(replay)).not.toBe(true);
+        expect(replay.structuredContent).toEqual(first.structuredContent);
+        expect(yield* fs.readFileString(`${root}/accepted/README.md`)).toBe(
+          "Later independent edit",
+        );
+        const next = ThreadId.make("worktree382-ambiguous-parent");
+        yield* seedParent(node, next);
+        yield* Ref.set(node.loseWorktreeReply, true);
+        const ambiguousInput = {
+          ...input,
+          branch: "worktree382-ambiguous",
+          path: `${root}/ambiguous`,
+          clientRequestId: "worktree382-lost-native-reply",
+        };
+        const lost = yield* nativeCall(
+          node,
+          next,
+          "t3_worktree_handoff",
+          ambiguousInput,
+          capabilities,
+        );
+        expect(lost.isError).toBe(true);
+        expect(json(lost)).toContain("outcome_unknown");
+        expect(yield* fs.exists(`${root}/ambiguous/README.md`)).toBe(true);
+        const again = yield* nativeCall(
+          node,
+          next,
+          "t3_worktree_handoff",
+          ambiguousInput,
+          capabilities,
+        );
+        expect(again.isError).toBe(true);
+        expect(json(again)).toContain("native_binding_accepted");
+        expect((yield* node.threads.getThreadShell(next))?.worktreePath).toBe(`${root}/ambiguous`);
+        expect(yield* fs.exists(`${root}/ambiguous/README.md`)).toBe(true);
+        const sql = Context.get(node.database, SqlClient.SqlClient);
+        expect(
+          yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_type='thread.metadata.update' AND command_id LIKE 'worktree-handoff:%'`,
+        ).toHaveLength(2);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "manual382: a durable command admission survives reconstruction without a second external start",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        let starts = 0;
+        const spawner = ChildProcessSpawner.make(() =>
+          Effect.gen(function* () {
+            starts++;
+            yield* Deferred.succeed(started, undefined);
+            return ChildProcessSpawner.makeHandle({
+              pid: ChildProcessSpawner.ProcessId(382),
+              exitCode: Effect.never,
+              isRunning: Effect.succeed(true),
+              kill: () => Effect.void,
+              stdin: Sink.drain,
+              stdout: Stream.empty,
+              stderr: Stream.empty,
+              all: Stream.empty,
+              getInputFd: () => Sink.drain,
+              getOutputFd: () => Stream.empty,
+              unref: Effect.succeed(Effect.void),
+            });
+          }),
+        );
+        const node = yield* makeNode(
+          descriptorOf("manual382-command", "Command", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true, commandSpawner: spawner },
+        );
+        const parent = ThreadId.make("manual382-command-parent");
+        yield* seedParent(node, parent);
+        const scheduled = yield* nativeCall(node, parent, "schedule_task", {
+          prompt: "Isolated external command",
+          command: "isolated-external-boundary-382",
+          title: "One command",
+          schedule: { type: "interval", everyMs: 60_000 },
+          bindToCurrentThread: false,
+          clientRequestId: "manual382-command-schedule",
+        });
+        expect(scheduled.isError, json(scheduled)).not.toBe(true);
+        const task = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ scheduledTaskId: Schema.String }),
+        )(scheduled.structuredContent);
+        const input = { taskId: task.scheduledTaskId, clientRequestId: "manual382-command-fire" };
+        const first = yield* nativeCall(node, parent, "run_scheduled_task_now", input);
+        expect(first.isError, json(first)).not.toBe(true);
+        const result = yield* Schema.decodeUnknownEffect(
+          ThreadToolkit.tools.run_scheduled_task_now.successSchema,
+        )(first.structuredContent);
+        expect(result.manualReceipt?.stage).toBe("admitted");
+        yield* Deferred.await(started);
+        expect(starts).toBe(1);
+        expect(
+          (yield* nativeCall(node, parent, "run_scheduled_task_now", input)).structuredContent,
+        ).toEqual(result);
+        expect(starts).toBe(1);
+        const sql = Context.get(node.database, SqlClient.SqlClient);
+        const row = (yield* sql<{
+          request_id: string;
+          generation: string;
+          input_digest: string;
+        }>`SELECT request_id,generation,input_digest FROM scheduled_manual_requests`)[0]!;
+        const rebuilt = yield* node.rebuildScheduler;
+        const owner = Context.get(rebuilt, ScheduledTasks.ScheduledTaskService);
+        const identity = {
+          id: row.request_id,
+          generation: row.generation,
+          inputDigest: row.input_digest,
+          clientRequestId: input.clientRequestId,
+        };
+        const replay = yield* owner.runNow({ id: result.taskId }, { request: identity });
+        expect(replay.manualReceipt).toEqual(result.manualReceipt);
+        expect(starts).toBe(1);
+        // Drive the existing command owner after a process restart. Its unresolved
+        // external start remains needs-you, never silently executed again.
+        yield* Option.getOrThrow(Context.getOption(rebuilt, ScheduledChecks.ScheduledTaskChecks))
+          .reconcile;
+        expect(starts).toBe(1);
+        const current = (yield* owner.list()).tasks.find((t) => t.id === result.taskId)!;
+        expect(current.command?.run).toMatchObject({ stage: "needs-you", imported: false });
+        expect(current.command?.run?.error).toBeTruthy();
+        expect(current.runCount).toBe(1);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "device382: registered native device owners start after receipt and historical open/empty-close cannot replace later intent",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf("device382", "Isolated devices", { peerAuthority: 1 }),
+          "disk",
+          {
+            productionKernel: true,
+            attachmentRequests: true,
+            preferencesOwner: true,
+            deviceOwner: true,
+          },
+        );
+        const parent = ThreadId.make("device382-parent");
+        yield* seedParent(node, parent);
+        const devices = node.fixtureDevice;
+        if (devices === undefined) throw new Error("Expected the real isolated device owner");
+        const emptyClose = { clientRequestId: "device382-empty-close" };
+        expect((yield* nativeCall(node, parent, "device_close", emptyClose)).isError).not.toBe(
+          true,
+        );
+        expect(yield* Ref.get(node.deviceAgentStarts)).toBe(0);
+        yield* devices.open({
+          threadId: parent,
+          hostId: LOCAL_DEVICE_HOST_ID,
+          deviceId: DeviceId.make("fixture-device382"),
+          platform: "android",
+        });
+        expect(yield* devices.sessionsForThread(parent)).toHaveLength(1);
+        expect((yield* nativeCall(node, parent, "device_close", emptyClose)).isError).not.toBe(
+          true,
+        );
+        expect(yield* devices.sessionsForThread(parent)).toHaveLength(1);
+        const input = {
+          deviceId: "fixture-device382",
+          platform: "android",
+          clientRequestId: "device382-open",
+        };
+        const opened = yield* nativeCall(node, parent, "device_open", input);
+        expect(opened.isError, json(opened)).not.toBe(true);
+        expect(yield* Ref.get(node.deviceAgentStarts)).toBe(1);
+        expect(yield* Ref.get(node.deviceConfigurations)).toBe(1);
+        expect((yield* nativeCall(node, parent, "device_open", input)).structuredContent).toEqual(
+          opened.structuredContent,
+        );
+        expect(yield* Ref.get(node.deviceAgentStarts)).toBe(1);
+        expect(yield* Ref.get(node.deviceConfigurations)).toBe(1);
+        yield* devices.close({ threadId: parent });
+        expect((yield* nativeCall(node, parent, "device_open", input)).structuredContent).toEqual(
+          opened.structuredContent,
+        );
+        expect(yield* devices.sessionsForThread(parent)).toHaveLength(0);
+        const fs = yield* FileSystem.FileSystem;
+        const file = `${node.config.stateDir}/fixture-device-agent.json`;
+        yield* fs.writeFileString(file, "Later native configuration before the new action");
+        yield* Ref.set(node.loseDeviceConfiguration, true);
+        const uncertain = { ...input, clientRequestId: "device382-uncertain" };
+        const failed = yield* nativeCall(node, parent, "device_open", uncertain);
+        expect(failed.isError, json(failed)).toBe(true);
+        expect(json(failed)).toContain("outcome_unknown");
+        expect(yield* Ref.get(node.deviceAgentStarts)).toBe(2);
+        expect(yield* Ref.get(node.deviceConfigurations)).toBe(2);
+        expect(yield* fs.readFileString(file)).toContain("ISOLATED_DEVICE_TOKEN_382");
+        const later = "Independent configuration after the uncertain original action";
+        yield* fs.writeFileString(file, later);
+        const active = { ...node, ...(yield* node.restartSchedulerTransport) };
+        const again = yield* nativeCall(active, parent, "device_open", uncertain);
+        expect(json(again)).toContain("outcome_unknown");
+        expect(yield* Ref.get(node.deviceAgentStarts)).toBe(2);
+        expect(yield* Ref.get(node.deviceConfigurations)).toBe(2);
+        expect(yield* fs.readFileString(file)).toBe(later);
+        expect(yield* devices.sessionsForThread(parent)).toHaveLength(0);
+        const sql = Context.get(node.database, SqlClient.SqlClient);
+        expect(json(yield* sql`SELECT * FROM mcp_request_receipts`)).not.toContain(
+          "ISOLATED_DEVICE_TOKEN_382",
+        );
+        yield* node.fixtureSettings.updateSettings({ enableAgentDeviceAccess: false });
+        const denied = yield* nativeCall(active, parent, "device_open", input);
+        expect(denied.isError, json(denied)).toBe(true);
+        expect(yield* Ref.get(node.deviceAgentStarts)).toBe(2);
+        expect(yield* Ref.get(node.deviceConfigurations)).toBe(2);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "png382: registered peer PNG saves stay on the originating environment and retain exact artifact bytes",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf("png382-source", "PNG source", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const b = yield* makeNode(
+          descriptorOf("png382-destination", "PNG destination", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("png382-parent");
+        yield* seedParent(a, parent);
+        const launch = yield* nativeCall(a, parent, "t3_thread_launch", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          title: "PNG owner",
+          message: "Wait",
+          modelSelection: selection,
+          clientRequestId: "png382-owner",
+        });
+        expect(launch.isError, json(launch)).not.toBe(true);
+        const child = (yield* decodeLaunchReceipt(launch.structuredContent)).threadId;
+        yield* activate(b, child);
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        const connected = yield* Deferred.make<void>();
+        const png = Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==",
+          "base64",
+        );
+        let reads = 0;
+        yield* Stream.runForEach(
+          yield* b.browser.connect({ clientId: "png382-renderer", environmentId: b.environmentId }),
+          (event) =>
+            event.type === "connected"
+              ? Deferred.succeed(connected, undefined)
+              : Effect.gen(function* () {
+                  reads++;
+                  yield* b.browser.respond({
+                    clientId: "png382-renderer",
+                    connectionId: event.connectionId,
+                    requestId: event.request.requestId,
+                    ok: true,
+                    result: {
+                      url: "https://isolated-png.example.test/private?fixture=DO_NOT_CACHE_PAGE_URL_382",
+                      title: "Isolated page",
+                      loading: false,
+                      visibleText: "DO_NOT_CACHE_PAGE_TEXT_382",
+                      interactiveElements: [],
+                      accessibilityTree: {},
+                      consoleEntries: [],
+                      networkEntries: [],
+                      actionTimeline: [],
+                      screenshot: {
+                        mimeType: "image/png",
+                        data: png.toString("base64"),
+                        width: 1,
+                        height: 1,
+                      },
+                    },
+                  });
+                }),
+        ).pipe(Effect.forkScoped);
+        yield* Deferred.await(connected);
+        const input = {
+          environmentId: b.environmentId,
+          contextThreadId: child,
+          save: true,
+          includeImage: true,
+          clientRequestId: "png382-saved",
+        };
+        const first = yield* nativeCall(a, parent, "preview_snapshot", input);
+        expect(first.isError, json(first)).not.toBe(true);
+        const receipt = yield* decodeSavedPngReceipt(first.structuredContent);
+        expect(receipt.artifact.environmentId).toBe(a.environmentId);
+        expect(receipt.artifact.sizeBytes).toBe(png.byteLength);
+        expect(receipt.artifact.digest).toBe(
+          "2640059609118b695c139804676372eca75c30d30e5906775902d13e44f5356c",
+        );
+        const fs = yield* FileSystem.FileSystem;
+        expect(Array.from(yield* fs.readFile(receipt.artifact.screenshotPath))).toEqual(
+          Array.from(png),
+        );
+        expect(receipt.artifact.screenshotPath.startsWith(a.config.browserArtifactsDir)).toBe(true);
+        expect(yield* fs.exists(b.config.browserArtifactsDir)).toBe(false);
+        expect(first.content.some((item) => item.type === "image")).toBe(true);
+        expect((yield* nativeCall(a, parent, "preview_snapshot", input)).structuredContent).toEqual(
+          receipt,
+        );
+        expect(yield* fs.readDirectory(a.config.browserArtifactsDir)).toHaveLength(1);
+        const sql = Context.get(a.database, SqlClient.SqlClient);
+        expect(json(yield* sql`SELECT * FROM mcp_request_receipts`)).not.toContain(
+          "DO_NOT_CACHE_PAGE_",
+        );
+        yield* fs.writeFileString(
+          receipt.artifact.screenshotPath,
+          "Later independent PNG path edit",
+        );
+        const replay = yield* nativeCall(a, parent, "preview_snapshot", input);
+        expect(replay.structuredContent).toEqual(receipt);
+        expect(replay.content.some((item) => item.type === "image")).toBe(false);
+        expect(yield* fs.readFileString(receipt.artifact.screenshotPath)).toBe(
+          "Later independent PNG path edit",
+        );
+        expect(reads).toBeGreaterThan(0);
+        // Ordinary inspection remains available independently of historical saves.
+        const inspect = yield* nativeCall(a, parent, "preview_snapshot", {
+          environmentId: b.environmentId,
+          contextThreadId: child,
+        });
+        expect(inspect.isError, json(inspect)).not.toBe(true);
+        expect(inspect.structuredContent).not.toHaveProperty("type");
+        yield* a.links.unlink(b.environmentId);
+        expect((yield* nativeCall(a, parent, "preview_snapshot", input)).isError).toBe(true);
+        expect(yield* fs.readFileString(receipt.artifact.screenshotPath)).toBe(
+          "Later independent PNG path edit",
+        );
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "recording382: registered peer recording returns an owned bounded reference usable by attachment send",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf("recording382-source", "Source", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const b = yield* makeNode(
+          descriptorOf("recording382-destination", "Destination", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("recording382-parent");
+        yield* seedParent(a, parent);
+        const launched = yield* nativeCall(a, parent, "t3_thread_launch", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          title: "Recording owner",
+          message: "Wait",
+          modelSelection: selection,
+          clientRequestId: "recording382-owner",
+        });
+        expect(launched.isError, json(launched)).not.toBe(true);
+        const child = (yield* decodeLaunchReceipt(launched.structuredContent)).threadId;
+        yield* activate(b, child);
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        const bytes = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0x81, 1, 0x42, 0x86, 0x81, 1]);
+        const uploaded = yield* AttachmentUpload.issueAttachmentUploadUrl({
+          type: "file",
+          name: "recording.webm",
+          mimeType: "video/webm",
+          sizeBytes: bytes.byteLength,
+        }).pipe(
+          Effect.provideService(Config.ServerConfig, b.config),
+          Effect.provideService(
+            Secrets.ServerSecretStore,
+            Context.get(b.services, Secrets.ServerSecretStore),
+          ),
+        );
+        const http = yield* HttpClient.HttpClient;
+        expect(
+          (yield* http.execute(
+            HttpClientRequest.post(`${b.url}${uploaded.relativeUrl}`).pipe(
+              HttpClientRequest.setBody(HttpBody.uint8Array(bytes)),
+            ),
+          )).status,
+        ).toBe(204);
+        const connected = yield* Deferred.make<void>();
+        let stops = 0;
+        yield* Stream.runForEach(
+          yield* b.browser.connect({
+            clientId: "recording382-renderer",
+            environmentId: b.environmentId,
+          }),
+          (event) =>
+            event.type === "connected"
+              ? Deferred.succeed(connected, undefined)
+              : Effect.gen(function* () {
+                  const request = event.request;
+                  if (request.operation === "recordingStop") {
+                    stops++;
+                    yield* b.browser.respond({
+                      clientId: "recording382-renderer",
+                      connectionId: event.connectionId,
+                      requestId: request.requestId,
+                      ok: true,
+                      result: {
+                        id: "renderer-recording",
+                        tabId: "recording382-tab",
+                        path: "/isolated-renderer/recording.webm",
+                        uploadedAttachmentId: uploaded.attachmentId,
+                        mimeType: "video/webm",
+                        sizeBytes: bytes.byteLength,
+                        createdAt: "2026-10-18T00:00:00Z",
+                      },
+                    });
+                  } else
+                    yield* b.browser.respond({
+                      clientId: "recording382-renderer",
+                      connectionId: event.connectionId,
+                      requestId: request.requestId,
+                      ok: true,
+                      result: {
+                        available: true,
+                        visible: true,
+                        tabId: null,
+                        url: null,
+                        title: null,
+                        loading: false,
+                      },
+                    });
+                }),
+        ).pipe(Effect.forkScoped);
+        yield* Deferred.await(connected);
+        const input = {
+          environmentId: b.environmentId,
+          contextThreadId: child,
+          clientRequestId: "recording382-stop",
+        };
+        const stopped = yield* nativeCall(a, parent, "preview_recording_stop", input);
+        expect(stopped.isError, json(stopped)).not.toBe(true);
+        const { resource } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ resource: PeerAttachmentReference }),
+        )(stopped.structuredContent);
+        expect(resource).toMatchObject({
+          environmentId: b.environmentId,
+          name: "recording.webm",
+          mimeType: "video/webm",
+          sizeBytes: bytes.byteLength,
+        });
+        expect(resource.owner).toMatch(/^[a-f0-9]{64}$/);
+        expect(resource.digest).toMatch(/^[a-f0-9]{64}$/);
+        expect(stopped.structuredContent).not.toHaveProperty("path");
+        expect(json(stopped)).not.toContain("/isolated-renderer/");
+        const sent = yield* nativeCall(a, parent, "t3_thread_send_attachments", {
+          environmentId: b.environmentId,
+          threadId: child,
+          clientRequestId: "recording382-send",
+          message: "Owned recording",
+          attachments: [
+            {
+              type: "file",
+              id: resource.attachmentId,
+              environmentId: resource.environmentId,
+              name: resource.name,
+              mimeType: resource.mimeType,
+              sizeBytes: resource.sizeBytes,
+            },
+          ],
+        });
+        expect(sent.isError, json(sent)).not.toBe(true);
+        const delivered = (yield* b.threads.getThreadRecords(child, ["messages"])).messages.flatMap(
+          (message) => message.attachments,
+        );
+        expect(delivered).toHaveLength(1);
+        const path = resolveAttachmentPathById({
+          attachmentsDir: b.config.attachmentsDir,
+          attachmentId: delivered[0]!.id,
+        });
+        expect(path).not.toBeNull();
+        const fs = yield* FileSystem.FileSystem;
+        expect(Array.from(yield* fs.readFile(path!))).toEqual(Array.from(bytes));
+        const replay = yield* nativeCall(a, parent, "preview_recording_stop", input);
+        expect(replay.isError, json(replay)).not.toBe(true);
+        expect(replay.structuredContent).toEqual(stopped.structuredContent);
+        expect(stops).toBe(1);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "spectrum382: registered Spectrum and participant commands retain identity across credential renewal",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf("spectrum382", "Spectrum", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const parent = ThreadId.make("spectrum382-parent");
+        yield* seedParent(node, parent);
+        const input = {
+          question: "An isolated identity check",
+          mode: "council",
+          colors: [
+            { label: "Blue", selection },
+            { label: "Red", selection },
+          ],
+          clientRequestId: "spectrum382-once",
+        };
+        const first = yield* nativeCall(node, parent, "start_spectrum", input);
+        expect(first.isError, json(first)).not.toBe(true);
+        const spectrum = yield* Schema.decodeUnknownEffect(SpectrumMcp.StartSpectrumResult)(
+          first.structuredContent,
+        );
+        expect(
+          (yield* nativeCall(node, parent, "start_spectrum", input)).structuredContent,
+        ).toEqual(spectrum);
+        const sql = Context.get(node.database, SqlClient.SqlClient);
+        expect(yield* sql`SELECT thread_id FROM fork_spectra`).toHaveLength(1);
+        expect(
+          yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_type='spectrum.register'`,
+        ).toHaveLength(1);
+        const member = spectrum.participants[0]!.threadId;
+        yield* node.threads.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("spectrum382-member-turn"),
+          threadId: member,
+          messageId: MessageId.make("spectrum382-member-input"),
+          text: "Isolated work",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* activate(node, member);
+        const send = {
+          threadId: parent,
+          message: "Isolated participant report",
+          clientRequestId: "spectrum382-member-send",
+        };
+        const sent = yield* nativeCall(node, member, "t3_thread_send", send);
+        expect(sent.isError, json(sent)).not.toBe(true);
+        const decoded = yield* decodeSend(sent.structuredContent);
+        const replay = yield* nativeCall(node, member, "t3_thread_send", send);
+        expect(replay.isError, json(replay)).not.toBe(true);
+        expect(replay.structuredContent).toEqual(decoded);
+        const messages = (yield* node.threads.getThreadRecords(parent, [
+          "messages",
+        ])).messages.filter((message) => message.id === decoded.messageId);
+        expect(messages).toHaveLength(1);
+        const changed = yield* nativeCall(node, parent, "start_spectrum", {
+          ...input,
+          question: "Changed question",
+        });
+        expect(changed.isError).toBe(true);
+        expect(yield* sql`SELECT thread_id FROM fork_spectra`).toHaveLength(1);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "html382: registered peer HTML publication keeps its accepted artifact after replay and later edits",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf("html382-source", "Source", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const b = yield* makeNode(
+          descriptorOf("html382-destination", "Destination", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("html382-parent");
+        yield* seedParent(a, parent);
+        const launch = yield* nativeCall(a, parent, "t3_thread_launch", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          title: "HTML target",
+          message: "Wait",
+          modelSelection: selection,
+          clientRequestId: "html382-target",
+        });
+        expect(launch.isError, json(launch)).not.toBe(true);
+        const child = (yield* decodeLaunchReceipt(launch.structuredContent)).threadId;
+        yield* activate(b, child);
+        const input = {
+          environmentId: b.environmentId,
+          contextThreadId: child,
+          html: "<!doctype html><html><body>Isolated HTML 382</body></html>",
+          title: "Stable page",
+          height: 420,
+          clientRequestId: "html382-once",
+        };
+        const first = yield* nativeCall(a, parent, "html_render", input);
+        expect(first.isError, json(first)).not.toBe(true);
+        const result = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ htmlRender: Schema.Struct({ attachmentId: Schema.String }) }),
+        )(first.structuredContent);
+        const path = resolveAttachmentPathById({
+          attachmentsDir: a.config.attachmentsDir,
+          attachmentId: result.htmlRender.attachmentId,
+        });
+        expect(path).not.toBeNull();
+        const fs = yield* FileSystem.FileSystem;
+        expect(yield* fs.readFileString(path!)).toContain("Isolated HTML 382");
+        yield* fs.writeFileString(path!, "Later independent page edit 382");
+        const replay = yield* nativeCall(a, parent, "html_render", input);
+        expect(replay.isError, json(replay)).not.toBe(true);
+        expect(replay.structuredContent).toEqual(first.structuredContent);
+        expect(yield* fs.readFileString(path!)).toBe("Later independent page edit 382");
+        const changed = yield* nativeCall(a, parent, "html_render", {
+          ...input,
+          html: "<html>Changed semantic input</html>",
+        });
+        expect(changed.isError).toBe(true);
+        expect(yield* fs.readFileString(path!)).toBe("Later independent page edit 382");
+        const sql = Context.get(a.database, SqlClient.SqlClient);
+        const rows = yield* sql`SELECT * FROM mcp_request_receipts WHERE state='completed'`;
+        expect(rows).toHaveLength(1);
+        expect(json(rows)).not.toContain(input.html);
+        expect(json(rows)).toContain(result.htmlRender.attachmentId);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "named382: registered title-only project creation replays its exact native owner",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf("named382-registered", "Named", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true, nativeOwners: true },
+        );
+        const parent = ThreadId.make("named382-parent");
+        yield* seedParent(node, parent);
+        const input = { title: "Isolated named request", clientRequestId: "named382-original" };
+        const first = yield* nativeCall(node, parent, "t3_project_create", input);
+        expect(first.isError, json(first)).not.toBe(true);
+        const created = yield* Schema.decodeUnknownEffect(
+          ProjectToolkit.tools.t3_project_create.successSchema,
+        )(first.structuredContent);
+        const sql = Context.get(node.database, SqlClient.SqlClient);
+        const rows = yield* sql<{
+          project_id: string;
+          workspace_root: string;
+        }>`SELECT project_id,workspace_root FROM managed_project_requests`;
+        expect(rows).toHaveLength(1);
+        const fs = yield* FileSystem.FileSystem;
+        const readme = `${rows[0]!.workspace_root}/README.md`;
+        yield* fs.writeFileString(readme, "Later independent README edit 382");
+        const replay = yield* nativeCall(node, parent, "t3_project_create", input);
+        expect(replay.isError, json(replay)).not.toBe(true);
+        expect(replay.structuredContent).toEqual(created);
+        expect(yield* fs.readFileString(readme)).toBe("Later independent README edit 382");
+        expect(yield* sql`SELECT project_id FROM managed_project_requests`).toHaveLength(1);
+        expect(
+          yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE aggregate_kind='project' AND command_type='project.create'`,
+        ).toHaveLength(1);
+        const changed = yield* nativeCall(node, parent, "t3_project_create", {
+          ...input,
+          title: "Different title",
+        });
+        expect(changed.isError).toBe(true);
+        expect(yield* sql`SELECT project_id FROM managed_project_requests`).toHaveLength(1);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "manual382: registered manual identity recovers native acceptance and preserves later scheduler work",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf("manual382", "Manual", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const parent = ThreadId.make("manual382-parent");
+        yield* seedParent(node, parent);
+        const { task } = yield* node.scheduled.upsert({
+          commandId: CommandId.make("manual382-schedule"),
+          title: "One native action",
+          prompt: "Isolated manual work",
+          enabled: true,
+          schedule: { type: "interval", everyMs: 60_000 },
+          projectId: node.project.id,
+          threadId: null,
+          workspaceStrategy: { type: "root" },
+          modelSelection: selection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        });
+        const input = { taskId: task.id, clientRequestId: "manual382-request" };
+        const call = yield* nativeCall(node, parent, "run_scheduled_task_now", input);
+        expect(call.isError, json(call)).not.toBe(true);
+        const decoded = yield* Schema.decodeUnknownEffect(
+          ThreadToolkit.tools.run_scheduled_task_now.successSchema,
+        )(call.structuredContent);
+        expect(decoded.manualReceipt).toMatchObject({
+          requestId: input.clientRequestId,
+          stage: "native-accepted",
+        });
+        const sql = Context.get(node.database, SqlClient.SqlClient);
+        const messages =
+          yield* sql`SELECT message_id FROM orchestration_v2_projection_messages WHERE role='user'`;
+        expect(messages).toHaveLength(2);
+        const before = (yield* node.scheduled.list()).tasks.find((t) => t.id === task.id)!;
+        expect(before.runCount).toBe(1);
+        yield* node.scheduled.setEnabled({ id: task.id, enabled: false });
+        const later = (yield* node.scheduled.list()).tasks.find((t) => t.id === task.id)!;
+        const replay = yield* nativeCall(node, parent, "run_scheduled_task_now", input);
+        expect(replay.structuredContent).toEqual(decoded);
+        expect((yield* node.scheduled.list()).tasks.find((t) => t.id === task.id)).toEqual(later);
+        expect(
+          yield* sql`SELECT message_id FROM orchestration_v2_projection_messages WHERE role='user'`,
+        ).toHaveLength(2);
+        const changed = yield* nativeCall(node, parent, "run_scheduled_task_now", {
+          ...input,
+          taskId: "different-schedule",
+        });
+        expect(changed.isError).toBe(true);
+
+        // Stop the caller after actual native commit but before its reply/bookkeeping.
+        yield* Ref.set(node.holdManualLaunchReply, true);
+        const requestOwner = yield* RequestReceipts.layer.pipe(
+          Layer.provide(Layer.succeedContext(node.database)),
+          Layer.fresh,
+          Layer.build,
+        );
+        const identity = yield* Context.get(
+          requestOwner,
+          RequestReceipts.McpRequestReceipts,
+        ).identify(
+          caller(node, parent),
+          "run_scheduled_task_now",
+          { taskId: task.id },
+          "manual382-lost-native-reply",
+        );
+        const interrupted = yield* node.scheduled
+          .runNow({ id: task.id }, { request: identity })
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(node.manualLaunchReplyHeld);
+        yield* Fiber.interrupt(interrupted);
+        const nativeMessages =
+          yield* sql`SELECT message_id FROM orchestration_v2_projection_messages WHERE role='user'`;
+        expect(nativeMessages).toHaveLength(3);
+        const rebuilt = yield* node.rebuildScheduler;
+        const recovered = yield* Context.get(rebuilt, ScheduledTasks.ScheduledTaskService).runNow(
+          { id: task.id },
+          { request: identity },
+        );
+        expect(recovered.manualReceipt?.stage).toBe("native-accepted");
+        expect(
+          yield* sql`SELECT message_id FROM orchestration_v2_projection_messages WHERE role='user'`,
+        ).toHaveLength(3);
+        expect((yield* node.scheduled.list()).tasks.find((t) => t.id === task.id)?.runCount).toBe(
+          2,
+        );
+        const denied = yield* Effect.result(
+          Context.get(rebuilt, ScheduledTasks.ScheduledTaskService).runNow(
+            { id: task.id },
+            { request: { ...identity, generation: "replacement" } },
+          ),
+        );
+        expect(denied._tag).toBe("Failure");
+        yield* node.scheduled.delete({ id: task.id });
+        yield* node.scheduled.upsert({
+          id: task.id,
+          title: "Replacement",
+          prompt: "Other action",
+          enabled: false,
+          schedule: { type: "interval", everyMs: 60_000 },
+          projectId: node.project.id,
+          threadId: parent,
+          workspaceStrategy: { type: "root" },
+          modelSelection: selection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        });
+        const replacement = yield* Effect.result(
+          Context.get(rebuilt, ScheduledTasks.ScheduledTaskService).runNow(
+            { id: task.id },
+            { request: identity },
+          ),
+        );
+        expect(replacement._tag).toBe("Failure");
+        expect(
+          yield* sql`SELECT message_id FROM orchestration_v2_projection_messages WHERE role='user'`,
+        ).toHaveLength(3);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "preferences382: negotiated peer result retains its bounded variant and original grant checks",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf("preferences382-source", "Source", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true, preferencesOwner: true },
+        );
+        const b = yield* makeNode(
+          descriptorOf("preferences382-destination", "Destination", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true, preferencesOwner: true },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("preferences382-peer-parent");
+        yield* seedParent(a, parent);
+        yield* a.forwarding.call(
+          caller(a, parent),
+          ProjectToolkit.tools.t3_project_list,
+          b.environmentId,
+          {},
+        );
+        const input = {
+          environmentId: b.environmentId,
+          clientRequestId: "peer-preferences-confirmed",
+          sourceControlWritingStyle: { customInstructions: "ISOLATED_PEER_PRIVATE_TEXT_382" },
+        };
+        // The approved direct full-access peer exception remains supported.
+        const accepted = yield* nativeCall(a, parent, "t3_environment_preferences_update", input);
+        expect(accepted.isError, json(accepted)).not.toBe(true);
+        const decoded = yield* Schema.decodeUnknownEffect(
+          EnvironmentToolkit.tools.t3_environment_preferences_update.successSchema,
+        )(accepted.structuredContent);
+        expect(decoded).toMatchObject({
+          type: "confirmed-operation",
+          applied: true,
+          stage: "confirmed",
+        });
+        const writes = yield* Ref.get(b.settingsWrites);
+        expect(writes).toBeGreaterThan(0);
+        expect(
+          (yield* nativeCall(a, parent, "t3_environment_preferences_update", input))
+            .structuredContent,
+        ).toEqual(decoded);
+        const reordered = yield* nativeCall(
+          a,
+          parent,
+          "t3_environment_preferences_update",
+          input,
+          new Set(["device", "preview", "orchestration"]),
+        );
+        expect(reordered.isError, json(reordered)).not.toBe(true);
+        expect(reordered.structuredContent).toEqual(decoded);
+        expect(yield* Ref.get(b.settingsWrites)).toBe(writes);
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        for (const rows of [
+          yield* sql`SELECT * FROM mcp_request_receipts`,
+          yield* sql`SELECT * FROM peer_authority_records`,
+          yield* sql`SELECT * FROM peer_control_frames`,
+        ])
+          expect(json(rows)).not.toContain(input.sourceControlWritingStyle.customInstructions);
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("preferences382-narrow"),
+          threadId: parent,
+          runtimeMode: "auto",
+        });
+        const narrowed = yield* nativeCall(a, parent, "t3_environment_preferences_update", input);
+        expect(narrowed.isError).toBe(true);
+        expect(yield* Ref.get(b.settingsWrites)).toBe(writes);
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("preferences382-restore"),
+          threadId: parent,
+          runtimeMode: "full-access",
+        });
+        // A destination restored without its request ledger cannot turn source
+        // historical intent into a fresh operation under a replacement grant.
+        yield* sql`DELETE FROM mcp_request_receipts`;
+        yield* a.links.unlink(b.environmentId);
+        yield* linkTo(a.links, b, "full-access");
+        const replaced = yield* nativeCall(a, parent, "t3_environment_preferences_update", input);
+        expect(replaced.isError).toBe(true);
+        expect(yield* Ref.get(b.settingsWrites)).toBe(writes);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "preferences382: registered keyed receipts exclude private text and never overwrite later settings",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf("preferences382", "Preferences", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true, preferencesOwner: true },
+        );
+        const parent = ThreadId.make("preferences382-parent");
+        yield* seedParent(node, parent);
+        const firstPrivate = "ISOLATED_PRIVATE_INSTRUCTIONS_382_ALPHA_DO_NOT_PERSIST_IN_RECEIPTS";
+        const secondPrivate = "ISOLATED_PRIVATE_INSTRUCTIONS_382_BETA_CHANGED_INPUT";
+        const input = {
+          clientRequestId: "preferences-confirmed",
+          sourceControlWritingStyle: { customInstructions: firstPrivate },
+        };
+        const response = yield* nativeCall(
+          node,
+          parent,
+          "t3_environment_preferences_update",
+          input,
+        );
+        expect(response.isError, json(response)).not.toBe(true);
+        const receipt = yield* Schema.decodeUnknownEffect(
+          EnvironmentToolkit.tools.t3_environment_preferences_update.successSchema,
+        )(response.structuredContent);
+        expect(receipt).toMatchObject({
+          type: "confirmed-operation",
+          applied: true,
+          requestId: "preferences-confirmed",
+          stage: "confirmed",
+        });
+        expect(Object.keys(receipt).sort()).toEqual([
+          "applied",
+          "operationId",
+          "requestId",
+          "stage",
+          "type",
+        ]);
+        const writes = yield* Ref.get(node.settingsWrites);
+        expect(writes).toBeGreaterThan(0);
+        const sql = Context.get(node.database, SqlClient.SqlClient);
+        const persisted = yield* sql`SELECT * FROM mcp_request_receipts`;
+        expect(json(persisted)).not.toContain(firstPrivate);
+        expect(json(persisted)).toContain("confirmed-operation");
+        // Lose the confirmed wire reply, renew the credential and reconstruct the SQL receipt owner.
+        const reopened = yield* node.reopenDatabase;
+        const rebuilt = yield* RequestReceipts.layer.pipe(
+          Layer.provide(Layer.succeedContext(reopened)),
+          Layer.fresh,
+          Layer.build,
+        );
+        const rows = yield* sql<{
+          id: string;
+          generation: string;
+          input_digest: string;
+        }>`SELECT id,generation,input_digest FROM mcp_request_receipts WHERE state='completed'`;
+        expect(rows).toHaveLength(1);
+        const row = rows[0]!;
+        const recovered = yield* Context.get(rebuilt, RequestReceipts.McpRequestReceipts).replay({
+          id: row.id,
+          generation: row.generation,
+          inputDigest: row.input_digest,
+          clientRequestId: input.clientRequestId,
+        });
+        expect(Option.getOrThrow(recovered)).toEqual(receipt);
+        const replay = yield* nativeCall(node, parent, "t3_environment_preferences_update", input);
+        expect(replay.structuredContent).toEqual(receipt);
+        expect(yield* Ref.get(node.settingsWrites)).toBe(writes);
+        const changed = yield* nativeCall(node, parent, "t3_environment_preferences_update", {
+          ...input,
+          sourceControlWritingStyle: { customInstructions: secondPrivate },
+        });
+        expect(changed.isError).toBe(true);
+        expect(yield* Ref.get(node.settingsWrites)).toBe(writes);
+        const later = yield* nativeCall(node, parent, "t3_environment_preferences_update", {
+          sourceControlWritingStyle: { customInstructions: "ISOLATED_LATER_INDEPENDENT_EDIT_382" },
+        });
+        expect(later.isError, json(later)).not.toBe(true);
+        expect(later.structuredContent).toMatchObject({
+          sourceControlWritingStyle: { customInstructions: "ISOLATED_LATER_INDEPENDENT_EDIT_382" },
+        });
+        expect(later.structuredContent).not.toHaveProperty("type");
+        const afterLater = yield* Ref.get(node.settingsWrites);
+        expect(
+          (yield* nativeCall(node, parent, "t3_environment_preferences_update", input))
+            .structuredContent,
+        ).toEqual(receipt);
+        expect(yield* Ref.get(node.settingsWrites)).toBe(afterLater);
+        const current = yield* nativeCall(node, parent, "t3_environment_read", {});
+        expect(current.structuredContent).toMatchObject({
+          preferences: {
+            sourceControlWritingStyle: {
+              customInstructions: "ISOLATED_LATER_INDEPENDENT_EDIT_382",
+            },
+          },
+        });
+        yield* Ref.set(node.loseSettingsConfirmation, true);
+        const ambiguousInput = {
+          clientRequestId: "preferences-write-confirmation-lost",
+          sourceControlWritingStyle: { customInstructions: "ISOLATED_AMBIGUOUS_INSTRUCTIONS_382" },
+        };
+        const failed = yield* nativeCall(
+          node,
+          parent,
+          "t3_environment_preferences_update",
+          ambiguousInput,
+        );
+        expect(failed.isError).toBe(true);
+        const ambiguousWrites = yield* Ref.get(node.settingsWrites);
+        // Reopen the actual settings owner and observe that the write happened despite failed acknowledgement.
+        const freshSettings = yield* node.rebuildSettings;
+        expect(
+          (yield* Context.get(freshSettings, Settings.ServerSettingsService).getSettings)
+            .sourceControlWritingStyle.customInstructions,
+        ).toBe(ambiguousInput.sourceControlWritingStyle.customInstructions);
+        const unknown = yield* nativeCall(
+          node,
+          parent,
+          "t3_environment_preferences_update",
+          ambiguousInput,
+        );
+        expect(unknown.isError).toBe(true);
+        expect(json(unknown)).toContain("outcome_unknown");
+        expect(yield* Ref.get(node.settingsWrites)).toBe(ambiguousWrites);
+        const allRows = json(yield* sql`SELECT * FROM mcp_request_receipts`);
+        for (const privateText of [
+          firstPrivate,
+          secondPrivate,
+          ambiguousInput.sourceControlWritingStyle.customInstructions,
+          "ISOLATED_LATER_INDEPENDENT_EDIT_382",
+        ])
+          expect(allRows).not.toContain(privateText);
+        expect(allRows).not.toContain("customInstructions");
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "attachments382: destination upload rivals consume once and an old generation cannot publish bytes",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf("destination382-a", "A", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const b = yield* makeNode(
+          descriptorOf("destination382-b", "B", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("destination382-parent");
+        yield* seedParent(a, parent);
+        const launched = yield* nativeCall(a, parent, "t3_thread_launch", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          title: "Destination",
+          message: "Receive",
+          modelSelection: selection,
+          clientRequestId: "destination-owner",
+        });
+        expect(launched.isError, json(launched.content)).not.toBe(true);
+        const child = (yield* decodeLaunchReceipt(launched.structuredContent)).threadId;
+        const capabilities = new Set(["orchestration", "preview", "device"] as const);
+        const credential = yield* a.registry.issue({
+          threadId: parent,
+          providerInstanceId: instanceId,
+          capabilities,
+        });
+        const upload = {
+          type: "file",
+          name: "once.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 4,
+        };
+        const prepare = (key: string) =>
+          nativeCall(
+            a,
+            parent,
+            "t3_attachment_prepare_upload",
+            {
+              environmentId: b.environmentId,
+              upload,
+              digest: "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a",
+              clientRequestId: key,
+            },
+            capabilities,
+            credential,
+          );
+        const prepared = yield* prepare("destination-upload");
+        expect(prepared.isError, json(prepared.content)).not.toBe(true);
+        const decodeUpload = Schema.decodeUnknownEffect(
+          Schema.Struct({
+            attachmentId: Schema.String,
+            relativeUrl: Schema.String,
+            uploadOrigin: Schema.String,
+          }),
+        );
+        const issued = yield* decodeUpload(prepared.structuredContent);
+        expect(issued.uploadOrigin).toBe(b.url);
+        const http = yield* HttpClient.HttpClient;
+        const store = (url: string) =>
+          http.execute(
+            HttpClientRequest.post(url).pipe(
+              HttpClientRequest.setBody(HttpBody.uint8Array(new Uint8Array([1, 2, 3, 4]))),
+            ),
+          );
+        expect((yield* store(`${issued.uploadOrigin}${issued.relativeUrl}`)).status).toBe(204);
+        const send = (key: string) =>
+          nativeCall(
+            a,
+            parent,
+            "t3_thread_send_attachments",
+            {
+              environmentId: b.environmentId,
+              threadId: child,
+              message: "One use",
+              attachments: [{ ...upload, id: issued.attachmentId, environmentId: b.environmentId }],
+              clientRequestId: key,
+            },
+            capabilities,
+            credential,
+          );
+        const raced = yield* Effect.all(
+          [send("destination-consumer-a"), send("destination-consumer-b")],
+          { concurrency: "unbounded" },
+        );
+        expect(
+          raced.filter((result) => result.isError !== true),
+          json(raced),
+        ).toHaveLength(1);
+        expect(raced.filter((result) => result.isError === true)).toHaveLength(1);
+        const records = yield* b.threads.getThreadRecords(child, ["messages"]);
+        expect(records.messages.filter((message) => message.role === "user")).toHaveLength(2);
+        expect(records.messages.flatMap((message) => message.attachments)).toHaveLength(1);
+        const stale = yield* prepare("stale-upload");
+        expect(stale.isError, json(stale.content)).not.toBe(true);
+        const old = yield* decodeUpload(stale.structuredContent);
+        yield* a.links.unlink(b.environmentId);
+        expect((yield* store(`${old.uploadOrigin}${old.relativeUrl}`)).status).toBe(403);
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        expect(
+          (yield* sql<{
+            digest: string | null;
+          }>`SELECT digest FROM attachment_staging WHERE id=${old.attachmentId}`)[0]?.digest,
+        ).toBe(null);
+        const fs = yield* FileSystem.FileSystem;
+        expect(
+          (yield* fs.readDirectory(b.config.attachmentsDir)).some((path) =>
+            path.startsWith(old.attachmentId),
+          ),
+        ).toBe(false);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "attachments382: registered media send preserves each MIME and digest and refuses rival source consumption",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(descriptorOf("media382-a", "A", { peerAuthority: 1 }), "disk", {
+          productionKernel: true,
+          attachmentRequests: true,
+        });
+        const b = yield* makeNode(descriptorOf("media382-b", "B", { peerAuthority: 1 }), "disk", {
+          productionKernel: true,
+          attachmentRequests: true,
+        });
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("media382-parent");
+        yield* seedParent(a, parent);
+        const launched = yield* nativeCall(a, parent, "t3_thread_launch", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          title: "Media",
+          message: "Receive files",
+          modelSelection: selection,
+          clientRequestId: "media-owner",
+        });
+        expect(launched.isError, json(launched.content)).not.toBe(true);
+        const child = (yield* decodeLaunchReceipt(launched.structuredContent)).threadId;
+        const fixtures = [
+          {
+            type: "image",
+            name: "pixel.png",
+            mimeType: "image/png",
+            bytes: new Uint8Array(
+              Buffer.from(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==",
+                "base64",
+              ),
+            ),
+          },
+          {
+            type: "file",
+            name: "clip.mp4",
+            mimeType: "video/mp4",
+            bytes: new Uint8Array([
+              0, 0, 0, 20, 102, 116, 121, 112, 105, 115, 111, 109, 0, 0, 0, 0, 105, 115, 111, 109,
+            ]),
+          },
+          {
+            type: "file",
+            name: "sound.wav",
+            mimeType: "audio/wav",
+            bytes: new TextEncoder().encode("RIFF0000WAVEfmt "),
+          },
+          {
+            type: "file",
+            name: "notes.txt",
+            mimeType: "text/plain",
+            bytes: new TextEncoder().encode("destination bytes\n"),
+          },
+        ];
+        const http = yield* HttpClient.HttpClient;
+        const attachments = yield* Effect.forEach(fixtures, (fixture, index) =>
+          Effect.gen(function* () {
+            const upload = {
+              type: fixture.type,
+              name: fixture.name,
+              mimeType: fixture.mimeType,
+              sizeBytes: fixture.bytes.byteLength,
+            };
+            const prepared = yield* nativeCall(a, parent, "t3_attachment_prepare_upload", {
+              upload,
+              clientRequestId: `media-upload-${index}`,
+            });
+            expect(prepared.isError, json(prepared.content)).not.toBe(true);
+            const issued = yield* Schema.decodeUnknownEffect(
+              Schema.Struct({ attachmentId: Schema.String, relativeUrl: Schema.String }),
+            )(prepared.structuredContent);
+            expect(
+              (yield* http.execute(
+                HttpClientRequest.post(`${a.url}${issued.relativeUrl}`).pipe(
+                  HttpClientRequest.setBody(HttpBody.uint8Array(fixture.bytes)),
+                ),
+              )).status,
+            ).toBe(204);
+            return { ...upload, id: issued.attachmentId };
+          }),
+        );
+        const capabilities = new Set(["orchestration", "preview", "device"] as const);
+        const credential = yield* a.registry.issue({
+          threadId: parent,
+          providerInstanceId: instanceId,
+          capabilities,
+        });
+        const send = (clientRequestId: string) =>
+          nativeCall(
+            a,
+            parent,
+            "t3_thread_send_attachments",
+            {
+              environmentId: b.environmentId,
+              threadId: child,
+              attachments,
+              message: "Exact media",
+              clientRequestId,
+            },
+            capabilities,
+            credential,
+          );
+        const raced = yield* Effect.all([send("source-consumer-a"), send("source-consumer-b")], {
+          concurrency: "unbounded",
+        });
+        expect(
+          raced.filter((result) => result.isError !== true),
+          json(raced),
+        ).toHaveLength(1);
+        expect(raced.filter((result) => result.isError === true)).toHaveLength(1);
+        const winningKey = raced[0]!.isError === true ? "source-consumer-b" : "source-consumer-a";
+        const replayed = yield* send(winningKey);
+        expect(replayed.isError, json(replayed.content)).not.toBe(true);
+        const records = yield* b.threads.getThreadRecords(child, ["messages", "runs"]);
+        expect(records.messages.filter((message) => message.role === "user")).toHaveLength(2);
+        const delivered = records.messages.flatMap((message) => message.attachments);
+        expect(delivered).toHaveLength(fixtures.length);
+        const fs = yield* FileSystem.FileSystem;
+        for (const fixture of fixtures) {
+          const attachment = delivered.find((item) => item.name === fixture.name)!;
+          expect(attachment.mimeType).toBe(fixture.mimeType);
+          expect(attachment.sizeBytes).toBe(fixture.bytes.byteLength);
+          const path = resolveAttachmentPath({
+            attachmentsDir: b.config.attachmentsDir,
+            attachment,
+          });
+          expect(Array.from(yield* fs.readFile(path!))).toEqual(Array.from(fixture.bytes));
+        }
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "requests382: mixed versions negotiate before effects and imported unowned launches cannot duplicate",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(descriptorOf("import382-a", "A", { peerAuthority: 1 }), "disk", {
+          productionKernel: true,
+          attachmentRequests: true,
+        });
+        const b = yield* makeNode(descriptorOf("import382-b", "B", { peerAuthority: 1 }), "disk", {
+          productionKernel: true,
+          attachmentRequests: true,
+        });
+        const old = yield* makeNode(
+          descriptorOf("import382-old", "Old", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true },
+        );
+        const parent = ThreadId.make("import382-parent");
+        yield* seedParent(a, parent);
+        yield* linkTo(a.links, b, "full-access");
+        yield* linkTo(a.links, old, "full-access");
+        const unavailable = yield* nativeCall(a, parent, "t3_thread_launch", {
+          environmentId: old.environmentId,
+          projectId: old.project.id,
+          title: "Unsupported",
+          message: "Do not launch",
+          modelSelection: selection,
+          clientRequestId: "needs-protocol",
+        });
+        expect(unavailable.isError).toBe(true);
+        const oldSql = Context.get(old.database, SqlClient.SqlClient);
+        expect(
+          yield* oldSql`SELECT thread_id FROM orchestration_v2_projection_threads WHERE project_id=${old.project.id}`,
+        ).toHaveLength(0);
+        const http = yield* HttpClient.HttpClient;
+        expect((yield* http.get(`${b.url}/mcp/peer-control/requests`)).status).toBe(401);
+        // The old source path has no new receipt owner. Its original accepted
+        // destination record remains verifiable as an effect, but has no input ledger.
+        const legacy = yield* PeerForwarding.PeerForwarding.pipe(
+          Effect.provide(
+            PeerForwarding.layer.pipe(
+              Layer.provide(
+                Layer.succeedContext(Context.omit(RequestReceipts.McpRequestReceipts)(a.services)),
+              ),
+              Layer.provide(Layer.succeedContext(a.runtime)),
+            ),
+          ),
+        );
+        const input = {
+          projectId: b.project.id,
+          title: "Imported",
+          message: "Exactly one",
+          modelSelection: selection,
+          clientRequestId: "legacy-launch",
+        };
+        const accepted = yield* legacy.call(
+          caller(a, parent),
+          ProjectToolkit.tools.t3_thread_launch,
+          b.environmentId,
+          input,
+        );
+        const receipt = yield* decodeLaunchReceipt(accepted);
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        yield* sql`DELETE FROM mcp_request_receipts`;
+        const upgraded = yield* Effect.result(
+          a.forwarding.call(
+            caller(a, parent),
+            ProjectToolkit.tools.t3_thread_launch,
+            b.environmentId,
+            input,
+          ),
+        );
+        expect(upgraded._tag).toBe("Failure");
+        if (upgraded._tag === "Failure")
+          expect(upgraded.failure.message).toContain("legacy operation");
+        const records = yield* b.threads.getThreadRecords(receipt.threadId, ["messages", "runs"]);
+        expect(records.messages.filter((m) => m.role === "user")).toHaveLength(1);
+        expect(
+          yield* sql`SELECT thread_id FROM orchestration_v2_projection_threads WHERE project_id=${b.project.id}`,
+        ).toHaveLength(1);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "requests382: registered browser ambiguity persists before dispatch and cannot repeat an action",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(descriptorOf("external-a", "A", { peerAuthority: 1 }), "disk", {
+          productionKernel: true,
+          attachmentRequests: true,
+        });
+        const b = yield* makeNode(descriptorOf("external-b", "B", { peerAuthority: 1 }), "disk", {
+          productionKernel: true,
+          attachmentRequests: true,
+        });
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("external-parent");
+        yield* seedParent(a, parent);
+        const launched = yield* nativeCall(a, parent, "t3_thread_launch", {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          title: "Browser owner",
+          message: "Wait",
+          modelSelection: selection,
+          clientRequestId: "browser-owner",
+        });
+        expect(launched.isError, json(launched.content)).not.toBe(true);
+        const child = (yield* decodeLaunchReceipt(launched.structuredContent)).threadId;
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        yield* activate(b, child);
+        const connected = yield* Deferred.make<void>();
+        let actions = 0;
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        yield* Stream.runForEach(
+          yield* b.browser.connect({
+            clientId: "deterministic-browser",
+            environmentId: b.environmentId,
+          }),
+          (event) =>
+            event.type === "connected"
+              ? Deferred.succeed(connected, undefined)
+              : Effect.gen(function* () {
+                  const request = event.request;
+                  if (request.operation === "click") {
+                    const started = yield* sql<{
+                      state: string;
+                    }>`SELECT state FROM mcp_request_receipts WHERE state='started'`;
+                    expect(started).toHaveLength(1);
+                    actions++;
+                    yield* b.browser.respond({
+                      clientId: "deterministic-browser",
+                      connectionId: event.connectionId,
+                      requestId: request.requestId,
+                      ok: false,
+                      error: {
+                        _tag: "PreviewAutomationExecutionError",
+                        message: "External action happened; its confirmation was lost.",
+                      },
+                    });
+                  } else
+                    yield* b.browser.respond({
+                      clientId: "deterministic-browser",
+                      connectionId: event.connectionId,
+                      requestId: request.requestId,
+                      ok: true,
+                      result: {
+                        available: true,
+                        visible: true,
+                        tabId: null,
+                        url: null,
+                        title: null,
+                        loading: false,
+                      },
+                    });
+                }),
+        ).pipe(Effect.forkScoped);
+        yield* Deferred.await(connected);
+        const input = {
+          environmentId: b.environmentId,
+          contextThreadId: child,
+          locator: "role=button[name='Send']",
+          clientRequestId: "deliberate-click",
+        };
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const response = yield* nativeCall(a, parent, "preview_click", input);
+          expect(response.isError).toBe(true);
+          const failure = response.content.map((item) => item.text ?? "").join("");
+          expect(failure, json(response)).toContain('"code":"outcome_unknown"');
+          expect(failure).toContain('"requestId":"deliberate-click"');
+          expect(failure).toContain('"lastConfirmedStage":"dispatch_started"');
+        }
+        expect(actions).toBe(1);
+        const inspected = yield* nativeCall(a, parent, "preview_status", {
+          environmentId: b.environmentId,
+          contextThreadId: child,
+        });
+        expect(inspected.isError, json(inspected.content)).not.toBe(true);
+        expect(actions).toBe(1);
+        const changed = yield* nativeCall(a, parent, "preview_click", {
+          ...input,
+          locator: "role=button[name='Different']",
+        });
+        expect(changed.isError).toBe(true);
+        expect(actions).toBe(1);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "attachments382: registered native and peer launches preserve bytes and one accepted launch after reply loss",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(descriptorOf("attachment-a", "A", { peerAuthority: 1 }), "disk", {
+          productionKernel: true,
+          attachmentRequests: true,
+        });
+        const b = yield* makeNode(descriptorOf("attachment-b", "B", { peerAuthority: 1 }), "disk", {
+          productionKernel: true,
+          attachmentRequests: true,
+        });
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("attachment-parent");
+        yield* seedParent(a, parent);
+        const metadata = {
+          type: "file",
+          name: "sample.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 4,
+        };
+        const prepared = yield* nativeCall(a, parent, "t3_attachment_prepare_upload", {
+          upload: metadata,
+          clientRequestId: "source-upload",
+        });
+        expect(prepared.isError, json(prepared.content)).not.toBe(true);
+        const upload = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ attachmentId: Schema.String, relativeUrl: Schema.String }),
+        )(prepared.structuredContent);
+        const http = yield* HttpClient.HttpClient;
+        const stored = yield* http.execute(
+          HttpClientRequest.post(`${a.url}${upload.relativeUrl}`).pipe(
+            HttpClientRequest.setBody(HttpBody.uint8Array(new Uint8Array([1, 2, 3, 4]))),
+          ),
+        );
+        expect(stored.status, yield* stored.text).toBe(204);
+        const input = {
+          environmentId: b.environmentId,
+          projectId: b.project.id,
+          title: "Attachment fixture",
+          message: "Read this file",
+          attachments: [{ ...metadata, id: upload.attachmentId }],
+          modelSelection: selection,
+          clientRequestId: "one-peer-launch",
+        };
+        yield* Ref.set(a.dropLaunchResponses, 1);
+        const lost = yield* nativeCall(a, parent, "t3_thread_launch", input);
+        expect(lost.isError).toBe(true);
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const before = yield* sql<{
+          thread_id: string;
+        }>`SELECT thread_id FROM orchestration_v2_projection_threads WHERE project_id=${b.project.id}`;
+        expect(before, json(lost)).toHaveLength(1);
+        const acceptedId = ThreadId.make(before[0]!.thread_id);
+        const first = yield* b.threads.getThreadRecords(acceptedId, ["messages", "runs"]);
+        expect(first.messages.filter((message) => message.role === "user")).toHaveLength(1);
+        const delivered = first.messages.flatMap((message) => message.attachments);
+        expect(delivered).toHaveLength(1);
+        expect(delivered[0]).toMatchObject({
+          mimeType: "application/pdf",
+          sizeBytes: 4,
+          name: "sample.pdf",
+        });
+        const path = resolveAttachmentPath({
+          attachmentsDir: b.config.attachmentsDir,
+          attachment: delivered[0]!,
+        });
+        const fs = yield* FileSystem.FileSystem;
+        expect(Array.from(yield* fs.readFile(path!))).toEqual([1, 2, 3, 4]);
+        // Simulate pending-upload expiry after the actual native commit and
+        // lost reply. Native acceptance, not ephemeral pending bytes, owns replay.
+        const sourcePending = resolveAttachmentPath({
+          attachmentsDir: a.config.attachmentsDir,
+          attachment: { ...metadata, type: "file", id: upload.attachmentId },
+        });
+        yield* fs.remove(sourcePending!);
+        const pending = yield* sql<{ id: string }>`SELECT id FROM attachment_staging`;
+        for (const row of pending) {
+          const pendingPath = resolveAttachmentPathById({
+            attachmentsDir: b.config.attachmentsDir,
+            attachmentId: row.id,
+          });
+          if (pendingPath !== null) yield* fs.remove(pendingPath);
+        }
+        yield* a.stopConnections;
+        const reconnected = yield* a.reconnect();
+        yield* reconnected.peers.start;
+        const retried = yield* nativeCall(a, parent, "t3_thread_launch", input);
+        expect(retried.isError, json(retried.content)).not.toBe(true);
+        const receipt = yield* decodeLaunchReceipt(retried.structuredContent);
+        expect(receipt.threadId).toBe(acceptedId);
+        expect(
+          yield* sql`SELECT thread_id FROM orchestration_v2_projection_threads WHERE project_id=${b.project.id}`,
+        ).toHaveLength(1);
+        const after = yield* b.threads.getThreadRecords(acceptedId, ["messages", "runs"]);
+        expect(after.messages.map((m) => [m.id, m.attachments])).toEqual(
+          first.messages.map((m) => [m.id, m.attachments]),
+        );
+        expect(after.runs.map((r) => r.id)).toEqual(first.runs.map((r) => r.id));
+        // Later independent local edits belong to the accepted file. A replay
+        // must consult the native receipt instead of recopying the upload.
+        yield* fs.writeFile(path!, new Uint8Array([9, 8, 7, 6]));
+        const again = yield* nativeCall(a, parent, "t3_thread_launch", input);
+        expect(again.isError, json(again.content)).not.toBe(true);
+        expect(Array.from(yield* fs.readFile(path!))).toEqual([9, 8, 7, 6]);
+        const reopened = yield* a.reopenDatabase;
+        const rebuilt = yield* RequestReceipts.McpRequestReceipts.pipe(
+          Effect.provide(RequestReceipts.layer.pipe(Layer.provide(Layer.succeedContext(reopened)))),
+        );
+        yield* rebuilt.identify(
+          caller(a, parent),
+          "t3_thread_launch",
+          input,
+          input.clientRequestId,
+        );
+        const changed = yield* nativeCall(a, parent, "t3_thread_launch", {
+          ...input,
+          message: "Different intent",
+        });
+        expect(changed.isError).toBe(true);
+        expect((yield* b.threads.getThreadRecords(acceptedId, ["messages"])).messages).toEqual(
+          after.messages,
+        );
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
 
 /** Production claim/receipt worker, with provider I/O replaced only at its external boundary. */
 const drainStops = (node: Node) =>
@@ -6090,12 +8753,12 @@ it.live(
         const b = yield* makeNode(
           descriptorOf("native-route-b", "B", { peerAuthority: 1 }),
           "disk",
-          true,
+          { productionKernel: true },
         );
         const a = yield* makeNode(
           descriptorOf("native-route-a", "A", { peerAuthority: 1 }),
           "disk",
-          true,
+          { productionKernel: true },
         );
         yield* linkTo(a.links, b, "full-access");
         const session = (yield* b.linkedSessions)[0];

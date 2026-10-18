@@ -1,4 +1,9 @@
 import {
+  registerToolEffect,
+  classifyToolEffect,
+  type McpToolEffectClassification,
+} from "./McpToolEffects.ts";
+import {
   type OrchestrationV2LinkOrigin,
   OrchestratorMcpFailure,
   type ProviderInteractionMode,
@@ -48,6 +53,7 @@ const refuseOutsideConstruction = (token: symbol) => {
 /** Builds a declaration; only the declaration functions below call it. */
 let declare: <P, A, E, R>(
   handle: (params: P) => Effect.Effect<A, E, R>,
+  effect?: McpToolEffectClassification,
 ) => Declaration<(params: P) => Effect.Effect<A, E | OrchestratorMcpFailure, R>>;
 
 type CheckedHandlerOf<D> = D extends Declaration<infer Handler> ? Handler : never;
@@ -90,13 +96,23 @@ export class Declaration<out Handler> {
   // in to module-scoped functions. Copying a declaration's fields onto
   // anything else fails to typecheck and, at runtime, to run.
   readonly #handle: Handler;
-  private constructor(token: typeof builtHere, handle: Handler) {
+  readonly effect: McpToolEffectClassification;
+  private constructor(
+    token: typeof builtHere,
+    handle: Handler,
+    effect: McpToolEffectClassification,
+  ) {
     refuseOutsideConstruction(token);
     this.#handle = handle;
+    this.effect = effect;
   }
   static {
-    declare = (handle) =>
-      new Declaration(builtHere, (params) => McpRouting.withContext(params, handle(params)));
+    declare = (handle, effect = "owned") =>
+      new Declaration(
+        builtHere,
+        (params) => McpRouting.withContext(params, handle(params)),
+        effect,
+      );
     checkedHandler = Struct.lambda<CheckedHandler>((declaration) => declaration.#handle);
   }
 }
@@ -138,12 +154,17 @@ const requireThreadCaller = McpInvocationContext.McpInvocationContext.pipe(
 
 /** Changes nothing, so every caller may call it. */
 export const reads = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
-  declare((params: P) => McpRouting.invoke(params, handle));
+  declare((params: P) => McpRouting.invoke(params, handle), "read");
 
 /** Reads what belongs to the calling T3 thread, such as its preview tabs or devices. */
-export const readsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
-  declare((params: P) =>
-    requireThreadCaller.pipe(Effect.flatMap(() => McpRouting.invoke(params, handle))),
+export const readsAsCaller = <P, A, E, R>(
+  handle: (params: P) => Effect.Effect<A, E, R>,
+  effect: McpToolEffectClassification = "read",
+) =>
+  declare(
+    (params: P) =>
+      requireThreadCaller.pipe(Effect.flatMap(() => McpRouting.invoke(params, handle))),
+    effect,
   );
 
 /**
@@ -151,12 +172,17 @@ export const readsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A
  * worktree) while that thread's run is live. Only an agent running inside a
  * T3 thread has one.
  */
-export const actsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
-  declare((params: P) =>
-    requireThreadCaller.pipe(
-      Effect.flatMap(() => writingCaller),
-      Effect.flatMap(() => McpRouting.invoke(params, handle)),
-    ),
+export const actsAsCaller = <P, A, E, R>(
+  handle: (params: P) => Effect.Effect<A, E, R>,
+  effect: "read" | "owned" | "external-unknown" = "owned",
+) =>
+  declare(
+    (params: P) =>
+      requireThreadCaller.pipe(
+        Effect.flatMap(() => writingCaller),
+        Effect.flatMap(() => McpRouting.invoke(params, handle)),
+      ),
+    effect,
   );
 
 /**
@@ -187,9 +213,13 @@ export const writes = <P, A, E, R>(
  * writing a pull request's review guide. Unlike `writes` it does not need thread control; the
  * handler checks its capability, as the capability toolkits do.
  */
-export const writesWithCapability = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
-  declare((params: P) =>
-    writingCaller.pipe(Effect.flatMap(() => McpRouting.invoke(params, handle))),
+export const writesWithCapability = <P, A, E, R>(
+  handle: (params: P) => Effect.Effect<A, E, R>,
+  effect: "owned" | "external-unknown" = "owned",
+) =>
+  declare(
+    (params: P) => writingCaller.pipe(Effect.flatMap(() => McpRouting.invoke(params, handle))),
+    effect,
   );
 
 /**
@@ -299,13 +329,16 @@ export const writesEnvironment = <P, A, E, R>(
     params: P,
     check: Effect.Effect<Caller, OrchestratorMcpFailure, CheckServices>,
   ) => Effect.Effect<A, E, R>,
+  effect: "owned" | "external-unknown" = "owned",
 ) => {
   const check = orchestratingCaller.pipe(
     Effect.tap((caller) => assertNotLinked(caller, "change projects or environment settings")),
     Effect.tap((caller) => assertFullAccess(caller, fullAccessRequired)),
   );
-  return declare((params: P) =>
-    check.pipe(Effect.flatMap(() => McpRouting.invoke(params, (local) => handle(local, check)))),
+  return declare(
+    (params: P) =>
+      check.pipe(Effect.flatMap(() => McpRouting.invoke(params, (local) => handle(local, check)))),
+    effect,
   );
 };
 
@@ -366,10 +399,17 @@ const routedHandlers = <Tools extends Record<string, Tool.Any>>(
     ...checkedHandlers<Toolkit.HandlersFrom<Tools>>(declarations),
   };
   for (const name of Object.keys(handlers) as Array<keyof Toolkit.HandlersFrom<Tools>>) {
+    const tool = toolkit.tools[name as keyof Tools];
+    if (tool === undefined) throw new Error(`Missing registered tool ${String(name)}.`);
+    registerToolEffect(tool, declarations[name].effect);
     const handler = handlers[name];
     handlers[name] = (params, context) =>
       handler(params, context).pipe(
         Effect.provideService(McpRouting.CurrentTool, toolkit.tools[name as keyof Tools]),
+        Effect.provideService(
+          McpRouting.CurrentEffect,
+          classifyToolEffect(declarations[name].effect, params),
+        ),
       );
   }
   // The nominal declarations were checked against this toolkit before mapping.

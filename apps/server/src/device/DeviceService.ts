@@ -115,6 +115,8 @@ export class DeviceService extends Context.Service<
     readonly testHost: (
       config: SshDeviceHostConfig,
     ) => Effect.Effect<DeviceHostSummary, DeviceError>;
+    /** Fresh consent and host availability, without starting a host or writing config. */
+    readonly checkAgentAccess?: (hostId?: DeviceHostId) => Effect.Effect<void, DeviceError>;
     readonly agentTarget: (input: {
       threadId: ThreadId;
       hostId: DeviceHostId;
@@ -312,14 +314,35 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     return yield* readiness(host.id);
   });
 
-  const agentReadinessIfSupported: DeviceService["Service"]["agentReadinessIfSupported"] =
-    Effect.fn("DeviceService.agentReadinessIfSupported")(function* (hostId) {
+  const supportedAgentHost = (hostId?: DeviceHostId) =>
+    Effect.gen(function* () {
       const deviceSettings = yield* readDeviceSettings;
-      if (!deviceSettings.enabled || !deviceSettings.agentAccessEnabled) return null;
+      if (!deviceSettings.enabled || !deviceSettings.agentAccessEnabled) return undefined;
       const host = yield* resolveHost(hostId);
       const summary = yield* host.summary;
       if (summary.kind === "local" && !summary.platforms.some((platform) => platform.available))
-        return null;
+        return undefined;
+      return host;
+    });
+  const checkAgentAccess = (hostId?: DeviceHostId) =>
+    supportedAgentHost(hostId).pipe(
+      Effect.flatMap((host) =>
+        host === undefined
+          ? Effect.fail(
+              new DeviceHostUnavailableError({
+                hostId: hostId ?? LOCAL_DEVICE_HOST_ID,
+                reason:
+                  "Agent device access requires enabled device support, agent access, and an available simulator platform on this host.",
+              }),
+            )
+          : Effect.void,
+      ),
+    );
+
+  const agentReadinessIfSupported: DeviceService["Service"]["agentReadinessIfSupported"] =
+    Effect.fn("DeviceService.agentReadinessIfSupported")(function* (hostId) {
+      const host = yield* supportedAgentHost(hostId);
+      if (host === undefined) return null;
       const ready = yield* host
         .ensureAgentReady((phase, detail) =>
           setHostStatus(host.id, { status: phase, detail }).pipe(Effect.asVoid),
@@ -927,6 +950,7 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
           reason: "Agent CLI installation is unavailable in this device service.",
         }),
       ),
+      checkAgentAccess,
       agentTarget: (input) =>
         Effect.gen(function* () {
           const host = yield* resolveHost(input.hostId);

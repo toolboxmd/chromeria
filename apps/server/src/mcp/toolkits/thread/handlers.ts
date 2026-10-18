@@ -1,3 +1,4 @@
+import { CurrentRequest } from "../../McpRequestReceipts.ts";
 import {
   type CommandId,
   ThreadId,
@@ -58,7 +59,7 @@ const writesThread = <P extends { readonly threadId?: ThreadId | undefined }, A,
 ) => McpToolAccess.writesThreads((params: P) => [params.threadId], handle);
 
 export const layer = McpToolAccess.toLayer(ThreadToolkit, {
-  run_scheduled_task_now: McpToolAccess.writesEnvironment((input) =>
+  run_scheduled_task_now: McpToolAccess.writesEnvironment((input, check) =>
     Effect.gen(function* () {
       const scheduler = yield* ScheduledTasks.ScheduledTaskService;
       const { tasks } = yield* scheduler.list().pipe(Effect.mapError(unavailable));
@@ -69,11 +70,23 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           message: "The scheduled task was not found.",
         });
       yield* assertSameLink(yield* readCaller(), selected);
-      const { task } = yield* scheduler
-        .runNow({ id: input.taskId })
-        .pipe(Effect.mapError(unavailable));
+      const request = yield* CurrentRequest;
+      const context = yield* Effect.context<Effect.Services<typeof check>>();
+      const operation =
+        request === undefined
+          ? scheduler.runNow({ id: input.taskId })
+          : scheduler.runNow(
+              { id: input.taskId },
+              { request, recheck: check.pipe(Effect.provideContext(context), Effect.asVoid) },
+            );
+      const { task, manualReceipt } = yield* operation.pipe(
+        Effect.mapError((error) =>
+          error._tag === "OrchestratorMcpFailure" ? error : unavailable(),
+        ),
+      );
       return {
         taskId: task.id,
+        ...(manualReceipt === undefined ? {} : { manualReceipt }),
         threadId: task.threadId,
         lastRunStatus: task.lastRunStatus,
         runCount: task.runCount,

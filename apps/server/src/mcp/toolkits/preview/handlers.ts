@@ -1,3 +1,4 @@
+import * as Option from "effect/Option";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
@@ -7,6 +8,7 @@ import {
   PreviewAutomationRecordingTransferError,
   PreviewAutomationRecordingDesktopUpdateRequiredError,
   PreviewAutomationRecordingArtifact,
+  OrchestratorMcpFailure,
   type ToolActivityIcon,
   type ThreadId,
   type PreviewAutomationOperation,
@@ -30,6 +32,7 @@ import { resolveAttachmentRelativePath } from "../../../attachmentPaths.ts";
 import * as ServerConfig from "../../../config.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
+import * as AttachmentStaging from "../../../assets/AttachmentStaging.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import { PreviewSnapshotToolkit, PreviewStandardToolkit, PreviewToolkit } from "./tools.ts";
 
@@ -59,7 +62,8 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
   tabId?: PreviewTabId,
 ): Effect.fn.Return<
   { result: A; toolIcon?: ToolActivityIcon },
-  import("@t3tools/contracts").PreviewAutomationError,
+  | import("@t3tools/contracts").PreviewAutomationError
+  | import("@t3tools/contracts").OrchestratorMcpFailure,
   McpInvocationContext.McpInvocationContext | PreviewAutomationBroker.PreviewAutomationBroker
 > {
   const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
@@ -190,76 +194,130 @@ export const claimPreviewRecording = Effect.fn("PreviewToolkit.claimRecording")(
 });
 
 const handlers = {
-  preview_dialog: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<PreviewAutomationStatus>("dialog", input),
+  preview_dialog: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<PreviewAutomationStatus>("dialog", input),
+    "external-unknown",
   ),
   preview_status: McpToolAccess.readsAsCaller((input) =>
     invokeTargeted<PreviewAutomationStatus>("status", input ?? {}),
   ),
-  preview_open: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<PreviewAutomationStatus>("open", normalizePreviewOpenInput(input)),
+  preview_open: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<PreviewAutomationStatus>("open", normalizePreviewOpenInput(input)),
+    "external-unknown",
   ),
-  preview_navigate: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<PreviewAutomationStatus>("navigate", input, input.timeoutMs),
+  preview_navigate: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<PreviewAutomationStatus>("navigate", input, input.timeoutMs),
+    "external-unknown",
   ),
-  preview_resize: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<PreviewAutomationResizeResult>("resize", input, input.timeoutMs),
+  preview_resize: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<PreviewAutomationResizeResult>("resize", input, input.timeoutMs),
+    "external-unknown",
   ),
-  preview_set_appearance: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<PreviewAutomationSetColorSchemeResult>("setColorScheme", input),
+  preview_set_appearance: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<PreviewAutomationSetColorSchemeResult>("setColorScheme", input),
+    "external-unknown",
   ),
-  preview_snapshot: McpToolAccess.readsAsCaller((input) => {
-    // Output selection and saving are MCP-only; the browser still produces a complete snapshot.
-    const { includeImage: _includeImage, save: _save, ...operationInput } = input ?? {};
-    return invokeTargeted<PreviewAutomationSnapshot>("snapshot", operationInput);
-  }),
-  preview_click: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<object>("click", input, input.timeoutMs),
+  preview_snapshot: McpToolAccess.readsAsCaller(
+    (input) => {
+      // Output selection and saving are MCP-only; the browser still produces a complete snapshot.
+      const { includeImage: _includeImage, save: _save, ...operationInput } = input ?? {};
+      return invokeTargeted<PreviewAutomationSnapshot>("snapshot", operationInput);
+    },
+    (input) =>
+      typeof input === "object" && input !== null && "save" in input && input.save === true
+        ? "external-unknown"
+        : "read",
   ),
-  preview_type: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<object>("type", input, input.timeoutMs),
+  preview_click: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<object>("click", input, input.timeoutMs),
+    "external-unknown",
   ),
-  preview_hover: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<object>("hover", input, input.timeoutMs),
+  preview_type: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<object>("type", input, input.timeoutMs),
+    "external-unknown",
   ),
-  preview_select: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<PreviewAutomationSelectResult>("select", input, input.timeoutMs),
+  preview_hover: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<object>("hover", input, input.timeoutMs),
+    "external-unknown",
   ),
-  preview_drag: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<object>("drag", input, input.timeoutMs),
+  preview_select: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<PreviewAutomationSelectResult>("select", input, input.timeoutMs),
+    "external-unknown",
   ),
-  preview_upload: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<object>("upload", input, input.timeoutMs),
+  preview_drag: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<object>("drag", input, input.timeoutMs),
+    "external-unknown",
   ),
-  preview_press: McpToolAccess.actsAsCaller((input) => invokeTargeted<object>("press", input)),
-  preview_scroll: McpToolAccess.actsAsCaller((input) => invokeTargeted<object>("scroll", input)),
-  preview_evaluate: McpToolAccess.actsAsCaller(({ tabId, ...input }) =>
-    invoke<unknown>("evaluate", input, undefined, tabId).pipe(
-      Effect.map(({ result, toolIcon }) => ({
-        value: result ?? null,
-        ...(toolIcon ? { toolIcon } : {}),
-      })),
-    ),
+  preview_upload: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<object>("upload", input, input.timeoutMs),
+    "external-unknown",
+  ),
+  preview_press: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<object>("press", input),
+    "external-unknown",
+  ),
+  preview_scroll: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<object>("scroll", input),
+    "external-unknown",
+  ),
+  preview_evaluate: McpToolAccess.actsAsCaller(
+    ({ tabId, ...input }) =>
+      invoke<unknown>("evaluate", input, undefined, tabId).pipe(
+        Effect.map(({ result, toolIcon }) => ({
+          value: result ?? null,
+          ...(toolIcon ? { toolIcon } : {}),
+        })),
+      ),
+    "external-unknown",
   ),
   preview_wait_for: McpToolAccess.readsAsCaller((input) =>
     invokeTargeted<object>("waitFor", input, input.timeoutMs),
   ),
-  preview_recording_start: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<PreviewAutomationRecordingStatus>("recordingStart", input ?? {}),
+  preview_recording_start: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<PreviewAutomationRecordingStatus>("recordingStart", input ?? {}),
+    "external-unknown",
   ),
-  preview_recording_stop: McpToolAccess.actsAsCaller((input) =>
-    Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
-      const { tabId, ...operationInput } = input;
-      const response = yield* invoke<unknown>(
-        "recordingStop",
-        { ...operationInput, transferToEnvironment: true },
-        PREVIEW_RECORDING_STOP_TIMEOUT_MS,
-        tabId,
-      );
-      const artifact = yield* claimPreviewRecording(scope.thread.threadId, response.result);
-      return { ...artifact, ...(response.toolIcon ? { toolIcon: response.toolIcon } : {}) };
-    }),
+  preview_recording_stop: McpToolAccess.actsAsCaller(
+    (input) =>
+      Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
+        const staging = yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging);
+        const modern =
+          scope.client?.linked === true && scope.authority?.envelope.requestOwner !== undefined;
+        if (modern && Option.isNone(staging))
+          return yield* new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message:
+              "The durable media reference owner is unavailable; recording stop was not dispatched.",
+          });
+        const { tabId, ...operationInput } = input;
+        const response = yield* invoke<unknown>(
+          "recordingStop",
+          { ...operationInput, transferToEnvironment: true },
+          PREVIEW_RECORDING_STOP_TIMEOUT_MS,
+          tabId,
+        );
+        const artifact = yield* claimPreviewRecording(scope.thread.threadId, response.result);
+        if (modern && Option.isSome(staging)) {
+          const resource = yield* staging.value.publishReference(scope, {
+            type: "file",
+            id: artifact.id,
+            name: `recording.${parseAttachmentFileExtension(artifact.id) ?? "webm"}`,
+            mimeType: artifact.mimeType,
+            sizeBytes: artifact.sizeBytes,
+          });
+          return {
+            resource,
+            tabId: artifact.tabId,
+            mimeType: artifact.mimeType,
+            sizeBytes: artifact.sizeBytes,
+            createdAt: artifact.createdAt,
+            ...(response.toolIcon ? { toolIcon: response.toolIcon } : {}),
+          };
+        }
+        return { ...artifact, ...(response.toolIcon ? { toolIcon: response.toolIcon } : {}) };
+      }),
+    "external-unknown",
   ),
 } satisfies McpToolAccess.Handlers<typeof PreviewToolkit.tools>;
 

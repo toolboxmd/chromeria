@@ -73,6 +73,7 @@ export const servePeer = <E, R>(
   tools: Layer.Layer<never, E, R>,
   options?: {
     readonly persisted?: boolean;
+    readonly serverConfig?: ServerConfig.ServerConfig["Service"];
     readonly registry?: McpSessionRegistry.McpSessionRegistryShape;
     readonly controlStreamUnavailable?: boolean;
     readonly database?: Layer.Layer<SqlClient.SqlClient>;
@@ -104,7 +105,11 @@ export const servePeer = <E, R>(
           : Layer.succeed(ServerSecretStore.ServerSecretStore, options.secretStore),
       ),
       Layer.provideMerge(ServerEnvironment.layerIdentity),
-      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-peer-link-peer-" })),
+      Layer.provideMerge(
+        options?.serverConfig === undefined
+          ? ServerConfig.layerTest(process.cwd(), { prefix: "t3-peer-link-peer-" })
+          : Layer.succeed(ServerConfig.ServerConfig, options.serverConfig),
+      ),
       Layer.provideMerge(Layer.mergeAll(NodeCrypto.layer, NodeFileSystem.layer, NodePath.layer)),
       Layer.fresh,
       Layer.build,
@@ -185,6 +190,8 @@ export const servePeer = <E, R>(
     // Fresh, so the peer never shares a toolkit or MCP server with the
     // environment that links to it in the same test.
     yield* HttpRouter.serve(layerRoutes, { disableListenLog: true, disableLogger: true }).pipe(
+      Layer.provide(Layer.succeedContext(authContext)),
+      Layer.provide(Layer.succeedContext(authorityContext ?? Context.empty())),
       Layer.fresh,
       Layer.build,
     );

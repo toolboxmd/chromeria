@@ -1,3 +1,4 @@
+import * as MutationReceipts from "../scheduledTasks/mutationReceipts.ts";
 import {
   isForkScheduledTaskSchedule,
   OrchestrationV2RunJson,
@@ -8,6 +9,9 @@ import {
   type ScheduledTaskOutcomeCheckUpdate,
   type ScheduledTaskSchedule,
   type ScheduledTaskUpsertInput,
+  type ScheduledTaskRunNowInput,
+  type ScheduledTaskRunNowResult,
+  OrchestratorMcpFailure,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -94,7 +98,9 @@ export class ScheduledTaskChecks extends Context.Service<
         readonly scope: { readonly requestNamespace: string };
       },
       save: (input: ScheduledTaskUpsertInput) => Effect.Effect<A, E, R>,
-    ) => (input: ScheduledTaskUpsertInput) => Effect.Effect<A, E | ScheduledTaskError, R>;
+    ) => (
+      input: ScheduledTaskUpsertInput,
+    ) => Effect.Effect<A, E | ScheduledTaskError | OrchestratorMcpFailure, R>;
     /**
      * Wraps `update_scheduled_task`'s save the same way, under the task's lock
      * so no fire sees the new fork fields with the old definition. Refuses a
@@ -110,7 +116,9 @@ export class ScheduledTaskChecks extends Context.Service<
         readonly parent: Caller;
       },
       save: (input: ScheduledTaskUpsertInput) => Effect.Effect<A, E, R>,
-    ) => (input: ScheduledTaskUpsertInput) => Effect.Effect<A, E | ScheduledTaskError, R>;
+    ) => (
+      input: ScheduledTaskUpsertInput,
+    ) => Effect.Effect<A, E | ScheduledTaskError | OrchestratorMcpFailure, R>;
     /**
      * Wraps `delete_scheduled_task`'s delete: a judged thread cannot delete its
      * own task. The guard runs inside the decorated delete, under the task's lock.
@@ -118,7 +126,7 @@ export class ScheduledTaskChecks extends Context.Service<
     readonly delete: <I, A, E, R>(
       hook: { readonly existing: ScheduledTask; readonly parent: Caller },
       remove: (input: I) => Effect.Effect<A, E, R>,
-    ) => (input: I) => Effect.Effect<A, E | ScheduledTaskError, R>;
+    ) => (input: I) => Effect.Effect<A, E | ScheduledTaskError | OrchestratorMcpFailure, R>;
     /** Advances every unfinished fork run one step; the shared scheduler runs it each tick. */
     readonly reconcile: Effect.Effect<void, ScheduledTaskError>;
   }
@@ -563,6 +571,24 @@ const decoratedLayer = Layer.effect(
     const refused = (message: string, taskId: ScheduledTaskId | undefined) =>
       new ScheduledTaskError({ message, ...(taskId === undefined ? {} : { taskId }) });
 
+    function runNow(
+      input: ScheduledTaskRunNowInput,
+    ): Effect.Effect<ScheduledTaskRunNowResult, ScheduledTaskError>;
+    function runNow(
+      input: ScheduledTaskRunNowInput,
+      options: ScheduledTaskService.ManualOptions,
+    ): Effect.Effect<ScheduledTaskRunNowResult, ScheduledTaskError | OrchestratorMcpFailure>;
+    function runNow(input: ScheduledTaskRunNowInput, options?: ScheduledTaskService.ManualOptions) {
+      // A keyed result is the original owner's historical receipt. Decorating it
+      // with current fork state would silently change that accepted intent.
+      return options === undefined
+        ? inner.runNow(input).pipe(
+            Effect.flatMap((result) => attach(result.task)),
+            Effect.map((task) => ({ task })),
+          )
+        : inner.runNow(input, options);
+    }
+
     return ScheduledTaskService.ScheduledTaskService.of({
       ...inner,
       list: () => inner.list().pipe(Effect.flatMap(attachList)),
@@ -574,8 +600,18 @@ const decoratedLayer = Layer.effect(
           Stream.mapEffect(attachList),
           Stream.map((result) => ({ ...result, tasks: result.tasks.map(withoutCommandOutput) })),
         ),
-      upsert: (input) =>
+      upsert: (input, options) =>
         Effect.gen(function* () {
+          const mutation = yield* MutationReceipts.CurrentMutation;
+          if (
+            mutation !== undefined &&
+            Option.isSome(
+              yield* MutationReceipts.confirmed(mutation.request).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              ),
+            )
+          )
+            return yield* inner.upsert(input, options);
           const now = yield* Clock.currentTimeMillis;
           const { tasks } = yield* inner.list();
           const existing =
@@ -608,9 +644,14 @@ const decoratedLayer = Layer.effect(
                   : chooseWeeklyMinutes(schedule, busyMinutes(tasks, input.id, now), now),
             };
           }
-          const result = yield* inner.upsert({ ...input, schedule });
+          const result = yield* inner.upsert({ ...input, schedule }, options);
           return { task: yield* attach(result.task) };
-        }),
+        }).pipe(
+          Effect.catchTags({
+            OrchestratorMcpFailure: (cause) =>
+              Effect.fail(new ScheduledTaskError({ message: cause.message, cause })),
+          }),
+        ),
       setEnabled: (input) =>
         inner.setEnabled(input).pipe(
           Effect.flatMap((result) => attach(result.task)),
@@ -619,19 +660,27 @@ const decoratedLayer = Layer.effect(
       // The guard, upstream's delete and the fork state share the task's lock and one transaction.
       delete: (input) =>
         Effect.gen(function* () {
+          const mutation = yield* MutationReceipts.CurrentMutation;
+          if (
+            mutation !== undefined &&
+            Option.isSome(
+              yield* MutationReceipts.confirmed(mutation.request).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              ),
+            )
+          )
+            return { id: input.id };
           const actorThreadId = yield* ScheduledTaskDeleteActor;
           return yield* runs.removeTask(input.id, actorThreadId, inner.delete(input));
         }).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.mapError((error) =>
-            error._tag === "ScheduledTaskError" ? error : toTaskError(input.id)(error),
+            error._tag === "ScheduledTaskError"
+              ? error
+              : new ScheduledTaskError({ message: error.message, taskId: input.id, cause: error }),
           ),
         ),
-      runNow: (input) =>
-        inner.runNow(input).pipe(
-          Effect.flatMap((result) => attach(result.task)),
-          Effect.map((task) => ({ task })),
-        ),
+      runNow,
       rotateWebhookToken: (input) =>
         inner.rotateWebhookToken(input).pipe(
           Effect.flatMap((result) => attach(result.task)),
@@ -696,23 +745,27 @@ const checksLayer = Layer.effect(
             const id = ScheduledTaskId.make(`scheduled-task:${key}`);
             return yield* runs.withTaskLock(
               id,
-              sql.withTransaction(
-                Effect.gen(function* () {
-                  yield* withSql(
-                    runs.saveUnlocked({
-                      taskId: id,
-                      projectId,
-                      threadId:
-                        bindToCurrentThread && parent !== undefined ? parent.thread.id : null,
-                      schedule: fields.schedule,
-                      fields,
-                      actor: parent?.thread.id ?? "agent",
-                      actorThreadId: null,
-                    }),
-                  ).pipe(Effect.mapError(toToolError(id)));
-                  return yield* save({ ...input, id });
-                }),
-              ),
+              MutationReceipts.accept(
+                id,
+                sql.withTransaction(
+                  Effect.gen(function* () {
+                    yield* withSql(
+                      runs.saveUnlocked({
+                        taskId: id,
+                        projectId,
+                        threadId:
+                          bindToCurrentThread && parent !== undefined ? parent.thread.id : null,
+                        schedule: fields.schedule,
+                        fields,
+                        actor: parent?.thread.id ?? "agent",
+                        actorThreadId: null,
+                      }),
+                    ).pipe(Effect.mapError(toToolError(id)));
+                    return yield* save({ ...input, id });
+                  }),
+                ),
+                save({ ...input, id }),
+              ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
             );
           }).pipe(rethrowSql),
       update:
@@ -721,22 +774,26 @@ const checksLayer = Layer.effect(
           runs
             .withTaskLock(
               existing.id,
-              sql.withTransaction(
-                Effect.gen(function* () {
-                  yield* withSql(
-                    runs.saveUnlocked({
-                      taskId: existing.id,
-                      projectId: existing.projectId,
-                      threadId,
-                      schedule: fields.schedule ?? existing.schedule,
-                      fields,
-                      actor: parent?.thread.id ?? "agent",
-                      actorThreadId: parent?.thread.id ?? null,
-                    }),
-                  ).pipe(Effect.mapError(toToolError(existing.id)));
-                  return yield* save(input);
-                }),
-              ),
+              MutationReceipts.accept(
+                existing.id,
+                sql.withTransaction(
+                  Effect.gen(function* () {
+                    yield* withSql(
+                      runs.saveUnlocked({
+                        taskId: existing.id,
+                        projectId: existing.projectId,
+                        threadId,
+                        schedule: fields.schedule ?? existing.schedule,
+                        fields,
+                        actor: parent?.thread.id ?? "agent",
+                        actorThreadId: parent?.thread.id ?? null,
+                      }),
+                    ).pipe(Effect.mapError(toToolError(existing.id)));
+                    return yield* save(input);
+                  }),
+                ),
+                save(input),
+              ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
             )
             .pipe(rethrowSql),
       delete:

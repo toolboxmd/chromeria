@@ -1,6 +1,7 @@
 import * as McpRouting from "../../McpRouting.ts";
 import {
   McpCapabilityUnavailableError,
+  McpConfirmedOperation,
   OrchestratorMcpFailure,
   PositiveInt,
   PullRequestReviewGuide,
@@ -192,6 +193,7 @@ export class PullRequestGuideFailedError extends Schema.TaggedError<PullRequestG
 export const PullRequestToolError = Schema.Union([
   OrchestratorMcpFailure,
   McpCapabilityUnavailableError,
+  McpConfirmedOperation,
   PullRequestUrlInvalidError,
   PullRequestTargetIncompleteError,
   PullRequestHostRequiredError,
@@ -277,9 +279,9 @@ export const ListThreadPullRequestsResult = Schema.Struct({
 export type ListThreadPullRequestsResult = typeof ListThreadPullRequestsResult.Type;
 
 const LinkPullRequestTool = Tool.make("link_pull_request", {
-  description: `${REGISTER_EVERY_PR} Links a pull request to this thread so T3 Code tracks it, shows its status beside the thread, and settles the thread when it merges. Pass the URL, or repository plus number. Linking an already-linked pull request succeeds with alreadyLinked=true.`,
+  description: `${REGISTER_EVERY_PR} Links a pull request to this thread so T3 Code tracks it, shows its status beside the thread, and settles the thread when it merges. Pass the URL, or repository plus number. Unkeyed linking of an already-linked pull request succeeds with alreadyLinked=true. Negotiated keyed calls return a historical confirmed-operation receipt; list_thread_pull_requests reads current links.`,
   parameters: McpRouting.parameters(PullRequestTargetInput),
-  success: LinkPullRequestResult,
+  success: Schema.Union([LinkPullRequestResult, McpConfirmedOperation]),
   failure: PullRequestToolError,
   dependencies,
 })
@@ -291,9 +293,9 @@ const LinkPullRequestTool = Tool.make("link_pull_request", {
 
 const UnlinkPullRequestTool = Tool.make("unlink_pull_request", {
   description:
-    "Remove a pull request link from this thread, for example after closing a pull request you opened by mistake. Pass the URL, or repository plus number. Unlinking a pull request that is not linked succeeds with wasLinked=false.",
+    "Remove a pull request link from this thread, for example after closing a pull request you opened by mistake. Pass the URL, or repository plus number. Unkeyed unlinking of a pull request that is not linked succeeds with wasLinked=false. Negotiated keyed calls return a historical confirmed-operation receipt; list_thread_pull_requests reads current links.",
   parameters: McpRouting.parameters(PullRequestTargetInput),
-  success: UnlinkPullRequestResult,
+  success: Schema.Union([UnlinkPullRequestResult, McpConfirmedOperation]),
   failure: PullRequestToolError,
   dependencies,
 })

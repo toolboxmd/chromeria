@@ -1,3 +1,8 @@
+import { requestNamespace, requestGeneration } from "./requestIdentity.ts";
+import { McpSavedSnapshotReceipt } from "@t3tools/contracts";
+import { sha256 } from "@noble/hashes/sha2";
+import * as Hex from "effect/encoding/Hex";
+import { loadCaller } from "./threadAccess.ts";
 import * as PeerTaskLifecycle from "../peer/PeerTaskLifecycle.ts";
 import { PeerTaskLifecycleRequest } from "@t3tools/contracts";
 import * as SpectrumToolkit from "../spectrum/mcpToolkit.ts";
@@ -11,10 +16,11 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
-import { AiError, McpProtocol, McpSchema, McpServer, Tool, type Toolkit } from "effect/ai";
+import { AiError, McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   OrchestratorMcpFailure,
@@ -70,6 +76,8 @@ import {
 } from "./toolkits/device/tools.ts";
 import * as HtmlHandlers from "./toolkits/html/handlers.ts";
 import { HtmlPreviewTool, HtmlPreviewToolkit, HtmlRenderToolkit } from "./toolkits/html/tools.ts";
+import * as RequestReceipts from "./McpRequestReceipts.ts";
+import * as AttachmentStaging from "../assets/AttachmentStaging.ts";
 
 /** Where an MCP client discovers how to sign in (RFC 9728), at this request's own origin. */
 const mcpResourceMetadataUrl = (request: HttpServerRequest.HttpServerRequest) =>
@@ -268,6 +276,7 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
         return {
           ...limited,
           authority: record,
+          requestNamespace: record.envelope.requestOwner?.namespace ?? limited.requestNamespace,
           capabilities: new Set(record.ceiling.capabilities),
         };
       }).pipe(Effect.result);
@@ -500,6 +509,7 @@ const screenshotSiteSlug = (rawUrl: string): string => {
 const saveScreenshot = Effect.fn("McpHttpServer.saveScreenshot")(function* (
   pageUrl: string,
   data: Uint8Array,
+  operationId?: string,
 ) {
   const config = yield* ServerConfig.ServerConfig;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -507,15 +517,26 @@ const saveScreenshot = Effect.fn("McpHttpServer.saveScreenshot")(function* (
   const millis = yield* Clock.currentTimeMillis;
   const crypto = yield* Crypto.Crypto;
   // Two saves in the same millisecond must not overwrite each other.
-  const unique = (yield* crypto.randomUUIDv4().pipe(Effect.orDie)).slice(0, 8);
+  const unique = operationId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie)).slice(0, 8);
   const fileName = `browser-screenshot-${screenshotSiteSlug(pageUrl)}-${millis.toString(36)}-${unique}.png`;
   const screenshotPath = path.join(config.browserArtifactsDir, fileName);
   yield* fileSystem.makeDirectory(config.browserArtifactsDir, { recursive: true }).pipe(
-    Effect.andThen(fileSystem.writeFile(screenshotPath, data)),
+    Effect.andThen(
+      fileSystem.writeFile(
+        screenshotPath,
+        data,
+        operationId === undefined ? undefined : { flag: "wx" },
+      ),
+    ),
     Effect.mapError((cause) => new PreviewScreenshotSaveError({ screenshotPath, cause })),
   );
   return screenshotPath;
 });
+
+const decodeSavedSnapshotParameters = Schema.decodeUnknownEffect(
+  PreviewSnapshotTool.parametersSchema,
+);
+const decodeSavedSnapshotReceipt = Schema.decodeUnknownEffect(McpSavedSnapshotReceipt);
 
 const isPreviewAutomationError = Schema.is(PreviewAutomationError);
 
@@ -525,6 +546,16 @@ const previewSnapshotFailure = <E>(cause: Cause.Cause<E>) => {
   }
   const failures = cause.reasons.filter(Cause.isFailReason);
   const firstFailure = failures[0]?.error;
+  if (isOrchestratorMcpFailure(firstFailure))
+    return Effect.succeed(
+      new McpSchema.CallToolResult({
+        isError: true,
+        structuredContent: encodeOrchestratorMcpFailure(firstFailure),
+        content: [
+          { type: "text", text: encodeJsonText(encodeOrchestratorMcpFailure(firstFailure)) },
+        ],
+      }),
+    );
   const errorTag =
     typeof firstFailure === "object" &&
     firstFailure !== null &&
@@ -563,6 +594,8 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
   const saveServices = yield* Effect.context<
     ServerConfig.ServerConfig | FileSystem.FileSystem | Path.Path | Crypto.Crypto
   >();
+  const requestOwner = yield* Effect.serviceOption(RequestReceipts.McpRequestReceipts);
+  const authorityOwner = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
   const built = yield* PreviewSnapshotToolkit;
   const tool = PreviewSnapshotTool;
   yield* server.addTool({
@@ -616,6 +649,111 @@ const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot
                 });
               const { screenshot, ...page } = snapshot;
               const png = new Uint8Array(Buffer.from(screenshot.data, "base64"));
+              if (
+                payload?.save === true &&
+                typeof payload.clientRequestId === "string" &&
+                Option.isSome(requestOwner)
+              ) {
+                const parameters = yield* decodeSavedSnapshotParameters(payload).pipe(
+                  Effect.mapError(
+                    () =>
+                      new OrchestratorMcpFailure({
+                        code: "invalid_request",
+                        message: "Invalid saved snapshot request.",
+                      }),
+                  ),
+                );
+                // Saving an app artifact keeps snapshot's read access semantics,
+                // but refreshes the actual caller and every resource authority.
+                const check = McpInvocationContext.requireThreadMcpCapability("preview").pipe(
+                  Effect.andThen(loadCaller()),
+                  Effect.flatMap((caller) => {
+                    if (caller.scope.thread === undefined)
+                      return Effect.fail(
+                        new OrchestratorMcpFailure({
+                          code: "capability_denied",
+                          message: "Saving a snapshot needs its authorized calling thread.",
+                        }),
+                      );
+                    return Option.isSome(authorityOwner)
+                      ? authorityOwner.value.checkTarget(caller.scope, {
+                          type: "thread",
+                          threadId: caller.scope.thread.threadId,
+                        })
+                      : caller.scope.authority === undefined
+                        ? Effect.void
+                        : Effect.fail(
+                            new OrchestratorMcpFailure({
+                              code: "capability_denied",
+                              message: "The snapshot authority owner is unavailable.",
+                            }),
+                          );
+                  }),
+                  Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+                  Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+                );
+                yield* check;
+                const identity = yield* requestOwner.value.identify(
+                  invocation,
+                  "preview_snapshot:save",
+                  parameters,
+                  parameters.clientRequestId,
+                );
+                const receipt = yield* requestOwner.value.external(
+                  identity,
+                  Effect.gen(function* () {
+                    yield* check;
+                    const screenshotPath = yield* saveScreenshot(snapshot.url, png, identity.id);
+                    return {
+                      type: "confirmed-operation" as const,
+                      applied: true as const,
+                      requestId: identity.clientRequestId,
+                      operationId: identity.id,
+                      stage: "confirmed" as const,
+                      artifact: {
+                        environmentId: invocation.environmentId,
+                        owner: RequestReceipts.requestDigest([
+                          requestNamespace(invocation),
+                          requestGeneration(invocation),
+                        ]),
+                        screenshotPath,
+                        mimeType: "image/png" as const,
+                        sizeBytes: png.byteLength,
+                        digest: Hex.encode(sha256(png)),
+                      },
+                    };
+                  }),
+                );
+                const saved = yield* decodeSavedSnapshotReceipt(receipt).pipe(
+                  Effect.mapError(
+                    () =>
+                      new OrchestratorMcpFailure({
+                        code: "orchestration_error",
+                        message: "The saved snapshot receipt is invalid.",
+                      }),
+                  ),
+                );
+                // Replays describe the original artifact. A later independent file
+                // edit must neither be overwritten nor shown as that original PNG.
+                const original = yield* FileSystem.FileSystem.pipe(
+                  Effect.flatMap((fs) => fs.readFile(saved.artifact.screenshotPath)),
+                  Effect.orElseSucceed(() => undefined),
+                );
+                const unchanged =
+                  original !== undefined &&
+                  original.byteLength === saved.artifact.sizeBytes &&
+                  Hex.encode(sha256(original)) === saved.artifact.digest;
+                return new McpSchema.CallToolResult({
+                  isError: false,
+                  structuredContent: saved,
+                  content: [
+                    { type: "text", text: encodeJsonText(saved) },
+                    ...(payload.includeImage === true && unchanged
+                      ? [{ type: "image" as const, data: original, mimeType: "image/png" }]
+                      : []),
+                  ],
+                });
+              }
               const screenshotPath =
                 payload?.save === true ? yield* saveScreenshot(snapshot.url, png) : undefined;
               // Images stay out of tool history unless asked for: providers replay them on every
@@ -857,6 +995,7 @@ const registerDeviceScreenshot = Effect.fn("McpHttpServer.registerDeviceScreensh
 });
 
 const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
+const encodeOrchestratorMcpFailure = Schema.encodeSync(OrchestratorMcpFailure);
 
 const registerHtmlPreview = Effect.fn("McpHttpServer.registerHtmlPreview")(function* () {
   const htmlRender = yield* HtmlRender.HtmlRender;
@@ -882,6 +1021,44 @@ const registerHtmlPreview = Effect.fn("McpHttpServer.registerHtmlPreview")(funct
   );
 });
 
+type WireTool<T> =
+  T extends Tool.Tool<infer Name, infer Config, infer Requirements>
+    ? Tool.Tool<
+        Name,
+        {
+          readonly parameters: Config["parameters"];
+          readonly success: Config["success"];
+          readonly failure: Schema.Codec<Config["failure"]["Type"], unknown>;
+          readonly failureMode: "return";
+        },
+        Requirements
+      >
+    : never;
+
+const wireToolkit = <Tools extends Record<string, Tool.Any>>(toolkit: Toolkit.Toolkit<Tools>) =>
+  // Object.values erases key/schema/dependency correlations; the wire schema preserves declared failure types and scrubs internal fields.
+  Toolkit.make(
+    ...Object.values(toolkit.tools).map((tool) =>
+      Tool.make(tool.name, {
+        description: Tool.getDescription(tool),
+        parameters: tool.parametersSchema,
+        success: tool.successSchema,
+        failure: Schema.toType(tool.failureSchema).pipe(
+          Schema.encodeTo(Schema.Unknown, {
+            decode: SchemaGetter.forbidden(() => "Tool failures are output-only."),
+            encode: SchemaGetter.transform((error) =>
+              isOrchestratorMcpFailure(error)
+                ? encodeOrchestratorMcpFailure(error)
+                : { message: error instanceof Error ? error.message : "Tool execution failed." },
+            ),
+          }),
+        ),
+        failureMode: "return",
+        needsApproval: tool.needsApproval,
+      }).annotateMerge(tool.annotations),
+    ),
+  ) as unknown as Toolkit.Toolkit<{ readonly [K in keyof Tools]: WireTool<Tools[K]> }>;
+
 /**
  * `McpServer.toolkit` for handlers that declared their access (see
  * `McpToolAccess`). Every toolkit on `/mcp` registers through this.
@@ -895,7 +1072,11 @@ export const toolkitRegistration = <Tools extends Record<string, Tool.Any>, EX, 
   toolkit: Toolkit.Toolkit<Tools>,
   handlers: McpToolAccess.HandlersLayer<Tools, EX, RX>,
 ) => {
-  const registration = McpServer.toolkit(toolkit);
+  // MCP peers need declared error fields (including durable outcome receipts).
+  // Error-mode registration in Effect emits only Error.message. Return-mode
+  // still validates declared failures, and retains the library's request-local
+  // auth context, parameter errors and internal-error scrubbing.
+  const registration = McpServer.toolkit(wireToolkit(toolkit));
   // @effect-diagnostics-next-line unsafeEffectTypeAssertion:off - the auth middleware provides it per request.
   const registered = registration as Layer.Layer<
     never,
@@ -1035,6 +1216,8 @@ const layerPeerControl = Layer.unwrap(
       }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 403 })))),
     );
     const lifecycle = yield* Effect.serviceOption(PeerTaskLifecycle.PeerTaskLifecycle);
+    const requests = yield* Effect.serviceOption(RequestReceipts.McpRequestReceipts);
+    const attachments = yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging);
     if (Option.isNone(authority)) return Layer.merge(post, streaming);
     const tasks = Layer.merge(
       HttpRouter.add(
@@ -1060,7 +1243,16 @@ const layerPeerControl = Layer.unwrap(
         }),
       ),
     );
-    return Layer.mergeAll(post, streaming, tasks);
+    const requestProtocol = HttpRouter.add(
+      "GET",
+      "/mcp/peer-control/requests",
+      Effect.succeed(
+        Option.isSome(requests)
+          ? HttpServerResponse.jsonUnsafe({ version: 1, attachments: Option.isSome(attachments) })
+          : HttpServerResponse.empty({ status: 409 }),
+      ),
+    );
+    return Layer.mergeAll(post, streaming, tasks, requestProtocol);
   }),
 );
 

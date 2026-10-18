@@ -414,3 +414,17 @@ packages/client-runtime/src/work-log/itemDetail.test.ts
 packages/client-runtime/src/work-log/itemDetail.ts
 packages/shared/src/orchestrationV2PendingBackgroundWork.test.ts
 packages/shared/src/orchestrationV2PendingBackgroundWork.ts
+apps/server/src/assets/AttachmentUpload.ts
+apps/server/src/mcp/PreviewAutomationBroker.ts
+apps/server/src/mcp/ThreadMetadataMcpService.ts
+apps/server/src/mcp/toolkits/attachment/input.ts
+apps/server/src/mcp/toolkits/device/handlers.ts
+apps/server/src/mcp/toolkits/environment/handlers.ts
+apps/server/src/mcp/toolkits/preview/handlers.ts
+apps/server/src/mcp/toolkits/previewControls/handlers.ts
+apps/server/src/mcp/toolkits/pullRequests/handlers.test.ts
+apps/server/src/mcp/toolkits/pullRequests/handlers.ts
+apps/server/src/mcp/toolkits/worktree/handlers.ts
+apps/server/src/orchestration-v2/AttachmentClaims.ts
+apps/server/src/project/ManagedProjectFolders.test.ts
+apps/server/src/project/ManagedProjectFolders.ts

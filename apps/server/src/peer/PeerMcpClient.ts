@@ -27,9 +27,13 @@ import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerNoticeDelivery from "./PeerNoticeDelivery.ts";
 import * as PeerAuthority from "./PeerAuthority.ts";
 import { PeerAuthorityEnvelope } from "@t3tools/contracts";
+import { PeerRequestProtocol } from "@t3tools/contracts";
 
 /** The only MCP protocol version a T3 Code `/mcp` registers. */
 const json = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeRequestProtocol = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(PeerRequestProtocol),
+);
 const PROTOCOL_VERSION = "2025-06-18";
 
 /** The limits a call carries to the peer: the calling agent's modes here. */
@@ -46,6 +50,17 @@ export interface PeerCallLimits {
 export class PeerMcpClient extends Context.Service<
   PeerMcpClient,
   {
+    readonly requireRequestProtocol?: (
+      environmentId: EnvironmentId,
+      generation?: string,
+    ) => Effect.Effect<PeerRequestProtocol, OrchestratorMcpFailure>;
+    readonly uploadAttachment: (input: {
+      readonly environmentId: EnvironmentId;
+      readonly generation: string;
+      readonly relativeUrl: string;
+      readonly bytes: Stream.Stream<Uint8Array, unknown>;
+      readonly sizeBytes: number;
+    }) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly start: Effect.Effect<void, never, Scope.Scope>;
     readonly requireTaskLifecycle?: (
       environmentId: EnvironmentId,
@@ -94,7 +109,12 @@ const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unkno
 const decodeToolCallResponse = Schema.decodeUnknownEffect(Schema.fromJsonString(ToolCallResponse));
 const decodeFailure = Schema.decodeUnknownOption(
   Schema.fromJsonString(
-    Schema.Struct({ code: OrchestratorMcpFailure.fields.code, message: Schema.String }),
+    Schema.Struct({
+      code: OrchestratorMcpFailure.fields.code,
+      message: Schema.String,
+      requestId: OrchestratorMcpFailure.fields.requestId,
+      lastConfirmedStage: OrchestratorMcpFailure.fields.lastConfirmedStage,
+    }),
   ),
 );
 
@@ -490,7 +510,7 @@ const make = Effect.gen(function* () {
         // A refusal keeps the peer's own code, so the agent sees why it was refused.
         const refused = decodeFailure(text);
         return yield* refused._tag === "Some"
-          ? new OrchestratorMcpFailure({ code: refused.value.code, message: refused.value.message })
+          ? new OrchestratorMcpFailure(refused.value)
           : new OrchestratorMcpFailure({
               code: "orchestration_error",
               message: text || "The linked environment refused the call.",
@@ -666,7 +686,104 @@ const make = Effect.gen(function* () {
             }),
       ),
     );
-  return PeerMcpClient.of({ call, start, requireTaskLifecycle, taskLifecycle });
+  const uploadAttachment: PeerMcpClient["Service"]["uploadAttachment"] = (input) =>
+    Effect.gen(function* () {
+      const resolved = yield* links
+        .resolve(input.environmentId)
+        .pipe(Effect.mapError(fromLinkError));
+      if (
+        resolved.link.launchIdentity !== input.generation ||
+        !/^\/api\/attachments\/upload\/[A-Za-z0-9_.-]+$/.test(input.relativeUrl)
+      )
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "The attachment transfer does not match its destination grant or upload route.",
+        });
+      const response = yield* httpClient
+        .execute(
+          HttpClientRequest.post(`${resolved.url}${input.relativeUrl}`).pipe(
+            HttpClientRequest.setBody(
+              HttpBody.stream(input.bytes, "application/octet-stream", input.sizeBytes),
+            ),
+          ),
+        )
+        .pipe(
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message:
+                  "The attachment transfer response was lost; retry the original request key.",
+              }),
+          ),
+        );
+      if (response.status !== 204)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "The destination did not accept the attachment bytes.",
+        });
+    });
+  const requireRequestProtocol: NonNullable<PeerMcpClient["Service"]["requireRequestProtocol"]> = (
+    environmentId,
+    generation,
+  ) =>
+    Effect.gen(function* () {
+      const resolved = yield* links.resolve(environmentId).pipe(Effect.mapError(fromLinkError));
+      if (generation !== undefined && resolved.link.launchIdentity !== generation)
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "The original request grant was replaced.",
+        });
+      const response = yield* httpClient
+        .execute(
+          HttpClientRequest.get(`${resolved.url}/mcp/peer-control/requests`).pipe(
+            HttpClientRequest.setHeader("authorization", `Bearer ${resolved.token}`),
+          ),
+        )
+        .pipe(
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "The request protocol could not be confirmed.",
+              }),
+          ),
+        );
+      if (response.status !== 200)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message:
+            "The destination does not support durable requests v1; no mutation was forwarded.",
+        });
+      return yield* decodeRequestProtocol(
+        yield* response.text.pipe(
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "The request protocol response was lost.",
+              }),
+          ),
+        ),
+      ).pipe(
+        Effect.mapError(
+          () =>
+            new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message:
+                "The destination request protocol is incompatible; no mutation was forwarded.",
+            }),
+        ),
+      );
+    });
+  return PeerMcpClient.of({
+    call,
+    start,
+    requireTaskLifecycle,
+    taskLifecycle,
+    uploadAttachment,
+    requireRequestProtocol,
+  });
 });
 
 export const layer = Layer.effect(PeerMcpClient, make);

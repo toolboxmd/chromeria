@@ -37,6 +37,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as PeerNoticeDelivery from "./PeerNoticeDelivery.ts";
 import * as Invocation from "../mcp/McpInvocationContext.ts";
+import { requestNamespace, requestGeneration } from "../mcp/requestIdentity.ts";
+import { requestDigest } from "../mcp/McpRequestReceipts.ts";
 import * as Environment from "../environment/ServerEnvironment.ts";
 import * as Links from "./PeerLinks.ts";
 
@@ -126,6 +128,7 @@ const unavailable = () =>
 export class PeerAuthority extends Context.Service<
   PeerAuthority,
   {
+    readonly checkRecord: (id: string) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly authorizeStopEffect: (
       effectId: string,
       threadId: ThreadId,
@@ -169,6 +172,7 @@ export class PeerAuthority extends Context.Service<
       limits: Invocation.ClientModes,
       pair?: Authority["pair"],
       readOnly?: boolean,
+      stableRequests?: boolean,
     ) => Effect.Effect<PeerAuthorityEnvelope, OrchestratorMcpFailure>;
     readonly accept: (
       scope: Invocation.McpInvocationScope,
@@ -887,6 +891,7 @@ const make = Effect.gen(function* () {
     limits,
     pair,
     readOnly = false,
+    stableRequests = false,
   ) =>
     Effect.gen(function* () {
       if (!scope.thread && !scope.client)
@@ -913,7 +918,7 @@ const make = Effect.gen(function* () {
         scope.thread === undefined
           ? null
           : yield* threads.getThreadShell(scope.thread.threadId).pipe(Effect.mapError(unavailable));
-      const digest = yield* hash({ tool, args });
+      const digest = stableRequests ? requestDigest({ tool, args }) : yield* hash({ tool, args });
       const id = yield* hash({
         actor:
           scope.thread === undefined
@@ -935,6 +940,14 @@ const make = Effect.gen(function* () {
         digest,
         route,
         descendant: parent !== undefined || scope.client?.linked === true,
+        ...(stableRequests
+          ? {
+              requestOwner: {
+                namespace: requestNamespace(scope),
+                generation: `${requestGeneration(scope)}:${generation}`,
+              },
+            }
+          : {}),
         ...(pair ? { pair } : {}),
       };
       const record: Authority = {
@@ -1004,7 +1017,11 @@ const make = Effect.gen(function* () {
     });
   const checkPayload: PeerAuthority["Service"]["checkPayload"] = (authority, tool, args) =>
     Effect.gen(function* () {
-      if ((yield* hash({ tool, args })) !== authority.envelope.digest)
+      const digest =
+        authority.envelope.requestOwner === undefined
+          ? yield* hash({ tool, args })
+          : requestDigest({ tool, args });
+      if (digest !== authority.envelope.digest)
         return yield* denied("The peer action does not match its authenticated authority.");
     });
   const bind: PeerAuthority["Service"]["bind"] = (authority, threadId, registerReturn) =>
@@ -1380,6 +1397,7 @@ const make = Effect.gen(function* () {
         );
     });
   return PeerAuthority.of({
+    checkRecord: (id) => Effect.flatMap(read(id), validate).pipe(Effect.asVoid),
     authorizeTaskStop: (scope, input) =>
       Effect.gen(function* () {
         yield* verifyTask(scope, input);
