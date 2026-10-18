@@ -748,6 +748,27 @@ describe("web_read at the registered MCP seam", () => {
     }),
   );
 
+  it.effect("keeps dense single-page text and continuation readable with stored links", () =>
+    Effect.gen(function* () {
+      const body = `<html><head><title>Dense index</title></head><body>${'<a href="x">Rooms</a>'.repeat(80_000)}</body></html>`;
+      const f = yield* fixture(() => Effect.succeed(response(body)));
+      yield* Effect.gen(function* () {
+        const first = yield* finish(
+          read({ url: "https://dense-links.example/", followSubpages: false }),
+          f.requests,
+        );
+        expect(first).toMatchObject({ status: "ok", nextOffset: 20_000 });
+        expect(first.text).toContain("[Rooms](https://dense-links.example/x)");
+        const continuation = yield* read({ cacheId: first.cacheId, offset: 20_000, maxChars: 200 });
+        expect(continuation.text).toHaveLength(200);
+        expect(continuation.text).toContain("https://dense-links.example/x");
+        const cached = yield* read({ url: "https://dense-links.example/" });
+        expect(cached).toMatchObject({ status: "ok", rung: "cache", cacheId: first.cacheId });
+        expect(f.observed).toHaveLength(2);
+      }).pipe(Effect.provide(f.layer));
+    }),
+  );
+
   it.effect("keeps the root and siblings when nested anchors exceed the extraction budget", () =>
     Effect.gen(function* () {
       const nested = `<html><head><title>Nested anchors</title></head><body>${`<math>${"<a href=x>".repeat(256)}${"\u0001".repeat(256)}</math>`.repeat(270)}</body></html>`;
