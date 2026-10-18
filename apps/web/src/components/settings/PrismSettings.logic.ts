@@ -1,4 +1,6 @@
 import {
+  DEFAULT_SERVER_SETTINGS,
+  PrismDelegateRole,
   overlayPrismRoleKits,
   ProjectId,
   type Color,
@@ -130,22 +132,44 @@ export function planPrismRolePatch(
   );
 }
 
-/** "Use environment role settings": drop the project's role overrides, keeping its Promachos kit. */
-export function planPrismRolesReset(
+/** Reset only the kits owned by this page, preserving every other setting. */
+export function planPrismKitsReset(
   scope: Parameters<typeof planScopedSettingsPatch>[0],
   environments: Parameters<typeof planScopedSettingsPatch>[1],
+  roles: readonly PrismRole[],
 ): ReturnType<typeof planScopedSettingsPatch> {
+  if (scope.kind !== "project" && scope.kind !== "checkout") {
+    return planScopedSettingsPatch(scope, environments, {
+      prismRoles: Object.fromEntries(
+        roles.map((role) => [role, DEFAULT_SERVER_SETTINGS.prismRoles[role]]),
+      ),
+    });
+  }
   return withProjectEntries(
     planScopedSettingsClear(scope, environments, ["prismRoles"]),
     environments,
     (written, stored) => {
-      const promachos = stored?.prismRoles?.promachos;
-      return promachos ? { ...written, prismRoles: { promachos } } : written;
+      const prismRoles = Object.fromEntries(
+        Object.entries(stored?.prismRoles ?? {}).filter(
+          ([role]) => !roles.some((owned) => owned === role),
+        ),
+      );
+      const entry = { ...written, ...(Object.keys(prismRoles).length ? { prismRoles } : {}) };
+      return Object.keys(entry).length ? entry : null;
     },
   );
 }
 
-export type PrismWriteExpectation = PrismRoleUpdate | { kind: "inherit" };
+export function planPrismRolesReset(
+  scope: Parameters<typeof planScopedSettingsPatch>[0],
+  environments: Parameters<typeof planScopedSettingsPatch>[1],
+): ReturnType<typeof planScopedSettingsPatch> {
+  return planPrismKitsReset(scope, environments, PrismDelegateRole.literals);
+}
+
+export type PrismWriteExpectation =
+  | PrismRoleUpdate
+  | { kind: "inherit"; roles?: readonly PrismRole[] };
 
 /** A successful RPC is not enough: wait for the streamed settings before building another override. */
 export function prismWriteObserved(
@@ -159,11 +183,20 @@ export function prismWriteObserved(
     if (!settings) return false;
     const projectIds = Object.keys(write.patch.projectSettingsOverrides ?? {});
     if (expectation.kind === "inherit") {
-      return projectIds.every((id) =>
-        Object.keys(settings.projectSettingsOverrides[ProjectId.make(id)]?.prismRoles ?? {}).every(
-          (role) => role === "promachos",
-        ),
-      );
+      const roles = expectation.roles ?? PrismDelegateRole.literals;
+      return projectIds.length
+        ? projectIds.every((id) =>
+            roles.every(
+              (role) =>
+                settings.projectSettingsOverrides[ProjectId.make(id)]?.prismRoles?.[role] ===
+                undefined,
+            ),
+          )
+        : roles.every(
+            (role) =>
+              JSON.stringify(settings.prismRoles[role]) ===
+              JSON.stringify(DEFAULT_SERVER_SETTINGS.prismRoles[role]),
+          );
     }
     const effective = projectIds.length
       ? projectIds.map((id) => resolveProjectSettings(settings, ProjectId.make(id)).settings)

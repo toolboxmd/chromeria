@@ -585,3 +585,17 @@ describe("settings sidebar scope", () => {
     expect(isSettingsOverviewVisible({ project: "project", checkout: "checkout" })).toBe(true);
   });
 });
+
+it("finds Promachos Colors in settings search with project scope", () => {
+  expect(searchSettings("Promachos")).toContainEqual(
+    expect.objectContaining({
+      to: "/settings/promachos",
+      targetId: "promachos-colors",
+      scope: "project-defaults",
+    }),
+  );
+  expect(getSettingsSearchTargetScope("promachos-colors")).toEqual({
+    title: "Promachos Colors",
+    scope: "project-defaults",
+  });
+});

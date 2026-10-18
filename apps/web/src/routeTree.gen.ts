@@ -22,6 +22,7 @@ import { Route as SettingsSourceControlRouteImport } from './routes/settings.sou
 import { Route as SettingsSnapShotRouteImport } from './routes/settings.snap-shot'
 import { Route as SettingsScheduledTasksRouteImport } from './routes/settings.scheduled-tasks'
 import { Route as SettingsProvidersRouteImport } from './routes/settings.providers'
+import { Route as SettingsPromachosRouteImport } from './routes/settings.promachos'
 import { Route as SettingsProjectsRouteImport } from './routes/settings.projects'
 import { Route as SettingsPrismRouteImport } from './routes/settings.prism'
 import { Route as SettingsOpenSourceLicensesRouteImport } from './routes/settings.open-source-licenses'
@@ -100,6 +101,11 @@ const SettingsScheduledTasksRoute = SettingsScheduledTasksRouteImport.update({
 const SettingsProvidersRoute = SettingsProvidersRouteImport.update({
   id: '/providers',
   path: '/providers',
+  getParentRoute: () => SettingsRoute,
+} as any)
+const SettingsPromachosRoute = SettingsPromachosRouteImport.update({
+  id: '/promachos',
+  path: '/promachos',
   getParentRoute: () => SettingsRoute,
 } as any)
 const SettingsProjectsRoute = SettingsProjectsRouteImport.update({
@@ -201,6 +207,7 @@ export interface FileRoutesByFullPath {
   '/settings/open-source-licenses': typeof SettingsOpenSourceLicensesRoute
   '/settings/prism': typeof SettingsPrismRoute
   '/settings/projects': typeof SettingsProjectsRoute
+  '/settings/promachos': typeof SettingsPromachosRoute
   '/settings/providers': typeof SettingsProvidersRoute
   '/settings/scheduled-tasks': typeof SettingsScheduledTasksRoute
   '/settings/snap-shot': typeof SettingsSnapShotRoute
@@ -229,6 +236,7 @@ export interface FileRoutesByTo {
   '/settings/open-source-licenses': typeof SettingsOpenSourceLicensesRoute
   '/settings/prism': typeof SettingsPrismRoute
   '/settings/projects': typeof SettingsProjectsRoute
+  '/settings/promachos': typeof SettingsPromachosRoute
   '/settings/providers': typeof SettingsProvidersRoute
   '/settings/scheduled-tasks': typeof SettingsScheduledTasksRoute
   '/settings/snap-shot': typeof SettingsSnapShotRoute
@@ -260,6 +268,7 @@ export interface FileRoutesById {
   '/settings/open-source-licenses': typeof SettingsOpenSourceLicensesRoute
   '/settings/prism': typeof SettingsPrismRoute
   '/settings/projects': typeof SettingsProjectsRoute
+  '/settings/promachos': typeof SettingsPromachosRoute
   '/settings/providers': typeof SettingsProvidersRoute
   '/settings/scheduled-tasks': typeof SettingsScheduledTasksRoute
   '/settings/snap-shot': typeof SettingsSnapShotRoute
@@ -292,6 +301,7 @@ export interface FileRouteTypes {
     | '/settings/open-source-licenses'
     | '/settings/prism'
     | '/settings/projects'
+    | '/settings/promachos'
     | '/settings/providers'
     | '/settings/scheduled-tasks'
     | '/settings/snap-shot'
@@ -320,6 +330,7 @@ export interface FileRouteTypes {
     | '/settings/open-source-licenses'
     | '/settings/prism'
     | '/settings/projects'
+    | '/settings/promachos'
     | '/settings/providers'
     | '/settings/scheduled-tasks'
     | '/settings/snap-shot'
@@ -350,6 +361,7 @@ export interface FileRouteTypes {
     | '/settings/open-source-licenses'
     | '/settings/prism'
     | '/settings/projects'
+    | '/settings/promachos'
     | '/settings/providers'
     | '/settings/scheduled-tasks'
     | '/settings/snap-shot'
@@ -462,6 +474,13 @@ declare module '@tanstack/react-router' {
       path: '/providers'
       fullPath: '/settings/providers'
       preLoaderRoute: typeof SettingsProvidersRouteImport
+      parentRoute: typeof SettingsRoute
+    }
+    '/settings/promachos': {
+      id: '/settings/promachos'
+      path: '/promachos'
+      fullPath: '/settings/promachos'
+      preLoaderRoute: typeof SettingsPromachosRouteImport
       parentRoute: typeof SettingsRoute
     }
     '/settings/projects': {
@@ -601,6 +620,7 @@ interface SettingsRouteChildren {
   SettingsOpenSourceLicensesRoute: typeof SettingsOpenSourceLicensesRoute
   SettingsPrismRoute: typeof SettingsPrismRoute
   SettingsProjectsRoute: typeof SettingsProjectsRoute
+  SettingsPromachosRoute: typeof SettingsPromachosRoute
   SettingsProvidersRoute: typeof SettingsProvidersRoute
   SettingsScheduledTasksRoute: typeof SettingsScheduledTasksRoute
   SettingsSnapShotRoute: typeof SettingsSnapShotRoute
@@ -619,6 +639,7 @@ const SettingsRouteChildren: SettingsRouteChildren = {
   SettingsOpenSourceLicensesRoute: SettingsOpenSourceLicensesRoute,
   SettingsPrismRoute: SettingsPrismRoute,
   SettingsProjectsRoute: SettingsProjectsRoute,
+  SettingsPromachosRoute: SettingsPromachosRoute,
   SettingsProvidersRoute: SettingsProvidersRoute,
   SettingsScheduledTasksRoute: SettingsScheduledTasksRoute,
   SettingsSnapShotRoute: SettingsSnapShotRoute,

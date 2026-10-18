@@ -35,7 +35,7 @@ fix the cause and choose **Create** again.
   and agents a conversation starts stay in its Lineage section.
 - Type a custom answer to a question in the composer, as in the standard view.
 - A new conversation starts on the first model with capacity in the Promachos list
-  under **Settings → Prism**. If that list is empty, it starts on the model picked in
+  under **Settings → Promachos**. If that list is empty, it starts on the model picked in
   the composer. If no listed model has capacity, the conversation does not start and
   the chat shows why.
 - The right panel and the composer work as they do in the standard view.
