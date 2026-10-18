@@ -1,3 +1,19 @@
+import { clientHandlers as pendingRequestClientHandlers } from "../childThreads/PendingRequestIngress.ts";
+import * as RpcAuthorization from "../auth/RpcAuthorization.ts";
+import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpServer from "effect/http/HttpServer";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
+import { RpcServer, RpcSerialization } from "effect/rpc";
+import {
+  PendingRequestClientRpcGroup,
+  RemotePendingRequestResult,
+  WS_METHODS,
+} from "@t3tools/contracts";
+import * as PendingRequests from "../childThreads/PendingRequestService.ts";
+import * as RuntimeRequests from "../orchestration-v2/RuntimeRequestService.ts";
+import * as AuthSessions from "../persistence/AuthSessions.ts";
+import { AuthSessionId, RuntimeRequestId } from "@t3tools/contracts";
 import * as AttachmentStaging from "../assets/AttachmentStaging.ts";
 import * as AttachmentClaims from "../orchestration-v2/AttachmentClaims.ts";
 import * as Invocation from "../mcp/McpInvocationContext.ts";
@@ -7,8 +23,10 @@ import { dual } from "effect/Function";
 import * as Path from "effect/Path";
 import * as NativeDevices from "../device/DeviceService.ts";
 import * as DeviceHost from "../device/DeviceHost.ts";
-import { writeAgentDeviceConfig } from "../device/AgentDeviceTarget.ts";
-import { LOCAL_DEVICE_HOST_ID, DeviceId, DeviceOperationError } from "@t3tools/contracts";
+import { agentDeviceConfigPath } from "../device/AgentDeviceTarget.ts";
+import { AGENT_DEVICE_VERSION, DEVICE_HUB_VERSION } from "../device/DeviceToolchain.ts";
+import * as Net from "@t3tools/shared/Net";
+import { LOCAL_DEVICE_HOST_ID, DeviceId } from "@t3tools/contracts";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as PullRequestReviewGuideService from "../pullRequest/PullRequestReviewGuideService.ts";
 import {
@@ -744,11 +762,66 @@ const makeNode = (
             enableAgentDeviceAccess: true,
           });
           const config = Context.get(nodeConfigContext, Config.ServerConfig);
-          const file = `${config.stateDir}/fixture-device-agent.json`;
-          const entryPath = `${config.stateDir}/fixture-device-agent.js`;
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
-          yield* fs.writeFileString(entryPath, "// Isolated adapter fixture, never executed.\n");
+          const file = yield* agentDeviceConfigPath(config.stateDir, LOCAL_DEVICE_HOST_ID, path);
+          const agentInstall = `${config.baseDir}/tools/agent-device/${AGENT_DEVICE_VERSION}`;
+          const hubInstall = `${config.baseDir}/tools/expo-device-hub/${DEVICE_HUB_VERSION}`;
+          const entryPath = `${agentInstall}/node_modules/agent-device/bin/agent-device.mjs`;
+          const hubEntry = `${hubInstall}/node_modules/expo-device-hub/dist/server/cli.mjs`;
+          for (const [entry, install, version] of [
+            [entryPath, agentInstall, AGENT_DEVICE_VERSION],
+            [hubEntry, hubInstall, DEVICE_HUB_VERSION],
+          ] as const) {
+            yield* fs.makeDirectory(path.dirname(entry), { recursive: true });
+            yield* fs.writeFileString(
+              entry,
+              "// Isolated external process leaf, never executed.\n",
+            );
+            yield* fs.writeFileString(`${install}/.install-complete`, version);
+          }
+          const assertStarted = Effect.gen(function* () {
+            const sql = Context.get(database, SqlClient.SqlClient);
+            expect(
+              (yield* sql`SELECT id FROM mcp_request_receipts WHERE state='started'`.pipe(
+                Effect.orDie,
+              )).length,
+            ).toBeGreaterThan(0);
+          });
+          const deviceFs: FileSystem.FileSystem = {
+            ...fs,
+            rename: (from, to) => {
+              if (to !== file) return fs.rename(from, to);
+              return assertStarted.pipe(
+                Effect.andThen(fs.rename(from, to)),
+                Effect.tap(() =>
+                  Effect.gen(function* () {
+                    yield* Ref.update(deviceConfigurations, (n) => n + 1);
+                    if (yield* Ref.getAndSet(loseDeviceConfiguration, false))
+                      return yield* PlatformError.systemError({
+                        _tag: "Unknown",
+                        module: "FileSystem",
+                        method: "rename",
+                        description: "Isolated reply loss after actual native config persistence",
+                      });
+                  }),
+                ),
+              );
+            },
+          };
+          const runner = ProcessRunner.ProcessRunner.of({
+            run: () =>
+              Effect.succeed({
+                code: ChildProcessSpawner.ExitCode(0),
+                stdout: '{"success":true,"data":{}}',
+                stderr: "",
+                timedOut: false,
+                stdoutTruncated: false,
+                stderrTruncated: false,
+                stdoutInvalidUtf8: false,
+                stderrInvalidUtf8: false,
+              }),
+          });
           const ready: DeviceHost.DeviceHostReady = {
             nodePath: process.execPath,
             hub: { origin: "http://device382.invalid" },
@@ -765,11 +838,28 @@ const makeNode = (
                 platforms: [{ platform: "android" as const, available }],
                 hubInstalled: true,
                 agentDeviceInstalled: true,
+                tools: {
+                  agent: {
+                    requiredVersion: AGENT_DEVICE_VERSION,
+                    installedVersions: [AGENT_DEVICE_VERSION],
+                    runningVersion: AGENT_DEVICE_VERSION,
+                  },
+                  hub: {
+                    requiredVersion: DEVICE_HUB_VERSION,
+                    installedVersions: [DEVICE_HUB_VERSION],
+                    runningVersion: DEVICE_HUB_VERSION,
+                  },
+                },
               })),
             ),
             platformAvailability: (platform) => Effect.succeed({ platform, available: true }),
             ensureReady: () =>
-              Ref.update(deviceHostStarts, (n) => n + 1).pipe(
+              Effect.gen(function* () {
+                // A direct native UI setup call has no MCP request identity.
+                // Every registered action must be started before preparation.
+                if ((yield* RequestReceipts.CurrentRequest) !== undefined) yield* assertStarted;
+              }).pipe(
+                Effect.andThen(Ref.update(deviceHostStarts, (n) => n + 1)),
                 Effect.andThen(
                   fs
                     .writeFileString(
@@ -781,7 +871,8 @@ const makeNode = (
                 Effect.as(ready),
               ),
             ensureAgentReady: () =>
-              Ref.update(deviceAgentStarts, (n) => n + 1).pipe(
+              assertStarted.pipe(
+                Effect.andThen(Ref.update(deviceAgentStarts, (n) => n + 1)),
                 Effect.as({
                   ...ready,
                   agentDevice: {
@@ -815,43 +906,15 @@ const makeNode = (
               ),
             ),
           );
-          const service = yield* NativeDevices.makeWithHosts(
-            new Map([[host.id, host]]),
-            undefined,
-            (_id, ready) =>
-              Effect.gen(function* () {
-                const sql = Context.get(database, SqlClient.SqlClient);
-                expect(
-                  (yield* sql`SELECT id FROM mcp_request_receipts WHERE state='started'`.pipe(
-                    Effect.orDie,
-                  )).length,
-                ).toBeGreaterThan(0);
-                yield* writeAgentDeviceConfig(file, ready.agentDevice).pipe(
-                  Effect.provideService(FileSystem.FileSystem, fs),
-                  Effect.provideService(Path.Path, path),
-                  Effect.mapError(
-                    (cause) =>
-                      new DeviceOperationError({
-                        operation: "configure agent",
-                        reason: "settings_failed",
-                        cause,
-                      }),
-                  ),
-                );
-                yield* Ref.update(deviceConfigurations, (n) => n + 1);
-                if (yield* Ref.getAndSet(loseDeviceConfiguration, false))
-                  return yield* new DeviceOperationError({
-                    operation: "configure agent",
-                    reason: "settings_failed",
-                    cause: "Isolated reply loss after actual native config persistence",
-                  });
-                return file;
-              }),
-          ).pipe(
+          const service = yield* NativeDevices.make.pipe(
+            Effect.provideService(DeviceHost.DeviceHost, host),
+            Effect.provideService(FileSystem.FileSystem, deviceFs),
+            Effect.provideService(ProcessRunner.ProcessRunner, runner),
             Effect.provideService(HttpClient.HttpClient, hub),
             Effect.provideService(Settings.ServerSettingsService, settingsService),
+            Effect.provide(Layer.merge(nodeConfig, Net.layer)),
           );
-          fixtureDevice = { ...service, agentCli: Effect.succeed(entryPath) };
+          fixtureDevice = service;
           return Layer.succeed(NativeDevices.DeviceService, fixtureDevice);
         })
       : Layer.mock(NativeDevices.DeviceService)({});
@@ -936,6 +999,22 @@ const makeNode = (
       Layer.provide(Layer.succeedContext(lifecycleContext)),
       Layer.build,
     );
+    const pendingRequests = yield* PendingRequests.layer.pipe(
+      Layer.provide(
+        Layer.succeedContext(
+          Context.mergeAll(
+            lifecycleContext,
+            baseServices,
+            requestContext,
+            Context.make(Environment.ServerEnvironment, {
+              getEnvironmentId: Effect.succeed(descriptor.environmentId),
+              getDescriptor: Effect.succeed(descriptor),
+            }),
+          ),
+        ),
+      ),
+      Layer.build,
+    );
     const peer = yield* servePeer(descriptor, tools, {
       ...(attachmentRequests
         ? { serverConfig: Context.get(nodeConfigContext, Config.ServerConfig) }
@@ -943,7 +1022,7 @@ const makeNode = (
       database: db,
       registry,
       secretStore: Context.get(services, Secrets.ServerSecretStore),
-      authorityServices: Context.merge(lifecycleContext, lifecycle),
+      authorityServices: Context.mergeAll(lifecycleContext, lifecycle, pendingRequests),
     }).pipe(Effect.provide(Layer.succeedContext(serverContext)));
     yield* Effect.addFinalizer(() =>
       Effect.forEach([...connectionScopes], (lifetime) => Scope.close(lifetime, Exit.void), {
@@ -982,7 +1061,7 @@ const makeNode = (
         database: db,
         registry: renewed,
         secretStore: Context.get(services, Secrets.ServerSecretStore),
-        authorityServices: Context.merge(lifecycleContext, lifecycle),
+        authorityServices: Context.mergeAll(lifecycleContext, lifecycle, pendingRequests),
       }).pipe(Effect.provide(Layer.succeedContext(http)));
       return {
         ...restarted,
@@ -993,6 +1072,7 @@ const makeNode = (
     });
     return {
       ...peer,
+      pendingRequests: Context.get(pendingRequests, PendingRequests.PendingRequests),
       noticeFailure,
       holdLaunchReply,
       dropLaunchResponses,
@@ -1720,7 +1800,11 @@ it.live(
         );
         expect(yield* devices.sessionsForThread(parent)).toHaveLength(0);
         const fs = yield* FileSystem.FileSystem;
-        const file = `${node.config.stateDir}/fixture-device-agent.json`;
+        const file = yield* agentDeviceConfigPath(
+          node.config.stateDir,
+          LOCAL_DEVICE_HOST_ID,
+          yield* Path.Path,
+        );
         yield* fs.writeFileString(file, "Later native configuration before the new action");
         yield* Ref.set(node.loseDeviceConfiguration, true);
         const uncertain = { ...input, clientRequestId: "device382-uncertain" };
@@ -10922,5 +11006,1533 @@ it.live(
         expect(Array.from(yield* fs.readFile(result.path))).toEqual([9, 8, 7, 6, 5, 4, 3, 2, 1, 0]);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30000,
+);
+
+const decodePending369Content = Schema.decodeUnknownEffect(
+  ThreadToolkit.tools.t3_pending_request_read.successSchema,
+);
+const decodePending369ClientResult = Schema.decodeUnknownEffect(RemotePendingRequestResult);
+const decodePending369LocalTask = Schema.decodeUnknownEffect(
+  OrchestratorToolkit.tools.delegate_task.successSchema,
+);
+
+const seedPending369 = (node: Node, threadId: ThreadId, suffix = "question") =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const requestId = RuntimeRequestId.make(`pending369:${threadId}:${suffix}`);
+    const nodeId = NodeId.make(`node:${requestId}`);
+    const common = { threadId, nodeId, occurredAt: now };
+    yield* node.sink.write({
+      events: [
+        {
+          ...common,
+          id: EventId.make(`node:${requestId}`),
+          type: "node.updated",
+          payload: {
+            id: nodeId,
+            threadId,
+            runId: null,
+            parentNodeId: null,
+            rootNodeId: nodeId,
+            kind: "user_input_request",
+            status: "waiting",
+            countsForRun: false,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            runtimeRequestId: requestId,
+            checkpointScopeId: null,
+            startedAt: now,
+            completedAt: null,
+          },
+        },
+        {
+          ...common,
+          id: EventId.make(`request:${requestId}`),
+          type: "runtime-request.updated",
+          payload: {
+            id: requestId,
+            nodeId,
+            providerTurnId: null,
+            nativeRequestRef: null,
+            kind: "user_input",
+            status: "pending",
+            responseCapability: { type: "message" },
+            createdAt: now,
+            resolvedAt: null,
+          },
+        },
+        {
+          ...common,
+          id: EventId.make(`item:${requestId}`),
+          type: "turn-item.updated",
+          payload: {
+            id: TurnItemId.make(`item:${requestId}`),
+            type: "user_input_request",
+            threadId,
+            runId: null,
+            nodeId,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 0,
+            status: "waiting",
+            title: null,
+            startedAt: now,
+            completedAt: null,
+            updatedAt: now,
+            requestId,
+            responseMode: "message",
+            questions: [{ id: "color", header: "Color", question: "Which color?", options: [] }],
+          },
+        },
+      ],
+    });
+    return requestId;
+  });
+
+it.live(
+  "pending369: authenticated native HTTP proves pair ancestry and replays one native answer",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(descriptorOf("pending369-a", "A", { peerAuthority: 1 }), "disk", {
+          attachmentRequests: true,
+          productionKernel: true,
+        });
+        const b = yield* makeNode(descriptorOf("pending369-b", "B", { peerAuthority: 1 }), "disk", {
+          attachmentRequests: true,
+          productionKernel: true,
+        });
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("pending369-parent");
+        yield* seedParent(a, parent);
+        const child = yield* delegate(a, b, parent, "pending369-child");
+        yield* activate(b, child.childId);
+        const requestId = yield* seedPending369(b, child.childId);
+        const args = { environmentId: b.environmentId, threadId: child.childId, requestId };
+        const read = yield* nativeCall(a, parent, "t3_pending_request_read", args);
+        expect(read.isError, json(read.content)).not.toBe(true);
+        const content = yield* decodePending369Content(read.structuredContent);
+        expect(content.kind).toBe("user-input");
+        expect(content.revision).toBeGreaterThan(0);
+        const answer = {
+          ...args,
+          expectedRevision: content.revision,
+          answers: { color: "Blue" },
+          clientRequestId: "pending369-answer",
+        };
+        const concurrent = yield* Effect.all(
+          [
+            nativeCall(a, parent, "t3_pending_request_respond", answer),
+            nativeCall(a, parent, "t3_pending_request_respond", answer),
+          ],
+          { concurrency: "unbounded" },
+        );
+        const response = concurrent[0];
+        expect(concurrent[1]?.structuredContent).toEqual(response.structuredContent);
+        expect(response.isError, json(response.content)).not.toBe(true);
+        const replay = yield* nativeCall(a, parent, "t3_pending_request_respond", answer);
+        expect(replay.isError, json(replay.content)).not.toBe(true);
+        expect(replay.structuredContent).toEqual(response.structuredContent);
+        // Rebuild the destination's actual disk request runtime and authenticated
+        // transport. Renewed source credentials still recover native acceptance.
+        const rebuilt = { ...b, ...(yield* b.restartSchedulerTransport) };
+        yield* Context.get(
+          a.database,
+          SqlClient.SqlClient,
+        )`UPDATE peer_environment_links SET urls_json=${json([rebuilt.url])} WHERE environment_id=${b.environmentId}`;
+        expect(
+          (yield* nativeCall(a, parent, "t3_pending_request_respond", answer)).structuredContent,
+        ).toEqual(response.structuredContent);
+        const changed = yield* nativeCall(a, parent, "t3_pending_request_respond", {
+          ...answer,
+          answers: { color: "Red" },
+        });
+        expect(changed.isError).toBe(true);
+        const records = yield* b.threads.getThreadRecords(child.childId, [
+          "runtimeRequests",
+          "messages",
+        ]);
+        expect(records.runtimeRequests.find((r) => r.id === requestId)?.status).toBe("resolved");
+        expect(records.messages.filter((m) => m.text === "Which color?\nBlue")).toHaveLength(1);
+        const selfRequestId = yield* seedPending369(b, child.childId, "self");
+        const self = yield* nativeCall(b, child.childId, "t3_pending_request_read", {
+          threadId: child.childId,
+          requestId: selfRequestId,
+        });
+        expect(self.isError).toBe(true);
+        const dismissArgs = { ...args, requestId: selfRequestId };
+        const dismissRead = yield* nativeCall(a, parent, "t3_pending_request_read", dismissArgs);
+        const dismissContent = yield* decodePending369Content(dismissRead.structuredContent);
+        const dismissed = yield* nativeCall(a, parent, "t3_pending_request_dismiss", {
+          ...dismissArgs,
+          expectedRevision: dismissContent.revision,
+          clientRequestId: "explicit-dismiss",
+        });
+        expect(dismissed.isError, json(dismissed.content)).not.toBe(true);
+        expect(
+          (yield* b.threads.getThreadRecords(child.childId, [
+            "runtimeRequests",
+          ])).runtimeRequests.find((request) => request.id === selfRequestId),
+        ).toMatchObject({ status: "resolved", decision: "cancel" });
+        const shapeRequest = yield* seedPending369(b, child.childId, "shape-revision");
+        const shapeArgs = { ...args, requestId: shapeRequest };
+        const shapeRead = yield* decodePending369Content(
+          (yield* nativeCall(a, parent, "t3_pending_request_read", shapeArgs)).structuredContent,
+        );
+        const shapeItem = (yield* b.threads.getThreadRecords(child.childId, [
+          "turnItems",
+        ])).turnItems.find(
+          (item) => item.type === "user_input_request" && item.requestId === shapeRequest,
+        );
+        if (shapeItem?.type !== "user_input_request")
+          return yield* Effect.die("Expected current question shape");
+        const shapeNow = yield* DateTime.now;
+        yield* b.sink.write({
+          events: [
+            {
+              id: EventId.make("pending369-question-shape-update"),
+              type: "turn-item.updated",
+              threadId: child.childId,
+              occurredAt: shapeNow,
+              payload: {
+                ...shapeItem,
+                questions: shapeItem.questions.map((question) => ({
+                  ...question,
+                  question: "Which updated color?",
+                })),
+              },
+            },
+          ],
+        });
+        const staleShape = yield* nativeCall(a, parent, "t3_pending_request_respond", {
+          ...shapeArgs,
+          expectedRevision: shapeRead.revision,
+          answers: { color: "White" },
+          clientRequestId: "pending369-old-shape",
+        });
+        expect(staleShape.isError, json(staleShape.content)).toBe(true);
+        const freshShape = yield* decodePending369Content(
+          (yield* nativeCall(a, parent, "t3_pending_request_read", shapeArgs)).structuredContent,
+        );
+        expect(freshShape.revision).toBeGreaterThan(shapeRead.revision!);
+        expect(
+          (yield* nativeCall(a, parent, "t3_pending_request_respond", {
+            ...shapeArgs,
+            expectedRevision: freshShape.revision,
+            answers: { color: "White" },
+            clientRequestId: "pending369-new-shape",
+          })).isError,
+        ).not.toBe(true);
+        expect(
+          (yield* b.threads.getThreadRecords(child.childId, ["messages"])).messages.filter(
+            (message) => message.text === "Which updated color?\nWhite",
+          ),
+        ).toHaveLength(1);
+        const protectedRequest = yield* seedPending369(b, child.childId, "current-policy");
+        const protectedArgs = { ...args, requestId: protectedRequest };
+        const protectedRead = yield* nativeCall(
+          a,
+          parent,
+          "t3_pending_request_read",
+          protectedArgs,
+        );
+        const protectedContent = yield* decodePending369Content(protectedRead.structuredContent);
+        const protectedAnswer = {
+          ...protectedArgs,
+          expectedRevision: protectedContent.revision,
+          answers: { color: "Black" },
+          clientRequestId: "pending369-current-policy",
+        };
+        const beforePolicy = yield* b.threads.getThreadRecords(child.childId, [
+          "messages",
+          "runtimeRequests",
+        ]);
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("pending369-narrow-mode"),
+          threadId: parent,
+          runtimeMode: "auto",
+        });
+        expect(
+          (yield* nativeCall(a, parent, "t3_pending_request_respond", protectedAnswer)).isError,
+        ).toBe(true);
+        expect((yield* nativeCall(a, parent, "t3_pending_request_respond", answer)).isError).toBe(
+          true,
+        );
+        yield* a.threads.dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("pending369-restore-mode"),
+          threadId: parent,
+          runtimeMode: "full-access",
+        });
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.auth.revokeSession(grant.sessionId);
+        expect(
+          (yield* nativeCall(a, parent, "t3_pending_request_read", protectedArgs)).isError,
+        ).toBe(true);
+        expect(
+          (yield* nativeCall(a, parent, "t3_pending_request_respond", protectedAnswer)).isError,
+        ).toBe(true);
+        expect((yield* nativeCall(a, parent, "t3_pending_request_respond", answer)).isError).toBe(
+          true,
+        );
+        const afterPolicy = yield* b.threads.getThreadRecords(child.childId, [
+          "messages",
+          "runtimeRequests",
+        ]);
+        expect(afterPolicy.messages).toEqual(beforePolicy.messages);
+        expect(afterPolicy.runtimeRequests).toEqual(beforePolicy.runtimeRequests);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "pending369: grandparent routes A-B-C without destination profiles and denies unrelated or stale actions",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf("pending369-grand-a", "A", { peerAuthority: 1 }),
+          "disk",
+          { attachmentRequests: true },
+        );
+        const b = yield* makeNode(
+          descriptorOf("pending369-grand-b", "B", { peerAuthority: 1 }),
+          "disk",
+          { attachmentRequests: true },
+        );
+        const c = yield* makeNode(
+          descriptorOf("pending369-grand-c", "C", { peerAuthority: 1 }),
+          "disk",
+          { attachmentRequests: true },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        yield* linkTo(b.links, c, "full-access");
+        const parent = ThreadId.make("pending369-grandparent");
+        yield* seedParent(a, parent);
+        yield* a.forwarding.call(
+          caller(a, parent),
+          ProjectToolkit.tools.t3_project_list,
+          b.environmentId,
+          {},
+        );
+        const grant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...grant, onward: true });
+        const ab = yield* delegate(a, b, parent, "pending369-ab");
+        yield* activate(b, ab.childId);
+        const bc = yield* delegate(b, c, ab.childId, "pending369-bc");
+        yield* activate(c, bc.childId);
+        const requestId = yield* seedPending369(c, bc.childId);
+        const requestTarget = { environmentId: c.environmentId, threadId: bc.childId };
+        const requestRoute = [
+          { environmentId: b.environmentId, threadId: ab.childId },
+          requestTarget,
+        ];
+        const args = { threadId: parent, requestId, requestTarget, requestRoute };
+        const read = yield* nativeCall(a, parent, "t3_pending_request_read", args);
+        expect(read.isError, json(read.content)).not.toBe(true);
+        const content = yield* decodePending369Content(read.structuredContent);
+        const unrelated = ThreadId.make("pending369-unrelated");
+        yield* seedParent(a, unrelated);
+        expect(
+          (yield* nativeCall(a, unrelated, "t3_pending_request_respond", {
+            ...args,
+            expectedRevision: content.revision,
+            answers: { color: "Red" },
+            clientRequestId: "unrelated",
+          })).isError,
+        ).toBe(true);
+        expect(
+          (yield* nativeCall(a, parent, "t3_pending_request_respond", {
+            ...args,
+            expectedRevision: 0,
+            answers: { color: "Red" },
+            clientRequestId: "stale",
+          })).isError,
+        ).toBe(true);
+        const good = yield* nativeCall(a, parent, "t3_pending_request_respond", {
+          ...args,
+          expectedRevision: content.revision,
+          answers: { color: "Green" },
+          clientRequestId: "grandparent",
+        });
+        expect(good.isError, json(good.content)).not.toBe(true);
+        expect(
+          (yield* c.threads.getThreadRecords(bc.childId, ["messages"])).messages.filter(
+            (m) => m.text === "Which color?\nGreen",
+          ),
+        ).toHaveLength(1);
+        expect(yield* c.links.list).toEqual([]);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "pending369: source client derives its actor from a real current session and preserves native action identity",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf("pending369-human-a", "A", { peerAuthority: 1 }),
+          "disk",
+          { attachmentRequests: true },
+        );
+        const b = yield* makeNode(
+          descriptorOf("pending369-human-b", "B", { peerAuthority: 1 }),
+          "disk",
+          { attachmentRequests: true },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("pending369-human-parent");
+        yield* seedParent(a, parent);
+        yield* a.forwarding.call(
+          caller(a, parent),
+          ProjectToolkit.tools.t3_project_list,
+          b.environmentId,
+          {},
+        );
+        const initialGrant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...initialGrant, onward: true });
+        const child = yield* delegate(a, b, parent, "pending369-human-child");
+        yield* activate(b, child.childId);
+        const requestId = yield* seedPending369(b, child.childId);
+        const sessionId = AuthSessionId.make("pending369-real-client-session");
+        const now = yield* DateTime.now;
+        const auth = yield* AuthSessions.layer.pipe(
+          Layer.provide(Layer.succeedContext(a.database)),
+          Layer.build,
+        );
+        const sessions = Context.get(auth, AuthSessions.AuthSessionRepository);
+        yield* sessions.create({
+          sessionId,
+          subject: "isolated-client",
+          method: "browser-session-cookie",
+          scopes: ["orchestration:read", "orchestration:operate"],
+          client: {
+            label: "Isolated source client",
+            ipAddress: null,
+            userAgent: null,
+            deviceType: "unknown",
+            os: null,
+            browser: null,
+          },
+          issuedAt: now,
+          expiresAt: DateTime.add(now, { hours: 1 }),
+        });
+        const base = {
+          parentThreadId: parent,
+          taskId: child.taskId,
+          requestId,
+          requestTarget: { environmentId: b.environmentId, threadId: child.childId },
+        };
+        const unrelated = ThreadId.make("pending369-unrelated-destination");
+        yield* seedParent(b, unrelated);
+        const unrelatedRequest = yield* seedPending369(b, unrelated);
+        const unrelatedRead = yield* a.pendingRequests
+          .fromTask(sessionId, {
+            ...base,
+            requestId: unrelatedRequest,
+            requestTarget: { environmentId: b.environmentId, threadId: unrelated },
+            operation: { type: "read" },
+          })
+          .pipe(Effect.result);
+        expect(unrelatedRead._tag).toBe("Failure");
+        const read = yield* a.pendingRequests.fromTask(sessionId, {
+          ...base,
+          operation: { type: "read" },
+        });
+        if (!("kind" in read) || read.revision === undefined)
+          return yield* Effect.die("Missing qualified read");
+        const action = {
+          ...base,
+          operation: {
+            type: "respond" as const,
+            clientRequestId: "human369-answer",
+            expectedRevision: read.revision,
+            answers: { color: "Orange" },
+          },
+        };
+        const accepted = yield* a.pendingRequests.fromTask(sessionId, action);
+        expect(yield* a.pendingRequests.fromTask(sessionId, action)).toEqual(accepted);
+        expect(
+          (yield* b.threads.getThreadRecords(child.childId, ["messages"])).messages.filter(
+            (m) => m.text === "Which color?\nOrange",
+          ),
+        ).toHaveLength(1);
+        yield* linkTo(b.links, a, "full-access");
+        const sourceGrant = (yield* b.authority.grants)[0]!;
+        yield* b.authority.setGrant({ ...sourceGrant, onward: true });
+        const back = yield* delegate(
+          b,
+          a,
+          child.childId,
+          "pending369-return-to-earlier-environment",
+        );
+        yield* activate(a, back.childId);
+        const backRequest = yield* seedPending369(a, back.childId);
+        const nativeRead = yield* nativeCall(a, parent, "t3_pending_request_read", {
+          threadId: back.childId,
+          requestId: backRequest,
+        });
+        expect(nativeRead.isError, json(nativeRead.content)).not.toBe(true);
+        const backBase = {
+          ...base,
+          requestId: backRequest,
+          requestTarget: { environmentId: a.environmentId, threadId: back.childId },
+          requestRoute: [{ environmentId: a.environmentId, threadId: back.childId }],
+        };
+        const backRead = yield* a.pendingRequests.fromTask(sessionId, {
+          ...backBase,
+          operation: { type: "read" },
+        });
+        if (!("kind" in backRead) || backRead.revision === undefined)
+          return yield* Effect.die("Missing returned descendant request");
+        const backAnswer = {
+          ...backBase,
+          operation: {
+            type: "respond" as const,
+            expectedRevision: backRead.revision,
+            clientRequestId: "human369-back",
+            answers: { color: "Silver" },
+          },
+        };
+        const backAccepted = yield* a.pendingRequests.fromTask(sessionId, backAnswer);
+        expect(yield* a.pendingRequests.fromTask(sessionId, backAnswer)).toEqual(backAccepted);
+        expect(
+          (yield* a.threads.getThreadRecords(back.childId, ["messages"])).messages.filter(
+            (message) => message.text === "Which color?\nSilver",
+          ),
+        ).toHaveLength(1);
+        yield* sessions.revoke({ sessionId, revokedAt: now });
+        const denied = yield* a.pendingRequests.fromTask(sessionId, action).pipe(Effect.result);
+        expect(denied._tag).toBe("Failure");
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "pending369: local-equivalent remote approval commits once and the real native effect calls its provider once",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf("pending369-approve-a", "A", { peerAuthority: 1 }),
+          "disk",
+          { attachmentRequests: true },
+        );
+        const b = yield* makeNode(
+          descriptorOf("pending369-approve-b", "B", { peerAuthority: 1 }),
+          "disk",
+          { attachmentRequests: true, productionKernel: true },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("pending369-approve-parent");
+        yield* seedParent(a, parent);
+        const child = yield* delegate(a, b, parent, "pending369-approve-child");
+        yield* activate(b, child.childId);
+        const projection = yield* b.orchestrator.getThreadProjection(child.childId);
+        const providerSessionId = projection.providerThreads[0]!.providerSessionId!;
+        const now = yield* DateTime.now;
+        const providerSession = {
+          id: providerSessionId,
+          driver,
+          providerInstanceId: instanceId,
+          status: "running" as const,
+          cwd: process.cwd(),
+          model: selection.model,
+          capabilities: CodexProviderCapabilitiesV2,
+          createdAt: now,
+          updatedAt: now,
+          lastError: null,
+        };
+        yield* b.sink.write({
+          events: [
+            {
+              id: EventId.make("pending369-approve-session"),
+              type: "provider-session.attached",
+              threadId: child.childId,
+              occurredAt: now,
+              payload: providerSession,
+            },
+          ],
+        });
+        const requestId = RuntimeRequestId.make("pending369-approval");
+        const nodeId = NodeId.make("pending369-approval-node");
+        const common = { threadId: child.childId, nodeId, occurredAt: now };
+        yield* b.sink.write({
+          events: [
+            {
+              ...common,
+              id: EventId.make("pending369-approval-node"),
+              type: "node.updated",
+              payload: {
+                id: nodeId,
+                threadId: child.childId,
+                runId: null,
+                parentNodeId: null,
+                rootNodeId: nodeId,
+                kind: "approval_request",
+                status: "waiting",
+                countsForRun: false,
+                providerThreadId: null,
+                providerTurnId: null,
+                nativeItemRef: null,
+                runtimeRequestId: requestId,
+                checkpointScopeId: null,
+                startedAt: now,
+                completedAt: null,
+              },
+            },
+            {
+              ...common,
+              id: EventId.make("pending369-approval-request"),
+              type: "runtime-request.updated",
+              payload: {
+                id: requestId,
+                nodeId,
+                providerTurnId: null,
+                nativeRequestRef: null,
+                kind: "command",
+                status: "pending",
+                responseCapability: { type: "live", providerSessionId },
+                createdAt: now,
+                resolvedAt: null,
+              },
+            },
+            {
+              ...common,
+              id: EventId.make("pending369-approval-item"),
+              type: "turn-item.updated",
+              payload: {
+                id: TurnItemId.make("pending369-approval-item"),
+                type: "approval_request",
+                threadId: child.childId,
+                runId: null,
+                nodeId,
+                providerThreadId: null,
+                providerTurnId: null,
+                nativeItemRef: null,
+                parentItemId: null,
+                ordinal: 1,
+                status: "waiting",
+                title: null,
+                startedAt: now,
+                completedAt: null,
+                updatedAt: now,
+                requestId,
+                requestKind: "command",
+                prompt: "Run the requested command?",
+                options: [
+                  { decision: "accept", label: "Approve" },
+                  { decision: "decline", label: "Deny" },
+                ],
+              },
+            },
+          ],
+        });
+        yield* a.orchestrator
+          .streamStoredEventsFrom({
+            threadId: parent,
+            afterSequence: 0,
+            eventType: "subagent.updated",
+          })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "subagent.updated" &&
+                stored.event.payload.id === child.taskId &&
+                (stored.event.payload.remoteChild?.snapshot?.requests.some(
+                  (request) => request.requestId === requestId,
+                ) ??
+                  false),
+            ),
+            Stream.runHead,
+            Effect.flatMap(Effect.fromOption),
+          );
+        expect((yield* a.threads.getThreadShell(parent))?.remotePendingRequest).toBe("approval");
+        const status = yield* nativeCall(a, parent, "task_status", { taskId: child.taskId });
+        expect(status.isError, json(status.content)).not.toBe(true);
+        expect(status.structuredContent).toMatchObject({
+          hasPendingApproval: true,
+          childThreadId: null,
+        });
+        const args = { environmentId: b.environmentId, threadId: child.childId, requestId };
+        const read = yield* nativeCall(a, parent, "t3_pending_request_read", args);
+        expect(read.isError, json(read.content)).not.toBe(true);
+        const content = yield* decodePending369Content(read.structuredContent);
+        expect(content.kind).toBe("approval");
+        const malformed = yield* nativeCall(a, parent, "t3_pending_request_respond", {
+          ...args,
+          expectedRevision: content.revision,
+          decision: "cancel",
+          clientRequestId: "bad-shape",
+        });
+        expect(malformed.isError).toBe(true);
+        const answer = {
+          ...args,
+          expectedRevision: content.revision,
+          decision: "accept",
+          clientRequestId: "native-approval",
+        };
+        yield* Ref.set(a.dropCommittedToolReply, "t3_pending_request_respond");
+        const lost = yield* nativeCall(a, parent, "t3_pending_request_respond", answer);
+        expect(lost.isError).toBe(true);
+        const accepted = yield* nativeCall(a, parent, "t3_pending_request_respond", answer);
+        expect(accepted.isError, json(accepted.content)).not.toBe(true);
+        expect(
+          (yield* nativeCall(a, parent, "t3_pending_request_respond", answer)).structuredContent,
+        ).toEqual(accepted.structuredContent);
+        const callbacks: Array<Adapter.ProviderAdapterV2RuntimeRequestResponseInput> = [];
+        const sessions = Context.get(b.runtime, ProviderSessionManager.ProviderSessionManagerV2);
+        const spy = vi.spyOn(sessions, "get").mockReturnValue(
+          Effect.succeed(
+            Option.some({
+              providerSession,
+              instanceId,
+              driver,
+              providerSessionId,
+              events: Stream.empty,
+              ensureThread: () => Effect.die("No external provider process in this proof"),
+              resumeThread: () => Effect.die("No external provider process in this proof"),
+              startTurn: () => Effect.die("No external provider process in this proof"),
+              steerTurn: () => Effect.die("No external provider process in this proof"),
+              interruptTurn: () => Effect.die("No external provider process in this proof"),
+              readThreadSnapshot: () => Effect.die("No external provider process in this proof"),
+              rollbackThread: () => Effect.die("No external provider process in this proof"),
+              forkThread: () => Effect.die("No external provider process in this proof"),
+              respondToRuntimeRequest: (
+                input: Adapter.ProviderAdapterV2RuntimeRequestResponseInput,
+              ) =>
+                Effect.sync(() => {
+                  callbacks.push(input);
+                }),
+            } satisfies Adapter.ProviderAdapterV2SessionRuntime),
+          ),
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
+        const native = yield* RuntimeRequests.layer.pipe(
+          Layer.provide(Layer.succeedContext(b.runtime)),
+          Layer.build,
+        );
+        const runtimeRequests = Context.get(native, RuntimeRequests.RuntimeRequestServiceV2);
+        const worker = yield* EffectWorker.layerWithOptions({ maxAttempts: 1 }).pipe(
+          Layer.provide(
+            Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
+              execute: (effect) =>
+                effect.request.type === "runtime-request.respond"
+                  ? runtimeRequests
+                      .respond({
+                        threadId: effect.threadId,
+                        providerSessionId: effect.request.providerSessionId,
+                        requestId: effect.request.requestId,
+                        ...(effect.request.decision === undefined
+                          ? {}
+                          : { decision: effect.request.decision }),
+                        ...(effect.request.answers === undefined
+                          ? {}
+                          : { answers: effect.request.answers }),
+                      })
+                      .pipe(
+                        Effect.mapError(
+                          (cause) =>
+                            new EffectWorker.OrchestrationEffectExecutionError({
+                              effectId: effect.id,
+                              effectType: effect.request.type,
+                              cause,
+                            }),
+                        ),
+                      )
+                  : Effect.void,
+            }),
+          ),
+          Layer.provide(Layer.succeed(PeerAuthority.PeerAuthority, b.authority)),
+          Layer.provide(Layer.succeedContext(b.runtime)),
+          Layer.build,
+        );
+        const drain = Context.get(worker, EffectWorker.OrchestrationEffectWorkerV2).drain();
+        yield* drain;
+        yield* drain;
+        expect(callbacks).toEqual([{ requestId, decision: "accept" }]);
+        const self = yield* nativeCall(b, child.childId, "t3_pending_request_respond", {
+          threadId: child.childId,
+          requestId,
+          decision: "accept",
+          actor: "human",
+          human: true,
+          clientRequestId: "spoof",
+        });
+        expect(self.isError).toBe(true);
+        expect(callbacks).toHaveLength(1);
+        const stoppingRequest = yield* seedPending369(b, child.childId, "live-stop");
+        const stoppingRecords = yield* b.threads.getThreadRecords(child.childId, [
+          "nodes",
+          "runtimeRequests",
+          "turnItems",
+        ]);
+        const stoppedRunId = (yield* b.threads.getThreadShell(child.childId))?.activeRunId;
+        if (stoppedRunId == null)
+          return yield* Effect.die("Expected a live native run before Stop");
+        const stoppingNode = stoppingRecords.nodes.find(
+          (node) => node.runtimeRequestId === stoppingRequest,
+        )!;
+        const stoppingRuntimeRequest = stoppingRecords.runtimeRequests.find(
+          (request) => request.id === stoppingRequest,
+        )!;
+        const stoppingItem = stoppingRecords.turnItems.find(
+          (item) => item.type === "user_input_request" && item.requestId === stoppingRequest,
+        );
+        if (stoppingItem?.type !== "user_input_request")
+          return yield* Effect.die("Expected live question item");
+        const stopNow = yield* DateTime.now;
+        yield* b.sink.write({
+          events: [
+            {
+              id: EventId.make("pending369-live-stop-node"),
+              type: "node.updated",
+              threadId: child.childId,
+              runId: stoppedRunId,
+              nodeId: stoppingNode.id,
+              occurredAt: stopNow,
+              payload: { ...stoppingNode, runId: stoppedRunId },
+            },
+            {
+              id: EventId.make("pending369-live-stop-request"),
+              type: "runtime-request.updated",
+              threadId: child.childId,
+              runId: stoppedRunId,
+              nodeId: stoppingNode.id,
+              occurredAt: stopNow,
+              payload: {
+                ...stoppingRuntimeRequest,
+                responseCapability: { type: "live", providerSessionId },
+              },
+            },
+            {
+              id: EventId.make("pending369-live-stop-item"),
+              type: "turn-item.updated",
+              threadId: child.childId,
+              runId: stoppedRunId,
+              nodeId: stoppingNode.id,
+              occurredAt: stopNow,
+              payload: { ...stoppingItem, runId: stoppedRunId, responseMode: undefined },
+            },
+          ],
+        });
+        const stopArgs = { ...args, requestId: stoppingRequest };
+        const stopRead = yield* decodePending369Content(
+          (yield* nativeCall(a, parent, "t3_pending_request_read", stopArgs)).structuredContent,
+        );
+        const stopped = yield* nativeCall(a, parent, "t3_thread_interrupt", {
+          environmentId: b.environmentId,
+          threadId: child.childId,
+          clientRequestId: "pending369-stop-before-answer",
+        });
+        expect(stopped.isError, json(stopped.content)).not.toBe(true);
+        const tooLate = yield* nativeCall(a, parent, "t3_pending_request_respond", {
+          ...stopArgs,
+          expectedRevision: stopRead.revision,
+          answers: { color: "Late" },
+          clientRequestId: "pending369-after-stop",
+        });
+        expect(tooLate.isError, json(tooLate.content)).toBe(true);
+        const stopSql = Context.get(b.database, SqlClient.SqlClient);
+        const previousEffects = yield* stopSql<{
+          count: number;
+        }>`SELECT COUNT(*) AS count FROM orchestration_v2_effect_outbox WHERE effect_type='runtime-request.respond' AND json_extract(payload_json,'$.requestId')=${requestId}`;
+        expect(previousEffects[0]?.count).toBe(1);
+        const lateEffects = yield* stopSql<{
+          count: number;
+        }>`SELECT COUNT(*) AS count FROM orchestration_v2_effect_outbox WHERE effect_type='runtime-request.respond' AND json_extract(payload_json,'$.requestId')=${stoppingRequest}`;
+        expect(lateEffects[0]?.count).toBe(0);
+        expect(callbacks).toHaveLength(1);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("pending369: asynchronous answer and dismiss race in the native serialized owner", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const a = yield* makeNode(
+        descriptorOf("pending369-race-a", "A", { peerAuthority: 1 }),
+        "disk",
+        { attachmentRequests: true },
+      );
+      const b = yield* makeNode(
+        descriptorOf("pending369-race-b", "B", { peerAuthority: 1 }),
+        "disk",
+        { attachmentRequests: true },
+      );
+      yield* linkTo(a.links, b, "full-access");
+      const parent = ThreadId.make("pending369-race-parent");
+      yield* seedParent(a, parent);
+      const child = yield* delegate(a, b, parent, "pending369-race-child");
+      yield* activate(b, child.childId);
+      const requestId = yield* seedPending369(b, child.childId);
+      const args = { environmentId: b.environmentId, threadId: child.childId, requestId };
+      const read = yield* nativeCall(a, parent, "t3_pending_request_read", args);
+      const content = yield* decodePending369Content(read.structuredContent);
+      const outside = yield* Context.get(a.services, PeerMcpClient.PeerMcpClient)
+        .call({
+          environmentId: b.environmentId,
+          tool: "t3_pending_request_read",
+          arguments: args,
+          limits: { runtimeMode: "full-access", interactionMode: "default" },
+          success: ThreadToolkit.tools.t3_pending_request_read.successSchema,
+        })
+        .pipe(Effect.result);
+      expect(outside._tag).toBe("Failure");
+      const raced = yield* Effect.all(
+        [
+          nativeCall(a, parent, "t3_pending_request_respond", {
+            ...args,
+            expectedRevision: content.revision,
+            answers: { color: "Purple" },
+            clientRequestId: "answer-race",
+          }),
+          nativeCall(a, parent, "t3_pending_request_dismiss", {
+            ...args,
+            expectedRevision: content.revision,
+            clientRequestId: "dismiss-race",
+          }),
+        ],
+        { concurrency: "unbounded" },
+      );
+      expect(raced.filter((result) => result.isError !== true)).toHaveLength(1);
+      const records = yield* b.threads.getThreadRecords(child.childId, [
+        "runtimeRequests",
+        "messages",
+      ]);
+      expect(records.runtimeRequests.find((request) => request.id === requestId)?.status).toBe(
+        "resolved",
+      );
+      expect(
+        records.messages.filter((message) => message.text === "Which color?\nPurple"),
+      ).toHaveLength(raced[0]?.isError === true ? 0 : 1);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+const decodePendingWsReply = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      _tag: Schema.String,
+      requestId: Schema.optional(Schema.String),
+      exit: Schema.optional(
+        Schema.Struct({
+          _tag: Schema.String,
+          value: Schema.optional(Schema.Unknown),
+          cause: Schema.optional(Schema.Unknown),
+        }),
+      ),
+    }),
+  ),
+);
+it.live(
+  "pending369: real authenticated source WebSocket invokes the production request handlers and rejects agent credentials",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf("pending369-ws-a", "A", { peerAuthority: 1 }),
+          "disk",
+          { attachmentRequests: true, productionKernel: true },
+        );
+        const b = yield* makeNode(
+          descriptorOf("pending369-ws-b", "B", { peerAuthority: 1 }),
+          "disk",
+          { attachmentRequests: true, productionKernel: true },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("pending369-ws-parent");
+        yield* seedParent(a, parent);
+        const child = yield* delegate(a, b, parent, "pending369-ws-child");
+        yield* activate(b, child.childId);
+        const requestId = yield* seedPending369(b, child.childId);
+        const server = yield* NodeHttpServer.layerTest.pipe(Layer.fresh, Layer.build);
+        const route = HttpRouter.add(
+          "GET",
+          "/ws",
+          Effect.gen(function* () {
+            const request = yield* HttpServerRequest.HttpServerRequest;
+            const authenticated = yield* a.auth
+              .authenticateWebSocketUpgrade(request)
+              .pipe(Effect.result);
+            if (authenticated._tag === "Failure") return HttpServerResponse.empty({ status: 403 });
+            const session = authenticated.success;
+            const { protocol, httpEffect } = yield* RpcServer.makeProtocolWithHttpEffectWebsocket;
+            yield* RpcServer.make(PendingRequestClientRpcGroup, {
+              disableTracing: true,
+              disableFatalDefects: true,
+            }).pipe(
+              Effect.provideService(RpcServer.Protocol, protocol),
+              Effect.provide(
+                Layer.merge(
+                  PendingRequestClientRpcGroup.toLayer(
+                    pendingRequestClientHandlers(session, a.pendingRequests),
+                  ),
+                  RpcAuthorization.layer(session.scopes),
+                ),
+              ),
+              Effect.forkScoped,
+            );
+            return yield* httpEffect;
+          }),
+        );
+        yield* HttpRouter.serve(route, { disableListenLog: true, disableLogger: true }).pipe(
+          Layer.provide(Layer.succeedContext(server)),
+          Layer.provide(RpcSerialization.layerJson),
+          Layer.fresh,
+          Layer.build,
+        );
+        const address = Context.get(server, HttpServer.HttpServer).address;
+        if (address._tag === "UnixPathAddress") return yield* Effect.die("Expected test socket");
+        const messages = yield* Queue.unbounded<string>();
+        const connect = (ticket: string) =>
+          Effect.acquireRelease(
+            Effect.tryPromise({
+              try: () =>
+                new Promise<WebSocket>((resolve, reject) => {
+                  const socket = new WebSocket(
+                    `ws://127.0.0.1:${address.port}/ws?wsTicket=${encodeURIComponent(ticket)}`,
+                  );
+                  socket.addEventListener("message", (event) =>
+                    Queue.offerUnsafe(messages, String(event.data)),
+                  );
+                  socket.addEventListener("open", () => resolve(socket), { once: true });
+                  socket.addEventListener(
+                    "error",
+                    () => reject(new Error("Unauthenticated source socket refused")),
+                    { once: true },
+                  );
+                }),
+              catch: () =>
+                new OrchestratorMcpFailure({
+                  code: "orchestration_error",
+                  message: "Isolated source WebSocket failed",
+                }),
+            }),
+            (socket) => Effect.sync(() => socket.close()),
+          );
+        const pairing = yield* a.auth.issuePairingCredential({
+          scopes: ["orchestration:read", "orchestration:operate"],
+        });
+        const token = yield* a.auth.exchangeBootstrapCredentialForAccessToken(
+          pairing.credential,
+          undefined,
+          { deviceType: "desktop", os: "fixture", browser: "fixture", ipAddress: "127.0.0.1" },
+        );
+        const session = yield* a.auth.authenticateHttpRequest(
+          HttpServerRequest.fromWeb(
+            new Request(a.url, { headers: { authorization: `Bearer ${token.access_token}` } }),
+          ),
+        );
+        const ticket = yield* a.auth.issueWebSocketTicket(session);
+        const socket = yield* connect(ticket.ticket);
+        let ordinal = 0;
+        const rpc = (tag: string, payload: unknown, client = socket) =>
+          Effect.gen(function* () {
+            const id = String(++ordinal);
+            client.send(json({ _tag: "Request", id, tag, payload, headers: [] }));
+            const reply = yield* decodePendingWsReply(yield* Queue.take(messages));
+            expect(reply.requestId).toBe(id);
+            return reply;
+          });
+        const base = {
+          parentThreadId: parent,
+          taskId: child.taskId,
+          requestId,
+          requestTarget: { environmentId: b.environmentId, threadId: child.childId },
+        };
+        const read = yield* rpc(WS_METHODS.remoteTaskRequestRead, {
+          ...base,
+          operation: { type: "read" },
+        });
+        expect(read.exit?._tag).toBe("Success");
+        const content = yield* decodePending369ClientResult(read.exit?.value);
+        if (!("kind" in content) || content.revision === undefined)
+          return yield* Effect.die("Missing native qualified request");
+        const answer = {
+          ...base,
+          operation: {
+            type: "respond",
+            clientRequestId: "ws369-answer",
+            expectedRevision: content.revision,
+            answers: { color: "Teal" },
+          },
+          actor: "human",
+        };
+        const accepted = yield* rpc(WS_METHODS.remoteTaskRequest, answer);
+        expect(accepted.exit?._tag).toBe("Success");
+        expect((yield* rpc(WS_METHODS.remoteTaskRequest, answer)).exit).toEqual(accepted.exit);
+        expect(
+          (yield* b.threads.getThreadRecords(child.childId, ["messages"])).messages.filter(
+            (message) => message.text === "Which color?\nTeal",
+          ),
+        ).toHaveLength(1);
+        const peerSession = yield* a.auth.issueMcpClientSession({
+          label: "Outside OAuth",
+          access: "full-access",
+          peerLink: false,
+          client: {
+            deviceType: "desktop",
+            os: "fixture",
+            browser: "fixture",
+            ipAddress: "127.0.0.1",
+          },
+        });
+        const impersonation = yield* a.auth
+          .authenticateWebSocketUpgrade(
+            HttpServerRequest.fromWeb(
+              new Request(a.url, { headers: { authorization: `Bearer ${peerSession.token}` } }),
+            ),
+          )
+          .pipe(Effect.result);
+        expect(impersonation._tag).toBe("Failure");
+        const readPairing = yield* a.auth.issuePairingCredential({
+          scopes: ["orchestration:read"],
+        });
+        const readToken = yield* a.auth.exchangeBootstrapCredentialForAccessToken(
+          readPairing.credential,
+          undefined,
+          { deviceType: "desktop", os: "fixture", browser: "fixture", ipAddress: "127.0.0.1" },
+        );
+        const readSession = yield* a.auth.authenticateHttpRequest(
+          HttpServerRequest.fromWeb(
+            new Request(a.url, { headers: { authorization: `Bearer ${readToken.access_token}` } }),
+          ),
+        );
+        const readTicket = yield* a.auth.issueWebSocketTicket(readSession);
+        const readSocket = yield* connect(readTicket.ticket);
+        const secondRequestId = yield* seedPending369(b, child.childId, "read-only");
+        const secondRead = yield* rpc(
+          WS_METHODS.remoteTaskRequestRead,
+          { ...base, requestId: secondRequestId, operation: { type: "read" } },
+          readSocket,
+        );
+        expect(secondRead.exit?._tag).toBe("Success");
+        expect(
+          (yield* rpc(
+            WS_METHODS.remoteTaskRequest,
+            { ...answer, requestId: secondRequestId },
+            readSocket,
+          )).exit?._tag,
+        ).toBe("Failure");
+        const authRepository = yield* AuthSessions.layer.pipe(
+          Layer.provide(Layer.succeedContext(a.database)),
+          Layer.build,
+        );
+        yield* Context.get(authRepository, AuthSessions.AuthSessionRepository).revoke({
+          sessionId: session.sessionId,
+          revokedAt: yield* DateTime.now,
+        });
+        expect((yield* rpc(WS_METHODS.remoteTaskRequest, answer)).exit?._tag).toBe("Failure");
+        expect((yield* connect("unproved-agent-token").pipe(Effect.result))._tag).toBe("Failure");
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "pending369: native intake resolving after planning wins before the response transaction commits",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf("pending369-intake-a", "A", { peerAuthority: 1 }),
+          "disk",
+          { attachmentRequests: true, productionKernel: true },
+        );
+        const b = yield* makeNode(
+          descriptorOf("pending369-intake-b", "B", { peerAuthority: 1 }),
+          "disk",
+          { attachmentRequests: true, productionKernel: true },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("pending369-intake-parent");
+        yield* seedParent(a, parent);
+        const child = yield* delegate(a, b, parent, "pending369-intake-child");
+        yield* activate(b, child.childId);
+        const requestId = yield* seedPending369(b, child.childId);
+        const args = { environmentId: b.environmentId, threadId: child.childId, requestId };
+        const read = yield* nativeCall(a, parent, "t3_pending_request_read", args);
+        const content = yield* decodePending369Content(read.structuredContent);
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const commit = b.sink.commitCommand;
+        const held = vi
+          .spyOn(b.sink, "commitCommand")
+          .mockImplementation((input) =>
+            input.commandType !== "runtime-request.respond"
+              ? commit(input)
+              : Deferred.succeed(entered, undefined).pipe(
+                  Effect.andThen(Deferred.await(release)),
+                  Effect.andThen(commit(input)),
+                ),
+          );
+        yield* Effect.addFinalizer(() => Effect.sync(() => held.mockRestore()));
+        const pending = yield* nativeCall(a, parent, "t3_pending_request_respond", {
+          ...args,
+          expectedRevision: content.revision,
+          answers: { color: "Obsolete" },
+          clientRequestId: "intake-response",
+        }).pipe(Effect.forkScoped);
+        yield* Deferred.await(entered);
+        const request = (yield* b.threads.getThreadRecords(child.childId, [
+          "runtimeRequests",
+        ])).runtimeRequests.find((request) => request.id === requestId)!;
+        const now = yield* DateTime.now;
+        yield* b.sink.write({
+          events: [
+            {
+              id: EventId.make("pending369-intake-cancel"),
+              type: "runtime-request.updated",
+              threadId: child.childId,
+              nodeId: request.nodeId,
+              occurredAt: now,
+              payload: { ...request, status: "cancelled", resolvedAt: now },
+            },
+          ],
+        });
+        yield* Deferred.succeed(release, undefined);
+        const refused = yield* Fiber.join(pending);
+        expect(refused.isError, json(refused.content)).toBe(true);
+        const records = yield* b.threads.getThreadRecords(child.childId, [
+          "runtimeRequests",
+          "messages",
+        ]);
+        expect(records.runtimeRequests.find((request) => request.id === requestId)?.status).toBe(
+          "cancelled",
+        );
+        expect(records.messages.some((message) => message.text === "Which color?\nObsolete")).toBe(
+          false,
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "pending369: a native local grandparent crosses a real local child and an authenticated pair",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(
+          descriptorOf("pending369-local-a", "A", { peerAuthority: 1 }),
+          "disk",
+          { attachmentRequests: true },
+        );
+        const b = yield* makeNode(
+          descriptorOf("pending369-local-b", "B", { peerAuthority: 1 }),
+          "disk",
+          { attachmentRequests: true },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        const root = ThreadId.make("pending369-local-root");
+        yield* seedParent(a, root);
+        const launched = yield* nativeCall(a, root, "delegate_task", {
+          task: "Own local intermediate work",
+          target: {
+            projectId: a.project.id,
+            providerInstanceId: instanceId,
+            model: selection.model,
+          },
+          mode: "async",
+          clientRequestId: "pending369-local-child",
+        });
+        expect(launched.isError, json(launched.content)).not.toBe(true);
+        const local = yield* decodePending369LocalTask(launched.structuredContent);
+        if (local.childThreadId === null)
+          return yield* Effect.die("Expected a real native local child");
+        expect((yield* a.threads.getThreadShell(local.childThreadId))?.lineage).toMatchObject({
+          parentThreadId: root,
+          relationshipToParent: "subagent",
+        });
+        yield* activate(a, local.childThreadId);
+        const remote = yield* delegate(a, b, local.childThreadId, "pending369-local-pair");
+        yield* activate(b, remote.childId);
+        const requestId = yield* seedPending369(b, remote.childId);
+        const args = { environmentId: b.environmentId, threadId: remote.childId, requestId };
+        const read = yield* nativeCall(a, root, "t3_pending_request_read", args);
+        expect(read.isError, json(read.content)).not.toBe(true);
+        const content = yield* decodePending369Content(read.structuredContent);
+        const answered = yield* nativeCall(a, root, "t3_pending_request_respond", {
+          ...args,
+          expectedRevision: content.revision,
+          answers: { color: "Amber" },
+          clientRequestId: "pending369-local-grandparent",
+        });
+        expect(answered.isError, json(answered.content)).not.toBe(true);
+        expect(
+          (yield* b.threads.getThreadRecords(remote.childId, ["messages"])).messages.filter(
+            (message) => message.text === "Which color?\nAmber",
+          ),
+        ).toHaveLength(1);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "pending369 R1: read content and revision describe one snapshot",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(descriptorOf("r1-read-a", "A", { peerAuthority: 1 }), "disk", {
+          attachmentRequests: true,
+          productionKernel: true,
+        });
+        const b = yield* makeNode(descriptorOf("r1-read-b", "B", { peerAuthority: 1 }), "disk", {
+          attachmentRequests: true,
+          productionKernel: true,
+        });
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("r1-read-parent");
+        yield* seedParent(a, parent);
+        const child = yield* delegate(a, b, parent, "r1-read-child");
+        yield* activate(b, child.childId);
+        const requestId = yield* seedPending369(b, child.childId);
+        const args = { environmentId: b.environmentId, threadId: child.childId, requestId };
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const original = b.threads.getProjectThreadRecords;
+        let once = true;
+        // Scheduling barrier only: the real native owner executes and its exact result is retained.
+        // No authority decision, projection value or SQL operation is replaced.
+        const barrier = vi
+          .spyOn(b.threads, "getProjectThreadRecords")
+          .mockImplementation((...input) =>
+            original(...input).pipe(
+              Effect.flatMap((records) => {
+                if (
+                  !once ||
+                  input[0].threadId !== child.childId ||
+                  !input[1]?.includes("turnItems")
+                )
+                  return Effect.succeed(records);
+                once = false;
+                return Deferred.succeed(entered, undefined).pipe(
+                  Effect.andThen(Deferred.await(release)),
+                  Effect.as(records),
+                );
+              }),
+            ),
+          );
+        yield* Effect.addFinalizer(() => Effect.sync(() => barrier.mockRestore()));
+        const reading = yield* nativeCall(a, parent, "t3_pending_request_read", args).pipe(
+          Effect.forkScoped,
+        );
+        yield* Deferred.await(entered);
+        const records = yield* b.threads.getThreadRecords(child.childId, ["turnItems"]);
+        const item = records.turnItems.find(
+          (i) => i.type === "user_input_request" && i.requestId === requestId,
+        );
+        if (item?.type !== "user_input_request") return yield* Effect.die("Missing native item");
+        const changed = "Which UPDATED color?";
+        yield* b.sink.write({
+          events: [
+            {
+              id: EventId.make("r1-read-change"),
+              type: "turn-item.updated",
+              threadId: child.childId,
+              occurredAt: yield* DateTime.now,
+              payload: {
+                ...item,
+                questions: item.questions.map((q) => ({ ...q, question: changed })),
+              },
+            },
+          ],
+        });
+        yield* Deferred.succeed(release, undefined);
+        const result = yield* Fiber.join(reading);
+        expect(result.isError, json(result)).not.toBe(true);
+        const content = yield* decodePending369Content(result.structuredContent);
+        const accepted = yield* nativeCall(a, parent, "t3_pending_request_respond", {
+          ...args,
+          expectedRevision: content.revision,
+          answers: { color: "Blue" },
+          clientRequestId: "r1-old-content-answer",
+        });
+        const after = yield* b.threads.getThreadRecords(child.childId, [
+          "messages",
+          "runtimeRequests",
+        ]);
+        yield* Effect.log(
+          "R1 READ RACE EVIDENCE",
+          json({
+            content,
+            accepted,
+            updatedMessage: after.messages.find((m) => m.text.includes(changed)),
+            status: after.runtimeRequests.find((r) => r.id === requestId)?.status,
+          }),
+        );
+        // Either read must return updated content, or its stale revision must reject the answer.
+        expect(
+          (content.kind === "user-input" && content.questions[0]?.question === changed) ||
+            accepted.isError === true,
+        ).toBe(true);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  30000,
+);
+
+it.live(
+  "pending369 R1: advertised empty live option retains local-equivalent response",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(descriptorOf("r1-empty-a", "A", { peerAuthority: 1 }), "disk", {
+          attachmentRequests: true,
+          productionKernel: true,
+        });
+        const b = yield* makeNode(descriptorOf("r1-empty-b", "B", { peerAuthority: 1 }), "disk", {
+          attachmentRequests: true,
+          productionKernel: true,
+        });
+        yield* linkTo(a.links, b, "full-access");
+        const parent = ThreadId.make("r1-empty-parent");
+        yield* seedParent(a, parent);
+        const child = yield* delegate(a, b, parent, "r1-empty-child");
+        yield* activate(b, child.childId);
+        const requestId = yield* seedPending369(b, child.childId);
+        const projection = yield* b.orchestrator.getThreadProjection(child.childId);
+        const providerSessionId = projection.providerThreads[0]!.providerSessionId!;
+        const now = yield* DateTime.now;
+        const request = projection.runtimeRequests.find((r) => r.id === requestId)!;
+        const item = projection.turnItems.find(
+          (i) => i.type === "user_input_request" && i.requestId === requestId,
+        );
+        if (item?.type !== "user_input_request")
+          return yield* Effect.die("Missing real pending item");
+        // This is the exact input/select empty-value shape produced by piQuestion
+        // in packages/provider-pi/src/server/adapter.ts. No invented optional flag.
+        yield* b.sink.write({
+          events: [
+            {
+              id: EventId.make("r1-empty-session"),
+              type: "provider-session.attached",
+              threadId: child.childId,
+              occurredAt: now,
+              payload: {
+                id: providerSessionId,
+                driver,
+                providerInstanceId: instanceId,
+                status: "running",
+                cwd: process.cwd(),
+                model: selection.model,
+                capabilities: CodexProviderCapabilitiesV2,
+                createdAt: now,
+                updatedAt: now,
+                lastError: null,
+              },
+            },
+            {
+              id: EventId.make("r1-empty-request"),
+              type: "runtime-request.updated",
+              threadId: child.childId,
+              nodeId: request.nodeId,
+              occurredAt: now,
+              payload: { ...request, responseCapability: { type: "live", providerSessionId } },
+            },
+            {
+              id: EventId.make("r1-empty-item"),
+              type: "turn-item.updated",
+              threadId: child.childId,
+              nodeId: request.nodeId,
+              occurredAt: now,
+              payload: {
+                ...item,
+                responseMode: undefined,
+                questions: [
+                  {
+                    id: "color",
+                    header: "Input",
+                    question: "Value?",
+                    options: [
+                      {
+                        label: "Submit empty value",
+                        description: "Send an empty string to the extension.",
+                        value: "",
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+          ],
+        });
+        const args = { environmentId: b.environmentId, threadId: child.childId, requestId };
+        const read = yield* decodePending369Content(
+          (yield* nativeCall(a, parent, "t3_pending_request_read", args)).structuredContent,
+        );
+        for (const [index, answers] of [{}, { color: [""] }].entries()) {
+          const rejected = yield* nativeCall(a, parent, "t3_pending_request_respond", {
+            ...args,
+            expectedRevision: read.revision,
+            answers,
+            clientRequestId: `r1-empty-invalid-${index}`,
+          });
+          expect(rejected.isError).toBe(true);
+        }
+        const remote = yield* nativeCall(a, parent, "t3_pending_request_respond", {
+          ...args,
+          expectedRevision: read.revision,
+          answers: { color: "" },
+          clientRequestId: "r1-empty-answer",
+        });
+        const after = yield* b.threads.getThreadRecords(child.childId, ["runtimeRequests"]);
+        expect(remote.isError, json(remote)).not.toBe(true);
+        expect(after.runtimeRequests.find((r) => r.id === requestId)).toMatchObject({
+          status: "resolved",
+          answers: { color: "" },
+        });
+        const fixedId = yield* seedPending369(b, child.childId, "fixed-choice-control");
+        const fixedItem = (yield* b.threads.getThreadRecords(child.childId, [
+          "turnItems",
+        ])).turnItems.find(
+          (entry) => entry.type === "user_input_request" && entry.requestId === fixedId,
+        );
+        if (fixedItem?.type !== "user_input_request")
+          return yield* Effect.die("Missing fixed choice control");
+        yield* b.sink.write({
+          events: [
+            {
+              id: EventId.make("r1-fixed-shape"),
+              type: "turn-item.updated",
+              threadId: child.childId,
+              occurredAt: yield* DateTime.now,
+              payload: {
+                ...fixedItem,
+                questions: [
+                  {
+                    id: "color",
+                    header: "Choice",
+                    question: "Choose?",
+                    allowCustomAnswer: false,
+                    options: [{ label: "Blue", description: "Allowed" }],
+                  },
+                ],
+              },
+            },
+          ],
+        });
+        const fixedArgs = { ...args, requestId: fixedId };
+        const fixedRead = yield* decodePending369Content(
+          (yield* nativeCall(a, parent, "t3_pending_request_read", fixedArgs)).structuredContent,
+        );
+        const invalidOption = yield* nativeCall(a, parent, "t3_pending_request_respond", {
+          ...fixedArgs,
+          expectedRevision: fixedRead.revision,
+          answers: { color: "not offered" },
+          clientRequestId: "r1-fixed-invalid",
+        });
+        expect(invalidOption.isError).toBe(true);
+        expect(
+          (yield* b.threads.getThreadRecords(child.childId, [
+            "runtimeRequests",
+          ])).runtimeRequests.find((entry) => entry.id === fixedId)?.status,
+        ).toBe("pending");
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
   30000,
 );

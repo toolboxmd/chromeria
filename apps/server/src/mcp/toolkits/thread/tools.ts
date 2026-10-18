@@ -1,6 +1,8 @@
 import { ThreadBare } from "@t3tools/contracts";
 import * as McpRouting from "../../McpRouting.ts";
 import {
+  PendingRequestInput,
+  PendingRequestContent,
   ScheduledTaskId,
   McpManualRunReceipt,
   ScheduledTask,
@@ -15,8 +17,6 @@ import {
   RuntimeRequestId,
   ProviderUserInputAnswers,
   ProviderApprovalDecision,
-  ProviderApprovalOption,
-  ProviderRequestKind,
   IsoDateTime,
   OrchestratorMcpFailure,
   OrchestrationV2DispatchCommandResult,
@@ -153,38 +153,7 @@ const QueuePromoteTool = Tool.make("t3_queue_promote_to_steer", {
   parameters: McpRouting.parameters(Schema.Struct({ ...queueTarget, targetRunId: RunId })),
 }).annotate(Tool.Destructive, true);
 
-const requestTarget = { threadId: Schema.optional(ThreadId), requestId: RuntimeRequestId };
-const question = Schema.Struct({
-  id: Schema.String,
-  header: Schema.String,
-  question: Schema.String,
-  options: Schema.Array(
-    Schema.Struct({
-      label: Schema.String,
-      description: Schema.String,
-      value: Schema.optional(Schema.String),
-    }),
-  ),
-  multiSelect: Schema.optional(Schema.Boolean),
-  allowCustomAnswer: Schema.optional(Schema.Boolean),
-  initialAnswer: Schema.optional(Schema.String),
-  required: Schema.optional(Schema.Boolean),
-});
-const pendingRequest = Schema.Union([
-  Schema.Struct({
-    requestId: RuntimeRequestId,
-    kind: Schema.Literal("user-input"),
-    questions: Schema.Array(question),
-  }),
-  Schema.Struct({
-    requestId: RuntimeRequestId,
-    kind: Schema.Literal("approval"),
-    requestKind: ProviderRequestKind,
-    prompt: Schema.optional(Schema.String),
-    appName: Schema.optional(Schema.String),
-    options: Schema.optional(Schema.Array(ProviderApprovalOption)),
-  }),
-]);
+export const pendingRequest = PendingRequestContent;
 const PendingRequestListTool = Tool.make("t3_pending_request_list", {
   ...commandTool,
   description: "List pending questions and descendant approvals. Omit threadId for this thread.",
@@ -193,22 +162,22 @@ const PendingRequestListTool = Tool.make("t3_pending_request_list", {
 })
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);
-const PendingRequestReadTool = Tool.make("t3_pending_request_read", {
+export const PendingRequestReadTool = Tool.make("t3_pending_request_read", {
   ...commandTool,
   description:
-    "Read a pending question or descendant approval. Respond with t3_pending_request_respond.",
-  parameters: McpRouting.parameters(Schema.Struct(requestTarget)),
+    "Read a verified descendant question or approval. For nested remote work use the parent threadId plus requestTarget and requestRoute from the task observation or notice. Use the returned revision as expectedRevision when responding.",
+  parameters: McpRouting.parameters(PendingRequestInput),
   success: pendingRequest,
 })
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false);
-const PendingRequestRespondTool = Tool.make("t3_pending_request_respond", {
+export const PendingRequestRespondTool = Tool.make("t3_pending_request_respond", {
   ...commandTool,
   description:
-    "Answer a pending question or descendant approval using the existing runtime response command. The child keeps its permission mode.",
+    "Answer a verified descendant question (answers) or ordinary runtime approval (decision). Keep the qualified target and route from the read, pass expectedRevision and one stable clientRequestId per answer across retries. Agents cannot claim a human actor. The child keeps its permission mode.",
   parameters: McpRouting.parameters(
     Schema.Struct({
-      ...requestTarget,
+      ...PendingRequestInput.fields,
       answers: Schema.optional(ProviderUserInputAnswers),
       decision: Schema.optional(ProviderApprovalDecision),
     }),
@@ -216,6 +185,13 @@ const PendingRequestRespondTool = Tool.make("t3_pending_request_respond", {
 })
   .annotate(Tool.Destructive, true)
   .annotate(Tool.OpenWorld, true);
+
+export const PendingRequestDismissTool = Tool.make("t3_pending_request_dismiss", {
+  ...commandTool,
+  description:
+    "Dismiss a durable descendant question without starting another turn. Read its current revision first; live questions require an answer or Stop.",
+  parameters: McpRouting.parameters(PendingRequestInput),
+}).annotate(Tool.Destructive, true);
 
 const ThreadConfigurationTool = Tool.make("t3_thread_configuration", {
   ...commandTool,
@@ -334,6 +310,7 @@ export const ThreadToolkit = Toolkit.make(
   PendingRequestListTool,
   PendingRequestReadTool,
   PendingRequestRespondTool,
+  PendingRequestDismissTool,
   ThreadOrganizeTool,
   QueueListTool,
   QueueReadTool,

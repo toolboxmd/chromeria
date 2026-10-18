@@ -48,6 +48,7 @@ const isChildRunLive = (
 /** Provider-native
     subagents ask on their parent, so they are skipped. */
 function subagentRequest(thread: OrchestrationV2ThreadShell): PendingSubagentRequest | null {
+  if (thread.remotePendingRequest != null) return thread.remotePendingRequest;
   const kind = thread.pendingRuntimeRequest?.kind;
   if (
     kind === undefined ||
@@ -67,8 +68,9 @@ export function pendingSubagentRequestsByThread(
   const requests = new Map<ThreadId, PendingSubagentRequest>();
   let byId: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell> | undefined;
   for (const child of threads) {
-    const request = subagentRequest(child);
+    const request = child.remotePendingRequest ?? subagentRequest(child);
     if (request === null) continue;
+    if (child.remotePendingRequest != null) requests.set(child.id, request);
     byId ??= new Map(threads.map((thread) => [thread.id, thread] as const));
     const seen = new Set<ThreadId>([child.id]);
     let current: OrchestrationV2ThreadShell | undefined = child;
