@@ -262,6 +262,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "patches/vitest@5.0.1.patch",
     "scripts/lib/vitest-cache.test.ts",
     "apps/server/src/device/DeviceInventory.test.ts",
+    "apps/web/src/components/device/DeviceDiscovery.browser.test.tsx",
     "apps/server/src/forkWsRpc.ts"
   ],
   "upstreamFiles": [
