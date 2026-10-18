@@ -1184,7 +1184,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/183",
-    "https://github.com/toolboxmd/chromeria/pull/408"
+    "https://github.com/toolboxmd/chromeria/pull/408",
+    "https://github.com/toolboxmd/chromeria/pull/499"
   ],
   "newFiles": [
     "apps/server/src/prism/PrismRoleOverrides.test.ts",
