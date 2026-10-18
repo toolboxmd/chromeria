@@ -37,6 +37,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as ClosingReferences from "./closingReferences.ts";
 import {
   type DerivedIssueLink,
@@ -222,6 +223,7 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const projects = yield* ProjectService.ProjectService;
+  const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const closing = yield* ClosingReferences.IssueClosingReferences;
   const pubsub = yield* PubSub.unbounded<IssueLinkChange>();
 
@@ -264,28 +266,36 @@ const make = Effect.gen(function* () {
   `;
 
   /** Each active project's GitHub repository (a fork checkout's own), by project id. */
-  const projectRepositories = projects
-    .listShells()
-    .pipe(
-      Effect.map(
-        (shells) =>
-          new Map(
-            shells.map((project) => [
-              project.id as string,
-              gitHubRepositoryOf(project.repositoryIdentity),
-            ]),
-          ),
+  const projectRepositories = projects.listShells().pipe(
+    Effect.flatMap((shells) =>
+      Effect.forEach(
+        shells,
+        (project) =>
+          Effect.gen(function* () {
+            const identity =
+              project.repositoryIdentity ??
+              (yield* repositoryIdentities.resolve(project.workspaceRoot));
+            return [project.id as string, gitHubRepositoryOf(identity)] as const;
+          }),
+        { concurrency: 16 },
       ),
-    );
+    ),
+    Effect.map((entries) => new Map(entries)),
+  );
 
   const projectContext = Effect.fn("IssueLinks.projectContext")(function* (threadId: ThreadId) {
     const thread = yield* orchestrator.getThreadShell(threadId);
     if (thread === null) return null;
     const project = Option.getOrNull(yield* projects.getShell(thread.projectId));
+    const identity =
+      project === null
+        ? null
+        : (project.repositoryIdentity ??
+          (yield* repositoryIdentities.resolve(project.workspaceRoot)));
     return {
       thread,
       project,
-      repository: gitHubRepositoryOf(project?.repositoryIdentity),
+      repository: gitHubRepositoryOf(identity),
     };
   });
 
