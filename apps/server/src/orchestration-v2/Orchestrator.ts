@@ -1521,21 +1521,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const offerDelegatedCompletionDelivery =
     /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
     Effect.fnUntraced(function* (threadId: ThreadId, parentRunId: RunId) {
-<<<<<<< HEAD
+      const state = yield* retirement(threadId);
+      if (state.retired || !state.complete) return;
       const controls = yield* projectionStore.getThreadRecords(threadId, ["runs"], {
         runIds: [parentRunId],
       });
       const parentRun = controls.runs[0];
-=======
-      const state = yield* retirement(threadId);
-      if (state.retired || !state.complete) return;
-      const projection = yield* projectionStore.getThreadRecords(
-        threadId,
-        ["runs", "messages", "providerTurns", "providerThreads"],
-        { messageRoles: ["user"] },
-      );
-      const parentRun = projection.runs.find((candidate) => candidate.id === parentRunId);
->>>>>>> f033e49cb2 (fix(orchestration): park stopped delegated completions until resume (#431))
       const cohort = parentRun?.delegatedCompletion;
       const delivery = cohort?.delivery;
       if (
@@ -2810,7 +2801,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return;
     }
 
-<<<<<<< HEAD
     const { messages } = yield* projectionStore
       .getThreadRecords(command.parentThreadId, ["messages"], {
         messageRoles: ["user"],
@@ -2822,10 +2812,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
     const deliveryProjection = { ...projection, messages };
-    const remainingTaskIds = delivery.taskIds.filter((taskId) => taskId !== task.id);
     const deliveryRun = completionDeliveryRun(deliveryProjection, delivery);
-=======
-    const deliveryRun = completionDeliveryRun(projection, delivery);
     const pendingTasks =
       deliveryRun === undefined ||
       deliveryRun.status === "queued" ||
@@ -2865,7 +2852,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           updatedAt: now,
         },
       });
->>>>>>> f033e49cb2 (fix(orchestration): park stopped delegated completions until resume (#431))
     const clearDelivery =
       remainingTaskIds.length === 0 &&
       (deliveryRun === undefined || deliveryRun.status === "queued");
@@ -13679,17 +13665,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     if (message?.delegatedCompletion === undefined) return;
     const projection = yield* projectionStore.getThreadRecords(
       threadId,
-<<<<<<< HEAD
-      ["runs", "messages", "subagents"],
+      ["runs", "messages", "subagents", "attempts"],
       {
         runIds: [runId, message.delegatedCompletion.parentRunId],
         messageIds: [message.id],
         subagentRunIds: [message.delegatedCompletion.parentRunId],
       },
-=======
-      ["runs", "messages", "subagents", "attempts"],
-      { messageRoles: ["user"] },
->>>>>>> f033e49cb2 (fix(orchestration): park stopped delegated completions until resume (#431))
     );
     const deliveryRun = projection.runs.find((candidate) => candidate.id === runId);
     const deliveryMessage =
@@ -14675,10 +14656,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
       Effect.catch((cause) =>
         Effect.gen(function* () {
-<<<<<<< HEAD
           // Refusals depend on modes the user can change; a recorded rejection would block the retry.
           if (
             cause._tag === "OrchestratorThreadAboveModeLimitError" ||
+            cause._tag === "OrchestratorCommandRejectedError" ||
             cause._tag === "OrchestratorRuntimeModeAboveCeilingError"
           ) {
             return yield* cause;
@@ -14696,14 +14677,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               organization,
             });
           }
-=======
-          // Retirement refusals stay retryable after the thread resumes.
-          if (
-            cause._tag === "OrchestratorThreadAboveModeLimitError" ||
-            cause._tag === "OrchestratorCommandRejectedError"
-          )
-            return yield* cause;
->>>>>>> f033e49cb2 (fix(orchestration): park stopped delegated completions until resume (#431))
           const rejectedAt = yield* DateTime.now;
           const receipt = yield* eventSink
             .commitRejectedCommand({
@@ -14855,11 +14828,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   // dispatchWithReceiptEffect owns the dispatch span; this wrapper selects the thread locks.
   const dispatchWithReceipt = Effect.fnUntraced(function* (command: OrchestrationV2ServerCommand) {
-<<<<<<< HEAD
-    const dispatch = threadDispatch.withLock(
-      commandThreadId(command),
-      dispatchWithReceiptEffect(command),
-    );
+    // A completion delivery already holds this thread's lock on its own fiber.
+    const owner = yield* CompletionDeliveryLock;
+    const dispatch =
+      owner?.threadId === commandThreadId(command) && owner.fiberId === (yield* Effect.fiberId)
+        ? dispatchWithReceiptEffect(command)
+        : threadDispatch.withLock(commandThreadId(command), dispatchWithReceiptEffect(command));
     // A parent's lock comes before its side chats' locks, so a delete cascade and a side chat
     // fork or command never interleave. A fork from a side chat or onto an existing thread would
     // invert that order; dispatch rejects both, so they skip the source lock.
@@ -14891,15 +14865,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.type !== "runtime-request.respond" &&
       (command.type !== "message.dispatch" || !mayStartSubagentFollowup(command))
     )
-=======
-    // A completion delivery already holds this thread's lock on its own fiber.
-    const owner = yield* CompletionDeliveryLock;
-    const dispatch =
-      owner?.threadId === commandThreadId(command) && owner.fiberId === (yield* Effect.fiberId)
-        ? dispatchWithReceiptEffect(command)
-        : threadDispatch.withLock(commandThreadId(command), dispatchWithReceiptEffect(command));
-    if (command.type !== "runtime-request.respond" && (command.type !== "message.dispatch" || !mayStartSubagentFollowup(command)))
->>>>>>> f033e49cb2 (fix(orchestration): park stopped delegated completions until resume (#431))
       return yield* dispatch;
     const parentThreadId = yield* appOwnedSubagentParentThreadId(command.threadId).pipe(
       Effect.mapError(
