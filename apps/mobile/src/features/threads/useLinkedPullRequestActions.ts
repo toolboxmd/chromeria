@@ -1,5 +1,6 @@
 import {
   pullRequestLinkProject,
+  threadPullRequestWatchInput,
   resolveLinkPullRequestInput,
 } from "@t3tools/client-runtime/pull-request-link-input";
 import type {
@@ -154,13 +155,12 @@ export function useLinkedPullRequestActions(input: {
           "Couldn't change watching",
           watch({
             environmentId: thread.environmentId,
-            input: {
+            input: threadPullRequestWatchInput({
               threadId: thread.id,
-              host: link.host,
-              repository: link.repository,
-              number: link.number,
+              reference: link,
+              ownLinks: thread.pullRequests ?? [],
               watching: link.watch === undefined,
-            },
+            }),
           }),
         );
       else if (action === "unlink") setLinked(link, false);

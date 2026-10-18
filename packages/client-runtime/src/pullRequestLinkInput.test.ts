@@ -1,8 +1,13 @@
+import { ThreadId, type ThreadPullRequestLink } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { sourceControlClients } from "./sourceControlClients.ts";
 
-import { parsePullRequestReference, resolveLinkPullRequestInput } from "./pullRequestLinkInput.ts";
+import {
+  parsePullRequestReference,
+  resolveLinkPullRequestInput,
+  threadPullRequestWatchInput,
+} from "./pullRequestLinkInput.ts";
 
 const changeRequestWebUrl = (kind: string, host: string, repository: string, number: number) =>
   sourceControlClients.get(kind).changeRequestUrl({ host, repository, number });
@@ -207,5 +212,69 @@ describe("parsePullRequestReference", () => {
 
   it("rejects non-pull-request input", () => {
     expect(parsePullRequestReference("feature/my-branch")).toBeNull();
+  });
+});
+
+describe("threadPullRequestWatchInput", () => {
+  const threadId = ThreadId.make("parent");
+  const reference: ThreadPullRequestLink = {
+    host: "github.com",
+    repository: "acme/web",
+    number: 42,
+    url: "https://github.com/acme/web/pull/42",
+    source: "agent",
+    linkedAt: "2026-10-18T20:00:00.000Z",
+    snapshot: null,
+    stack: null,
+  };
+  const watchInput = {
+    threadId,
+    host: "github.com",
+    repository: "acme/web",
+    number: 42,
+    watching: true,
+  };
+
+  it("sends parent link intent for a descendant-only PR", () => {
+    expect(
+      threadPullRequestWatchInput({ threadId, reference, ownLinks: [], watching: true }),
+    ).toEqual({ ...watchInput, link: { url: reference.url, source: "manual" } });
+  });
+
+  it("preserves a direct link without relinking it", () => {
+    expect(
+      threadPullRequestWatchInput({ threadId, reference, ownLinks: [reference], watching: true }),
+    ).toEqual(watchInput);
+  });
+
+  it("recognizes direct links with normalized host and repository names", () => {
+    expect(
+      threadPullRequestWatchInput({
+        threadId,
+        reference,
+        ownLinks: [{ ...reference, host: "GitHub.com", repository: "Acme/Web" }],
+        watching: true,
+      }),
+    ).toEqual(watchInput);
+  });
+
+  it.each([{ host: "git.example.com" }, { repository: "other/web" }, { number: 43 }])(
+    "does not mistake another PR for a direct link: %j",
+    (other) => {
+      expect(
+        threadPullRequestWatchInput({
+          threadId,
+          reference,
+          ownLinks: [{ ...reference, ...other }],
+          watching: true,
+        }),
+      ).toEqual({ ...watchInput, link: { url: reference.url, source: "manual" } });
+    },
+  );
+
+  it.each([[[]], [[reference]]])("never creates a link when stopping a watch", (ownLinks) => {
+    expect(threadPullRequestWatchInput({ threadId, reference, ownLinks, watching: false })).toEqual(
+      { ...watchInput, watching: false },
+    );
   });
 });

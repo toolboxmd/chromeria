@@ -1,6 +1,13 @@
-import { pullRequestHostOf, type RepositoryIdentity } from "@t3tools/contracts";
+import {
+  pullRequestHostOf,
+  type RepositoryIdentity,
+  type ThreadId,
+  type ThreadPullRequestLink,
+} from "@t3tools/contracts";
 import { parseChangeRequestUrl } from "@t3tools/shared/changeRequestUrl";
+import { threadPullRequestKeysEqual } from "@t3tools/shared/threadPullRequests";
 
+import type { WatchThreadPullRequestInput } from "./operations/commands.ts";
 import { sourceControlClients } from "./sourceControlClients.ts";
 
 const PULL_REQUEST_NUMBER_PATTERN = /^#?(\d+)$/;
@@ -100,5 +107,24 @@ export function resolveLinkPullRequestInput(input: {
   }
   return {
     link: { ...webReference, url: webUrl },
+  };
+}
+
+export function threadPullRequestWatchInput(input: {
+  readonly threadId: ThreadId;
+  readonly reference: ThreadPullRequestLink;
+  readonly ownLinks: ReadonlyArray<ThreadPullRequestLink>;
+  readonly watching: boolean;
+}): WatchThreadPullRequestInput {
+  return {
+    threadId: input.threadId,
+    host: input.reference.host,
+    repository: input.reference.repository,
+    number: input.reference.number,
+    watching: input.watching,
+    ...(input.watching &&
+    !input.ownLinks.some((link) => threadPullRequestKeysEqual(link, input.reference))
+      ? { link: { url: input.reference.url, source: "manual" } }
+      : {}),
   };
 }

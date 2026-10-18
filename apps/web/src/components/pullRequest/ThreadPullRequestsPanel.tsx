@@ -1,3 +1,4 @@
+import { threadPullRequestWatchInput } from "@t3tools/client-runtime/pull-request-link-input";
 import type { ProjectId, ScopedThreadRef, ThreadPullRequestLink } from "@t3tools/contracts";
 import {
   sourceControlClients,
@@ -444,13 +445,12 @@ function EnabledThreadPullRequestsPanel({
   const handleSetWatching = (link: ThreadPullRequestLink, watching: boolean) => {
     void watch({
       environmentId: threadRef.environmentId,
-      input: {
+      input: threadPullRequestWatchInput({
         threadId: threadRef.threadId,
-        host: link.host,
-        repository: link.repository,
-        number: link.number,
+        reference: link,
+        ownLinks: thread?.pullRequests ?? [],
         watching,
-      },
+      }),
     });
   };
 
