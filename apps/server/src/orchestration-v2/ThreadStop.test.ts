@@ -30,6 +30,7 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
+import { runOrderedV2StartupPhases } from "../serverRuntimeStartup.ts";
 import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
 import * as ProviderContinuationService from "./ProviderContinuationService.ts";
 import * as EventSink from "./EventSink.ts";
@@ -2391,10 +2392,21 @@ it.effect("a queued completion survives startup recovery after resume", () =>
       )!;
       yield* completeRunWithoutProvider(parentId, resumeRun.id, "late-resume-finished");
       const recovery = yield* ProviderRuntimeRecovery.make.pipe(Effect.provide(IdAllocator.layer));
-      yield* recovery.recover;
-      yield* orchestrator.recoverDelegatedTasks;
-      yield* orchestrator.resumeQueuedRuns;
+      yield* runOrderedV2StartupPhases({
+        importLegacyShells: Effect.void,
+        recover: recovery.recover,
+        recoverDelegatedTasks: orchestrator.recoverDelegatedTasks,
+        startEffectWorker: Effect.void,
+        autoBootstrap: Effect.void,
+      });
       const scheduled = yield* orchestrator.getThreadProjection(parentId);
+      const wake = scheduled.runs.find(
+        (run) => run.userMessageId === successor.delegatedCompletion!.messageId,
+      )!;
+      const sql = yield* SqlClient.SqlClient;
+      const startEffects =
+        yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE effect_type = 'provider-turn.start' AND json_extract(payload_json, '$.runId') = ${wake.id} AND status IN ('pending', 'running')`;
+      assert.lengthOf(startEffects, 1);
       assert.equal(
         scheduled.runs.find((run) => run.userMessageId === successor.delegatedCompletion!.messageId)
           ?.status,
@@ -2636,6 +2648,109 @@ it.effect(
         assert.equal(
           scheduled.subagents.find((task) => task.id === firstTask.id)!.completionDelivery?.state,
           "acknowledged",
+        );
+      }).pipe(
+        Effect.provide(layerTest),
+        Effect.provideService(ProviderContinuationRequests.ProviderContinuationRequests, {
+          offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+          take: Effect.never,
+        }),
+      );
+    }),
+);
+
+it.effect.each(["live", "startup"] as const)(
+  "completion keeps a failed-worktree hold during %s scheduling",
+  (phase) =>
+    Effect.gen(function* () {
+      const offers =
+        yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const parentId = ThreadId.make("review-worktree-guard");
+        yield* createWatchingThread(parentId, 112);
+        yield* send(parentId, "delegate before new workspace", "start_immediately");
+        const parentRun = (yield* orchestrator.getThreadProjection(parentId)).runs[0]!;
+        const childId = yield* delegate(parentId, "child finishes after workspace setup fails");
+        const childRun = (yield* orchestrator.getThreadProjection(childId)).runs[0]!;
+        const siblingId = yield* delegate(parentId, "sibling reports later");
+        const siblingRun = (yield* orchestrator.getThreadProjection(siblingId)).runs[0]!;
+        yield* completeRunWithoutProvider(parentId, parentRun.id, "review-prior-turn-finished");
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("review-prepare-new-worktree"),
+          threadId: parentId,
+          messageId: MessageId.make("review-prepare-new-worktree"),
+          text: "work in a new worktree",
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+          dispatchMode: {
+            type: "defer_start",
+            workspaceStrategy: { type: "worktree", baseRef: "HEAD", startFromOrigin: false },
+          },
+        });
+        const prepared = (yield* orchestrator.getThreadProjection(parentId)).runs.at(-1)!;
+        assert.equal(prepared.status, "preparing");
+        // Workspace preparation reports its ordinary terminal failure before producing a checkout.
+        const sink = yield* EventSink.EventSinkV2;
+        const now = yield* DateTime.now;
+        yield* sink.write({
+          commandId: CommandId.make("command:runtime-reconcile:review-worktree-setup-failure"),
+          events: [
+            {
+              id: EventId.make("review-worktree-setup-failed"),
+              type: "run.updated",
+              threadId: parentId,
+              runId: prepared.id,
+              occurredAt: now,
+              payload: { ...prepared, status: "failed", completedAt: now },
+            },
+          ],
+        });
+        yield* send(parentId, "ordinary queued message", "queue_after_active");
+        yield* completeRunWithoutProvider(childId, childRun.id, "review-worktree-child-complete");
+        yield* orchestrator.recoverDelegatedTask(childId, childRun.id);
+        const request = yield* Queue.take(offers);
+        yield* request.dispatchIfCurrent!(consumeCompletion(request));
+        const queued = yield* orchestrator.getThreadProjection(parentId);
+        assert.isNull(queued.thread.worktreePath);
+        assert.equal(
+          queued.runs.find((run) => run.userMessageId === request.delegatedCompletion!.messageId)
+            ?.status,
+          "queued",
+        );
+        yield* completeRunWithoutProvider(
+          siblingId,
+          siblingRun.id,
+          "review-worktree-sibling-complete",
+        );
+        yield* orchestrator.recoverDelegatedTask(siblingId, siblingRun.id);
+        if (phase === "startup") {
+          const recovery = yield* ProviderRuntimeRecovery.make.pipe(
+            Effect.provide(IdAllocator.layer),
+          );
+          yield* runOrderedV2StartupPhases({
+            importLegacyShells: Effect.void,
+            recover: recovery.recover,
+            recoverDelegatedTasks: orchestrator.recoverDelegatedTasks,
+            startEffectWorker: Effect.void,
+            autoBootstrap: Effect.void,
+          });
+        }
+        const scanned = yield* orchestrator.getThreadProjection(parentId);
+        const heldWake = scanned.runs.find(
+          (run) => run.userMessageId === request.delegatedCompletion!.messageId,
+        )!;
+        assert.isTrue(heldWake.queueHeld);
+        const sql = yield* SqlClient.SqlClient;
+        const starts =
+          yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE effect_type = 'provider-turn.start' AND json_extract(payload_json, '$.runId') = ${heldWake.id} AND status IN ('pending', 'running')`;
+        assert.lengthOf(starts, 0);
+        assert.equal(
+          scanned.runs.find((run) => run.userMessageId === request.delegatedCompletion!.messageId)
+            ?.status,
+          "queued",
         );
       }).pipe(
         Effect.provide(layerTest),

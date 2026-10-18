@@ -833,7 +833,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
 ```json
 {
   "id": "child-threads",
-  "purpose": "Create native children in any project, handle descendant requests, preserve durable subtree Stop and restart outcomes, park delegated completions until explicit resume, and expose guarded agent queue resume.",
+  "purpose": "Create native children in any project, handle descendant requests, preserve durable subtree Stop and restart outcomes, park delegated completions until explicit resume, preserve operational queue holds while scheduling eligible mailbox work at startup, and expose guarded agent queue resume.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/168",
     "https://github.com/toolboxmd/chromeria/issues/269",

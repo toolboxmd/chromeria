@@ -343,7 +343,8 @@ export const make = Effect.gen(function* () {
         queuedMessages.filter(isBufferedProviderNotification).map((message) => message.id),
       );
       // Buffered wakes lost their output with the process. Hold user work for
-      // explicit resume; durable mailbox completions remain independently runnable.
+      // explicit resume. Mailbox work avoids that pause, but existing operational
+      // holds (including failed worktree preparation) remain authoritative.
       for (const run of queuedRuns) {
         if (bufferedMessageIds.has(run.userMessageId)) {
           runs.push(run);
@@ -353,7 +354,7 @@ export const make = Effect.gen(function* () {
           (message) =>
             message.id === run.userMessageId && message.delegatedCompletion !== undefined,
         );
-        if (run.queueHeld === !completion) continue;
+        if (run.queueHeld === true || completion) continue;
         events.push({
           id: yield* allocateEventId(),
           type: "run.updated",
@@ -361,7 +362,7 @@ export const make = Effect.gen(function* () {
           runId: run.id,
           providerInstanceId: run.providerInstanceId,
           occurredAt: now,
-          payload: { ...run, queueHeld: !completion },
+          payload: { ...run, queueHeld: true },
         });
       }
       for (const request of requests) {

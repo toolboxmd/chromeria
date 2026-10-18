@@ -1539,7 +1539,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const now = yield* DateTime.now;
         yield* writeSystemEvents(
           projection.runs
-            .filter((run) => run.status === "queued" && !isAutomaticCompletionRun(projection, run))
+            .filter((run) => run.status === "queued")
             .map((run) => ({
               type: "run.updated" as const,
               threadId,
@@ -5470,8 +5470,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           rootNodeId,
           activeAttemptId: attemptId,
           status: "queued",
-          ...(delegatedCompletion === undefined &&
-          (worktreeMissingRun !== undefined ||
+          ...(worktreeMissingRun !== undefined ||
+          (delegatedCompletion === undefined &&
             projection.runs.some(
               (candidate) => candidate.status === "queued" && candidate.queueHeld === true,
             ))
@@ -12944,6 +12944,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     ) {
                       yield* offerDelegatedCompletionDelivery(threadId, run.id);
                     }
+                  }
+                  // Startup has no terminal event to promote a persisted queue.
+                  // Use its normal guarded start path for mailbox work only.
+                  if (
+                    refreshed.runs.some(
+                      (run) =>
+                        run.status === "queued" && openDeliveryMessageIds.has(run.userMessageId),
+                    )
+                  ) {
+                    const state = yield* retirement(threadId);
+                    if (!state.retired && state.complete) yield* startNextQueuedRun(threadId);
                   }
                 }),
               )
