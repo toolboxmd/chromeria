@@ -67,6 +67,8 @@ it.effect.each([
   [unrelated, grandchild, "approval", "accept", undefined, false],
   [unrelated, grandchild, "question", undefined, { choice: "continue" }, false],
   [undefined, grandchild, "approval", "accept", undefined, false],
+  [undefined, grandchild, "question", undefined, { choice: "continue" }, false],
+  [grandchild, grandchild, "question", undefined, { choice: "continue" }, false],
   [root, fork, "approval", "accept", undefined, false],
   [grandchild, grandchild, "approval", "accept", undefined, false],
 ] as const)(

@@ -1,3 +1,5 @@
+import { clientHandlers as pendingRequestClientHandlers } from "./childThreads/PendingRequestIngress.ts";
+import * as PendingRequestService from "./childThreads/PendingRequestService.ts";
 import * as RemoteDelegation from "./peer/RemoteDelegation.ts";
 import * as PeerAuthority from "./peer/PeerAuthority.ts";
 import { stopSpectrum } from "./spectrum/humanStopRpc.ts";
@@ -1260,6 +1262,7 @@ const layerWsRpc = (
       const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
+      const pendingRequestService = yield* PendingRequestService.PendingRequests;
       const secretRequests = yield* SecretRequests.SecretRequests;
       const pullRequests = yield* PullRequestService.PullRequestService;
       const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
@@ -2485,6 +2488,7 @@ const layerWsRpc = (
           }),
         [WS_METHODS.serverRunStorageCleanup]: () => storageCleanup.runNow,
         [WS_METHODS.serverGetStorageCleanupReport]: () => storageCleanup.reports,
+        ...pendingRequestClientHandlers(currentSession, pendingRequestService),
         [WS_METHODS.remoteTaskView]: (input) =>
           remoteDelegation.view(
             input.parentThreadId,

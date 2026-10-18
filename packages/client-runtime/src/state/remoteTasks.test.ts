@@ -4,6 +4,7 @@ import {
   EnvironmentId,
   ThreadId,
   NodeId,
+  RuntimeRequestId,
   ProjectId,
   OrchestrationV2RemoteTaskLaunch,
   WS_METHODS,
@@ -107,6 +108,21 @@ it.effect(
                 requests.push({ method: WS_METHODS.remoteTaskView, input });
                 return view;
               }),
+            [WS_METHODS.remoteTaskRequestRead]: (input: unknown) =>
+              Effect.sync(() => {
+                requests.push({ method: WS_METHODS.remoteTaskRequestRead, input });
+                return {
+                  kind: "user-input",
+                  requestId: RuntimeRequestId.make("B-question"),
+                  revision: 19,
+                  questions: [{ id: "color", header: "Color", question: "Choose", options: [] }],
+                };
+              }),
+            [WS_METHODS.remoteTaskRequest]: (input: unknown) =>
+              Effect.sync(() => {
+                requests.push({ method: WS_METHODS.remoteTaskRequest, input });
+                return { sequence: 20 };
+              }),
             [WS_METHODS.remoteTaskStop]: (input: unknown) =>
               Effect.sync(() => {
                 requests.push({ method: WS_METHODS.remoteTaskStop, input });
@@ -194,6 +210,52 @@ it.effect(
           { method: WS_METHODS.remoteTaskView, input: { parentThreadId, taskId, after: 0 } },
           { method: WS_METHODS.remoteTaskStop, input: input.input },
         ]);
+        const requestBase = {
+          parentThreadId,
+          taskId,
+          requestId: RuntimeRequestId.make("B-question"),
+          requestTarget: { environmentId: destination, threadId: ThreadId.make("B-child") },
+        };
+        const readQuery = state.readRequest({
+          environmentId: source,
+          input: { ...requestBase, operation: { type: "read" } },
+        });
+        yield* AtomRegistry.mount(registry, readQuery);
+        expect(
+          yield* AtomRegistry.getResult(registry, readQuery, { suspendOnWaiting: true }),
+        ).toMatchObject({ kind: "user-input", revision: 19 });
+        for (const operation of [
+          {
+            type: "respond" as const,
+            clientRequestId: "source-answer",
+            expectedRevision: 19,
+            answers: { color: "Blue" },
+          },
+          { type: "dismiss" as const, clientRequestId: "source-dismiss", expectedRevision: 19 },
+        ]) {
+          registry.set(sessions(source), AsyncResult.success(session));
+          const action = { environmentId: source, input: { ...requestBase, operation } };
+          const count = requests.length;
+          expect((yield* Effect.promise(() => state.request.run(registry, action)))._tag).toBe(
+            "Failure",
+          );
+          expect(requests).toHaveLength(count);
+          registry.set(
+            sessions(source),
+            AsyncResult.success({
+              ...session,
+              scopes: [AuthOrchestrationOperateScope],
+              permissions: [AuthOrchestrationOperateScope],
+            }),
+          );
+          expect((yield* Effect.promise(() => state.request.run(registry, action)))._tag).toBe(
+            "Success",
+          );
+          expect(requests.at(-1)).toEqual({
+            method: WS_METHODS.remoteTaskRequest,
+            input: action.input,
+          });
+        }
         expect(accessed.every((id) => id === source)).toBe(true);
       }),
     ),

@@ -1,3 +1,4 @@
+import { pendingResponseAdmission } from "../childThreads/pendingResponseAdmission.ts";
 import { ForkCommandInterceptor } from "../fork/ForkCommandInterceptor.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as WightAdmission from "../wight/AdmissionHooks.ts";
@@ -8319,6 +8320,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         .pipe(
           Effect.mapError(() => new OrchestratorProjectionError({ threadId: command.threadId })),
         );
+      if (command.expectedRevision !== undefined) {
+        const revisions = yield* forkSql<{
+          revision: number;
+        }>`SELECT COALESCE(MAX(sequence),0) AS revision FROM orchestration_events WHERE stream_id=${command.threadId} AND ((event_type='runtime-request.updated' AND json_extract(payload_json,'$.id')=${command.requestId}) OR (event_type='turn-item.updated' AND json_extract(payload_json,'$.requestId')=${command.requestId}))`.pipe(
+          Effect.mapError(
+            (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+          ),
+        );
+        if (revisions[0]?.revision !== command.expectedRevision)
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "The pending request changed. Read it again before answering.",
+          });
+      }
       const runtimeRequest = context.request;
       if (runtimeRequest === undefined) {
         return yield* new OrchestratorDispatchError({
@@ -8340,6 +8356,81 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           commandType: command.type,
           cause: runtimeRequest.responseCapability.reason,
         });
+      }
+      if (
+        runtimeRequest.responseCapability.type === "live" &&
+        context.node?.runId != null &&
+        (yield* stopReachedRun(command, command.threadId, context.node.runId))
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "The request's run is stopping.",
+        });
+      }
+      if (
+        command.expectedRevision !== undefined &&
+        !(
+          runtimeRequest.kind === "user_input" &&
+          runtimeRequest.responseCapability.type === "message" &&
+          command.decision === "cancel" &&
+          command.answers === undefined
+        )
+      ) {
+        const invalid = () =>
+          new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "The answer does not match the current pending request.",
+          });
+        if (runtimeRequest.kind === "user_input") {
+          if (
+            context.item?.type !== "user_input_request" ||
+            command.answers === undefined ||
+            command.decision !== undefined
+          )
+            return yield* invalid();
+          const questions = context.item.questions;
+          if (
+            Object.keys(command.answers).some(
+              (id) => !questions.some((question) => question.id === id),
+            )
+          )
+            return yield* invalid();
+          for (const question of questions) {
+            const answer = command.answers[question.id];
+            const values =
+              typeof answer === "string"
+                ? [answer]
+                : question.multiSelect &&
+                    Array.isArray(answer) &&
+                    answer.every((value) => typeof value === "string")
+                  ? answer
+                  : undefined;
+            if (
+              values === undefined ||
+              (question.required !== false &&
+                question.initialAnswer === undefined &&
+                !values.some((value) => value.trim().length > 0))
+            )
+              return yield* invalid();
+            if (
+              question.allowCustomAnswer === false &&
+              values.some(
+                (value) =>
+                  !question.options.some((option) => (option.value ?? option.label) === value),
+              )
+            )
+              return yield* invalid();
+          }
+        } else if (
+          command.decision === undefined ||
+          command.answers !== undefined ||
+          (context.item?.type === "approval_request" &&
+            context.item.options !== undefined &&
+            !context.item.options.some((option) => option.decision === command.decision))
+        )
+          return yield* invalid();
       }
       const providerSessionId =
         runtimeRequest.responseCapability.type === "live"
@@ -8452,7 +8543,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const replies: string[] = [];
         for (const question of approvalTurnItem.questions) {
           const answer = command.answers?.[question.id];
-          if (typeof answer !== "string" || answer.trim().length === 0) {
+          const values =
+            typeof answer === "string"
+              ? [answer]
+              : question.multiSelect &&
+                  Array.isArray(answer) &&
+                  answer.every((value) => typeof value === "string" && value.trim().length > 0)
+                ? answer
+                : [];
+          const text = values.map((value) => value.trim()).join(", ");
+          if (text.length === 0) {
             if (question.required === false) continue;
             return yield* new OrchestratorDispatchError({
               commandId: command.commandId,
@@ -8460,7 +8560,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               cause: "Answer each question before sending.",
             });
           }
-          replies.push(`${question.question}\n${answer.trim()}`);
+          if (
+            question.allowCustomAnswer === false &&
+            values.some(
+              (value) =>
+                !question.options.some((option) => (option.value ?? option.label) === value),
+            )
+          )
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "Choose one of the available options.",
+            });
+          replies.push(`${question.question}\n${text}`);
         }
         if (replies.length === 0) {
           return yield* new OrchestratorDispatchError({
@@ -8568,6 +8680,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           commandId: command.commandId,
           threadId: command.threadId,
           requestId: command.requestId,
+          ...(command.expectedRevision === undefined
+            ? {}
+            : { expectedRevision: command.expectedRevision }),
           decision: "cancel",
         },
         events,
@@ -12691,7 +12806,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
     );
 
+    const pendingAdmission =
+      command.type === "runtime-request.respond" || command.type === "thread.user-input.dismiss"
+        ? pendingResponseAdmission(command, plan.events)
+        : undefined;
     const commitPlans = [
+      ...(pendingAdmission === undefined ? [] : [pendingAdmission]),
       ...(plan.forkPlans ?? []),
       ...prismRecovery.commitPlans(command, plan.events),
       ...(yield* ForkDispatchPlans),
