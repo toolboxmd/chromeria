@@ -59,7 +59,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   state.subagents = [];
-  state.configs.clear();
+  state.configs = new Map();
 });
 
 const remoteAgent = {
@@ -95,7 +95,7 @@ function buttonsByLabel(label: string) {
 
 it("opens a remote delegated task's notification card in its own environment", async () => {
   state.subagents = [remoteAgent];
-  state.configs.set("cavallo", {});
+  state.configs = new Map([["cavallo", {}]]);
   const onOpenThread = vi.fn();
   await act(async () => {
     root.render(
@@ -122,27 +122,23 @@ it("opens a remote delegated task's notification card in its own environment", a
 it("renders no link for a remote notification when the client is not connected there", async () => {
   state.subagents = [remoteAgent];
   const onOpenThread = vi.fn();
-  await act(async () => {
-    root.render(
-      <NotificationSubagentOpenButton
-        parentRef={parentRef}
-        subagentId={NodeId.make("remote-agent")}
-        onOpenThread={onOpenThread}
-      />,
-    );
-  });
+  const render = () =>
+    act(async () => {
+      root.render(
+        <NotificationSubagentOpenButton
+          parentRef={parentRef}
+          subagentId={NodeId.make("remote-agent")}
+          onOpenThread={onOpenThread}
+        />,
+      );
+    });
+  await render();
   expect(buttonsByLabel("Open subagent thread")).toHaveLength(0);
 
-  state.configs.set("cavallo", {});
-  await act(async () => {
-    root.render(
-      <NotificationSubagentOpenButton
-        parentRef={parentRef}
-        subagentId={NodeId.make("remote-agent")}
-        onOpenThread={onOpenThread}
-      />,
-    );
-  });
+  // The native config atom publishes a new snapshot when membership changes.
+  // In-place edits hide those changes from the compiler's cached consumer.
+  state.configs = new Map([["cavallo", {}]]);
+  await render();
   const buttons = buttonsByLabel("Open subagent thread");
   expect(buttons).toHaveLength(1);
   await act(async () => buttons[0]!.click());
@@ -150,4 +146,10 @@ it("renders no link for a remote notification when the client is not connected t
     ThreadId.make("remote-child"),
     EnvironmentId.make("cavallo"),
   );
+
+  onOpenThread.mockClear();
+  state.configs = new Map();
+  await render();
+  expect(buttonsByLabel("Open subagent thread")).toHaveLength(0);
+  expect(onOpenThread).not.toHaveBeenCalled();
 });
