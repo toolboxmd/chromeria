@@ -338,4 +338,7 @@ it("badges background failures with in-app notifications enabled", async () => {
   expect(state.toast).not.toHaveBeenCalled();
 });
 
-vi.mock(import("../state/query"), async (original) => ({ ...(await original()), useEnvironmentQuery: (() => ({ data: null })) as never }));
+vi.mock(import("../state/query"), async (original) => ({
+  ...(await original()),
+  useEnvironmentQuery: (() => ({ data: null })) as never,
+}));

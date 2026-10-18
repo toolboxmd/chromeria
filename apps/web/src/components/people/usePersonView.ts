@@ -2,7 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { DEFAULT_PERSON, type EnvironmentId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { Atom } from "effect/reactivity";
-import { useCallback, useEffect, useMemo } from "react";
+import { useEffect } from "react";
 
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
@@ -103,21 +103,15 @@ export function usePersonViewThreads<T extends { readonly source: ThreadOwnershi
   threads: ReadonlyArray<T>,
 ): ReadonlyArray<T> {
   const [view] = usePersonView();
-  return useMemo(
-    () =>
-      view === "All"
-        ? threads
-        : threads.filter((thread) => threadInPersonView(thread.source, view)),
-    [threads, view],
-  );
+  return view === "All"
+    ? threads
+    : threads.filter((thread) => threadInPersonView(thread.source, view));
 }
 
 /** Whether an unsent draft on an environment belongs in the current person view. */
 export function useDraftInPersonView(): (environmentId: EnvironmentId) => boolean {
   const [view] = usePersonView();
   const { byEnvironment } = useAtomValue(devicePeopleAtom);
-  return useCallback(
-    (environmentId) => draftInPersonView(byEnvironment.get(environmentId) ?? DEFAULT_PERSON, view),
-    [byEnvironment, view],
-  );
+  return (environmentId) =>
+    draftInPersonView(byEnvironment.get(environmentId) ?? DEFAULT_PERSON, view);
 }

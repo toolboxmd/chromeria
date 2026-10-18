@@ -24,7 +24,7 @@ import {
   MessageSquarePlusIcon,
   SearchIcon,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { isElectron } from "~/env";
 import { cn } from "~/lib/utils";
@@ -140,16 +140,13 @@ interface IssueRowFacts {
 /** The Issues half of the Pull Requests page (`/pull-requests?view=issues`). GitHub only. */
 export function IssuesView() {
   const { environments } = useEnvironments();
-  const environmentIds = useMemo(
-    () => environmentIdsWithCapability(environments, "issues"),
-    [environments],
-  );
+  const environmentIds = environmentIdsWithCapability(environments, "issues");
   const capabilityKnown = environments.some((environment) => environment.serverConfig !== null);
   const projects = useProjects();
   const projectsKnown = useAllEnvironmentShellsBootstrapped();
 
   const [preferences, setPreferences] = useState(readPreferences);
-  const updatePreferences = useCallback((patch: Partial<IssueListPreferences>) => {
+  const updatePreferences = (patch: Partial<IssueListPreferences>) => {
     setPreferences((previous) => {
       const next = { ...previous, ...patch };
       try {
@@ -159,7 +156,7 @@ export function IssuesView() {
       }
       return next;
     });
-  }, []);
+  };
   const [searchValue, setSearchValue] = useState("");
   const query = useDebouncedValue(searchValue.trim(), SEARCH_DEBOUNCE_MS);
   const [filters, setFilters] = useState<IssueMenuFilters>({});
@@ -168,7 +165,7 @@ export function IssuesView() {
   const search = useSearch({ from: "/_chat/pull-requests" });
 
   // The open side panel lives in the URL, so a thread's linked Issue can open it from elsewhere.
-  const selected = useMemo((): SelectedIssue | null => {
+  const selected = ((): SelectedIssue | null => {
     const reference = search.issue === undefined ? null : parseIssueUrl(search.issue);
     if (reference === null) return null;
     const environmentId = resolveIssuePanelEnvironment(
@@ -181,26 +178,23 @@ export function IssuesView() {
       },
     );
     return environmentId === null ? null : { environmentId, reference };
-  }, [environments, projects, search.issue, search.selectedEnvironmentId]);
+  })();
   const selectedKey = selected === null ? null : issueKey(selected.reference);
-  const select = useCallback(
-    (next: { readonly environmentId: EnvironmentId; readonly url: string } | null) =>
-      void navigate({
-        to: "/pull-requests",
-        search: (() => {
-          const { issue: _issue, selectedEnvironmentId: _environmentId, ...rest } = search;
-          return next === null
-            ? rest
-            : { ...rest, issue: next.url, selectedEnvironmentId: next.environmentId };
-        })(),
-        replace: true,
-      }),
-    [navigate, search],
-  );
+  const select = (next: { readonly environmentId: EnvironmentId; readonly url: string } | null) =>
+    void navigate({
+      to: "/pull-requests",
+      search: (() => {
+        const { issue: _issue, selectedEnvironmentId: _environmentId, ...rest } = search;
+        return next === null
+          ? rest
+          : { ...rest, issue: next.url, selectedEnvironmentId: next.environmentId };
+      })(),
+      replace: true,
+    });
 
   // Repository, labels and milestone narrow the search on GitHub too, so the rows are complete
   // rather than a filter over one page. Parent narrows only the loaded rows.
-  const baseInput = useMemo((): IssueListInput => {
+  const baseInput = ((): IssueListInput => {
     const repository = filters.repository?.split(" ");
     return {
       state: preferences.state,
@@ -211,31 +205,21 @@ export function IssuesView() {
       ...(filters.milestone ? { milestone: filters.milestone } : {}),
       ...(repository?.length === 2 ? { repositories: [filters.repository!] } : {}),
     };
-  }, [
-    filters.labels,
-    filters.milestone,
-    filters.repository,
-    preferences.sort,
-    preferences.state,
-    query,
-  ]);
+  })();
   const baseKey = JSON.stringify(baseInput);
   const [pages, setPages] = useState<{
     readonly key: string;
     readonly targets: ReadonlyArray<EnvironmentQueryTarget<IssueListInput>>;
   }>({ key: baseKey, targets: [] });
   const continuations = pages.key === baseKey ? pages.targets : [];
-  const targets = useMemo(
-    () => [
-      ...environmentIds.map((environmentId) => ({ environmentId, input: baseInput })),
-      ...continuations,
-    ],
-    [baseInput, continuations, environmentIds],
-  );
+  const targets = [
+    ...environmentIds.map((environmentId) => ({ environmentId, input: baseInput })),
+    ...continuations,
+  ];
   const list = useIssueList(targets);
   const data = list.data;
 
-  const loadMore = useCallback(() => {
+  const loadMore = () => {
     if (data === null || data.nextCursors.size === 0) return;
     // A page already asked for is retried through Retry, not asked for twice.
     const asked = new Set(continuations.map((target) => JSON.stringify(target)));
@@ -244,16 +228,13 @@ export function IssuesView() {
       .filter((target) => !asked.has(JSON.stringify(target)));
     if (next.length === 0) return;
     setPages({ key: baseKey, targets: [...continuations, ...next] });
-  }, [baseInput, baseKey, continuations, data]);
+  };
 
-  const refresh = useCallback(() => list.refresh(), [list]);
+  const refresh = () => list.refresh();
 
-  const linkEnvironments = useMemo(
-    () => new Set(environmentIdsWithCapability(environments, "issueLinks")),
-    [environments],
-  );
+  const linkEnvironments = new Set(environmentIdsWithCapability(environments, "issueLinks"));
   const { threadsByIssue, working } = useIssueRowThreads(data?.entries ?? [], linkEnvironments);
-  const facts = useMemo(() => {
+  const facts = (() => {
     const byKey = new Map<string, IssueRowFacts>();
     for (const entry of data?.entries ?? []) {
       const threads = threadsByIssue.get(issueKey(entry)) ?? NO_THREADS;
@@ -269,97 +250,68 @@ export function IssuesView() {
       });
     }
     return byKey;
-  }, [data, threadsByIssue, working]);
-  const factsOf = useCallback(
-    (entry: EnvironmentIssueEntry): IssueRowFacts =>
-      facts.get(issueKey(entry)) ?? { status: "to-do", threads: NO_THREADS },
-    [facts],
-  );
+  })();
+  const factsOf = (entry: EnvironmentIssueEntry): IssueRowFacts =>
+    facts.get(issueKey(entry)) ?? { status: "to-do", threads: NO_THREADS };
 
-  const visible = useMemo(
-    () =>
-      data === null
-        ? []
-        : sortIssues(
-            data.entries.filter((entry) => {
-              if (!matchesIssueFilters(entry, filters)) return false;
-              const { status, threads } = factsOf(entry);
-              return matchesIssueStatusFilters(
-                { status, linkedThreadCount: threads.length },
-                filters,
-              );
-            }),
-            preferences.sort,
-          ),
-    [data, factsOf, filters, preferences.sort],
+  const visible =
+    data === null
+      ? []
+      : sortIssues(
+          data.entries.filter((entry) => {
+            if (!matchesIssueFilters(entry, filters)) return false;
+            const { status, threads } = factsOf(entry);
+            return matchesIssueStatusFilters(
+              { status, linkedThreadCount: threads.length },
+              filters,
+            );
+          }),
+          preferences.sort,
+        );
+  const statusGroups = preferences.groupByParent
+    ? null
+    : groupIssuesByStatus(visible, (entry) => factsOf(entry).status);
+  const facets = collectIssueFacets(data?.entries ?? []);
+  const projectRepositories = new Set(
+    (data?.repositories ?? []).map((repository) =>
+      repositoryKey(repository.host, repository.repository),
+    ),
   );
-  const statusGroups = useMemo(
-    () =>
-      preferences.groupByParent
-        ? null
-        : groupIssuesByStatus(visible, (entry) => factsOf(entry).status),
-    [factsOf, preferences.groupByParent, visible],
-  );
-  const facets = useMemo(() => collectIssueFacets(data?.entries ?? []), [data]);
-  const projectRepositories = useMemo(
-    () =>
-      new Set(
-        (data?.repositories ?? []).map((repository) =>
-          repositoryKey(repository.host, repository.repository),
-        ),
-      ),
-    [data],
-  );
-  const tree = useMemo(
-    () => (preferences.groupByParent ? buildIssueTree(visible, projectRepositories) : null),
-    [preferences.groupByParent, projectRepositories, visible],
-  );
+  const tree = preferences.groupByParent ? buildIssueTree(visible, projectRepositories) : null;
 
-  const open = useCallback(
-    (entry: EnvironmentIssueEntry) =>
-      select({ environmentId: entry.environmentId, url: entry.url }),
-    [select],
-  );
-  const openThread = useCallback(
-    (thread: IssueRowThread) =>
-      void navigate({
-        to: "/$environmentId/$threadId",
-        params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, thread.id)),
-      }),
-    [navigate],
-  );
+  const open = (entry: EnvironmentIssueEntry) =>
+    select({ environmentId: entry.environmentId, url: entry.url });
+  const openThread = (thread: IssueRowThread) =>
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, thread.id)),
+    });
   const { resolve: resolveStart, start: startFromIssue } = useStartThreadFromIssue();
   const readDetail = useAtomCommand(issueDetailRead, { reportFailure: false });
   // The row whose thread is being started; its button waits and repeat clicks do nothing.
   const [startingKey, setStartingKey] = useState<string | null>(null);
   const starting = useRef(false);
   // The list carries no bodies; read the one Issue, and start with title and URL if that fails.
-  const startFromEntry = useCallback(
-    async (entry: EnvironmentIssueEntry) => {
-      if (starting.current) return;
-      starting.current = true;
-      setStartingKey(issueKey(entry));
-      const reference = { host: entry.host, repository: entry.repository, number: entry.number };
-      const detail = await readDetail({ environmentId: entry.environmentId, input: reference });
-      await startFromIssue({
-        ...reference,
-        url: entry.url,
-        title: entry.title,
-        body: detail._tag === "Success" ? detail.value.body : null,
-      }).finally(() => {
-        starting.current = false;
-        setStartingKey(null);
-      });
-    },
-    [readDetail, startFromIssue],
-  );
-  const startDisabledReason = useCallback(
-    (entry: EnvironmentIssueEntry) => {
-      const target = resolveStart(entry);
-      return "reason" in target ? target.reason : null;
-    },
-    [resolveStart],
-  );
+  const startFromEntry = async (entry: EnvironmentIssueEntry) => {
+    if (starting.current) return;
+    starting.current = true;
+    setStartingKey(issueKey(entry));
+    const reference = { host: entry.host, repository: entry.repository, number: entry.number };
+    const detail = await readDetail({ environmentId: entry.environmentId, input: reference });
+    await startFromIssue({
+      ...reference,
+      url: entry.url,
+      title: entry.title,
+      body: detail._tag === "Success" ? detail.value.body : null,
+    }).finally(() => {
+      starting.current = false;
+      setStartingKey(null);
+    });
+  };
+  const startDisabledReason = (entry: EnvironmentIssueEntry) => {
+    const target = resolveStart(entry);
+    return "reason" in target ? target.reason : null;
+  };
   const renderRow = (entry: EnvironmentIssueEntry, showStatusLabel: boolean) => {
     const { status, threads } = factsOf(entry);
     return (

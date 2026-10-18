@@ -9,7 +9,7 @@ import * as IssueLinks from "../issueLinks/IssueLinks.ts";
 import { gitHubIdentity } from "../issueLinks/IssueLinks.testFixtures.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
-import * as GitHubApi from "@t3tools/source-control-github/server/GitHubApi";
+import * as GitHubApi from "./IssueGitHubApi.ts";
 import * as IssueService from "./IssueService.ts";
 
 /** More repositories than one search names, so the host is read in two searches. */
@@ -54,14 +54,14 @@ const resolverLayer = (
 /** The service over a fake GitHub whose GraphQL answers come from `graphql`. */
 const serviceWith = (
   shells: ReadonlyArray<OrchestrationProjectShell>,
-  graphql: GitHubApi.GitHubApi["Service"]["graphql"],
+  graphql: GitHubApi.IssueGitHubApi["Service"]["graphql"],
   resolve = noIdentities,
 ) =>
   Effect.provide(
     IssueService.IssueService,
     IssueService.layer.pipe(
       Layer.provide(
-        Layer.mock(GitHubApi.GitHubApi)({
+        Layer.mock(GitHubApi.IssueGitHubApi)({
           credential: () =>
             Effect.succeed({ token: Redacted.make("token"), fingerprint: "account" }),
           graphql,
@@ -104,7 +104,7 @@ describe("IssueService.list", () => {
       // Every credential lookup returns the next account, as a `gh auth switch` mid-list would.
       const lookups = yield* Ref.make(0);
       const searches = yield* Ref.make<ReadonlyArray<string | null>>([]);
-      const api = Layer.mock(GitHubApi.GitHubApi)({
+      const api = Layer.mock(GitHubApi.IssueGitHubApi)({
         credential: () =>
           Ref.updateAndGet(lookups, (count) => count + 1).pipe(
             Effect.map((count) => ({

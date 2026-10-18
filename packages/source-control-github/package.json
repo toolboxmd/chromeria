@@ -70,6 +70,10 @@
     "./server/githubStackRebase": {
       "types": "./src/server/githubStackRebase.ts",
       "import": "./src/server/githubStackRebase.ts"
+    },
+    "./server/gitHubGraphQlClient": {
+      "types": "./src/server/gitHubGraphQlClient.ts",
+      "import": "./src/server/gitHubGraphQlClient.ts"
     }
   },
   "scripts": {

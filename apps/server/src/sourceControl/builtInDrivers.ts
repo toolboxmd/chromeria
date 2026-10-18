@@ -19,6 +19,7 @@ import type { SourceControlDriver } from "@t3tools/source-control-core/server/dr
 import * as Layer from "effect/Layer";
 
 import * as ServerSourceControlHost from "./ServerSourceControlHost.ts";
+import * as IssueGitHubApi from "../issues/IssueGitHubApi.ts";
 
 const drivers = [
   GitHubDriver.driver,
@@ -39,7 +40,9 @@ export const BUILT_IN_SOURCE_CONTROL_DRIVERS: ReadonlyArray<
 export const layer = Layer.mergeAll(
   // `GitHubRest.layerWithDependencies` carries the quota reserve and rate-limit pause every GitHub
   // reader shares, so the server builds it once, here.
-  GitHubPullRequestApi.layer.pipe(Layer.provideMerge(GitHubRest.layerWithDependencies)),
+  Layer.merge(GitHubPullRequestApi.layer, IssueGitHubApi.layer).pipe(
+    Layer.provideMerge(GitHubRest.layerWithDependencies),
+  ),
   AzureDevOpsPullRequestCli.layer.pipe(Layer.provideMerge(AzureDevOpsCli.layer)),
   BitbucketPullRequestApi.layer.pipe(Layer.provideMerge(BitbucketApi.layer)),
   ForgejoCli.layer,

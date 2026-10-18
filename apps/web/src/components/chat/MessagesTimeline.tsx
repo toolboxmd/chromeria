@@ -1089,7 +1089,10 @@ const ConversationTimeline = memo(function ConversationTimeline({
     shouldRestorePosition: shouldRestoreVisibleContentPosition,
   };
   const timelineListFooter = (
-    <TimelineListFooter {...(onInlineCardHost === undefined ? {} : { onInlineCardHost })} composerInset={anchoredEndSpace ? 0 : contentInsetEndAdjustment}>
+    <TimelineListFooter
+      {...(onInlineCardHost === undefined ? {} : { onInlineCardHost })}
+      composerInset={anchoredEndSpace ? 0 : contentInsetEndAdjustment}
+    >
       {footer}
     </TimelineListFooter>
   );

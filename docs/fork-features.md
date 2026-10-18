@@ -202,7 +202,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/web/src/branding.ts",
     "apps/web/src/bundledDev.test.ts",
     "apps/web/src/components/T3Wordmark.tsx",
-    "apps/web/src/components/chat/MessagesTimeline.test.tsx",
+    "apps/web/src/components/chat/MessagesTimeline.browser.test.tsx",
     "apps/web/src/components/chat/MessagesTimeline.tsx",
     "apps/web/src/components/onboarding/WelcomeWizard.tsx",
     "apps/web/src/components/settings/IntegrationsSettings.tsx",
@@ -258,7 +258,6 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "scripts/fork-rebase.sh",
     "scripts/fork-upstream-edits.txt",
     "patches/vitest@5.0.1.patch",
-    "patches/expo-modules-jsi@58.0.7.patch",
     "scripts/lib/vitest-cache.test.ts",
     "apps/server/src/forkWsRpc.ts"
   ],
@@ -478,7 +477,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
 ```json
 {
   "id": "data-foundation",
-  "purpose": "Isolate the Chromeria V2 database, preserve deferred settings data and provide shell-only backfills and fork-origin PR lookup.",
+  "purpose": "Isolate the Chromeria V2 database, retain passive legacy tables and deferred settings data and provide shell-only backfills and fork-origin PR lookup.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/167"],
   "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...port/167-foundation"],
   "newFiles": [
@@ -486,7 +485,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/server/src/persistence/forkV1Backfills.ts",
     "apps/server/src/persistence/forkV1Snapshot.testFixtures.ts",
     "apps/server/src/pullRequest/forkRepositoryIdentity.ts",
-    "packages/contracts/src/forkSettings.ts"
+    "packages/contracts/src/forkSettings.ts",
+    "apps/server/src/persistence/forkV1Migrations.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/persistence/initializeV2Database.test.ts",
@@ -499,7 +499,9 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
     "apps/server/src/serverRuntimeStartup.ts",
     "apps/server/src/serverSettings.test.ts",
-    "packages/contracts/src/settings.ts"
+    "packages/contracts/src/settings.ts",
+    "apps/server/src/persistence/Migrations.ts",
+    "apps/server/src/persistence/Migrations/063_DropUnusedV1Projections.test.ts"
   ],
   "sharedFiles": [],
   "keywords": [
@@ -551,7 +553,10 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/web/src/state/issues.ts",
     "packages/client-runtime/src/state/issueCommandPermissions.test.ts",
     "packages/contracts/src/issues.test.ts",
-    "packages/contracts/src/issues.ts"
+    "packages/contracts/src/issues.ts",
+    "apps/server/src/issues/IssueGitHubApi.ts",
+    "apps/server/src/issues/IssueGitHubApi.test.ts",
+    "apps/server/src/issues/gitHubDocuments.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/auth/RpcAuthorization.ts",
@@ -563,7 +568,10 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "docs/user/source-control.md",
     "packages/contracts/src/clientRpcPermissions.ts",
     "packages/contracts/src/index.ts",
-    "packages/contracts/src/rpc.ts"
+    "packages/contracts/src/rpc.ts",
+    "packages/source-control-github/package.json",
+    "apps/server/src/sourceControl/builtInDrivers.ts",
+    "apps/web/src/components/chat/RightPanelSurfaceContent.tsx"
   ],
   "sharedFiles": [
     "apps/server/src/server.ts",
@@ -631,7 +639,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/server/src/mcp/McpHttpServer.ts",
     "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
     "apps/web/src/components/ChatView.tsx",
-    "apps/web/src/components/RightPanelTabs.keyboard.test.tsx",
+    "apps/web/src/components/RightPanelTabs.keyboard.browser.test.tsx",
     "apps/web/src/components/RightPanelTabs.tsx",
     "apps/web/src/components/pullRequest/ThreadPullRequestsPanel.tsx",
     "apps/web/src/reopenClosedView.test.ts",
@@ -736,7 +744,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
   ],
   "upstreamFiles": [
     "apps/web/src/components/files/BrowserDocumentFrame.tsx",
-    "apps/web/src/components/chat/HtmlRenderDialog.test.tsx",
+    "apps/web/src/components/chat/HtmlRenderDialog.browser.test.tsx",
     "apps/web/src/components/ChatMarkdown.tsx",
     "apps/web/src/lib/openPullRequestLink.ts"
   ],
@@ -1061,7 +1069,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "packages/contracts/src/prism.ts"
   ],
   "upstreamFiles": [
-    "apps/web/src/components/settings/SettingsPanels.restore.test.tsx",
+    "apps/web/src/components/settings/SettingsPanels.restore.browser.test.tsx",
     "apps/server/src/mcp/toolkits/project/tools.ts",
     "apps/server/src/orchestration-v2/runtimeLayer.ts"
   ],
@@ -1343,7 +1351,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/scheduledTaskChecks/v1Import.actual.integration.test.ts",
     "apps/server/src/scheduledTaskChecks/v1Import.test.ts",
     "apps/server/src/scheduledTaskChecks/v1Import.ts",
-    "apps/web/src/components/ScheduledCommandNotifications.test.tsx",
+    "apps/web/src/components/ScheduledCommandNotifications.browser.test.tsx",
     "apps/web/src/components/ScheduledCommandNotifications.tsx",
     "apps/web/src/components/settings/scheduledTaskFork.logic.test.ts",
     "apps/web/src/components/settings/scheduledTaskFork.tsx",
@@ -1357,8 +1365,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/mobile/src/features/settings/scheduledTaskDraft.ts",
     "apps/server/src/scheduledTasks/Schedule.ts",
     "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
-    "apps/web/src/components/ThreadNotificationCoordinator.badge.test.tsx",
-    "apps/web/src/components/ThreadNotificationCoordinator.test.tsx",
+    "apps/web/src/components/ThreadNotificationCoordinator.badge.browser.test.tsx",
+    "apps/web/src/components/ThreadNotificationCoordinator.browser.test.tsx",
     "apps/web/src/components/ThreadNotificationCoordinator.tsx",
     "apps/web/src/components/settings/ScheduledTasksSettings.tsx",
     "apps/web/src/components/settings/scheduledTasksSettings.logic.ts",
@@ -1641,9 +1649,11 @@ sources and reasons.
     "apps/server/src/mcp/McpRouting.ts",
     "apps/server/src/persistence/forkScheduledTaskOriginsSchema.ts",
     "apps/server/src/persistence/forkScheduledTaskOriginsSchema.test.ts",
-    "apps/web/src/components/chat/V2LifecycleRow.remote.test.tsx"
+    "apps/web/src/components/chat/V2LifecycleRow.remote.browser.test.tsx",
+    "apps/web/src/state/entities.remoteRelationships.test.ts"
   ],
   "upstreamFiles": [
+    "apps/web/src/state/entities.ts",
     "apps/server/src/auth/McpOAuth.ts",
     "apps/server/src/binCli.ts",
     "apps/server/src/cli/environment.ts",
@@ -1687,7 +1697,7 @@ sources and reasons.
     "apps/mobile/src/features/threads/thread-subagent-group.tsx",
     "apps/mobile/src/features/threads/threadAgentsPresentation.test.ts",
     "apps/mobile/src/features/threads/threadAgentsPresentation.ts",
-    "apps/web/src/components/chat/ThreadRelationshipsControl.agents.test.tsx",
+    "apps/web/src/components/chat/ThreadRelationshipsControl.agents.browser.test.tsx",
     "apps/web/src/components/chat/ThreadRelationshipsControl.tsx",
     "apps/web/src/components/chat/V2ItemInspector.tsx",
     "apps/web/src/components/chat/V2LifecycleRow.tsx",
@@ -2049,7 +2059,7 @@ sources and reasons.
   "prs": ["https://github.com/toolboxmd/chromeria/pull/364"],
   "newFiles": [],
   "upstreamFiles": [
-    "apps/web/src/components/cloud/CloudEnvironmentConnectList.test.tsx",
+    "apps/web/src/components/cloud/CloudEnvironmentConnectList.browser.test.tsx",
     "packages/client-runtime/src/connection/layer.ts",
     "packages/client-runtime/src/connection/onboarding.test.ts",
     "packages/client-runtime/src/connection/registry.test.ts",

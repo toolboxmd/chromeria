@@ -461,6 +461,7 @@ it.effect.each(["running", "waiting"])(
             ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
             Layer.mock(ProjectionStore.ProjectionStoreV2)({
               getRecoveryThreadIds: () => Effect.succeed([threadId]),
+              getUnresolvedRestartCuts: () => Effect.succeed([]),
               getRuntimeRecoveryProjection: () => Effect.succeed(projection),
             }),
             Layer.mock(EventSink.EventSinkV2)({
@@ -472,6 +473,7 @@ it.effect.each(["running", "waiting"])(
             IdAllocator.layer,
             Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({}),
             Layer.mock(EffectOutbox.EffectOutboxV2)({
+              get: () => Effect.succeed(Option.none()),
               listByCommandId: () => Effect.succeed([]),
               reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
             }),
@@ -840,24 +842,6 @@ it.effect("wakes a run whose subagent's own shell the restart cut, past a wake i
     } as unknown as OrchestrationV2ThreadProjection);
     assert.lengthOf(texts, 1);
     assert.include(texts[0], "- subagent: sleep 150 (subagent agent:1)");
-    // A run the user stopped before it started still takes precedence.
-    const stopped = yield* continuationTexts({
-      ...base,
-      runs: [
-        {
-          ...base.runs[0]!,
-          status: "completed",
-          startedAt: now,
-          completedAt: now,
-          restartCancelledBackgroundWork: [
-            { kind: "subagent", label: "sleep 150 (subagent agent:1)", id: "agent:1" },
-          ],
-        },
-        { ...cutWake, status: "interrupted", completedAt: now },
-      ],
-      providerTurns: [{ ...base.providerTurns[0]!, status: "completed" }],
-    } as unknown as OrchestrationV2ThreadProjection);
-    assert.lengthOf(stopped, 0);
   }),
 );
 

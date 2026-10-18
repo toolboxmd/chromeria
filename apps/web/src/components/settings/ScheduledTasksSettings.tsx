@@ -1358,10 +1358,10 @@ function ScheduledTaskEditorForm({
             ) : null}
             <div className="flex items-center justify-between gap-2">
               <Label>Schedule</Label>
-                <ScheduledTaskFork.PreservedScheduleNote schedule={draft.preservedSchedule} />
+              <ScheduledTaskFork.PreservedScheduleNote schedule={draft.preservedSchedule} />
               <ToggleGroup
                 disabled={draft.preservedSchedule !== null}
-                  aria-label="Schedule type"
+                aria-label="Schedule type"
                 value={[draft.scheduleMode]}
                 onValueChange={(values) => {
                   const mode = values[0] as ScheduleMode | undefined;

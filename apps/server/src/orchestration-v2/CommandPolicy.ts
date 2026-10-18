@@ -166,7 +166,7 @@ export function resolveMessageDispatchIntent(
   deliveryIntent?: "auto" | "steer" | "restart",
   requester?: SteeringRequester,
 ): MessageDispatchMode {
-  const mode = resolveDeliveryIntent(projection, requestedMode, deliveryIntent);
+  const mode = resolveDeliveryIntent(projection, requestedMode, deliveryIntent, requester);
   if (mode.type !== "steer_active") return mode;
   // Compaction and sign-out turns cannot take steering input. A message sent
   // while one runs waits in the queue like any other follow-up.
@@ -181,9 +181,14 @@ function resolveDeliveryIntent(
   projection: OrchestrationV2ThreadProjection,
   requestedMode: MessageDispatchMode,
   deliveryIntent?: "auto" | "steer" | "restart",
+  requester?: SteeringRequester,
 ): MessageDispatchMode {
   if (deliveryIntent === undefined) {
-    if (requestedMode.type === "steer_active" && steeringCancelsRunningTools(projection, requestedMode.targetRunId)) return { type: "queue_after_active" };
+    if (
+      requestedMode.type === "steer_active" &&
+      steeringCancelsRunningTools(projection, requestedMode.targetRunId)
+    )
+      return { type: "queue_after_active" };
     return requestedMode;
   }
 

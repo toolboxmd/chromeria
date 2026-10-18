@@ -1,4 +1,5 @@
 import * as NodePath from "@effect/platform-node/NodePath";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it, vi } from "@effect/vitest";
 import {
   CheckpointScopeId,
@@ -36,6 +37,8 @@ import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuth from "../provider/ProviderAuthService.ts";
 import * as ContextmdServing from "../contextmd/ContextmdServing.ts";
+import * as ServerConfig from "../config.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 
 /** External native-runtime and store ports, with the real turn-start owner and projector. */
@@ -409,6 +412,10 @@ function harness(
     Layer.provide(NodePath.layer),
     Layer.provide(
       Layer.mergeAll(
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-bare-turn-start-" }).pipe(
+          Layer.provide(NodeServices.layer),
+        ),
+        ServerSettings.layerTest(),
         IdAllocator.layer,
         FileSystem.layerNoop({}),
         Layer.mock(BareLaunch.BareLaunch)({ deliveryText: additions }),

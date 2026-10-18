@@ -579,7 +579,6 @@ export const OrchestratorMcpEnvironmentLink = Schema.Struct({
 export type OrchestratorMcpEnvironmentLink = typeof OrchestratorMcpEnvironmentLink.Type;
 
 export const OrchestratorMcpEnvironmentLinksResult = Schema.Struct({
-  /** This environment. */
   environmentId: EnvironmentId,
   links: Schema.Array(OrchestratorMcpEnvironmentLink),
 });

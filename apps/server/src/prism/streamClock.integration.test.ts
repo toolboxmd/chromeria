@@ -25,6 +25,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as AppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as Persistence from "../persistence/Sqlite.ts";
 import * as Settings from "../serverSettings.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as Checkpoints from "../orchestration-v2/CheckpointService.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
@@ -134,7 +135,15 @@ it.effect.each([
           Layer.merge(
             clockLayer,
             Ingestor.layer.pipe(
-              Layer.provide(Layer.mergeAll(sink, stores, IdAllocator.layer, ThreadCommands.layer)),
+              Layer.provide(
+                Layer.mergeAll(
+                  sink,
+                  stores,
+                  IdAllocator.layer,
+                  ThreadCommands.layer,
+                  Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+                ),
+              ),
             ),
           ),
         ),

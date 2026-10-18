@@ -1,4 +1,8 @@
 import { useAtomValue } from "@effect/atom-react";
+import {
+  subagentChildTarget,
+  type ThreadRelationshipShellInput,
+} from "@t3tools/client-runtime/state/thread-relationships";
 import type {
   EnvironmentProject,
   EnvironmentThread,
@@ -381,13 +385,43 @@ export function selectThreadRelationshipShells(
 
 const relationshipShellsAtomFamily = Atom.family((key: string) => {
   const ref = parseThreadKey(key);
-  let previous: ReadonlyArray<OrchestrationV2ThreadShell> = [];
+  let previous: ReadonlyArray<ThreadRelationshipShellInput> = [];
+  let previousRemote = new Map<
+    string,
+    { readonly shell: OrchestrationV2ThreadShell; readonly environmentId: EnvironmentId }
+  >();
   return Atom.make((get) => {
-    const next = selectThreadRelationshipShells(
-      ref.threadId,
-      get(environmentThreadDetails.threadAtom(ref))?.projection ?? null,
-      get(environmentThreadShells.environmentThreadsAtom(ref.environmentId)),
-    );
+    const projection = get(environmentThreadDetails.threadAtom(ref))?.projection ?? null;
+    const next: Array<ThreadRelationshipShellInput> = [
+      ...selectThreadRelationshipShells(
+        ref.threadId,
+        projection,
+        get(environmentThreadShells.environmentThreadsAtom(ref.environmentId)),
+      ),
+    ];
+    const remote = new Map<
+      string,
+      { readonly shell: OrchestrationV2ThreadShell; readonly environmentId: EnvironmentId }
+    >();
+    for (const subagent of projection?.subagents ?? []) {
+      const target = subagentChildTarget(subagent);
+      if (target?.environmentId == null) continue;
+      const targetKey = threadKey({
+        environmentId: target.environmentId,
+        threadId: target.threadId,
+      });
+      if (remote.has(targetKey)) continue;
+      const shell = get(environmentThreadShells.environmentThreadsAtom(target.environmentId)).find(
+        (candidate) => candidate.id === target.threadId,
+      );
+      if (shell === undefined) continue;
+      const cached = previousRemote.get(targetKey);
+      const entry =
+        cached?.shell === shell ? cached : { shell, environmentId: target.environmentId };
+      remote.set(targetKey, entry);
+      next.push(entry);
+    }
+    previousRemote = remote;
     if (arrayElementsEqual(previous, next)) return previous;
     previous = next;
     return next;
@@ -396,6 +430,6 @@ const relationshipShellsAtomFamily = Atom.family((key: string) => {
 
 export function useThreadRelationshipShells(
   ref: ScopedThreadRef,
-): ReadonlyArray<OrchestrationV2ThreadShell> {
+): ReadonlyArray<ThreadRelationshipShellInput> {
   return useAtomValue(relationshipShellsAtomFamily(threadKey(ref)));
 }

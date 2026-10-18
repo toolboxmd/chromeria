@@ -4843,6 +4843,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                           (run) =>
                             run.id !== source.id &&
                             run.status !== "queued" &&
+                            !cancelledBeforeStart(run) &&
                             runRanAfter(run, source),
                         )
                       ? RESTART_CUT_REASONS.SUPERSEDED

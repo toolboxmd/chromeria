@@ -3,7 +3,6 @@ import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ChevronsUpDownIcon } from "lucide-react";
-import { useMemo } from "react";
 
 import { useThreadShell, useThreadShells } from "~/state/entities";
 import { Button } from "../ui/button";
@@ -26,23 +25,14 @@ export function ThreadParentCrumbs({
   environmentId: EnvironmentId;
   threadId: ThreadId;
 }) {
-  const self = useThreadShell(
-    useMemo(() => scopeThreadRef(environmentId, threadId), [environmentId, threadId]),
-  );
+  const self = useThreadShell(scopeThreadRef(environmentId, threadId));
   const parentId = childParentThreadId(self);
-  const parent = useThreadShell(
-    useMemo(
-      () => (parentId === null ? null : scopeThreadRef(environmentId, parentId)),
-      [environmentId, parentId],
-    ),
-  );
+  const parent = useThreadShell(parentId === null ? null : scopeThreadRef(environmentId, parentId));
   // Only child threads subscribe to the full shell list.
   const shells = useThreadShells(parent !== null);
   const navigate = useNavigate();
-  const siblings = useMemo(
-    () => (parentId === null ? [] : siblingThreads(shells, environmentId, parentId, threadId)),
-    [environmentId, parentId, shells, threadId],
-  );
+  const siblings =
+    parentId === null ? [] : siblingThreads(shells, environmentId, parentId, threadId);
   if (parent === null) return null;
   return (
     <>

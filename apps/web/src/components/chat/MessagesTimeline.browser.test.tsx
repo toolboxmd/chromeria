@@ -23,6 +23,12 @@ import { readTimelinePosition } from "./timelineScrollAnchoring";
 import { useComposerFocusState } from "./useComposerFocusState";
 
 const pullRequestQuery = vi.hoisted(() => ({ error: "Pull request not found" }));
+const remoteConnection = vi.hoisted(() => ({ connected: true }));
+vi.mock(import("../../state/entities"), async (original) => ({
+  ...(await original()),
+  useServerConfigs: (() =>
+    remoteConnection.connected ? new Map([["environment-cavallo", {}]]) : new Map()) as never,
+}));
 vi.mock(import("~/state/query"), async (original) => ({
   ...(await original()),
   useEnvironmentQuery: (() => ({
@@ -155,6 +161,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await act(async () => root.unmount());
   document.body.replaceChildren();
   vi.unstubAllGlobals();
+  remoteConnection.connected = true;
 });
 
 async function renderElement(element: ReactElement) {
@@ -967,6 +974,46 @@ describe("MessagesTimeline history and thread links", () => {
 });
 
 describe("MessagesTimeline subagents", () => {
+  it("opens a remote child in its environment and disables the link after disconnect", async () => {
+    const onOpenThread = vi.fn();
+    const entries: ReadonlyArray<Entry> = [
+      {
+        id: "subagent-remote",
+        kind: "event",
+        createdAt: CREATED_AT,
+        projectedItem: v2Item("subagent", {
+          id: "subagent-remote",
+          subagentId: "node-subagent-remote",
+          title: "Remote roast",
+          origin: "app_owned",
+          driver: "cursor",
+          providerInstanceId: "cursor",
+          childThreadId: null,
+          remoteChild: {
+            environmentId: "environment-cavallo",
+            threadId: "thread-remote-child",
+            label: "cavallo",
+          },
+          prompt: "Roast the draft",
+          progress: "Reading the draft",
+          result: null,
+        }),
+      },
+    ];
+    await renderTimeline(entries, { onOpenThread });
+    await vi.waitFor(() => expect(buttons("Open Remote roast")).toHaveLength(1));
+    await click(button("Open Remote roast"));
+    expect(onOpenThread).toHaveBeenCalledWith("thread-remote-child", "environment-cavallo");
+
+    for (const root of roots.splice(0)) await act(async () => root.unmount());
+    remoteConnection.connected = false;
+    onOpenThread.mockClear();
+    await renderTimeline(entries, { onOpenThread });
+    await vi.waitFor(() => expect(text()).toContain("Remote roast"));
+    expect(buttons("Open Remote roast")).toHaveLength(0);
+    expect(onOpenThread).not.toHaveBeenCalled();
+  });
+
   it.each(
     (
       [

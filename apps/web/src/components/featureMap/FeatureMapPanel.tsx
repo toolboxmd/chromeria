@@ -16,16 +16,7 @@ import {
   ZoomInIcon,
   ZoomOutIcon,
 } from "lucide-react";
-import {
-  Suspense,
-  useCallback,
-  useEffect,
-  useEffectEvent,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { Suspense, useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { useOpenLink } from "~/browser/useOpenLink";
@@ -116,10 +107,10 @@ export function FeatureMapPanel({
   const { refresh } = query;
   const expandRef = useRef<HTMLButtonElement>(null);
   const [expanded, setExpanded] = useState(false);
-  const closeExpanded = useCallback(() => {
+  const closeExpanded = () => {
     setExpanded(false);
     expandRef.current?.focus();
-  }, []);
+  };
   // The interval lives with the mounted tab, so it stops when the tab closes.
   useEffect(() => {
     if (!supported || projectId === null) return;
@@ -247,38 +238,28 @@ function FeatureMapBody({
 }) {
   const navigate = useNavigate();
   const { environments } = useEnvironments();
-  const linkEnvironments = useMemo(
-    () => new Set(environmentIdsWithCapability(environments, "issueLinks")),
-    [environments],
-  );
+  const linkEnvironments = new Set(environmentIdsWithCapability(environments, "issueLinks"));
   // Linked threads are read for the map's Issue refs, from every server that keeps links.
-  const issueEntries = useMemo(
-    () =>
-      map.facts.flatMap((entry) =>
-        entry.fact?.kind === "issue"
-          ? [
-              {
-                host: map.host,
-                repository: entry.repository,
-                number: entry.number,
-                closingPullRequests: entry.fact.openClosingPullRequests,
-              },
-            ]
-          : [],
-      ),
-    [map],
+  const issueEntries = map.facts.flatMap((entry) =>
+    entry.fact?.kind === "issue"
+      ? [
+          {
+            host: map.host,
+            repository: entry.repository,
+            number: entry.number,
+            closingPullRequests: entry.fact.openClosingPullRequests,
+          },
+        ]
+      : [],
   );
   const {
     threadsByIssue,
     working,
     error: threadsError,
   } = useIssueRowThreads(issueEntries, linkEnvironments);
-  const views = useMemo(
-    () => foldFeatureMap(map, { threadsByIssue, working }),
-    [map, threadsByIssue, working],
-  );
-  const gaps = useMemo(() => featureMapGaps(map), [map]);
-  const source = useMemo(() => featureMapDiagramSource(map.source, views), [map.source, views]);
+  const views = foldFeatureMap(map, { threadsByIssue, working });
+  const gaps = featureMapGaps(map);
+  const source = featureMapDiagramSource(map.source, views);
 
   const openLink = useOpenLink(threadRef);
   const openChangeRequestLink = useOpenChangeRequestLink(threadRef);
@@ -287,20 +268,14 @@ function FeatureMapBody({
     openLink,
     threadRef,
   );
-  const openUrl = useCallback(
-    (url: string) => {
-      if (openIssueOrPullRequest(url, threadRef.environmentId) === null) void openLink(url);
-    },
-    [openIssueOrPullRequest, openLink, threadRef.environmentId],
-  );
-  const openThread = useCallback(
-    (thread: IssueRowThread) =>
-      void navigate({
-        to: "/$environmentId/$threadId",
-        params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, thread.id)),
-      }),
-    [navigate],
-  );
+  const openUrl = (url: string) => {
+    if (openIssueOrPullRequest(url, threadRef.environmentId) === null) void openLink(url);
+  };
+  const openThread = (thread: IssueRowThread) =>
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, thread.id)),
+    });
 
   return (
     <ScrollArea className="min-h-0 flex-1">
@@ -409,7 +384,7 @@ function ExpandedMap({
   const [viewport, setViewport] = useState<MapViewport>({ scale: 1, x: 0, y: 0 });
   const [panning, setPanning] = useState(false);
 
-  const fit = useCallback(() => {
+  const fit = () => {
     const view = viewportRef.current;
     const content = contentRef.current;
     if (view === null || content === null) return false;
@@ -422,12 +397,12 @@ function ExpandedMap({
     if (next === null) return false;
     setViewport(next);
     return true;
-  }, []);
+  };
 
-  const onContentReady = useCallback(() => {
+  const onContentReady = () => {
     if (fittedRef.current) return;
     if (fit()) fittedRef.current = true;
-  }, [fit]);
+  };
 
   useEffect(() => {
     closeRef.current?.focus();
@@ -645,14 +620,11 @@ function FeatureMapDiagram({
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [svg, setSvg] = useState<SVGSVGElement | null>(null);
   const [icons, setIcons] = useState<ReadonlyArray<IconPlacement>>([]);
-  const byId = useMemo(() => new Map(views.map((view) => [view.part.id, view])), [views]);
-  const assignWrapper = useCallback(
-    (node: HTMLDivElement | null) => {
-      wrapperRef.current = node;
-      if (contentRef) contentRef.current = node;
-    },
-    [contentRef],
-  );
+  const byId = new Map(views.map((view) => [view.part.id, view]));
+  const assignWrapper = (node: HTMLDivElement | null) => {
+    wrapperRef.current = node;
+    if (contentRef) contentRef.current = node;
+  };
   // Node clicks read the newest views, so a refresh never needs the SVG rebound.
   const openNode = useEffectEvent((elementId: string) => {
     const id = featureMapPartIdOf(elementId, new Set(byId.keys()));
@@ -672,10 +644,7 @@ function FeatureMapDiagram({
     };
   }, [svg]);
 
-  const workingIds = useMemo(
-    () => views.filter((view) => view.threads.length > 0).map((view) => view.part.id),
-    [views],
-  );
+  const workingIds = views.filter((view) => view.threads.length > 0).map((view) => view.part.id);
   const scale = viewport?.scale ?? 1;
   const expandedLayer = viewport !== null;
   // The expanded drawing uses its viewBox size, so fit and zoom are not capped by the window.

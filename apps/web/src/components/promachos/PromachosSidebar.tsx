@@ -4,7 +4,6 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/models";
 import type { ScopedProjectRef } from "@t3tools/contracts";
 import { Link, useParams } from "@tanstack/react-router";
 import { HouseIcon, SquarePenIcon } from "lucide-react";
-import { useMemo } from "react";
 
 import { isElectron } from "../../env";
 import { useNowMinute } from "../../hooks/useNowMinute";
@@ -63,10 +62,8 @@ export function PromachosSidebar() {
   const homeRefs = usePromachosHomeRefs(home);
   const projects = useProjects();
   const { environments } = useEnvironments();
-  const environmentLabelById = useMemo(
-    () =>
-      new Map(environments.map((environment) => [environment.environmentId, environment.label])),
-    [environments],
+  const environmentLabelById = new Map(
+    environments.map((environment) => [environment.environmentId, environment.label]),
   );
   const multipleEnvironments = new Set(projects.map((project) => project.environmentId)).size > 1;
   const homeProject =
@@ -141,10 +138,7 @@ function PromachosConversationList({
   const threads = useThreadShells();
   const personThreads = usePersonViewThreads(threads);
   const homeRefs = usePromachosHomeRefs(home);
-  const conversations = useMemo(
-    () => promachosConversations(personThreads, homeRefs),
-    [personThreads, homeRefs],
-  );
+  const conversations = promachosConversations(personThreads, homeRefs);
   const startConversation = useStartPromachosConversation();
   const { isMobile, setOpenMobile } = useSidebar();
   const routeThreadRef = useParams({

@@ -459,8 +459,16 @@ function useSidebarThreads(input: {
   const allThreads = useThreadShells();
   const threads = usePersonViewThreads(allThreads);
   const projects = useProjects();
-  const noProjectKeys = new Set(projects.filter((project) => project.isScratch).map((project) => `${project.environmentId}:${project.id}`));
-  const [noProjectShelfExpanded, setNoProjectShelfExpanded] = useLocalStorage(NO_PROJECT_SHELF_EXPANDED_KEY, false, Schema.Boolean);
+  const noProjectKeys = new Set(
+    projects
+      .filter((project) => project.isScratch)
+      .map((project) => `${project.environmentId}:${project.id}`),
+  );
+  const [noProjectShelfExpanded, setNoProjectShelfExpanded] = useLocalStorage(
+    NO_PROJECT_SHELF_EXPANDED_KEY,
+    false,
+    Schema.Boolean,
+  );
   const workingShelfEnabled = useClientSettings((s) => s.sidebarWorkingShelfEnabled);
   const nowMinute = useNowMinute();
   // Snooze wake times are second-precise, so classifying with the quantized
@@ -509,8 +517,14 @@ function useSidebarThreads(input: {
   const partitionNextWakeAt = partition.snoozedThreads[0]?.snoozedUntil ?? null;
   if (partitionNextWakeAt !== nextSnoozeWakeAt) setNextSnoozeWakeAt(partitionNextWakeAt);
 
-  const { pinnedThreads, activeThreads, workingThreads, noProjectThreads, snoozedThreads, settledThreads } =
-    partition;
+  const {
+    pinnedThreads,
+    activeThreads,
+    workingThreads,
+    noProjectThreads,
+    snoozedThreads,
+    settledThreads,
+  } = partition;
   const visibleSettledThreads = (() => {
     if (settledThreads.length <= settledVisibleCount) return settledThreads;
     const visible = settledThreads.slice(0, settledVisibleCount);
@@ -531,7 +545,11 @@ function useSidebarThreads(input: {
   const visibleWorkingThreads = workingShelfExpanded
     ? workingThreads
     : routeThreadOnly(workingThreads, routeThreadKey);
-  const visibleNoProjectThreads = visibleSidebarShelfThreads(noProjectThreads, noProjectShelfExpanded, routeThreadKey);
+  const visibleNoProjectThreads = visibleSidebarShelfThreads(
+    noProjectThreads,
+    noProjectShelfExpanded,
+    routeThreadKey,
+  );
   const orderedThreads = [
     ...pinnedThreads,
     ...activeThreads,
@@ -600,7 +618,14 @@ function useSidebarThreads(input: {
 }
 
 function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
-  const { threads, scopedProjectKeys, serverConfigs, optimisticDrop, workingShelfEnabled, noProjectKeys } = input;
+  const {
+    threads,
+    scopedProjectKeys,
+    serverConfigs,
+    optimisticDrop,
+    workingShelfEnabled,
+    noProjectKeys,
+  } = input;
   const preciseNow = new Date().toISOString();
   const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys);
   inboxReturns.observe(workingShelfEnabled ? threads : null);
@@ -609,7 +634,11 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   const working: EnvironmentThreadShell[] = [];
   const noProject: EnvironmentThreadShell[] = [];
   const inbox = (thread: EnvironmentThreadShell) =>
-    noProjectKeys.has(`${thread.environmentId}:${thread.projectId}`) ? noProject : workingShelfEnabled && isSidebarThreadWorking(thread) ? working : active;
+    noProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)
+      ? noProject
+      : workingShelfEnabled && isSidebarThreadWorking(thread)
+        ? working
+        : active;
   const snoozed: EnvironmentThreadShell[] = [];
   const settled: EnvironmentThreadShell[] = [];
   const draggable = new Set<string>();
@@ -653,7 +682,9 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
           ? settled
           : section === "pinned"
             ? pinned
-            : section === "no-project" ? noProject : inbox(thread)
+            : section === "no-project"
+              ? noProject
+              : inbox(thread)
       ).push(thread);
     }
   }
@@ -3679,7 +3710,13 @@ export default function Sidebar() {
           activeThreads,
           workingShelfEnabled,
         });
-  const draggedNoProjectOrder = draggingScratch && dragState !== null && draggedScratchThread !== undefined ? sortThreadsForSidebar([...noProjectThreads, applySidebarThreadDrop(draggedScratchThread, "active", dragState.occurredAt)]).map(threadShellKey) : undefined;
+  const draggedNoProjectOrder =
+    draggingScratch && dragState !== null && draggedScratchThread !== undefined
+      ? sortThreadsForSidebar([
+          ...noProjectThreads,
+          applySidebarThreadDrop(draggedScratchThread, "active", dragState.occurredAt),
+        ]).map(threadShellKey)
+      : undefined;
   const sidebarSortingStrategy = createSidebarSortingStrategy({
     items: sidebarListItems,
     enabled: !isContextDrag,
@@ -3758,7 +3795,9 @@ export default function Sidebar() {
       activeOrder: activeKeys,
       activeKeysById,
       activeReorderableKeys: activeReorderableThreadKeys,
-      activeTimeOrdered: workingShelfEnabled,
+      activeTimeOrdered:
+        workingShelfEnabled ||
+        noProjectKeys.has(`${activeThread.environmentId}:${activeThread.projectId}`),
     });
     if (plan.kind === "none") return;
     if (plan.kind === "settle" && settlingThreadKeysRef.current.has(activeKey)) return;

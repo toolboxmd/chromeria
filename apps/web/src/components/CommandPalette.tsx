@@ -1280,7 +1280,7 @@ function OpenCommandPaletteDialog(props: {
   const recentThreadItems = allThreadItems.slice(0, RECENT_THREAD_LIMIT);
   // Fork: `#N`, `owner/repo#N` or an Issue URL also finds its linked threads (toolboxmd/t3code#25).
   const issueLinkedThreads = usePaletteIssueThreads(threadSearchQuery);
-  const threadItemsWithIssueLinks = useMemo(() => {
+  const threadItemsWithIssueLinks = (() => {
     if (issueLinkedThreads.length === 0) return allThreadItems;
     const linkedItems = issueLinkedThreads.flatMap((linked) =>
       buildLinkedThreadActionItems({
@@ -1299,7 +1299,7 @@ function OpenCommandPaletteDialog(props: {
       issueLinkedThreads.flatMap((linked) => linked.threads.map((thread) => `thread:${thread.id}`)),
     );
     return [...linkedItems, ...allThreadItems.filter((item) => !linkedIds.has(item.value))];
-  }, [allThreadItems, issueLinkedThreads, navigate, threadSearchQuery]);
+  })();
 
   // Stable so the item builders that capture it during render never see the
   // highlight ref it writes.

@@ -310,7 +310,6 @@ packageExtensions:
       vite-plus: "catalog:"
 
 patchedDependencies:
-  expo-modules-jsi@58.0.7: patches/expo-modules-jsi@58.0.7.patch
   alchemy@2.0.0-beta.80: patches/alchemy@2.0.0-beta.80.patch
   expo-audio@58.0.9: patches/expo-audio@58.0.9.patch
   "@clerk/expo-native-components@0.2.0": patches/@clerk__expo-native-components@0.2.0.patch

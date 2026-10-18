@@ -1,7 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
-import { useMemo } from "react";
 
 import { issueLinkEnvironment } from "~/state/issueLinks";
 import { createMergedEnvironmentQuery } from "~/state/pullRequests";
@@ -26,17 +25,11 @@ export function useIssueRowThreads(
   entries: Parameters<typeof issueThreadTargets>[0],
   linkEnvironments: ReadonlySet<EnvironmentId>,
 ) {
-  const targets = useMemo(
-    () => issueThreadTargets(entries, linkEnvironments),
-    [entries, linkEnvironments],
-  );
+  const targets = issueThreadTargets(entries, linkEnvironments);
   const query = useThreadsForIssuesQuery(targets);
-  const threadsByIssue = useMemo(() => mergeIssueRowThreads(query.values), [query.values]);
+  const threadsByIssue = mergeIssueRowThreads(query.values);
   const workingKey = useAtomValue(workingThreadKeysAtom);
-  const working = useMemo(
-    (): ReadonlySet<string> => new Set(workingKey.length === 0 ? [] : workingKey.split("\n")),
-    [workingKey],
-  );
+  const working = new Set(workingKey.length === 0 ? [] : workingKey.split("\n"));
   // The first server that could not answer, so a view can say whose threads it is missing.
   return { threadsByIssue, working, error: query.error };
 }

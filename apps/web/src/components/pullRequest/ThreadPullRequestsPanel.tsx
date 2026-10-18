@@ -193,7 +193,8 @@ function LinkRowImpl({
                 #{link.number}
               </TooltipTrigger>
               <TooltipPopup>
-                {linkedBy === null ? SOURCE_LABELS[link.source] : `Linked by ${linkedBy.title}`} · <RelativeTime timestamp={link.linkedAt} />
+                {linkedBy === null ? SOURCE_LABELS[link.source] : `Linked by ${linkedBy.title}`} ·{" "}
+                <RelativeTime timestamp={link.linkedAt} />
               </TooltipPopup>
             </Tooltip>
           }
@@ -455,7 +456,14 @@ function EnabledThreadPullRequestsPanel({
 
   // Legend re-renders visible rows only when data or extraData changes, so everything the rows
   // read from outside their line goes in here.
-  const rowInputs = { speedMode, environmentProjects, capabilities, supportsWatch, thread, rolledUp };
+  const rowInputs = {
+    speedMode,
+    environmentProjects,
+    capabilities,
+    supportsWatch,
+    thread,
+    rolledUp,
+  };
 
   if (linkCount === 0) {
     return (

@@ -234,7 +234,10 @@ export const make = Effect.gen(function* () {
         }
         runs.push(run);
       }
-      const restartProjection = { ...projection, providerSessions: sessionsLiveAtStart(projection, stoppedThisPass) };
+      const restartProjection = {
+        ...projection,
+        providerSessions: sessionsLiveAtStart(projection, stoppedThisPass),
+      };
       const decision = restartCutDecision(
         restartProjection,
         new Set(runs.map((run) => run.id)),

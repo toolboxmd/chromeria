@@ -666,6 +666,10 @@ it.effect.each([
       Layer.provide(
         Layer.mergeAll(
           NodeServices.layer,
+          ServerConfig.layerTest(process.cwd(), { prefix: "t3-rollback-" }).pipe(
+            Layer.provide(NodeServices.layer),
+          ),
+          ServerSettings.layerTest(),
           Layer.mock(GitWorkflow.GitWorkflowService)({}),
           Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeed(unrelatedProject) }),
           Layer.mock(ContextmdServing.ContextmdServing)({

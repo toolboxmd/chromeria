@@ -12,7 +12,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { Atom } from "effect/reactivity";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useRef } from "react";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { mergeIssueLists } from "../components/issues/issueList.logic";
@@ -93,7 +93,7 @@ const useIssueListsQuery = createMergedEnvironmentQuery("web-issues:list", issue
 /** One listing per environment, merged into the list the page renders. */
 export function useIssueList(targets: ReadonlyArray<EnvironmentQueryTarget<IssueListInput>>) {
   const query = useIssueListsQuery(targets);
-  const data = useMemo(() => mergeIssueLists(query.values), [query.values]);
+  const data = mergeIssueLists(query.values);
   return { data, error: query.error, isPending: query.isPending, refresh: query.refresh };
 }
 
@@ -148,8 +148,8 @@ export function useLinkedIssueStates(
     const targets = JSON.parse(key) as ReadonlyArray<EnvironmentQueryTarget<IssueStatesInput>>;
     for (const target of targets) appAtomRegistry.refresh(issueStates(target));
   }, [syncKey, key]);
-  return useMemo(() => {
+  return (() => {
     const reads = results.map(linkedIssueStatesReadOf);
     return { states: linkedIssueStates(links, reads), entries: linkedIssueEntries(reads) };
-  }, [links, results]);
+  })();
 }

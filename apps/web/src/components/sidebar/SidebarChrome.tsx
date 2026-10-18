@@ -183,7 +183,10 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   };
   const handleIssuesClick = () => {
     closeMobileSidebar();
-    void navigate({ to: "/pull-requests", search: { ...readPullRequestListPreferences(), view: "issues" } });
+    void navigate({
+      to: "/pull-requests",
+      search: { ...readPullRequestListPreferences(), view: "issues" },
+    });
   };
   const handleSettingsClick = () => {
     closeMobileSidebar();

@@ -445,16 +445,15 @@ function waitForProjection(
   predicate: (projection: OrchestrationV2ThreadProjection) => boolean,
 ) {
   return Effect.gen(function* () {
-    for (let attempt = 0; attempt < 1_000; attempt += 1) {
-      const projection = yield* orchestrator.getThreadProjection(threadId);
-      if (predicate(projection)) {
-        return projection;
-      }
-      yield* Effect.sleep("5 millis");
-    }
-    return yield* Effect.die(
-      new Error(`Timed out waiting for orchestration projection ${threadId}.`),
+    const afterSequence = yield* orchestrator.getThreadEventSequence(threadId);
+    const current = yield* orchestrator.getThreadProjection(threadId);
+    if (predicate(current)) return current;
+    const matched = yield* orchestrator.streamStoredEventsFrom({ threadId, afterSequence }).pipe(
+      Stream.mapEffect(() => orchestrator.getThreadProjection(threadId)),
+      Stream.filter(predicate),
+      Stream.runHead,
     );
+    return Option.getOrThrow(matched);
   });
 }
 
@@ -997,31 +996,28 @@ describe("orchestrator MCP toolkit", () => {
           const continuationOffers = yield* Ref.make<
             ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
           >([]);
+          const offered = yield* Queue.unbounded<void>();
           const layerContinuationProbe = Layer.succeed(
             ProviderContinuationRequests.ProviderContinuationRequests,
             {
               offer: (request) =>
-                Ref.update(continuationOffers, (existing) => [...existing, request]),
+                Ref.update(continuationOffers, (existing) => [...existing, request]).pipe(
+                  Effect.andThen(Queue.offer(offered, undefined)),
+                  Effect.asVoid,
+                ),
               take: Effect.never,
             },
           );
           const waitForContinuationOffers = (count: number) =>
             Effect.gen(function* () {
-              for (let attempt = 0; attempt < 1_000; attempt += 1) {
-                const current = yield* Ref.get(continuationOffers);
-                if (current.length >= count) {
-                  return current;
-                }
-                yield* Effect.sleep("5 millis");
-              }
+              while ((yield* Ref.get(continuationOffers)).length < count)
+                yield* Queue.take(offered);
               return yield* Ref.get(continuationOffers);
             });
           const expectOffersToStay = (count: number) =>
             Effect.gen(function* () {
-              for (let sample = 0; sample < 4; sample += 1) {
-                yield* Effect.sleep("50 millis");
-                expect(yield* Ref.get(continuationOffers)).toHaveLength(count);
-              }
+              yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
+              expect(yield* Ref.get(continuationOffers)).toHaveLength(count);
             });
           const layerOrchestrator = ProviderReplayHarness.layerWithRegistry(
             {
@@ -2211,6 +2207,7 @@ describe("orchestrator MCP toolkit", () => {
             const childFollowup = yield* decodeThreadSendResult(
               childFollowupCall.structuredContent,
             ).pipe(Effect.orDie);
+            if (childFollowup.delivery === "transcript") throw new Error("Expected a child run");
             const childFollowupWaitCall = yield* invoke("t3_thread_wait", {
               threadId: localChild(delegated.childThreadId),
               runId: childFollowup.runId,
@@ -2249,6 +2246,8 @@ describe("orchestrator MCP toolkit", () => {
             const activeChildFollowup = yield* decodeThreadSendResult(
               activeChildFollowupCall.structuredContent,
             ).pipe(Effect.orDie);
+            if (activeChildFollowup.delivery === "transcript")
+              throw new Error("Expected a child run");
             yield* waitForProjection(
               orchestrator,
               localChild(delegated.childThreadId),
@@ -2365,12 +2364,12 @@ describe("orchestrator MCP toolkit", () => {
               latestTerminalStatus: "interrupted",
             });
 
-            expect(childFollowup.taskId).toBeDefined();
-            expect(activeChildFollowup.taskId).toBeDefined();
-            yield* waitForContinuationOffers(2);
-            yield* expectOffersToStay(2);
-            yield* invoke("task_status", { taskId: childFollowup.taskId });
-            yield* invoke("task_status", { taskId: activeChildFollowup.taskId });
+            // Fork follow-ups continue one task. The completed follow-up wakes
+            // its parent; cancelling that task disposes a later cut's delivery.
+            expect(childFollowup.taskId).toBe(delegated.taskId);
+            expect(activeChildFollowup.taskId).toBe(delegated.taskId);
+            expect(yield* waitForContinuationOffers(1)).toHaveLength(1);
+            yield* expectOffersToStay(1);
             yield* Ref.set(continuationOffers, []);
 
             const repeatedDelegatedCall = yield* invoke("delegate_task", {

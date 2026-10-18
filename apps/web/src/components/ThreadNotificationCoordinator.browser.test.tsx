@@ -361,4 +361,7 @@ describe("thread notifications", () => {
   });
 });
 
-vi.mock(import("../state/query"), async (original) => ({ ...(await original()), useEnvironmentQuery: (() => ({ data: null })) as never }));
+vi.mock(import("../state/query"), async (original) => ({
+  ...(await original()),
+  useEnvironmentQuery: (() => ({ data: null })) as never,
+}));
