@@ -56,7 +56,7 @@ const linkedMachines: DiscoveredEnvironments = new Map([
         endpoint: {
           httpBaseUrl: "https://relay.example.test",
           wsBaseUrl: "wss://relay.example.test/ws",
-          providerKind: "manual",
+          providerKind: "cloudflare_tunnel",
         },
         linkedAt: "2026-09-05T12:00:00.000Z",
       },
@@ -190,6 +190,63 @@ describe("cloud environment offline reasons", () => {
 });
 
 describe("cloud onboarding discovery", () => {
+  it.each(["manual", "t3_relay"] as const)(
+    "does not offer or auto-select a %s publishing link as a new relay",
+    async (providerKind) => {
+      const base = linkedMachines.get(newMachineId)!;
+      discovery.listEnvironments.mockResolvedValue(
+        new Map([
+          [
+            newMachineId,
+            {
+              ...base,
+              environment: {
+                ...base.environment,
+                endpoint: { ...base.environment.endpoint, providerKind },
+              },
+            },
+          ],
+        ]),
+      );
+      const onChange = vi.fn();
+      await render(
+        <CloudEnvironmentConnectRows
+          primaryEnvironmentId={null}
+          savedEnvironments={[]}
+          showSavedEnvironments
+          selection={{
+            autoSelectedComputers: new Set(),
+            selectedIds: new Set(),
+            onChange,
+          }}
+          empty={<p>No addable tunnels.</p>}
+        />,
+      );
+
+      expect(text()).toBe("No addable tunnels.");
+      expect(button()).toBeUndefined();
+      expect(onChange).not.toHaveBeenCalled();
+      expect(discovery.register).not.toHaveBeenCalled();
+
+      await render(
+        <CloudEnvironmentConnectRows
+          primaryEnvironmentId={null}
+          savedEnvironments={[
+            {
+              environmentId: newMachineId,
+              connection: { phase: "connected", error: null, traceId: null },
+              relayManaged: true,
+            },
+          ]}
+          showSavedEnvironments
+        />,
+      );
+      expect(text()).toContain("Work laptop");
+      expect(button()?.textContent).toBe("Connected");
+      expect(discovery.register).not.toHaveBeenCalled();
+    },
+  );
+
   it("signals that the section can expand after initial discovery settles", async () => {
     let finishDiscovery!: (environments: DiscoveredEnvironments) => void;
     discovery.listEnvironments.mockReturnValue(
