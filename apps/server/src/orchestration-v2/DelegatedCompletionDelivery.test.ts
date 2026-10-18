@@ -2330,6 +2330,7 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
   const stopWhileRunningThenFollowUp = (input: {
     readonly name: string;
     readonly cancelAfterStop: boolean;
+    readonly followUpBeforeResult?: boolean;
   }) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -2455,31 +2456,63 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
         });
       }
       // The child finishes its first run after the Stop: no wake.
-      yield* orchestrator.recoverDelegatedTasks;
-      const settled = (yield* orchestrator.getThreadProjection(threadId)).subagents.find(
-        (row) => row.id === child.taskId,
-      );
-      assert.equal(settled?.result !== null, true);
-      assert.equal(settled?.completionDelivery?.state, "disposed");
-
-      // A later parent turn sends a follow-up to the child, which finishes it.
-      const messageId = MessageId.make(`message:${input.name}:follow-up`);
-      yield* orchestrator.dispatch({
-        type: "message.dispatch",
-        createdBy: "agent",
-        creationSource: "mcp",
-        commandId: CommandId.make(`command:${input.name}:follow-up`),
-        threadId: child.childThreadId,
-        senderThreadId: threadId,
-        messageId,
-        text: "Continue the same delegated work.",
-        attachments: [],
-        dispatchMode: { type: "start_immediately" },
+      const settleFirstResult = Effect.gen(function* () {
+        yield* orchestrator.recoverDelegatedTasks;
+        const settled = (yield* orchestrator.getThreadProjection(threadId)).subagents.find(
+          (row) => row.id === child.taskId,
+        );
+        assert.equal(settled?.result !== null, true);
+        assert.deepEqual(
+          settled?.completionDelivery,
+          input.cancelAfterStop
+            ? { state: "disposed", observedByRunId: null }
+            : { state: "disposed", observedByRunId: null, disposedBy: "stop" },
+        );
       });
-      const requested = (yield* orchestrator.getThreadProjection(child.childThreadId)).runs.find(
-        (run) => run.userMessageId === messageId,
-      )!;
-      assert.equal(requested.delegatedTaskId, child.taskId);
+      // A later parent turn sends a follow-up to the same child.
+      const messageId = MessageId.make(`message:${input.name}:follow-up`);
+      const sendFollowUp = Effect.gen(function* () {
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: "agent",
+          creationSource: "mcp",
+          commandId: CommandId.make(`command:${input.name}:follow-up`),
+          threadId: child.childThreadId,
+          senderThreadId: threadId,
+          messageId,
+          text: "Continue the same delegated work.",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+        });
+        const run = (yield* orchestrator.getThreadProjection(child.childThreadId)).runs.find(
+          (row) => row.userMessageId === messageId,
+        )!;
+        assert.equal(run.delegatedTaskId, child.taskId);
+        return run;
+      });
+      let requested: OrchestrationV2Run;
+      if (input.followUpBeforeResult) {
+        requested = yield* sendFollowUp;
+        // The whole-child barrier holds the first result until the follow-up ends.
+        yield* orchestrator.recoverDelegatedTasks;
+        const held = (yield* orchestrator.getThreadProjection(threadId)).subagents.find(
+          (row) => row.id === child.taskId,
+        );
+        assert.equal(held?.result, null);
+        assert.equal(held?.completionDelivery?.state, "disposed");
+      } else {
+        yield* settleFirstResult;
+        requested = yield* sendFollowUp;
+      }
+      // After the first result, the live follow-up keeps the parent from
+      // looking idle, unless cancelled.
+      if (!input.followUpBeforeResult) {
+        const shell = yield* orchestrator.getThreadShell(threadId);
+        assert.equal(
+          shell?.pendingBackgroundTasks?.some((task) => task.taskId === child.taskId),
+          !input.cancelAfterStop,
+        );
+      }
       yield* eventSink.write({
         commandId: CommandId.make(`command:${input.name}:follow-up-finished`),
         events: [
@@ -2505,7 +2538,7 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
               transfer.sourceThreadId === child.childThreadId,
           )
           .map((transfer) => transfer.sourcePoint.runId),
-        [child.childRunId, requested.id],
+        input.followUpBeforeResult ? [requested.id] : [child.childRunId, requested.id],
       );
       const cohort = parent.runs.find((row) => row.id === runId)?.delegatedCompletion;
       const delivery = parent.subagents.find((row) => row.id === child.taskId)?.completionDelivery;
@@ -2524,5 +2557,21 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
 
   it.effect("keeps a task cancelled after a Stop quiet for a later follow-up", () =>
     stopWhileRunningThenFollowUp({ name: "cancel-after-stop", cancelAfterStop: true }),
+  );
+
+  it.effect("wakes the parent for a follow-up sent before the stopped task's first result", () =>
+    stopWhileRunningThenFollowUp({
+      name: "follow-up-before-result",
+      cancelAfterStop: false,
+      followUpBeforeResult: true,
+    }),
+  );
+
+  it.effect("keeps a cancelled task quiet for a follow-up sent before its first result", () =>
+    stopWhileRunningThenFollowUp({
+      name: "cancel-follow-up-before-result",
+      cancelAfterStop: true,
+      followUpBeforeResult: true,
+    }),
   );
 });

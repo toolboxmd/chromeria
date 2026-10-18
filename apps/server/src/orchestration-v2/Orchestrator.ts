@@ -11,6 +11,7 @@ import {
   delegatedResultTransfers,
   untransferredDelegatedRuns,
   restartContinuationRuns,
+  restartContinuationSource,
 } from "../childThreads/delegatedFollowups.ts";
 import * as PrismRecovery from "../prism/RecoveryHooks.ts";
 import { ForkDispatchPlans } from "../fork/ForkDispatchPlans.ts";
@@ -7336,10 +7337,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const parentRun = parent.runs.find((candidate) => candidate.id === original.runId);
     // A new requested turn can resume a stopped cohort. A Stop after intake
     // keeps it stopped, and task_cancel's disposed delivery stays disposed.
+    // A stop-disposed task reopens even before its first result: that result
+    // stays quiet on its disposed delivery, and only the follow-up wakes.
     if (
-      original.result !== null &&
-      (original.completionDelivery?.state !== "disposed" ||
-        original.completionDelivery.disposedBy === "stop") &&
+      (original.completionDelivery?.state === "disposed"
+        ? original.completionDelivery.disposedBy === "stop"
+        : original.result !== null) &&
       parentRun?.delegatedCompletion?.disposition === "stopped"
     ) {
       yield* emitEvent({
@@ -10829,12 +10832,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       input.parentProjection.thread.deletedAt !== null ||
       (cohort !== undefined && cohort.disposition !== "open")
     ) {
+      const stopped =
+        input.parentRun !== undefined &&
+        input.parentProjection.thread.archivedAt === null &&
+        input.parentProjection.thread.deletedAt === null &&
+        cohort?.disposition === "stopped";
       return {
         task: {
           ...input.updatedTask,
           completionDelivery: {
             state: "disposed" as const,
             observedByRunId: null,
+            ...(stopped ? { disposedBy: "stop" as const } : {}),
           },
         },
         parentRun: undefined,
@@ -11130,6 +11139,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           turnItemRunIds: [childRun.id],
         })).turnItems.length > 0;
       const { completionDelivery: observedDelivery, ...unobservedTask } = task;
+      const stopDisposed =
+        observedDelivery?.state === "disposed" && observedDelivery.disposedBy === "stop";
+      // A follow-up sent before the first result joins it under the whole-child
+      // barrier; that result then ends the follow-up, not the stopped original.
+      const followUpEndsStoppedTask =
+        !followUp &&
+        stopDisposed &&
+        taskRuns.length > 0 &&
+        restartContinuationSource(childControls.runs, childRun).id !==
+          taskRuns.toSorted((a, b) => a.ordinal - b.ordinal)[0]!.id;
       // A follow-up keeps the task's first result (task_status reports the
       // later one as latestTerminal*) and reopens a wake the parent already
       // observed or a Stop disposed. A cancelled task stays quiet.
@@ -11137,11 +11156,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? !explicitlyStopped &&
           (observedDelivery?.state === "acknowledged" ||
             observedDelivery?.state === "delivered" ||
-            (observedDelivery?.state === "disposed" && observedDelivery.disposedBy === "stop"))
+            stopDisposed)
           ? { ...unobservedTask, updatedAt: now }
           : task
         : {
-            ...task,
+            ...(followUpEndsStoppedTask ? unobservedTask : task),
             providerThreadId: childRun.providerThreadId,
             status: terminalStatus,
             result: result.text,
@@ -11171,7 +11190,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     },
                   }
                 : parentRun,
-            task: followUp ? { ...task, completionWake: "always" } : task,
+            task:
+              followUp || followUpEndsStoppedTask ? { ...task, completionWake: "always" } : task,
             updatedTask,
             now,
           });
