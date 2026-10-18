@@ -2251,9 +2251,7 @@ sources and reasons.
   "id": "login-shell-capture",
   "purpose": "Keep installed harnesses available when the desktop login-shell capture is slow or fails, and let the server try again only when that capture did not return a PATH.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/458"],
-  "prs": [
-    "https://github.com/toolboxmd/chromeria/compare/c1d3960a1d1c0da46e714553ec32bf08b3136844...fix/458-login-shell-capture"
-  ],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/459"],
   "newFiles": [],
   "upstreamFiles": [
     "apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
