@@ -86,5 +86,7 @@ export * from "./spectrumSettings.ts";
 export * from "./browserCookieMirror.ts";
 export * from "./webResearch.ts";
 export * from "./peerAuthority.ts";
+export * from "./peerAttachments.ts";
 
 export * from "./peerTask.ts";
+export * from "./mcpRequest.ts";

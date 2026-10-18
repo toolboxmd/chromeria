@@ -1,3 +1,4 @@
+import { threadRequestNamespace } from "./requestIdentity.ts";
 import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import * as Option from "effect/Option";
 import { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
@@ -155,7 +156,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       const browserToolsAvailable = request.browserToolsAvailable ?? true;
       const scope: McpInvocationContext.McpThreadInvocationScope = {
         environmentId,
-        requestNamespace: providerSessionId,
+        requestNamespace: threadRequestNamespace(environmentId, request.threadId),
         thread: {
           threadId: ThreadId.make(request.threadId),
           providerSessionId,

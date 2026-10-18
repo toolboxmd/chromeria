@@ -171,7 +171,6 @@ apps/web/test/environmentHttpTest.ts
 docs/README.md
 packages/contracts/src/auth.ts
 packages/contracts/src/environmentHttp.ts
-packages/contracts/src/orchestrationV2.ts
 packages/provider-core/src/server/subagentProjection.ts
 # Prism routing, settings and shared runtime guidance (#169, #568)
 apps/server/src/mcp/toolkits/preview/tools.test.ts
@@ -309,7 +308,6 @@ apps/server/src/mcp/toolkits/worktree/tools.ts
 apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts
 docs/internals/remote.md
 packages/contracts/src/assets.ts
-apps/server/src/mcp/toolkits/orchestrator/tools.test.ts
 apps/server/src/htmlRender/HtmlRender.ts
 apps/server/src/mcp/toolkits/html/handlers.ts
 apps/server/src/htmlRender/HtmlRender.test.ts
@@ -374,8 +372,6 @@ packages/provider-cursor/src/server/sdk.ts
 packages/provider-grok/package.json
 packages/provider-grok/src/server/acpSupport.ts
 packages/provider-opencode/src/server/OpenCodeRuntime.ts
-packages/provider-opencode/src/server/adapter.test.ts
-packages/provider-opencode/src/server/adapter.ts
 packages/provider-opencode/src/server/driver.ts
 # Urgent interruption (#285)
 apps/server/src/orchestration-v2/ProviderTurnControlService.ts
@@ -526,8 +522,6 @@ apps/mobile/src/state/thread-outbox.test.ts
 apps/mobile/src/state/use-thread-composer-state.ts
 apps/mobile/src/state/use-thread-outbox-drain.ts
 apps/server/src/mcp/toolkits/pullRequests/handlers.ts
-apps/server/src/orchestration-v2/ProviderContinuationService.test.ts
-apps/server/src/orchestration-v2/ProviderContinuationService.ts
 packages/client-runtime/src/state/models.ts
 packages/contracts/src/threadPullRequest.ts
 packages/provider-core/src/server/ProviderContinuationRequests.ts
@@ -588,3 +582,15 @@ apps/desktop/scripts/main-process-bundle.test.mjs
 apps/server/src/mcp/PreviewAutomationBroker.ts
 apps/server/src/mcp/toolkits/preview/handlers.ts
 apps/server/src/preview/ServerBrowserPage.ts
+
+apps/server/src/assets/AttachmentUpload.ts
+apps/server/src/mcp/ThreadMetadataMcpService.ts
+apps/server/src/mcp/toolkits/attachment/input.ts
+apps/server/src/mcp/toolkits/device/handlers.ts
+apps/server/src/mcp/toolkits/environment/handlers.ts
+apps/server/src/mcp/toolkits/preview/handlers.test.ts
+apps/server/src/mcp/toolkits/previewControls/handlers.ts
+apps/server/src/mcp/toolkits/worktree/handlers.ts
+apps/server/src/orchestration-v2/AttachmentClaims.ts
+apps/server/src/project/ManagedProjectFolders.test.ts
+apps/server/src/project/ManagedProjectFolders.ts

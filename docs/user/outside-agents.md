@@ -80,6 +80,28 @@ link. This does not let it interrupt the parent or use unrelated threads. A
 pending return receipt means the notice is stored for delivery; the parent has
 not acknowledged it yet.
 
+## Recover an interrupted call
+
+For tools that accept a request key, keep the same key when retrying the same
+operation after a lost reply or sign-in renewal. Changing the operation needs a
+new key. If a tool reports `outcome_unknown`, inspect its destination before
+starting another action: the original action may already have happened.
+
+A keyed snapshot save returns its original PNG artifact receipt; its qualified
+path is in `artifact.screenshotPath`. For a remote saved snapshot, its server
+must remain reachable and your access must still permit that preview. Its
+renderer can be disconnected; update both servers if the renderer-free replay
+check is unsupported. Ordinary snapshot inspection remains available separately. A confirmed-operation receipt describes the original acceptance. Read current
+preferences with `t3_environment_read`, scheduled tasks with
+`list_scheduled_tasks`, and links with their list tools. For a new timer, report
+the current cadence and next run time from that list. For a webhook, read its
+current public URL there.
+
+Linked environments can transfer supported attachments with a send or launch.
+The source must own or be authorized to read the attachment, and the destination
+checks the received bytes before accepting it. A local path alone is not a
+transferable attachment.
+
 ## Claude Code
 
 ```sh

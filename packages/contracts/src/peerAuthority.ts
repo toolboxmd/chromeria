@@ -39,6 +39,13 @@ export const PeerAuthorityEnvelope = Schema.Struct({
   digest: Schema.String,
   route: Schema.Array(EnvironmentId),
   descendant: Schema.Boolean,
+  /** Bound to the complete authenticated envelope; absent on pre-request-identity peers. */
+  requestOwner: Schema.optionalKey(
+    Schema.Struct({
+      namespace: Schema.String.check(Schema.isMaxLength(2048)),
+      generation: Schema.String.check(Schema.isMaxLength(2048)),
+    }),
+  ),
   pair: Schema.optionalKey(Schema.Struct({ parentThreadId: ThreadId, taskId: NodeId })),
 });
 export type PeerAuthorityEnvelope = typeof PeerAuthorityEnvelope.Type;

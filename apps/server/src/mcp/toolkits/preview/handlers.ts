@@ -1,3 +1,7 @@
+import { CurrentRequest } from "../../McpRequestReceipts.ts";
+import { loadCaller } from "../../threadAccess.ts";
+import { assertSameLink } from "../../linkOrigin.ts";
+import * as Option from "effect/Option";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
@@ -7,6 +11,7 @@ import {
   PreviewAutomationRecordingTransferError,
   PreviewAutomationRecordingDesktopUpdateRequiredError,
   PreviewAutomationRecordingArtifact,
+  OrchestratorMcpFailure,
   type ToolActivityIcon,
   type ThreadId,
   type PreviewAutomationOperation,
@@ -33,6 +38,7 @@ import * as ServerConfig from "../../../config.ts";
 import { recordCredentialFill } from "../../../preview/CredentialAudit.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
+import * as AttachmentStaging from "../../../assets/AttachmentStaging.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import { PreviewSnapshotToolkit, PreviewStandardToolkit, PreviewToolkit } from "./tools.ts";
 
@@ -59,7 +65,8 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
   tabId?: PreviewTabId,
 ): Effect.fn.Return<
   { result: A; toolIcon?: ToolActivityIcon },
-  import("@t3tools/contracts").PreviewAutomationError,
+  | import("@t3tools/contracts").PreviewAutomationError
+  | import("@t3tools/contracts").OrchestratorMcpFailure,
   McpInvocationContext.McpInvocationContext | PreviewAutomationBroker.PreviewAutomationBroker
 > {
   const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
@@ -75,7 +82,8 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
     ...(tabId === undefined ? {} : { tabId }),
   });
-  if (["status", "open", "navigate", "snapshot"].includes(operation)) return { result };
+  if (["status", "open", "navigate", "snapshot", "recordingStop"].includes(operation))
+    return { result };
   const statusTabId =
     (operation !== "evaluate" && typeof result === "object" && result !== null
       ? (result as { tabId?: PreviewTabId }).tabId
@@ -159,74 +167,115 @@ export const claimPreviewRecording = Effect.fn("PreviewToolkit.claimRecording")(
   if (!currentPath || !finalPath) {
     return yield* new PreviewAutomationRecordingTransferError({ threadId });
   }
+  const { uploadedAttachmentId: _uploadedAttachmentId, ...recording } = artifact;
+  const attachment = {
+    type: "file" as const,
+    id: finalId,
+    name: `recording.${extension}`,
+    mimeType: artifact.mimeType,
+    sizeBytes: artifact.sizeBytes,
+  };
+  const staging = yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging);
+  const scope = yield* Effect.serviceOption(McpInvocationContext.McpInvocationContext);
+  if (Option.isSome(staging) && Option.isSome(scope)) {
+    if (scope.value.thread?.threadId !== threadId)
+      return yield* new PreviewAutomationRecordingTransferError({ threadId });
+    const resource = yield* staging.value.claimRecording(scope.value, pendingId, attachment);
+    return { ...recording, id: finalId, path: finalPath, resource };
+  }
+  // Minimal legacy compositions have no durable acceptance evidence. First
+  // publication is exclusive; an existing path is never guessed to be ours.
   const fileSystem = yield* FileSystem.FileSystem;
-  const validateFile = (filePath: string) =>
-    fileSystem.stat(filePath).pipe(
-      Effect.filterOrFail(
-        (stat) =>
-          stat.type === "File" &&
-          Number(stat.size) === artifact.sizeBytes &&
-          artifact.sizeBytes > 0 &&
-          artifact.sizeBytes <= PROVIDER_SEND_TURN_MAX_FILE_BYTES,
-        () => new PreviewAutomationRecordingTransferError({ threadId }),
-      ),
-    );
   yield* Effect.gen(function* () {
-    yield* validateFile(currentPath);
-    yield* fileSystem.rename(currentPath, finalPath);
+    const bytes = yield* fileSystem.readFile(currentPath);
+    if (
+      bytes.byteLength !== artifact.sizeBytes ||
+      artifact.sizeBytes < 1 ||
+      artifact.sizeBytes > PROVIDER_SEND_TURN_MAX_FILE_BYTES
+    )
+      return yield* new PreviewAutomationRecordingTransferError({ threadId });
+    yield* fileSystem.writeFile(finalPath, bytes, { flag: "wx" });
   }).pipe(
-    Effect.catchIf(
-      (cause) =>
-        cause._tag !== "PreviewAutomationRecordingTransferError" &&
-        cause.reason._tag === "NotFound",
-      () => validateFile(finalPath),
-    ),
     Effect.mapError((cause) => new PreviewAutomationRecordingTransferError({ threadId, cause })),
   );
-  const { uploadedAttachmentId: _uploadedAttachmentId, ...recording } = artifact;
-  return { ...recording, id: finalId, path: finalPath };
+  return { ...recording, id: finalId, path: finalPath, resource: undefined };
 });
 
+/** Snapshot access is independent of any renderer, page or tab state. */
+const authorizePreviewTarget = McpInvocationContext.requireThreadMcpCapability("preview").pipe(
+  Effect.andThen(loadCaller()),
+  Effect.flatMap((caller) =>
+    caller.caller === undefined
+      ? Effect.fail(
+          new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "Snapshot access needs its authorized calling thread.",
+          }),
+        )
+      : assertSameLink(caller, caller.caller),
+  ),
+);
+
+export const authorizeSnapshot = authorizePreviewTarget;
+
 const handlers = {
-  preview_dialog: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<PreviewAutomationStatus>("dialog", input),
+  preview_dialog: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<PreviewAutomationStatus>("dialog", input),
+    "external-unknown",
   ),
   preview_status: McpToolAccess.readsAsCaller((input) =>
     invokeTargeted<PreviewAutomationStatus>("status", input ?? {}),
   ),
-  preview_open: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<PreviewAutomationStatus>("open", normalizePreviewOpenInput(input)),
+  preview_open: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<PreviewAutomationStatus>("open", normalizePreviewOpenInput(input)),
+    "external-unknown",
   ),
-  preview_navigate: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<PreviewAutomationStatus>("navigate", input, input.timeoutMs),
+  preview_navigate: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<PreviewAutomationStatus>("navigate", input, input.timeoutMs),
+    "external-unknown",
   ),
-  preview_resize: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<PreviewAutomationResizeResult>("resize", input, input.timeoutMs),
+  preview_resize: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<PreviewAutomationResizeResult>("resize", input, input.timeoutMs),
+    "external-unknown",
   ),
-  preview_set_appearance: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<PreviewAutomationSetColorSchemeResult>("setColorScheme", input),
+  preview_set_appearance: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<PreviewAutomationSetColorSchemeResult>("setColorScheme", input),
+    "external-unknown",
   ),
-  preview_snapshot: McpToolAccess.readsAsCaller((input) => {
-    const { includeImage: _includeImage, save: _save, ...operationInput } = input ?? {};
-    return invokeTargeted<PreviewAutomationSnapshot>("snapshot", operationInput);
-  }),
-  preview_click: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<object>("click", input, input.timeoutMs),
+  preview_snapshot: McpToolAccess.readsAsCaller(
+    (input) => {
+      // Output selection and saving are MCP-only; the browser still produces a complete snapshot.
+      const { includeImage: _includeImage, save: _save, ...operationInput } = input ?? {};
+      return authorizeSnapshot.pipe(
+        Effect.andThen(invokeTargeted<PreviewAutomationSnapshot>("snapshot", operationInput)),
+      );
+    },
+    {
+      effect: (input) =>
+        typeof input === "object" && input !== null && "save" in input && input.save === true
+          ? "external-unknown"
+          : "read",
+    },
   ),
-  preview_type: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<object>("type", input, input.timeoutMs),
+  preview_click: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<object>("click", input, input.timeoutMs),
+    "external-unknown",
   ),
-  preview_hover: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<object>("hover", input, input.timeoutMs),
+  preview_type: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<object>("type", input, input.timeoutMs),
+    "external-unknown",
   ),
-  preview_select: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<PreviewAutomationSelectResult>("select", input, input.timeoutMs),
+  preview_hover: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<object>("hover", input, input.timeoutMs),
+    "external-unknown",
   ),
-  preview_drag: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<object>("drag", input, input.timeoutMs),
+  preview_select: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<PreviewAutomationSelectResult>("select", input, input.timeoutMs),
+    "external-unknown",
   ),
-  preview_upload: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<object>("upload", input, input.timeoutMs),
+  preview_drag: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<object>("drag", input, input.timeoutMs),
+    "external-unknown",
   ),
   preview_fill_credential: McpToolAccess.actsAsCaller((input) =>
     Effect.gen(function* () {
@@ -256,35 +305,74 @@ const handlers = {
   preview_end_login: McpToolAccess.actsAsCaller((input) =>
     invokeTargeted<PreviewAutomationEndLoginResult>("endLogin", input ?? {}),
   ),
-  preview_press: McpToolAccess.actsAsCaller((input) => invokeTargeted<object>("press", input)),
-  preview_scroll: McpToolAccess.actsAsCaller((input) => invokeTargeted<object>("scroll", input)),
-  preview_evaluate: McpToolAccess.actsAsCaller(({ tabId, ...input }) =>
-    invoke<unknown>("evaluate", input, undefined, tabId).pipe(
-      Effect.map(({ result, toolIcon }) => ({
-        value: result ?? null,
-        ...(toolIcon ? { toolIcon } : {}),
-      })),
-    ),
+  preview_upload: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<object>("upload", input, input.timeoutMs),
+    "external-unknown",
+  ),
+  preview_press: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<object>("press", input),
+    "external-unknown",
+  ),
+  preview_scroll: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<object>("scroll", input),
+    "external-unknown",
+  ),
+  preview_evaluate: McpToolAccess.actsAsCaller(
+    ({ tabId, ...input }) =>
+      invoke<unknown>("evaluate", input, undefined, tabId).pipe(
+        Effect.map(({ result, toolIcon }) => ({
+          value: result ?? null,
+          ...(toolIcon ? { toolIcon } : {}),
+        })),
+      ),
+    "external-unknown",
   ),
   preview_wait_for: McpToolAccess.readsAsCaller((input) =>
     invokeTargeted<object>("waitFor", input, input.timeoutMs),
   ),
-  preview_recording_start: McpToolAccess.actsAsCaller((input) =>
-    invokeTargeted<PreviewAutomationRecordingStatus>("recordingStart", input ?? {}),
+  preview_recording_start: McpToolAccess.actsAsCaller(
+    (input) => invokeTargeted<PreviewAutomationRecordingStatus>("recordingStart", input ?? {}),
+    "external-unknown",
   ),
-  preview_recording_stop: McpToolAccess.actsAsCaller((input) =>
-    Effect.gen(function* () {
-      const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
-      const { tabId, ...operationInput } = input;
-      const response = yield* invoke<unknown>(
-        "recordingStop",
-        { ...operationInput, transferToEnvironment: true },
-        PREVIEW_RECORDING_STOP_TIMEOUT_MS,
-        tabId,
-      );
-      const artifact = yield* claimPreviewRecording(scope.thread.threadId, response.result);
-      return { ...artifact, ...(response.toolIcon ? { toolIcon: response.toolIcon } : {}) };
-    }),
+  preview_recording_stop: McpToolAccess.actsAsCaller(
+    (input) =>
+      Effect.gen(function* () {
+        yield* authorizePreviewTarget;
+        const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
+        const staging = yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging);
+        const modern =
+          scope.client?.linked === true && scope.authority?.envelope.requestOwner !== undefined;
+        const request = yield* CurrentRequest;
+        if ((modern || request !== undefined) && Option.isNone(staging))
+          return yield* new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message:
+              "The durable media reference owner is unavailable; recording stop was not dispatched.",
+          });
+        const { tabId, ...operationInput } = input;
+        const response = yield* invoke<unknown>(
+          "recordingStop",
+          { ...operationInput, transferToEnvironment: true },
+          PREVIEW_RECORDING_STOP_TIMEOUT_MS,
+          tabId,
+        );
+        const { resource, ...artifact } = yield* claimPreviewRecording(
+          scope.thread.threadId,
+          response.result,
+        );
+        if (modern && resource !== undefined) {
+          return {
+            resource,
+            tabId: artifact.tabId,
+            mimeType: artifact.mimeType,
+            sizeBytes: artifact.sizeBytes,
+            createdAt: artifact.createdAt,
+            ...(response.toolIcon ? { toolIcon: response.toolIcon } : {}),
+          };
+        }
+        return { ...artifact, ...(response.toolIcon ? { toolIcon: response.toolIcon } : {}) };
+      }),
+    "external-unknown",
   ),
 } satisfies McpToolAccess.Handlers<typeof PreviewToolkit.tools>;
 

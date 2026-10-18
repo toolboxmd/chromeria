@@ -2672,6 +2672,7 @@ describe("OrchestratorMcpService provider resolution", () => {
         });
         assert.equal(yield* Ref.get(upserted), 1);
         assert.equal(updated.scheduledTaskId, bound.id);
+        assert.ok(!("type" in updated), "The unkeyed caller keeps the current task projection.");
         assert.equal(updated.webhookUrl, undefined);
       }),
     );
