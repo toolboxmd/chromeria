@@ -585,12 +585,6 @@ const cases = [
     operation: "queued-run.edit",
   },
   {
-    group: "pending requests",
-    name: "t3_pending_request_respond",
-    args: { threadId, requestId: "question", answers: {} },
-    operation: "runtime-request.respond",
-  },
-  {
     group: "projects",
     name: "t3_project_update",
     args: { projectId, title: "Remote" },
@@ -723,6 +717,28 @@ it.effect("new native tools retain local execution when no environment is select
       ]);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "pending request mutations refuse an old peer before its unverified request handler",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* fixture;
+        yield* f.link("full-access");
+        const before = yield* Ref.get(f.seen);
+        const result = yield* f.call(
+          "t3_pending_request_respond",
+          { threadId, requestId: "question", answers: {} },
+          false,
+        );
+        expect(result.isError).toBe(true);
+        expect(JSON.stringify(result)).toContain(
+          "does not support verified pending request actions",
+        );
+        expect(yield* Ref.get(f.seen)).toEqual(before);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect.each(cases)("$group reaches the peer and refuses a narrower link", (test) =>

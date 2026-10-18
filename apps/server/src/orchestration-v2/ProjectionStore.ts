@@ -1213,6 +1213,7 @@ type ShellThreadRow = {
   readonly blocking_run_completed_at: string | null;
   readonly blocking_failure_payload_json: string | null;
   readonly pending_request_payload_json: string | null;
+  readonly remote_pending_request_kind: "approval" | "user_input" | null;
   readonly pending_secret_request_payload_json: string | null;
   readonly latest_user_message_at: string | null;
   readonly latest_user_authored_message_at: string | null;
@@ -1619,6 +1620,32 @@ function secretRequestAsPendingInput(
   };
 }
 
+function remotePendingRequestKind(
+  tasks: ReadonlyArray<OrchestrationV2Subagent>,
+): "approval" | "user_input" | null {
+  let kind: "approval" | "user_input" | null = null;
+  for (const task of tasks) {
+    const remote = task.remoteChild;
+    if (
+      task.completionDelivery?.state === "disposed" ||
+      remote?.stop !== undefined ||
+      remote?.availability !== "current"
+    )
+      continue;
+    for (const request of remote.snapshot?.requests ?? []) {
+      if (
+        request.responseType !== "live" ||
+        request.kind === "auth_refresh" ||
+        request.kind === "dynamic_tool_call"
+      )
+        continue;
+      if (request.kind !== "user_input") return "approval";
+      kind = "user_input";
+    }
+  }
+  return kind;
+}
+
 export function threadShellFromProjection(
   projection: OrchestrationV2ThreadProjection,
   pendingChildTasks: ReadonlyArray<OrchestrationV2Subagent> = [],
@@ -1741,6 +1768,7 @@ export function threadShellFromProjection(
           },
     // Thread detail owns message bodies. Keeping them out of shell rows makes
     // initial hydration and streaming updates independent of transcript size.
+    remotePendingRequest: remotePendingRequestKind(projection.subagents),
     latestVisibleMessage: null,
     latestUserMessageAt: latestUserMessage?.updatedAt ?? null,
     latestUserAuthoredMessageAt:
@@ -1845,6 +1873,7 @@ type ShellThreadState = {
   readonly lastErrorClass: OrchestrationV2ThreadShell["lastErrorClass"];
   readonly usageLimitResetAt: OrchestrationV2ThreadShell["usageLimitResetAt"];
   readonly pendingRuntimeRequest: OrchestrationV2ThreadProjection["runtimeRequests"][number] | null;
+  readonly remotePendingRequest?: "approval" | "user_input" | null;
   readonly latestUserMessageAt: DateTime.Utc | null;
   readonly latestUserAuthoredMessageAt: DateTime.Utc | null;
   readonly hasActionableProposedPlan: boolean;
@@ -2014,6 +2043,7 @@ function shellFromState(input: {
             kind: input.state.pendingRuntimeRequest.kind,
             createdAt: input.state.pendingRuntimeRequest.createdAt,
           },
+    remotePendingRequest: input.state.remotePendingRequest ?? null,
     latestVisibleMessage: null,
     latestUserMessageAt: input.state.latestUserMessageAt,
     latestUserAuthoredMessageAt: input.state.latestUserAuthoredMessageAt,
@@ -5632,6 +5662,18 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 LIMIT 1
               ) AS pending_request_payload_json,
               (
+                SELECT CASE WHEN json_extract(request.value,'$.kind')='user_input' THEN 'user_input' ELSE 'approval' END
+                FROM orchestration_v2_projection_subagents task,
+                  json_each(task.payload_json,'$.remoteChild.snapshot.requests') request
+                WHERE task.thread_id=t.thread_id
+                  AND json_extract(task.payload_json,'$.remoteChild.availability')='current'
+                  AND json_extract(task.payload_json,'$.remoteChild.stop') IS NULL
+                  AND COALESCE(json_extract(task.payload_json,'$.completionDelivery.state'),'')<>'disposed'
+                  AND json_extract(request.value,'$.responseType')='live'
+                  AND json_extract(request.value,'$.kind') NOT IN ('auth_refresh','dynamic_tool_call')
+                ORDER BY CASE WHEN json_extract(request.value,'$.kind')='user_input' THEN 1 ELSE 0 END LIMIT 1
+              ) AS remote_pending_request_kind,
+              (
                 SELECT secret.payload_json
                 -- Keep runs outermost so completed history is never scanned for a pending secret.
                 FROM orchestration_v2_projection_runs r
@@ -6187,6 +6229,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             row.last_error,
           ),
           pendingRuntimeRequest,
+          remotePendingRequest: row.remote_pending_request_kind,
           latestUserMessageAt:
             row.latest_user_message_at === null
               ? null

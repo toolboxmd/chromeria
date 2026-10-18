@@ -70,6 +70,8 @@ const RPC_AGGREGATES = {
   [WS_METHODS.serverGetDatabaseStorage]: "server",
   [WS_METHODS.serverGetSettings]: "server",
   [WS_METHODS.remoteTaskView]: "orchestration",
+  [WS_METHODS.remoteTaskRequest]: "orchestration",
+  [WS_METHODS.remoteTaskRequestRead]: "orchestration",
   [WS_METHODS.remoteTaskStop]: "orchestration",
   [WS_METHODS.peerGrantsList]: "peerLinks",
   [WS_METHODS.peerGrantsUpdate]: "peerLinks",
