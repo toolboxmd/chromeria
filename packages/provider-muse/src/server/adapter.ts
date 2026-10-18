@@ -95,6 +95,13 @@ const isOpenSessionError = Schema.is(ProviderAdapter.ProviderAdapterOpenSessionE
 const isProtocolError = Schema.is(ProviderAdapter.ProviderAdapterProtocolError);
 
 const MuseProviderCapabilitiesV2 = {
+  purposeEvidence: {
+    version: 1,
+    nativeInputs: "unsupported",
+    childSegments: "unsupported",
+    backgroundInventory: "unsupported",
+    nativeUsageFinality: "main_agent_only",
+  },
   runtimePolicy: { enforcement: "native" },
   sessions: {
     supportsMultipleProviderThreadsPerSession: false,

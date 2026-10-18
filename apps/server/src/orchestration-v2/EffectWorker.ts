@@ -1,3 +1,4 @@
+import { executionPurposeOf } from "@t3tools/contracts";
 import { CommandId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -283,6 +284,15 @@ export const layerExecutor: Layer.Layer<
                     // retry cannot append a duplicate message or start a second follow-up.
                     yield* threads
                       .dispatch({
+                        purposeSource: {
+                          version: 1,
+                          scope: executionPurposeOf(run).scope,
+                          provenance: {
+                            type: "source_run",
+                            threadId: effect.threadId,
+                            runId: run.id,
+                          },
+                        },
                         type: "message.dispatch",
                         commandId: CommandId.make(`command:steer-follow-up:${effect.id}`),
                         threadId: effect.threadId,

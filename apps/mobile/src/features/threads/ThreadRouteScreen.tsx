@@ -1,4 +1,5 @@
 import * as Dialog from "../../components/ui/Dialog";
+import { executionPurposeOf, savedPurposeIntentForScope } from "@t3tools/contracts";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
 import { buildProjectThreadStartTurnInput } from "../../lib/projectThreadStartTurn";
@@ -878,22 +879,29 @@ function ThreadRouteContent(
       const metadata = makeTurnCommandMetadata();
       const launched = await startLocalThread({
         environmentId: selectedThread.environmentId,
-        input: buildProjectThreadStartTurnInput({
-          ...metadata,
-          projectId: selectedThread.projectId,
-          projectCwd: selectedThreadProject.workspaceRoot,
-          text: setupMessage.text,
-          ...(setupMessage.context ? { context: setupMessage.context } : {}),
-          uploadedAttachments: setupMessage.attachments,
-          modelSelection: selectedThread.modelSelection,
-          runtimeMode: selectedThread.runtimeMode,
-          interactionMode: selectedThread.interactionMode,
-          workspaceMode: "local",
-          branch: null,
-          worktreePath: null,
-          startFromOrigin: false,
-          worktreeBranchName: "",
-        }),
+        input: {
+          ...buildProjectThreadStartTurnInput({
+            ...metadata,
+            projectId: selectedThread.projectId,
+            projectCwd: selectedThreadProject.workspaceRoot,
+            text: setupMessage.text,
+            ...(setupMessage.context ? { context: setupMessage.context } : {}),
+            uploadedAttachments: setupMessage.attachments,
+            modelSelection: selectedThread.modelSelection,
+            runtimeMode: selectedThread.runtimeMode,
+            interactionMode: selectedThread.interactionMode,
+            workspaceMode: "local",
+            branch: null,
+            worktreePath: null,
+            startFromOrigin: false,
+            worktreeBranchName: "",
+          }),
+          purposeIntent: savedPurposeIntentForScope(
+            executionPurposeOf(
+              selectedThreadDetail?.runs.find((run) => run.id === setupMessage.runId) ?? {},
+            ).scope,
+          ),
+        },
       });
       if (launched._tag !== "Success") return;
       navigation.dispatch(
@@ -910,6 +918,7 @@ function ThreadRouteContent(
     navigation,
     selectedThread,
     selectedThreadProject,
+    selectedThreadDetail,
     setupMessage,
     startLocalThread,
   ]);

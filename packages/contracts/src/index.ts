@@ -37,6 +37,8 @@ export * from "./pullRequest.ts";
 export * from "./pullRequestReviewGuide.ts";
 export * from "./issues.ts";
 export * from "./issueLinks.ts";
+export * from "./executionPurpose.ts";
+export * from "./nativeExecution.ts";
 export * from "./featureMap.ts";
 export * from "./orchestrationDispatch.ts";
 export * from "./orchestrationProject.ts";

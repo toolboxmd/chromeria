@@ -844,6 +844,7 @@ export function useThreadOutboxDrain(): void {
         environmentId: queuedMessage.environmentId,
         input: {
           commandId: queuedMessage.commandId,
+          purposeIntent: queuedMessage.purposeIntent,
           creationSource: "mobile",
           threadId: queuedMessage.threadId,
           message: {
@@ -1012,32 +1013,35 @@ export function useThreadOutboxDrain(): void {
       }
       const deliveryResult = await startTurn({
         environmentId: queuedMessage.environmentId,
-        input: buildProjectThreadStartTurnInput({
-          projectId: creation.projectId,
-          projectCwd,
-          threadId: queuedMessage.threadId,
-          commandId: queuedMessage.commandId,
-          messageId: queuedMessage.messageId,
-          createdAt: queuedMessage.createdAt,
-          ...serializeComposerMessageForServer(
-            queuedMessage.text.trim(),
-            uploadedComposerContext(
-              queuedMessage.context,
-              queuedMessage.attachments,
-              prepared.attachments,
+        input: {
+          ...buildProjectThreadStartTurnInput({
+            projectId: creation.projectId,
+            projectCwd,
+            threadId: queuedMessage.threadId,
+            commandId: queuedMessage.commandId,
+            messageId: queuedMessage.messageId,
+            createdAt: queuedMessage.createdAt,
+            ...serializeComposerMessageForServer(
+              queuedMessage.text.trim(),
+              uploadedComposerContext(
+                queuedMessage.context,
+                queuedMessage.attachments,
+                prepared.attachments,
+              ),
+              currentConfig.environment.capabilities.inlineMessageContext === true,
             ),
-            currentConfig.environment.capabilities.inlineMessageContext === true,
-          ),
-          uploadedAttachments: prepared.attachments,
-          modelSelection: sendSettings.modelSelection,
-          runtimeMode: sendSettings.runtimeMode,
-          interactionMode: sendSettings.interactionMode,
-          workspaceMode: workspace.workspaceMode,
-          branch: workspace.branch,
-          worktreePath: workspace.worktreePath,
-          startFromOrigin: workspace.startFromOrigin ?? false,
-          worktreeBranchName: buildTemporaryWorktreeBranchName(randomHex),
-        }),
+            uploadedAttachments: prepared.attachments,
+            modelSelection: sendSettings.modelSelection,
+            runtimeMode: sendSettings.runtimeMode,
+            interactionMode: sendSettings.interactionMode,
+            workspaceMode: workspace.workspaceMode,
+            branch: workspace.branch,
+            worktreePath: workspace.worktreePath,
+            startFromOrigin: workspace.startFromOrigin ?? false,
+            worktreeBranchName: buildTemporaryWorktreeBranchName(randomHex),
+          }),
+          purposeIntent: queuedMessage.purposeIntent,
+        },
       });
       if (AsyncResult.isFailure(deliveryResult) && !hasAccess()) return true;
       const failure = reportFailure(deliveryResult, "start-turn");

@@ -1088,8 +1088,16 @@ describe("orchestrator MCP toolkit", () => {
                   ]);
                   return { task };
                 }),
-              setEnabled: () =>
-                Effect.die("ScheduledTaskService.setEnabled is unused in this test"),
+              setEnabled: (input) =>
+                Ref.modify(scheduledStore, (tasks) => {
+                  const task = tasks.find((task) => task.id === input.id);
+                  if (task === undefined) throw new Error("Missing scheduled task fixture");
+                  const updated = { ...task, enabled: input.enabled };
+                  return [
+                    { task: updated },
+                    tasks.map((task) => (task.id === input.id ? updated : task)),
+                  ] as const;
+                }),
               delete: (input) =>
                 Ref.update(scheduledStore, (all) =>
                   all.filter((candidate) => candidate.id !== input.id),
@@ -4628,15 +4636,21 @@ describe("orchestrator MCP toolkit", () => {
           )!;
           const {
             completionDelivery: _firstDelivery,
+            completionSource: _firstCompletionSource,
             updatedAt: _firstUpdatedAt,
             ...firstResult
           } = originalTask;
           const {
             completionDelivery: _delivery,
+            completionSource: _completionSource,
             updatedAt: _updatedAt,
             ...stableResult
           } = finishedTask;
           expect(stableResult).toEqual(firstResult);
+          expect(finishedTask.completionSource).toEqual({
+            runId: queuedFollowup.runId,
+            purpose: finalProjection.runs.find((run) => run.id === queuedFollowup.runId)?.purpose,
+          });
           expect(
             finishedParent.subagents.filter(
               (task) => task.childThreadId === delegated.childThreadId,

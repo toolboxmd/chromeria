@@ -819,10 +819,11 @@ describe("Run groups", () => {
           ).toBe(claude);
           // Reviewer keeps Run 1: the result is exactly today's single-task shape.
           const single = yield* invoke("delegate_task", { task: "Review it.", role: "review" });
-          // `remoteChild` is present only for a task in a linked environment.
+          // `remoteChild` is present only for a task in a linked environment, and
+          // `latestTerminalPurpose` only once a later run has ended.
           expect(Object.keys(single.structuredContent ?? {}).toSorted()).toEqual(
             Object.keys(OrchestratorMcpDelegateTaskResult.fields)
-              .filter((key) => key !== "remoteChild")
+              .filter((key) => key !== "remoteChild" && key !== "latestTerminalPurpose")
               .toSorted(),
           );
         }),
