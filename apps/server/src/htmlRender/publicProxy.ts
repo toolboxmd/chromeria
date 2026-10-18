@@ -69,11 +69,12 @@ const ownAddresses = () => {
   return own;
 };
 
-const isLocal = (address: string, family: number): boolean => {
+// Shared with research fetches so proxy and direct requests use the same address policy.
+export const isLocalAddress = (address: string, family: number): boolean => {
   const type = family === 6 ? "ipv6" : "ipv4";
   if (LOCAL_ADDRESSES.check(address, type) || ownAddresses().check(address, type)) return true;
   const embedded = family === 6 ? embeddedIPv4(address) : undefined;
-  return embedded !== undefined && isLocal(embedded, 4);
+  return embedded !== undefined && isLocalAddress(embedded, 4);
 };
 
 // Connect only to checked addresses to prevent DNS rebinding.
@@ -82,7 +83,7 @@ const publicAddresses = async (host: string) => {
     ? [{ address: host, family: NodeNet.isIP(host) }]
     : await NodeDnsPromises.lookup(host, { all: true, verbatim: true }).catch(() => []);
   if (addresses.length === 0) return undefined;
-  const local = addresses.some(({ address, family }) => isLocal(address, family));
+  const local = addresses.some(({ address, family }) => isLocalAddress(address, family));
   return local ? undefined : addresses;
 };
 

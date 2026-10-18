@@ -82,6 +82,11 @@ import {
 import * as HtmlHandlers from "./toolkits/html/handlers.ts";
 import { HtmlPreviewTool, HtmlPreviewToolkit, HtmlRenderToolkit } from "./toolkits/html/tools.ts";
 import { requestUrl } from "../requestUrl.ts";
+import * as WebResearchHandlers from "./toolkits/webResearch/handlers.ts";
+import { WebResearchToolkit } from "./toolkits/webResearch/tools.ts";
+import * as WebResearch from "../webResearch/WebResearch.ts";
+import * as PageCache from "../webResearch/PageCache.ts";
+import * as PublicHttp from "../webResearch/PublicHttp.ts";
 
 const mcpResourceMetadataUrl = (request: HttpServerRequest.HttpServerRequest) =>
   requestUrl(request).pipe(
@@ -1118,6 +1123,18 @@ export const layerHtmlToolkit = Layer.mergeAll(
   imageToolRegistration(registerHtmlPreview(), HtmlHandlers.layerPreview),
 ).pipe(Layer.provide(HtmlRender.layer));
 
+// One environment-owned reader/cache/limiter is shared by all MCP sessions.
+export const layerWebResearchToolkit = toolkitRegistration(
+  WebResearchToolkit,
+  WebResearchHandlers.layer,
+);
+
+const layerWebResearch = layerWebResearchToolkit.pipe(
+  Layer.provide(
+    WebResearch.layer.pipe(Layer.provide(PageCache.layer), Layer.provide(PublicHttp.layer)),
+  ),
+);
+
 const layerPreviewStandardToolkitRegistration = toolkitRegistration(
   PreviewStandardToolkit,
   PreviewHandlers.layerStandard,
@@ -1229,6 +1246,7 @@ export const layerTools = Layer.mergeAll(
   layerDeviceToolkit,
   toolkitRegistration(SpectrumToolkit.SpectrumToolkit, SpectrumToolkit.layer),
   layerHtmlToolkit,
+  layerWebResearch,
 );
 
 export const layer = layerMcpTransport(layerTools);
