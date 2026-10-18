@@ -1762,7 +1762,9 @@ sources and reasons.
     "packages/client-runtime/src/state/threadShell.test.ts",
     "packages/client-runtime/src/state/threadShell.ts",
     "packages/shared/src/agentAwareness.test.ts",
-    "packages/shared/src/agentAwareness.ts"
+    "packages/shared/src/agentAwareness.ts",
+    "apps/server/src/orchestration-v2/WireProjection.test.ts",
+    "packages/client-runtime/src/t3ToolSummary.test.ts"
   ],
   "sharedFiles": [
     "apps/server/src/orchestration-v2/EffectWorker.ts",
