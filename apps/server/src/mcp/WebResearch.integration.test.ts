@@ -515,11 +515,145 @@ it.effect("round 3: bounds actual semaphore contention separately from active fe
                 page.status === "ok" ||
                 (page.status === "challenge" &&
                   page.delayMs === 60_000 &&
-                  (page.retryAfterMs ?? 0) > 0),
+                  page.retryAfterMs === null),
             ),
           ).toBe(true);
         }
         expect([...pages.values()].every((page) => page.status === "ok")).toBe(true);
+      }).pipe(Effect.ensuring(s.check));
+    }).pipe(Effect.provide(f.layer));
+  }),
+);
+
+it.effect.each([
+  [55, 6],
+  [60, 2],
+] as const)(
+  "round 4: Crawl-delay %s allows an active response lasting %s seconds across the queue deadline",
+  ([seconds, activeSeconds]) =>
+    Effect.gen(function* () {
+      const release = yield* Deferred.make<void>();
+      const pages = new Map<string, CachedPage>();
+      const f = yield* fixture(
+        () => Deferred.await(release).pipe(Effect.as(response())),
+        memoryCache(pages),
+        `User-agent: *\nAllow: /\nCrawl-delay: ${seconds}`,
+      );
+      yield* Effect.gen(function* () {
+        const s = yield* session;
+        yield* Effect.gen(function* () {
+          const fiber = yield* Effect.forkScoped(s.read({ url: "https://active.example/" }));
+          yield* Queue.take(f.requests);
+          yield* TestClock.adjust(seconds * 1000);
+          expect(yield* Queue.take(f.requests)).toEqual({
+            url: "https://active.example/",
+            at: seconds * 1000,
+          });
+          yield* TestClock.adjust(activeSeconds * 1000);
+          yield* Deferred.succeed(release, undefined);
+          expect(yield* Fiber.join(fiber)).toMatchObject({
+            status: "ok",
+            delayMs: seconds * 1000,
+            httpStatus: 200,
+          });
+          expect(pages.get("https://active.example/")?.status).toBe("ok");
+        }).pipe(Effect.ensuring(s.check));
+      }).pipe(Effect.provide(f.layer));
+    }),
+);
+
+it.effect("round 4: the active HTTP timeout starts after long spacing", () =>
+  Effect.gen(function* () {
+    const release = yield* Deferred.make<void>();
+    const f = yield* fixture(
+      () => Deferred.await(release).pipe(Effect.as(response())),
+      memoryCache(new Map()),
+      "User-agent: *\nAllow: /\nCrawl-delay: 60",
+    );
+    yield* Effect.gen(function* () {
+      const s = yield* session;
+      yield* Effect.gen(function* () {
+        const fiber = yield* Effect.forkScoped(s.read({ url: "https://active-timeout.example/" }));
+        yield* Queue.take(f.requests);
+        yield* TestClock.adjust("60 seconds");
+        yield* Queue.take(f.requests);
+        yield* TestClock.adjust("10 seconds");
+        expect(yield* Fiber.join(fiber)).toMatchObject({
+          status: "timeout",
+          delayMs: 60_000,
+          fetchedAt: "1970-01-01T00:01:10.000Z",
+        });
+      }).pipe(Effect.ensuring(s.check));
+    }).pipe(Effect.provide(f.layer));
+  }),
+);
+
+it.effect("round 4: eight queued slow responses finish on their own active budgets", () =>
+  Effect.gen(function* () {
+    const releases = yield* Queue.unbounded<Deferred.Deferred<void>>();
+    const f = yield* fixture(
+      () =>
+        Effect.gen(function* () {
+          const release = yield* Deferred.make<void>();
+          yield* Queue.offer(releases, release);
+          yield* Deferred.await(release);
+          return response();
+        }),
+      memoryCache(new Map()),
+    );
+    yield* Effect.gen(function* () {
+      const s = yield* session;
+      yield* Effect.gen(function* () {
+        const fiber = yield* Effect.forkScoped(
+          Effect.forEach(
+            Array.from({ length: 8 }, (_, i) => `https://slow-queue.example/${i}`),
+            (url) => s.read({ url }),
+            { concurrency: "unbounded" },
+          ),
+        );
+        yield* Queue.take(f.requests);
+        yield* TestClock.adjust("3 seconds");
+        for (let i = 0; i < 8; i++) {
+          const release = yield* Queue.take(releases);
+          yield* TestClock.adjust("8 seconds");
+          yield* Deferred.succeed(release, undefined);
+        }
+        const results = yield* Fiber.join(fiber);
+        expect(results.map((page) => page.status)).toEqual(Array(8).fill("ok"));
+        expect(results.map((page) => page.delayMs).toSorted((a, b) => a - b)).toEqual([
+          3000, 11000, 19000, 27000, 35000, 43000, 51000, 59000,
+        ]);
+      }).pipe(Effect.ensuring(s.check));
+    }).pipe(Effect.provide(f.layer));
+  }),
+);
+
+it.effect("round 4: a refused redirect hop has no inherited HTTP response status", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture(
+      () =>
+        Effect.succeed({
+          ...response(""),
+          status: 302,
+          headers: { location: "/next", "retry-after": "600" },
+        }),
+      memoryCache(new Map()),
+    );
+    yield* Effect.gen(function* () {
+      const s = yield* session;
+      yield* Effect.gen(function* () {
+        const fiber = yield* Effect.forkScoped(s.read({ url: "https://redirect-wait.example/" }));
+        yield* Queue.take(f.requests);
+        yield* TestClock.adjust("3 seconds");
+        yield* Queue.take(f.requests);
+        expect(yield* Fiber.join(fiber)).toMatchObject({
+          status: "challenge",
+          finalUrl: "https://redirect-wait.example/next",
+          httpStatus: null,
+          delayMs: 3000,
+          retryAfterMs: 600_000,
+        });
+        expect(yield* Queue.size(f.requests)).toBe(0);
       }).pipe(Effect.ensuring(s.check));
     }).pipe(Effect.provide(f.layer));
   }),

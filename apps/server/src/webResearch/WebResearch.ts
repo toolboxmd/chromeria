@@ -94,7 +94,7 @@ class ReadStopped extends Schema.TaggedError<ReadStopped>()("ReadStopped", {
 class OriginQueueWaitError extends Schema.TaggedError<OriginQueueWaitError>()(
   "OriginQueueWaitError",
   {
-    retryAfterMs: Schema.Number,
+    retryAfterMs: Schema.NullOr(Schema.Number),
     delayMs: Schema.Number,
   },
 ) {}
@@ -152,18 +152,16 @@ const make = Effect.gen(function* () {
   ) {
     const state = originFor(url.origin);
     const queuedAt = yield* Clock.currentTimeMillis;
-    const refuse = Effect.gen(function* () {
-      const now = yield* Clock.currentTimeMillis;
-      return yield* new OriginQueueWaitError({
-        retryAfterMs: Math.max(1, Math.max(state.blockedUntil, state.nextStart) - now),
-        delayMs: now - queuedAt,
+    const refuse = (retryAfterMs: number | null) =>
+      Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        return yield* new OriginQueueWaitError({ retryAfterMs, delayMs: now - queuedAt });
       });
-    });
     const run = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       const spacing = Math.max(0, state.nextStart - now);
       if (state.blockedUntil > now || now - queuedAt + spacing > maxQueueWaitMs)
-        return yield* refuse;
+        return yield* refuse(Math.max(1, Math.max(state.blockedUntil, state.nextStart) - now));
       if (spacing) yield* Effect.sleep(spacing);
       const startedAt = yield* Clock.currentTimeMillis;
       yield* Ref.update(delay, (ms) => ms + startedAt - queuedAt);
@@ -196,12 +194,15 @@ const make = Effect.gen(function* () {
     // Once acquired, cancel the queue deadline; the lock still owns cleanup on cancellation.
     const acquired = yield* Deferred.make<void>();
     const deadline = Effect.raceFirst(
-      Effect.sleep(maxQueueWaitMs),
-      Deferred.await(acquired).pipe(Effect.andThen(Effect.never)),
+      Effect.sleep(maxQueueWaitMs).pipe(Effect.as(true)),
+      Deferred.await(acquired).pipe(Effect.as(false)),
+    ).pipe(
+      // Once acquired wins, the sleep is cancelled. Contention has no known retry duration.
+      Effect.flatMap((expired) => (expired ? refuse(null) : Effect.never)),
     );
     return yield* Effect.raceFirst(
       state.lock.withPermits(1)(Deferred.succeed(acquired, undefined).pipe(Effect.andThen(run))),
-      deadline.pipe(Effect.andThen(refuse)),
+      deadline,
     );
   });
 
@@ -347,6 +348,7 @@ const make = Effect.gen(function* () {
         TimeoutError: () => Effect.succeed({ status: "timeout" as const, title: "", text: "" }),
         OriginQueueWaitError: (error) => {
           cacheable = false;
+          httpStatus = null;
           retryAfterMs = error.retryAfterMs;
           return Ref.update(delay, (ms) => ms + error.delayMs).pipe(
             Effect.as({ status: "challenge" as const, title: "", text: "" }),
