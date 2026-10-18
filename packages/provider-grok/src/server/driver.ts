@@ -87,13 +87,17 @@ const UPDATE: ProviderMaintenanceCapabilitiesResolver = {
       env: context.env,
     });
     const realPath = normalizeCommandPath(context.realCommandPath);
+    const fileSystem = yield* FileSystem.FileSystem;
     const grokHome = context.env.GROK_HOME
-      ? normalizeCommandPath(context.env.GROK_HOME).replace(/\/$/, "")
+      ? yield* fileSystem.realPath(context.env.GROK_HOME).pipe(
+          Effect.map((home) => normalizeCommandPath(home).replace(/\/$/, "")),
+          Effect.orElseSucceed(() => null),
+        )
       : null;
     const nativePath = grokHome ? realPath.slice(grokHome.length) : "";
     const isNative = grokHome
       ? realPath.startsWith(`${grokHome}/`) && /^\/(bin|downloads)\/grok-[^/]+$/.test(nativePath)
-      : /\/\.grok\/(bin|downloads)\/grok-[^/]+$/.test(realPath);
+      : !context.env.GROK_HOME && /\/\.grok\/(bin|downloads)\/grok-[^/]+$/.test(realPath);
     if (
       capabilities.update &&
       isNative &&

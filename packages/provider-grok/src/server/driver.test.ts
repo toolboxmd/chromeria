@@ -176,11 +176,13 @@ it.layer(layerTest)("GrokDriver", (it) => {
     { suffix: ".grok/downloads/grok-1.0.52-linux-x86_64", native: true, home: undefined },
     { suffix: ".grok/bin/grok-1.0.52", native: true, home: undefined },
     { suffix: "custom/downloads/grok-macos-aarch64", native: true, home: "custom" },
+    { suffix: "custom/downloads/grok-macos-aarch64", native: false, home: "foreign" },
+    { suffix: ".grok/bin/grok-1.0.52", native: false, home: "missing" },
     { suffix: "lib/node_modules/@xai-official/grok/bin/grok", native: false, home: undefined },
     { suffix: "unknown/grok", native: false, home: undefined },
   ]) {
     it.effect.skipIf(windowsHost)(
-      `allows active-session updates only for native Grok (${suffix})`,
+      `allows active-session updates only for native Grok (${suffix}, home: ${home ?? "default"})`,
       () =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
@@ -190,6 +192,9 @@ it.layer(layerTest)("GrokDriver", (it) => {
           yield* fs.makeDirectory(path.dirname(binaryPath), { recursive: true });
           yield* fs.writeFileString(binaryPath, "#!/bin/sh\n");
           yield* fs.chmod(binaryPath, 0o755);
+          if (home === "foreign") {
+            yield* fs.makeDirectory(path.join(tempDir, home));
+          }
           const instance = yield* GrokDriver.create({
             instanceId: ProviderInstanceId.make("grok-native-busy"),
             displayName: "Grok test",
@@ -208,6 +213,53 @@ it.layer(layerTest)("GrokDriver", (it) => {
           Effect.scoped,
         ),
     );
+  }
+
+  for (const platform of ["linux", "darwin"] as const) {
+    for (const directory of ["bin", "downloads"]) {
+      it.effect.skipIf(windowsHost)(
+        `recognizes aliased custom native homes (${platform}, ${directory})`,
+        () =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const tempDir = yield* fs.realPath(
+              yield* fs.makeTempDirectoryScoped({ prefix: "t3-grok-alias-" }),
+            );
+            const canonicalHome = path.join(tempDir, "custom");
+            const aliasedHome = path.join(tempDir, "alias");
+            const suffix = path.join(directory, "grok-1.0.52");
+            const canonicalBinary = path.join(canonicalHome, suffix);
+            yield* fs.makeDirectory(path.dirname(canonicalBinary), { recursive: true });
+            yield* fs.writeFileString(canonicalBinary, "#!/bin/sh\n");
+            yield* fs.chmod(canonicalBinary, 0o755);
+            yield* fs.symlink(canonicalHome, aliasedHome);
+
+            for (const binaryPath of [canonicalBinary, path.join(aliasedHome, suffix)]) {
+              for (const grokHome of [canonicalHome, aliasedHome]) {
+                const instance = yield* GrokDriver.create({
+                  instanceId: ProviderInstanceId.make("grok-native-alias"),
+                  displayName: "Grok test",
+                  enabled: false,
+                  environment: [{ name: "GROK_HOME", value: grokHome, sensitive: false }],
+                  config: { ...GrokDriver.defaultConfig(), binaryPath },
+                });
+                const capabilities = yield* instance.snapshot.resolveMaintenance();
+                expect(capabilities.update).toMatchObject({
+                  canRunWhileBusy: true,
+                  executable: binaryPath,
+                  args: ["update"],
+                  env: { GROK_HOME: grokHome },
+                });
+              }
+            }
+          }).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawner),
+            Effect.provideService(HostProcess.Platform, platform),
+            Effect.scoped,
+          ),
+      );
+    }
   }
 
   it.effect.skipIf(windowsHost)("upgrades a Homebrew grok-build cask through brew", () => {
