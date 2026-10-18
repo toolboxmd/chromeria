@@ -16,7 +16,11 @@ export function isBufferedProviderNotification(
   );
 }
 
-/** Acceptance and receipts cannot commit atomically; reuse message ids for at-least-once delivery. */
+/**
+ * An unaccepted mailbox steer or unstarted cancelled wake can be retried as a continuation.
+ * Delivery is at least once: provider acceptance and our receipt cannot commit
+ * atomically. Reusing the message ID keeps recovery from duplicating timeline items.
+ */
 export function isUndeliveredMailboxSteer(
   projection: Pick<OrchestrationV2ThreadProjection, "messages" | "runs" | "providerTurns">,
   messageId: MessageId,
@@ -24,8 +28,16 @@ export function isUndeliveredMailboxSteer(
   const message = projection.messages.find((candidate) => candidate.id === messageId);
   if (message?.delegatedCompletion === undefined) return false;
   const run = projection.runs.find((candidate) => candidate.id === message.runId);
+  if (run === undefined) return false;
+  // Stop can cancel an unstarted queued mailbox wake. Retrying updates the
+  // same message to its next execution, preserving mailbox deduplication.
+  if (
+    run.startedAt === null &&
+    (run.status === "cancelled" || run.status === "interrupted") &&
+    latestProviderTurnForAttempt(projection.providerTurns, run.activeAttemptId) === undefined
+  )
+    return true;
   return (
-    run !== undefined &&
     run.userMessageId !== message.id &&
     (["completed", "failed", "interrupted", "cancelled", "rolled_back"].includes(run.status) ||
       latestProviderTurnForAttempt(projection.providerTurns, run.activeAttemptId)?.status ===

@@ -1927,10 +1927,8 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
                 transfer.sourcePoint.runId === run.id,
             ),
           );
-          assert.equal(
-            followup.completionDelivery?.state,
-            outcome === "stopped" ? "disposed" : "claimed",
-          );
+          // Stop keeps the result claimed in the mailbox until explicit resume.
+          assert.equal(followup.completionDelivery?.state, "claimed");
           if (outcome !== "stopped") {
             let wake = yield* requests.take;
             while (

@@ -1,6 +1,7 @@
 import { CommandId, type OrchestrationV2ThreadProjection } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -49,6 +50,16 @@ function delegatedCompletionRetryKey(
 ): string {
   return `${request.threadId}:${completion.parentRunId}:${completion.generation}:${completion.messageId}`;
 }
+
+// App-owned mailbox offers use the same producer-owned eligibility hook as
+// adapter-buffered wakes. Check before loading records, including on a retry.
+const withCurrentDelegatedOffer = <A, E, R>(
+  request: ProviderContinuationRequests.ProviderContinuationRequest,
+  effect: Effect.Effect<A, E, R>,
+) =>
+  request.delegatedCompletion !== undefined && request.dispatchIfCurrent !== undefined
+    ? request.dispatchIfCurrent(effect)
+    : effect.pipe(Effect.asSome);
 
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -236,7 +247,12 @@ export const layer = Layer.effectDiscard(
 
     yield* requests.take.pipe(
       Effect.flatMap((request) =>
-        dispatchContinuation(request).pipe(
+        withCurrentDelegatedOffer(request, dispatchContinuation(request)).pipe(
+          Effect.tap((current) =>
+            Option.isNone(current) && request.delegatedCompletion !== undefined
+              ? clearRetryAttempt(delegatedCompletionRetryKey(request, request.delegatedCompletion))
+              : Effect.void,
+          ),
           Effect.catchCause((cause) =>
             Effect.gen(function* () {
               yield* Effect.logWarning("orchestration-v2.provider-continuation.dispatch-failed", {
@@ -250,21 +266,29 @@ export const layer = Layer.effectDiscard(
                 const retryDelay = yield* nextRetryDelay(retryKey);
                 yield* Effect.gen(function* () {
                   yield* Effect.sleep(`${retryDelay} millis`);
-                  const projection = yield* threads.getThreadRecords(
-                    request.threadId,
-                    ["messages", "runs", "providerTurns"],
-                    {
-                      messageIds:
-                        request.delegatedCompletion === undefined
-                          ? []
-                          : [request.delegatedCompletion.messageId],
-                    },
+                  const retried = yield* withCurrentDelegatedOffer(
+                    request,
+                    Effect.gen(function* () {
+                      const projection = yield* threads.getThreadRecords(
+                        request.threadId,
+                        ["messages", "runs", "providerTurns"],
+                        {
+                          messageIds:
+                            request.delegatedCompletion === undefined
+                              ? []
+                              : [request.delegatedCompletion.messageId],
+                        },
+                      );
+                      if (
+                        currentDelegatedCompletionDelivery(projection, completion) !== undefined
+                      ) {
+                        yield* requests.offer(request);
+                      } else {
+                        yield* clearRetryAttempt(retryKey);
+                      }
+                    }),
                   );
-                  if (currentDelegatedCompletionDelivery(projection, completion) !== undefined) {
-                    yield* requests.offer(request);
-                  } else {
-                    yield* clearRetryAttempt(retryKey);
-                  }
+                  if (Option.isNone(retried)) yield* clearRetryAttempt(retryKey);
                 }).pipe(
                   Effect.catchCause((retryCause) =>
                     Effect.logWarning("orchestration-v2.provider-continuation.retry-check-failed", {
