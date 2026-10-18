@@ -2234,3 +2234,24 @@ sources and reasons.
   "keywords": ["web_read", "WebResearch", "web-cache", "ChromeriaResearch"]
 }
 ```
+
+## login-shell-capture
+
+```json
+{
+  "id": "login-shell-capture",
+  "purpose": "Keep installed harnesses available when the desktop login-shell capture is slow or fails, and let the server try again only when that capture did not return a PATH.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/458"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/459"],
+  "newFiles": [],
+  "upstreamFiles": [
+    "apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
+    "apps/desktop/src/shell/DesktopShellEnvironment.ts",
+    "apps/server/src/os-jank.test.ts",
+    "packages/shared/src/shell.test.ts",
+    "packages/shared/src/shell.ts"
+  ],
+  "sharedFiles": [],
+  "keywords": ["LOGIN_SHELL_CAPTURE_TIMEOUT_MS", "shellEnvironmentPrepared", "login-shell"]
+}
+```
