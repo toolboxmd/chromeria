@@ -1108,7 +1108,7 @@ export const layer: Layer.Layer<
         return;
       }
       const routableSubagents = projection.subagents.filter((subagent) =>
-        RunExecutionService.canRouteRelatedSubagent(subagent.status),
+        RunExecutionService.canRouteRelatedSubagent(subagent.status, subagent.origin),
       );
       const messageText =
         projection.thread.bare === undefined
