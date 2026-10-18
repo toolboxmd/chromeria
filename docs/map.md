@@ -82,7 +82,7 @@ flowchart TD
     PRN["Paired session renewal"]
     %% PRN: #323
     WR["Agent web research"]
-    %% WR: #423 PR #453
+    %% WR: #423 PR #455
     WRR["Headless page rendering"]
     %% WRR: #442
     WR --- WRR
