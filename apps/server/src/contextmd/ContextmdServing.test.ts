@@ -15,7 +15,6 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
-import * as Duration from "effect/Duration";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -25,6 +24,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
+import type * as SqlStatement from "effect/sql/Statement";
 
 import * as ServerConfig from "../config.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -155,6 +155,8 @@ interface Fact {
 const makeHarness = (
   overrideFs: (fs: FileSystem.FileSystem) => FileSystem.FileSystem = (fs) => fs,
   disk = false,
+  onRunLookup: (rows: ReadonlyArray<unknown>, session: string) => Effect.Effect<void> = () =>
+    Effect.void,
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -174,9 +176,18 @@ const makeHarness = (
       disk ? SqlitePersistence.layerFromPath(config.dbPath) : SqlitePersistence.layerMemory,
     );
     const sql = Context.get(database, SqlClient.SqlClient);
+    const observedSql = new Proxy(sql, {
+      apply(target, thisArg, args) {
+        const statement: SqlStatement.Statement<unknown> = Reflect.apply(target, thisArg, args);
+        return String(args[0]?.[0]).includes("SELECT DISTINCT run_id, thread_id")
+          ? statement.pipe(Effect.tap((rows) => onRunLookup(rows, String(args[1]))))
+          : statement;
+      },
+    });
     const services = yield* Layer.build(
       ContextmdServing.layer.pipe(
         Layer.provide(Layer.succeedContext(cfgContext)),
+        Layer.provide(Layer.succeed(SqlClient.SqlClient, observedSql)),
         Layer.provide(Layer.succeedContext(database)),
         Layer.provide(Layer.succeed(FileSystem.FileSystem, overrideFs(fs))),
         Layer.provide(
@@ -274,182 +285,332 @@ const decodeDeadline = Schema.decodeUnknownSync(
   ),
 );
 
+const startupHarness = (
+  overrideFs: (fs: FileSystem.FileSystem) => FileSystem.FileSystem = (fs) => fs,
+) =>
+  Effect.gen(function* () {
+    const missing = yield* Queue.unbounded<string>();
+    const lookups = new Map<string, number>();
+    const h = yield* makeHarness(overrideFs, false, (rows, session) => {
+      const count = (lookups.get(session) ?? 0) + 1;
+      lookups.set(session, count);
+      // The waiter has been installed before this second, still-unmatched SQL read.
+      return count === 2 && rows.length === 0
+        ? Queue.offer(missing, session).pipe(Effect.asVoid)
+        : Effect.void;
+    });
+    const start = NodePath.join(h.config.baseDir, "session-start.md");
+    const index = NodePath.join(h.config.baseDir, "library-index.md");
+    NodeFS.writeFileSync(start, "Public startup instructions.\n");
+    NodeFS.writeFileSync(index, "# Public Library\n");
+    NodeFS.writeFileSync(
+      h.configPath,
+      JSON.stringify({
+        exact_keys: [],
+        great_library: index,
+        session_start: [{ path: start, max_chars: 100 }],
+      }),
+    );
+    yield* h.sql`INSERT INTO orchestration_v2_projection_runs
+    (run_id, thread_id, ordinal, provider, status, requested_at, payload_json)
+    VALUES ('startup-run', 'startup-thread', 1, 'custom-instance', 'starting', 'now', '{}')`;
+    const request = (
+      harness: string,
+      event: string,
+      session = "startup-session",
+      delivery = "first-startup",
+      extra = {},
+    ) =>
+      h.service.moment({
+        authorized: Effect.succeed(true),
+        harness,
+        delivery,
+        contentLength: undefined,
+        body: Effect.succeed(
+          JSON.stringify({
+            hook_event_name: event,
+            source: "startup",
+            session_id: session,
+            cwd: h.config.baseDir,
+            ...extra,
+          }),
+        ),
+      });
+    const persist = (
+      session = "startup-session",
+      runId = "startup-run",
+      status = "running",
+      ordinal = 1,
+    ) =>
+      h.sql`INSERT INTO orchestration_v2_projection_run_attempts
+      (attempt_id, thread_id, run_id, attempt_ordinal, root_node_id, provider,
+        provider_instance_id, provider_thread_id, status, payload_json)
+      VALUES (${`attempt-${runId}-${ordinal}`}, ${`thread-${runId}`}, ${runId}, ${ordinal}, 'node', 'custom-instance',
+        'custom-instance', 'provider-thread', ${status}, ${JSON.stringify({ nativeThreadId: session })})`;
+    const joined = (delivery = "first-startup") =>
+      h.db
+        .prepare("SELECT status, run_id FROM moments WHERE delivery = ? ORDER BY id DESC LIMIT 1")
+        .get(delivery);
+    return { ...h, missing, request, persist, joined, index, lookups };
+  });
+
 describe("ContextMD startup run registration", () => {
   it.effect.each([
-    { harness: "claude", event: "SessionStart" },
-    { harness: "claude", event: "UserPromptSubmit" },
-    { harness: "grok", event: "SessionStart" },
+    { harness: "claude", event: "SessionStart", late: false },
+    { harness: "claude", event: "UserPromptSubmit", late: false },
+    { harness: "grok", event: "SessionStart", late: false },
+    { harness: "claude", event: "SessionStart", late: true },
+    { harness: "claude", event: "UserPromptSubmit", late: true },
+    { harness: "grok", event: "SessionStart", late: true },
+    { harness: "claude", event: "SessionStart", late: true, nextEvent: "PostToolUse" },
+    { harness: "claude", event: "SessionStart", late: true, nextEvent: "UserPromptSubmit" },
+    { harness: "claude", event: "SessionStart", late: true, nextEvent: "SessionStart" },
+    { harness: "claude", event: "SessionStart", late: true, nextEvent: "Stop" },
   ])(
-    "$harness $event joins when its native session is registered after the first lookup",
-    ({ harness, event }) =>
+    "$harness $event joins on registration (over deadline: $late, next: $nextEvent)",
+    ({ harness, event, late, nextEvent }) =>
       withNode(
         Effect.gen(function* () {
-          const h = yield* makeHarness();
-          const provider = harness === "claude" ? "claudeAgent" : harness;
-          const start = NodePath.join(h.config.baseDir, "session-start.md");
-          const index = NodePath.join(h.config.baseDir, "library-index.md");
-          NodeFS.writeFileSync(index, "# Public Library\n");
-          NodeFS.writeFileSync(start, "Public startup instructions.\n");
-          NodeFS.writeFileSync(
-            NodePath.join(h.config.baseDir, "keys/public.md"),
-            "---\nid: public-rule\ncommand: echo public-rule\nmust-know-before: true\n---\nA public rule.\n",
-          );
-          NodeFS.writeFileSync(
-            h.configPath,
-            JSON.stringify({
-              exact_keys: [NodePath.join(h.config.baseDir, "keys")],
-              great_library: index,
-              session_start: [{ path: start, max_chars: 100 }],
-            }),
-          );
-          yield* h.sql`INSERT INTO orchestration_v2_projection_runs
-            (run_id, thread_id, ordinal, provider, status, requested_at, payload_json)
-            VALUES ('startup-run', 'startup-thread', 1, ${provider}, 'starting', 'now', '{}')`;
-          const lookedUp = yield* Deferred.make<boolean>();
-          const registered = yield* Deferred.make<void>();
-          const clock = yield* Clock.Clock;
-          const pending = yield* Effect.forkScoped(
-            h.service
-              .moment({
-                authorized: Effect.succeed(true),
-                harness,
-                delivery: "first-startup",
-                contentLength: undefined,
-                body: Effect.succeed(
-                  JSON.stringify({
-                    hook_event_name: event,
-                    source: "startup",
-                    session_id: "startup-session",
-                    cwd: h.config.baseDir,
-                  }),
-                ),
-              })
-              .pipe(
-                Effect.provideService(Clock.Clock, {
-                  ...clock,
-                  // A receipt for the initial missing join, then an explicit registration barrier.
-                  // No elapsed-time assumption decides when the lifecycle may advance.
-                  sleep: (duration) =>
-                    Duration.toMillis(duration) === 25
-                      ? Deferred.succeed(lookedUp, true).pipe(
-                          Effect.andThen(Deferred.await(registered)),
-                        )
-                      : clock.sleep(duration),
-                }),
-                Effect.tap(() => Deferred.succeed(lookedUp, false)),
-              ),
-          );
-          assert.isTrue(yield* Deferred.await(lookedUp));
-          yield* h.sql`INSERT INTO orchestration_v2_projection_run_attempts
-            (attempt_id, thread_id, run_id, attempt_ordinal, root_node_id, provider,
-              provider_instance_id, provider_thread_id, status, payload_json)
-            VALUES ('startup-attempt', 'startup-thread', 'startup-run', 1, 'node', ${provider},
-              ${provider}, 'provider-thread', 'running',
-              ${JSON.stringify({ nativeThreadId: "startup-session" })})`;
-          yield* h.sql`UPDATE orchestration_v2_projection_runs SET status = 'running'
-            WHERE run_id = 'startup-run'`;
-          yield* Deferred.succeed(registered, undefined);
-          const first = yield* Fiber.join(pending);
-          assert.deepEqual(
-            h.db
-              .prepare("SELECT status, run_id, thread_id FROM moments WHERE delivery = ?")
-              .get("first-startup"),
-            { status: "ok", run_id: "startup-run", thread_id: "startup-thread" },
-          );
-          if (harness === "claude") {
-            assert.equal(first.status, 200);
-            if (first.status === 200)
+          const h = yield* startupHarness();
+          const pending = yield* Effect.forkScoped(h.request(harness, event));
+          assert.equal(yield* Queue.take(h.missing), "startup-session");
+          if (late) {
+            yield* TestClock.adjust("1300 millis");
+            assert.equal((yield* Fiber.join(pending)).status, 204);
+          }
+          yield* h.persist();
+          yield* h.sql`UPDATE orchestration_v2_projection_runs SET status = 'running' WHERE run_id = 'startup-run'`;
+          yield* h.service.nativeSessionRegistered({
+            nativeSessionId: "startup-session",
+            runId: "startup-run",
+          });
+          assert.deepEqual(h.joined(), { status: "ok", run_id: "startup-run" });
+          const reply = yield* Fiber.join(pending);
+          if (!late && harness === "claude") {
+            assert.equal(reply.status, 200);
+            if (reply.status === 200)
               assert.include(
-                decodeBody(first.body).hookSpecificOutput.additionalContext,
-                event === "SessionStart" ? "Public startup instructions." : index,
+                reply.body,
+                event === "SessionStart" ? "Public startup instructions." : h.index,
               );
-          } else {
-            assert.equal(first.status, 204);
+          } else assert.equal(reply.status, 204);
+          if (late && harness === "claude") {
             const next = yield* h.moment(
-              "grok",
+              harness,
               "startup-session",
-              {
-                hook_event_name: "PreToolUse",
-              },
+              { hook_event_name: nextEvent ?? "PreToolUse" },
               false,
             );
             assert.equal(next.reply.status, 200);
-            if (next.reply.status === 200) assert.include(next.reply.body, "A public rule.");
+            if (next.reply.status === 200)
+              assert.include(
+                next.reply.body,
+                event === "SessionStart" ? "Public startup instructions." : h.index,
+              );
+            yield* h.service.release(next.delivery);
+            const retry = yield* h.moment(
+              harness,
+              "startup-session",
+              { hook_event_name: "PreToolUse" },
+              false,
+            );
+            assert.equal(retry.reply.status, 200);
+            yield* h.service.settle(retry.delivery);
+            const again = yield* h.moment(
+              harness,
+              "startup-session",
+              { hook_event_name: "PreToolUse" },
+              false,
+            );
+            assert.equal(again.reply.status, 204);
+          }
+          if (harness === "grok") {
+            // SessionStart is a non-delivering Grok seam. A later normal hook still joins.
+            const next = yield* h.moment(harness, "startup-session", {}, false);
+            assert.equal(next.reply.status, 204);
+            const row = h.db
+              .prepare("SELECT status, run_id FROM moments WHERE delivery = ?")
+              .get(next.delivery);
+            assert.deepEqual(row, { status: "ok", run_id: "startup-run" });
+            assert.equal(h.db.prepare("SELECT count(*) AS n FROM carries").get()!.n, 0);
           }
         }).pipe(Effect.scoped),
       ),
   );
 
   it.effect.each(["external", "completed", "other-session", "ambiguous", "no-start", "tool"])(
-    "does not assign a %s session to the starting run",
+    "rejects %s without guessing ownership",
     (scenario) =>
       withNode(
         Effect.gen(function* () {
-          const h = yield* makeHarness();
-          if (scenario !== "no-start")
-            yield* h.sql`INSERT INTO orchestration_v2_projection_runs
-        (run_id, thread_id, ordinal, provider, status, requested_at, payload_json)
-        VALUES ('next-run', 'next-thread', 1, 'custom-instance', 'starting', 'now', '{}')`;
-          if (["completed", "other-session", "ambiguous"].includes(scenario)) {
-            const native = scenario === "other-session" ? "another-session" : "old-session";
-            const status = scenario === "completed" ? "completed" : "running";
-            yield* h.sql`INSERT INTO orchestration_v2_projection_run_attempts
-          (attempt_id, thread_id, run_id, attempt_ordinal, root_node_id, provider,
-            provider_instance_id, provider_thread_id, status, payload_json)
-          VALUES ('old-attempt', 'old-thread', 'old-run', 1, 'node', 'claudeAgent',
-            'custom-instance', 'provider-thread', ${status}, ${JSON.stringify({ nativeThreadId: native })})`;
-            if (scenario === "ambiguous")
-              yield* h.sql`INSERT INTO orchestration_v2_projection_run_attempts
-          (attempt_id, thread_id, run_id, attempt_ordinal, root_node_id, provider,
-            provider_instance_id, provider_thread_id, status, payload_json)
-          VALUES ('duplicate', 'different-thread', 'different-run', 1, 'node', 'claudeAgent',
-            'custom-instance', 'different-provider-thread', 'running',
-            ${JSON.stringify({ nativeThreadId: native })})`;
-          }
-          const waiting = yield* Deferred.make<boolean>();
-          const clock = yield* Clock.Clock;
+          const h = yield* startupHarness();
+          if (scenario === "no-start") yield* h.sql`DELETE FROM orchestration_v2_projection_runs`;
+          if (["completed", "other-session", "ambiguous"].includes(scenario))
+            yield* h.persist(
+              scenario === "other-session" ? "another-session" : "startup-session",
+              "old-run",
+              scenario === "completed" ? "completed" : "running",
+            );
+          if (scenario === "ambiguous") yield* h.persist("startup-session", "other-run");
+          const waiting = ["external", "completed", "other-session"].includes(scenario);
           const pending = yield* Effect.forkScoped(
-            h.service
-              .moment({
-                authorized: Effect.succeed(true),
-                harness: "claude",
-                delivery: "unowned-startup",
-                contentLength: undefined,
-                body: Effect.succeed(
-                  JSON.stringify({
-                    hook_event_name: scenario === "tool" ? "PreToolUse" : "UserPromptSubmit",
-                    session_id: "old-session",
-                    cwd: h.config.baseDir,
-                  }),
-                ),
-              })
-              .pipe(
-                Effect.provideService(Clock.Clock, {
-                  ...clock,
-                  sleep: (duration) =>
-                    Duration.toMillis(duration) === 25
-                      ? Deferred.succeed(waiting, true).pipe(Effect.andThen(clock.sleep(duration)))
-                      : clock.sleep(duration),
-                }),
-                Effect.tap(() => Deferred.succeed(waiting, false)),
-              ),
+            h.request("claude", scenario === "tool" ? "PreToolUse" : "UserPromptSubmit"),
           );
-          assert.equal(
-            yield* Deferred.await(waiting),
-            ["external", "completed", "other-session"].includes(scenario),
-          );
-          yield* TestClock.adjust("500 millis");
+          if (waiting) {
+            yield* Queue.take(h.missing);
+            // A notification without a committed exact identity cannot wake or join this moment.
+            yield* h.service.nativeSessionRegistered({
+              nativeSessionId: "startup-session",
+              runId: "startup-run",
+            });
+            yield* TestClock.adjust("950 millis");
+          }
           assert.equal((yield* Fiber.join(pending)).status, 204);
-          const row = h.db
-            .prepare("SELECT status, run_id, thread_id FROM moments WHERE delivery = ?")
-            .get("unowned-startup");
-          assert.deepEqual(row, {
-            status: scenario === "ambiguous" ? "ambiguous" : "unjoined",
+          assert.deepEqual(h.joined(), {
+            status: scenario === "ambiguous" ? "ambiguous" : waiting ? "over_budget" : "unjoined",
             run_id: null,
-            thread_id: null,
           });
         }).pipe(Effect.scoped),
       ),
+  );
+
+  it.effect.each([
+    { count: 33, payloadBytes: 0 },
+    { count: 5, payloadBytes: 900_000 },
+  ])(
+    "bounds retained startup payloads ($count events, $payloadBytes bytes each)",
+    ({ count, payloadBytes }) =>
+      withNode(
+        Effect.gen(function* () {
+          const h = yield* startupHarness();
+          const pending = [];
+          for (let n = 0; n < count; n++) {
+            pending.push(
+              yield* Effect.forkScoped(
+                h.request("claude", "SessionStart", `session-${n}`, `delivery-${n}`, {
+                  prompt: "x".repeat(payloadBytes),
+                }),
+              ),
+            );
+            assert.equal(yield* Queue.take(h.missing), `session-${n}`);
+          }
+          yield* TestClock.adjust("1300 millis");
+          for (const fiber of pending) assert.equal((yield* Fiber.join(fiber)).status, 204);
+          yield* h.persist("session-0");
+          yield* h.service.nativeSessionRegistered({
+            nativeSessionId: "session-0",
+            runId: "startup-run",
+          });
+          assert.equal(h.joined("delivery-0")!.run_id, null);
+          const last = `session-${count - 1}`;
+          yield* h.persist(last, "startup-run", "running", 2);
+          yield* h.service.nativeSessionRegistered({ nativeSessionId: last, runId: "startup-run" });
+          assert.deepEqual(h.joined(`delivery-${count - 1}`), {
+            status: "ok",
+            run_id: "startup-run",
+          });
+          const first = yield* h.moment(
+            "claude",
+            "session-0",
+            { hook_event_name: "PreToolUse" },
+            false,
+          );
+          assert.equal(first.reply.status, 204);
+          const next = yield* h.moment("claude", last, { hook_event_name: "PreToolUse" }, false);
+          assert.equal(next.reply.status, 200);
+          if (next.reply.status === 200)
+            assert.include(next.reply.body, "Public startup instructions.");
+        }).pipe(Effect.scoped),
+      ),
+  );
+
+  it.effect("rejects an attempt completed while its startup context was being selected", () =>
+    withNode(
+      Effect.gen(function* () {
+        const selecting = yield* Deferred.make<void>();
+        const proceed = yield* Deferred.make<void>();
+        const h = yield* startupHarness((fs) => ({
+          ...fs,
+          readFileString: (path, options) =>
+            fs
+              .readFileString(path, options)
+              .pipe(
+                Effect.tap(() =>
+                  path.endsWith("/session-start.md")
+                    ? Deferred.succeed(selecting, undefined).pipe(
+                        Effect.andThen(Deferred.await(proceed)),
+                      )
+                    : Effect.void,
+                ),
+              ),
+        }));
+        const pending = yield* Effect.forkScoped(h.request("claude", "SessionStart"));
+        yield* Queue.take(h.missing);
+        yield* h.persist();
+        const registration = yield* Effect.forkScoped(
+          h.service.nativeSessionRegistered({
+            nativeSessionId: "startup-session",
+            runId: "startup-run",
+          }),
+        );
+        yield* Deferred.await(selecting);
+        yield* h.sql`UPDATE orchestration_v2_projection_run_attempts SET status = 'completed'`;
+        yield* Deferred.succeed(proceed, undefined);
+        assert.equal((yield* Fiber.join(pending)).status, 204);
+        yield* Fiber.join(registration);
+        assert.deepEqual(h.joined(), { status: "unjoined", run_id: null });
+        assert.equal(h.db.prepare("SELECT count(*) AS n FROM carries").get()!.n, 0);
+      }).pipe(Effect.scoped),
+    ),
+  );
+
+  it.effect("recovers after the waiting HTTP hook is interrupted", () =>
+    withNode(
+      Effect.gen(function* () {
+        const h = yield* startupHarness();
+        const pending = yield* Effect.forkScoped(h.request("claude", "SessionStart"));
+        yield* Queue.take(h.missing);
+        yield* Fiber.interrupt(pending);
+        yield* h.persist();
+        yield* h.service.nativeSessionRegistered({
+          nativeSessionId: "startup-session",
+          runId: "startup-run",
+        });
+        assert.deepEqual(h.joined(), { status: "ok", run_id: "startup-run" });
+        const next = yield* h.moment(
+          "claude",
+          "startup-session",
+          { hook_event_name: "PreToolUse" },
+          false,
+        );
+        assert.equal(next.reply.status, 200);
+      }).pipe(Effect.scoped),
+    ),
+  );
+
+  it.effect("expires retained payloads before a later exact registration", () =>
+    withNode(
+      Effect.gen(function* () {
+        const h = yield* startupHarness();
+        const pending = yield* Effect.forkScoped(h.request("claude", "SessionStart"));
+        yield* Queue.take(h.missing);
+        yield* TestClock.adjust("11 seconds");
+        assert.equal((yield* Fiber.join(pending)).status, 204);
+        yield* h.persist();
+        yield* h.service.nativeSessionRegistered({
+          nativeSessionId: "startup-session",
+          runId: "startup-run",
+        });
+        assert.deepEqual(h.joined(), { status: "over_budget", run_id: null });
+        const next = yield* h.moment(
+          "claude",
+          "startup-session",
+          { hook_event_name: "PreToolUse" },
+          false,
+        );
+        assert.equal(next.reply.status, 204);
+      }).pipe(Effect.scoped),
+    ),
   );
 });
 
