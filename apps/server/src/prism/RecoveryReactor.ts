@@ -114,9 +114,20 @@ export const layer = Layer.effect(
             for (const stored of storedEvents) {
               const sources = changed.get(stored.event.threadId) ?? new Set<RunId>();
               if (stored.event.type === "run.updated") {
-                sources.add(stored.event.payload.id);
-                if (stored.event.payload.forkPrismContinuationSourceRunId !== undefined)
-                  sources.add(stored.event.payload.forkPrismContinuationSourceRunId);
+                const run = stored.event.payload;
+                // Match the sweep's source eligibility. Observing a fresh nonterminal
+                // run would initialize a closed controller and consume its first retry.
+                if (
+                  run.status === "failed" ||
+                  (run.forkPrismContinuationSourceRunId !== undefined &&
+                    (run.status === "interrupted" ||
+                      run.status === "cancelled" ||
+                      run.status === "rolled_back"))
+                ) {
+                  sources.add(run.id);
+                  if (run.forkPrismContinuationSourceRunId !== undefined)
+                    sources.add(run.forkPrismContinuationSourceRunId);
+                }
               }
               changed.set(stored.event.threadId, sources);
             }

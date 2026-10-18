@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Deferred from "effect/Deferred";
+import * as Queue from "effect/Queue";
 import {
   CommandId,
   EventId,
@@ -597,6 +598,69 @@ it.effect("live run recovery finalizes its child without reading settled childre
           snapshot.mockRestore();
         }),
       ),
+    );
+  }).pipe(Effect.provide(dependencies)),
+);
+
+it.effect("a nonterminal run update preserves the first retryable failure's retry", () =>
+  Effect.gen(function* () {
+    const { orchestrator, childId, run } = yield* setup;
+    const sink = yield* EventSink.EventSinkV2;
+    const observed = yield* Queue.unbounded<void>();
+    const overrides = Layer.mergeAll(
+      Layer.succeed(ServerActivation, undefined),
+      Layer.succeed(Orchestrator.OrchestratorV2, {
+        ...orchestrator,
+        recoverDelegatedTask: (threadId, sourceRunId) =>
+          orchestrator
+            .recoverDelegatedTask(threadId, sourceRunId)
+            .pipe(
+              Effect.andThen(threadId === childId ? Queue.offer(observed, undefined) : Effect.void),
+              Effect.asVoid,
+            ),
+      }),
+    );
+    yield* Effect.gen(function* () {
+      const running = { ...run, status: "running" as const, startedAt: run.requestedAt };
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("first-retry:running"),
+            type: "run.updated",
+            threadId: childId,
+            occurredAt: run.requestedAt,
+            payload: running,
+          },
+        ],
+      });
+      // Finish observing the nonterminal event before the failure can mask it.
+      yield* Queue.take(observed);
+      yield* finish(running, failure);
+      const failed = (yield* orchestrator.getThreadProjection(childId)).runs[0]!;
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make("first-retry:failed"),
+            type: "run.updated",
+            threadId: childId,
+            occurredAt: failed.completedAt!,
+            payload: failed,
+          },
+        ],
+      });
+      yield* Queue.take(observed);
+      const child = yield* orchestrator.getThreadProjection(childId);
+      assert.lengthOf(child.runs, 2);
+      assert.strictEqual(child.runs[1]!.forkPrismContinuationSourceRunId, run.id);
+      assert.deepStrictEqual(child.runs[1]!.modelSelection, run.modelSelection);
+      assert.lengthOf(
+        (yield* orchestrator.getThreadProjection(parentId)).contextTransfers.filter(
+          (item) => item.type === "subagent_result",
+        ),
+        0,
+      );
+    }).pipe(
+      Effect.provide(Reactor.layer.pipe(Layer.provide(Layer.merge(dependencies, overrides)))),
     );
   }).pipe(Effect.provide(dependencies)),
 );
