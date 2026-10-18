@@ -135,7 +135,7 @@ it.live(
         expect(extract(second.body, second.finalUrl).text).toContain("# fresh storage");
         expect(dns.rebound).toHaveBeenCalled();
         expect(requests).toEqual([]);
-      }).pipe(Effect.provide(layer(executable)), Effect.provide(PublicHttp.layer));
+      }).pipe(Effect.provide(Layer.mergeAll(layer(executable), PublicHttp.layer)));
     }).pipe(Effect.scoped),
   30_000,
 );
@@ -171,7 +171,7 @@ it.live(
           }),
         ).pipe(Effect.flip);
         expect(result.status).toBe("blocked_local");
-      }).pipe(Effect.provide(layer(executable)), Effect.provide(PublicHttp.layer));
+      }).pipe(Effect.provide(Layer.mergeAll(layer(executable), PublicHttp.layer)));
     }),
   30_000,
 );
