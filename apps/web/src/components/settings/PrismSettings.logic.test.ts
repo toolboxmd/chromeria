@@ -4,11 +4,13 @@ import {
   ProjectId,
   ProviderInstanceId,
 } from "@t3tools/contracts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import { describe, expect, it } from "vite-plus/test";
 import {
   movePrismPreference,
   planPrismRolePatch,
+  planPrismRolesReset,
   prismEffortOptions,
   prismModelChoices,
   prismWriteObserved,
@@ -109,7 +111,7 @@ describe("Prism role preferences", () => {
     ).toEqual([]);
   });
 
-  it("preserves each project's own kit when writing a project override", () => {
+  it("writes only the edited role to a project override and resets without touching Promachos", () => {
     const env = environment("one");
     const projectId = ProjectId.make("project");
     const member = {
@@ -132,9 +134,10 @@ describe("Prism role preferences", () => {
           ...env.serverConfig.settings,
           projectSettingsOverrides: {
             [projectId]: {
+              defaultAutoPull: false,
               prismRoles: {
-                ...roles,
-                worker: { ...roles.worker, instructions: "Project instructions" },
+                promachos: { models: [second] },
+                worker: { instructions: "Project instructions" },
               },
             },
           },
@@ -165,12 +168,32 @@ describe("Prism role preferences", () => {
       plan.serverWrites[0]!.patch,
     );
     expect(next.prismRoles).toEqual(roles);
-    expect(next.projectSettingsOverrides[projectId]?.prismRoles?.worker).toEqual({
+    expect(next.projectSettingsOverrides[projectId]).toEqual({
+      defaultAutoPull: false,
+      prismRoles: {
+        promachos: { models: [second] },
+        worker: { instructions: "Project instructions", lanes: { medium: [second, first] } },
+      },
+    });
+    expect(resolveProjectSettings(next, projectId).settings.prismRoles.worker).toEqual({
       ...roles.worker,
       instructions: "Project instructions",
       lanes: { ...rolesLanes, medium: [second, first] },
     });
-    expect(next.projectSettingsOverrides[projectId]?.prismRoles?.reviewer).toEqual(roles.reviewer);
+
+    const savedEnv = { ...scopedEnv, serverConfig: { ...scopedEnv.serverConfig, settings: next } };
+    const reset = planPrismRolesReset(scope, [savedEnv]);
+    const afterReset = applyServerSettingsPatch(next, reset.serverWrites[0]!.patch);
+    expect(afterReset.projectSettingsOverrides[projectId]).toEqual({
+      defaultAutoPull: false,
+      prismRoles: { promachos: { models: [second] } },
+    });
+    const resetEnv = {
+      ...savedEnv,
+      serverConfig: { ...savedEnv.serverConfig, settings: afterReset },
+    };
+    expect(prismWriteObserved(reset, [resetEnv], { kind: "inherit" })).toBe(true);
+    expect(prismWriteObserved(reset, [savedEnv], { kind: "inherit" })).toBe(false);
   });
 
   it("reports disconnected scopes and partial save failures", async () => {

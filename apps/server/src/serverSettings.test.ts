@@ -1,7 +1,9 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  DEFAULT_PRISM_ROLE_KITS,
   DEFAULT_SERVER_SETTINGS,
   ModelSelection,
+  PrismRoleKits,
   ProjectId,
   ProjectScript,
   ProviderDriverKind,
@@ -11,6 +13,7 @@ import {
   UsageLimitSourceId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { assert, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -32,6 +35,7 @@ import * as ServerSettingsModule from "./serverSettings.ts";
 import { resolveProviderInstanceTerminalEnvironment } from "./terminal/Manager.ts";
 
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
+const encodePrismRoleKits = Schema.encodeEffect(PrismRoleKits);
 const decodeServerSettingsJson = Schema.decodeUnknownEffect(Schema.fromJsonString(ServerSettings));
 
 const layerServerSettings = () =>
@@ -1881,6 +1885,76 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const persisted = yield* decodeServerSettings(JSON.parse(raw));
       assert.isTrue(persisted.projectSettingsFolded);
       assert.isUndefined(persisted.projectSettingsOverrides[legacyProject]);
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect("rewrites whole-kit Prism project overrides once so unset roles inherit", () =>
+    Effect.gen(function* () {
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const codex = ProviderInstanceId.make("codex");
+      const sol = { instanceId: codex, model: "gpt-6.1-sol", effort: "medium" };
+      const grok = { instanceId: ProviderInstanceId.make("grok"), model: "grok-4.7" };
+      const luna = { instanceId: codex, model: "gpt-6-luna" };
+      // What earlier builds stored: every role filled in, one lane actually set.
+      const legacyKits = (yield* encodePrismRoleKits(DEFAULT_PRISM_ROLE_KITS)) as Record<
+        string,
+        Record<string, unknown>
+      >;
+      const tuned = ProjectId.make("project-tuned");
+      const untouched = ProjectId.make("project-untouched");
+      const lanes = ProjectId.make("project-lanes");
+      yield* fileSystem.writeFileString(
+        serverConfig.settingsPath,
+        JSON.stringify({
+          projectSettingsFolded: true,
+          prismRoles: { reviewer: { models: [sol] }, worker: { lanes: { hard: [sol] } } },
+          projectSettingsOverrides: {
+            [tuned]: {
+              defaultAutoPull: true,
+              prismRoles: {
+                ...legacyKits,
+                promachos: { ...legacyKits.promachos, models: [grok] },
+                worker: { ...legacyKits.worker, lanes: { easy: [], medium: [luna], hard: [] } },
+              },
+            },
+            [untouched]: { prismRoles: legacyKits },
+            // Saved before single lists: the medium lane is the reviewer's list.
+            [lanes]: { prismRoles: { reviewer: { lanes: { easy: [], medium: [luna] } } } },
+          },
+        }),
+      );
+
+      const settings = yield* serverSettings.getSettings;
+      assert.isTrue(settings.prismRoleOverridesPartial);
+      assert.deepEqual(settings.projectSettingsOverrides, {
+        [tuned]: {
+          defaultAutoPull: true,
+          prismRoles: { promachos: { models: [grok] }, worker: { lanes: { medium: [luna] } } },
+        },
+        [lanes]: { prismRoles: { reviewer: { models: [luna] } } },
+      });
+      const persisted = yield* decodeServerSettingsJson(
+        yield* fileSystem.readFileString(serverConfig.settingsPath),
+      );
+      assert.deepEqual(persisted.projectSettingsOverrides, settings.projectSettingsOverrides);
+
+      // A later environment change reaches every role the project did not set.
+      const changed = yield* serverSettings.updateSettings({
+        prismRoles: {
+          reviewer: {
+            models: [grok],
+          },
+        },
+      });
+      const kits = resolveProjectSettings(changed, tuned).settings.prismRoles;
+      assert.deepEqual(kits.reviewer.models, [grok]);
+      assert.deepEqual(kits.worker.lanes, { easy: [], medium: [luna], hard: [sol] });
+      assert.deepEqual(
+        resolveProjectSettings(changed, untouched).settings.prismRoles,
+        changed.prismRoles,
+      );
     }).pipe(Effect.provide(layerServerSettings())),
   );
 

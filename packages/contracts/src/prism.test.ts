@@ -43,7 +43,7 @@ describe("Prism role kits", () => {
     expect(decodeKitsPatch({ promachos: { models } })).toEqual({ promachos: { models } });
     expect(
       decodeProjectOverrides({ prismRoles: { promachos: { models } } }).prismRoles?.promachos
-        .models,
+        ?.models,
     ).toEqual(models);
   });
 
@@ -97,7 +97,7 @@ describe("Prism role kits", () => {
     });
     expect(both.prismRoles.retry.enabled).toBe(true);
     const overrides = decodeProjectOverrides({ prismRoles: { recovery: { enabled: false } } });
-    expect(overrides.prismRoles?.escalation.enabled).toBe(false);
+    expect(overrides.prismRoles?.escalation?.enabled).toBe(false);
   });
 
   it("load saved settings that still name a role runtime mode, dropping it", () => {
@@ -154,14 +154,30 @@ describe("Prism role kits", () => {
     expect(settings.prismRoles.reviewer.instructions).toBe("");
   });
 
-  it("accept a project override of the whole kit set", () => {
+  it("keep a project override partial: only the roles it set, an empty list kept", () => {
+    const luna = { instanceId: "codex", model: "gpt-5.6-luna" };
     const overrides = decodeProjectOverrides({
-      prismRoles: {
-        reviewer: { models: [{ instanceId: "codex", model: "gpt-5.6-luna" }] },
-      },
+      prismRoles: { reviewer: { models: [luna] }, planner: { models: [] } },
     });
-    expect(overrides.prismRoles?.reviewer.models[0]?.model).toBe("gpt-5.6-luna");
-    expect(overrides.prismRoles?.planner.models).toEqual([]);
+    expect(overrides.prismRoles).toEqual({ reviewer: { models: [luna] }, planner: { models: [] } });
+  });
+
+  it("keep a project override's legacy medium lane as the role's list, without defaults", () => {
+    const opus = { instanceId: "claudeAgent", model: "claude-opus-5-5" };
+    const luna = { instanceId: "codex", model: "gpt-5.6-luna" };
+    expect(
+      decodeProjectOverrides({
+        prismRoles: {
+          reviewer: { lanes: { medium: [opus], hard: [luna] } },
+          retry: { models: [luna], lanes: { medium: [opus] } },
+          worker: { lanes: { medium: [luna] } },
+        },
+      }).prismRoles,
+    ).toEqual({
+      reviewer: { models: [opus] },
+      retry: { models: [luna] },
+      worker: { lanes: { medium: [luna] } },
+    });
   });
 
   it("patch one lane of the worker or one field of another role without defaults", () => {

@@ -136,24 +136,34 @@ const roleKits = Schema.Struct({
   escalation: singleListKit(switchable),
 });
 
-/** All role kits; a role saved under its legacy key loads as the renamed role. */
-export const PrismRoleKits = Schema.Record(Schema.String, Schema.Unknown).pipe(
-  Schema.decodeTo(
-    roleKits,
-    SchemaTransformation.transform({
-      decode: (saved) => {
-        const kits: Record<string, unknown> = {};
-        for (const [key, kit] of Object.entries(saved)) {
-          const role = LEGACY_PRISM_ROLE_KEYS[key];
-          if (role === undefined) kits[key] = kit;
-          else if (saved[role] === undefined) kits[role] = kit;
-        }
-        return kits as typeof roleKits.Encoded;
-      },
-      encode: (kits) => kits as Record<string, unknown>,
-    }),
-  ),
-);
+/**
+ * A role saved under its legacy key loads as the renamed role. `kit` adapts
+ * each saved kit before the role schema decodes it.
+ */
+const withLegacyRoleKeys = <S extends Schema.Top>(
+  kits: S,
+  kit: (role: string, saved: unknown) => unknown = (_role, saved) => saved,
+) =>
+  Schema.Record(Schema.String, Schema.Unknown).pipe(
+    Schema.decodeTo(
+      kits,
+      SchemaTransformation.transform({
+        decode: (saved) => {
+          const renamed: Record<string, unknown> = {};
+          for (const [key, value] of Object.entries(saved)) {
+            const role = LEGACY_PRISM_ROLE_KEYS[key];
+            if (role === undefined) renamed[key] = kit(key, value);
+            else if (saved[role] === undefined) renamed[role] = kit(role, value);
+          }
+          return renamed as S["Encoded"];
+        },
+        encode: (decoded) => decoded as Record<string, unknown>,
+      }),
+    ),
+  );
+
+/** All role kits. */
+export const PrismRoleKits = withLegacyRoleKeys(roleKits);
 export type PrismRoleKits = typeof PrismRoleKits.Type;
 export type PrismRoleKit = PrismRoleKits[PrismRole];
 
@@ -203,6 +213,80 @@ export const PrismRoleKitsPatch = Schema.Struct({
   escalation: Schema.optionalKey(switchableKitPatch),
 });
 export type PrismRoleKitsPatch = typeof PrismRoleKitsPatch.Type;
+
+/**
+ * A project's `prismRoles` override: only the roles, fields and worker lanes
+ * the project set, with no filled-in defaults. Each present value overlays
+ * the environment kit and everything absent inherits it, so a later
+ * environment change still reaches the project. A present empty model list
+ * is a real value: that role runs on the caller's model.
+ */
+export const PrismProjectRoleKits = withLegacyRoleKeys(PrismRoleKitsPatch, (role, saved) => {
+  // Like `singleListKit`: a saved medium lane becomes the single list.
+  if (role === "worker" || typeof saved !== "object" || saved === null) return saved;
+  const { lanes, ...fields } = saved as { lanes?: { medium?: unknown }; models?: unknown };
+  return fields.models === undefined && lanes?.medium !== undefined
+    ? { ...fields, models: lanes.medium }
+    : fields;
+});
+export type PrismProjectRoleKits = typeof PrismProjectRoleKits.Type;
+
+/** `kits` with each present role field (and worker lane) of `patch` replacing its own. */
+export function overlayPrismRoleKits<Kits extends PrismRoleKits | PrismRoleKitsPatch>(
+  kits: Kits,
+  patch: PrismRoleKitsPatch,
+): Kits {
+  const next: Record<string, unknown> = { ...kits };
+  for (const [role, fields] of Object.entries(patch)) {
+    if (fields === undefined) continue;
+    const current = (kits as Record<string, { lanes?: object } | undefined>)[role];
+    next[role] =
+      "lanes" in fields && fields.lanes !== undefined
+        ? { ...current, ...fields, lanes: { ...current?.lanes, ...fields.lanes } }
+        : { ...current, ...fields };
+  }
+  return next as Kits;
+}
+
+/**
+ * Drop the empty lists, blank instructions and default `enabled` that a
+ * whole-kit Prism override carries for roles the project never set, so those
+ * roles inherit the environment. Set values are kept; `undefined` when
+ * nothing is left.
+ */
+function dropUnsetPrismRoleFields(kits: PrismProjectRoleKits): PrismProjectRoleKits | undefined {
+  const isSet = (key: string, value: unknown) =>
+    value !== undefined &&
+    value !== "" &&
+    !(Array.isArray(value) && value.length === 0) &&
+    !(key === "enabled" && value === true);
+  const next: Record<string, Record<string, unknown>> = {};
+  for (const [role, kit] of Object.entries(kits)) {
+    const fields: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(kit ?? {})) {
+      if (key !== "lanes") {
+        if (isSet(key, value)) fields[key] = value;
+        continue;
+      }
+      const lanes = Object.fromEntries(
+        Object.entries(value ?? {}).filter(([lane, models]) => isSet(lane, models)),
+      );
+      if (Object.keys(lanes).length > 0) fields.lanes = lanes;
+    }
+    if (Object.keys(fields).length > 0) next[role] = fields;
+  }
+  return Object.keys(next).length > 0 ? (next as PrismProjectRoleKits) : undefined;
+}
+
+/** A project override entry with its Prism kits reduced to the roles it actually set. */
+export function withoutUnsetPrismRoles<
+  Entry extends { readonly prismRoles?: PrismProjectRoleKits },
+>(entry: Entry): Entry {
+  if (entry.prismRoles === undefined) return entry;
+  const { prismRoles, ...rest } = entry;
+  const kits = dropUnsetPrismRoleFields(prismRoles);
+  return (kits === undefined ? rest : { ...rest, prismRoles: kits }) as Entry;
+}
 
 export const PrismStaleReason = Schema.Literals(["silence", "provider-dead", "provider-error"]);
 export type PrismStaleReason = typeof PrismStaleReason.Type;

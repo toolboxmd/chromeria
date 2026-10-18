@@ -1,5 +1,6 @@
 import {
   type ModelSelection,
+  overlayPrismRoleKits,
   PROJECT_FILE_BACKED_SETTINGS,
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
   type ProjectFileBackedSettingKey,
@@ -147,7 +148,14 @@ function resolveProjectOverrides(
     ) {
       continue;
     }
-    effective[key] = value;
+    // Prism kits are partial: the project's roles overlay the environment's.
+    effective[key] =
+      key === "prismRoles"
+        ? overlayPrismRoleKits(
+            settings.prismRoles,
+            value as NonNullable<typeof overrides.prismRoles>,
+          )
+        : value;
     sources[key] = "project";
   }
   const textGeneration = effective.textGenerationModelSelection as ModelSelection;
