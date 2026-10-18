@@ -131,6 +131,7 @@ function startWithMissingWorktree(
     Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
     Layer.provide(
       Layer.mock(ContextmdServing.ContextmdServing)({
+        nativeSessionRegistered: () => Effect.void,
         releaseSessionInstructions: () => Effect.void,
         recordNativeFork: () => Effect.void,
       }),
@@ -757,6 +758,14 @@ function makeLocalCommandHarness(input: {
     Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
     Layer.provide(
       Layer.mock(ContextmdServing.ContextmdServing)({
+        nativeSessionRegistered: ({ nativeSessionId, runId: registeredRun }) =>
+          Effect.sync(() => {
+            const attempt = projection.attempts.find(
+              (a) => a.runId === registeredRun && a.status === "running",
+            );
+            expect(attempt?.nativeThreadId).toBe(nativeSessionId);
+            input.grokInstructions?.calls.push("registered");
+          }),
         stageSessionInstructions: () =>
           Effect.sync(() => {
             input.grokInstructions!.calls.push("stage");
@@ -1366,6 +1375,7 @@ effectIt.effect.each([undefined, "bind", "attach"] as const)(
           "adopt",
           "attach",
           "running",
+          "registered",
           "dispatch",
           "release",
         ]);

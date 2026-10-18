@@ -130,6 +130,7 @@ docs/user/updating.md
 knip.jsonc
 packages/client-runtime/src/rpc/client.ts
 packages/client-runtime/src/state/runtime.test.ts
+packages/client-runtime/src/state/threadDetail.ts
 packages/client-runtime/src/state/runtime.ts
 packages/contracts/src/clientRpcPermissions.ts
 packages/contracts/src/environment.ts
@@ -452,3 +453,10 @@ apps/server/src/htmlRender/publicProxy.ts
 
 # Public research rendering reuses the pinned browser/context owner (#442)
 apps/server/src/preview/ServerBrowserContexts.ts
+
+# Legacy terminal-label boundaries (#345).
+packages/shared/src/composerContextLegacy.test.ts
+packages/shared/src/composerContextLegacy.ts
+
+# Launcher test fixture ownership (#157)
+apps/server/src/serviceLauncher.test.ts

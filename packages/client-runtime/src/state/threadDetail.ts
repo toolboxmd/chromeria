@@ -32,6 +32,7 @@ import {
   derivePendingThreadRequests,
   type PendingThreadRequests,
 } from "./threadRequests.ts";
+import { createRestartCutProjector } from "./restartCutPresentation.ts";
 import { arrayElementsEqual, parseThreadKey, threadKey } from "./entities.ts";
 import { getProjectionArrayReplacementIndex } from "./orchestrationV2Projection.ts";
 
@@ -247,9 +248,15 @@ export function createEnvironmentThreadDetailAtoms<E>(
 
   const visibleTurnItemsAtomFamily = Atom.family((key: string) => {
     const projectQuestionHistory = createQuestionHistoryProjector();
+    const projectRestartCuts = createRestartCutProjector();
     return Atom.make((get): OrchestrationV2ThreadProjection["visibleTurnItems"] => {
       const projection = Option.getOrNull(get(threadStateValueAtomFamily(key)).data);
-      return projection === null ? EMPTY_VISIBLE_TURN_ITEMS : projectQuestionHistory(projection);
+      return projection === null
+        ? EMPTY_VISIBLE_TURN_ITEMS
+        : projectRestartCuts({
+            ...projection,
+            visibleTurnItems: projectQuestionHistory(projection),
+          });
     }).pipe(Atom.setIdleTTL(0), Atom.withLabel(`environment-thread-visible-turn-items:${key}`));
   });
 

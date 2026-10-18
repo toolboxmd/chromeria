@@ -1551,6 +1551,11 @@ export const layer: Layer.Layer<
       if (!runningWrite.committed) {
         return;
       }
+      if (contextmd !== undefined && runningAttempt.nativeThreadId !== undefined)
+        yield* contextmd.nativeSessionRegistered({
+          nativeSessionId: runningAttempt.nativeThreadId,
+          runId: run.id,
+        });
       const routableSubagents = projection.subagents.filter((subagent) =>
         RunExecutionService.canRouteRelatedSubagent(subagent.status, subagent.origin),
       );
