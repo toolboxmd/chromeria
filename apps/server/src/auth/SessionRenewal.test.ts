@@ -11,6 +11,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as SessionStore from "./SessionStore.ts";
 import * as SessionRenewal from "./SessionRenewal.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
@@ -20,7 +21,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
 
 const testLayer = Layer.mergeAll(SessionStore.layer, SessionRenewal.layer).pipe(
-  Layer.provide(Sqlite.layerMemory),
+  Layer.provideMerge(Sqlite.layerMemory),
   Layer.provide(ServerSecretStore.layer),
   Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "session-renewal-test-" })),
   Layer.provide(
@@ -206,6 +207,99 @@ it.layer(NodeServices.layer)("paired auth renewal", (it) => {
         expect(
           (yield* renewal
             .approveEnrollment(pending.enrollmentId, pending.fingerprint)
+            .pipe(Effect.flip))._tag,
+        ).toBe("RenewalRejected");
+      }).pipe(Effect.provide(testLayer)),
+  );
+  it.effect("retries verified approval without replacing authority before or after rotation", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionStore.SessionStore;
+      const renewal = yield* SessionRenewal.SessionRenewal;
+      const sql = yield* SqlClient.SqlClient;
+      const original = yield* sessions.issue({
+        method: "bearer-access-token",
+        ttl: Duration.minutes(10),
+      });
+      const device = yield* renewal.requestEnrollment({
+        sessionId: original.sessionId,
+        commitment: SessionRenewal.commitment("trusted-device"),
+        route: null,
+        ipAddress: null,
+      });
+      yield* renewal.approveEnrollment(device.enrollmentId, device.fingerprint);
+      const approved = yield* sql`SELECT * FROM auth_session_renewal`;
+      yield* TestClock.adjust("1 minute");
+      yield* renewal.approveEnrollment(device.enrollmentId, device.fingerprint);
+      expect(yield* sql`SELECT * FROM auth_session_renewal`).toEqual(approved);
+      const rotated = yield* renewal.renew({
+        secret: "trusted-device",
+        next: SessionRenewal.commitment("trusted-next"),
+      });
+      expect(rotated.generation).toBe(1);
+      const authority = yield* sql`SELECT * FROM auth_session_renewal`;
+      yield* TestClock.adjust("1 minute");
+      yield* renewal.approveEnrollment(device.enrollmentId, device.fingerprint);
+      expect(yield* sql`SELECT * FROM auth_session_renewal`).toEqual(authority);
+      expect(
+        yield* renewal.renew({ secret: "trusted-next", next: SessionRenewal.commitment("later") }),
+      ).toEqual({ ...rotated, outcome: "current" });
+    }).pipe(Effect.provide(testLayer)),
+  );
+  it.effect("refuses rejected enrollments and different commitments on approval retries", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionStore.SessionStore;
+      const renewal = yield* SessionRenewal.SessionRenewal;
+      const original = yield* sessions.issue({
+        method: "bearer-access-token",
+        ttl: Duration.minutes(10),
+      });
+      const request = (secret: string) =>
+        renewal.requestEnrollment({
+          sessionId: original.sessionId,
+          commitment: SessionRenewal.commitment(secret),
+          route: null,
+          ipAddress: null,
+        });
+      const device = yield* request("trusted-device");
+      const other = yield* request("other-device");
+      const rejected = yield* request("rejected-device");
+      yield* renewal.rejectEnrollment(rejected.enrollmentId);
+      yield* renewal.approveEnrollment(device.enrollmentId, device.fingerprint);
+      for (const [id, fingerprint] of [
+        [device.enrollmentId, other.fingerprint],
+        [other.enrollmentId, device.fingerprint],
+        [other.enrollmentId, other.fingerprint],
+        [rejected.enrollmentId, rejected.fingerprint],
+        ["unknown-enrollment", device.fingerprint],
+      ] as const) {
+        expect((yield* renewal.approveEnrollment(id, fingerprint).pipe(Effect.flip))._tag).toBe(
+          "RenewalRejected",
+        );
+      }
+    }).pipe(Effect.provide(testLayer)),
+  );
+  it.effect.each(["expiry", "revocation"] as const)(
+    "refuses verified approval retries after session %s",
+    (invalidation) =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionStore.SessionStore;
+        const renewal = yield* SessionRenewal.SessionRenewal;
+        const original = yield* sessions.issue({
+          method: "bearer-access-token",
+          ttl: Duration.minutes(10),
+        });
+        const device = yield* renewal.requestEnrollment({
+          sessionId: original.sessionId,
+          commitment: SessionRenewal.commitment("trusted-device"),
+          route: null,
+          ipAddress: null,
+        });
+        yield* renewal.approveEnrollment(device.enrollmentId, device.fingerprint);
+        if (invalidation === "expiry") yield* TestClock.adjust("11 minutes");
+        else yield* sessions.revoke(original.sessionId);
+        expect(
+          (yield* renewal
+            .approveEnrollment(device.enrollmentId, device.fingerprint)
             .pipe(Effect.flip))._tag,
         ).toBe("RenewalRejected");
       }).pipe(Effect.provide(testLayer)),
