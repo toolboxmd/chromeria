@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 
-import { ProviderInstanceId, type PrismModelPreference } from "@t3tools/contracts";
+import { ProviderDriverKind, ProviderInstanceId, type Color } from "@t3tools/contracts";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
+import type { ColorProviderChoice } from "./ColorPicker.logic";
 import { ModelList } from "./PrismSettings";
 
 const first = { instanceId: ProviderInstanceId.make("codex"), model: "first" };
@@ -38,11 +39,11 @@ afterEach(async () => {
  * Mirrors the page: one write at a time, and `saving` turns on in the same render as the edit,
  * as the save store does, until its snapshot lands or it fails.
  */
-function harness(initial: readonly PrismModelPreference[]) {
+function harness(initial: readonly Color[], providers: readonly ColorProviderChoice[] = []) {
   let saved = initial;
   let saving = false;
   let settle: { resolve: () => void; reject: (cause: Error) => void } | null = null;
-  const save = vi.fn((models: readonly PrismModelPreference[]) => {
+  const save = vi.fn((models: readonly Color[]) => {
     if (saving) return Promise.reject(new Error("Wait for the current settings update to finish."));
     saving = true;
     root.render(element());
@@ -61,7 +62,7 @@ function harness(initial: readonly PrismModelPreference[]) {
       key="list"
       title="Reviewer"
       saved={saved}
-      choices={[]}
+      providers={providers}
       mixed={false}
       disabled={false}
       saving={saving}
@@ -127,5 +128,31 @@ describe("ModelList while a save is pending", () => {
 
     await list.finish("failure");
     expect(order()).toEqual(["first", "second"]);
+  });
+});
+
+describe("ModelList adding a Color", () => {
+  it("appends the picked Color and keeps existing rows mounted when the save lands", async () => {
+    const codex: ColorProviderChoice = {
+      instanceId: first.instanceId,
+      driverKind: ProviderDriverKind.make("codex"),
+      displayName: "Codex",
+      models: [{ slug: "third", name: "Third", efforts: [] }],
+    };
+    const list = harness([first, second], [codex]);
+    await list.render();
+    const [firstRow, secondRow] = rows();
+    await act(() =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Add Reviewer Color"]')!.click(),
+    );
+    expect(list.save).toHaveBeenCalledWith([
+      first,
+      second,
+      { instanceId: first.instanceId, model: "third" },
+    ]);
+
+    await list.finish("success");
+    expect(rows()).toHaveLength(3);
+    expect(rows().slice(0, 2)).toEqual([firstRow, secondRow]);
   });
 });

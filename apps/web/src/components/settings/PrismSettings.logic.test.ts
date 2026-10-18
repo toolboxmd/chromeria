@@ -11,8 +11,6 @@ import {
   movePrismPreference,
   planPrismRolePatch,
   planPrismRolesReset,
-  prismEffortOptions,
-  prismModelChoices,
   prismWriteObserved,
   syncPrismDraft,
 } from "./PrismSettings.logic";
@@ -53,32 +51,6 @@ describe("Prism role preferences", () => {
     expect(movePrismPreference(original, 0, -1)).toBe(original);
     expect(movePrismPreference(original, 1, 1)).toBe(original);
     expect(movePrismPreference([], 0, 1)).toEqual([]);
-  });
-
-  it("uses provider effort choices and excludes prompt-only controls", () => {
-    expect(
-      prismEffortOptions({
-        optionDescriptors: [
-          {
-            id: "agent",
-            label: "Agent",
-            type: "select",
-            options: [{ id: "build", label: "Build" }],
-          },
-          {
-            id: "variant",
-            label: "Reasoning",
-            type: "select",
-            options: [
-              { id: "deep", label: "Deep" },
-              { id: "prompt", label: "Prompt" },
-            ],
-            promptInjectedValues: ["prompt"],
-          },
-        ],
-      }),
-    ).toEqual([{ id: "deep", label: "Deep" }]);
-    expect(prismEffortOptions(null)).toEqual([]);
   });
 
   it("replaces model arrays, including clearing them, without changing role kits or offline environments", () => {
@@ -222,33 +194,6 @@ describe("Prism role preferences", () => {
     expect(result.savedEnvironmentCount).toBe(1);
     expect(result.failedEnvironments.map((env) => env.label)).toEqual(["two"]);
   });
-});
-
-it("offers only enabled models available across the selected scope", () => {
-  const entry = {
-    instanceId: first.instanceId,
-    displayName: "Codex",
-    enabled: true,
-    isAvailable: true,
-    models: [],
-  };
-  const options = new Map([
-    [
-      first.instanceId,
-      [
-        { slug: "enabled", name: "Enabled" },
-        { slug: "unavailable", name: "Unavailable", isUnavailable: true },
-        { slug: "other-scope", name: "Other scope" },
-      ],
-    ],
-  ]);
-  expect(
-    prismModelChoices([entry], options, (_, model) =>
-      model === "other-scope" ? "Unavailable elsewhere" : null,
-    ).map((choice) => choice.preference.model),
-  ).toEqual(["enabled"]);
-  expect(prismModelChoices([{ ...entry, enabled: false }], options, () => null)).toEqual([]);
-  expect(prismModelChoices([{ ...entry, isAvailable: false }], options, () => null)).toEqual([]);
 });
 
 it("keeps the same model at distinct efforts as separate ordered entries", () => {

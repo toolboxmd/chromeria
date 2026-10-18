@@ -1165,7 +1165,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "purpose": "Keep scoped Prism kits, ordered model lists and worker lanes editable with saved settings replay and honest explicit retry/escalation kit semantics. Project overrides are partial role maps over the environment kits.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/169",
-    "https://github.com/toolboxmd/chromeria/issues/395"
+    "https://github.com/toolboxmd/chromeria/issues/395",
+    "https://github.com/toolboxmd/chromeria/issues/397"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/183",
@@ -1175,6 +1176,10 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/prism/PrismRoleOverrides.test.ts",
     "apps/server/src/prism/PrismRoleOverrides.ts",
     "packages/shared/src/prismProjectOverrides.test.ts",
+    "apps/web/src/components/settings/ColorPicker.logic.test.ts",
+    "apps/web/src/components/settings/ColorPicker.logic.ts",
+    "apps/web/src/components/settings/ColorPicker.tsx",
+    "apps/web/src/components/settings/PrismSettings.list.test.tsx",
     "apps/web/src/components/settings/PrismSettings.logic.test.ts",
     "apps/web/src/components/settings/PrismSettings.logic.ts",
     "apps/web/src/components/settings/PrismSettings.state.test.ts",

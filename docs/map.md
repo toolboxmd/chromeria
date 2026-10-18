@@ -34,7 +34,7 @@ flowchart TD
     end
 
     PZ["Prism routing"]
-    %% PZ: #92 PR #408 PR #430
+    %% PZ: #92 PR #408 PR #430 PR #479
     VT["Visible T3 threads"]
     %% VT: #10
     PM["Promachos bubbles and persona"]
