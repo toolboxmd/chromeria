@@ -1,4 +1,5 @@
 import { SessionPermissions } from "./SessionPermissions";
+import { isAddableRelayEnvironment } from "@t3tools/client-runtime/relay";
 import { AUTH_SCOPE_OPTIONS as PAIRING_SCOPE_OPTIONS } from "@t3tools/shared/authScopeOptions";
 import {
   ChevronRightIcon,
@@ -2810,7 +2811,9 @@ export function ConnectionsSettings() {
   const relayRouteOffer =
     routeTarget !== null &&
     !routeTarget.relayManaged &&
-    relayDiscoveryState.environments.has(routeTarget.environmentId)
+    isAddableRelayEnvironment(
+      relayDiscoveryState.environments.get(routeTarget.environmentId)?.environment,
+    )
       ? relayDiscoveryState.environments.get(routeTarget.environmentId)!.environment
       : null;
   const addRelayRoute = async () => {
