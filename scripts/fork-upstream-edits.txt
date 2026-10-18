@@ -312,7 +312,7 @@ apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs
 apps/server/src/provider/acp/AcpJsonRpcConnection.test.ts
 packages/provider-acp/src/server/AcpSessionRuntime.ts
 
-# Paired session renewal (#323)
+# Paired session renewal (#323, #330)
 apps/desktop/src/ipc/DesktopIpcHandlers.ts
 apps/desktop/src/ipc/channels.ts
 apps/desktop/src/ipc/methods/connectionCatalog.ts
@@ -323,6 +323,9 @@ apps/server/src/auth/http.test.ts
 apps/server/src/cli/auth.ts
 apps/server/src/cli/browser.ts
 apps/web/src/authBootstrap.test.ts
+apps/web/src/routes/__root.tsx
+apps/web/src/routes/_chat.tsx
+apps/web/src/routes/pair.tsx
 apps/web/src/lib/runtime.ts
 packages/client-runtime/src/authorization/index.ts
 packages/client-runtime/src/authorization/remote.ts

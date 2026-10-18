@@ -1900,8 +1900,14 @@ sources and reasons.
 {
   "id": "paired-session-renewal",
   "purpose": "Keep paired desktop, web and mobile sessions active through rotating device-held renewal authority, with headless approval for existing devices.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/323"],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/334"],
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/323",
+    "https://github.com/toolboxmd/chromeria/issues/330"
+  ],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/334",
+    "https://github.com/toolboxmd/chromeria/pull/504"
+  ],
   "newFiles": [
     "apps/desktop/src/app/DesktopRenewalStore.test.ts",
     "apps/desktop/src/app/DesktopRenewalStore.ts",
@@ -1929,6 +1935,9 @@ sources and reasons.
     "apps/web/src/authBootstrap.test.ts",
     "apps/web/src/lib/runtime.test.ts",
     "apps/web/src/lib/runtime.ts",
+    "apps/web/src/routes/__root.tsx",
+    "apps/web/src/routes/_chat.tsx",
+    "apps/web/src/routes/pair.tsx",
     "docs/user/remote-access.md",
     "packages/client-runtime/src/authorization/index.ts",
     "packages/client-runtime/src/authorization/remote.ts",
