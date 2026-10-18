@@ -209,7 +209,7 @@ const testLayers = NodeCrypto.layer;
 
 it.effect("returns shared subpage ownership and forwards selection through the peer", () =>
   Effect.gen(function* () {
-    const root = `<h1>Guest house</h1><p>${"Visit the house and garden. ".repeat(12)}</p><a href='/conference'>Conference</a><a href='/camere'>Rooms</a>`;
+    const root = `<h1>Guest house</h1><p>${"Visit the house and garden. ".repeat(12)}</p><a href='/conference'>Conference</a><a href='/conference-two'>Conference rates</a><a href='/camere'>Rooms</a>`;
     const f = yield* fixture(undefined, (target: URL) =>
       response(target.pathname === "/rooms" ? root : body),
     );
@@ -226,6 +226,9 @@ it.effect("returns shared subpage ownership and forwards selection through the p
     expect(yield* Queue.take(f.requests)).toBe("/conference");
     const result = page(yield* Fiber.join(work));
     expect(result.subpages).toHaveLength(1);
+    expect(result.pendingSubpages).toEqual(["https://venue.example/conference-two"]);
+    expect(result.unvisitedSubpages).toBe(1);
+    expect(result.truncationReasons).toContain("page_budget");
     const child = result.subpages[0]!;
     expect(child).toMatchObject({
       url: "https://venue.example/conference",
