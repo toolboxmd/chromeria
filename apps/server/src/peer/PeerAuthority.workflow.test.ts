@@ -776,6 +776,9 @@ const makeNode = (
     const deviceMediaPaths = new Map<string, string>();
     const deviceMediaOutside = yield* Ref.make(false);
     const deviceScreenshotCalls = yield* Ref.make(0);
+    const deviceShutdownCalls = yield* Ref.make(0);
+    const deviceHubPlatform = yield* Ref.make<"android" | "ios">("android");
+    const deviceHubBooted = yield* Ref.make(true);
     const deviceOldVersion = yield* Ref.make(false);
     const deviceCapabilities = yield* Ref.make({
       device: { id: "fixture-device382", platform: "android", target: "mobile", kind: "emulator" },
@@ -998,6 +1001,15 @@ const makeNode = (
           };
           const hub = HttpClient.make((request) =>
             Effect.gen(function* () {
+              if (request.url.endsWith("/grid/api/start")) {
+                yield* assertStarted;
+                return HttpClientResponse.fromWeb(request, Response.json({ ok: true }));
+              }
+              if (request.url.endsWith("/shutdown")) {
+                yield* assertStarted;
+                yield* Ref.update(deviceShutdownCalls, (n) => n + 1);
+                return HttpClientResponse.fromWeb(request, Response.json({ ok: true }));
+              }
               if (request.url.includes("screenshot")) {
                 yield* assertStarted;
                 yield* Ref.update(deviceScreenshotCalls, (n) => n + 1);
@@ -1015,17 +1027,32 @@ const makeNode = (
               return HttpClientResponse.fromWeb(
                 request,
                 Response.json({
-                  simulators: [],
-                  emulators: [
-                    {
-                      id: "fixture-device382",
-                      name: "Isolated Android",
-                      platform: "android",
-                      version: "fixture",
-                      booted: true,
-                      physical: false,
-                    },
-                  ],
+                  simulators:
+                    (yield* Ref.get(deviceHubPlatform)) === "ios"
+                      ? [
+                          {
+                            id: "fixture-device382",
+                            name: "Isolated iOS",
+                            platform: "ios",
+                            version: "fixture",
+                            booted: yield* Ref.get(deviceHubBooted),
+                            physical: false,
+                          },
+                        ]
+                      : [],
+                  emulators:
+                    (yield* Ref.get(deviceHubPlatform)) === "android"
+                      ? [
+                          {
+                            id: "fixture-device382",
+                            name: "Isolated Android",
+                            platform: "android",
+                            version: "fixture",
+                            booted: yield* Ref.get(deviceHubBooted),
+                            physical: false,
+                          },
+                        ]
+                      : [],
                 }),
               );
             }),
@@ -1258,6 +1285,9 @@ const makeNode = (
       deviceMediaPaths,
       deviceMediaOutside,
       deviceScreenshotCalls,
+      deviceShutdownCalls,
+      deviceHubPlatform,
+      deviceHubBooted,
       deviceOldVersion,
       deviceCapabilities,
       deviceHostStarts,
@@ -1943,6 +1973,7 @@ const assertTyped383SourceIdle = (source: Node) =>
     expect(yield* Ref.get(source.deviceAgentStarts)).toBe(0);
     expect(yield* Ref.get(source.deviceConfigurations)).toBe(0);
     expect(yield* Ref.get(source.deviceScreenshotCalls)).toBe(0);
+    expect(yield* Ref.get(source.deviceShutdownCalls)).toBe(0);
     expect(source.deviceProcessCalls).toHaveLength(0);
   });
 const typed383Pair = (id: string, legacyDeviceDomain = false, sourcePreferencesOwner = false) =>
@@ -14097,6 +14128,86 @@ it.live(
             })).error.code,
           ).toBe(-32602);
         expect(yield* footprint()).toEqual(beforeInvalid);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live.each(["android", "ios"] as const)(
+  "typed383-shutdown: %s readiness-time grant retirement denies shutdown outside stopped-device recovery",
+  (platform) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { a, b, parent, route } = yield* typed383Pair(`typed383-shutdown-${platform}`);
+        yield* Ref.set(b.deviceHubPlatform, platform);
+        yield* Ref.update(b.deviceCapabilities, (c) => ({
+          ...c,
+          device: { ...c.device, platform, kind: platform === "ios" ? "simulator" : "emulator" },
+        }));
+        const open = (key: string) =>
+          nativeCall(a, parent, "device_open", {
+            ...route,
+            deviceId: "fixture-device382",
+            platform,
+            clientRequestId: key,
+          });
+        const close = (key: string) =>
+          nativeCall(a, parent, "device_close", {
+            ...route,
+            hostId: "local",
+            deviceId: "fixture-device382",
+            shutdown: true,
+            clientRequestId: key,
+          });
+        const firstOpen = yield* open("lawful-open");
+        expect(firstOpen.isError, json(firstOpen)).not.toBe(true);
+        const lawful = yield* close("lawful-close");
+        expect(lawful.isError, json(lawful)).not.toBe(true);
+        expect(yield* Ref.get(b.deviceShutdownCalls)).toBe(1);
+        const nextOpen = yield* open("revoked-open");
+        expect(nextOpen.isError, json(nextOpen)).not.toBe(true);
+        const grant = (yield* b.authority.grants)[0]!;
+        const armed = yield* Ref.make(true);
+        yield* Ref.set(
+          b.deviceReadinessHook,
+          Effect.gen(function* () {
+            if (!(yield* Ref.getAndSet(armed, false))) return;
+            yield* b.authority.setGrant({ ...grant, device: false }).pipe(Effect.orDie);
+            // A refusal caught by the iOS already-stopped fallback must not become success.
+            yield* Ref.set(b.deviceHubBooted, false);
+          }),
+        );
+        const revoked = yield* close("revoked-close");
+        expect(yield* Ref.get(armed)).toBe(false);
+        expect((yield* b.authority.grants)[0]!.device).toBe(false);
+        expect(
+          yield* Ref.get(b.deviceShutdownCalls),
+          "no new shutdown after observed grant retirement",
+        ).toBe(1);
+        expect(
+          revoked.isError,
+          "retired grant must deny shutdown even when the hub reports stopped",
+        ).toBe(true);
+        expect(json(revoked)).toContain("outcome_unknown");
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const unknown = yield* sql`SELECT id FROM mcp_request_receipts WHERE state='started'`;
+        expect(unknown.length).toBeGreaterThan(0);
+        yield* b.authority.setGrant({ ...grant, device: true });
+        expect(json(yield* close("revoked-close"))).toContain("outcome_unknown");
+        expect(yield* Ref.get(b.deviceShutdownCalls)).toBe(1);
+        yield* Ref.set(b.deviceHubBooted, true);
+        const later = yield* open("later-open");
+        expect(later.isError, json(later)).not.toBe(true);
+        const { target } = yield* decodeTyped383Open(later.structuredContent);
+        expect(json(yield* close("revoked-close"))).toContain("outcome_unknown");
+        expect(yield* Ref.get(b.deviceShutdownCalls)).toBe(1);
+        const click = yield* nativeCall(a, parent, "device_execute", {
+          ...route,
+          target,
+          command: { type: "click", ref: "@e1" },
+          clientRequestId: "later-click",
+        });
+        expect(click.isError, json(click)).not.toBe(true);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
   30_000,

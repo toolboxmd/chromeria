@@ -976,6 +976,9 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
     // across a reboot. serve-sim runs simctl bare, though, so a simulator that is
     // already off fails there. Accept that failure only when the hub confirms
     // the simulator is off; a failure on a running one still surfaces.
+    // Readiness can wait while authority changes. Keep this refusal outside
+    // the iOS already-stopped recovery so it cannot be converted to success.
+    yield* recheckAction;
     yield* platform === "ios"
       ? postShutdown(`${vendorPrefix("ios")}/grid/api/shutdown`, { udid: deviceId }).pipe(
           Effect.catch((cause) =>
