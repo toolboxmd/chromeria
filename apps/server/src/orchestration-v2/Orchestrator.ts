@@ -12529,11 +12529,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
       Effect.catch((cause) =>
         Effect.gen(function* () {
-          // Refused like the check above: nothing recorded, so the same command
-          // can go through once the thread's user lowers it again.
+          // Refused messages can be retried after the user lowers the thread.
+          // Other commands retain their durable rejection receipt, including a
+          // prepared launch's release when Stop wins during workspace setup.
           if (
             cause._tag === "OrchestratorThreadAboveModeLimitError" ||
-            cause._tag === "OrchestratorCommandRejectedError"
+            (cause._tag === "OrchestratorCommandRejectedError" &&
+              command.type === "message.dispatch")
           )
             return yield* cause;
           const rejectedAt = yield* DateTime.now;
