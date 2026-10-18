@@ -220,7 +220,7 @@ export const layer: Layer.Layer<
       >;
     }) => {
       const isCurrentAttemptInStatus = (expectedStatus: OrchestrationV2Run["status"]) =>
-        projectionStore.getRuntimeRecoveryProjection(input.threadId).pipe(
+        projectionStore.getThreadRecords(input.threadId, ["runs"], { runIds: [input.runId] }).pipe(
           Effect.map((current) => {
             const run = current.runs.find((candidate) => candidate.id === input.runId);
             return run?.activeAttemptId === input.attemptId && run.status === expectedStatus;
@@ -243,15 +243,17 @@ export const layer: Layer.Layer<
           ),
         shouldStartProviderTurn: () => isCurrentAttemptInStatus("running"),
         shouldFinalizeRun: () =>
-          projectionStore.getRuntimeRecoveryProjection(input.threadId).pipe(
-            Effect.map((current) => {
-              const run = current.runs.find((candidate) => candidate.id === input.runId);
-              return (
-                run?.activeAttemptId === input.attemptId &&
-                (run.status === "starting" || run.status === "running")
-              );
-            }),
-          ),
+          projectionStore
+            .getThreadRecords(input.threadId, ["runs"], { runIds: [input.runId] })
+            .pipe(
+              Effect.map((current) => {
+                const run = current.runs.find((candidate) => candidate.id === input.runId);
+                return (
+                  run?.activeAttemptId === input.attemptId &&
+                  (run.status === "starting" || run.status === "running")
+                );
+              }),
+            ),
         hasUnpairedRunInterruptRequest: () =>
           projectionStore
             .hasUnpairedRunInterruptRequest(

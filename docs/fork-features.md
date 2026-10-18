@@ -1545,6 +1545,26 @@ sources and reasons.
 }
 ```
 
+## single-run-status
+
+```json
+{
+  "id": "single-run-status",
+  "purpose": "Read only the current run for provider turn-start and finalization status guards, preserving recovery reads for inherited background work. Drop when upstream uses equivalent filtered status reads.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/426"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...perf/426-single-run-status"],
+  "newFiles": [],
+  "upstreamFiles": [],
+  "sharedFiles": [
+    "apps/server/src/orchestration-v2/ProviderTurnStartService.bare.test.ts",
+    "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+    "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+    "apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs"
+  ],
+  "keywords": ["isCurrentAttemptInStatus", "shouldFinalizeRun", "runIds"]
+}
+```
+
 ## bounded-stored-event-replay
 
 ```json
