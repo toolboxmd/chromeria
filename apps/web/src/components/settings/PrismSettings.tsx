@@ -1,4 +1,9 @@
-import { type Color, PRISM_ROLE_LABELS, PrismLane } from "@t3tools/contracts";
+import {
+  type Color,
+  PRISM_ROLE_DESCRIPTIONS,
+  PRISM_ROLE_LABELS,
+  PrismLane,
+} from "@t3tools/contracts";
 import {
   closestCenter,
   DndContext,
@@ -25,13 +30,15 @@ import { prismSaveStore } from "./PrismSettings.state";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  ChevronsUpIcon,
+  FlameIcon,
   GripVerticalIcon,
   HammerIcon,
-  LockIcon,
-  RotateCcwIcon,
+  ListChecksIcon,
+  PencilRulerIcon,
   RouteIcon,
+  ScaleIcon,
   SearchCheckIcon,
+  SearchIcon,
   TrashIcon,
 } from "lucide-react";
 import { getCustomModelOptionsByInstance } from "../../modelSelection";
@@ -44,9 +51,7 @@ import { useThreadShells } from "../../state/entities";
 import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
-import { Switch } from "../ui/switch";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { SettingsGroup } from "./SettingsGroup";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
@@ -71,49 +76,28 @@ import {
   type ColorProviderChoice,
 } from "./ColorPicker.logic";
 
-/** The planner is whoever submits the job; it is not configured here. */
+/** Promachos stays here until its own page lands (#400). */
 const PAGE_ROLES = [
-  "promachos",
-  "dispatcher",
+  "planner",
+  "researcher",
+  "designer",
   "worker",
+  "roast",
   "reviewer",
-  "retry",
-  "escalation",
+  "judge",
+  "promachos",
 ] as const;
 type PageRole = (typeof PAGE_ROLES)[number];
 
-const ROLE_DETAILS: Record<
-  PageRole,
-  { icon: ReactNode; description: string; lockedReason?: string }
-> = {
-  promachos: {
-    icon: <RouteIcon />,
-    description: "Starts a new Promachos conversation on the first model with capacity.",
-    lockedReason: "Every new Promachos conversation starts from this list.",
-  },
-  dispatcher: {
-    icon: <RouteIcon />,
-    description: "Owns a job: runs workers, handles problems and delivers one PR.",
-    lockedReason: "Needed until router #117 decides whether jobs keep a dispatcher.",
-  },
-  worker: {
-    icon: <HammerIcon />,
-    description: "Implements the task and commits as it works.",
-    lockedReason: "Required.",
-  },
-  reviewer: {
-    icon: <SearchCheckIcon />,
-    description: "Reviews the finished change before the PR is ready.",
-    lockedReason: "Independent review is required.",
-  },
-  retry: {
-    icon: <RotateCcwIcon />,
-    description: 'Model list used when the planner requests prismRole: "retry".',
-  },
-  escalation: {
-    icon: <ChevronsUpIcon />,
-    description: 'Model list used when the planner requests prismRole: "escalation".',
-  },
+const ROLE_ICONS: Record<PageRole, ReactNode> = {
+  planner: <ListChecksIcon />,
+  researcher: <SearchIcon />,
+  designer: <PencilRulerIcon />,
+  worker: <HammerIcon />,
+  roast: <FlameIcon />,
+  reviewer: <SearchCheckIcon />,
+  judge: <ScaleIcon />,
+  promachos: <RouteIcon />,
 };
 
 const LANE_LABELS: Record<PrismLane, string> = { easy: "Easy", medium: "Medium", hard: "Hard" };
@@ -348,7 +332,6 @@ function RoleRow({
   selected: boolean;
   onSelect: () => void;
 }) {
-  const { icon, description, lockedReason } = ROLE_DETAILS[role];
   const name = PRISM_ROLE_LABELS[role];
   return (
     <div
@@ -367,30 +350,15 @@ function RoleRow({
           aria-pressed={selected}
         />
         <span className="mt-0.5 flex size-4 shrink-0 text-muted-foreground [&_svg]:size-4">
-          {icon}
+          {ROLE_ICONS[role]}
         </span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm font-medium text-foreground">{name}</span>
           <span className="mt-0.5 line-clamp-2 text-xs leading-normal text-muted-foreground/80">
-            {description}
+            {PRISM_ROLE_DESCRIPTIONS[role]}
           </span>
         </span>
       </div>
-      {lockedReason && (
-        <span className="flex h-5 shrink-0 items-center gap-1.5">
-          <LockIcon aria-hidden className="size-3.5 text-muted-foreground" />
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <span tabIndex={0} className="inline-flex">
-                  <Switch checked disabled aria-label={`${name} is always on: ${lockedReason}`} />
-                </span>
-              }
-            />
-            <TooltipPopup side="top">{lockedReason}</TooltipPopup>
-          </Tooltip>
-        </span>
-      )}
     </div>
   );
 }
@@ -435,7 +403,7 @@ export function PrismSettings() {
       setSaveError(cause instanceof Error ? cause.message : "Could not save preferences.");
       throw cause;
     });
-  const [selectedRole, setSelectedRole] = useState<PageRole>("dispatcher");
+  const [selectedRole, setSelectedRole] = useState<PageRole>("planner");
   const [workerLane, setWorkerLane] = useState<PrismLane>("medium");
 
   const providersByEnvironment = useEnvironmentProviders();
@@ -517,23 +485,13 @@ export function PrismSettings() {
           <div id={`prism-${selectedRole}`} className="min-w-0 space-y-4 p-4">
             <div className="flex items-start gap-3">
               <span className="mt-0.5 flex size-4 shrink-0 text-muted-foreground [&_svg]:size-4">
-                {ROLE_DETAILS[selectedRole].icon}
+                {ROLE_ICONS[selectedRole]}
               </span>
               <div className="min-w-0 flex-1">
                 <h3 className="text-sm font-medium">{PRISM_ROLE_LABELS[selectedRole]}</h3>
                 <p className="text-xs text-muted-foreground">
-                  {ROLE_DETAILS[selectedRole].description}
+                  {PRISM_ROLE_DESCRIPTIONS[selectedRole]}
                 </p>
-                {ROLE_DETAILS[selectedRole].lockedReason ? (
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Always on. {ROLE_DETAILS[selectedRole].lockedReason}
-                  </p>
-                ) : (
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Automatic recovery retries once on the same provider and model, independently of
-                    these lists.
-                  </p>
-                )}
               </div>
               {pendingWrite && (
                 <span role="status" className="shrink-0 text-xs text-muted-foreground">

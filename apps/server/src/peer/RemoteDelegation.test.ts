@@ -415,7 +415,7 @@ const boxToolkitLayer = (
             lanes: { medium: [modelSelection], hard: [{ instanceId, model: "box-prism" }] },
           },
           reviewer: { models: [modelSelection] },
-          escalation: { models: [{ instanceId, model: "box-prism" }] },
+          roast: { models: [{ instanceId, model: "box-prism" }] },
         },
       }),
     ),
@@ -1233,7 +1233,7 @@ const recordPending = (
           linkIdentity: link.launchIdentity,
           projectId: boxProject,
           title: "Remote suite",
-          prismRole: "escalation",
+          prismRole: "roast",
           lane: "hard",
           workspaceStrategy: { type: "root", branch: "remote-root" },
           runtimeMode: "full-access",
@@ -1330,7 +1330,7 @@ it.effect.each([false, true])(
           expect(yield* Ref.get(thread.launchIds)).toHaveLength(1);
           const task = yield* taskResult(after, taskId);
           expect(task?.remoteChild?.launch).toMatchObject({
-            prismRole: "escalation",
+            prismRole: "roast",
             lane: "hard",
             workspaceStrategy: { type: "root", branch: "remote-root" },
           });
