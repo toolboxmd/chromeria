@@ -283,7 +283,9 @@ export function DevicePanel(props: {
                     >
                       {state.hostStatus === "failed"
                         ? (state.hostStatusDetail ?? "The device hub failed to start.")
-                        : "No simulators or emulators were found on this environment."}
+                        : isAndroidDiscoveryUncertain(state)
+                          ? "Device discovery is incomplete. Check the host warning above, then refresh devices."
+                          : "No simulators or emulators were found on this environment."}
                     </p>
                   </>
                 ) : null}
