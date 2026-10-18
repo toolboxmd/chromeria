@@ -1,5 +1,5 @@
 import { BareLaunchRequest, ThreadBare, BareReceipt } from "./bareLaunch.ts";
-import { PrismRole, PrismLane } from "./prism.ts";
+import { PrismLane, StoredPrismRole } from "./prism.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -773,7 +773,7 @@ export const OrchestrationV2RemoteTaskLaunch = Schema.Struct({
   projectId: ProjectId,
   title: Schema.String,
   modelSelection: Schema.optional(ModelSelection),
-  prismRole: Schema.optional(PrismRole),
+  prismRole: Schema.optional(StoredPrismRole),
   lane: Schema.optional(PrismLane),
   workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
   runtimeMode: Schema.optional(RuntimeMode),

@@ -1,7 +1,16 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { DEFAULT_PRISM_ROLE_KITS, PrismRoleKits, PrismRoleKitsPatch } from "./prism.ts";
+import { OrchestratorMcpDelegateTaskInput, OrchestrationV2RemoteTaskLaunch } from "./index.ts";
+import {
+  admitDelegateRole,
+  DEFAULT_PRISM_ROLE_KITS,
+  PRISM_DELEGATE_ROLE_ERROR,
+  PrismRole,
+  PrismRoleKits,
+  PrismRoleKitsPatch,
+  StoredPrismRole,
+} from "./prism.ts";
 import { ProjectSettingsOverrides, ServerSettings } from "./settings.ts";
 
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
@@ -9,6 +18,11 @@ const decodeServerSettings = Schema.decodeSync(ServerSettings);
 const decodeProjectOverrides = Schema.decodeSync(ProjectSettingsOverrides);
 const decodeKitsPatch = Schema.decodeSync(PrismRoleKitsPatch);
 const encodeKits = Schema.encodeSync(PrismRoleKits);
+const decodeUnknownServerSettings = Schema.decodeUnknownSync(ServerSettings);
+const decodeStored = Schema.decodeUnknownSync(StoredPrismRole);
+const decodeRole = Schema.decodeUnknownSync(PrismRole);
+const decodeRemoteLaunch = Schema.decodeUnknownSync(OrchestrationV2RemoteTaskLaunch);
+const decodeDelegate = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
 
 describe("Prism role kits", () => {
   it("enables Chromeria reset recovery by default and preserves a saved opt-out through patches", () => {
@@ -27,10 +41,16 @@ describe("Prism role kits", () => {
     }
     expect(DEFAULT_PRISM_ROLE_KITS.promachos.models).toEqual([]);
     expect(DEFAULT_PRISM_ROLE_KITS.worker.lanes).toEqual({ easy: [], medium: [], hard: [] });
-    expect(DEFAULT_PRISM_ROLE_KITS.dispatcher.models).toEqual([]);
-    expect(DEFAULT_PRISM_ROLE_KITS.retry.enabled).toBe(true);
-    expect(DEFAULT_PRISM_ROLE_KITS.escalation.enabled).toBe(true);
-    expect("enabled" in DEFAULT_PRISM_ROLE_KITS.reviewer).toBe(false);
+    expect(Object.keys(DEFAULT_PRISM_ROLE_KITS).toSorted()).toEqual([
+      "designer",
+      "judge",
+      "planner",
+      "promachos",
+      "researcher",
+      "reviewer",
+      "roast",
+      "worker",
+    ]);
   });
 
   it("preserves the Promachos preference order and effort through saved settings", () => {
@@ -48,9 +68,9 @@ describe("Prism role kits", () => {
   });
 
   it("loads older settings without a Promachos kit and permits clearing its preferences", () => {
-    const old = decodeServerSettings({ prismRoles: { dispatcher: { instructions: "Lead." } } });
+    const old = decodeServerSettings({ prismRoles: { planner: { instructions: "Lead." } } });
     expect(old.prismRoles.promachos.models).toEqual([]);
-    expect(old.prismRoles.dispatcher.instructions).toBe("Lead.");
+    expect(old.prismRoles.planner.instructions).toBe("Lead.");
     expect(decodeKitsPatch({ promachos: { models: [] } })).toEqual({ promachos: { models: [] } });
   });
 
@@ -62,42 +82,109 @@ describe("Prism role kits", () => {
   });
 
   it("load saved settings that still carry a thread-tool scope, dropping it", () => {
-    const settings = decodeServerSettings({
+    const settings = decodeUnknownServerSettings({
       prismRoles: {
-        dispatcher: { instructions: "Lead.", threadTools: "children" },
+        planner: { instructions: "Lead.", threadTools: "children" },
         worker: { threadTools: "none", lanes: { easy: [] } },
-        correction: { threadTools: "none" },
+        reviewer: { threadTools: "none" },
       },
     });
-    expect(settings.prismRoles.dispatcher.instructions).toBe("Lead.");
+    expect(settings.prismRoles.planner.instructions).toBe("Lead.");
     const encoded = encodeKits(settings.prismRoles) as Record<string, object>;
-    for (const role of ["dispatcher", "worker", "retry"] as const) {
+    for (const role of ["planner", "worker", "reviewer"] as const) {
       expect("threadTools" in settings.prismRoles[role]).toBe(false);
       expect("threadTools" in encoded[role]!).toBe(false);
     }
   });
 
-  it("load Retry and Escalation saved under their legacy keys", () => {
-    const luna = { instanceId: "codex", model: "gpt-5.6-luna" };
-    const settings = decodeServerSettings({
-      prismRoles: {
-        correction: { models: [luna], enabled: false },
-        recovery: { instructions: "Escalate." },
-      },
+  it("drop removed role kits from environment settings and project overrides, keeping the rest", () => {
+    const opus = { instanceId: "claudeAgent", model: "claude-opus-5-5", effort: "high" };
+    const luna = { instanceId: "codex", model: "gpt-6-luna" };
+    const grok = { instanceId: "grok", model: "grok-4.7" };
+    const removed = {
+      dispatcher: { models: [opus], instructions: "Lead." },
+      retry: { models: [luna], enabled: false },
+      escalation: { models: [opus] },
+      correction: { models: [luna] },
+      recovery: { enabled: false },
+    };
+    const kept = {
+      planner: { models: [opus] },
+      reviewer: { models: [luna, grok] },
+      promachos: { models: [grok] },
+      worker: { lanes: { easy: [luna], hard: [opus] } },
+    };
+    const settings = decodeServerSettings({ prismRoles: { ...removed, ...kept } });
+    const encoded = encodeKits(settings.prismRoles) as Record<string, unknown>;
+    for (const role of Object.keys(removed)) expect(encoded).not.toHaveProperty(role);
+    expect(settings.prismRoles.planner.models).toEqual([opus]);
+    expect(settings.prismRoles.reviewer.models).toEqual([luna, grok]);
+    expect(settings.prismRoles.promachos.models).toEqual([grok]);
+    expect(settings.prismRoles.worker.lanes).toEqual({ easy: [luna], medium: [], hard: [opus] });
+
+    // A project override keeps only the kept roles it set; an empty list stays a real value.
+    const overrides = decodeProjectOverrides({
+      prismRoles: { ...removed, reviewer: { models: [] }, worker: { lanes: { hard: [opus] } } },
     });
-    expect(settings.prismRoles.retry).toMatchObject({ models: [luna], enabled: false });
-    expect(settings.prismRoles.escalation).toMatchObject({
-      instructions: "Escalate.",
-      enabled: true,
+    expect(overrides.prismRoles).toEqual({
+      reviewer: { models: [] },
+      worker: { lanes: { hard: [opus] } },
     });
-    expect(Object.keys(encodeKits(settings.prismRoles))).not.toContain("correction");
-    // A kit saved under the new key wins over one left under the legacy key.
-    const both = decodeServerSettings({
-      prismRoles: { retry: { enabled: true }, correction: { enabled: false } },
+    expect(decodeProjectOverrides({ prismRoles: removed }).prismRoles).toEqual({});
+  });
+
+  it("read removed role names in stored records as the role that now does that work", () => {
+    expect(decodeStored("dispatcher")).toBe("planner");
+    expect(decodeStored("retry")).toBe("worker");
+    expect(decodeStored("escalation")).toBe("worker");
+    expect(decodeStored("researcher")).toBe("researcher");
+    expect(() => decodeStored("nonsense")).toThrow();
+    const launch = decodeRemoteLaunch({
+      requestNamespace: "ns",
+      clientRequestId: "id",
+      linkIdentity: "link",
+      projectId: "project",
+      title: "Old launch",
+      prismRole: "escalation",
+      delegatedFrom: { environmentId: "env", threadId: "thread", title: "Parent" },
     });
-    expect(both.prismRoles.retry.enabled).toBe(true);
-    const overrides = decodeProjectOverrides({ prismRoles: { recovery: { enabled: false } } });
-    expect(overrides.prismRoles?.escalation?.enabled).toBe(false);
+    expect(launch.prismRole).toBe("worker");
+    expect(() => decodeRole("dispatcher")).toThrow();
+  });
+
+  it("accept the seven delegated roles and reject Promachos and unknown names with the list", () => {
+    for (const prismRole of [
+      "planner",
+      "researcher",
+      "designer",
+      "worker",
+      "roast",
+      "reviewer",
+      "judge",
+    ]) {
+      expect(decodeDelegate({ task: "Do it.", prismRole }).prismRole).toBe(prismRole);
+    }
+    for (const prismRole of ["promachos", "nonsense"]) {
+      expect(() => decodeDelegate({ task: "Do it.", prismRole })).toThrow(
+        PRISM_DELEGATE_ROLE_ERROR,
+      );
+    }
+    expect(PRISM_DELEGATE_ROLE_ERROR).toBe(
+      "prismRole must be one of: planner, researcher, designer, worker, roast, reviewer, judge.",
+    );
+  });
+
+  it("admit a removed delegated role only when replaying a request an older build accepted", () => {
+    for (const [removed, successor] of [
+      ["dispatcher", "planner"],
+      ["retry", "worker"],
+      ["escalation", "worker"],
+    ] as const) {
+      const prismRole = decodeDelegate({ task: "Do it.", prismRole: removed }).prismRole!;
+      expect(admitDelegateRole(prismRole, false)).toBeUndefined();
+      expect(admitDelegateRole(prismRole, true)).toBe(successor);
+    }
+    expect(admitDelegateRole("judge", false)).toBe("judge");
   });
 
   it("load saved settings that still name a role runtime mode, dropping it", () => {
@@ -113,17 +200,17 @@ describe("Prism role kits", () => {
     const luna = { instanceId: "codex", model: "gpt-5.6-luna" };
     const settings = decodeServerSettings({
       prismRoles: {
-        dispatcher: { instructions: "Lead.", lanes: { easy: [luna], medium: [opus], hard: [] } },
+        planner: { instructions: "Lead.", lanes: { easy: [luna], medium: [opus], hard: [] } },
         reviewer: { lanes: { hard: [opus] } },
-        retry: { models: [luna], lanes: { medium: [opus] }, enabled: false },
+        judge: { models: [luna], lanes: { medium: [opus] } },
       },
     });
-    expect(settings.prismRoles.dispatcher.models).toEqual([opus]);
-    expect(settings.prismRoles.dispatcher.instructions).toBe("Lead.");
-    expect("lanes" in settings.prismRoles.dispatcher).toBe(false);
+    expect(settings.prismRoles.planner.models).toEqual([opus]);
+    expect(settings.prismRoles.planner.instructions).toBe("Lead.");
+    expect("lanes" in settings.prismRoles.planner).toBe(false);
     expect(settings.prismRoles.reviewer.models).toEqual([]);
-    expect(settings.prismRoles.retry).toMatchObject({ models: [luna], enabled: false });
-    expect(encodeKits(settings.prismRoles).dispatcher).toEqual({
+    expect(settings.prismRoles.judge.models).toEqual([luna]);
+    expect(encodeKits(settings.prismRoles).planner).toEqual({
       instructions: "Lead.",
       skills: [],
       models: [opus],
@@ -150,7 +237,7 @@ describe("Prism role kits", () => {
     ]);
     expect(settings.prismRoles.worker.lanes.hard[0]?.effort).toBe("xhigh");
     expect(settings.prismRoles.worker.lanes.easy).toEqual([]);
-    expect(settings.prismRoles.escalation.models).toEqual([]);
+    expect(settings.prismRoles.roast.models).toEqual([]);
     expect(settings.prismRoles.reviewer.instructions).toBe("");
   });
 
@@ -169,13 +256,13 @@ describe("Prism role kits", () => {
       decodeProjectOverrides({
         prismRoles: {
           reviewer: { lanes: { medium: [opus], hard: [luna] } },
-          retry: { models: [luna], lanes: { medium: [opus] } },
+          judge: { models: [luna], lanes: { medium: [opus] } },
           worker: { lanes: { medium: [luna] } },
         },
       }).prismRoles,
     ).toEqual({
       reviewer: { models: [opus] },
-      retry: { models: [luna] },
+      judge: { models: [luna] },
       worker: { lanes: { medium: [luna] } },
     });
   });
@@ -184,8 +271,8 @@ describe("Prism role kits", () => {
     expect(decodeKitsPatch({ worker: { lanes: { hard: [] } } })).toEqual({
       worker: { lanes: { hard: [] } },
     });
-    expect(decodeKitsPatch({ escalation: { enabled: false } })).toEqual({
-      escalation: { enabled: false },
+    expect(decodeKitsPatch({ roast: { instructions: "Attack." } })).toEqual({
+      roast: { instructions: "Attack." },
     });
   });
 });
