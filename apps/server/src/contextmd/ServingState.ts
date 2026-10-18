@@ -172,6 +172,7 @@ export interface Unserved {
   readonly harness: string | null;
   readonly delivery: string | null;
   readonly status:
+    | "unjoined"
     | "unmapped"
     | "bad_config"
     | "bad_event"
@@ -268,6 +269,7 @@ class Composer {
     this.used + this.cost(text) <= this.limit &&
     this.cost(text) + (this.parts.length ? 0 : utf8(this.head)) <= this.budgetLeft;
   overLimit = (text: string) => this.used + this.cost(text) > this.limit;
+  exceedsLimitAlone = (text: string) => utf8(this.head) + this.cost(text) > this.limit;
   add = (text: string, claim: Claim) => {
     const cost = this.cost(text) + (this.parts.length ? 0 : utf8(this.head));
     this.used += this.cost(text);
@@ -1788,22 +1790,20 @@ export class ServingState {
         this.insertCandidate(momentId, { ...this.base(c), outcome: "no_seam" });
       return [{ status: 204 }];
     }
-    const out = new Composer(
-      "",
-      delivering ? sel.profile.session_start_limit_bytes : sel.profile.limit_bytes,
-      this.hasCarries(sel.profile.harness, sel.moment.session, runId)
-        ? Math.max(this.budgetLeft(runId).serve, 0)
-        : Number.POSITIVE_INFINITY,
-    );
+    const limit = delivering ? sel.profile.session_start_limit_bytes : sel.profile.limit_bytes;
+    const carryOutput = new Composer("", limit, Math.max(this.budgetLeft(runId).serve, 0));
     let charged = 0;
     const carried: Claim[] = [];
-    this.appendCarries(sel.profile.harness, sel, epoch, momentId, runId, out, carried);
-    const carriedBytes = utf8(out.text() ?? "");
+    this.appendCarries(sel.profile.harness, sel, epoch, momentId, runId, carryOutput, carried);
+    const carriedBytes = utf8(carryOutput.text() ?? "");
     if (carriedBytes > 0) {
       this.charge(runId, carriedBytes, 0);
       this.writeClaims(delivery, sel.profile.harness, sel.moment.session, epoch, runId, carried);
       charged += carriedBytes;
     }
+    // Files share the output limit, but only the carried parts spend the serve budget.
+    const out = new Composer("", limit, Number.POSITIVE_INFINITY);
+    for (const part of carryOutput.parts) out.add(part.text, part.claim);
     if (
       pointer !== null &&
       !carried.some((claim) => claim.entry === pointer.entry && claim.version === pointer.version)
@@ -2421,6 +2421,14 @@ export class ServingState {
           outcome: "cut_budget",
           reason: out.overLimit(w.text) ? "moment" : "turn",
         });
+        // A carry larger than this seam can never succeed on retry. Finish it as cut.
+        if (out.exceedsLimitAlone(w.text)) {
+          this.run("UPDATE carries SET state = 'cut_budget' WHERE id = ?", w.id);
+          this.run(
+            "UPDATE candidates SET outcome = 'cut_budget', reason = 'moment' WHERE id = (SELECT candidate_id FROM carries WHERE id = ?)",
+            w.id,
+          );
+        }
         continue;
       }
       const id = this.insertCandidate(momentId, {

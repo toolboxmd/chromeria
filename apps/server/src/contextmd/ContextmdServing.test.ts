@@ -294,7 +294,7 @@ const startupHarness = (
     const h = yield* makeHarness(overrideFs, false, (rows, session) => {
       const count = (lookups.get(session) ?? 0) + 1;
       lookups.set(session, count);
-      // The waiter has been installed before this second, still-unmatched SQL read.
+      // Retention has been installed before this second, still-unmatched SQL read.
       return count === 2 && rows.length === 0
         ? Queue.offer(missing, session).pipe(Effect.asVoid)
         : Effect.void;
@@ -392,15 +392,8 @@ describe("ContextMD startup run registration", () => {
             runId: "startup-run",
           });
           const reply = yield* Fiber.join(pending);
-          if (!late && harness === "claude") {
-            assert.equal(reply.status, 200);
-            if (reply.status === 200)
-              assert.include(
-                reply.body,
-                event === "SessionStart" ? "Public startup instructions." : h.index,
-              );
-          } else assert.equal(reply.status, 204);
-          if (late && harness === "claude") {
+          assert.equal(reply.status, 204);
+          if (harness === "claude") {
             const next = yield* h.moment(
               harness,
               "startup-session",
@@ -452,7 +445,7 @@ describe("ContextMD startup run registration", () => {
   );
 
   it.effect(
-    "rechecks identity when the last starting run registers before waiter installation",
+    "rechecks identity when the last starting run registers before retention installation",
     () =>
       withNode(
         Effect.gen(function* () {
@@ -573,22 +566,22 @@ describe("ContextMD startup run registration", () => {
               scenario === "completed" ? "completed" : "running",
             );
           if (scenario === "ambiguous") yield* h.persist("startup-session", "other-run");
-          const waiting = ["external", "completed", "other-session"].includes(scenario);
+          const retained = ["external", "completed", "other-session"].includes(scenario);
           const pending = yield* Effect.forkScoped(
             h.request("claude", scenario === "tool" ? "PreToolUse" : "UserPromptSubmit"),
           );
-          if (waiting) {
+          // Complete without advancing the clock, even while an unrelated run is starting.
+          assert.equal((yield* Fiber.join(pending)).status, 204);
+          if (retained) {
             yield* Queue.take(h.missing);
-            // A notification without a committed exact identity cannot wake or join this moment.
+            // A notification without a committed exact identity cannot join this moment.
             yield* h.service.nativeSessionRegistered({
               nativeSessionId: "startup-session",
               runId: "startup-run",
             });
-            yield* TestClock.adjust("950 millis");
           }
-          assert.equal((yield* Fiber.join(pending)).status, 204);
           assert.deepEqual(h.joined(), {
-            status: scenario === "ambiguous" ? "ambiguous" : waiting ? "over_budget" : "unjoined",
+            status: scenario === "ambiguous" ? "ambiguous" : "unjoined",
             run_id: null,
           });
         }).pipe(Effect.scoped),
@@ -685,13 +678,13 @@ describe("ContextMD startup run registration", () => {
     ),
   );
 
-  it.effect("recovers after the waiting HTTP hook is interrupted", () =>
+  it.effect("recovers after the unmatched HTTP hook has finished", () =>
     withNode(
       Effect.gen(function* () {
         const h = yield* startupHarness();
         const pending = yield* Effect.forkScoped(h.request("claude", "SessionStart"));
         yield* Queue.take(h.missing);
-        yield* Fiber.interrupt(pending);
+        assert.equal((yield* Fiber.join(pending)).status, 204);
         yield* h.persist();
         yield* h.service.nativeSessionRegistered({
           nativeSessionId: "startup-session",
@@ -722,7 +715,7 @@ describe("ContextMD startup run registration", () => {
           nativeSessionId: "startup-session",
           runId: "startup-run",
         });
-        assert.deepEqual(h.joined(), { status: "over_budget", run_id: null });
+        assert.deepEqual(h.joined(), { status: "unjoined", run_id: null });
         const next = yield* h.moment(
           "claude",
           "startup-session",

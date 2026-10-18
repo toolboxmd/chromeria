@@ -189,7 +189,6 @@ interface PendingStartup {
   readonly request: MomentRequest;
   readonly bytes: number;
   readonly receivedAt: number;
-  readonly registered: Deferred.Deferred<void>;
   readonly finished: Deferred.Deferred<void>;
   registeredRunId: string | null;
   phase: "waiting" | "recovering";
@@ -789,14 +788,14 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed((): RunJoin => ({ type: "unjoined" })),
     );
 
-  const pruneStartups = Effect.fnUntraced(function* (now: number) {
-    for (const [delivery, entry] of startups) {
-      if (now - entry.receivedAt >= STARTUP_TTL_SECONDS) {
-        startups.delete(delivery);
-        yield* Deferred.succeed(entry.registered, undefined);
+  const pruneStartups = (now: number) =>
+    Effect.sync(() => {
+      for (const [delivery, entry] of startups) {
+        if (now - entry.receivedAt >= STARTUP_TTL_SECONDS) {
+          startups.delete(delivery);
+        }
       }
-    }
-  });
+    });
   yield* ServerActivation.forkParked(
     nowSeconds.pipe(Effect.flatMap(pruneStartups), Effect.repeat(Schedule.spaced("1 second"))),
   );
@@ -1102,7 +1101,6 @@ const make = Effect.gen(function* () {
                       const oldest = startups.entries().next().value;
                       if (oldest === undefined) break;
                       startups.delete(oldest[0]);
-                      yield* Deferred.succeed(oldest[1].registered, undefined);
                     }
                     startup = {
                       session: identity.session,
@@ -1115,20 +1113,22 @@ const make = Effect.gen(function* () {
                         authorized: Effect.succeed(true),
                         body: Effect.succeed(body),
                       },
-                      registered: yield* Deferred.make<void>(),
                       finished: yield* Deferred.make<void>(),
                     };
                     startups.set(delivery, startup);
                   }
-                  // Install the waiter before rechecking so registration cannot be missed.
+                  // Retain before rechecking so a concurrent registration cannot be missed.
+                  // No exact identity means we cannot distinguish an outside hook from startup.
                   join = yield* resolveRun(identity.session);
-                  if (join.type === "unjoined") {
-                    yield* Deferred.await(startup.registered);
-                    join = yield* resolveRun(identity.session);
-                  }
                   return join;
                 }),
               );
+              if (startup !== undefined && join.type === "unjoined")
+                return {
+                  type: "retained" as const,
+                  status: "unjoined" as const,
+                  reason: "awaiting_registration",
+                };
               // Registration returns before recovery. The first subsequent hook waits here,
               // inside its own budget; neither the original hook nor recovery waits on itself.
               if (mode.type === "hook" && startup === undefined && join.type === "run") {
@@ -1156,7 +1156,7 @@ const make = Effect.gen(function* () {
                 "selection",
                 Select.select(harness, raw.value, config, library),
               );
-              return { selection, config, library, join };
+              return { type: "selected" as const, selection, config, library, join };
             }),
           ),
           Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -1164,14 +1164,22 @@ const make = Effect.gen(function* () {
           Effect.provideService(Crypto.Crypto, crypto),
           Effect.catchTags({
             ContextmdBadConfig: (e) =>
-              Effect.succeed({ status: "bad_config" as const, reason: e.reason }),
+              Effect.succeed({
+                type: "error" as const,
+                status: "bad_config" as const,
+                reason: e.reason,
+              }),
             ContextmdBadEvent: (e) =>
-              Effect.succeed({ status: "bad_event" as const, reason: e.reason }),
+              Effect.succeed({
+                type: "error" as const,
+                status: "bad_event" as const,
+                reason: e.reason,
+              }),
           }),
         );
-        if (!("selection" in selected)) {
-          yield* unserved(selected.status, { reason: selected.reason });
-          return { reply: { status: 204 } as const };
+        if (selected.type !== "selected") {
+          yield* unserved(selected.status, { ...known, reason: selected.reason });
+          return { reply: { status: 204 } as const, retainStartup: selected.status === "unjoined" };
         }
         let selection: Selection = selected.selection;
         let join = selected.join;
@@ -1281,7 +1289,11 @@ const make = Effect.gen(function* () {
         return { status: 204 } as const;
       }
       if ("reply" in prepared.value) {
-        if (startup !== undefined && request.delivery !== undefined)
+        if (
+          startup !== undefined &&
+          request.delivery !== undefined &&
+          !("retainStartup" in prepared.value && prepared.value.retainStartup)
+        )
           startups.delete(request.delivery);
         return prepared.value.reply;
       }
@@ -1328,10 +1340,9 @@ const make = Effect.gen(function* () {
       );
       for (const [, entry] of pending) {
         entry.registeredRunId = input.runId;
-        yield* Deferred.succeed(entry.registered, undefined);
       }
       for (const [delivery, entry] of pending) {
-        // A live hook gets its reply first. Only its timeout/cancellation leaves a retained entry.
+        // Let the original hook finish before recovering its retained payload.
         yield* Deferred.await(entry.finished);
         if (startups.get(delivery) !== entry || entry.phase === "recovering") continue;
         entry.phase = "recovering";

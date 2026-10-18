@@ -91,6 +91,7 @@ interface Fire {
   readonly profile?: Profile;
   readonly delivery?: string;
   readonly settle?: boolean;
+  readonly deliveryMode?: "retained_startup";
   readonly readChecks?: ReadonlyArray<{ readonly toolUseId: string; readonly ok: boolean | null }>;
   readonly toolUseId?: string | null;
   readonly cue?: CueMoment;
@@ -111,6 +112,7 @@ const makeHarness = (file = ":memory:") => {
     const reply = state.decide({
       harness: profile.harness,
       delivery,
+      ...(f.deliveryMode === undefined ? {} : { deliveryMode: f.deliveryMode }),
       selection: {
         moment: {
           kind: f.kind,
@@ -1096,6 +1098,38 @@ describe("ServingState epochs and carries", () => {
       [0, 1],
     );
     assert.strictEqual(h.db.prepare("SELECT count(*) AS n FROM budgets").get()!.n, 0);
+  });
+
+  it("keeps a large session-start file outside the serve budget beside a carry", () => {
+    const h = makeHarness();
+    h.fire({
+      kind: "user_message",
+      candidates: [entry("carry", "c".repeat(100))],
+      deliveryMode: "retained_startup",
+    });
+    const pack = "p".repeat(8200);
+    const reply = h.fire({
+      kind: "session_start",
+      candidates: [entry("pack", pack, { matcher: "session_start" })],
+    });
+    assert.equal(reply.status, 200);
+    assert.include(h.text(reply)!, pack);
+    assert.include(h.text(reply)!, "c".repeat(100));
+    assert.equal(h.db.prepare("SELECT serve_used FROM budgets").get()!.serve_used, 100);
+  });
+
+  it("cuts a startup carry that cannot fit the next hook instead of leaving it waiting", () => {
+    const h = makeHarness();
+    h.fire({
+      kind: "session_start",
+      candidates: [entry("pack", "p".repeat(3000), { matcher: "session_start" })],
+      deliveryMode: "retained_startup",
+    });
+    assert.equal(h.fire({ kind: "pre_tool" }).status, 204);
+    assert.deepEqual(h.db.prepare("SELECT state FROM carries").get(), { state: "cut_budget" });
+    assert.deepEqual(h.outcomes("pack"), ["cut_budget", "cut_budget"]);
+    h.fire({ kind: "pre_tool" });
+    assert.deepEqual(h.outcomes("pack"), ["cut_budget", "cut_budget"]);
   });
 
   it("starts a new epoch on a compaction moment", () => {
