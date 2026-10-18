@@ -52,12 +52,24 @@ export class WebResearchInputError extends Schema.TaggedError<WebResearchInputEr
   }
 }
 
+export class WebResearchBudgetError extends Schema.TaggedError<WebResearchBudgetError>()(
+  "WebResearchBudgetError",
+  {},
+) {
+  override get message() {
+    return "The traversal deadline expired before the root page was available. Retry the URL, or set followSubpages:false to wait for a single page's normal origin queue.";
+  }
+}
+
 export class WebResearch extends Context.Service<
   WebResearch,
   {
     readonly read: (
       input: typeof WebReadInput.Type,
-    ) => Effect.Effect<typeof WebReadResult.Type, WebResearchInputError | PageCache.PageCacheError>;
+    ) => Effect.Effect<
+      typeof WebReadResult.Type,
+      WebResearchInputError | WebResearchBudgetError | PageCache.PageCacheError
+    >;
   }
 >()("t3/webResearch/WebResearch") {}
 
@@ -112,7 +124,28 @@ class PageExtractionError extends Schema.TaggedError<PageExtractionError>()("Pag
 class PageRequest extends Data.Class<{
   readonly href: string;
   readonly sameOrigin: string | undefined;
+  readonly maxAgeHours: number | undefined;
 }> {}
+
+class ReadFreshness extends Context.Service<
+  ReadFreshness,
+  {
+    readonly previousCacheId: string | undefined;
+    readonly maxAgeHours: number | undefined;
+    readonly requireLinks: boolean;
+    readonly requestedAt: number;
+  }
+>()("t3/webResearch/WebResearch/ReadFreshness") {}
+
+const isFresh = (page: CachedPage, maxAgeHours: number | undefined, now: number) =>
+  page.expiresAt > now &&
+  (maxAgeHours === undefined ||
+    (maxAgeHours > 0 && now - page.fetchedAt <= maxAgeHours * 3600_000));
+
+const acceptsOrigin = (page: CachedPage, requested: URL, sameOrigin?: string) =>
+  sameOrigin === undefined
+    ? page.restrictedToOrigin === undefined || parseUrl(page.finalUrl)?.origin === requested.origin
+    : page.restrictedToOrigin === sameOrigin || parseUrl(page.finalUrl)?.origin === sameOrigin;
 
 const make = Effect.gen(function* () {
   const http = yield* PublicHttp.PublicHttp;
@@ -261,13 +294,18 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const fetchPage = Effect.fnUntraced(function* (original: URL, sameOrigin?: string) {
+  const fetchPage = Effect.fnUntraced(function* (
+    original: URL,
+    sameOrigin?: string,
+    maxAgeHours?: number,
+  ) {
     const delay = yield* Ref.make(0);
     const budget = yield* Ref.make(30_000);
     let finalUrl = original.href;
     let httpStatus: number | null = null;
     let retryAfterMs: number | null = null;
     let cacheable = true;
+    let reusedTarget: CachedPage | undefined;
     const fetch = Effect.gen(function* () {
       let url = original;
       const visited = new Set<string>();
@@ -280,6 +318,26 @@ const make = Effect.gen(function* () {
         visited.add(url.href);
         if (/(^|\.)booking\.com$|(^|\.)airbnb\./i.test(url.hostname))
           return { status: "unsupported" as const, title: "", text: "" };
+        if (sameOrigin !== undefined && url.href !== original.href) {
+          const stored = yield* cache.get({ url: url.href, sameOrigin });
+          const now = yield* Clock.currentTimeMillis;
+          if (
+            stored &&
+            isFresh(stored, maxAgeHours, now) &&
+            acceptsOrigin(stored, url, sameOrigin)
+          ) {
+            reusedTarget = stored;
+            finalUrl = stored.finalUrl;
+            httpStatus = stored.httpStatus;
+            retryAfterMs = stored.retryAfterMs;
+            return {
+              status: stored.status,
+              title: stored.title,
+              text: stored.text,
+              links: stored.links ?? [],
+            };
+          }
+        }
         const rules = yield* Cache.get(robotRules, url.origin);
         if (rules.rules.isAllowed(url.href, "ChromeriaResearch") === false)
           return yield* new ReadStopped({
@@ -369,21 +427,25 @@ const make = Effect.gen(function* () {
         },
       }),
     );
-    const fetchedAt = yield* Clock.currentTimeMillis;
+    const completedAt = yield* Clock.currentTimeMillis;
+    const fetchedAt = reusedTarget?.fetchedAt ?? completedAt;
     const contentHash = hash(content.text);
     const page: CachedPage = {
       url: original.href,
       finalUrl,
       fetchedAt,
       expiresAt:
+        reusedTarget?.expiresAt ??
         fetchedAt +
-        (content.status === "ok"
-          ? 7 * 24 * 3600_000
-          : content.status === "login" || content.status === "consent" || content.status === "thin"
-            ? 300_000
-            : 60_000),
+          (content.status === "ok"
+            ? 7 * 24 * 3600_000
+            : content.status === "login" ||
+                content.status === "consent" ||
+                content.status === "thin"
+              ? 300_000
+              : 60_000),
       cacheId: hash(
-        `${original.href}\n${fetchedAt}\n${content.status}\n${contentHash}\n${sameOrigin ?? ""}`,
+        `${original.href}\n${finalUrl}\n${completedAt}\n${content.status}\n${contentHash}\n${sameOrigin ?? ""}`,
       ),
       sourceRung: "http",
       ...content,
@@ -401,8 +463,26 @@ const make = Effect.gen(function* () {
   // Pending fetches survive one reader's cancellation and stop when all readers leave.
   // Restricted traversal cannot join an unrestricted fetch that may leave the origin.
   const flights = yield* Cache.makeWith(
-    (key: PageRequest) => fetchPage(new URL(key.href), key.sameOrigin),
-    { capacity: Infinity, timeToLive: () => 0 },
+    Effect.fnUntraced(function* (key: PageRequest) {
+      const intent = yield* ReadFreshness;
+      const url = new URL(key.href);
+      const stored = yield* cache.get({
+        url: key.href,
+        ...(key.sameOrigin === undefined ? {} : { sameOrigin: key.sameOrigin }),
+      });
+      const now = yield* Clock.currentTimeMillis;
+      if (
+        stored &&
+        stored.cacheId !== intent.previousCacheId &&
+        (!intent.requireLinks || stored.links !== undefined) &&
+        acceptsOrigin(stored, url, key.sameOrigin) &&
+        (intent.maxAgeHours !== 0 || stored.fetchedAt >= intent.requestedAt) &&
+        isFresh(stored, intent.maxAgeHours === 0 ? undefined : intent.maxAgeHours, now)
+      )
+        return { page: stored, fromCache: true };
+      return { page: yield* fetchPage(url, key.sameOrigin, key.maxAgeHours), fromCache: false };
+    }),
+    { capacity: Infinity, timeToLive: () => 0, requireServicesAt: "lookup" },
   );
 
   const loadPage = Effect.fnUntraced(function* (
@@ -415,29 +495,38 @@ const make = Effect.gen(function* () {
   ) {
     let reused = true;
     const now = yield* Clock.currentTimeMillis;
-    const stored = yield* cache.get({ url: url.href });
+    const stored = yield* cache.get({
+      url: url.href,
+      ...(options.sameOrigin === undefined ? {} : { sameOrigin: options.sameOrigin }),
+    });
     if (
       stored &&
-      stored.expiresAt > now &&
+      isFresh(stored, options.maxAgeHours, now) &&
       (!options.requireLinks || stored.links !== undefined) &&
-      (options.sameOrigin === undefined
-        ? stored.restrictedToOrigin === undefined ||
-          parseUrl(stored.finalUrl)?.origin === url.origin
-        : stored.restrictedToOrigin === options.sameOrigin ||
-          parseUrl(stored.finalUrl)?.origin === options.sameOrigin) &&
-      (options.maxAgeHours === undefined ||
-        (options.maxAgeHours > 0 && now - stored.fetchedAt <= options.maxAgeHours * 3600_000))
+      acceptsOrigin(stored, url, options.sameOrigin)
     )
       return { page: stored, reused, delayMs: 0 };
-    const key = new PageRequest({ href: url.href, sameOrigin: options.sameOrigin });
-    const active = yield* Cache.getOption(flights, key);
-    let page: CachedPage;
-    if (Option.isSome(active)) page = active.value;
-    else {
+    const key = new PageRequest({
+      href: url.href,
+      sameOrigin: options.sameOrigin,
+      // Restricted redirects may reuse a target, so their freshness requirements must agree.
+      maxAgeHours: options.sameOrigin === undefined ? undefined : options.maxAgeHours,
+    });
+    const flight = yield* Effect.gen(function* () {
+      const active = yield* Cache.getOption(flights, key);
+      if (Option.isSome(active)) return active.value;
       reused = false;
-      page = yield* Cache.get(flights, key);
-    }
-    return { page, reused, delayMs: page.delayMs };
+      return yield* Cache.get(flights, key);
+    }).pipe(
+      Effect.provideService(ReadFreshness, {
+        previousCacheId: stored?.cacheId,
+        maxAgeHours: options.maxAgeHours,
+        requireLinks: options.requireLinks ?? false,
+        requestedAt: now,
+      }),
+    );
+    reused ||= flight.fromCache;
+    return { page: flight.page, reused, delayMs: flight.fromCache ? 0 : flight.page.delayMs };
   });
 
   const pageResult = (
@@ -500,10 +589,15 @@ const make = Effect.gen(function* () {
     } else {
       const url = parseUrl(input.url!);
       if (!url) return yield* new WebResearchInputError({ reason: "invalid_url" });
-      ({ page, reused, delayMs } = yield* loadPage(url, {
+      const loading = loadPage(url, {
         maxAgeHours: input.maxAgeHours,
         requireLinks: follow,
-      }));
+      });
+      if (follow) {
+        const loaded = yield* loading.pipe(Effect.timeoutOption(READ_BUDGET_MS));
+        if (Option.isNone(loaded)) return yield* new WebResearchBudgetError();
+        ({ page, reused, delayMs } = loaded.value);
+      } else ({ page, reused, delayMs } = yield* loading);
     }
     const offset = input.offset ?? 0;
     if (offset > page.text.length)
@@ -529,12 +623,13 @@ const make = Effect.gen(function* () {
     let remainingChars = maxChars - root.text.length;
     const fetched = new Set([page.url, page.finalUrl]);
     let completed = 0;
+    let attempted = 0;
     for (const target of candidates) {
       if (fetched.has(target.href)) {
         completed++;
         continue;
       }
-      if (subpages.length >= (input.maxSubpages ?? 6)) {
+      if (attempted >= (input.maxSubpages ?? 6)) {
         reasons.add("page_budget");
         break;
       }
@@ -547,6 +642,7 @@ const make = Effect.gen(function* () {
         reasons.add("time_budget");
         break;
       }
+      attempted++;
       const loaded = yield* loadPage(target, {
         maxAgeHours: input.maxAgeHours,
         sameOrigin: origin,
@@ -555,12 +651,15 @@ const make = Effect.gen(function* () {
         reasons.add("time_budget");
         break;
       }
+      completed++;
+      const duplicate =
+        loaded.value.page.status === "ok" && fetched.has(loaded.value.page.finalUrl);
+      fetched.add(target.href);
+      if (duplicate) continue;
       const child = pageResult(loaded.value, 0, remainingChars);
       subpages.push(child);
-      completed++;
       remainingChars -= child.text.length;
       if (child.nextOffset !== null) reasons.add("output_budget");
-      fetched.add(target.href);
       fetched.add(child.finalUrl);
     }
     return {

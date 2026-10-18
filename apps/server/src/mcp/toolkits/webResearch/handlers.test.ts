@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -8,9 +9,11 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
+import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, McpServer } from "effect/ai";
 
 import * as ServerConfig from "../../../config.ts";
@@ -373,6 +376,31 @@ describe("web_read at the registered MCP seam", () => {
     }),
   );
 
+  it.effect("bounds a root waiting in the origin queue without caching a queue failure", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture(undefined, undefined, "User-agent: *\nAllow: /\nCrawl-delay: 40");
+      yield* Effect.gen(function* () {
+        const first = yield* Effect.forkScoped(call({ url: "https://root-deadline.example/" }));
+        yield* Queue.take(f.requests);
+        yield* TestClock.adjust(30_000);
+        const limited = yield* Fiber.join(first);
+        expect(limited.isError).toBe(true);
+        expect(JSON.stringify(limited.content)).toContain("traversal deadline expired");
+        expect(f.observed).toHaveLength(1);
+        const single = yield* Effect.forkScoped(
+          read({ url: "https://root-deadline.example/", followSubpages: false }),
+        );
+        yield* TestClock.adjust(10_000);
+        expect((yield* Queue.take(f.requests)).url).toBe("https://root-deadline.example/");
+        expect(yield* Fiber.join(single)).toMatchObject({ status: "ok", rung: "http" });
+        expect(yield* read({ url: "https://root-deadline.example/" })).toMatchObject({
+          status: "ok",
+          rung: "cache",
+        });
+      }).pipe(Effect.provide(f.layer));
+    }),
+  );
+
   it.effect("retains successful pages and independent failure provenance", () =>
     Effect.gen(function* () {
       const f = yield* fixture((url) =>
@@ -482,6 +510,184 @@ describe("web_read at the registered MCP seam", () => {
           expect(f.observed).toHaveLength(9);
         }).pipe(Effect.provide(f.layer));
       }),
+  );
+
+  it.effect(
+    "preserves both cache policies when a scoped refusal follows a successful explicit read",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* fixture((url) =>
+          Effect.succeed(
+            url.hostname === "policies.example"
+              ? url.pathname === "/camere"
+                ? response("", 302, { location: "https://engine.example/reservation" })
+                : response(html.replace("</body>", '<a href="/camere">Camere</a></body>'))
+              : response(),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const direct = yield* finish(
+            read({ url: "https://policies.example/camere", followSubpages: false }),
+            f.requests,
+            4,
+          );
+          expect(direct).toMatchObject({
+            status: "ok",
+            finalUrl: "https://engine.example/reservation",
+          });
+          const followed = yield* finish(read({ url: "https://policies.example/" }), f.requests, 2);
+          expect(followed.subpages[0]).toMatchObject({
+            status: "unsupported",
+            finalUrl: "https://engine.example/reservation",
+          });
+          const count = f.observed.length;
+          expect(
+            yield* read({ url: "https://policies.example/camere", followSubpages: false }),
+          ).toMatchObject({ rung: "cache", cacheId: direct.cacheId });
+          expect((yield* read({ url: "https://policies.example/" })).subpages[0]).toMatchObject({
+            rung: "cache",
+            cacheId: followed.subpages[0]!.cacheId,
+          });
+          expect(f.observed).toHaveLength(count);
+        }).pipe(Effect.provide(f.layer));
+      }),
+  );
+
+  it.effect("deduplicates late redirect aliases onto returned children and the root", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture((url) =>
+        Effect.succeed(
+          url.pathname === "/"
+            ? response(
+                html.replace(
+                  "</body>",
+                  '<a href="/camere">Camere</a><a href="/rooms">Rooms alias</a><a href="/rooms-home">Rooms home</a><a href="/eventi">Events</a></body>',
+                ),
+              )
+            : url.pathname === "/rooms"
+              ? response("", 302, { location: "/camere" })
+              : url.pathname === "/rooms-home"
+                ? response('<meta http-equiv="refresh" content="0;url=/">')
+                : response(),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        yield* finish(read({ url: "https://aliases.example/", followSubpages: false }), f.requests);
+        const root = yield* read({ url: "https://aliases.example/", followSubpages: false });
+        const fiber = yield* Effect.forkScoped(read({ url: "https://aliases.example/" }));
+        let last = "";
+        for (let i = 0; i < 6; i++) {
+          last = new URL((yield* Queue.take(f.requests)).url).pathname;
+          if (last === "/eventi") break;
+          yield* TestClock.adjust(3000);
+        }
+        expect(last).toBe("/eventi");
+        const result = yield* Fiber.join(fiber);
+        expect(result.subpages.map((page) => page.url)).toEqual([
+          "https://aliases.example/camere",
+          "https://aliases.example/eventi",
+        ]);
+        expect(result).toMatchObject({ truncated: false, unvisitedSubpages: 0 });
+        expect(f.observed.map((request) => new URL(request.url).pathname)).toEqual([
+          "/robots.txt",
+          "/",
+          "/camere",
+          "/rooms",
+          "/rooms-home",
+          "/eventi",
+        ]);
+        expect(result.text).toBe(root.text);
+        const alias = yield* read({ url: "https://aliases.example/rooms", followSubpages: false });
+        expect(alias).toMatchObject({
+          rung: "cache",
+          finalUrl: "https://aliases.example/camere",
+          fetchedAt: result.subpages[0]!.fetchedAt,
+          contentHash: result.subpages[0]!.contentHash,
+        });
+        const bounded = yield* read({ url: "https://aliases.example/", maxSubpages: 2 });
+        expect(bounded.subpages.map((page) => page.url)).toEqual([
+          "https://aliases.example/camere",
+        ]);
+        expect(bounded).toMatchObject({ truncationReasons: ["page_budget"], unvisitedSubpages: 2 });
+        expect(f.observed).toHaveLength(6);
+      }).pipe(Effect.provide(f.layer));
+    }),
+  );
+
+  it.effect(
+    "keeps a recovered alias cached when its reused target body predates an expired failure",
+    () =>
+      Effect.gen(function* () {
+        let failing = true;
+        const f = yield* fixture((url) =>
+          Effect.succeed(
+            url.pathname === "/"
+              ? response(html.replace("</body>", '<a href="/rooms">Rooms</a></body>'))
+              : url.pathname === "/rooms"
+                ? failing
+                  ? response("Unavailable", 503)
+                  : response("", 302, { location: "/camere" })
+                : response(),
+          ),
+        );
+        yield* Effect.gen(function* () {
+          const target = yield* finish(
+            read({ url: "https://recovered.example/camere", followSubpages: false }),
+            f.requests,
+          );
+          const failed = yield* finish(read({ url: "https://recovered.example/" }), f.requests, 2);
+          expect(failed.subpages[0]!.status).toBe("origin_error");
+          yield* TestClock.adjust(61_000);
+          failing = false;
+          const recovered = yield* finish(
+            read({ url: "https://recovered.example/" }),
+            f.requests,
+            1,
+          );
+          expect(recovered.subpages[0]).toMatchObject({
+            status: "ok",
+            fetchedAt: target.fetchedAt,
+          });
+          const again = yield* read({ url: "https://recovered.example/" });
+          expect(again.subpages[0]).toMatchObject({
+            rung: "cache",
+            cacheId: recovered.subpages[0]!.cacheId,
+          });
+          expect(f.observed).toHaveLength(5);
+        }).pipe(Effect.provide(f.layer));
+      }),
+  );
+
+  it.effect("refreshes a redirected target when the caller forces fresh subpages", () =>
+    Effect.gen(function* () {
+      let rooms = html;
+      const f = yield* fixture((url) =>
+        Effect.succeed(
+          url.pathname === "/"
+            ? response(html.replace("</body>", '<a href="/rooms">Rooms</a></body>'))
+            : url.pathname === "/rooms"
+              ? response("", 302, { location: "/camere" })
+              : response(rooms),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const old = yield* finish(
+          read({ url: "https://redirect-fresh.example/camere", followSubpages: false }),
+          f.requests,
+        );
+        rooms = html.replace("eight guest rooms", "twelve guest rooms");
+        const result = yield* finish(
+          read({ url: "https://redirect-fresh.example/", maxAgeHours: 0 }),
+          f.requests,
+          3,
+        );
+        expect(result.subpages[0]!.text).toContain("twelve guest rooms");
+        expect(result.subpages[0]!.contentHash).not.toBe(old.contentHash);
+        expect(
+          f.observed.filter((request) => new URL(request.url).pathname === "/camere"),
+        ).toHaveLength(2);
+      }).pipe(Effect.provide(f.layer));
+    }),
   );
 
   it.effect(
@@ -1142,6 +1348,24 @@ describe("web_read at the registered MCP seam", () => {
         const saved = yield* Effect.scoped(
           finish(read({ url: "https://restart.example/" }), first.requests).pipe(
             Effect.provide(first.layer),
+          ),
+        );
+        const path = yield* Path.Path;
+        const paths = yield* ServerConfig.deriveServerPaths(directory, undefined);
+        // Reopen the original core's three-column index without losing its cached bodies or ids.
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql`DROP INDEX pages_url_indexed`;
+            yield* sql`ALTER TABLE pages DROP COLUMN indexed_at`;
+            yield* sql`ALTER TABLE pages DROP COLUMN restriction_origin`;
+            yield* sql`ALTER TABLE pages DROP COLUMN final_origin`;
+          }).pipe(
+            Effect.provide(
+              NodeSqliteClient.layer({
+                filename: path.join(paths.stateDir, "web-cache", "index.sqlite"),
+              }),
+            ),
           ),
         );
         const second = yield* fixture(
