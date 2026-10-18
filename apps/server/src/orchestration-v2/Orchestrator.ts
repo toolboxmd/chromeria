@@ -2155,8 +2155,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // valid observations can race after their read preflight. Re-emit the
       // existing task row so the second dispatch is a successful idempotent
       // no-op rather than "already acknowledged/disposed" or empty-events.
+      // task_cancel replaces a Stop's disposal so a later follow-up stays quiet.
       if (
-        task.completionDelivery?.state === state ||
+        (task.completionDelivery?.state === state &&
+          !(
+            task.completionDelivery.state === "disposed" &&
+            task.completionDelivery.disposedBy === "stop"
+          )) ||
         (command.type === "delegated_task.completion-delivery.acknowledge" &&
           task.completionDelivery?.state === "disposed")
       ) {
@@ -2361,7 +2366,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         if (
           task.completionDelivery?.state === "acknowledged" ||
           task.completionDelivery?.state === "delivered" ||
-          task.completionDelivery?.state === "disposed"
+          (task.completionDelivery?.state === "disposed" &&
+            (task.completionDelivery.disposedBy === undefined || nextDisposition === "stopped"))
         ) {
           continue;
         }
@@ -2378,6 +2384,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             completionDelivery: {
               state: "disposed",
               observedByRunId: null,
+              ...(nextDisposition === "stopped" ? { disposedBy: "stop" as const } : {}),
             },
             updatedAt: input.now,
           },
@@ -7331,7 +7338,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // keeps it stopped, and task_cancel's disposed delivery stays disposed.
     if (
       original.result !== null &&
-      original.completionDelivery?.state !== "disposed" &&
+      (original.completionDelivery?.state !== "disposed" ||
+        original.completionDelivery.disposedBy === "stop") &&
       parentRun?.delegatedCompletion?.disposition === "stopped"
     ) {
       yield* emitEvent({
@@ -11124,10 +11132,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const { completionDelivery: observedDelivery, ...unobservedTask } = task;
       // A follow-up keeps the task's first result (task_status reports the
       // later one as latestTerminal*) and reopens a wake the parent already
-      // observed. A cancelled task (disposed) stays quiet.
+      // observed or a Stop disposed. A cancelled task stays quiet.
       const updatedTask: OrchestrationV2Subagent = followUp
         ? !explicitlyStopped &&
-          (observedDelivery?.state === "acknowledged" || observedDelivery?.state === "delivered")
+          (observedDelivery?.state === "acknowledged" ||
+            observedDelivery?.state === "delivered" ||
+            (observedDelivery?.state === "disposed" && observedDelivery.disposedBy === "stop"))
           ? { ...unobservedTask, updatedAt: now }
           : task
         : {
