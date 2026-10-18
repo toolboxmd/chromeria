@@ -19,6 +19,7 @@ import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 
 import { findErrorTraceId } from "../errors/errorTrace.ts";
 import * as ManagedRelay from "./managedRelay.ts";
+import * as RelayEnvironmentDiscovery from "./discovery.ts";
 import { relayProtectedErrorMessage } from "./errorPresentation.ts";
 
 const DEFAULT_STALE_TIME_MS = 15_000;
@@ -205,6 +206,8 @@ export const deregisterManagedRelayEnvironment = Effect.fn(
   const clerkToken = yield* readSessionClerkToken(session);
   const relay = yield* ManagedRelay.ManagedRelayClient;
   yield* relay.unlinkEnvironment({ clerkToken, environmentId: input.environmentId });
+  const discovery = yield* RelayEnvironmentDiscovery.RelayEnvironmentDiscovery;
+  yield* discovery.refresh;
 });
 
 function requireClerkToken(
