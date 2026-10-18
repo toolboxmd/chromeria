@@ -435,3 +435,9 @@ packages/source-control-github/src/server/pullRequestBatches.graphql.ts
 packages/source-control-github/src/server/pullRequestListings.graphql
 packages/source-control-github/src/server/pullRequestListings.graphql.ts
 packages/shared/src/projectSettings.ts
+
+
+# Grok root settlement and background command ownership (#435).
+apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash/input.ts
+apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash/output.ts
+apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash_fast_wake/input.ts

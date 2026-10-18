@@ -68,6 +68,7 @@ import {
   extractXAiAcpSubagentUpdate,
   makeGrokAdapterV2,
   makeXAiPromptCompletionRuntime,
+  makeGrokAcpAdapterFlavor,
   normalizeXAiAcpToolCallState,
   registerXAiBackgroundTaskTracking,
   xAiBackgroundTaskLifecycleMutation,
@@ -110,6 +111,7 @@ const layerTest = Layer.mergeAll(
   layerHost,
 );
 const ACP_TEST_DRIVER = ProviderDriverKind.make("acp-test");
+const decodeGrokSettings = Schema.decodeEffect(GrokSettings);
 const decodeUnknownJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 
 describe("acpToolCallDiffPatch", () => {
@@ -6771,6 +6773,1117 @@ describe("AcpAdapterV2", () => {
       assert.equal(continuationTerminalStatus, "completed");
       assert.isTrue(bufferedTextSeen, "continuation must drain the wake buffer after the user run");
       assert.isFalse(yield* hasPendingBackgroundWork);
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.effect.each([
+    "background server",
+    "command quoting spawn subagents",
+    "background server killed by a follow-up",
+    "background server polled by a follow-up",
+    "background server polled after end",
+    "background server polled after partial end",
+    "background server polled running after end",
+    "background server frame after end",
+    "background build wake beside running server",
+    "background build wake after server end",
+    "Stop after background end",
+    "Stop after foreground completion",
+    "runtime replacement",
+    "failed runtime replacement",
+    "persistent monitor terminal wake",
+    "legacy persistent monitor wake",
+    "bounded background retention",
+    "session release",
+    "background server with output before root completion",
+    "legacy persistent monitor wake with output before root completion",
+    "persistent monitor terminal wake with output before root completion",
+    "background server polled after end under cache pressure",
+    "nonpersistent monitor polled after end under cache pressure",
+    "background server frame after end under cache pressure",
+    "background server polled running after end under cache pressure",
+  ] as const)("Grok settles its reply with a %s (#435)", (caseName) =>
+    Effect.gen(function* () {
+      const beforeRootTick = caseName.endsWith(" with output before root completion");
+      const cachePressure = caseName.endsWith(" under cache pressure");
+      const nonpersistentMonitor = caseName.startsWith("nonpersistent monitor");
+      const scenario = caseName
+        .replace("nonpersistent monitor", "background server")
+        .replace(" with output before root completion", "")
+        .replace(" under cache pressure", "");
+      const isPolling = scenario.startsWith("background server polled");
+      const isBuildWake = scenario.startsWith("background build wake");
+      const isContinuation = isBuildWake || scenario === "persistent monitor terminal wake";
+      const endedBeforeResult =
+        scenario === "background server polled after end" ||
+        scenario === "background server polled after partial end" ||
+        scenario === "background server polled running after end" ||
+        scenario === "background server frame after end" ||
+        scenario === "Stop after background end";
+      const buildTaskId = "01a14f36-1b68-7092-a0bd-62d0a91cb320";
+      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const path = yield* Path.Path;
+      const selfInvocation = yield* resolveSelfInvocation();
+      const mockAgentPath = yield* path.fromFileUrl(
+        new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+      );
+      type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
+      let send: Parameters<RuntimeService["handleSessionUpdate"]>[0] | undefined;
+      const promptCalled = yield* Deferred.make<void>();
+      const secondPromptCalled = yield* Deferred.make<void>();
+      const thirdPromptCalled = yield* Deferred.make<void>();
+      let retainedTools: ReadonlyArray<{ readonly toolCallId: string }> = [];
+      const promptGate = yield* Deferred.make<EffectAcpSchema.PromptResponse>();
+      const held = yield* Deferred.make<void>();
+      const finalizeScheduled = yield* Deferred.make<Duration.Input>();
+      const continuationRequests: Array<ProviderContinuationRequests.ProviderContinuationRequest> =
+        [];
+      let promptCount = 0;
+      const extensionHandlers = new Map<
+        string,
+        (params: unknown) => Effect.Effect<void, EffectAcpErrors.AcpError>
+      >();
+      const instanceId = ProviderInstanceId.make("grok");
+      const makeRuntime = makeMockRuntime({
+        childProcessSpawner,
+        mockAgentPath,
+        environment: { T3_ACP_HANG_PROMPT_FOREVER: "1" },
+        wrapRuntime: (runtime, runtimeOrdinal) => ({
+          ...runtime,
+          start: () =>
+            scenario === "failed runtime replacement" && runtimeOrdinal > 1
+              ? Effect.fail(
+                  new EffectAcpErrors.AcpTransportError({
+                    detail: "Forced replacement startup failure",
+                    cause: "test",
+                  }),
+                )
+              : runtime.start().pipe(
+                  Effect.map((started) => ({
+                    ...started,
+                    sessionId:
+                      scenario === "Stop after background end"
+                        ? "mock-session-1"
+                        : `mock-session-${runtimeOrdinal}`,
+                  })),
+                ),
+          // These cases prove adapter ownership, not native process teardown.
+          terminateProcessGroup: Effect.void,
+          handleSessionUpdate: (handler) =>
+            Effect.sync(() => {
+              send = handler;
+            }).pipe(Effect.andThen(runtime.handleSessionUpdate(handler))),
+          handleExtNotification: (method, schema, handler) =>
+            Effect.sync(() => {
+              extensionHandlers.set(method, (params) =>
+                Schema.decodeUnknownEffect(schema)(params).pipe(
+                  Effect.orDie,
+                  Effect.flatMap(handler),
+                ),
+              );
+            }),
+          prompt: () =>
+            Effect.gen(function* () {
+              promptCount += 1;
+              if (promptCount === 3) yield* Deferred.succeed(thirdPromptCalled, undefined);
+              yield* Deferred.succeed(
+                promptCount === 1 ? promptCalled : secondPromptCalled,
+                undefined,
+              );
+              return yield* Deferred.await(promptGate);
+            }),
+        }),
+      });
+      const flavor = makeGrokAcpAdapterFlavor(
+        {
+          instanceId,
+          settings: yield* decodeGrokSettings({}),
+          environment: {},
+          hostPlatform: "linux",
+          selfInvocation,
+          makeRuntime: (input) =>
+            makeRuntime(input).pipe(Effect.flatMap(makeXAiPromptCompletionRuntime)),
+        },
+        "/home/test",
+      );
+      const adapter = yield* makeAcpAdapterV2({
+        instanceId,
+        flavor,
+        selfInvocation,
+        continuationRequests: {
+          offer: (request) =>
+            Effect.sync(() => {
+              continuationRequests.push(request);
+            }),
+        },
+        testHooks: {
+          onBackgroundToolRetention: (tools) =>
+            Effect.sync(() => {
+              retainedTools = tools;
+            }),
+          afterPromptSettledWithBackgroundWork: () =>
+            Deferred.succeed(held, undefined).pipe(Effect.asVoid),
+          onDeferredFinalizeScheduled: (debounce) =>
+            Deferred.succeed(finalizeScheduled, debounce).pipe(Effect.asVoid),
+        },
+      });
+      const threadId = ThreadId.make(`grok-settlement-${scenario}`);
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      });
+      const modelSelection = { instanceId, model: "default" } as const;
+      const releaseScope = scenario === "session release" ? yield* Scope.make() : undefined;
+      if (releaseScope !== undefined)
+        yield* Effect.addFinalizer(() => Scope.close(releaseScope, Exit.void));
+      const runtime = yield* adapter
+        .openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make(`provider-session-${scenario}`),
+          modelSelection,
+          runtimePolicy,
+        })
+        .pipe(Effect.provideService(Scope.Scope, releaseScope ?? (yield* Scope.Scope)));
+      const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+      yield* runtime.events.pipe(
+        Stream.runForEach((event) => Queue.offer(events, event)),
+        Effect.forkScoped,
+      );
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
+      const now = yield* DateTime.now;
+      yield* runtime.startTurn(
+        makeTurnInput({ threadId, providerThread, instanceId, runtimePolicy, now }),
+      );
+      yield* Deferred.await(promptCalled);
+      const notify = extensionHandlers.get("_x.ai/session_notification");
+      if (send === undefined || notify === undefined)
+        return yield* Effect.die("missing update handlers");
+      const sessionId = "mock-session-1";
+      const taskId = "01a14f36-1b68-7092-a0bd-62d0a91cb319";
+      const command =
+        scenario === "command quoting spawn subagents"
+          ? "printf '%s\\n' 'Do not spawn subagents.'"
+          : "node server.js";
+      if (scenario === "Stop after foreground completion") {
+        // The native foreground terminal is omitted; root settlement closes it.
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "foreground-1",
+            kind: "read",
+            title: "Read a file",
+            status: "in_progress",
+            rawInput: { variant: "Read", file_path: "/tmp/unused" },
+          },
+        });
+      }
+      if (scenario === "legacy persistent monitor wake") {
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "command-1",
+            title: "Tool",
+            kind: "other",
+            status: "in_progress",
+            rawInput: { command, persistent: true, description: "Watch ticks" },
+          },
+        });
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "command-1",
+            status: "completed",
+            content: [
+              {
+                type: "content",
+                content: { type: "text", text: `Monitor started (task ${taskId})` },
+              },
+            ],
+          },
+        });
+      } else {
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "command-1",
+            title: `Execute \`${command}\``,
+            kind: "execute",
+            status: "in_progress",
+            rawInput:
+              scenario === "persistent monitor terminal wake" || nonpersistentMonitor
+                ? {
+                    variant: "Monitor",
+                    command,
+                    persistent: !nonpersistentMonitor,
+                    description: scenario,
+                  }
+                : { variant: "Bash", command, description: scenario },
+          },
+        });
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "command-1",
+            title: `[bg] ${command} (${taskId})`,
+            status: "completed",
+            rawOutput:
+              scenario === "persistent monitor terminal wake" || nonpersistentMonitor
+                ? {
+                    type: "Monitor",
+                    taskId,
+                    persistent: !nonpersistentMonitor,
+                    timeoutMs: 36000000,
+                  }
+                : {
+                    type: "BackgroundTaskStarted",
+                    task_id: taskId,
+                    task_type: "bash",
+                    status: "running",
+                    command,
+                  },
+          },
+        });
+      }
+      if (beforeRootTick) {
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "command-1",
+            status: "in_progress",
+            content: [{ type: "content", content: { type: "text", text: "in-turn output\n" } }],
+            rawOutput: {
+              type: "Bash",
+              output_for_prompt: "in-turn output\n",
+              exit_code: 0,
+              command,
+            },
+          },
+        });
+      }
+      if (isBuildWake) {
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "build-1",
+            kind: "execute",
+            title: "Execute build",
+            status: "in_progress",
+            rawInput: { variant: "Bash", command: "npm run build" },
+          },
+        });
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "build-1",
+            status: "completed",
+            rawOutput: {
+              type: "BackgroundTaskStarted",
+              task_id: buildTaskId,
+              task_type: "bash",
+              status: "running",
+              command: "npm run build",
+            },
+          },
+        });
+      }
+      if (scenario === "command quoting spawn subagents") {
+        yield* notify({
+          sessionId,
+          update: {
+            sessionUpdate: "task_completed",
+            task_snapshot: {
+              task_id: taskId,
+              kind: "bash",
+              exit_code: 0,
+              output: "Do not spawn subagents.\n",
+            },
+          },
+        });
+      }
+      yield* send({
+        sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "Finished." },
+        },
+      });
+      if (nonpersistentMonitor) {
+        yield* notify({
+          sessionId,
+          update: {
+            sessionUpdate: "task_completed",
+            task_snapshot: { task_id: taskId, kind: "monitor", exit_code: 0 },
+          },
+        });
+      }
+      // Grok reported this turn complete while session/prompt stayed open.
+      yield* notify({
+        sessionId,
+        update: {
+          sessionUpdate: "turn_completed",
+          prompt_id: "t3-xai-prompt-1",
+          stop_reason: "end_turn",
+        },
+      });
+      const observed: Array<ProviderAdapter.ProviderAdapterV2Event> = [];
+      const terminal = Effect.gen(function* () {
+        while (true) {
+          const event = yield* Queue.take(events);
+          observed.push(event);
+          if (event.type === "turn.terminal") return event.status;
+        }
+      });
+      const outcome = yield* Effect.raceFirst(
+        terminal,
+        Deferred.await(held).pipe(Effect.as("held")),
+      );
+      assert.equal(outcome, "completed", "a finished reply must release the run");
+      assert.isFalse(observed.some((event) => event.type === "subagent.updated"));
+      const commands = observed.flatMap((event) =>
+        event.type === "turn_item.updated" && event.turnItem.type === "command_execution"
+          ? [event.turnItem]
+          : [],
+      );
+      if (scenario !== "legacy persistent monitor wake")
+        assert.equal(
+          commands.at(-1)?.status,
+          scenario === "command quoting spawn subagents" || nonpersistentMonitor
+            ? "completed"
+            : "running",
+        );
+      const originalTerminal = observed.find((event) => event.type === "turn.terminal");
+      if (originalTerminal === undefined) return yield* Effect.die("missing original terminal");
+      if (releaseScope !== undefined) {
+        if (runtime.hasPendingBackgroundWork === undefined)
+          return yield* Effect.die("missing background work state");
+        assert.isTrue(yield* runtime.hasPendingBackgroundWork);
+        yield* Scope.close(releaseScope, Exit.void);
+        assert.isFalse(
+          yield* runtime.hasPendingBackgroundWork,
+          "released sessions retain no live background state",
+        );
+        assert.lengthOf(retainedTools, 0, "session release clears background payloads");
+        return;
+      }
+
+      if (beforeRootTick) {
+        assert.equal(
+          commands.at(-1)?.status,
+          "running",
+          "root completion must not end a registered background task after its ACK is replaced",
+        );
+        if (runtime.hasPendingBackgroundWork === undefined)
+          return yield* Effect.die("missing background work state");
+        assert.isTrue(
+          yield* runtime.hasPendingBackgroundWork,
+          "the live task must still pin its native session after root completion",
+        );
+      }
+
+      if (scenario === "legacy persistent monitor wake") {
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "command-1",
+            status: "in_progress",
+            content: [{ type: "content", content: { type: "text", text: "tick 1\n" } }],
+            rawOutput: { type: "Bash", output_for_prompt: "tick 1\n", exit_code: 0, command },
+          },
+        });
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "Tick 1 seen." },
+            _meta: { promptId: `monitor-event-${taskId}` },
+          },
+        });
+        assert.lengthOf(
+          continuationRequests,
+          0,
+          "legacy monitor progress chatter must not wake a run",
+        );
+        if (runtime.hasPendingBackgroundWork === undefined)
+          return yield* Effect.die("missing background work state");
+        assert.isTrue(yield* runtime.hasPendingBackgroundWork, "the monitor remains live");
+        return;
+      }
+
+      if (isBuildWake) {
+        if (scenario === "background build wake after server end") {
+          yield* notify({
+            sessionId,
+            update: {
+              sessionUpdate: "task_completed",
+              task_snapshot: {
+                task_id: taskId,
+                kind: "bash",
+                exit_code: 0,
+                output: "server stopped",
+              },
+            },
+          });
+        }
+        yield* notify({
+          sessionId,
+          update: {
+            sessionUpdate: "task_completed",
+            task_snapshot: {
+              task_id: buildTaskId,
+              kind: "bash",
+              exit_code: 0,
+              output: "built",
+            },
+          },
+        });
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "The build finished." },
+            _meta: { promptId: `task-completed-${buildTaskId}` },
+          },
+        });
+        yield* notify({
+          sessionId,
+          update: {
+            sessionUpdate: "turn_completed",
+            prompt_id: `task-completed-${buildTaskId}`,
+            stop_reason: "end_turn",
+          },
+        });
+        assert.lengthOf(
+          continuationRequests,
+          1,
+          "a running server must not swallow another task's wake reply",
+        );
+      }
+      if (scenario === "persistent monitor terminal wake") {
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "command-1",
+            status: "in_progress",
+            rawOutput: { type: "Bash", output_for_prompt: "still watching", exit_code: 0 },
+          },
+        });
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "Still watching." },
+            _meta: { promptId: `monitor-event-${taskId}` },
+          },
+        });
+        assert.lengthOf(continuationRequests, 0, "streaming progress must not wake a run");
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "command-1",
+            status: "completed",
+            rawOutput: { type: "Bash", output_for_prompt: "monitor stopped", exit_code: 0 },
+          },
+        });
+        assert.lengthOf(continuationRequests, 1, "the terminal tool frame alone must wake a run");
+        while (true) {
+          const event = yield* Queue.take(events);
+          observed.push(event);
+          if (
+            event.type === "turn_item.updated" &&
+            event.turnItem.type === "command_execution" &&
+            event.turnItem.status === "completed"
+          ) {
+            assert.equal(event.turnItem.runId, commands[0]?.runId);
+            assert.equal(event.turnItem.output, "monitor stopped");
+            break;
+          }
+        }
+      }
+      if (scenario === "Stop after foreground completion") {
+        yield* runtime.interruptTurn({
+          providerThread,
+          providerTurnId: originalTerminal.providerTurnId,
+          requestRuntimeRestart: true,
+        });
+        while (true) {
+          const event = yield* Queue.take(events);
+          observed.push(event);
+          if (
+            event.type === "turn_item.updated" &&
+            event.turnItem.nativeItemRef?.nativeId === "command-1" &&
+            event.turnItem.status === "interrupted"
+          )
+            break;
+        }
+        const foregroundStatuses = observed.flatMap((event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.nativeItemRef?.nativeId === "foreground-1"
+            ? [event.turnItem.status]
+            : [],
+        );
+        assert.deepEqual(foregroundStatuses, ["running", "completed"]);
+        return;
+      }
+      let followUpThread = providerThread;
+      let followUpSessionId = sessionId;
+      const originalSend = send;
+      const afterOriginal = observed.length;
+      if (scenario === "runtime replacement" || scenario === "failed runtime replacement") {
+        const replacement = yield* runtime
+          .rollbackThread({
+            providerThread,
+            providerThreadTurns: [],
+            target: {
+              type: "thread_start",
+              checkpointId: CheckpointId.make("background-owner-rollback"),
+              appRunOrdinal: 0,
+            },
+          })
+          .pipe(Effect.exit);
+        if (scenario === "failed runtime replacement") {
+          assert.isTrue(Exit.isFailure(replacement));
+        } else {
+          if (Exit.isFailure(replacement)) return yield* Effect.failCause(replacement.cause);
+          followUpThread = replacement.value.providerThread;
+          followUpSessionId = "mock-session-2";
+          assert.equal(followUpThread.nativeThreadRef?.nativeId, followUpSessionId);
+        }
+      }
+      yield* runtime.startTurn(
+        makeTurnInput({
+          threadId,
+          providerThread: followUpThread,
+          instanceId,
+          runtimePolicy,
+          now,
+          ordinal: 2,
+          ...(isContinuation
+            ? {
+                messageCreatedBy: "agent" as const,
+                messageCreationSource: "provider" as const,
+                messageText: "Background task completed.",
+              }
+            : {}),
+        }),
+      );
+      if (isContinuation) {
+        const debounce = yield* Deferred.await(finalizeScheduled);
+        yield* TestClock.adjust(debounce);
+        assert.equal(yield* terminal, "completed");
+        assert.equal(promptCount, 1, "a provider continuation attaches without another prompt RPC");
+        assert.lengthOf(continuationRequests, 1);
+        assert.isFalse(
+          observed.some(
+            (event) => event.type === "message.updated" && event.message.text === "Still watching.",
+          ),
+          "monitor progress chatter must not be replayed",
+        );
+        if (runtime.hasPendingBackgroundWork === undefined)
+          return yield* Effect.die("missing background work state");
+        if (scenario === "background build wake beside running server") {
+          assert.isTrue(
+            yield* runtime.hasPendingBackgroundWork,
+            "a live shell still pins its provider session",
+          );
+          yield* notify({
+            sessionId,
+            update: {
+              sessionUpdate: "task_completed",
+              task_snapshot: {
+                task_id: taskId,
+                kind: "bash",
+                exit_code: 0,
+                output: "server stopped",
+              },
+            },
+          });
+        }
+        assert.isFalse(yield* runtime.hasPendingBackgroundWork);
+        if (isBuildWake) {
+          const replies = observed.flatMap((event) =>
+            event.type === "message.updated" &&
+            event.message.role === "assistant" &&
+            event.message.text === "The build finished."
+              ? [event.message]
+              : [],
+          );
+          assert.equal(new Set(replies.map((reply) => reply.id)).size, 1);
+          assert.notEqual(replies[0]?.runId, commands[0]?.runId);
+        }
+        assert.isFalse(
+          observed
+            .slice(afterOriginal)
+            .some(
+              (event) =>
+                event.type === "turn_item.updated" &&
+                event.turnItem.type === "command_execution" &&
+                event.turnItem.runId !== commands[0]?.runId,
+            ),
+          "the already projected monitor must not be replayed into its continuation",
+        );
+        return;
+      }
+      yield* Deferred.await(secondPromptCalled);
+      if (scenario === "runtime replacement") {
+        const secondTurn = yield* Effect.gen(function* () {
+          while (true) {
+            const event = yield* Queue.take(events);
+            observed.push(event);
+            if (event.type === "provider_turn.updated" && event.providerTurn.ordinal === 2)
+              return event.providerTurn;
+          }
+        });
+        const retiredCards = observed
+          .slice(afterOriginal)
+          .flatMap((event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.nativeItemRef?.nativeId === "command-1" &&
+            event.turnItem.status === "interrupted"
+              ? [event.turnItem]
+              : [],
+          );
+        assert.lengthOf(
+          retiredCards,
+          1,
+          "committed replacement must end its retired live background card",
+        );
+        assert.equal(retiredCards[0]?.runId, commands[0]?.runId);
+        const afterReplacement = observed.length;
+        yield* runtime.interruptTurn({
+          providerThread: followUpThread,
+          providerTurnId: secondTurn.id,
+          requestRuntimeRestart: true,
+        });
+        assert.equal(yield* terminal, "interrupted");
+        assert.isFalse(
+          observed
+            .slice(afterReplacement)
+            .some(
+              (event) =>
+                event.type === "turn_item.updated" && event.turnItem.runId === commands[0]?.runId,
+            ),
+          "Stop in the replacement must not write items from the retired run",
+        );
+        return;
+      }
+      if (endedBeforeResult) {
+        yield* notify({
+          sessionId,
+          update: {
+            sessionUpdate: "task_completed",
+            task_snapshot: {
+              task_id: taskId,
+              kind: "bash",
+              exit_code: 0,
+              ...(scenario === "background server polled after partial end"
+                ? { output: "partial snapshot" }
+                : scenario === "background server polled running after end"
+                  ? { output: "final snapshot" }
+                  : {}),
+            },
+          },
+        });
+      }
+      if (cachePressure) {
+        for (let index = 0; index < 128; index += 1) {
+          const otherTaskId = `01a14f39-1b68-7092-a0bd-${String(index).padStart(12, "0")}`;
+          yield* originalSend({
+            sessionId,
+            update: {
+              sessionUpdate: "tool_call",
+              toolCallId: `pressure-${index}`,
+              title: "Execute true",
+              kind: "execute",
+              status: "completed",
+              rawInput: { variant: "Bash", command: "true" },
+              rawOutput: {
+                type: "BackgroundTaskStarted",
+                task_id: otherTaskId,
+                task_type: "bash",
+                status: "running",
+                command: "true",
+              },
+            },
+          });
+          yield* notify({
+            sessionId,
+            update: {
+              sessionUpdate: "task_completed",
+              task_snapshot: { task_id: otherTaskId, kind: "bash", exit_code: 0, output: "done" },
+            },
+          });
+        }
+      }
+      if (scenario === "Stop after background end") {
+        const stoppedTaskId = "01a14f39-1b68-7092-a0bd-62d0a91cb319";
+        yield* originalSend({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "active-server",
+            kind: "execute",
+            title: "Execute node server2.js",
+            status: "in_progress",
+            rawInput: { variant: "Bash", command: "node server2.js" },
+          },
+        });
+        yield* originalSend({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "active-server",
+            status: "completed",
+            rawOutput: {
+              type: "BackgroundTaskStarted",
+              task_id: stoppedTaskId,
+              task_type: "bash",
+              status: "running",
+              command: "node server2.js",
+            },
+          },
+        });
+        const secondTurn = yield* Effect.gen(function* () {
+          while (true) {
+            const event = yield* Queue.take(events);
+            observed.push(event);
+            if (event.type === "provider_turn.updated" && event.providerTurn.ordinal === 2)
+              return event.providerTurn;
+          }
+        });
+        yield* runtime.interruptTurn({
+          providerThread,
+          providerTurnId: secondTurn.id,
+          requestRuntimeRestart: true,
+        });
+        assert.equal(yield* terminal, "interrupted");
+        const oldCardStatuses = observed.flatMap((event) =>
+          event.type === "turn_item.updated" && event.turnItem.id === commands[0]?.id
+            ? [event.turnItem.status]
+            : [],
+        );
+        assert.equal(oldCardStatuses.at(-1), "completed");
+        assert.isFalse(
+          oldCardStatuses.includes("interrupted"),
+          "Stop must not interrupt a historical terminal card",
+        );
+        const stoppedCard = observed
+          .flatMap((event) =>
+            event.type === "turn_item.updated" &&
+            event.turnItem.nativeItemRef?.nativeId === "active-server"
+              ? [event.turnItem]
+              : [],
+          )
+          .at(-1);
+        assert.equal(stoppedCard?.status, "interrupted");
+        const afterStop = observed.length;
+        yield* runtime.startTurn(
+          makeTurnInput({ threadId, providerThread, instanceId, runtimePolicy, now, ordinal: 3 }),
+        );
+        yield* Deferred.await(thirdPromptCalled);
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "read-stopped-server",
+            title: "get_command_or_subagent_output",
+            kind: "other",
+            status: "in_progress",
+            rawInput: { variant: "TaskOutput", task_ids: [stoppedTaskId] },
+          },
+        });
+        yield* send({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "read-stopped-server",
+            status: "completed",
+            rawOutput: {
+              type: "TaskOutput",
+              Result: {
+                task_id: stoppedTaskId,
+                status: "completed",
+                exit_code: 0,
+                output: "server2 stopped",
+              },
+            },
+          },
+        });
+        const newNotify = extensionHandlers.get("_x.ai/session_notification");
+        if (newNotify === undefined) return yield* Effect.die("missing replacement callback");
+        yield* newNotify({
+          sessionId,
+          update: {
+            sessionUpdate: "turn_completed",
+            prompt_id: "t3-xai-prompt-1",
+            stop_reason: "end_turn",
+          },
+        });
+        assert.equal(yield* terminal, "completed");
+        assert.isFalse(
+          observed
+            .slice(afterStop)
+            .some(
+              (event) =>
+                event.type === "turn_item.updated" && event.turnItem.id === stoppedCard?.id,
+            ),
+          "a replacement runtime must not write the stopped card",
+        );
+        return;
+      }
+      if (scenario === "bounded background retention") {
+        yield* originalSend({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "large-read",
+            title: "Read unrelated file",
+            kind: "read",
+            status: "completed",
+            rawInput: { path: "/tmp/unrelated" },
+            rawOutput: { content: "x".repeat(1024 * 1024) },
+          },
+        });
+        for (let index = 0; index < 256; index += 1) {
+          const id = `01a14f39-1b68-7092-a0bd-${String(index).padStart(12, "0")}`;
+          yield* originalSend({
+            sessionId,
+            update: {
+              sessionUpdate: "tool_call",
+              toolCallId: `short-${index}`,
+              title: "Execute echo done",
+              kind: "execute",
+              status: "completed",
+              rawInput: { variant: "Bash", command: "echo done" },
+              rawOutput: {
+                type: "BackgroundTaskStarted",
+                task_id: id,
+                task_type: "bash",
+                status: "running",
+                command: "echo done",
+              },
+            },
+          });
+          yield* notify({
+            sessionId,
+            update: {
+              sessionUpdate: "task_completed",
+              task_snapshot: { task_id: id, kind: "bash", exit_code: 0, output: "done" },
+            },
+          });
+        }
+        if (runtime.hasPendingBackgroundWork === undefined)
+          return yield* Effect.die("missing background work state");
+        assert.isTrue(
+          yield* runtime.hasPendingBackgroundWork,
+          "the original server stays live beyond terminal cache pressure",
+        );
+        assert.isFalse(
+          retainedTools.some((tool) => tool.toolCallId === "large-read"),
+          "routing must not retain unrelated foreground output",
+        );
+        assert.isAtMost(
+          retainedTools.length,
+          129,
+          "only live tasks plus 128 terminal tool payloads survive",
+        );
+        assert.isTrue(
+          retainedTools.some((tool) => tool.toolCallId === "command-1"),
+          "cache eviction cannot discard a live server",
+        );
+      }
+      if (scenario === "background server polled running after end") {
+        // Exceed the unregistered-task tombstone window: registered identity
+        // must still reject a late running notice without pinning idle release.
+        for (let index = 0; index < 129; index += 1) {
+          yield* notify({
+            sessionId,
+            update: {
+              sessionUpdate: "task_completed",
+              task_snapshot: {
+                task_id: `01a14f36-1b68-7092-a0bd-${String(index).padStart(12, "0")}`,
+                kind: "bash",
+                exit_code: 0,
+              },
+            },
+          });
+        }
+        yield* notify({
+          sessionId,
+          update: {
+            sessionUpdate: "task_backgrounded",
+            task_id: taskId,
+            tool_call_id: "command-1",
+          },
+        });
+        if (runtime.hasPendingBackgroundWork === undefined)
+          return yield* Effect.die("missing background work state");
+        assert.isFalse(
+          yield* runtime.hasPendingBackgroundWork,
+          "an ended task must not become live again",
+        );
+      }
+      if (scenario === "background server frame after end") {
+        yield* originalSend({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "command-1",
+            status: "in_progress",
+            rawOutput: { type: "Bash", output_for_prompt: "late progress", command, exit_code: 0 },
+          },
+        });
+        yield* originalSend({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "command-1",
+            status: "completed",
+            rawOutput: { type: "Bash", output_for_prompt: "server stopped", command, exit_code: 0 },
+          },
+        });
+      }
+      if (scenario === "background server killed by a follow-up" || isPolling) {
+        const killing = scenario === "background server killed by a follow-up";
+        yield* originalSend({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "later-task-result",
+            title: killing ? "kill_command_or_subagent" : "get_command_or_subagent_output",
+            kind: "other",
+            status: "in_progress",
+            rawInput: killing
+              ? { variant: "KillTask", task_id: taskId }
+              : { variant: "TaskOutput", task_ids: [taskId] },
+          },
+        });
+        yield* originalSend({
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "later-task-result",
+            status: "completed",
+            rawOutput: killing
+              ? { type: "KillTask", Result: { task_id: taskId, outcome: "killed" } }
+              : {
+                  type: "TaskOutput",
+                  Result: {
+                    task_id: taskId,
+                    ...(scenario === "background server polled running after end"
+                      ? { status: "running", output: "stale partial" }
+                      : { status: "completed", exit_code: 0, output: "server stopped" }),
+                  },
+                },
+          },
+        });
+      }
+      yield* notify({
+        sessionId,
+        update: {
+          sessionUpdate: "turn_completed",
+          prompt_id: "t3-xai-prompt-2",
+          stop_reason: "end_turn",
+        },
+      });
+      const followUp = yield* terminal;
+      assert.equal(
+        followUp,
+        "completed",
+        "the follow-up must run without interrupting the first reply",
+      );
+      if (
+        scenario === "background server killed by a follow-up" ||
+        isPolling ||
+        scenario === "background server frame after end"
+      ) {
+        const originalCommands = observed.flatMap((event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "command_execution" &&
+          event.turnItem.runId === commands[0]?.runId
+            ? [event.turnItem]
+            : [],
+        );
+        const allOriginalIdUpdates = observed.flatMap((event) =>
+          event.type === "turn_item.updated" && event.turnItem.id === commands[0]?.id
+            ? [event.turnItem]
+            : [],
+        );
+        assert.isTrue(
+          allOriginalIdUpdates.every((item) => item.runId === commands[0]?.runId),
+          "late command frames must keep their original run owner",
+        );
+        const terminalIndex = originalCommands.findIndex((item) => item.status === "completed");
+        assert.isTrue(terminalIndex >= 0);
+        assert.isTrue(
+          originalCommands.slice(terminalIndex).every((item) => item.status === "completed"),
+          "straggler progress must not reopen an ended command",
+        );
+        assert.isFalse(
+          originalCommands.slice(terminalIndex).some((item) => item.output === "late progress"),
+          "straggler progress must not overwrite a terminal command's output",
+        );
+        assert.equal(originalCommands.at(-1)?.status, "completed");
+        if (cachePressure)
+          assert.equal(
+            originalCommands.at(-1)?.input,
+            command,
+            "hydration after payload eviction keeps the original command presentation",
+          );
+        if (isPolling || scenario === "background server frame after end")
+          assert.equal(
+            originalCommands.at(-1)?.output,
+            scenario === "background server polled running after end"
+              ? "final snapshot"
+              : "server stopped",
+          );
+        assert.isFalse(observed.some((event) => event.type === "subagent.updated"));
+      } else if (scenario !== "command quoting spawn subagents") {
+        yield* notify({
+          sessionId,
+          update: {
+            sessionUpdate: "task_completed",
+            task_snapshot: {
+              task_id: taskId,
+              kind: "bash",
+              exit_code: 0,
+              output: "server stopped\n",
+            },
+          },
+        });
+        const endedCommand = yield* Effect.gen(function* () {
+          while (true) {
+            const event = yield* Queue.take(events);
+            if (
+              event.type === "turn_item.updated" &&
+              event.turnItem.type === "command_execution" &&
+              event.turnItem.status === "completed"
+            )
+              return event.turnItem;
+          }
+        });
+        assert.equal(
+          endedCommand.runId,
+          commands[0]?.runId,
+          "late command output belongs to the original run",
+        );
+        assert.equal(endedCommand.output, "server stopped\n");
+      }
     }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 

@@ -130,6 +130,7 @@ export const ACP_PROTOCOL = "acp.ndjson-jsonrpc" as const;
 
 // Grok summaries can trail hydrated tools by over two seconds; shorter waits split the wake.
 const ACP_DEFERRED_FINALIZE_DEBOUNCE: Duration.Input = "3000 millis";
+const ACP_TERMINAL_BACKGROUND_PAYLOAD_LIMIT = 128;
 
 /**
  * Emit first chunks and segment-close events immediately; coalesce later chunks into full-text snapshots.
@@ -361,7 +362,13 @@ export interface AcpAdapterV2Flavor {
     readonly status: "running" | "completed" | "failed";
     readonly appendOutput: string;
   }>;
+  /**
+   * Background tools whose lifetime must not hold root settlement (persistent
+   * monitors or shell servers). Still tracked for output and idle retention.
+   */
   readonly isPersistentBackgroundTool?: (toolCall: AcpToolCallState) => boolean;
+  /** Progress-prompt tools coalesce chatter until they end; completion-only tasks do not. */
+  readonly backgroundToolWakePolicy?: (toolCall: AcpToolCallState) => "progress" | "completion";
   readonly isProviderWakeNotification?: (
     notification: EffectAcpSchema.SessionNotification,
   ) => boolean;
@@ -461,6 +468,9 @@ export interface AcpAdapterV2Options {
     ) => Effect.Effect<void>;
   };
   readonly testHooks?: {
+    readonly onBackgroundToolRetention?: (
+      tools: ReadonlyArray<AcpToolCallState>,
+    ) => Effect.Effect<void>;
     readonly onDeferredFinalizeScheduled?: (debounce: Duration.Input) => Effect.Effect<void>;
     readonly afterPromptSettledWithBackgroundWork?: () => Effect.Effect<void>;
     readonly onNativeResponseLifecycle?: (event: {
@@ -1057,6 +1067,25 @@ interface AcpNativeBuildConfiguration {
   readonly configOptions: ReadonlyArray<{ readonly id: string; readonly value: string }>;
 }
 
+type AcpToolProjectionIdentity = Pick<
+  ProviderAdapter.ProviderAdapterV2TurnInput,
+  "threadId" | "runId" | "rootNodeId"
+> & {
+  readonly providerThreadId: OrchestrationV2ProviderThread["id"];
+  readonly providerTurnId: OrchestrationV2ProviderTurn["id"];
+  readonly nativeThreadId: string;
+  readonly ordinal: number;
+  readonly startedAt: DateTime.Utc;
+};
+
+interface BackgroundToolRecord {
+  readonly taskId: string;
+  readonly identity: AcpToolProjectionIdentity;
+  readonly toolIdentity: Pick<AcpToolCallState, "toolCallId" | "kind" | "title" | "command">;
+  readonly status: ProjectedToolStatus;
+  readonly wakePolicy: "progress" | "completion";
+}
+
 interface ActiveAcpTurn {
   readonly input: ProviderAdapter.ProviderAdapterV2TurnInput;
   readonly providerTurnId: OrchestrationV2ProviderTurn["id"];
@@ -1197,9 +1226,9 @@ export function acpPostSettleContinuationOfferEvidence(
 
 function acpPostSettleWakeShouldBuffer(
   notification: EffectAcpSchema.SessionNotification,
-  backgroundWorkRunning: boolean,
+  backgroundProgressRunning: boolean,
 ): boolean {
-  if (!backgroundWorkRunning) return true;
+  if (!backgroundProgressRunning) return true;
   const update = notification.update;
   return (
     update.sessionUpdate !== "agent_message_chunk" && update.sessionUpdate !== "agent_thought_chunk"
@@ -1593,6 +1622,81 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             ? undefined
             : flavor.extractSubagentUpdate?.(tool);
         let turnAttached = yield* Deferred.make<boolean>();
+        // Identity and terminal facts last for the native runtime. Only payloads
+        // are evictable: late hydration/stragglers have no protocol expiry.
+        const backgroundTools = new Map<string, BackgroundToolRecord>();
+        const backgroundTaskByTool = new Map<string, string>();
+        const backgroundToolPayloads = new Map<string, AcpToolCallState>();
+        const terminalBackgroundPayloads = new Set<string>();
+        const backgroundToolIdentity = (
+          tool: AcpToolCallState,
+        ): BackgroundToolRecord["toolIdentity"] => {
+          const input = unknownRecord(tool.data.rawInput);
+          const output = unknownRecord(tool.data.rawOutput);
+          const command =
+            tool.command ??
+            (typeof input?.command === "string" ? input.command : undefined) ??
+            (typeof output?.command === "string" ? output.command : undefined);
+          const kind = command === undefined ? tool.kind : "execute";
+          // Keep only the presentation needed for a complete item after payload
+          // eviction, never raw arguments, output, detail, or a turn context.
+          return {
+            toolCallId: tool.toolCallId,
+            ...(kind === undefined ? {} : { kind }),
+            ...(tool.title === undefined ? {} : { title: tool.title }),
+            ...(command === undefined ? {} : { command }),
+          };
+        };
+        const backgroundToolState = (key: string, record: BackgroundToolRecord): AcpToolCallState =>
+          backgroundToolPayloads.get(key) ?? {
+            ...record.toolIdentity,
+            status:
+              record.status === "failed"
+                ? "failed"
+                : record.status === "running"
+                  ? "inProgress"
+                  : record.status === "pending"
+                    ? "pending"
+                    : "completed",
+            data: {},
+          };
+        const forgetBackgroundTool = (key: string) => {
+          const record = backgroundTools.get(key);
+          if (record === undefined) return;
+          backgroundTaskByTool.delete(
+            sessionScopedId(record.identity.nativeThreadId, record.toolIdentity.toolCallId),
+          );
+          backgroundTools.delete(key);
+          backgroundToolPayloads.delete(key);
+          terminalBackgroundPayloads.delete(key);
+        };
+        const cacheBackgroundTool = (
+          key: string,
+          record: BackgroundToolRecord,
+          tool: AcpToolCallState,
+        ) => {
+          backgroundTools.set(key, record);
+          backgroundTaskByTool.set(
+            sessionScopedId(record.identity.nativeThreadId, record.toolIdentity.toolCallId),
+            key,
+          );
+          backgroundToolPayloads.set(key, tool);
+          if (record.status === "pending" || record.status === "running") return;
+          terminalBackgroundPayloads.add(key);
+          while (terminalBackgroundPayloads.size > ACP_TERMINAL_BACKGROUND_PAYLOAD_LIMIT) {
+            const oldest = terminalBackgroundPayloads.values().next().value;
+            if (oldest !== undefined) {
+              backgroundToolPayloads.delete(oldest);
+              terminalBackgroundPayloads.delete(oldest);
+            }
+          }
+        };
+        const clearBackgroundTools = () => {
+          backgroundTools.clear();
+          backgroundTaskByTool.clear();
+          backgroundToolPayloads.clear();
+          terminalBackgroundPayloads.clear();
+        };
         const activeSessionId = yield* Ref.make<string | null>(null);
         const contextUsageBySessionId = yield* Ref.make(
           new Map<string, ThreadTokenUsageSnapshot>(),
@@ -1906,16 +2010,42 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         const midTurnUnreportedCompletedTaskIds = yield* Ref.make<ReadonlySet<string>>(new Set());
         // Grok re-prompts on stale monitor notices; suppress output until a genuine terminal or app turn.
         const suppressPostSettleMonitorPrompt = yield* Ref.make(false);
+        // Every live background task pins the native session, including servers.
+        // Only progress-prompt tasks suppress monitor chatter and coalesce wakes.
         const runningBackgroundTaskIds = yield* Ref.make<ReadonlySet<string>>(new Set());
-        // Tombstones prevent mid-stream exit_code 0 and stale monitor events from resurrecting ended tasks.
+        const hasRunningBackgroundProgress = Effect.gen(function* () {
+          const running = yield* Ref.get(runningBackgroundTaskIds);
+          if (flavor.backgroundToolWakePolicy === undefined) return running.size > 0;
+          const sessionId = yield* Ref.get(activeSessionId);
+          // Only identified progress-prompt tasks suppress native wake replies.
+          return [...running].some(
+            (taskId) =>
+              backgroundTools.get(sessionScopedId(sessionId ?? "", taskId))?.wakePolicy ===
+              "progress",
+          );
+        });
+        // Normalized tool statuses are not genuine: Grok Bash re-reports carry
+        // exit_code 0 mid-stream. A straggler monitor-event can land after the
+        // real end (the CLI keeps streaming while the agent already consumed
+        // the output via get_command_or_subagent_output); without the tombstone
+        // it would resurrect the running set and pin offers/idle-release
+        // forever.
         const endedBackgroundTaskIds = yield* Ref.make<ReadonlySet<string>>(new Set());
         const endedBackgroundTaskIdLimit = 128;
 
         const setBackgroundTaskRunning =
           /* Provider events include streaming deltas; avoid a span for each update. */
           Effect.fnUntraced(function* (taskId: string, running: boolean) {
-            if (running && (yield* Ref.get(endedBackgroundTaskIds)).has(taskId)) {
-              return;
+            if (running) {
+              if ((yield* Ref.get(endedBackgroundTaskIds)).has(taskId)) return;
+              const sessionId = yield* Ref.get(activeSessionId);
+              const record = backgroundTools.get(sessionScopedId(sessionId ?? "", taskId));
+              if (
+                record !== undefined &&
+                record.status !== "running" &&
+                record.status !== "pending"
+              )
+                return;
             }
             yield* Ref.update(runningBackgroundTaskIds, (current) => {
               if (current.has(taskId) === running) return current;
@@ -2108,9 +2238,16 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         let runtime!: AcpSessionRuntime.AcpSessionRuntime["Service"];
         let runtimeMcpBridge: AcpMcpOverAcpBridge | undefined;
         yield* Effect.addFinalizer(() =>
-          runtimeScope === undefined
+          (runtimeScope === undefined
             ? Effect.void
-            : Scope.close(runtimeScope, Exit.void).pipe(Effect.ignore),
+            : Scope.close(runtimeScope, Exit.void).pipe(Effect.ignore)
+          ).pipe(
+            Effect.ensuring(
+              Effect.sync(clearBackgroundTools).pipe(
+                Effect.andThen(Ref.set(runningBackgroundTaskIds, new Set())),
+              ),
+            ),
+          ),
         );
 
         const resolveItemOrdinal = (context: ActiveAcpTurn, nativeItemId: string) =>
@@ -3384,6 +3521,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           context: ActiveAcpTurn,
           incoming: AcpToolCallState,
           projectedStatus?: ProjectedToolStatus,
+          options?: { readonly endReportedOutOfBand?: boolean },
         ) => Effect.Effect<void> = () => Effect.void;
 
         const markAwaitingBackgroundHydration =
@@ -3432,178 +3570,20 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             return next ?? current;
           });
 
-        emitTool = Effect.fnUntraced(function* (
-          context: ActiveAcpTurn,
-          incoming: AcpToolCallState,
-          projectedStatus?: ProjectedToolStatus,
+        const emitToolProjection = Effect.fnUntraced(function* (
+          identity: AcpToolProjectionIdentity,
+          toolCall: AcpToolCallState,
+          status: ProjectedToolStatus,
+          beforeTokenCount?: number,
+          // Present only for the live turn that owns this tool's mutable state.
+          active?: {
+            readonly previous: AcpToolCallState | undefined;
+            readonly rememberTool: (tool: AcpToolCallState) => void;
+          },
         ) {
-          if (context.assistant.current?.sourceMessageId == null)
-            yield* closeTextStream(context, "assistant");
-          if (context.reasoning.current?.sourceMessageId == null)
-            yield* closeTextStream(context, "reasoning");
-          yield* closeTextStream(context, "user");
-          const previous = context.tools.get(incoming.toolCallId);
-          const merged = mergeToolCallState(previous, incoming);
-          const normalized = flavor.normalizeToolCall?.(merged) ?? merged;
-          const backgroundTaskId = flavor.extractBackgroundTaskId?.(normalized);
-          const backgroundCommandTaskId =
-            flavor.isBackgroundCommandTool?.(normalized) === true
-              ? backgroundTaskId
-              : previous?.backgroundCommandTaskId;
-          if (
-            backgroundCommandTaskId !== undefined &&
-            !context.backgroundCommands.has(backgroundCommandTaskId)
-          ) {
-            context.backgroundCommands.set(backgroundCommandTaskId, null);
-          }
-          const completion =
-            context.promptSettled && backgroundCommandTaskId !== undefined
-              ? (context.backgroundCommands.get(backgroundCommandTaskId) ?? undefined)
-              : undefined;
-          // Preserve hydrated output; only a replayed start ACK needs its output restored.
-          const toolCall =
-            completion === undefined
-              ? normalized
-              : {
-                  ...(backgroundTaskId === undefined || completion.output === undefined
-                    ? normalized
-                    : setToolOutputText(normalized, completion.output)),
-                  status: completion.status,
-                };
-          context.tools.set(
-            toolCall.toolCallId,
-            backgroundCommandTaskId === undefined
-              ? toolCall
-              : { ...toolCall, backgroundCommandTaskId },
-          );
-          if (
-            followsAgentWorkState &&
-            projectedStatus === undefined &&
-            flavor.isProvisionalSubagentTool?.(toolCall)
-          ) {
-            yield* rearmDeferredFinalize(context);
-            return;
-          }
-          if (backgroundTaskId !== undefined) {
-            context.toolCallIdsByBackgroundTaskId.set(backgroundTaskId, toolCall.toolCallId);
-            if (flavor.isPersistentBackgroundTool?.(toolCall) === true) {
-              context.persistentBackgroundTaskIds.add(backgroundTaskId);
-            }
-            const backgroundStatus = projectedStatus ?? toolStatus(toolCall.status);
-            yield* setBackgroundTaskRunning(
-              backgroundTaskId,
-              backgroundStatus === "pending" || backgroundStatus === "running",
-            );
-            if (
-              !context.promptSettled &&
-              backgroundStatus !== "pending" &&
-              backgroundStatus !== "running"
-            ) {
-              yield* Ref.update(handledBackgroundTaskIdsInActiveTurn, (current) =>
-                new Set(current).add(backgroundTaskId),
-              );
-              yield* Ref.update(midTurnUnreportedCompletedTaskIds, (current) => {
-                if (!current.has(backgroundTaskId)) return current;
-                const next = new Set(current);
-                next.delete(backgroundTaskId);
-                return next;
-              });
-            }
-          }
-
-          const backgroundCompletions =
-            projectedStatus === undefined
-              ? (flavor.extractBackgroundTaskCompletion?.(toolCall) ?? [])
-              : [];
-          let hydratedRegisteredMonitor = false;
-          for (const backgroundCompletion of backgroundCompletions) {
-            yield* applyBackgroundTaskMutationRunning(backgroundCompletion);
-            if (backgroundCompletion.status !== "running") {
-              yield* Ref.update(handledBackgroundTaskIdsInActiveTurn, (current) =>
-                new Set(current).add(backgroundCompletion.taskId),
-              );
-              yield* Ref.update(midTurnUnreportedCompletedTaskIds, (current) => {
-                if (!current.has(backgroundCompletion.taskId)) return current;
-                const next = new Set(current);
-                next.delete(backgroundCompletion.taskId);
-                return next;
-              });
-            }
-            if (backgroundCompletion.status !== "running") {
-              context.awaitingBackgroundHydration.delete(backgroundCompletion.taskId);
-            }
-            const targetToolCallId = context.toolCallIdsByBackgroundTaskId.get(
-              backgroundCompletion.taskId,
-            );
-            if (targetToolCallId !== undefined) {
-              hydratedRegisteredMonitor = true;
-            }
-            const target =
-              targetToolCallId !== undefined ? context.tools.get(targetToolCallId) : undefined;
-            if (target !== undefined && target.toolCallId !== toolCall.toolCallId) {
-              const nextStatus =
-                backgroundCompletion.status === "running"
-                  ? ("inProgress" as const)
-                  : backgroundCompletion.status === "failed"
-                    ? ("failed" as const)
-                    : ("completed" as const);
-              const hydrated =
-                backgroundCompletion.appendOutput.length > 0
-                  ? isMonitorEndNoticeText(toolOutputText(target)) ||
-                    toolOutputText(target).trim().length === 0
-                    ? setToolOutputText(
-                        { ...target, status: nextStatus },
-                        backgroundCompletion.appendOutput,
-                      )
-                    : appendToolOutputText(
-                        { ...target, status: nextStatus },
-                        backgroundCompletion.appendOutput,
-                      )
-                  : { ...target, status: nextStatus };
-              // BackgroundTaskStarted normalization can reopen this row, so keep the
-              // completion for settlement when no task_completed recorded one.
-              if (
-                backgroundCompletion.status !== "running" &&
-                context.backgroundCommands.get(backgroundCompletion.taskId) === null
-              ) {
-                context.backgroundCommands.set(backgroundCompletion.taskId, {
-                  status: backgroundCompletion.status,
-                  output: toolOutputText(hydrated),
-                });
-              }
-              yield* emitTool(context, hydrated);
-            }
-          }
-
-          // Monitor TaskOutput resembles subagent hydration; do not invent a subagent.
-          const subagentUpdate = hydratedRegisteredMonitor
-            ? undefined
-            : extractSubagentUpdate(toolCall);
-          if (subagentUpdate !== undefined) {
-            yield* emitSubagent(context, subagentUpdate);
-            if (followsAgentWorkState) yield* syncNativeChildren(context);
-            if (subagentUpdate.suppressNormalTool !== false) {
-              yield* rearmDeferredFinalize(context);
-              return;
-            }
-          }
-          if (
-            projectedStatus === undefined &&
-            !shouldPersistToolUpdate(
-              context,
-              toolCall.toolCallId,
-              previous,
-              toolCall,
-              merged.status,
-            )
-          ) {
-            yield* rearmDeferredFinalize(context);
-            return;
-          }
-          const status = projectedStatus ?? toolStatus(toolCall.status);
           const now = yield* DateTime.now;
-          const nativeItemId = `${context.nativeThreadId}:tool:${toolCall.toolCallId}`;
-          const ordinal = yield* resolveItemOrdinal(context, nativeItemId);
+          const nativeItemId = `${identity.nativeThreadId}:tool:${toolCall.toolCallId}`;
+          const ordinal = identity.ordinal;
           const nodeId = providerNodeId(nativeItemId);
           const turnItemId = providerTurnItemId(nativeItemId);
           const nativeItemRef = {
@@ -3611,8 +3591,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             nativeId: toolCall.toolCallId,
             strength: "strong" as const,
           };
-          const startedAt = context.toolStartedAt.get(toolCall.toolCallId) ?? now;
-          context.toolStartedAt.set(toolCall.toolCallId, startedAt);
+          const startedAt = identity.startedAt;
           const completedAt = completedAtForStatus(status, now);
           const title = toolCall.title ?? null;
           yield* emitProviderEvent({
@@ -3620,15 +3599,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             driver,
             node: {
               id: nodeId,
-              threadId: context.input.threadId,
-              runId: context.input.runId,
-              parentNodeId: context.input.rootNodeId,
-              rootNodeId: context.input.rootNodeId,
+              threadId: identity.threadId,
+              runId: identity.runId,
+              parentNodeId: identity.rootNodeId,
+              rootNodeId: identity.rootNodeId,
               kind: "tool_call",
               status: nodeStatus(status),
               countsForRun: true,
-              providerThreadId: context.input.providerThread.id,
-              providerTurnId: context.providerTurnId,
+              providerThreadId: identity.providerThreadId,
+              providerTurnId: identity.providerTurnId,
               nativeItemRef,
               runtimeRequestId: null,
               checkpointScopeId: null,
@@ -3639,11 +3618,11 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
 
           const base = {
             id: turnItemId,
-            threadId: context.input.threadId,
-            runId: context.input.runId,
+            threadId: identity.threadId,
+            runId: identity.runId,
             nodeId,
-            providerThreadId: context.input.providerThread.id,
-            providerTurnId: context.providerTurnId,
+            providerThreadId: identity.providerThreadId,
+            providerTurnId: identity.providerTurnId,
             nativeItemRef,
             parentItemId: null,
             ordinal,
@@ -3681,7 +3660,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           const projectAsCommandExecution = inputVariant === "monitor" || outputIsBashResult;
           const mcpIdentity = extractMcpToolCallIdentity(toolCall, {
             embeddedTerminalCommands: embeddedTerminalCommands(
-              context.nativeThreadId,
+              identity.nativeThreadId,
               toolCall.toolCallId,
             ),
           });
@@ -3693,23 +3672,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               type: "compaction",
               driver,
               ...(summary === undefined ? {} : { summary }),
-              ...(context.contextUsage?.usedTokens === undefined
-                ? {}
-                : { beforeTokenCount: context.contextUsage.usedTokens }),
+              ...(beforeTokenCount === undefined ? {} : { beforeTokenCount }),
             };
-            if (status === "completed") {
-              context.contextUsage = null;
-              yield* Ref.update(contextUsageBySessionId, (current) => {
-                const updated = new Map(current);
-                updated.delete(context.nativeThreadId);
-                return updated;
-              });
-              yield* Ref.update(compactionMarkers, (current) => {
-                const updated = new Map(current);
-                updated.set(context.nativeThreadId, Symbol());
-                return updated;
-              });
-            }
           } else if (mcpIdentity !== undefined) {
             const toolName = `${mcpIdentity.server}.${mcpIdentity.tool}`;
             const input =
@@ -3722,12 +3686,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             if (
               isHtmlRender &&
               (status === "failed" || (status === "completed" && isError)) &&
-              previous?.status !== "failed" &&
-              previous?.status !== "completed"
+              active?.previous?.status !== "failed" &&
+              active?.previous?.status !== "completed"
             ) {
               // A failed call may have published before the provider lost its result.
               yield* mcpSessions.takeHtmlRender(
-                context.input.threadId,
+                identity.threadId,
                 input,
                 htmlRenderFromToolItem({ toolName, output }),
               );
@@ -3737,15 +3701,16 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               // Antigravity replaces MCP results with summaries, including on repeated completions.
               const previousPage = htmlRenderFromToolItem({
                 toolName,
-                output: acpMcpToolCallOutput(previous?.data.rawOutput ?? previous?.data.content),
+                output: acpMcpToolCallOutput(
+                  active?.previous?.data.rawOutput ?? active?.previous?.data.content,
+                ),
               });
               const page = reportedPage
-                ? yield* mcpSessions.takeHtmlRender(context.input.threadId, input, reportedPage)
-                : (previousPage ??
-                  (yield* mcpSessions.takeHtmlRender(context.input.threadId, input)));
+                ? yield* mcpSessions.takeHtmlRender(identity.threadId, input, reportedPage)
+                : (previousPage ?? (yield* mcpSessions.takeHtmlRender(identity.threadId, input)));
               if (reportedPage === undefined && page !== undefined) {
                 output = { htmlRender: page };
-                context.tools.set(toolCall.toolCallId, {
+                active?.rememberTool({
                   ...toolCall,
                   data: { ...toolCall.data, rawOutput: output },
                 });
@@ -3767,7 +3732,6 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               ...(output === undefined ? {} : { output }),
             };
             yield* emitProviderEvent({ type: "turn_item.updated", driver, turnItem });
-            yield* rearmDeferredFinalize(context);
             return;
           } else if (changes.length > 0) {
             turnItem = {
@@ -3914,6 +3878,382 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             }
           }
           yield* emitProviderEvent({ type: "turn_item.updated", driver, turnItem });
+        });
+
+        const emitBackgroundTool = Effect.fnUntraced(function* (
+          key: string,
+          incoming: AcpToolCallState,
+          projectedStatus?: ProjectedToolStatus,
+        ) {
+          const record = backgroundTools.get(key);
+          if (record === undefined) return;
+          const ended = record.status !== "pending" && record.status !== "running";
+          if (ended && (incoming.status === "inProgress" || incoming.status === "pending")) return;
+          const merged = mergeToolCallState(backgroundToolState(key, record), incoming);
+          const normalized = flavor.normalizeToolCall?.(merged) ?? merged;
+          const authoritativeEnd =
+            (yield* Ref.get(endedBackgroundTaskIds)).has(record.taskId) &&
+            (incoming.status === "completed" || incoming.status === "failed");
+          const status =
+            projectedStatus ??
+            (ended
+              ? record.status
+              : authoritativeEnd
+                ? toolStatus(incoming.status)
+                : toolStatus(normalized.status));
+          const tool = {
+            ...normalized,
+            status:
+              status === "running"
+                ? ("inProgress" as const)
+                : status === "pending"
+                  ? ("pending" as const)
+                  : status === "failed"
+                    ? ("failed" as const)
+                    : ("completed" as const),
+          };
+          cacheBackgroundTool(key, { ...record, status }, tool);
+          yield* setBackgroundTaskRunning(
+            record.taskId,
+            status === "running" || status === "pending",
+          );
+          yield* emitToolProjection(record.identity, tool, status);
+        });
+
+        emitTool = Effect.fnUntraced(function* (
+          context: ActiveAcpTurn,
+          incoming: AcpToolCallState,
+          projectedStatus?: ProjectedToolStatus,
+          options?: { readonly endReportedOutOfBand?: boolean },
+        ) {
+          // An identified message can stream concurrently with tool updates.
+          // Keep its identity until the provider starts another message.
+          if (context.assistant.current?.sourceMessageId == null)
+            yield* closeTextStream(context, "assistant");
+          if (context.reasoning.current?.sourceMessageId == null)
+            yield* closeTextStream(context, "reasoning");
+          yield* closeTextStream(context, "user");
+          const previous = context.tools.get(incoming.toolCallId);
+          const merged = mergeToolCallState(previous, incoming);
+          const normalized = flavor.normalizeToolCall?.(merged) ?? merged;
+          const backgroundTaskId =
+            flavor.extractBackgroundTaskId?.(normalized) ??
+            [...context.toolCallIdsByBackgroundTaskId].find(
+              ([, toolCallId]) => toolCallId === normalized.toolCallId,
+            )?.[0];
+          // Normalization reads a kept start ACK as still running. Once the task
+          // has a genuine end, an ended row must not reopen and pin the turn.
+          const previousEndedStatus =
+            previous?.status === "completed" || previous?.status === "failed"
+              ? previous.status
+              : undefined;
+          if (
+            backgroundTaskId !== undefined &&
+            previousEndedStatus !== undefined &&
+            (incoming.status === "inProgress" || incoming.status === "pending")
+          )
+            return;
+          const backgroundCommandTaskId =
+            flavor.isBackgroundCommandTool?.(normalized) === true
+              ? backgroundTaskId
+              : previous?.backgroundCommandTaskId;
+          if (
+            backgroundCommandTaskId !== undefined &&
+            !context.backgroundCommands.has(backgroundCommandTaskId)
+          ) {
+            context.backgroundCommands.set(backgroundCommandTaskId, null);
+          }
+          const completion =
+            context.promptSettled && backgroundCommandTaskId !== undefined
+              ? (context.backgroundCommands.get(backgroundCommandTaskId) ?? undefined)
+              : undefined;
+          const endedStatus =
+            previousEndedStatus ??
+            (merged.status === "completed" || merged.status === "failed"
+              ? merged.status
+              : undefined);
+          // Preserve hydrated output; only a replayed start ACK needs its output restored.
+          const toolCall =
+            completion !== undefined
+              ? {
+                  ...(backgroundTaskId === undefined || completion.output === undefined
+                    ? normalized
+                    : setToolOutputText(normalized, completion.output)),
+                  status: completion.status,
+                }
+              : endedStatus !== undefined &&
+                  backgroundTaskId !== undefined &&
+                  toolStatus(normalized.status) === "running" &&
+                  (previousEndedStatus !== undefined ||
+                    (yield* Ref.get(endedBackgroundTaskIds)).has(backgroundTaskId))
+                ? { ...normalized, status: endedStatus }
+                : normalized;
+          context.tools.set(
+            toolCall.toolCallId,
+            backgroundCommandTaskId === undefined
+              ? toolCall
+              : { ...toolCall, backgroundCommandTaskId },
+          );
+          if (
+            followsAgentWorkState &&
+            projectedStatus === undefined &&
+            flavor.isProvisionalSubagentTool?.(toolCall)
+          ) {
+            yield* rearmDeferredFinalize(context);
+            return;
+          }
+          if (backgroundTaskId !== undefined) {
+            context.toolCallIdsByBackgroundTaskId.set(backgroundTaskId, toolCall.toolCallId);
+            if (flavor.isPersistentBackgroundTool?.(toolCall) === true) {
+              context.persistentBackgroundTaskIds.add(backgroundTaskId);
+            }
+            const backgroundStatus = projectedStatus ?? toolStatus(toolCall.status);
+            const key = sessionScopedId(context.nativeThreadId, backgroundTaskId);
+            const existing = backgroundTools.get(key);
+            // Polls can arrive after a non-persistent monitor ended its root.
+            if (
+              !context.interrupted &&
+              context.finalizedStatus !== "interrupted" &&
+              projectedStatus !== "interrupted" &&
+              (existing !== undefined ||
+                flavor.extractBackgroundTaskCompletion !== undefined ||
+                flavor.isPersistentBackgroundTool?.(toolCall) === true)
+            ) {
+              const now = yield* DateTime.now;
+              cacheBackgroundTool(
+                key,
+                {
+                  taskId: backgroundTaskId,
+                  identity: existing?.identity ?? {
+                    threadId: context.input.threadId,
+                    runId: context.input.runId,
+                    rootNodeId: context.input.rootNodeId,
+                    providerThreadId: context.input.providerThread.id,
+                    providerTurnId: context.providerTurnId,
+                    nativeThreadId: context.nativeThreadId,
+                    ordinal: yield* resolveItemOrdinal(
+                      context,
+                      `${context.nativeThreadId}:tool:${toolCall.toolCallId}`,
+                    ),
+                    startedAt: context.toolStartedAt.get(toolCall.toolCallId) ?? now,
+                  },
+                  toolIdentity: existing?.toolIdentity ?? backgroundToolIdentity(toolCall),
+                  status: backgroundStatus,
+                  wakePolicy:
+                    existing?.wakePolicy ??
+                    flavor.backgroundToolWakePolicy?.(toolCall) ??
+                    "progress",
+                },
+                toolCall,
+              );
+            }
+            yield* setBackgroundTaskRunning(
+              backgroundTaskId,
+              backgroundStatus === "pending" || backgroundStatus === "running",
+            );
+            // Background tool that reaches a terminal status while the root
+            // prompt is still open (completed, failed, or interrupted) was
+            // consumed in-turn. Mark handled so late CLI re-reports and residual
+            // agent chatter do not open synthetic "Background task completed."
+            // runs. get_command TaskOutput still marks handled below.
+            // Only before promptSettled: after STARTED the deferred-finalize
+            // hold can let a monitor finish while the turn is still active;
+            // marking then would suppress the legitimate post-settle TaskOutput
+            // continuation (live: grok-post-settle-continuation-poll).
+            // Terminal statuses only after normalizeToolCall (start ACKs stay
+            // inProgress/running).
+            //
+            // Tradeoff: a pre-settle false "completed" normalization (Bash-
+            // shaped re-report with exit_code 0, or the hydration safety
+            // force-complete firing pre-settle) would permanently mark the task
+            // handled and suppress its injected report chatter. The deleted
+            // handled-id removal on late monitor-event mutations used to rescue
+            // that case; likelihood is low because mid-turn monitor ends
+            // normally arrive as reminder mutations that force inProgress, and
+            // re-reports are documented post-settle traffic.
+            //
+            // An end Grok reported out of band (`task_completed`) is not
+            // evidence the agent read it; only its own poll or kill is.
+            if (
+              !context.promptSettled &&
+              options?.endReportedOutOfBand !== true &&
+              backgroundStatus !== "pending" &&
+              backgroundStatus !== "running"
+            ) {
+              yield* Ref.update(handledBackgroundTaskIdsInActiveTurn, (current) =>
+                new Set(current).add(backgroundTaskId),
+              );
+              yield* Ref.update(midTurnUnreportedCompletedTaskIds, (current) => {
+                if (!current.has(backgroundTaskId)) return current;
+                const next = new Set(current);
+                next.delete(backgroundTaskId);
+                return next;
+              });
+            }
+          }
+
+          // get_command TaskOutput for registered monitor(s): hydrate those tools.
+          const backgroundCompletions =
+            projectedStatus === undefined
+              ? (flavor.extractBackgroundTaskCompletion?.(toolCall) ?? [])
+              : [];
+          let hydratedRegisteredMonitor = false;
+          for (const backgroundCompletion of backgroundCompletions) {
+            const key = sessionScopedId(context.nativeThreadId, backgroundCompletion.taskId);
+            const record = backgroundTools.get(key);
+            const targetToolCallId = context.toolCallIdsByBackgroundTaskId.get(
+              backgroundCompletion.taskId,
+            );
+            const target =
+              record !== undefined
+                ? backgroundToolState(key, record)
+                : targetToolCallId === undefined
+                  ? undefined
+                  : context.tools.get(targetToolCallId);
+            if (target !== undefined) hydratedRegisteredMonitor = true;
+            const targetStatus =
+              record?.status ?? (target === undefined ? undefined : toolStatus(target.status));
+            const targetEnded =
+              targetStatus !== undefined &&
+              targetStatus !== "pending" &&
+              targetStatus !== "running";
+            const emitHydrated = (tool: AcpToolCallState) =>
+              record !== undefined && record.identity.runId !== context.input.runId
+                ? emitBackgroundTool(key, tool)
+                : emitTool(context, tool);
+            // A stale running poll cannot replace a terminal snapshot or make
+            // its original command live again.
+            if (targetEnded && backgroundCompletion.status === "running") continue;
+            // Genuine end signal when terminal: tombstone so straggler
+            // monitor-event chatter cannot resurrect the running set after the
+            // task truly ended. A still-running poll keeps the id running.
+            yield* applyBackgroundTaskMutationRunning(backgroundCompletion);
+            if (backgroundCompletion.status !== "running") {
+              yield* Ref.update(handledBackgroundTaskIdsInActiveTurn, (current) =>
+                new Set(current).add(backgroundCompletion.taskId),
+              );
+              yield* Ref.update(midTurnUnreportedCompletedTaskIds, (current) => {
+                if (!current.has(backgroundCompletion.taskId)) return current;
+                const next = new Set(current);
+                next.delete(backgroundCompletion.taskId);
+                return next;
+              });
+            }
+            // A still-running fetch must keep the hydration hold (and its
+            // safety timer) alive until output actually lands.
+            if (backgroundCompletion.status !== "running") {
+              context.awaitingBackgroundHydration.delete(backgroundCompletion.taskId);
+            }
+            if (
+              target !== undefined &&
+              target.toolCallId !== toolCall.toolCallId &&
+              targetEnded &&
+              backgroundCompletion.appendOutput.length > 0 &&
+              toolOutputText(target).trim() !== backgroundCompletion.appendOutput.trim()
+            ) {
+              // `task_completed` already ended the row without its final output
+              // (only the start ACK or partial stdout). The poll's result is the
+              // full output: replace, never append.
+              yield* emitHydrated(setToolOutputText(target, backgroundCompletion.appendOutput));
+            } else if (
+              target !== undefined &&
+              target.toolCallId !== toolCall.toolCallId &&
+              !targetEnded
+            ) {
+              const nextStatus =
+                backgroundCompletion.status === "running"
+                  ? ("inProgress" as const)
+                  : backgroundCompletion.status === "failed"
+                    ? ("failed" as const)
+                    : ("completed" as const);
+              const hydrated =
+                backgroundCompletion.appendOutput.length > 0
+                  ? // TaskOutput is the real stdout; replace end-notice boilerplate
+                    // so the timeline shows the listing, not only "Monitor ended…".
+                    isMonitorEndNoticeText(toolOutputText(target)) ||
+                    toolOutputText(target).trim().length === 0
+                    ? setToolOutputText(
+                        { ...target, status: nextStatus },
+                        backgroundCompletion.appendOutput,
+                      )
+                    : appendToolOutputText(
+                        { ...target, status: nextStatus },
+                        backgroundCompletion.appendOutput,
+                      )
+                  : { ...target, status: nextStatus };
+              // BackgroundTaskStarted normalization can reopen this row, so keep the
+              // completion for settlement when no task_completed recorded one.
+              if (
+                backgroundCompletion.status !== "running" &&
+                context.backgroundCommands.get(backgroundCompletion.taskId) === null
+              ) {
+                context.backgroundCommands.set(backgroundCompletion.taskId, {
+                  status: backgroundCompletion.status,
+                  output: toolOutputText(hydrated),
+                });
+              }
+              yield* emitHydrated(hydrated);
+            }
+          }
+
+          // Monitor TaskOutput resembles subagent hydration; do not invent a subagent.
+          const subagentUpdate = hydratedRegisteredMonitor
+            ? undefined
+            : extractSubagentUpdate(toolCall);
+          if (subagentUpdate !== undefined) {
+            yield* emitSubagent(context, subagentUpdate);
+            if (followsAgentWorkState) yield* syncNativeChildren(context);
+            if (subagentUpdate.suppressNormalTool !== false) {
+              yield* rearmDeferredFinalize(context);
+              return;
+            }
+          }
+          if (
+            projectedStatus === undefined &&
+            !shouldPersistToolUpdate(
+              context,
+              toolCall.toolCallId,
+              previous,
+              toolCall,
+              merged.status,
+            )
+          ) {
+            yield* rearmDeferredFinalize(context);
+            return;
+          }
+          const status = projectedStatus ?? toolStatus(toolCall.status);
+          const now = yield* DateTime.now;
+          const identity = {
+            threadId: context.input.threadId,
+            runId: context.input.runId,
+            rootNodeId: context.input.rootNodeId,
+            providerThreadId: context.input.providerThread.id,
+            providerTurnId: context.providerTurnId,
+            nativeThreadId: context.nativeThreadId,
+            ordinal: yield* resolveItemOrdinal(
+              context,
+              `${context.nativeThreadId}:tool:${toolCall.toolCallId}`,
+            ),
+            startedAt: context.toolStartedAt.get(toolCall.toolCallId) ?? now,
+          };
+          context.toolStartedAt.set(toolCall.toolCallId, identity.startedAt);
+          yield* emitToolProjection(identity, toolCall, status, context.contextUsage?.usedTokens, {
+            previous,
+            rememberTool: (tool) => context.tools.set(tool.toolCallId, tool),
+          });
+          if (toolCall.toolCallId.startsWith("acp-compaction:") && status === "completed") {
+            context.contextUsage = null;
+            yield* Ref.update(contextUsageBySessionId, (current) => {
+              const updated = new Map(current);
+              updated.delete(context.nativeThreadId);
+              return updated;
+            });
+            yield* Ref.update(compactionMarkers, (current) => {
+              const updated = new Map(current);
+              updated.set(context.nativeThreadId, Symbol());
+              return updated;
+            });
+          }
           yield* rearmDeferredFinalize(context);
         });
 
@@ -3952,6 +4292,17 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               updatedAt: now,
             },
           });
+        });
+
+        const retireBackgroundTools = Effect.fnUntraced(function* () {
+          const active = yield* Ref.get(activeTurn);
+          for (const [key, record] of backgroundTools) {
+            if (record.identity.runId === active?.input.runId && !active.finalized) continue;
+            if (record.status === "pending" || record.status === "running") {
+              yield* emitBackgroundTool(key, backgroundToolState(key, record), "interrupted");
+            }
+          }
+          clearBackgroundTools();
         });
 
         const emitPlan = Effect.fnUntraced(function* (
@@ -4253,7 +4604,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           if (
             postSettleContinuationEnabled &&
             (yield* Ref.get(activeSessionId)) === sessionId &&
-            (yield* Ref.get(runningBackgroundTaskIds)).size === 0 &&
+            !(yield* hasRunningBackgroundProgress) &&
             ((yield* Ref.get(wakeBuffer)).length > 0 ||
               (yield* Ref.get(midTurnUnreportedCompletedTaskIds)).size > 0)
           ) {
@@ -4264,35 +4615,56 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         // Structured task ends are authoritative, but emitting before prompt
         // settlement marks the result handled and suppresses its continuation.
         const finishRegisteredBackgroundTool = Effect.fnUntraced(function* (mutation: {
+          readonly sessionId: string;
           readonly taskId: string;
           readonly status: "completed" | "failed";
           readonly output?: string;
         }) {
-          const context = yield* Ref.get(activeTurn);
-          if (context === null || context.finalized || !context.promptSettled) return;
-          const toolCallId = context.toolCallIdsByBackgroundTaskId.get(mutation.taskId);
-          const tool = toolCallId === undefined ? undefined : context.tools.get(toolCallId);
+          const active = yield* Ref.get(activeTurn);
+          const key = sessionScopedId(mutation.sessionId, mutation.taskId);
+          const record = backgroundTools.get(key);
+          const context =
+            active?.nativeThreadId === mutation.sessionId &&
+            active.toolCallIdsByBackgroundTaskId.has(mutation.taskId)
+              ? active
+              : undefined;
+          const ownsActiveTurn =
+            context !== undefined &&
+            (record === undefined || context.input.runId === record.identity.runId);
+          // The active turn records an end until its prompt settles, then applies it.
+          if (ownsActiveTurn && (context.finalized || !context.promptSettled)) return;
+          const toolCallId = context?.toolCallIdsByBackgroundTaskId.get(mutation.taskId);
+          const tool =
+            record !== undefined
+              ? backgroundToolState(key, record)
+              : toolCallId === undefined
+                ? undefined
+                : context?.tools.get(toolCallId);
           if (tool === undefined) return;
-          const status = toolStatus(tool.status);
+          const status = record?.status ?? toolStatus(tool.status);
           if (
             status !== "pending" &&
             status !== "running" &&
-            !context.backgroundCommands.has(mutation.taskId)
+            context?.backgroundCommands.has(mutation.taskId) !== true
           ) {
             return;
           }
-          context.awaitingBackgroundHydration.delete(mutation.taskId);
-          const finished = { ...tool, status: mutation.status };
-          yield* emitTool(
-            context,
-            mutation.output === undefined ? finished : setToolOutputText(finished, mutation.output),
-            mutation.status,
-          );
-          yield* rearmDeferredFinalize(context);
+          const finished =
+            mutation.output === undefined
+              ? { ...tool, status: mutation.status }
+              : setToolOutputText({ ...tool, status: mutation.status }, mutation.output);
+          if (ownsActiveTurn) {
+            context.awaitingBackgroundHydration.delete(mutation.taskId);
+            yield* emitTool(context, finished, mutation.status, { endReportedOutOfBand: true });
+            yield* rearmDeferredFinalize(context);
+          } else if (record !== undefined) {
+            yield* emitBackgroundTool(key, finished, mutation.status);
+          }
         });
 
         const bufferPostSettleWake = Effect.fnUntraced(function* (
           notification: EffectAcpSchema.SessionNotification,
+          projection: "unprojected" | "projected" = "unprojected",
         ) {
           if (!postSettleContinuationEnabled || continuationRequests === undefined) {
             return {
@@ -4352,7 +4724,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               }
             }
           }
-          const backgroundWorkRunning = (yield* Ref.get(runningBackgroundTaskIds)).size > 0;
+          const backgroundProgressRunning = yield* hasRunningBackgroundProgress;
           const handledInTurnCount = (yield* Ref.get(handledBackgroundTaskIdsInActiveTurn)).size;
           const isInTurnHandledAgentChatter =
             handledInTurnCount > 0 &&
@@ -4361,9 +4733,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           // Grok re-prompts for each post-settle monitor event; retaining them would replay the whole burst.
           let buffered = false;
           if (
+            projection === "unprojected" &&
             !alreadyHandledToolUpdate &&
             !isInTurnHandledAgentChatter &&
-            acpPostSettleWakeShouldBuffer(notification, backgroundWorkRunning)
+            acpPostSettleWakeShouldBuffer(notification, backgroundProgressRunning)
           ) {
             yield* Ref.update(wakeBuffer, (current) => [...current, notification]);
             buffered = true;
@@ -4375,7 +4748,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               stopProcessing: true,
             };
           }
-          if (backgroundWorkRunning) {
+          if (backgroundProgressRunning) {
             return {
               buffered,
               offerContinuation: false,
@@ -4567,6 +4940,33 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             (yield* Ref.get(stoppedRunQuarantine))
           )
             return;
+          if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+            const key = backgroundTaskByTool.get(
+              sessionScopedId(notification.sessionId, update.toolCallId),
+            );
+            const record = key === undefined ? undefined : backgroundTools.get(key);
+            if (
+              key !== undefined &&
+              record !== undefined &&
+              record.identity.runId !== context?.input.runId
+            ) {
+              const wasRunning = record.status === "pending" || record.status === "running";
+              for (const event of parseSessionUpdateEvent(notification).events) {
+                if (event._tag === "ToolCallUpdated")
+                  yield* emitBackgroundTool(key, event.toolCall);
+              }
+              if (
+                wasRunning &&
+                !(yield* Ref.get(runningBackgroundTaskIds)).has(record.taskId) &&
+                (context === null || context.finalized)
+              ) {
+                const wake = yield* bufferPostSettleWake(notification, "projected");
+                if (wake.offerContinuation) yield* offerContinuationRun(notification.sessionId);
+              }
+              return;
+            }
+          }
+
           if (yield* projectAgentTerminalUpdate(notification, context)) return;
           if (
             update.sessionUpdate === "usage_update" ||
@@ -6382,6 +6782,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     yield* applyLateBackgroundMutation(mutation.sessionId, mutation);
                     if (mutation.status !== "running") {
                       yield* finishRegisteredBackgroundTool({
+                        sessionId: mutation.sessionId,
                         taskId: mutation.taskId,
                         status: mutation.status,
                         ...(mutation.output === undefined ? {} : { output: mutation.output }),
@@ -6454,6 +6855,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         });
 
         const restartAcpRuntime = Effect.fnUntraced(function* (threadId: ThreadId | null) {
+          yield* retireBackgroundTools();
           yield* spawnAcpRuntime(threadId);
           yield* wireAcpRuntimeHandlers(runtime, yield* Ref.get(runtimeCallbackGeneration));
         });
@@ -6563,6 +6965,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     return yield* lifecycle.error;
                   }
                   yield* quarantineNativeTransportAtGeneration(previousGeneration);
+                  yield* retireBackgroundTools();
                   runtime = replacementExit.value.replacementRuntime;
                   runtimeScope = replacementScope;
                   runtimeMcpBridge = replacementMcpBridge;
@@ -7047,7 +7450,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           context: ActiveAcpTurn,
           status: "completed" | "failed" = "completed",
         ) {
+          const backgroundToolIds = new Set(context.toolCallIdsByBackgroundTaskId.values());
           for (const tool of context.tools.values()) {
+            // Output frames can replace the ACK that carried the task id.
+            if (backgroundToolIds.has(tool.toolCallId)) continue;
             if (!acpCompletedTurnShouldTerminalizeTool(tool, { ...flavor, extractSubagentUpdate }))
               continue;
             yield* emitTool(context, tool, status);
@@ -7059,6 +7465,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             Effect.gen(function* () {
               yield* Ref.update(continuationGeneration, (value) => value + 1);
               yield* Ref.set(stoppedRunQuarantine, true);
+              yield* retireBackgroundTools();
               yield* Ref.set(wakeBuffer, []);
               yield* Ref.set(wakeReports, noWakeReports);
               yield* Ref.set(continuationRequested, false);
@@ -7101,6 +7508,11 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             yield* terminalizeOpenRunOwnedItems(context, {
               terminalizeSubagents: directStopQuarantine,
             });
+          }
+          if (settledStatus === "interrupted") {
+            for (const [key, record] of backgroundTools) {
+              if (record.identity.runId === context.input.runId) forgetBackgroundTool(key);
+            }
           }
           yield* closeTextStreams(context);
           if (settledStatus !== "failed") {
@@ -7232,7 +7644,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             postSettleContinuationEnabled &&
             settledStatus === "completed" &&
             !directStopQuarantine &&
-            (yield* Ref.get(runningBackgroundTaskIds)).size === 0 &&
+            !(yield* hasRunningBackgroundProgress) &&
             ((yield* Ref.get(wakeBuffer)).length > 0 ||
               (yield* Ref.get(midTurnUnreportedCompletedTaskIds)).size > 0)
           ) {
@@ -7241,10 +7653,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               yield* offerContinuationRun(sessionId);
             }
           }
-          if (
-            settledStatus !== "completed" ||
-            (yield* Ref.get(runningBackgroundTaskIds)).size === 0
-          ) {
+          if (settledStatus !== "completed" || !(yield* hasRunningBackgroundProgress)) {
             yield* Ref.set(midTurnUnreportedCompletedTaskIds, new Set());
           }
           yield* Deferred.succeed(context.completed, undefined).pipe(Effect.ignore);
@@ -7745,12 +8154,16 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                           ? "interrupted"
                           : "cancelled"
                         : "completed";
+                    context.promptSettled = true;
+                    context.promptSettledStatus = status;
                     if (flavor.deferFinalizeForBackgroundWork === true && !context.interrupted) {
-                      context.promptSettled = true;
-                      context.promptSettledStatus = status;
                       for (const [taskId, completion] of context.backgroundCommands) {
                         if (completion === null) continue;
-                        yield* finishRegisteredBackgroundTool({ taskId, ...completion });
+                        yield* finishRegisteredBackgroundTool({
+                          sessionId: context.nativeThreadId,
+                          taskId,
+                          ...completion,
+                        });
                       }
                     }
                     if (idleError) {
@@ -7923,6 +8336,11 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       agentRequests.size > 0)
                   )
                     return true;
+                  yield* (
+                    options.testHooks?.onBackgroundToolRetention?.([
+                      ...backgroundToolPayloads.values(),
+                    ]) ?? Effect.void
+                  );
                   if ((yield* Ref.get(wakeBuffer)).length > 0) return true;
                   if (yield* Ref.get(continuationRequested)) return true;
                   if ((yield* Ref.get(runningBackgroundTaskIds)).size > 0) return true;

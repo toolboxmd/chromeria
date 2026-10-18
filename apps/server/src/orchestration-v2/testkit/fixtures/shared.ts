@@ -543,8 +543,9 @@ export function materializeFixtureInput(input: {
                   (nextStep.type === "restart" && nextStep.targetRunIndex === runIndex) ||
                   (nextStep.type === "release_replay_gate_after_waiting" &&
                     nextStep.targetRunIndex === runIndex) ||
-                  // Continuations start while busy; waiting for idle would deadlock.
-                  (nextStep.type === "await_run_status" && nextStep.targetRunIndex > runIndex) ||
+                  // A provider continuation run starts while this thread is
+                  // busy, so waiting for idle first would never return.
+                  (nextStep.type === "await_run_status" && nextStep.targetRunIndex >= runIndex) ||
                   // Held open until the test clock moves, so it cannot go idle first.
                   nextStep.type === "finish_held_run")) ||
               nextStep?.type === "approve_next_runtime_request" ||

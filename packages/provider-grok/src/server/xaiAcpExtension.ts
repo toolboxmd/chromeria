@@ -207,12 +207,12 @@ function isXAiSpawnOrTaskTool(
   toolCall: AcpToolCallState,
   rawInput: Record<string, unknown> | undefined,
 ): boolean {
-  const title = titleKey(toolCall);
-  if (title === "task" || title === "spawn_subagent" || title.includes("spawn subagent")) {
-    return true;
-  }
   const variant = nonEmptyString(rawInput?.variant)?.toLowerCase();
-  if (variant === "cursortask" || variant === "task" || variant === "spawn_subagent") {
+  if (variant !== undefined) {
+    return variant === "cursortask" || variant === "task" || variant === "spawn_subagent";
+  }
+  const title = titleKey(toolCall);
+  if (title === "task" || title === "spawn_subagent" || /^spawn subagents?\b/.test(title)) {
     return true;
   }
   if (nonEmptyString(rawInput?.subagent_type) !== undefined) return true;
@@ -300,6 +300,11 @@ export function isXAiPersistentMonitor(toolCall: AcpToolCallState): boolean {
   }
   const rawInput = unknownRecord(toolCall.data.rawInput);
   return rawInput?.persistent === true;
+}
+
+/** Background shells can be servers: their lifetime must not hold a finished reply open. */
+export function isXAiNonBlockingBackgroundTool(toolCall: AcpToolCallState): boolean {
+  return xAiBackgroundShellTaskId(toolCall) !== undefined || isXAiPersistentMonitor(toolCall);
 }
 
 export function extractXAiBackgroundTaskCompletion(toolCall: AcpToolCallState): ReadonlyArray<{
@@ -478,6 +483,23 @@ export const registerXAiBackgroundTaskTracking = (
         return mutation === null ? Effect.void : apply(mutation);
       }),
     { discard: true },
+  ).pipe(
+    Effect.andThen(
+      Effect.forEach(
+        xAiSessionNotificationMethods,
+        (method) =>
+          runtime.handleExtNotification(method, XAiTaskLifecycleNotification, (notification) => {
+            const kind = notification.update.sessionUpdate;
+            if (kind !== "task_backgrounded" && kind !== "task_completed") return Effect.void;
+            const mutation = xAiBackgroundTaskLifecycleMutation(
+              notification,
+              kind === "task_completed" ? "completed" : "running",
+            );
+            return mutation === null ? Effect.void : apply(mutation);
+          }),
+        { discard: true },
+      ),
+    ),
   );
 
 /** Sent on the parent session; will_wake means a subagent-completed-<id> turn follows. */
@@ -1419,10 +1441,13 @@ const rememberCompletedXAiPromptId = (
 
 export const makeXAiPromptCompletionRuntime = Effect.fn("makeXAiPromptCompletionRuntime")(
   function* (runtime: AcpSessionRuntime.AcpSessionRuntime["Service"]) {
-    // Grok multiplexes session updates on extension methods that permit only one handler.
+    // Grok sends turn completion and other session updates (subagent_finished)
+    // on the same extension methods, and the client keeps one handler per
+    // method. This wrapper owns those methods: it settles prompts itself, then
+    // passes each notification to the lifecycle handlers registered on the wrapper.
     const sessionNotificationHandlers = new Map<
       string,
-      (params: unknown) => Effect.Effect<void, EffectAcpErrors.AcpError>
+      ReadonlyArray<(params: unknown) => Effect.Effect<boolean, EffectAcpErrors.AcpError>>
     >();
     let nextPromptFallbackId = 0;
     const allocatePromptFallbackId = Effect.sync(() => {
@@ -1456,18 +1481,23 @@ export const makeXAiPromptCompletionRuntime = Effect.fn("makeXAiPromptCompletion
       xAiSessionNotificationMethods,
       (method) =>
         runtime.handleExtNotification(method, Schema.Unknown, (params) =>
-          decodeXAiSessionUpdateNotification(params).pipe(
-            Effect.flatMap((notification) => {
-              const complete = xAiPromptCompleteFromSessionUpdate(notification);
-              return complete === null ? Effect.void : settleFromPromptComplete(complete);
-            }),
-            Effect.ignore,
-            Effect.andThen(
-              Effect.suspend(
-                () => sessionNotificationHandlers.get(method)?.(params) ?? Effect.void,
-              ),
-            ),
-          ),
+          Effect.gen(function* () {
+            const complete = yield* decodeXAiSessionUpdateNotification(params).pipe(
+              Effect.map(xAiPromptCompleteFromSessionUpdate),
+              Effect.catch(() => Effect.succeed(null)),
+            );
+            if (complete !== null) yield* settleFromPromptComplete(complete);
+            const accepted = yield* Effect.forEach(
+              sessionNotificationHandlers.get(method) ?? [],
+              (handler) => handler(params),
+              { concurrency: 1 },
+            );
+            if (complete === null && !accepted.some(Boolean)) {
+              yield* Effect.logDebug("Grok shared session notification rejected by all consumers", {
+                method,
+              });
+            }
+          }),
         ),
       { discard: true },
     );
@@ -1477,18 +1507,17 @@ export const makeXAiPromptCompletionRuntime = Effect.fn("makeXAiPromptCompletion
       handleExtNotification: (method, payload, handler) =>
         xAiSessionNotificationMethods.some((owned) => owned === method)
           ? Effect.sync(() => {
-              sessionNotificationHandlers.set(method, (params) =>
-                Schema.decodeUnknownEffect(payload)(params).pipe(
-                  Effect.mapError((error) =>
-                    EffectAcpErrors.AcpProtocolParseError.fromSchemaError(
-                      "decode-notification-payload",
-                      method,
-                      error,
-                    ),
+              sessionNotificationHandlers.set(method, [
+                ...(sessionNotificationHandlers.get(method) ?? []),
+                (params) =>
+                  Schema.decodeUnknownEffect(payload)(params).pipe(
+                    Effect.matchEffect({
+                      // A different consumer may accept this shared-method payload.
+                      onFailure: () => Effect.succeed(false),
+                      onSuccess: (value) => handler(value).pipe(Effect.as(true)),
+                    }),
                   ),
-                  Effect.flatMap(handler),
-                ),
-              );
+              ]);
             })
           : runtime.handleExtNotification(method, payload, handler),
       prompt: Effect.fn("xaiAcpExtension.prompt")(function* (payload, promptOptions?) {

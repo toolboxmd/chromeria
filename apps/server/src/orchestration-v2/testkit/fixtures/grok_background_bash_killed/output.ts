@@ -34,7 +34,7 @@ export function assertGrokBackgroundBashKilledOutput(
   const second = commands[1];
   assert.equal(second?.output, "second done\n");
 
-  // Run 1 settles only after the command that outlived the turn ended.
+  // Background work cannot hold the finished root reply open.
   const secondCompletedAt = result.domainEvents.findIndex(
     (event) =>
       event.type === "turn-item.updated" &&
@@ -43,12 +43,13 @@ export function assertGrokBackgroundBashKilledOutput(
   );
   const rootCompletedAt = result.domainEvents.findIndex(
     (event) =>
-      event.type === "run.updated" &&
-      event.payload.id === rootRun?.id &&
+      event.type === "provider-turn.updated" &&
+      event.payload.nodeId === rootRun?.rootNodeId &&
       event.payload.status === "completed",
   );
   assert.isAtLeast(secondCompletedAt, 0);
-  assert.isAbove(rootCompletedAt, secondCompletedAt, "run 1 completed before the command ended");
+  assert.isAtLeast(rootCompletedAt, 0);
+  assert.isBelow(rootCompletedAt, secondCompletedAt, "run 1 waited for the background command");
 
   assert.deepEqual(backgroundNotifications(projection), [
     {

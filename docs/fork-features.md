@@ -1006,13 +1006,17 @@ Child creation paths are owned by child-threads and shared with thread-people.
 ```json
 {
   "id": "grok-background-command-end",
-  "purpose": "Finish a Grok run when its background commands end inside the turn (task_completed before settle, call-id task ids, KillTask, MultiResult). Carries upstream pingdotgg/t3code#17144 plus fork edits: an unread pre-settle end keeps its report kind so a Monitor wake stays one (#211), the pre-settle Monitor test asserts one wake instead of the removed hold, and the fixture prompts are module-local for knip. When #17144 merges, take upstream's and keep or re-port those edits.",
+  "purpose": "Finish Grok replies independently of background shells, track command ends on standalone and shared session methods, and keep command prose out of subagent identity (#435). Carries upstream #17144's command-end recognition plus fork Monitor wake reports, assertions and module-local fixture prompts. When #17144 merges, preserve these fork changes.",
   "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/435",
     "https://github.com/toolboxmd/chromeria/issues/215",
     "https://github.com/pingdotgg/t3code/issues/15888",
     "https://github.com/pingdotgg/t3code/pull/17144"
   ],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/216"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/216",
+    "https://github.com/toolboxmd/chromeria/compare/main...fix/222-terminal-runs"
+  ],
   "newFiles": [
     "apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash_killed/grok_transcript.ndjson",
     "apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash_killed/input.ts",
@@ -1029,11 +1033,25 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
     "packages/provider-acp/src/server/adapter.ts",
     "apps/server/src/orchestration-v2/testkit/fixtures/index.ts",
+    "apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash/input.ts",
+    "apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash/output.ts",
+    "apps/server/src/orchestration-v2/testkit/fixtures/grok_background_bash_fast_wake/input.ts",
     "packages/provider-grok/src/server/xaiAcpExtension.test.ts",
     "packages/provider-grok/src/server/xaiAcpExtension.ts"
   ],
-  "sharedFiles": [],
-  "keywords": ["17144", "15888", "endReportedOutOfBand", "XAI_TASK_ID_RE", "KillTask"]
+  "sharedFiles": [
+    "packages/provider-grok/src/server/adapter.ts",
+    "apps/server/src/orchestration-v2/testkit/fixtures/shared.ts"
+  ],
+  "keywords": [
+    "17144",
+    "15888",
+    "435",
+    "endReportedOutOfBand",
+    "XAI_TASK_ID_RE",
+    "KillTask",
+    "isXAiNonBlockingBackgroundTool"
+  ]
 }
 ```
 
