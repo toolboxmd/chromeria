@@ -78,6 +78,17 @@ const response = (body: string, status = 200) => ({
   status,
   headers: { "content-type": "text/html" },
 });
+const scriptedPage = (body: string) =>
+  `<body><script>document.body.innerHTML=${JSON.stringify(body).replaceAll("<", "\\u003c")}</script></body>`;
+const pinnedRendererLayer = (executable: string) =>
+  PublicRender.layer.pipe(
+    Layer.provide(
+      Layer.succeed(PreviewBrowser.PreviewBrowser, {
+        installed: Effect.succeedSome(executable),
+        executable: Effect.die("Research must not install a browser."),
+      }),
+    ),
+  );
 
 const fixture = Effect.fnUntraced(function* (
   render: PublicRender.PublicRender["Service"]["render"],
@@ -625,4 +636,154 @@ it.effect("rendered origin queue refusals stay typed and do not poison the page 
       }).pipe(Effect.provide(f.layer));
     }).pipe(Effect.provide(rendererLayer));
   }),
+);
+
+it.effect(
+  "render/subpages: DOM links discover rendered children with shared paging and cache",
+  (ctx) =>
+    Effect.gen(function* () {
+      const executable = (yield* HostProcess.Environment).T3CODE_TEST_HEADLESS_SHELL;
+      if (!executable)
+        return ctx.skip("Set T3CODE_TEST_HEADLESS_SHELL to the installed pinned shell.");
+      yield* Effect.gen(function* () {
+        const renderer = yield* PublicRender.PublicRender;
+        const root = `<h1>Guest house</h1><p>${"Visit our guest house and its garden. ".repeat(12)}</p><a href='/camere'>Rooms</a>`;
+        const f = yield* fixture(renderer.render, (url) =>
+          Effect.succeed(response(scriptedPage(url.pathname === "/" ? root : article))),
+        );
+        yield* Effect.gen(function* () {
+          const before = yield* f.setup;
+          const work = yield* f.start();
+          yield* TestClock.adjust(3000);
+          expect((yield* Queue.take(f.requests)).url).toBe("https://render.example/camere");
+          const result = yield* Fiber.join(work);
+          expect(result).toMatchObject({ status: "ok", rung: "render", sourceRung: "render" });
+          expect(result.subpages).toHaveLength(1);
+          const child = result.subpages[0]!;
+          expect(child).toMatchObject({
+            url: "https://render.example/camere",
+            status: "ok",
+            rung: "render",
+            sourceRung: "render",
+          });
+          expect(result.text.length + child.text.length).toBe(20_000);
+          expect(child.nextOffset).not.toBeNull();
+          expect(result.truncationReasons).toContain("output_budget");
+          const rest = yield* read({ cacheId: child.cacheId, offset: child.nextOffset });
+          expect(rest).toMatchObject({ rung: "cache", sourceRung: "render", subpages: [] });
+          expect(child.text + rest.text).toContain("| Family | 4 |");
+          expect(child.text + rest.text).toContain('"numberOfRooms":8');
+          const cached = yield* read({ url: "https://render.example/" });
+          expect(cached.rung).toBe("cache");
+          expect(cached.subpages[0]).toMatchObject({ rung: "cache", sourceRung: "render" });
+          expect(yield* Queue.size(f.requests)).toBe(0);
+          expect(
+            yield* Orchestrator.OrchestratorV2.use((o) => o.getThreadProjection(threadId)),
+          ).toEqual(before);
+        }).pipe(Effect.provide(f.layer));
+      }).pipe(Effect.provide(pinnedRendererLayer(executable)));
+    }),
+);
+
+it.effect("render/subpages: a child browser navigation cannot leave the root origin", (ctx) =>
+  Effect.gen(function* () {
+    const executable = (yield* HostProcess.Environment).T3CODE_TEST_HEADLESS_SHELL;
+    if (!executable)
+      return ctx.skip("Set T3CODE_TEST_HEADLESS_SHELL to the installed pinned shell.");
+    yield* Effect.gen(function* () {
+      const renderer = yield* PublicRender.PublicRender;
+      const root = `<h1>Guest house</h1><p>${"Visit our guest house and its garden. ".repeat(12)}</p><a href='/camere'>Rooms</a>`;
+      const f = yield* fixture(renderer.render, (url) =>
+        Effect.succeed(
+          response(
+            url.pathname === "/"
+              ? root
+              : "<script>location.href='https://foreign.example/rooms';</script>",
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const before = yield* f.setup;
+        const work = yield* f.start();
+        yield* TestClock.adjust(3000);
+        expect((yield* Queue.take(f.requests)).url).toBe("https://render.example/camere");
+        const outcome = yield* Effect.raceFirst(
+          Fiber.join(work).pipe(Effect.map((result) => ({ _tag: "Done" as const, result }))),
+          Queue.take(f.requests).pipe(
+            Effect.map((request) => ({ _tag: "Network" as const, request })),
+          ),
+        );
+        if (outcome._tag === "Network")
+          throw new Error(`A restricted render reached ${outcome.request.url}`);
+        expect(outcome.result.status).toBe("ok");
+        expect(outcome.result.subpages).toHaveLength(1);
+        expect(outcome.result.subpages[0]).toMatchObject({
+          status: "unsupported",
+          sourceRung: "render",
+          text: "",
+        });
+        expect(yield* Queue.size(f.requests)).toBe(0);
+        expect(
+          yield* Orchestrator.OrchestratorV2.use((o) => o.getThreadProjection(threadId)),
+        ).toEqual(before);
+      }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.provide(pinnedRendererLayer(executable)));
+  }),
+);
+
+it.effect(
+  "render/subpages: a cached redirect alias keeps rendered provenance and body age",
+  (ctx) =>
+    Effect.gen(function* () {
+      const executable = (yield* HostProcess.Environment).T3CODE_TEST_HEADLESS_SHELL;
+      if (!executable)
+        return ctx.skip("Set T3CODE_TEST_HEADLESS_SHELL to the installed pinned shell.");
+      yield* Effect.gen(function* () {
+        const renderer = yield* PublicRender.PublicRender;
+        const releaseAlias = yield* Deferred.make<void>();
+        const root = `<h1>Guest house</h1><p>${"Visit our guest house and its garden. ".repeat(12)}</p><a href='/camere'>Rooms</a><a href='/rooms-alias'>Other rooms</a>`;
+        const rooms = `<h1>Rooms</h1><p>${"Eight guest rooms surround the garden. ".repeat(20)}</p>`;
+        const f = yield* fixture(renderer.render, (url) =>
+          url.pathname === "/rooms-alias"
+            ? Deferred.await(releaseAlias).pipe(
+                Effect.as({
+                  ...response("", 302),
+                  headers: { "content-type": "text/html", location: "/camere" },
+                }),
+              )
+            : Effect.succeed(response(url.pathname === "/" ? root : scriptedPage(rooms))),
+        );
+        yield* Effect.gen(function* () {
+          const before = yield* f.setup;
+          const work = yield* f.start();
+          yield* TestClock.adjust(3000);
+          expect((yield* Queue.take(f.requests)).url).toBe("https://render.example/camere");
+          yield* TestClock.adjust(3000);
+          expect((yield* Queue.take(f.requests)).url).toBe("https://render.example/rooms-alias");
+          yield* TestClock.adjust(1000);
+          yield* Deferred.succeed(releaseAlias, undefined);
+          const result = yield* Fiber.join(work);
+          expect(result.subpages).toHaveLength(1);
+          const child = result.subpages[0]!;
+          expect(child.sourceRung).toBe("render");
+          const alias = yield* read({
+            url: "https://render.example/rooms-alias",
+            followSubpages: false,
+          });
+          expect(alias).toMatchObject({
+            rung: "cache",
+            sourceRung: "render",
+            finalUrl: "https://render.example/camere",
+            fetchedAt: child.fetchedAt,
+            contentHash: child.contentHash,
+            text: child.text,
+          });
+          expect(alias.fetchedAt).not.toBe(new Date(yield* Clock.currentTimeMillis).toISOString());
+          expect(yield* Queue.size(f.requests)).toBe(0);
+          expect(
+            yield* Orchestrator.OrchestratorV2.use((o) => o.getThreadProjection(threadId)),
+          ).toEqual(before);
+        }).pipe(Effect.provide(f.layer));
+      }).pipe(Effect.provide(pinnedRendererLayer(executable)));
+    }),
 );

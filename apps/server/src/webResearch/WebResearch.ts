@@ -329,7 +329,11 @@ const make = Effect.gen(function* () {
     const loadDocument = Effect.fnUntraced(
       function* (target: URL) {
         const url = parseUrl(target.href);
-        if (!url || /(^|\.)booking\.com$|(^|\.)airbnb\./i.test(url.hostname))
+        if (
+          !url ||
+          (sameOrigin !== undefined && url.origin !== sameOrigin) ||
+          /(^|\.)booking\.com$|(^|\.)airbnb\./i.test(url.hostname)
+        )
           return yield* new PublicRender.PublicRenderError({
             status: "unsupported",
             httpStatus: null,
@@ -557,7 +561,7 @@ const make = Effect.gen(function* () {
       cacheId: hash(
         `${original.href}\n${finalUrl}\n${completedAt}\n${content.status}\n${contentHash}\n${sameOrigin ?? ""}`,
       ),
-      sourceRung,
+      sourceRung: reusedTarget?.sourceRung ?? sourceRung,
       ...content,
       httpStatus,
       contentHash,
