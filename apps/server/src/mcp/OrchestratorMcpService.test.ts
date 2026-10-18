@@ -31,6 +31,9 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
+import * as ServerConfig from "../config.ts";
 
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
@@ -73,6 +76,7 @@ const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
 );
 import { restartCutView } from "@t3tools/shared/restartCut";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 
 describe("OrchestratorMcpService", () => {
   it.effect("retries terminal acknowledgement with a fresh command id", () =>
@@ -1074,6 +1078,208 @@ describe("OrchestratorMcpService", () => {
       });
     }),
   );
+
+  it.effect.each([
+    { destination: "other", parentWorktree: true },
+    { destination: "other", parentWorktree: false },
+    { destination: "same", parentWorktree: true },
+    { destination: "same", parentWorktree: false },
+    { destination: "omitted", parentWorktree: true },
+    { destination: "non-git", parentWorktree: true },
+  ] as const)(
+    "worktree isolation uses the owning checkout: destination=$destination, parentWorktree=$parentWorktree",
+    ({ destination, parentWorktree }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const git = yield* GitVcsDriver.GitVcsDriver;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "delegation-isolation-" });
+        const parentRoot = `${root}/parent`;
+        const destinationRoot = `${root}/destination`;
+        const parentCheckout = `${root}/parent-worktree`;
+        const destinationId = ProjectId.make("project:destination");
+        const crossProject = destination === "other" || destination === "non-git";
+        const runGit = (cwd: string, args: ReadonlyArray<string>) =>
+          git.execute({ cwd, args, operation: "delegation-isolation-test" });
+        for (const cwd of [parentRoot, destinationRoot]) {
+          yield* fs.makeDirectory(cwd);
+          if (cwd === destinationRoot && destination === "non-git") continue;
+          yield* git.initRepo({ cwd });
+          yield* runGit(cwd, [
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            cwd,
+          ]);
+        }
+        yield* runGit(parentRoot, ["worktree", "add", "-b", "parent-task", parentCheckout]);
+        yield* runGit(parentCheckout, [
+          "-c",
+          "user.name=Test",
+          "-c",
+          "user.email=test@example.com",
+          "-c",
+          "commit.gpgsign=false",
+          "commit",
+          "--allow-empty",
+          "-m",
+          "parent task commit",
+        ]);
+        const projection = parentProjection([]);
+        const parent = {
+          ...projection,
+          thread: { ...projection.thread, worktreePath: parentWorktree ? parentCheckout : null },
+        };
+        let dispatched = false;
+        let selectedBase: string | undefined;
+        const task = {
+          id: taskId,
+          threadId: parentThreadId,
+          runId: parentRunId,
+          parentNodeId,
+          origin: "app_owned",
+          createdBy: "agent",
+          driver: ProviderDriverKind.make("codex"),
+          providerInstanceId: codexInstanceId,
+          providerThreadId: null,
+          childThreadId,
+          nativeTaskRef: null,
+          prompt: "Work in isolation.",
+          title: null,
+          model: "gpt-5.4",
+          status: "running",
+          result: null,
+          startedAt: null,
+          completedAt: null,
+        };
+        const dependencies = Layer.mergeAll(
+          Layer.succeed(GitVcsDriver.GitVcsDriver, git),
+          Layer.mock(BareLaunch.BareLaunch)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            hasReceipt: () => Effect.succeed(false),
+            assertProviderInstanceEnabled: () => Effect.void,
+            readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
+            getThreadRecords: (id) =>
+              Effect.succeed(
+                id === parentThreadId
+                  ? { ...parentProjection(dispatched ? [task] : []), thread: parent.thread }
+                  : childProjection,
+              ),
+            dispatch: (command) =>
+              Effect.gen(function* () {
+                assert.equal(command.type, "delegated_task.request");
+                if (command.type !== "delegated_task.request")
+                  return yield* Effect.die("unexpected command");
+                assert.equal(
+                  command.projectId,
+                  destination === "omitted" ? undefined : crossProject ? destinationId : projectId,
+                );
+                assert.equal(command.workspaceStrategy?.type, "worktree");
+                if (command.workspaceStrategy?.type !== "worktree")
+                  return yield* Effect.die("missing worktree strategy");
+                assert.equal(command.workspaceStrategy.startFromOrigin, false);
+                selectedBase = command.workspaceStrategy.baseRef;
+                dispatched = true;
+                return {
+                  sequence: 1,
+                  storedEvents: [
+                    {
+                      sequence: 1,
+                      commandId: null,
+                      event: { type: "subagent.updated", payload: task },
+                    },
+                  ],
+                } as never;
+              }),
+          }),
+          providerRegistryLayer([
+            providerSnapshot({
+              instanceId: codexInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+              model: "gpt-5.4",
+            }),
+          ]),
+          adapterRegistryLayer([codexInstanceId]),
+          Layer.mock(ProjectService.ProjectService)({
+            getById: (id) =>
+              Effect.succeed(
+                Option.some({
+                  id,
+                  title: "Isolation test",
+                  workspaceRoot: id === projectId ? parentRoot : destinationRoot,
+                  defaultModelSelection: null,
+                  scripts: [],
+                  createdAt: "2026-10-18T00:00:00Z",
+                  updatedAt: "2026-10-18T00:00:00Z",
+                  deletedAt: null,
+                }),
+              ),
+          }),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+          ServerSettings.layerTest(),
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const delegated = service.delegateTask(scope, {
+            task: "Work in isolation.",
+            isolation: "worktree",
+            mode: "async",
+            projectId:
+              destination === "omitted" ? undefined : crossProject ? destinationId : projectId,
+            target: { providerInstanceId: codexInstanceId, model: "gpt-5.4" },
+            clientRequestId: "isolation-test",
+          });
+          if (destination === "non-git") {
+            const error = yield* delegated.pipe(Effect.flip);
+            assert.equal(error.code, "invalid_request");
+            assert.equal(
+              error.message,
+              "Unable to resolve the destination project checkout commit. Worktree isolation requires a Git repository with a HEAD commit.",
+            );
+            assert.isFalse(dispatched);
+            return;
+          }
+          yield* delegated;
+          const expectedCwd = crossProject
+            ? destinationRoot
+            : parentWorktree
+              ? parentCheckout
+              : parentRoot;
+          const expected = yield* git.resolveCommit({ cwd: expectedCwd, revision: "HEAD" });
+          const checkout = yield* git.createWorktree({
+            cwd: crossProject ? destinationRoot : parentRoot,
+            refName: selectedBase!,
+            newRefName: "isolated-child",
+            path: `${root}/child`,
+          });
+          const childHead = yield* git.resolveCommit({
+            cwd: checkout.worktree.path,
+            revision: "HEAD",
+          });
+          assert.equal(selectedBase, expected.commitSha);
+          assert.equal(childHead.commitSha, expected.commitSha);
+        }).pipe(Effect.provide(OrchestratorMcpService.layer.pipe(Layer.provide(dependencies))));
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          GitVcsDriver.layer.pipe(
+            Layer.provide(
+              ServerConfig.layerTest(process.cwd(), { prefix: "delegation-isolation-config-" }),
+            ),
+            Layer.provideMerge(NodeServices.layer),
+          ),
+        ),
+      ),
+  );
+
 });
 
 describe("OrchestratorMcpService provider resolution", () => {

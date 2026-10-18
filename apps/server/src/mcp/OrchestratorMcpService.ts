@@ -2499,15 +2499,21 @@ const make = Effect.gen(function* () {
       );
       let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
       if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
-        const project = yield* requireProject(parent.thread.projectId);
+        const projectId = input.projectId ?? parent.thread.projectId;
+        const project = yield* requireProject(projectId);
+        const sameProject = projectId === parent.thread.projectId;
         const base = yield* gitDriver
           .resolveCommit({
-            cwd: parent.thread.worktreePath ?? project.workspaceRoot,
+            cwd: sameProject
+              ? (parent.thread.worktreePath ?? project.workspaceRoot)
+              : project.workspaceRoot,
             revision: "HEAD",
           })
           .pipe(
             Effect.mapError(() =>
-              failure("invalid_request", "Unable to resolve the parent checkout commit."),
+                sameProject
+                  ? "Unable to resolve the parent checkout commit."
+                  : "Unable to resolve the destination project checkout commit. Worktree isolation requires a Git repository with a HEAD commit.",
             ),
           );
         // Launch preparation creates the worktree from the project root, so a

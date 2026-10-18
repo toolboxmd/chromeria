@@ -44,7 +44,7 @@ flowchart TD
     BL["Bare launch and receipts"]
     %% BL: #289, PR #335
     DR["Drafters in any project"]
-    %% DR: #114
+    %% DR: #114 #429 PR #475
     SC["Spectrum council and free"]
     %% SC: #118
     JT["Spectrum judged tests"]
