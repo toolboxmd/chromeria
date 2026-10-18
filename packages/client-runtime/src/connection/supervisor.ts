@@ -839,6 +839,10 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
         }
         if (renewed._tag === "Pending") yield* Effect.sleep("1 hour");
         else if (renewed._tag === "Retry") yield* Effect.sleep("1 minute");
+        else if (renewed._tag === "Renewed") {
+          // The server renewAfter can already be past on an ahead client.
+          yield* Effect.sleep("1 minute");
+        }
       }
     });
     const connectedExit = yield* Effect.raceFirst(
