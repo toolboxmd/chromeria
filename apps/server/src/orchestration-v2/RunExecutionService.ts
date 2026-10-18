@@ -178,11 +178,15 @@ function isRunOwnedSubagentTerminalStatus(
 }
 
 /**
- * A running subagent stays with the run that launched it, which keeps ingesting until it ends;
- * taking it over too would store its events twice.
+ * App-owned children have their own run observer and durable parent wakes.
+ * A running native subagent stays with the run that launched it, which keeps
+ * ingesting until it ends; taking it over too would store its events twice.
  */
-export function canRouteRelatedSubagent(status: OrchestrationV2Subagent["status"]): boolean {
-  return status === "completed";
+export function canRouteRelatedSubagent(
+  status: OrchestrationV2Subagent["status"],
+  origin: OrchestrationV2Subagent["origin"],
+): boolean {
+  return origin === "provider_native" && status === "completed";
 }
 
 function emptyOpenRunOwnedSubagentProjection(): OpenRunOwnedSubagentProjection {
