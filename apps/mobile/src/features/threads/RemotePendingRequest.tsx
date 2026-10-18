@@ -1,8 +1,9 @@
+import { RequestActionButton } from "./RequestActionButton";
 import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
-import { Pressable, View } from "react-native";
+import { View } from "react-native";
 import type {
   EnvironmentId,
   OrchestrationV2Subagent,
@@ -19,6 +20,7 @@ export function RemotePendingRequest(props: {
   task: Pick<OrchestrationV2Subagent, "id" | "threadId">;
   request: PeerTaskSnapshot["requests"][number];
   onResolved: () => void;
+  destinationLabel?: string;
 }) {
   const base = {
     parentThreadId: props.task.threadId,
@@ -35,6 +37,7 @@ export function RemotePendingRequest(props: {
   const refresh = useAtomRefresh(query);
   const respond = useAtomCommand(remoteTasks.request);
   const mayRespond = useAtomValue(remoteTasks.request.permissionAtom(props.environmentId));
+  const [showDetails, setShowDetails] = useState(false);
   const [answers, setAnswers] = useState<ProviderUserInputAnswers>({});
   const [key, setKey] = useState(randomUUID);
   const [busy, setBusy] = useState(false);
@@ -90,65 +93,94 @@ export function RemotePendingRequest(props: {
       );
   };
   return (
-    <View accessibilityLabel="Remote pending request">
+    <View
+      accessibilityLabel="Remote pending request"
+      className="gap-4 rounded-2xl border border-border-subtle bg-grouped-card p-4"
+    >
+      <Text className="font-t3-bold text-sm text-foreground-muted">
+        {content?.kind === "approval" ? "Approval requested" : "Question"}
+        {props.destinationLabel ? ` · ${props.destinationLabel}` : ""}
+      </Text>
       {unavailable ? (
-        <Text accessibilityRole="alert">
+        <Text accessibilityRole="alert" className="text-sm text-danger">
           {content?.unavailableReason ??
             "This request can no longer be answered. Start or continue the task to ask again."}
         </Text>
       ) : null}
-      <Text>
-        {props.request.environmentId} / {props.request.threadId} / {props.request.requestId}
-      </Text>
       {AsyncResult.isFailure(result) ? (
-        <Text accessibilityRole="alert">
+        <Text accessibilityRole="alert" className="text-sm text-danger">
           This request changed or is unavailable. Refresh to check its current state.
         </Text>
       ) : null}
       {content?.kind === "user-input"
-        ? content.questions.map((question) => (
-            <View key={question.id}>
-              <Text>{question.question}</Text>
-              {question.options.map((option) => (
-                <Pressable
-                  key={option.label}
-                  accessibilityRole="button"
-                  disabled={busy || !mayRespond}
-                  onPress={() =>
-                    setAnswers((current) => {
-                      const value = option.value ?? option.label;
-                      const previous = current[question.id];
-                      const selected = Array.isArray(previous)
-                        ? previous.filter((entry): entry is string => typeof entry === "string")
-                        : [];
-                      return {
-                        ...current,
-                        [question.id]: question.multiSelect
-                          ? selected.includes(value)
-                            ? selected.filter((entry) => entry !== value)
-                            : [...selected, value]
-                          : value,
-                      };
-                    })
-                  }
-                >
-                  <Text>{option.label}</Text>
-                </Pressable>
-              ))}
-              <TextInput
-                accessibilityLabel={question.question}
-                value={String(answers[question.id] ?? question.initialAnswer ?? "")}
-                onChangeText={(value) =>
-                  setAnswers((current) => ({ ...current, [question.id]: value }))
-                }
-                editable={!busy && mayRespond && question.allowCustomAnswer !== false}
-              />
-            </View>
-          ))
+        ? content.questions.map((question) => {
+            const answer = answers[question.id] ?? question.initialAnswer;
+            return (
+              <View key={question.id} className="gap-3">
+                <Text className="font-t3-bold text-base">{question.question}</Text>
+                {question.options.length > 0 ? (
+                  <Text className="text-xs text-foreground-muted">
+                    {question.multiSelect ? "Choose any that apply" : "Choose one"}
+                    {question.required === false ? " · Optional" : ""}
+                  </Text>
+                ) : null}
+                {question.options.map((option) => {
+                  const value = option.value ?? option.label;
+                  const selected = Array.isArray(answer)
+                    ? answer.includes(value)
+                    : answer === value;
+                  return (
+                    <View key={option.label} className="gap-1">
+                      <RequestActionButton
+                        label={option.label}
+                        tone={selected ? "primary" : "secondary"}
+                        accessibilityState={{ selected }}
+                        disabled={busy || !mayRespond}
+                        onPress={() =>
+                          setAnswers((current) => {
+                            const previous = current[question.id];
+                            const selected = Array.isArray(previous)
+                              ? previous.filter(
+                                  (entry): entry is string => typeof entry === "string",
+                                )
+                              : [];
+                            return {
+                              ...current,
+                              [question.id]: question.multiSelect
+                                ? selected.includes(value)
+                                  ? selected.filter((entry) => entry !== value)
+                                  : [...selected, value]
+                                : value,
+                            };
+                          })
+                        }
+                      />
+                      {option.description ? (
+                        <Text className="px-1 text-xs text-foreground-muted">
+                          {option.description}
+                        </Text>
+                      ) : null}
+                    </View>
+                  );
+                })}
+                {question.allowCustomAnswer !== false ? (
+                  <TextInput
+                    accessibilityLabel={question.question}
+                    placeholder="Your answer"
+                    value={String(answer ?? "")}
+                    onChangeText={(value) =>
+                      setAnswers((current) => ({ ...current, [question.id]: value }))
+                    }
+                    editable={!busy && mayRespond}
+                  />
+                ) : null}
+              </View>
+            );
+          })
         : null}
       {content?.kind === "approval" ? (
-        <>
-          <Text>
+        <View className="gap-3">
+          <Text className="font-t3-bold text-base">
             {content.appName ? `${content.appName}: ` : ""}
             {content.prompt ?? content.requestKind}
           </Text>
@@ -158,50 +190,64 @@ export function RemotePendingRequest(props: {
               { decision: "decline" as const, label: "Deny" },
             ]
           ).map((option) => (
-            <View key={option.decision}>
-              <Pressable
-                accessibilityRole="button"
+            <View key={option.decision} className="gap-1">
+              <RequestActionButton
+                label={option.label}
                 disabled={busy || !mayRespond || content.revision === undefined || unavailable}
                 onPress={() => void act("respond", option.decision)}
-              >
-                <Text>{option.label}</Text>
-              </Pressable>
-              {"warning" in option && option.warning ? <Text>{option.warning}</Text> : null}
+              />
+              {"warning" in option && option.warning ? (
+                <Text className="text-sm text-danger">{option.warning}</Text>
+              ) : null}
             </View>
           ))}
-        </>
+        </View>
       ) : null}
       {content?.kind === "user-input" ? (
-        <Pressable
-          accessibilityRole="button"
+        <RequestActionButton
+          label={busy ? "Sending answer…" : "Send answer"}
           disabled={
             busy || !mayRespond || content.revision === undefined || unavailable || !complete
           }
           onPress={() => void act("respond")}
-        >
-          <Text>Send answer</Text>
-        </Pressable>
+        />
       ) : null}
       {content?.kind === "user-input" && props.request.responseType === "message" ? (
-        <Pressable
-          accessibilityRole="button"
+        <RequestActionButton
+          label="Dismiss question"
+          tone="secondary"
           disabled={busy || !mayRespond || content.revision === undefined || unavailable}
           onPress={() => void act("dismiss")}
-        >
-          <Text>Dismiss question</Text>
-        </Pressable>
+        />
       ) : null}
-      {error ? <Text accessibilityRole="alert">{error}</Text> : null}
-      <Pressable
-        accessibilityRole="button"
+      {error ? (
+        <Text accessibilityRole="alert" className="text-sm text-danger">
+          {error}
+        </Text>
+      ) : null}
+      <RequestActionButton
+        label="Refresh request"
+        tone="secondary"
         disabled={busy}
         onPress={() => {
           setKey(randomUUID());
           refresh();
         }}
-      >
-        <Text>Refresh request</Text>
-      </Pressable>
+      />
+      <RequestActionButton
+        label="Request details"
+        tone="secondary"
+        accessibilityState={{ expanded: showDetails }}
+        onPress={() => setShowDetails((value) => !value)}
+      />
+      {showDetails ? (
+        <Text selectable className="text-xs text-foreground-muted">
+          Environment: {props.request.environmentId}
+          {"\n"}Thread: {props.request.threadId}
+          {"\n"}Request: {props.request.requestId}
+          {"\n"}Revision: {content?.revision ?? props.request.revision}
+        </Text>
+      ) : null}
     </View>
   );
 }
