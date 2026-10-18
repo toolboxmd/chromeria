@@ -461,3 +461,7 @@ apps/server/src/htmlRender/publicProxy.ts
 
 # Public research rendering reuses the pinned browser/context owner (#442)
 apps/server/src/preview/ServerBrowserContexts.ts
+
+# Legacy terminal-label boundaries (#345).
+packages/shared/src/composerContextLegacy.test.ts
+packages/shared/src/composerContextLegacy.ts
