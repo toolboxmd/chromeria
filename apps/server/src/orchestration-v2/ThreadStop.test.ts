@@ -490,8 +490,51 @@ const consumeCompletion = (request: ProviderContinuationRequests.ProviderContinu
     });
   });
 
+// A held completion is pending visible work, not a lost result. Only the
+// ordinary queue.resume command releases it; replay cannot start it twice.
+const resumeHeldCompletion = (threadId: ThreadId, messageId: MessageId) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const before = yield* orchestrator.getThreadProjection(threadId);
+    const wake = before.runs.find(
+      (run) => run.userMessageId === messageId && run.status === "queued",
+    )!;
+    assert.isDefined(wake);
+    assert.isTrue(wake.queueHeld);
+    assert.isTrue(
+      before.runs.some(
+        (run) =>
+          run.delegatedCompletion?.delivery?.messageId === messageId &&
+          run.delegatedCompletion.delivery.taskIds.length > 0,
+      ),
+    );
+    yield* orchestrator.resumeQueuedRuns;
+    assert.equal(
+      (yield* orchestrator.getThreadProjection(threadId)).runs.find((run) => run.id === wake.id)!
+        .status,
+      "queued",
+    );
+    const sql = yield* SqlClient.SqlClient;
+    const starts = () =>
+      sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE effect_type = 'provider-turn.start' AND json_extract(payload_json, '$.runId') = ${wake.id} AND status IN ('pending', 'running')`;
+    assert.lengthOf(yield* starts(), 0);
+    const command = {
+      type: "queue.resume" as const,
+      threadId,
+      commandId: CommandId.make(`resume-held:${threadId}:${messageId}`),
+    };
+    yield* orchestrator.dispatch(command);
+    yield* orchestrator.dispatch(command);
+    const after = yield* orchestrator.getThreadProjection(threadId);
+    assert.lengthOf(
+      after.runs.filter((run) => run.userMessageId === messageId && run.status === "starting"),
+      1,
+    );
+    assert.lengthOf(yield* starts(), 1);
+  });
+
 it.effect.each(["queued", "starting"] as const)(
-  "resumes an unread %s delivery while unrelated queued work stays held",
+  "retains an unread %s delivery until its ordinary queue is resumed",
   (phase) =>
     Effect.gen(function* () {
       const offers =
@@ -536,7 +579,8 @@ it.effect.each(["queued", "starting"] as const)(
           (run) => run.userMessageId === MessageId.make(`message:${parentId}:resume unread result`),
         )!;
         yield* completeRunWithoutProvider(parentId, resumeRun.id, `resume-finished-${phase}`);
-        yield* orchestrator.resumeQueuedRuns;
+        if (phase === "queued") yield* resumeHeldCompletion(parentId, pending!.messageId);
+        else yield* orchestrator.resumeQueuedRuns;
         const scheduled = yield* orchestrator.getThreadProjection(parentId);
         assert.equal(
           scheduled.runs.find(
@@ -551,7 +595,7 @@ it.effect.each(["queued", "starting"] as const)(
           1,
         );
         if (phase === "queued")
-          assert.isTrue(
+          assert.isFalse(
             scheduled.runs.find(
               (run) =>
                 run.userMessageId === MessageId.make(`message:${parentId}:held instructions`),
@@ -606,7 +650,7 @@ it.effect("retries the same unread mailbox identity when finalization follows re
         (run) => run.userMessageId === MessageId.make(`message:${parentId}:resume unread result`),
       )!;
       yield* completeRunWithoutProvider(parentId, resumeRun.id, "late-resume-finished");
-      yield* orchestrator.resumeQueuedRuns;
+      yield* resumeHeldCompletion(parentId, successor.delegatedCompletion!.messageId);
       const scheduled = yield* orchestrator.getThreadProjection(parentId);
       assert.equal(
         scheduled.runs.find(
@@ -616,7 +660,7 @@ it.effect("retries the same unread mailbox identity when finalization follows re
         )?.status,
         "starting",
       );
-      assert.isTrue(
+      assert.isFalse(
         scheduled.runs.find(
           (run) => run.userMessageId === MessageId.make(`message:${parentId}:held instructions`),
         )?.queueHeld,
@@ -942,13 +986,13 @@ it.effect.each(["before-stop", "after-stop", "after-resume"] as const)(
             },
           ],
         });
-        yield* orchestrator.resumeQueuedRuns;
+        yield* resumeHeldCompletion(parentId, delivery.messageId);
         const scheduled = yield* orchestrator.getThreadProjection(parentId);
         assert.equal(
           scheduled.runs.find((run) => run.userMessageId === delivery.messageId)?.status,
           "starting",
         );
-        assert.isTrue(
+        assert.isFalse(
           scheduled.runs.find(
             (run) =>
               run.userMessageId === MessageId.make(`message:${parentId}:unrelated queued work`),
@@ -2174,7 +2218,7 @@ it.effect.each(["before settlement", "after reservation", "after queue"] as cons
           (run) => run.userMessageId === MessageId.make(`message:${parentId}:resume unread result`),
         )!;
         yield* completeRunWithoutProvider(parentId, resumeRun.id, "late-resume-finished");
-        yield* orchestrator.resumeQueuedRuns;
+        yield* resumeHeldCompletion(parentId, successor.delegatedCompletion!.messageId);
         const scheduled = yield* orchestrator.getThreadProjection(parentId);
         assert.equal(
           scheduled.runs.find(
@@ -2182,7 +2226,7 @@ it.effect.each(["before settlement", "after reservation", "after queue"] as cons
           )?.status,
           "starting",
         );
-        assert.isTrue(
+        assert.isFalse(
           scheduled.runs.find(
             (run) => run.userMessageId === MessageId.make(`message:${parentId}:held instructions`),
           )?.queueHeld,
@@ -2272,7 +2316,7 @@ it.effect("ancestor Stop wins before producer offer", () =>
   }).pipe(Effect.scoped),
 );
 
-it.effect("a queued completion survives startup recovery after resume", () =>
+it.effect("a queued completion survives startup held until queue.resume", () =>
   Effect.gen(function* () {
     const offers =
       yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
@@ -2406,14 +2450,17 @@ it.effect("a queued completion survives startup recovery after resume", () =>
       const sql = yield* SqlClient.SqlClient;
       const startEffects =
         yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE effect_type = 'provider-turn.start' AND json_extract(payload_json, '$.runId') = ${wake.id} AND status IN ('pending', 'running')`;
-      assert.lengthOf(startEffects, 1);
+      assert.lengthOf(startEffects, 0);
+      assert.isTrue(wake.queueHeld);
+      yield* resumeHeldCompletion(parentId, successor.delegatedCompletion!.messageId);
+      const released = yield* orchestrator.getThreadProjection(parentId);
       assert.equal(
-        scheduled.runs.find((run) => run.userMessageId === successor.delegatedCompletion!.messageId)
+        released.runs.find((run) => run.userMessageId === successor.delegatedCompletion!.messageId)
           ?.status,
         "starting",
       );
-      assert.isTrue(
-        scheduled.runs.find(
+      assert.isFalse(
+        released.runs.find(
           (run) => run.userMessageId === MessageId.make(`message:${parentId}:held instructions`),
         )?.queueHeld,
       );
@@ -2659,8 +2706,8 @@ it.effect(
     }),
 );
 
-it.effect.each(["live", "startup"] as const)(
-  "completion keeps a failed-worktree hold during %s scheduling",
+it.effect.each(["live", "startup", "preparing-restart"] as const)(
+  "completion obeys workspace and restart queue holds (%s)",
   (phase) =>
     Effect.gen(function* () {
       const offers =
@@ -2695,19 +2742,20 @@ it.effect.each(["live", "startup"] as const)(
         // Workspace preparation reports its ordinary terminal failure before producing a checkout.
         const sink = yield* EventSink.EventSinkV2;
         const now = yield* DateTime.now;
-        yield* sink.write({
-          commandId: CommandId.make("command:runtime-reconcile:review-worktree-setup-failure"),
-          events: [
-            {
-              id: EventId.make("review-worktree-setup-failed"),
-              type: "run.updated",
-              threadId: parentId,
-              runId: prepared.id,
-              occurredAt: now,
-              payload: { ...prepared, status: "failed", completedAt: now },
-            },
-          ],
-        });
+        if (phase !== "preparing-restart")
+          yield* sink.write({
+            commandId: CommandId.make("command:runtime-reconcile:review-worktree-setup-failure"),
+            events: [
+              {
+                id: EventId.make("review-worktree-setup-failed"),
+                type: "run.updated",
+                threadId: parentId,
+                runId: prepared.id,
+                occurredAt: now,
+                payload: { ...prepared, status: "failed", completedAt: now },
+              },
+            ],
+          });
         yield* send(parentId, "ordinary queued message", "queue_after_active");
         yield* completeRunWithoutProvider(childId, childRun.id, "review-worktree-child-complete");
         yield* orchestrator.recoverDelegatedTask(childId, childRun.id);
@@ -2726,7 +2774,7 @@ it.effect.each(["live", "startup"] as const)(
           "review-worktree-sibling-complete",
         );
         yield* orchestrator.recoverDelegatedTask(siblingId, siblingRun.id);
-        if (phase === "startup") {
+        if (phase !== "live") {
           const recovery = yield* ProviderRuntimeRecovery.make.pipe(
             Effect.provide(IdAllocator.layer),
           );
@@ -2760,4 +2808,124 @@ it.effect.each(["live", "startup"] as const)(
         }),
       );
     }),
+);
+
+it.effect("review r4: provider-failure queue hold is inherited by a later completion", () =>
+  Effect.gen(function* () {
+    const offers =
+      yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+    yield* Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const parentId = ThreadId.make("r4-operational-inheritance");
+      yield* createWatchingThread(parentId, 115);
+      yield* send(parentId, "delegate work", "start_immediately");
+      const activeRun = (yield* orchestrator.getThreadProjection(parentId)).runs[0]!;
+      const childId = yield* delegate(parentId, "result after provider-failure hold");
+      const childRun = (yield* orchestrator.getThreadProjection(childId)).runs[0]!;
+      yield* send(parentId, "queued user work", "queue_after_active");
+      const queuedUser = (yield* orchestrator.getThreadProjection(parentId)).runs.at(-1)!;
+      const held = yield* Deferred.make<void>();
+      const seq = yield* orchestrator.getThreadEventSequence(parentId);
+      yield* sink.stream({ threadId: parentId, afterSequence: seq }).pipe(
+        Stream.runForEach((stored) =>
+          stored.event.type === "run.updated" &&
+          stored.event.payload.id === queuedUser.id &&
+          stored.event.payload.queueHeld === true
+            ? Deferred.succeed(held, undefined)
+            : Effect.void,
+        ),
+        Effect.forkScoped,
+      );
+      yield* Effect.yieldNow;
+      const now = yield* DateTime.now;
+      yield* sink.write({
+        commandId: CommandId.make("r4-real-provider-failure"),
+        events: [
+          {
+            id: EventId.make("r4-provider-error"),
+            type: "turn-item.updated",
+            threadId: parentId,
+            runId: activeRun.id,
+            nodeId: activeRun.rootNodeId!,
+            providerInstanceId: activeRun.providerInstanceId,
+            occurredAt: now,
+            payload: {
+              id: TurnItemId.make("r4-provider-error"),
+              type: "error",
+              threadId: parentId,
+              runId: activeRun.id,
+              nodeId: activeRun.rootNodeId!,
+              providerThreadId: activeRun.providerThreadId,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 2,
+              status: "failed",
+              title: "Provider failure",
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+              failure: {
+                class: "provider_error",
+                message: "Provider failed.",
+                code: "provider_failed",
+                retryable: null,
+              },
+            },
+          },
+          {
+            id: EventId.make("r4-run-failed"),
+            type: "run.updated",
+            threadId: parentId,
+            runId: activeRun.id,
+            nodeId: activeRun.rootNodeId!,
+            providerInstanceId: activeRun.providerInstanceId,
+            occurredAt: now,
+            payload: { ...activeRun, status: "failed", completedAt: now },
+          },
+        ],
+      });
+      yield* Deferred.await(held);
+      assert.isTrue(
+        (yield* orchestrator.getThreadProjection(parentId)).runs.find((r) => r.id === queuedUser.id)
+          ?.queueHeld,
+      );
+      // A new explicit turn does not resume the held queue.
+      yield* send(parentId, "separate user turn", "start_immediately");
+      const busy = (yield* orchestrator.getThreadProjection(parentId)).runs.at(-1)!;
+      assert.equal(busy.status, "starting");
+      yield* completeRunWithoutProvider(childId, childRun.id, "r4-child-completed");
+      yield* orchestrator.recoverDelegatedTask(childId, childRun.id);
+      const offer = yield* Queue.take(offers);
+      yield* offer.dispatchIfCurrent!(consumeCompletion(offer));
+      const before = yield* orchestrator.getThreadProjection(parentId);
+      const wake = before.runs.find(
+        (r) => r.userMessageId === offer.delegatedCompletion!.messageId,
+      )!;
+      assert.equal(wake.status, "queued");
+      yield* completeRunWithoutProvider(parentId, busy.id, "r4-separate-turn-completed");
+      const recovery = yield* ProviderRuntimeRecovery.make.pipe(Effect.provide(IdAllocator.layer));
+      yield* runOrderedV2StartupPhases({
+        importLegacyShells: Effect.void,
+        recover: recovery.recover,
+        recoverDelegatedTasks: orchestrator.recoverDelegatedTasks,
+        startEffectWorker: Effect.void,
+        autoBootstrap: Effect.void,
+      });
+      const after = yield* orchestrator.getThreadProjection(parentId);
+      const afterWake = after.runs.find((r) => r.id === wake.id)!;
+      const sql = yield* SqlClient.SqlClient;
+      const starts =
+        yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE effect_type = 'provider-turn.start' AND json_extract(payload_json, '$.runId') = ${wake.id} AND status IN ('pending', 'running')`;
+      assert.equal(afterWake.status, "queued");
+      assert.lengthOf(starts, 0);
+    }).pipe(
+      Effect.provide(layerTest),
+      Effect.provideService(ProviderContinuationRequests.ProviderContinuationRequests, {
+        offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+        take: Effect.never,
+      }),
+    );
+  }),
 );

@@ -4987,17 +4987,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               WHERE thread_id = ${threadId} AND status = 'queued')
             AND NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_runs
               WHERE thread_id = ${threadId}
-                AND status IN ('preparing', 'starting', 'running', 'waiting'))
-            AND (NOT EXISTS (SELECT 1 FROM orchestration_v2_projection_runs
-              WHERE thread_id = ${threadId} AND status = 'queued'
-                AND json_extract(payload_json, '$.queueHeld') = 1)
-              OR EXISTS (SELECT 1 FROM orchestration_v2_projection_runs AS queued
-                JOIN orchestration_v2_projection_messages AS message
-                  ON message.message_id = json_extract(queued.payload_json, '$.userMessageId')
-                  AND message.thread_id = queued.thread_id
-                WHERE queued.thread_id = ${threadId} AND queued.status = 'queued'
-                  AND COALESCE(json_extract(queued.payload_json, '$.queueHeld'), 0) = 0
-                  AND json_type(message.payload_json, '$.delegatedCompletion') = 'object'))`;
+                AND (status IN ('preparing', 'starting', 'running', 'waiting')
+                  OR (status = 'queued' AND json_extract(payload_json, '$.queueHeld') = 1)))`;
             return rows.length > 0;
           }),
         )
@@ -6937,24 +6928,14 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
           return (
             projection.thread.archivedAt === null &&
             projection.thread.deletedAt === null &&
-            projection.runs.some(
-              (run) =>
-                run.status === "queued" &&
-                run.queueHeld !== true &&
-                (!projection.runs.some(
-                  (candidate) => candidate.status === "queued" && candidate.queueHeld === true,
-                ) ||
-                  projection.messages.some(
-                    (message) =>
-                      message.id === run.userMessageId && message.delegatedCompletion !== undefined,
-                  )),
-            ) &&
+            projection.runs.some((run) => run.status === "queued") &&
             !projection.runs.some(
               (run) =>
                 run.status === "preparing" ||
                 run.status === "starting" ||
                 run.status === "running" ||
-                run.status === "waiting",
+                run.status === "waiting" ||
+                (run.status === "queued" && run.queueHeld === true),
             )
           );
         }),

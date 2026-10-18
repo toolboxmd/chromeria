@@ -695,10 +695,7 @@ function delegatedTaskTerminalStatus(
 function nextQueuedRun(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
 ): OrchestrationV2Run | undefined {
-  const queued = queuedRunsInDeliveryOrder(projection);
-  return queued.some((run) => run.queueHeld === true)
-    ? queued.find((run) => run.queueHeld !== true && isAutomaticCompletionRun(projection, run))
-    : queued[0];
+  return queuedRunsInDeliveryOrder(projection)[0];
 }
 
 function latestStableRun(
@@ -1468,7 +1465,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (
         projection.thread.archivedAt !== null ||
         projection.thread.deletedAt !== null ||
-        projection.runs.some(isBlockingRun)
+        projection.runs.some(isBlockingRun) ||
+        projection.runs.some((run) => run.status === "queued" && run.queueHeld === true)
       ) {
         return;
       }
@@ -5471,10 +5469,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           activeAttemptId: attemptId,
           status: "queued",
           ...(worktreeMissingRun !== undefined ||
-          (delegatedCompletion === undefined &&
-            projection.runs.some(
-              (candidate) => candidate.status === "queued" && candidate.queueHeld === true,
-            ))
+          projection.runs.some(
+            (candidate) => candidate.status === "queued" && candidate.queueHeld === true,
+          )
             ? { queueHeld: true }
             : {}),
           queuePosition:
@@ -12944,17 +12941,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     ) {
                       yield* offerDelegatedCompletionDelivery(threadId, run.id);
                     }
-                  }
-                  // Startup has no terminal event to promote a persisted queue.
-                  // Use its normal guarded start path for mailbox work only.
-                  if (
-                    refreshed.runs.some(
-                      (run) =>
-                        run.status === "queued" && openDeliveryMessageIds.has(run.userMessageId),
-                    )
-                  ) {
-                    const state = yield* retirement(threadId);
-                    if (!state.retired && state.complete) yield* startNextQueuedRun(threadId);
                   }
                 }),
               )
