@@ -43,6 +43,15 @@ const database = Sqlite.layerMemory.pipe(
 );
 const layer = Staging.layer.pipe(Layer.provideMerge(database));
 const keyedLayer = Requests.layer.pipe(Layer.provideMerge(layer));
+const recordingClaimsLayer = Staging.layer.pipe(
+  Layer.provideMerge(
+    Sqlite.layerConfig.pipe(
+      Layer.provideMerge(Secrets.layer),
+      Layer.provideMerge(Config.layerTest(process.cwd(), { prefix: "t3-recording-claim-" })),
+      Layer.provideMerge(NodeServices.layer),
+    ),
+  ),
+);
 const bytes = new Uint8Array([1, 2, 3, 4]);
 const digest = Hex.encode(sha256(bytes));
 const metadata = {
@@ -614,4 +623,128 @@ it.effect.each([false, true])(
         expect([one.id, two.id]).toContain(JSON.parse(rows[0]!.discard_receipt).id);
       }),
     ).pipe(Effect.provide(keyedLayer)),
+);
+
+it.effect.each(["before-write", "after-write", "after-acceptance"] as const)(
+  "S8: recording claim %s reconstruction never repeats publication",
+  (stage) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { claims, attachment } = yield* upload;
+        yield* Upload.storeAttachmentUpload(claims, bytes);
+        // The same native file owner handles recordings; the test uses bounded PDF
+        // bytes so no renderer/codec can substitute for the publication oracle.
+        const final = { ...attachment, id: attachment.id.replace(/^pending-/, "caller-") };
+        const fs = yield* FileSystem.FileSystem;
+        const path = resolveAttachmentPath({
+          attachmentsDir: (yield* Config.ServerConfig).attachmentsDir,
+          attachment: final,
+        })!;
+        let writes = 0;
+        const interruptedFs = FileSystem.FileSystem.of({
+          ...fs,
+          writeFile: (file, data, options) =>
+            file !== path
+              ? fs.writeFile(file, data, options)
+              : Effect.gen(function* () {
+                  writes++;
+                  if (stage === "before-write") return yield* Effect.interrupt;
+                  yield* fs.writeFile(file, data, options);
+                  if (stage === "after-write") return yield* Effect.interrupt;
+                }),
+        });
+        const first = Context.get(
+          yield* Layer.build(
+            Staging.layer.pipe(
+              Layer.provide(Layer.succeed(FileSystem.FileSystem, interruptedFs)),
+              Layer.fresh,
+            ),
+          ),
+          Staging.AttachmentStaging,
+        );
+        const lost = yield* first
+          .claimRecording(scope, attachment.id, final)
+          .pipe(Effect.andThen(Effect.interrupt), Effect.forkScoped);
+        expect((yield* Fiber.await(lost))._tag).toBe("Failure");
+        const sql = yield* SqlClient.SqlClient;
+        const original =
+          yield* sql`SELECT owner,generation,manifest,digest,expected_digest FROM attachment_staging WHERE id=${final.id}`;
+        expect(original).toHaveLength(1);
+        expect(original[0]?.expected_digest).toBe(digest);
+        expect(original[0]?.digest).toBe(stage === "after-acceptance" ? digest : null);
+        expect(yield* fs.exists(path)).toBe(stage !== "before-write");
+        if (stage !== "before-write")
+          expect(Array.from(yield* fs.readFile(path))).toEqual([1, 2, 3, 4]);
+        yield* fs.writeFile(path, new Uint8Array([9, 8, 7, 6]));
+        const rebuilt = Context.get(
+          yield* Layer.build(
+            Staging.layer.pipe(
+              Layer.provide(Layer.succeed(FileSystem.FileSystem, interruptedFs)),
+              Layer.fresh,
+            ),
+          ),
+          Staging.AttachmentStaging,
+        );
+        const renewed = {
+          ...scope,
+          thread: { ...scope.thread!, providerSessionId: "renewed-recording" },
+        };
+        const replay = yield* Effect.result(rebuilt.claimRecording(renewed, attachment.id, final));
+        if (stage === "after-acceptance") {
+          expect(replay._tag).toBe("Success");
+          if (replay._tag === "Success") expect(replay.success.digest).toBe(digest);
+        } else {
+          expect(replay._tag).toBe("Failure");
+          if (replay._tag === "Failure")
+            expect(replay.failure).toMatchObject({
+              code: "outcome_unknown",
+              lastConfirmedStage: "native_binding_accepted",
+            });
+        }
+        expect(writes).toBe(1);
+        expect(Array.from(yield* fs.readFile(path))).toEqual([9, 8, 7, 6]);
+        expect(
+          yield* sql`SELECT owner,generation,manifest,digest,expected_digest FROM attachment_staging WHERE id=${final.id}`,
+        ).toEqual(original);
+        expect(
+          (yield* Effect.result(
+            rebuilt.claimRecording(renewed, attachment.id, { ...final, name: "changed.pdf" }),
+          ))._tag,
+        ).toBe("Failure");
+        expect(
+          (yield* Effect.result(
+            rebuilt.claimRecording(
+              { ...renewed, thread: { ...renewed.thread!, threadId: ThreadId.make("other") } },
+              attachment.id,
+              final,
+            ),
+          ))._tag,
+        ).toBe("Failure");
+      }),
+    ).pipe(Effect.provide(recordingClaimsLayer)),
+);
+
+it.effect("S8: an unproved existing recording path is never accepted or overwritten", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { claims, attachment } = yield* upload;
+      yield* Upload.storeAttachmentUpload(claims, bytes);
+      const final = { ...attachment, id: attachment.id.replace(/^pending-/, "caller-") };
+      const fs = yield* FileSystem.FileSystem;
+      const path = resolveAttachmentPath({
+        attachmentsDir: (yield* Config.ServerConfig).attachmentsDir,
+        attachment: final,
+      })!;
+      yield* fs.writeFile(path, new Uint8Array([9, 8, 7, 6]));
+      const native = yield* Staging.AttachmentStaging;
+      const refused = yield* Effect.result(native.claimRecording(scope, attachment.id, final));
+      expect(refused._tag).toBe("Failure");
+      if (refused._tag === "Failure") expect(refused.failure.code).toBe("outcome_unknown");
+      expect(Array.from(yield* fs.readFile(path))).toEqual([9, 8, 7, 6]);
+      const sql = yield* SqlClient.SqlClient;
+      expect(
+        (yield* sql`SELECT digest FROM attachment_staging WHERE id=${final.id}`)[0]?.digest,
+      ).toBe(null);
+    }),
+  ).pipe(Effect.provide(recordingClaimsLayer)),
 );

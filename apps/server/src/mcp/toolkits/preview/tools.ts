@@ -309,7 +309,7 @@ const PreviewRecordingStartTool = safeBrowserTool(
 const PreviewRecordingStopTool = safeBrowserTool(
   Tool.make("preview_recording_stop", {
     description:
-      "Stop recording the collaborative browser tab selected by tabId, or this agent session's current tab when omitted, and transfer the compressed recording once (up to 50 MiB) to an evidence file readable in this agent's environment. Native/legacy calls return the local evidence path. Negotiated peer calls return a bounded environment-qualified resource with its name, owner, byte digest, MIME and size; use its attachmentId with the supported attachment send/launch inputs instead of interpreting it as a source path.",
+      "Stop recording the collaborative browser tab selected by tabId, or this agent session's current tab when omitted, and transfer the compressed recording once (up to 50 MiB) to an evidence file readable in this agent's environment. Native/legacy calls return the local evidence path. Negotiated peer calls return a bounded environment-qualified resource with its name, owner, byte digest, MIME and size; use its attachmentId with the supported attachment send/launch inputs instead of interpreting it as a source path. Accepted native claims replay the original evidence without replacing later file edits; an unconfirmed durable publication reports outcome_unknown and is not repeated.",
     parameters: McpRouting.parameters(PreviewAutomationTabTargetInput),
     success: Schema.Union([
       Schema.Struct({ ...PreviewAutomationRecordingArtifact.fields, ...presentationFields }),

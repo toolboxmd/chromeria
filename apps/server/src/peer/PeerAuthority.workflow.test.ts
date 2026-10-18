@@ -2072,6 +2072,7 @@ it.live(
         ).toBe(204);
         const connected = yield* Deferred.make<void>();
         let stops = 0;
+        let rendererCalls = 0;
         yield* Stream.runForEach(
           yield* b.browser.connect({
             clientId: "recording382-renderer",
@@ -2082,6 +2083,7 @@ it.live(
               ? Deferred.succeed(connected, undefined)
               : Effect.gen(function* () {
                   const request = event.request;
+                  rendererCalls++;
                   if (request.operation === "recordingStop") {
                     stops++;
                     yield* b.browser.respond({
@@ -2165,10 +2167,105 @@ it.live(
         expect(path).not.toBeNull();
         const fs = yield* FileSystem.FileSystem;
         expect(Array.from(yield* fs.readFile(path!))).toEqual(Array.from(bytes));
+        const nativeDb = Context.get(b.database, SqlClient.SqlClient);
+        const nativeBefore =
+          yield* nativeDb`SELECT id,generation,input_digest,state,result_json FROM mcp_request_receipts WHERE state='completed' ORDER BY id`;
+        expect(nativeBefore.length).toBeGreaterThan(0);
+        const originalPath = resolveAttachmentPathById({
+          attachmentsDir: b.config.attachmentsDir,
+          attachmentId: resource.attachmentId,
+        })!;
+        const laterBytes = new Uint8Array([9, 8, 7, 6, 5, 4, 3, 2, 1, 0]);
+        yield* fs.writeFile(originalPath, laterBytes);
+        expect(Array.from(yield* fs.readFile(originalPath))).toEqual(Array.from(laterBytes));
+        // A delayed duplicate POST uses the same still-valid app-issued upload token.
+        expect(
+          (yield* http.execute(
+            HttpClientRequest.post(`${b.url}${uploaded.relativeUrl}`).pipe(
+              HttpClientRequest.setBody(HttpBody.uint8Array(bytes)),
+            ),
+          )).status,
+        ).toBe(204);
         const replay = yield* nativeCall(a, parent, "preview_recording_stop", input);
         expect(replay.isError, json(replay)).not.toBe(true);
         expect(replay.structuredContent).toEqual(stopped.structuredContent);
         expect(stops).toBe(1);
+        expect(rendererCalls).toBe(1);
+        expect(
+          yield* nativeDb`SELECT id,generation,input_digest,state,result_json FROM mcp_request_receipts WHERE state='completed' ORDER BY id`,
+        ).toEqual(nativeBefore);
+        expect(Array.from(yield* fs.readFile(originalPath))).toEqual(Array.from(laterBytes));
+        expect(stops).toBe(1);
+        expect(rendererCalls).toBe(1);
+        const originalNative =
+          yield* nativeDb`SELECT id,owner,generation,manifest,digest,expected_digest FROM attachment_staging WHERE id=${resource.attachmentId}`;
+        const rebuilt = { ...b, ...(yield* b.restartSchedulerTransport) };
+        yield* Context.get(
+          a.database,
+          SqlClient.SqlClient,
+        )`UPDATE peer_environment_links SET urls_json=${json([rebuilt.url])} WHERE environment_id=${b.environmentId}`;
+        const renewed = yield* nativeCall(a, parent, "preview_recording_stop", input);
+        expect(renewed.isError, json(renewed)).not.toBe(true);
+        expect(renewed.structuredContent).toEqual(stopped.structuredContent);
+        expect(stops).toBe(1);
+        expect(rendererCalls).toBe(1);
+        expect(Array.from(yield* fs.readFile(originalPath))).toEqual(Array.from(laterBytes));
+        expect(
+          yield* nativeDb`SELECT id,owner,generation,manifest,digest,expected_digest FROM attachment_staging WHERE id=${resource.attachmentId}`,
+        ).toEqual(originalNative);
+        expect(
+          (yield* nativeCall(a, parent, "preview_recording_stop", {
+            ...input,
+            tabId: "changed-intent",
+          })).isError,
+        ).toBe(true);
+        const other = ThreadId.make("recording382-rival");
+        yield* seedParent(a, other);
+        expect((yield* nativeCall(a, other, "preview_recording_stop", input)).isError).toBe(true);
+        // A separate authorized caller has an independent request namespace.
+        // Its new stop may run, but cannot acquire the first caller's reference.
+        expect(stops).toBe(2);
+        expect(rendererCalls).toBe(2);
+        expect(Array.from(yield* fs.readFile(originalPath))).toEqual(Array.from(laterBytes));
+        expect(
+          yield* nativeDb`SELECT id,owner,generation,manifest,digest,expected_digest FROM attachment_staging WHERE id=${resource.attachmentId}`,
+        ).toEqual(originalNative);
+        const unrelated = ThreadId.make("recording382-outside-grant");
+        yield* seedParent(b, unrelated);
+        expect(
+          (yield* nativeCall(a, parent, "preview_recording_stop", {
+            ...input,
+            contextThreadId: unrelated,
+            clientRequestId: "recording382-outside",
+          })).isError,
+        ).toBe(true);
+        expect(stops).toBe(2);
+        yield* b.authority.setGrant({ ...grant, preview: false });
+        expect((yield* nativeCall(a, parent, "preview_recording_stop", input)).isError).toBe(true);
+        yield* b.authority.setGrant({ ...grant, preview: true });
+        expect((yield* nativeCall(a, parent, "preview_recording_stop", input)).isError).not.toBe(
+          true,
+        );
+        expect(stops, "grant denial / restore must not stop renderer").toBe(2);
+        yield* a.links.unlink(b.environmentId);
+        expect((yield* nativeCall(a, parent, "preview_recording_stop", input)).isError).toBe(true);
+        expect(stops, "unlink denial must not stop renderer").toBe(2);
+        yield* linkTo(a.links, rebuilt, "full-access");
+        expect(
+          (yield* nativeCall(a, parent, "t3_project_list", { environmentId: b.environmentId }))
+            .isError,
+        ).not.toBe(true);
+        const replacement = (yield* b.authority.grants).find(
+          (g) => g.sessionId !== grant.sessionId,
+        )!;
+        yield* b.authority.setGrant({ ...replacement, preview: true });
+        expect((yield* nativeCall(a, parent, "preview_recording_stop", input)).isError).toBe(true);
+        expect(stops).toBe(2);
+        expect(rendererCalls).toBe(2);
+        expect(Array.from(yield* fs.readFile(originalPath))).toEqual(Array.from(laterBytes));
+        expect(
+          yield* nativeDb`SELECT id,owner,generation,manifest,digest,expected_digest FROM attachment_staging WHERE id=${resource.attachmentId}`,
+        ).toEqual(originalNative);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
   30_000,
@@ -10735,6 +10832,94 @@ it.live(
         expect(
           yield* sql`SELECT consumer,discard_receipt,discard_cleanup FROM attachment_staging WHERE id=${issued.attachmentId}`,
         ).toEqual(accepted);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30000,
+);
+
+it.live(
+  "S8: registered local keyed replay and deliberate unkeyed stops preserve native recording evidence",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const node = yield* makeNode(
+          descriptorOf("recording382-local", "Local", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const parent = ThreadId.make("recording382-local-parent");
+        yield* seedParent(node, parent);
+        const bytes = new Uint8Array([26, 69, 223, 163, 129, 1, 66, 134, 129, 1]);
+        const uploaded = yield* AttachmentUpload.issueAttachmentUploadUrl({
+          type: "file",
+          name: "recording.webm",
+          mimeType: "video/webm",
+          sizeBytes: bytes.byteLength,
+        }).pipe(
+          Effect.provideService(Config.ServerConfig, node.config),
+          Effect.provideService(
+            Secrets.ServerSecretStore,
+            Context.get(node.services, Secrets.ServerSecretStore),
+          ),
+        );
+        const http = yield* HttpClient.HttpClient;
+        const post = http.execute(
+          HttpClientRequest.post(`${node.url}${uploaded.relativeUrl}`).pipe(
+            HttpClientRequest.setBody(HttpBody.uint8Array(bytes)),
+          ),
+        );
+        expect((yield* post).status).toBe(204);
+        const ready = yield* Deferred.make<void>();
+        let rendererCalls = 0;
+        yield* Stream.runForEach(
+          yield* node.browser.connect({
+            clientId: "recording382-local-renderer",
+            environmentId: node.environmentId,
+          }),
+          (event) =>
+            event.type === "connected"
+              ? Deferred.succeed(ready, undefined)
+              : Effect.gen(function* () {
+                  rendererCalls++;
+                  expect(event.request.operation).toBe("recordingStop");
+                  yield* node.browser.respond({
+                    clientId: "recording382-local-renderer",
+                    connectionId: event.connectionId,
+                    requestId: event.request.requestId,
+                    ok: true,
+                    result: {
+                      id: "local-renderer-recording",
+                      tabId: "local-recording-tab",
+                      path: "/isolated-renderer/local.webm",
+                      uploadedAttachmentId: uploaded.attachmentId,
+                      mimeType: "video/webm",
+                      sizeBytes: bytes.byteLength,
+                      createdAt: "2026-10-18T00:00:00Z",
+                    },
+                  });
+                }),
+        ).pipe(Effect.forkScoped);
+        yield* Deferred.await(ready);
+        const input = { clientRequestId: "recording382-local-keyed" };
+        const first = yield* nativeCall(node, parent, "preview_recording_stop", input);
+        expect(first.isError, json(first)).not.toBe(true);
+        const result = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ id: Schema.String, path: Schema.String }),
+        )(first.structuredContent);
+        const fs = yield* FileSystem.FileSystem;
+        expect(Array.from(yield* fs.readFile(result.path))).toEqual(Array.from(bytes));
+        yield* fs.writeFile(result.path, new Uint8Array([9, 8, 7, 6, 5, 4, 3, 2, 1, 0]));
+        expect((yield* post).status).toBe(204);
+        const rebuilt = { ...node, ...(yield* node.restartSchedulerTransport) };
+        const replay = yield* nativeCall(rebuilt, parent, "preview_recording_stop", input);
+        expect(replay.isError, json(replay)).not.toBe(true);
+        expect(replay.structuredContent).toEqual(first.structuredContent);
+        expect(rendererCalls).toBe(1);
+        const unkeyed = yield* nativeCall(rebuilt, parent, "preview_recording_stop", {});
+        expect(unkeyed.isError, json(unkeyed)).not.toBe(true);
+        expect(unkeyed.structuredContent).toEqual(first.structuredContent);
+        expect(rendererCalls).toBe(2); // A deliberate unkeyed action still reaches its renderer.
+        expect(Array.from(yield* fs.readFile(result.path))).toEqual([9, 8, 7, 6, 5, 4, 3, 2, 1, 0]);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
   30000,

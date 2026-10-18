@@ -7,6 +7,7 @@ import {
   type PeerAttachmentTransferState,
   CommandId,
   AttachmentDigest,
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -16,6 +17,7 @@ import { sha256 } from "@noble/hashes/sha2";
 import * as Hex from "effect/encoding/Hex";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Semaphore from "effect/Semaphore";
 import {
   createPendingAttachmentId,
   createAttachmentId,
@@ -25,10 +27,12 @@ import {
   type AttachmentClaimPlan,
   attachmentFileExtension,
   toSafeThreadAttachmentSegment,
+  parseAttachmentUuid,
+  PENDING_ATTACHMENT_THREAD_SEGMENT,
 } from "../attachmentStore.ts";
 import * as Invocation from "../mcp/McpInvocationContext.ts";
 import { requestGeneration, requestNamespace } from "../mcp/requestIdentity.ts";
-import { requestDigest, type RequestIdentity } from "../mcp/McpRequestReceipts.ts";
+import { CurrentRequest, requestDigest, type RequestIdentity } from "../mcp/McpRequestReceipts.ts";
 import * as Config from "../config.ts";
 import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import * as Option from "effect/Option";
@@ -71,6 +75,11 @@ export class AttachmentStaging extends Context.Service<
     ) => Effect.Effect<PeerAttachmentTransferState, OrchestratorMcpFailure>;
     readonly publishReference: (
       scope: Invocation.McpInvocationScope,
+      attachment: ChatAttachment,
+    ) => Effect.Effect<PeerAttachmentReference, OrchestratorMcpFailure>;
+    readonly claimRecording: (
+      scope: Invocation.McpInvocationScope,
+      pendingId: string,
       attachment: ChatAttachment,
     ) => Effect.Effect<PeerAttachmentReference, OrchestratorMcpFailure>;
     readonly verify: (
@@ -121,6 +130,7 @@ const make = Effect.gen(function* () {
   const config = yield* Config.ServerConfig;
   const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
   const receipts = yield* Effect.serviceOption(CommandReceipts.CommandReceiptStoreV2);
+  const recordingClaims = yield* Semaphore.make(1);
   yield* sql`CREATE TABLE IF NOT EXISTS attachment_staging (
     id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, owner TEXT NOT NULL, generation TEXT NOT NULL,
     manifest TEXT NOT NULL, digest TEXT, expected_digest TEXT, consumer TEXT, target TEXT, claimed_id TEXT)`.pipe(
@@ -300,6 +310,123 @@ const make = Effect.gen(function* () {
       manifest(attachment),
     ]);
   return AttachmentStaging.of({
+    claimRecording: (scope, pendingId, attachment) =>
+      recordingClaims.withPermit(
+        Effect.gen(function* () {
+          // Current authority is checked outside SQL, even for accepted references.
+          if (scope.authority !== undefined) {
+            if (Option.isNone(authority) || scope.thread === undefined)
+              return yield* unavailable(undefined);
+            yield* authority.value.checkTarget(scope, {
+              type: "thread",
+              threadId: scope.thread.threadId,
+            });
+          }
+          const threadId = scope.thread?.threadId;
+          const segment = threadId === undefined ? null : toSafeThreadAttachmentSegment(threadId);
+          const uuid = parseAttachmentUuid(pendingId);
+          const extension = parseAttachmentFileExtension(pendingId);
+          if (
+            threadId === undefined ||
+            segment === null ||
+            !uuid ||
+            !extension ||
+            pendingId !== `${PENDING_ATTACHMENT_THREAD_SEGMENT}-${uuid}-${extension}` ||
+            attachment.id !== `${segment}-${uuid}-${extension}` ||
+            attachment.type !== "file" ||
+            attachment.sizeBytes < 1 ||
+            attachment.sizeBytes > PROVIDER_SEND_TURN_MAX_FILE_BYTES
+          )
+            return yield* denied();
+          const reference = (digest: string): PeerAttachmentReference => ({
+            environmentId: scope.environmentId,
+            attachmentId: attachment.id,
+            name: attachment.name,
+            owner: owner(scope),
+            digest,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+          });
+          const request = yield* CurrentRequest;
+          const uncertain = () =>
+            new OrchestratorMcpFailure({
+              code: "outcome_unknown",
+              ...(request === undefined ? {} : { requestId: request.clientRequestId }),
+              lastConfirmedStage: "native_binding_accepted",
+              message:
+                "The recording claim may have been published. Its native acceptance is unproved; no file was replaced or cleaned up.",
+            });
+          const previous = yield* read(attachment.id);
+          if (previous !== undefined) {
+            if (
+              !owned(scope, previous) ||
+              previous.manifest !== manifest(attachment) ||
+              previous.consumer === "discarded"
+            )
+              return yield* denied();
+            if (previous.digest === null || previous.expected_digest !== previous.digest)
+              return yield* uncertain();
+            // Native acceptance, not current path existence/size, owns replay.
+            return reference(previous.digest);
+          }
+          const currentPath = resolveAttachmentPath({
+            attachmentsDir: config.attachmentsDir,
+            attachment: { ...attachment, id: pendingId },
+          });
+          const finalPath = resolveAttachmentPath({
+            attachmentsDir: config.attachmentsDir,
+            attachment,
+          });
+          if (currentPath === null || finalPath === null) return yield* denied();
+          const staged = yield* read(pendingId);
+          if (
+            staged !== undefined &&
+            (!owned(scope, staged) ||
+              staged.manifest !== manifest(attachment) ||
+              staged.digest === null ||
+              staged.consumer !== null)
+          )
+            return yield* denied();
+          const bytes = yield* fs.readFile(currentPath).pipe(Effect.mapError(unavailable));
+          if (bytes.byteLength !== attachment.sizeBytes) return yield* denied();
+          const digest = Hex.encode(sha256(bytes));
+          if (staged !== undefined && staged.digest !== digest) return yield* denied();
+          // Reserve the exact upload before publication. A different caller/thread
+          // cannot claim the same upload, and reconstruction never retries a write.
+          yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                const won =
+                  yield* sql`INSERT INTO attachment_staging (id,request_id,owner,generation,manifest,expected_digest)
+          VALUES (${attachment.id},${requestDigest(["recording-claim", pendingId])},${owner(scope)},${requestGeneration(scope)},${manifest(attachment)},${digest})
+          ON CONFLICT DO NOTHING RETURNING id`;
+                if (won.length !== 1) return yield* uncertain();
+                if (staged !== undefined) {
+                  const reserved =
+                    yield* sql`UPDATE attachment_staging SET consumer=${`recording:${attachment.id}`},target=${threadId},claimed_id=${attachment.id}
+              WHERE id=${pendingId} AND owner=${owner(scope)} AND generation=${requestGeneration(scope)}
+              AND consumer IS NULL AND digest=${digest} RETURNING id`;
+                  if (reserved.length !== 1) return yield* denied();
+                }
+              }),
+            )
+            .pipe(
+              Effect.mapError((error) =>
+                error._tag === "OrchestratorMcpFailure" ? error : unavailable(error),
+              ),
+            );
+          // An exclusive copy from captured bytes never aliases the upload inode or
+          // replaces an existing artifact. Partial publication remains uncertain.
+          yield* fs.writeFile(finalPath, bytes, { flag: "wx" }).pipe(Effect.mapError(uncertain));
+          const accepted = yield* sql`UPDATE attachment_staging SET digest=${digest}
+          WHERE id=${attachment.id} AND owner=${owner(scope)} AND generation=${requestGeneration(scope)}
+          AND manifest=${manifest(attachment)} AND digest IS NULL AND expected_digest=${digest} RETURNING id`.pipe(
+            Effect.mapError(uncertain),
+          );
+          if (accepted.length !== 1) return yield* uncertain();
+          return reference(digest);
+        }),
+      ),
     prepare: (scope, input, key, digest) =>
       Effect.gen(function* () {
         const requestId = requestDigest([requestNamespace(scope), "attachment-upload", key]);

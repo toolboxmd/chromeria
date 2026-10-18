@@ -1738,6 +1738,7 @@ sources and reasons.
     "apps/server/src/mcp/toolkits/attachment/input.ts",
     "apps/server/src/mcp/toolkits/device/handlers.ts",
     "apps/server/src/mcp/toolkits/environment/handlers.ts",
+    "apps/server/src/mcp/toolkits/preview/handlers.test.ts",
     "apps/server/src/mcp/toolkits/preview/handlers.ts",
     "apps/server/src/mcp/toolkits/previewControls/handlers.ts",
     "apps/server/src/mcp/toolkits/pullRequests/handlers.test.ts",

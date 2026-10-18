@@ -1,3 +1,4 @@
+import { CurrentRequest } from "../../McpRequestReceipts.ts";
 import { loadCaller } from "../../threadAccess.ts";
 import { assertSameLink } from "../../linkOrigin.ts";
 import * as Option from "effect/Option";
@@ -81,7 +82,8 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
     ...(tabId === undefined ? {} : { tabId }),
   });
-  if (["status", "open", "navigate", "snapshot"].includes(operation)) return { result };
+  if (["status", "open", "navigate", "snapshot", "recordingStop"].includes(operation))
+    return { result };
   const statusTabId =
     (operation !== "evaluate" && typeof result === "object" && result !== null
       ? (result as { tabId?: PreviewTabId }).tabId
@@ -166,37 +168,42 @@ export const claimPreviewRecording = Effect.fn("PreviewToolkit.claimRecording")(
   if (!currentPath || !finalPath) {
     return yield* new PreviewAutomationRecordingTransferError({ threadId });
   }
+  const { uploadedAttachmentId: _uploadedAttachmentId, ...recording } = artifact;
+  const attachment = {
+    type: "file" as const,
+    id: finalId,
+    name: `recording.${extension}`,
+    mimeType: artifact.mimeType,
+    sizeBytes: artifact.sizeBytes,
+  };
+  const staging = yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging);
+  const scope = yield* Effect.serviceOption(McpInvocationContext.McpInvocationContext);
+  if (Option.isSome(staging) && Option.isSome(scope)) {
+    if (scope.value.thread?.threadId !== threadId)
+      return yield* new PreviewAutomationRecordingTransferError({ threadId });
+    const resource = yield* staging.value.claimRecording(scope.value, pendingId, attachment);
+    return { ...recording, id: finalId, path: finalPath, resource };
+  }
+  // Minimal legacy compositions have no durable acceptance evidence. First
+  // publication is exclusive; an existing path is never guessed to be ours.
   const fileSystem = yield* FileSystem.FileSystem;
-  const validateFile = (filePath: string) =>
-    fileSystem.stat(filePath).pipe(
-      Effect.filterOrFail(
-        (stat) =>
-          stat.type === "File" &&
-          Number(stat.size) === artifact.sizeBytes &&
-          artifact.sizeBytes > 0 &&
-          artifact.sizeBytes <= PROVIDER_SEND_TURN_MAX_FILE_BYTES,
-        () => new PreviewAutomationRecordingTransferError({ threadId }),
-      ),
-    );
   yield* Effect.gen(function* () {
-    yield* validateFile(currentPath);
-    yield* fileSystem.rename(currentPath, finalPath);
+    const bytes = yield* fileSystem.readFile(currentPath);
+    if (
+      bytes.byteLength !== artifact.sizeBytes ||
+      artifact.sizeBytes < 1 ||
+      artifact.sizeBytes > PROVIDER_SEND_TURN_MAX_FILE_BYTES
+    )
+      return yield* new PreviewAutomationRecordingTransferError({ threadId });
+    yield* fileSystem.writeFile(finalPath, bytes, { flag: "wx" });
   }).pipe(
-    // Another stop may already have claimed this exact upload for this thread.
-    Effect.catchIf(
-      (cause) =>
-        cause._tag !== "PreviewAutomationRecordingTransferError" &&
-        cause.reason._tag === "NotFound",
-      () => validateFile(finalPath),
-    ),
     Effect.mapError((cause) => new PreviewAutomationRecordingTransferError({ threadId, cause })),
   );
-  const { uploadedAttachmentId: _uploadedAttachmentId, ...recording } = artifact;
-  return { ...recording, id: finalId, path: finalPath };
+  return { ...recording, id: finalId, path: finalPath, resource: undefined };
 });
 
 /** Snapshot access is independent of any renderer, page or tab state. */
-export const authorizeSnapshot = McpInvocationContext.requireThreadMcpCapability("preview").pipe(
+const authorizePreviewTarget = McpInvocationContext.requireThreadMcpCapability("preview").pipe(
   Effect.andThen(loadCaller()),
   Effect.flatMap((caller) =>
     caller.caller === undefined
@@ -209,6 +216,8 @@ export const authorizeSnapshot = McpInvocationContext.requireThreadMcpCapability
       : assertSameLink(caller, caller.caller),
   ),
 );
+
+export const authorizeSnapshot = authorizePreviewTarget;
 
 const handlers = {
   preview_dialog: McpToolAccess.actsAsCaller(
@@ -299,11 +308,13 @@ const handlers = {
   preview_recording_stop: McpToolAccess.actsAsCaller(
     (input) =>
       Effect.gen(function* () {
+        yield* authorizePreviewTarget;
         const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
         const staging = yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging);
         const modern =
           scope.client?.linked === true && scope.authority?.envelope.requestOwner !== undefined;
-        if (modern && Option.isNone(staging))
+        const request = yield* CurrentRequest;
+        if ((modern || request !== undefined) && Option.isNone(staging))
           return yield* new OrchestratorMcpFailure({
             code: "orchestration_error",
             message:
@@ -316,15 +327,11 @@ const handlers = {
           PREVIEW_RECORDING_STOP_TIMEOUT_MS,
           tabId,
         );
-        const artifact = yield* claimPreviewRecording(scope.thread.threadId, response.result);
-        if (modern && Option.isSome(staging)) {
-          const resource = yield* staging.value.publishReference(scope, {
-            type: "file",
-            id: artifact.id,
-            name: `recording.${parseAttachmentFileExtension(artifact.id) ?? "webm"}`,
-            mimeType: artifact.mimeType,
-            sizeBytes: artifact.sizeBytes,
-          });
+        const { resource, ...artifact } = yield* claimPreviewRecording(
+          scope.thread.threadId,
+          response.result,
+        );
+        if (modern && resource !== undefined) {
           return {
             resource,
             tabId: artifact.tabId,
