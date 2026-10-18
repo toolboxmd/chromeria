@@ -1,0 +1,156 @@
+import { EnvironmentId, OrchestratorMcpFailure } from "@t3tools/contracts";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
+import { Tool } from "effect/ai";
+
+import * as Invocation from "../mcp/McpInvocationContext.ts";
+import * as PeerForwarding from "../peer/PeerForwarding.ts";
+import * as PeerLinks from "../peer/PeerLinks.ts";
+import * as Settings from "../serverSettings.ts";
+import * as PageCache from "./PageCache.ts";
+import * as WebResearch from "./WebResearch.ts";
+import { WebReadInput, WebReadResult } from "./schemas.ts";
+
+export const HostedWebReadInput = Schema.Struct({
+  ...WebReadInput.fields,
+  cacheEnvironmentId: Schema.optional(EnvironmentId).annotate({
+    description: "Required with cacheId. Copy cacheEnvironmentId from the page's provenance.",
+  }),
+});
+
+export const HostedWebReadResult = Schema.Struct({
+  ...WebReadResult.fields,
+  cacheEnvironmentId: EnvironmentId,
+});
+
+export class ResearchHostUnavailable extends Schema.TaggedError<ResearchHostUnavailable>()(
+  "ResearchHostUnavailable",
+  {
+    environmentId: EnvironmentId,
+    reason: Schema.Literals(["link", "transport", "forwarding_loop", "invalid_response"]),
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message() {
+    return "The configured research host is unavailable. Check its peer link and ensure it reads locally. No local fetch was attempted.";
+  }
+}
+
+export class ResearchCacheOwnerError extends Schema.TaggedError<ResearchCacheOwnerError>()(
+  "ResearchCacheOwnerError",
+  {},
+) {
+  override get message() {
+    return "Cache continuation requires the original cacheEnvironmentId and the same research host. Read the URL again after changing hosts.";
+  }
+}
+
+export class ResearchHost extends Context.Service<
+  ResearchHost,
+  {
+    readonly read: (
+      input: typeof HostedWebReadInput.Type,
+    ) => Effect.Effect<
+      typeof HostedWebReadResult.Type,
+      | WebResearch.WebResearchInputError
+      | PageCache.PageCacheError
+      | ResearchHostUnavailable
+      | ResearchCacheOwnerError
+      | OrchestratorMcpFailure,
+      Invocation.McpInvocationContext
+    >;
+  }
+>()("t3/webResearch/ResearchHost") {}
+
+// The peer call uses the same wire schemas as the registered tool, without
+// importing its registration and creating a service/transport dependency cycle.
+const peerTool = Tool.make("web_read", {
+  parameters: HostedWebReadInput,
+  success: HostedWebReadResult,
+  failure: OrchestratorMcpFailure,
+});
+const decodeInput = Schema.decodeUnknownEffect(HostedWebReadInput);
+
+const make = Effect.gen(function* () {
+  const research = yield* WebResearch.WebResearch;
+  const settings = yield* Settings.ServerSettingsService;
+  const forwarding = yield* PeerForwarding.PeerForwarding;
+  const links = yield* PeerLinks.PeerLinks;
+
+  const read = Effect.fn("ResearchHost.read")(function* (raw: typeof HostedWebReadInput.Type) {
+    const input = yield* decodeInput(raw).pipe(
+      Effect.mapError(() => new WebResearch.WebResearchInputError({ reason: "invalid_input" })),
+    );
+    const scope = yield* Invocation.McpInvocationContext;
+    const host =
+      (yield* settings.getSettings.pipe(
+        Effect.mapError(
+          (cause) =>
+            new ResearchHostUnavailable({
+              environmentId: scope.environmentId,
+              reason: "link",
+              cause,
+            }),
+        ),
+      )).webResearch.host ?? scope.environmentId;
+    if (
+      (input.cacheId !== undefined && input.cacheEnvironmentId !== host) ||
+      (input.cacheId === undefined && input.cacheEnvironmentId !== undefined)
+    )
+      return yield* new ResearchCacheOwnerError();
+
+    if (host === scope.environmentId) {
+      const page = yield* research.read(input);
+      return { ...page, cacheEnvironmentId: host };
+    }
+    // PeerForwarding already fences linked callers. Reject here as well so a
+    // misconfigured host is a typed host failure and can never form a chain.
+    if (scope.client?.linked === true)
+      return yield* new ResearchHostUnavailable({ environmentId: host, reason: "forwarding_loop" });
+    const resolved = yield* links
+      .resolve(host)
+      .pipe(
+        Effect.mapError((cause) =>
+          cause.reason === "expired"
+            ? new OrchestratorMcpFailure({ code: "capability_denied", message: cause.message })
+            : new ResearchHostUnavailable({ environmentId: host, reason: "link", cause }),
+        ),
+      );
+    if (resolved.link.access === "read-only")
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "Research reads require a peer link with agent access.",
+      });
+    const page = yield* forwarding
+      .call(scope, peerTool, host, input, { expectedLinkIdentity: resolved.link.launchIdentity })
+      .pipe(
+        Effect.timeout("60 seconds"),
+        Effect.catchTags({
+          TimeoutError: (cause) =>
+            Effect.fail(
+              new ResearchHostUnavailable({
+                environmentId: host,
+                reason: "transport",
+                cause,
+              }),
+            ),
+        }),
+        Effect.mapError((cause) =>
+          cause._tag === "OrchestratorMcpFailure" && cause.code === "orchestration_error"
+            ? new ResearchHostUnavailable({ environmentId: host, reason: "transport", cause })
+            : cause,
+        ),
+      );
+    if (page.cacheEnvironmentId !== host)
+      return yield* new ResearchHostUnavailable({
+        environmentId: host,
+        reason: "invalid_response",
+      });
+    return page;
+  });
+  return ResearchHost.of({ read });
+});
+
+export const layer = Layer.effect(ResearchHost, make);

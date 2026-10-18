@@ -198,6 +198,27 @@ again on its next connect.
 For Antigravity's Google callback on a remote host, see
 [remote sign-in](./providers-antigravity.md#sign-in-from-a-remote-device).
 
+## Share research reads across environments
+
+Agents in Chromeria can share one environment's public-page cache and request
+limits through `web_read`. Link each source environment to the research
+environment with agent access, then find its ID with `t3 environment list`.
+In each source server's `userdata/settings.json`, set:
+
+```json
+{ "webResearch": { "host": "<linked-environment-id>" } }
+```
+
+Merge this entry into your existing settings. Leave it unset, or set `host` to
+`null`, on the research environment itself. An unavailable or revoked link
+returns an error; reads do not fall back to the source machine. These server
+settings apply to agents used from web, desktop and mobile.
+
+For long pages, pass the returned `cacheId`, `cacheEnvironmentId` and
+`nextOffset` (as `offset`) to continue. Changing the research host requires
+reading the URL again. Outside MCP clients and links with read-only access
+cannot spend the research environment's request budget.
+
 ## Browser on a remote environment
 
 Browser tabs belong to the environment, so you and your agents see the same

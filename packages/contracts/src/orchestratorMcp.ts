@@ -742,6 +742,7 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "capability_denied",
       "parent_not_active",
       "provider_unavailable",
+      "research_host_unavailable",
       "model_unavailable",
       "runtime_mode_escalation_denied",
       "interaction_mode_escalation_denied",

@@ -121,7 +121,7 @@ const capabilityFor = (name: string): Invocation.McpCapability | undefined =>
             name === "unlink_issue" ||
             name === "list_thread_issues"
           ? "pull-requests"
-          : name.startsWith("html_")
+          : name.startsWith("html_") || name === "web_read"
             ? undefined
             : "orchestration";
 

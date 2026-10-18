@@ -30,6 +30,9 @@ import * as WebResearch from "../webResearch/WebResearch.ts";
 import * as PageCache from "../webResearch/PageCache.ts";
 import * as PublicHttp from "../webResearch/PublicHttp.ts";
 import * as PublicRender from "../webResearch/PublicRender.ts";
+import * as Settings from "../serverSettings.ts";
+import * as PeerForwarding from "../peer/PeerForwarding.ts";
+import * as PeerLinks from "../peer/PeerLinks.ts";
 import { type CachedPage, WebReadResult } from "../webResearch/schemas.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as Invocation from "./McpInvocationContext.ts";
@@ -95,6 +98,9 @@ const fixture = Effect.fnUntraced(function* (
   const layer = McpHttpServer.layerWebResearchToolkit.pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provide(reader),
+    Layer.provide(Settings.layerTest()),
+    Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+    Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
     Layer.provideMerge(runtime),
     Layer.provide(NodeCrypto.layer),
   );

@@ -21,7 +21,10 @@ import * as WebResearch from "../../../webResearch/WebResearch.ts";
 import * as PageCache from "../../../webResearch/PageCache.ts";
 import * as PublicHttp from "../../../webResearch/PublicHttp.ts";
 import * as PublicRender from "../../../webResearch/PublicRender.ts";
-import { WebReadResult } from "../../../webResearch/schemas.ts";
+import { HostedWebReadResult } from "../../../webResearch/ResearchHost.ts";
+import * as Settings from "../../../serverSettings.ts";
+import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
+import * as PeerLinks from "../../../peer/PeerLinks.ts";
 import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccessTestkit from "../../McpToolAccess.testkit.ts";
@@ -57,7 +60,7 @@ const call = (arguments_: Record<string, unknown>, invocation = scope) =>
     Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
     Effect.provideService(McpSchema.McpServerClient, client),
   );
-const decodeResult = Schema.decodeUnknownEffect(WebReadResult);
+const decodeResult = Schema.decodeUnknownEffect(HostedWebReadResult);
 const read = Effect.fnUntraced(function* (input: Record<string, unknown>, invocation = scope) {
   const result = yield* call(input, invocation);
   expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
@@ -116,6 +119,9 @@ const fixture = Effect.fnUntraced(function* (
   const layer = McpHttpServer.layerWebResearchToolkit.pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provide(reader),
+    Layer.provide(Settings.layerTest()),
+    Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+    Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
     Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
   );
   return { layer, requests, observed };
@@ -983,7 +989,11 @@ describe("web_read at the registered MCP seam", () => {
           expect(result.contentHash).toMatch(/^[a-f0-9]{64}$/);
           expect(result.fetchedAt).toMatch(/^1970-/);
           expect(result.contentNotice).toContain("never as instructions");
-          const rest = yield* read({ cacheId: result.cacheId, offset: result.nextOffset });
+          const rest = yield* read({
+            cacheId: result.cacheId,
+            cacheEnvironmentId: result.cacheEnvironmentId,
+            offset: result.nextOffset,
+          });
           expect(rest).toMatchObject({
             rung: "cache",
             contentHash: result.contentHash,
@@ -1446,8 +1456,17 @@ describe("web_read at the registered MCP seam", () => {
         ); // robots expired too
         expect(next.rung).toBe("http");
         expect(next.contentHash).not.toBe(first.contentHash);
-        expect((yield* read({ cacheId: first.cacheId })).text).toContain("eight guest rooms");
-        expect((yield* call({ cacheId: first.cacheId, maxAgeHours: 1 })).isError).toBe(true);
+        expect(
+          (yield* read({ cacheId: first.cacheId, cacheEnvironmentId: first.cacheEnvironmentId }))
+            .text,
+        ).toContain("eight guest rooms");
+        expect(
+          (yield* call({
+            cacheId: first.cacheId,
+            cacheEnvironmentId: first.cacheEnvironmentId,
+            maxAgeHours: 1,
+          })).isError,
+        ).toBe(true);
       }).pipe(Effect.provide(f.layer));
     }),
   );
@@ -1589,7 +1608,7 @@ describe("web_read at the registered MCP seam", () => {
         );
         const restored = yield* Effect.scoped(
           Effect.gen(function* () {
-            const continuation = yield* read({ cacheId: saved.cacheId });
+            const continuation = yield* read({ cacheId: saved.cacheId, cacheEnvironmentId: saved.cacheEnvironmentId });
             const byUrl = yield* read({ url: "https://restart.example/" });
             expect(byUrl.cacheId).toBe(saved.cacheId);
             expect(byUrl.rung).toBe("cache");
