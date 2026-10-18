@@ -83,7 +83,7 @@ flowchart TD
     %% PAR: #382 PR #410
     RTL --> PAR
     RPR["Remote descendant requests"]
-    %% RPR: #369
+    %% RPR: #369 PR #416
     RTL --> RPR
     PAR --> RPR
     NR["Network routes"]
