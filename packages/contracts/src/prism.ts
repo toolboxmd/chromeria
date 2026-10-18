@@ -42,20 +42,19 @@ export type PrismLane = typeof PrismLane.Type;
 export const DEFAULT_PRISM_LANE: PrismLane = "medium";
 
 /**
- * One entry of a role's model list. The same model at another effort is a
- * separate entry.
+ * A Color: one provider instance, model and effort used together. Prism role
+ * lists, the Promachos kit and Spectrum slots all store Colors; the same
+ * model at another effort is a separate Color.
  */
-export const PrismModelPreference = Schema.Struct({
+export const Color = Schema.Struct({
   instanceId: ProviderInstanceId,
   model: TrimmedNonEmptyString,
   /** Claude effort, Codex/Grok reasoningEffort, OpenCode variant. */
   effort: Schema.optionalKey(TrimmedNonEmptyString),
 });
-export type PrismModelPreference = typeof PrismModelPreference.Type;
+export type Color = typeof Color.Type;
 
-const modelList = Schema.Array(PrismModelPreference).pipe(
-  Schema.withDecodingDefault(Effect.succeed([])),
-);
+const modelList = Schema.Array(Color).pipe(Schema.withDecodingDefault(Effect.succeed([])));
 
 export const PrismLaneModels = Schema.Struct({
   easy: modelList,
@@ -174,7 +173,7 @@ export function prismRoleModels(
   kits: PrismRoleKits,
   role: PrismRole,
   lane: PrismLane,
-): ReadonlyArray<PrismModelPreference> {
+): ReadonlyArray<Color> {
   return role === "worker" ? kits.worker.lanes[lane] : kits[role].models;
 }
 
@@ -184,7 +183,7 @@ const kitPatchFields = {
 };
 const singleListKitPatch = Schema.Struct({
   ...kitPatchFields,
-  models: Schema.optionalKey(Schema.Array(PrismModelPreference)),
+  models: Schema.optionalKey(Schema.Array(Color)),
 });
 const switchableKitPatch = Schema.Struct({
   ...singleListKitPatch.fields,
@@ -202,9 +201,9 @@ export const PrismRoleKitsPatch = Schema.Struct({
       ...kitPatchFields,
       lanes: Schema.optionalKey(
         Schema.Struct({
-          easy: Schema.optionalKey(Schema.Array(PrismModelPreference)),
-          medium: Schema.optionalKey(Schema.Array(PrismModelPreference)),
-          hard: Schema.optionalKey(Schema.Array(PrismModelPreference)),
+          easy: Schema.optionalKey(Schema.Array(Color)),
+          medium: Schema.optionalKey(Schema.Array(Color)),
+          hard: Schema.optionalKey(Schema.Array(Color)),
         }),
       ),
     }),

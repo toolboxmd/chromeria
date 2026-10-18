@@ -1,26 +1,19 @@
 import {
   overlayPrismRoleKits,
   ProjectId,
-  type PrismModelPreference,
+  type Color,
   type PrismRole,
   type PrismRoleKits,
   type PrismRoleKitsPatch,
   type PrismLane,
   type PrismSwitchableRole,
-  type ModelCapabilities,
   type ProjectSettingsOverrides,
-  type ProviderInstanceId,
 } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
-import type { ProviderInstanceEntry } from "../../providerInstances";
-import type { ModelEsque } from "../chat/providerIconUtils";
+import { colorKey } from "./ColorPicker.logic";
 import { planScopedSettingsClear, planScopedSettingsPatch } from "./scopedSettings";
 
-export function prismModelKey(entry: Pick<PrismModelPreference, "instanceId" | "model">) {
-  return JSON.stringify([entry.instanceId, entry.model]);
-}
-
-export function movePrismPreference<T extends PrismModelPreference>(
+export function movePrismPreference<T extends Color>(
   models: readonly T[],
   index: number,
   direction: -1 | 1,
@@ -34,10 +27,9 @@ export function movePrismPreference<T extends PrismModelPreference>(
 }
 
 /** A list row while editing; `entryId` keeps drag identity stable across saves. */
-export type PrismDraftPreference = PrismModelPreference & { entryId: number };
+export type PrismDraftPreference = Color & { entryId: number };
 
-const samePreference = (a: PrismModelPreference, b: PrismModelPreference) =>
-  prismModelKey(a) === prismModelKey(b) && a.effort === b.effort;
+const samePreference = (a: Color, b: Color) => colorKey(a) === colorKey(b) && a.effort === b.effort;
 
 /** Row ids only need to be unique within their list. */
 export const nextPrismEntryId = (draft: readonly PrismDraftPreference[]) =>
@@ -49,7 +41,7 @@ export const nextPrismEntryId = (draft: readonly PrismDraftPreference[]) =>
  */
 export function syncPrismDraft(
   draft: readonly PrismDraftPreference[],
-  saved: readonly PrismModelPreference[],
+  saved: readonly Color[],
 ): readonly PrismDraftPreference[] {
   if (
     draft.length === saved.length &&
@@ -65,23 +57,13 @@ export function syncPrismDraft(
   });
 }
 
-export function prismEffortOptions(capabilities: ModelCapabilities | null | undefined) {
-  const descriptor = capabilities?.optionDescriptors?.find(
-    (option) =>
-      option.type === "select" && ["effort", "reasoningEffort", "variant"].includes(option.id),
-  );
-  return descriptor?.type === "select"
-    ? descriptor.options.filter((option) => !descriptor.promptInjectedValues?.includes(option.id))
-    : [];
-}
-
 /** One autosaved edit on the Prism page. */
 export type PrismRoleUpdate =
-  | { kind: "lane"; role: "worker"; lane: PrismLane; models: readonly PrismModelPreference[] }
+  | { kind: "lane"; role: "worker"; lane: PrismLane; models: readonly Color[] }
   | {
       kind: "models";
       role: Exclude<PrismRole, "worker">;
-      models: readonly PrismModelPreference[];
+      models: readonly Color[];
     }
   | { kind: "enabled"; role: PrismSwitchableRole; enabled: boolean };
 
@@ -165,29 +147,6 @@ export function planPrismRolesReset(
       return promachos ? { ...written, prismRoles: { promachos } } : written;
     },
   );
-}
-
-export function prismModelChoices(
-  entries: readonly Pick<
-    ProviderInstanceEntry,
-    "instanceId" | "displayName" | "enabled" | "isAvailable" | "models"
-  >[],
-  options: ReadonlyMap<ProviderInstanceId, readonly ModelEsque[]>,
-  disabledReason: (instanceId: ProviderInstanceId, model: string) => string | null,
-) {
-  return entries
-    .filter((entry) => entry.enabled && entry.isAvailable)
-    .flatMap((entry) =>
-      (options.get(entry.instanceId) ?? [])
-        .filter((model) => !model.isUnavailable && !disabledReason(entry.instanceId, model.slug))
-        .map((model) => ({
-          preference: { instanceId: entry.instanceId, model: model.slug },
-          label: `${entry.displayName} / ${model.name}`,
-          efforts: prismEffortOptions(
-            entry.models.find((candidate) => candidate.slug === model.slug)?.capabilities,
-          ),
-        })),
-    );
 }
 
 export type PrismWriteExpectation = PrismRoleUpdate | { kind: "inherit" };
