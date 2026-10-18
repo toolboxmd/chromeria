@@ -1869,7 +1869,24 @@ it.live(
         );
         const revokedPreview = { ...grant, preview: false };
         yield* b.authority.setGrant(revokedPreview);
-        expect((yield* nativeCall(a, parent, "preview_snapshot", input)).isError).toBe(true);
+        const previewDenied = yield* nativeCall(a, parent, "preview_snapshot", input);
+        expect(previewDenied.isError).toBe(true);
+        expect(previewDenied.structuredContent).toMatchObject({
+          code: "capability_denied",
+          message:
+            'MCP credential does not grant the preview capability: browser preview tools are off for this thread. Do not retry them. To check a page, use a headless browser from the shell, such as Playwright, or curl. The user can turn on "Agent browser access" in Settings; it applies when the agent session next starts.',
+        });
+        const newSaveDenied = yield* nativeCall(a, parent, "preview_snapshot", {
+          ...input,
+          clientRequestId: "png382-ungranted-new-save",
+        });
+        expect(newSaveDenied.isError).toBe(true);
+        expect(newSaveDenied.structuredContent).toEqual(previewDenied.structuredContent);
+        expect(reads).toBe(1);
+        expect(yield* fs.readDirectory(a.config.browserArtifactsDir)).toHaveLength(1);
+        expect(Array.from(yield* fs.readFile(receipt.artifact.screenshotPath))).toEqual(
+          Array.from(png),
+        );
         yield* b.authority.setGrant({ ...grant, preview: true });
         expect((yield* nativeCall(a, parent, "preview_snapshot", input)).structuredContent).toEqual(
           receipt,
@@ -10534,6 +10551,34 @@ it.live(
           ),
         );
         expect(refused.status).toBe(403);
+        expect(yield* refused.json).toEqual({
+          code: "capability_denied",
+          message:
+            "Saved-preview authorization needs its authenticated original destination generation.",
+        });
+        const malformedEnvelope = yield* http.execute(
+          HttpClientRequest.post(`${a.url}/mcp/peer-control/saved-preview`).pipe(
+            HttpClientRequest.setHeader("authorization", credential.config.authorizationHeader),
+            HttpClientRequest.setHeader(PeerAuthority.AUTHORITY_HEADER, "{"),
+            HttpClientRequest.setBody(HttpBody.text(json(body), "application/json")),
+          ),
+        );
+        expect(malformedEnvelope.status).toBe(403);
+        expect(yield* malformedEnvelope.json).toEqual({
+          code: "invalid_request",
+          message: "Invalid peer authority envelope.",
+        });
+        const malformedInput = yield* http.execute(
+          HttpClientRequest.post(`${a.url}/mcp/peer-control/saved-preview`).pipe(
+            HttpClientRequest.setHeader("authorization", credential.config.authorizationHeader),
+            HttpClientRequest.setBody(HttpBody.text("{}", "application/json")),
+          ),
+        );
+        expect(malformedInput.status).toBe(403);
+        expect(yield* malformedInput.json).toEqual({
+          code: "invalid_request",
+          message: "Invalid saved-preview authorization context.",
+        });
         expect(yield* fs.exists(a.config.browserArtifactsDir)).toBe(false);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),

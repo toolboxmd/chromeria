@@ -1226,6 +1226,12 @@ const layerSavedPreviewAuthorization = Layer.unwrap(
                 "Saved-preview authorization needs its authenticated original destination generation.",
             });
           yield* McpRouting.withContext(input, PreviewHandlers.authorizeSnapshot).pipe(
+            Effect.catchTags({
+              PreviewAutomationUnavailableError: (error) =>
+                Effect.fail(
+                  new OrchestratorMcpFailure({ code: "capability_denied", message: error.message }),
+                ),
+            }),
             Effect.provideService(McpRouting.CurrentTool, PreviewSnapshotTool),
             Effect.provideService(ThreadManagementService.ThreadManagementService, threads.value),
             Effect.provideService(PeerAuthority.PeerAuthority, authority.value),
