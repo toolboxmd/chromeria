@@ -799,6 +799,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
         const now = yield* Clock.currentTimeMillis;
         if (slot.renewAfter !== null && slot.renewAfter > now)
           yield* Effect.sleep(slot.renewAfter - now);
+        const renewalStartedAt = yield* Clock.monotonicTimeNanos;
         const renewed = yield* renewal.value.ensure(key, lease.httpBaseUrl).pipe(
           Effect.catchTags({
             ConnectionTransientError: () => Effect.succeed({ _tag: "Retry" as const }),
@@ -840,8 +841,15 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
         if (renewed._tag === "Pending") yield* Effect.sleep("1 hour");
         else if (renewed._tag === "Retry") yield* Effect.sleep("1 minute");
         else if (renewed._tag === "Renewed") {
-          // The server renewAfter can already be past on an ahead client.
-          yield* Effect.sleep("1 minute");
+          const elapsedMs =
+            Number((yield* Clock.monotonicTimeNanos) - renewalStartedAt) / 1_000_000;
+          // On older servers, a not-due reply has at least expiresAt - renewAfter left.
+          const remainingMs =
+            renewed.result.expiresAt -
+            (renewed.result.serverTime ?? renewed.result.renewAfter) -
+            elapsedMs;
+          // Leave half the remaining lifetime for rotation, independent of the client clock.
+          yield* Effect.sleep(Math.min(60_000, Math.max(1, remainingMs / 2)));
         }
       }
     });

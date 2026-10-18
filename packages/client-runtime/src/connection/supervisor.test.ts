@@ -1,17 +1,20 @@
 import {
   AuthStandardClientScopes,
+  AuthSessionRenewResult,
   EnvironmentId,
   type AuthRenewalLocalRecord,
   type ServerConfig,
 } from "@t3tools/contracts";
 import { RelayClientTracer } from "@t3tools/shared/relayTracing";
 import { describe, expect, it } from "@effect/vitest";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Random from "effect/Random";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
@@ -81,6 +84,7 @@ const PREPARED_CONNECTION: PreparedConnection = {
 };
 
 const TEST_RPC_CLIENT = {} as WsRpcProtocolClient;
+const decodeRenewalResult = Schema.decodeUnknownSync(AuthSessionRenewResult);
 
 const LAN_TARGET = new BearerConnectionTarget({
   environmentId: TARGET.environmentId,
@@ -1470,6 +1474,77 @@ describe("EnvironmentSupervisor", () => {
         expect(yield* Ref.get(attempts)).toBe(3);
         yield* TestClock.adjust(1);
         expect(yield* Ref.get(attempts)).toBe(4);
+        expect(yield* Ref.get(harness.sessionCount)).toBe(1);
+        yield* supervisor.disconnect;
+      }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect.each([true, false])(
+    "renews before server expiry with an ahead clock (serverTime supplied: %s)",
+    (includeServerTime) =>
+      Effect.gen(function* () {
+        const clientOffset = 3_600_000;
+        yield* TestClock.adjust(clientOffset);
+        const attempts: number[] = [];
+        const rotations: number[] = [];
+        const record: AuthRenewalLocalRecord = {
+          revision: 1,
+          active: {
+            epoch: "epoch",
+            environmentId: TARGET.environmentId,
+            origin: TARGET.httpBaseUrl,
+            kind: "cookie",
+            current: "current-secret",
+            generation: 0,
+            pending: null,
+            accessToken: null,
+            expiresAt: 30_000,
+            renewAfter: 15_000,
+          },
+          provisional: [],
+        };
+        const renewal = Renewal.SessionRenewal.of({
+          stage: () => Effect.die("Unexpected enrollment"),
+          complete: () => Effect.die("Unexpected completion"),
+          enrollExisting: () => Effect.void,
+          read: () => Effect.succeed(record),
+          ensure: () =>
+            Effect.gen(function* () {
+              const serverTime = (yield* Clock.currentTimeMillis) - clientOffset;
+              attempts.push(serverTime);
+              if (serverTime >= 30_000) return yield* new Renewal.RenewalRejected({});
+              const due = serverTime >= 15_000;
+              if (due) rotations.push(serverTime);
+              return {
+                _tag: "Renewed",
+                result: decodeRenewalResult({
+                  outcome: due ? "rotated" : "current",
+                  generation: due ? 1 : 0,
+                  expiresAt: due ? serverTime + 30_000 : 30_000,
+                  renewAfter: due ? serverTime + 15_000 : 15_000,
+                  ...(includeServerTime ? { serverTime } : {}),
+                }),
+              };
+            }),
+        });
+        const harness = yield* makeHarness();
+        const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+          initiallyDesired: true,
+        }).pipe(
+          Effect.provide(harness.dependencies),
+          Effect.provideService(Renewal.SessionRenewal, renewal),
+        );
+        yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+        yield* TestClock.adjust(0);
+        expect(attempts).toEqual([0]);
+        const firstDelay = includeServerTime ? 15_000 : 7_500;
+        yield* TestClock.adjust(firstDelay - 1);
+        expect(attempts).toEqual([0]);
+        yield* TestClock.adjust(1);
+        expect(attempts).toEqual([0, firstDelay]);
+        if (!includeServerTime) yield* TestClock.adjust(7_500);
+        expect(rotations).toEqual([15_000]);
+        expect((yield* SubscriptionRef.get(supervisor.state)).phase).toBe("connected");
         expect(yield* Ref.get(harness.sessionCount)).toBe(1);
         yield* supervisor.disconnect;
       }).pipe(Effect.provide(TestClock.layer())),
