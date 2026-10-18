@@ -412,6 +412,9 @@ packages/client-runtime/src/work-log/itemDetail.ts
 packages/shared/src/orchestrationV2PendingBackgroundWork.test.ts
 packages/shared/src/orchestrationV2PendingBackgroundWork.ts
 
+# Launcher test fixture ownership (#157)
+apps/server/src/serviceLauncher.test.ts
+
 # Legacy terminal-label boundaries (#345).
 packages/shared/src/composerContextLegacy.test.ts
 packages/shared/src/composerContextLegacy.ts
