@@ -1861,7 +1861,7 @@ sources and reasons.
 ```json
 {
   "id": "peer-links",
-  "purpose": "Port upstream server peer links and record-first remote delegation until absorption replaces the port; retain permanent pairing-code sessions, target Prism launch intent and recovery-aware waits. Extend routing to all MCP toolkit groups while retaining caller capabilities and link-mode narrowing. Own explicit peer consent, including its mobile settings entry and destination permission checks. Replay delegated lifecycle results durably and open qualified destination work through the source client connection. Bind negotiated requests to verified durable caller identity, transfer attachment bytes through destination staging, reconcile native acceptance and retain truthful unknown outcomes for unreconcilable effects. Surface qualified descendant questions and approvals through verified mixed ancestry and the authenticated source client, with native revision guards and receipt replay.",
+  "purpose": "Port upstream server peer links and record-first remote delegation until absorption replaces the port; retain permanent pairing-code sessions, target Prism launch intent and recovery-aware waits. Extend routing to all MCP toolkit groups while retaining caller capabilities and link-mode narrowing. Own explicit peer consent, including its mobile settings entry and destination permission checks. Replay delegated lifecycle results durably and open qualified destination work through the source client connection. Bind negotiated requests to verified durable caller identity, transfer attachment bytes through destination staging, reconcile native acceptance and retain truthful unknown outcomes for unreconcilable effects. Surface qualified descendant questions and approvals through verified mixed ancestry and the authenticated source client, with native revision guards and receipt replay. Keep source viewers and question choices readable across clients, with exact transport diagnostics behind a disclosure. Align sparse remote follow-up selection with full projections so initial work appears once.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/164",
     "https://github.com/toolboxmd/chromeria/issues/302",
@@ -1882,7 +1882,8 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/pull/368",
     "https://github.com/toolboxmd/chromeria/pull/391",
     "https://github.com/toolboxmd/chromeria/pull/410",
-    "https://github.com/toolboxmd/chromeria/pull/416"
+    "https://github.com/toolboxmd/chromeria/pull/416",
+    "https://github.com/toolboxmd/chromeria/pull/420"
   ],
   "newFiles": [
     "packages/contracts/src/peerTask.ts",
@@ -2010,6 +2011,7 @@ sources and reasons.
     "packages/shared/src/agentAwareness.test.ts",
     "packages/shared/src/agentAwareness.ts",
     "apps/server/src/orchestration-v2/WireProjection.test.ts",
+    "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
     "packages/client-runtime/src/t3ToolSummary.test.ts"
   ],
   "sharedFiles": [
