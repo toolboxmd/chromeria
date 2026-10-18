@@ -553,7 +553,7 @@ it.effect("round 3: bounds actual semaphore contention separately from active fe
         const fiber = yield* Effect.forkScoped(
           Effect.forEach(
             Array.from({ length: 24 }, (_, i) => `https://contention.example/${i}`),
-            (url) => s.read({ url }),
+            (url) => s.read({ url, followSubpages: false }),
             { concurrency: "unbounded" },
           ),
         );
