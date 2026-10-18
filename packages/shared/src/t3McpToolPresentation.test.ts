@@ -1,8 +1,24 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { T3_MCP_TOOL_NAMES, resolveT3McpToolPresentation } from "./t3McpToolPresentation.ts";
+import {
+  T3_MCP_TOOL_NAMES,
+  resolveT3McpToolDefinition,
+  resolveT3McpToolPresentation,
+} from "./t3McpToolPresentation.ts";
 
 describe("resolveT3McpToolPresentation", () => {
+  it("presents typed device discovery and execution through the existing device controls", () => {
+    for (const name of ["device_commands", "device_execute"]) {
+      const definition = resolveT3McpToolDefinition(name);
+      expect(definition?.icon).toBe("device");
+      expect(definition?.summaryAction).toBe("device");
+      expect(definition?.labels.every((label) => label.trim().length > 0)).toBe(true);
+      expect(resolveT3McpToolPresentation(`mcp__t3-code__${name}`)).toEqual({
+        displayName: definition?.displayName,
+        logo: "t3-code",
+      });
+    }
+  });
   it("recognizes every T3 tool across provider prefixes and completion suffixes", () => {
     for (const tool of T3_MCP_TOOL_NAMES) {
       const presentation = resolveT3McpToolPresentation(tool);
