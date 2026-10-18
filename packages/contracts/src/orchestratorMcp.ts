@@ -1,4 +1,5 @@
 import { ThreadToolsRequest } from "./threadTools.ts";
+import { McpScheduledMutationReceipt } from "./mcpRequest.ts";
 import { PeerTaskResult, PeerTaskSnapshot, PeerTaskStop } from "./peerTask.ts";
 import { BareLaunchRequest, BareSupport } from "./bareLaunch.ts";
 import {
@@ -691,6 +692,8 @@ export type OrchestratorMcpEnvironmentLinksResult =
 
 export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   executionPurposeVersions: Schema.optional(Schema.Array(Schema.Literal(1))),
+  peerAttachments: Schema.optional(Schema.Literal(1)),
+  peerRequests: Schema.optional(Schema.Literal(1)),
   bareLaunch: Schema.optional(Schema.Boolean),
   toolAllowlist: Schema.optional(Schema.Boolean),
   /** The calling thread, or null when the caller is not a T3 thread. */
@@ -759,7 +762,10 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
 });
 export type OrchestratorMcpScheduledTask = typeof OrchestratorMcpScheduledTask.Type;
 
-export const OrchestratorMcpScheduleTaskResult = OrchestratorMcpScheduledTask;
+export const OrchestratorMcpScheduleTaskResult = Schema.Union([
+  OrchestratorMcpScheduledTask,
+  McpScheduledMutationReceipt,
+]);
 export type OrchestratorMcpScheduleTaskResult = typeof OrchestratorMcpScheduleTaskResult.Type;
 
 export const OrchestratorMcpListScheduledTasksInput = Schema.Struct({
@@ -857,10 +863,13 @@ export const OrchestratorMcpDeleteScheduledTaskInput = Schema.Struct({
 export type OrchestratorMcpDeleteScheduledTaskInput =
   typeof OrchestratorMcpDeleteScheduledTaskInput.Type;
 
-export const OrchestratorMcpDeleteScheduledTaskResult = Schema.Struct({
-  scheduledTaskId: ScheduledTaskId,
-  deleted: Schema.Boolean,
-});
+export const OrchestratorMcpDeleteScheduledTaskResult = Schema.Union([
+  Schema.Struct({
+    scheduledTaskId: ScheduledTaskId,
+    deleted: Schema.Boolean,
+  }),
+  McpScheduledMutationReceipt,
+]);
 export type OrchestratorMcpDeleteScheduledTaskResult =
   typeof OrchestratorMcpDeleteScheduledTaskResult.Type;
 
@@ -869,6 +878,7 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
   {
     code: Schema.Literals([
       "capability_denied",
+      "outcome_unknown",
       "parent_not_active",
       "provider_unavailable",
       "research_host_unavailable",
@@ -892,5 +902,9 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "target_required",
     ]),
     message: Schema.String,
+    requestId: Schema.optional(Schema.String),
+    lastConfirmedStage: Schema.optional(
+      Schema.Literals(["dispatch_started", "native_binding_accepted"]),
+    ),
   },
 ) {}

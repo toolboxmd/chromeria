@@ -22,6 +22,8 @@ import * as Registry from "./McpSessionRegistry.ts";
 import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import { assertSameLink } from "./linkOrigin.ts";
 import { assertTargetWithinLimits, unavailable } from "./threadAccess.ts";
+import * as RequestReceipts from "./McpRequestReceipts.ts";
+import * as Ref from "effect/Ref";
 
 /** Destination-owned resources are addressed in that environment, never copied implicitly. */
 export const fields = {
@@ -43,11 +45,28 @@ export const fields = {
 };
 
 export const parameters = <F extends Schema.Struct.Fields>(schema: Schema.Struct<F>) =>
-  Schema.Struct({ ...schema.fields, ...fields });
+  Schema.Struct({
+    // Retain existing field order for legacy authority digests, then add defaults.
+    ...schema.fields,
+    clientRequestId: Schema.optional(
+      Schema.String.check(Schema.isMaxLength(512)).annotate({
+        description:
+          "With negotiated durable requests, reuse this key for the same intended operation across credential renewal or restart. Changed semantic input conflicts. An outcome_unknown must not be retried under a fresh key without inspecting its destination.",
+      }),
+    ),
+    ...schema.fields,
+    ...fields,
+  });
 
 export class CurrentTool extends Context.Reference<Tool.Any | undefined>("t3/mcp/CurrentTool", {
   defaultValue: () => undefined,
 }) {}
+export class CurrentEffect extends Context.Reference<"read" | "owned" | "external-unknown">(
+  "t3/mcp/CurrentEffect",
+  {
+    defaultValue: () => "read",
+  },
+) {}
 
 const decodePreparedDocument = Schema.decodeUnknownEffect(HtmlRender.PreparedDocument);
 const decodeDelegate = Schema.decodeUnknownEffect(OrchestratorMcpDelegateTaskInput);
@@ -222,7 +241,7 @@ const capabilityFor = (name: string): Invocation.McpCapability | undefined =>
             : "orchestration";
 
 /** Called only after the declaration's access check and before its local handler. */
-export const invoke = <P, A, E, R>(
+const invokeRouted = <P, A, E, R>(
   params: P,
   handle: (params: P) => Effect.Effect<A, E, R>,
 ): Effect.Effect<A, E | OrchestratorMcpFailure, R> =>
@@ -293,7 +312,11 @@ export const invoke = <P, A, E, R>(
           title: document.title,
           height: document.height,
         })
-        .pipe(Effect.mapError(unavailable));
+        .pipe(
+          Effect.mapError((error) =>
+            error._tag === "OrchestratorMcpFailure" ? error : unavailable(),
+          ),
+        );
       return {
         htmlRender: reference,
         message:
@@ -302,4 +325,71 @@ export const invoke = <P, A, E, R>(
     }
     // PeerForwarding decodes the paired toolkit's success schema before returning.
     return result as A;
+  });
+
+/** Identity spans routing and destination-owned execution, including source HTML publication. */
+export const invoke = <P, A, E, R>(
+  params: P,
+  handle: (params: P) => Effect.Effect<A, E, R>,
+): Effect.Effect<A, E | OrchestratorMcpFailure, R> =>
+  Effect.gen(function* () {
+    const tool = yield* CurrentTool;
+    const effect = yield* CurrentEffect;
+    const scope = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+    const receipts = yield* Effect.serviceOption(RequestReceipts.McpRequestReceipts);
+    const run = invokeRouted(params, handle).pipe(
+      Effect.provideService(
+        RequestReceipts.CurrentOperation,
+        tool !== undefined &&
+          effect === "external-unknown" &&
+          (Option.isSome(receipts) ||
+            (Option.isSome(scope) && scope.value.authority?.envelope.requestOwner !== undefined)) &&
+          typeof params === "object" &&
+          params !== null &&
+          "clientRequestId" in params &&
+          typeof params.clientRequestId === "string" &&
+          (Option.isNone(scope) ||
+            scope.value.client?.linked !== true ||
+            scope.value.authority?.envelope.requestOwner !== undefined)
+          ? { tool: tool.name, input: params }
+          : undefined,
+      ),
+    );
+    if (
+      tool !== undefined &&
+      effect !== "read" &&
+      Option.isSome(scope) &&
+      Option.isNone(receipts) &&
+      typeof params === "object" &&
+      params !== null &&
+      "clientRequestId" in params &&
+      typeof params.clientRequestId === "string" &&
+      scope.value.authority?.envelope.requestOwner !== undefined
+    )
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "Durable keyed requests are unavailable in this environment.",
+      });
+    if (
+      tool === undefined ||
+      effect === "read" ||
+      Option.isNone(scope) ||
+      Option.isNone(receipts) ||
+      typeof params !== "object" ||
+      params === null ||
+      !("clientRequestId" in params) ||
+      typeof params.clientRequestId !== "string"
+    )
+      return yield* run;
+    const identity = yield* receipts.value.identify(
+      scope.value,
+      tool.name,
+      params,
+      params.clientRequestId,
+    );
+    const index = yield* Ref.make(0);
+    return yield* run.pipe(
+      Effect.provideService(RequestReceipts.CurrentRequest, identity),
+      Effect.provideService(RequestReceipts.CommandIndex, index),
+    );
   });

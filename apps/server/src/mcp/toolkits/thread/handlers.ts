@@ -1,3 +1,4 @@
+import { CurrentRequest } from "../../McpRequestReceipts.ts";
 import {
   type CommandId,
   ThreadId,
@@ -58,7 +59,7 @@ const writesThread = <P extends { readonly threadId?: ThreadId | undefined }, A,
 ) => McpToolAccess.writesThreads((params: P) => [params.threadId], handle);
 
 export const layer = McpToolAccess.toLayer(ThreadToolkit, {
-  run_scheduled_task_now: McpToolAccess.writesEnvironment((input) =>
+  run_scheduled_task_now: McpToolAccess.writesEnvironment((input, check) =>
     Effect.gen(function* () {
       const scheduler = yield* ScheduledTasks.ScheduledTaskService;
       const { tasks } = yield* scheduler.list().pipe(Effect.mapError(unavailable));
@@ -69,11 +70,40 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           message: "The scheduled task was not found.",
         });
       yield* assertSameLink(yield* readCaller(), selected);
-      const { task } = yield* scheduler
-        .runNow({ id: input.taskId })
-        .pipe(Effect.mapError(unavailable));
+      const request = yield* CurrentRequest;
+      // The native owner captures its local binding fence before this live check.
+      // Re-authorize the actual current target, not the handler's earlier snapshot.
+      const recheck = check.pipe(
+        Effect.andThen(
+          Effect.gen(function* () {
+            const current = (yield* scheduler.list().pipe(Effect.mapError(unavailable))).tasks.find(
+              (task) => task.id === input.taskId,
+            );
+            if (current === undefined)
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "The scheduled task was not found.",
+              });
+            yield* assertSameLink(yield* readCaller(), current);
+          }),
+        ),
+      );
+      const context = yield* Effect.context<Effect.Services<typeof recheck>>();
+      const operation =
+        request === undefined
+          ? scheduler.runNow({ id: input.taskId })
+          : scheduler.runNow(
+              { id: input.taskId },
+              { request, recheck: recheck.pipe(Effect.provideContext(context), Effect.asVoid) },
+            );
+      const { task, manualReceipt } = yield* operation.pipe(
+        Effect.mapError((error) =>
+          error._tag === "OrchestratorMcpFailure" ? error : unavailable(),
+        ),
+      );
       return {
         taskId: task.id,
+        ...(manualReceipt === undefined ? {} : { manualReceipt }),
         threadId: task.threadId,
         lastRunStatus: task.lastRunStatus,
         runCount: task.runCount,

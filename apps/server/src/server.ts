@@ -1,6 +1,7 @@
 import * as BrowserCookieMirror from "./preview/BrowserCookieMirror.ts";
 import * as CookieMirrorRoute from "./preview/CookieMirrorRoute.ts";
 import * as PeerTaskLifecycle from "./peer/PeerTaskLifecycle.ts";
+import * as McpRequestRuntime from "./mcp/McpRequestRuntime.ts";
 import * as PeerLinkEvents from "./peer/PeerLinkEvents.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ForkProviderMaintenance from "./provider/forkProviderMaintenance.ts";
@@ -74,7 +75,6 @@ import * as TerminalManager from "./terminal/Manager.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as PeerAuthority from "./peer/PeerAuthority.ts";
 import * as PeerNoticeDelivery from "./peer/PeerNoticeDelivery.ts";
-import * as PeerForwarding from "./peer/PeerForwarding.ts";
 import * as RemoteDelegation from "./peer/RemoteDelegation.ts";
 import * as PeerLinks from "./peer/PeerLinks.ts";
 import * as PeerMcpClient from "./peer/PeerMcpClient.ts";
@@ -1113,7 +1113,7 @@ const layerMakeServer = Layer.unwrap(
         ),
       ),
       Layer.provide(
-        PeerForwarding.layer.pipe(
+        McpRequestRuntime.layerForwarding.pipe(
           Layer.provideMerge(PeerMcpClient.layer),
           Layer.provideMerge(PeerNoticeDelivery.layer),
         ),

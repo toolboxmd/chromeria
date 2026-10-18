@@ -7,9 +7,13 @@ import {
   type ExecutionPurpose,
 } from "@t3tools/contracts";
 import { executionPurposeWarnings } from "@t3tools/contracts";
+import * as ScheduleMutation from "../scheduledTasks/mutationReceipts.ts";
+import { requestNamespace } from "./requestIdentity.ts";
 import * as PeerAuthority from "../peer/PeerAuthority.ts";
 import type { BareReadGrant } from "../orchestration-v2/bareReadGrant.ts";
 import * as BareRuntime from "@t3tools/provider-core/server/bareLaunch";
+import * as AttachmentStaging from "../assets/AttachmentStaging.ts";
+import * as RequestReceipts from "./McpRequestReceipts.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import { callerLinkOrigin, assertSameLink } from "./linkOrigin.ts";
 import { SpectrumMcpInterrupt } from "../spectrum/mcpInterrupt.ts";
@@ -72,6 +76,7 @@ import {
   type ProviderOptionSelection,
   type RuntimeMode,
   type ScheduledTask,
+  type ScheduledTaskError,
   type ScheduledTaskUpsertInput,
   type ServerProvider,
   ThreadId,
@@ -143,6 +148,8 @@ import {
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
+
+const isMcpFailure = Schema.is(OrchestratorMcpFailure);
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
@@ -625,7 +632,7 @@ function stableCommandId(input: {
     [
       "command",
       "mcp",
-      stablePart(input.scope.requestNamespace),
+      stablePart(requestNamespace(input.scope)),
       stablePart(input.operation),
       stablePart(input.requestKey),
       ...(input.index === undefined ? [] : [String(input.index)]),
@@ -642,7 +649,7 @@ function stableThreadId(input: {
     [
       "thread",
       "mcp",
-      stablePart(input.scope.requestNamespace),
+      stablePart(requestNamespace(input.scope)),
       stablePart(input.requestKey),
       String(input.index),
     ].join(":"),
@@ -658,7 +665,7 @@ function stableMessageId(input: {
     [
       "message",
       "mcp",
-      stablePart(input.scope.requestNamespace),
+      stablePart(requestNamespace(input.scope)),
       stablePart(input.requestKey),
       String(input.index),
     ].join(":"),
@@ -674,7 +681,7 @@ function stableOperationMessageId(input: {
     [
       "message",
       "mcp",
-      stablePart(input.scope.requestNamespace),
+      stablePart(requestNamespace(input.scope)),
       stablePart(input.operation),
       stablePart(input.requestKey),
     ].join(":"),
@@ -927,6 +934,8 @@ const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const peerAuthority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+  const attachmentStaging = yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging);
+  const requestReceipts = yield* Effect.serviceOption(RequestReceipts.McpRequestReceipts);
   const bareLaunch = yield* BareLaunch.BareLaunch;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
@@ -2199,6 +2208,61 @@ const make = Effect.gen(function* () {
       }),
   });
 
+  const scheduleRequest = (scope: McpInvocationScope) =>
+    Effect.gen(function* () {
+      const identity = yield* RequestReceipts.CurrentRequest;
+      if (
+        identity === undefined ||
+        (scope.client?.linked === true && scope.authority?.envelope.requestOwner === undefined)
+      )
+        return undefined;
+      if (scheduledTasks.mutationReceipt === undefined)
+        return yield* failure(
+          "capability_denied",
+          "This environment does not support durable scheduler mutations.",
+        );
+      return identity;
+    });
+  const scheduleReceipt = (request: RequestReceipts.RequestIdentity) =>
+    scheduledTasks.mutationReceipt === undefined
+      ? Effect.fail(
+          failure(
+            "capability_denied",
+            "This environment does not support durable scheduler mutations.",
+          ),
+        )
+      : scheduledTasks.mutationReceipt(request);
+  const scheduleReplay = (
+    scope: McpInvocationScope,
+    request: RequestReceipts.RequestIdentity,
+    projectId?: ProjectId,
+  ) =>
+    Option.isSome(peerAuthority)
+      ? peerAuthority.value.historicalScheduleReceipt(scope, request, projectId)
+      : Effect.fail(
+          failure(
+            "capability_denied",
+            "Historical scheduler authority is unavailable; automatic replay is unsupported.",
+          ),
+        );
+  const scheduleRecheck = (scope: McpInvocationScope, taskId?: ScheduledTask["id"]) =>
+    Effect.gen(function* () {
+      const caller = yield* loadCaller(scope);
+      if (Option.isSome(peerAuthority) && scope.thread !== undefined)
+        yield* peerAuthority.value.checkThread(scope.thread.threadId);
+      if (taskId !== undefined) {
+        const task = yield* loadScheduledTask(taskId, caller.limits);
+        yield* assertSameLink({ scope, caller: caller.parent?.thread }, task);
+        yield* assertLiveCallerForOtherProject(scope, caller.parent, task.projectId);
+      }
+    });
+  const scheduleError = (error: ScheduledTaskError | OrchestratorMcpFailure) =>
+    error._tag === "OrchestratorMcpFailure"
+      ? error
+      : isMcpFailure(error.cause)
+        ? error.cause
+        : failure("orchestration_error", `Could not mutate scheduled task: ${error.message}`);
+
   const service: Omit<OrchestratorMcpServiceShape, RunGroupMethods> = {
     scheduleTask: (scope, input) =>
       Effect.gen(function* () {
@@ -2206,6 +2270,12 @@ const make = Effect.gen(function* () {
         const projectId = yield* resolveProjectTarget(parent, input.projectId);
         yield* assertLiveCallerForOtherProject(scope, parent, projectId);
         const project = yield* requireProject(projectId);
+        const request = yield* scheduleRequest(scope);
+        if (request !== undefined) {
+          const prior = yield* scheduleReplay(scope, request, projectId);
+          if (Option.isSome(prior)) return prior.value;
+        }
+
         const callerCanBind =
           input.bare === undefined && parent !== undefined && parent.thread.projectId === projectId;
         const bindToCurrentThread =
@@ -2255,7 +2325,7 @@ const make = Effect.gen(function* () {
           interactionMode: limits.interactionMode,
           createdBy: "agent",
           creationSource: "mcp",
-          // Scope the idempotency key by provider session so two callers
+          // Scope the idempotency key by authenticated caller so two callers
           // reusing the same clientRequestId cannot collide on one task row.
           ...(input.clientRequestId === undefined
             ? {}
@@ -2273,16 +2343,41 @@ const make = Effect.gen(function* () {
             : yield* scheduledBareGrant(parent, limits.runtimeMode);
         const { task } = yield* forkTasks
           .schedule(
-            { input, projectId, parent, bindToCurrentThread, scope },
+            {
+              input,
+              projectId,
+              parent,
+              bindToCurrentThread,
+              scope: { requestNamespace: requestNamespace(scope) },
+            },
             bareReadGrant === undefined
               ? scheduledTasks.upsert
               : (request) => scheduledTasks.upsert(request, { bareReadGrant }),
           )(upsertInput)
           .pipe(
-            Effect.mapError((error) =>
-              failure("orchestration_error", `Could not schedule task: ${error.message}`),
+            Effect.provideService(
+              ScheduleMutation.CurrentMutation,
+              request === undefined
+                ? undefined
+                : {
+                    request,
+                    recheck: scheduleRecheck(scope),
+                    consumesSecret:
+                      input.schedule?.type === "webhook" &&
+                      input.schedule.signature?.secretRef !== undefined,
+                  },
             ),
+            Effect.mapError(scheduleError),
           );
+        if (request !== undefined) {
+          const accepted = yield* scheduleReceipt(request);
+          if (Option.isNone(accepted))
+            return yield* failure(
+              "orchestration_error",
+              "Native scheduler acceptance was not recorded.",
+            );
+          return accepted.value;
+        }
         return yield* summarizeScheduledTask(scope, { parent, limits }, task);
       }),
     listScheduledTasks: (scope, input) =>
@@ -2306,6 +2401,11 @@ const make = Effect.gen(function* () {
     updateScheduledTask: (scope, input) =>
       Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope);
+        const request = yield* scheduleRequest(scope);
+        if (request !== undefined) {
+          const prior = yield* scheduleReplay(scope, request);
+          if (Option.isSome(prior)) return prior.value;
+        }
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
         yield* assertSameLink({ scope, caller: parent?.thread }, existing);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
@@ -2378,15 +2478,39 @@ const make = Effect.gen(function* () {
               : (request) => scheduledTasks.upsert(request, { bareReadGrant }),
           )(upsertInput)
           .pipe(
-            Effect.mapError((error) =>
-              failure("orchestration_error", `Could not update scheduled task: ${error.message}`),
+            Effect.provideService(
+              ScheduleMutation.CurrentMutation,
+              request === undefined
+                ? undefined
+                : {
+                    request,
+                    recheck: scheduleRecheck(scope, existing.id),
+                    consumesSecret:
+                      input.schedule?.type === "webhook" &&
+                      input.schedule.signature?.secretRef !== undefined,
+                  },
             ),
+            Effect.mapError(scheduleError),
           );
+        if (request !== undefined) {
+          const accepted = yield* scheduleReceipt(request);
+          if (Option.isNone(accepted))
+            return yield* failure(
+              "orchestration_error",
+              "Native scheduler acceptance was not recorded.",
+            );
+          return accepted.value;
+        }
         return yield* summarizeScheduledTask(scope, { parent, limits }, task);
       }),
     deleteScheduledTask: (scope, input) =>
       Effect.gen(function* () {
         const { parent, limits } = yield* loadCaller(scope);
+        const request = yield* scheduleRequest(scope);
+        if (request !== undefined) {
+          const prior = yield* scheduleReplay(scope, request);
+          if (Option.isSome(prior)) return prior.value;
+        }
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
         yield* assertSameLink({ scope, caller: parent?.thread }, existing);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
@@ -2396,10 +2520,23 @@ const make = Effect.gen(function* () {
             scheduledTasks.delete,
           )({ id: existing.id })
           .pipe(
-            Effect.mapError((error) =>
-              failure("orchestration_error", `Could not delete scheduled task: ${error.message}`),
+            Effect.provideService(
+              ScheduleMutation.CurrentMutation,
+              request === undefined
+                ? undefined
+                : { request, recheck: scheduleRecheck(scope, existing.id), consumesSecret: false },
             ),
+            Effect.mapError(scheduleError),
           );
+        if (request !== undefined) {
+          const accepted = yield* scheduleReceipt(request);
+          if (Option.isNone(accepted))
+            return yield* failure(
+              "orchestration_error",
+              "Native scheduler acceptance was not recorded.",
+            );
+          return accepted.value;
+        }
         return { scheduledTaskId: existing.id, deleted: true };
       }),
     requestSecret: (scope, input) =>
@@ -2562,6 +2699,8 @@ const make = Effect.gen(function* () {
           bareLaunch: true,
           toolAllowlist: true,
           executionPurposeVersions: [1],
+          ...(Option.isSome(attachmentStaging) ? { peerAttachments: 1 as const } : {}),
+          ...(Option.isSome(requestReceipts) ? { peerRequests: 1 as const } : {}),
           parentThreadId: parent?.thread.id ?? null,
           inheritedProviderInstanceId: parent?.thread.modelSelection.instanceId ?? null,
           inheritedModel: parent?.thread.modelSelection.model ?? null,

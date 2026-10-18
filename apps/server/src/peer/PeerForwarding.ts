@@ -3,6 +3,10 @@ import {
   OrchestratorMcpCapabilitiesResult,
   PurposeIntent,
 } from "@t3tools/contracts";
+import type { PreviewSnapshotTool } from "../mcp/toolkits/preview/tools.ts";
+import { toolEffect } from "../mcp/McpToolEffects.ts";
+import { McpAttachmentInput } from "../mcp/toolkits/attachment/input.ts";
+import { requestNamespace } from "../mcp/requestIdentity.ts";
 import * as Predicate from "effect/Predicate";
 import {
   type EnvironmentId,
@@ -33,6 +37,15 @@ import * as PeerMcpClient from "./PeerMcpClient.ts";
 import * as PeerAuthority from "./PeerAuthority.ts";
 import * as Option from "effect/Option";
 import { PeerReturnPair } from "@t3tools/contracts";
+import {
+  ChatAttachment,
+  AttachmentCreateUploadUrlInput,
+  PeerAttachmentUploadResult,
+  type PeerRequestProtocol,
+} from "@t3tools/contracts";
+import * as AttachmentStaging from "../assets/AttachmentStaging.ts";
+import * as FileSystem from "effect/FileSystem";
+import * as RequestReceipts from "../mcp/McpRequestReceipts.ts";
 
 /**
  * A peer's `/mcp` holds a wait open for its whole timeout without sending
@@ -40,6 +53,8 @@ import { PeerReturnPair } from "@t3tools/contracts";
  * forwarded wait goes out in pieces no longer than this.
  */
 export const FORWARDED_WAIT_CHUNK_MS = 50_000;
+const decodeAttachments = Schema.decodeUnknownEffect(Schema.Array(McpAttachmentInput));
+
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
 const isPurposeIntent = Schema.is(PurposeIntent);
@@ -55,6 +70,12 @@ type Scope = McpInvocationContext.McpInvocationScope;
 export class PeerForwarding extends Context.Service<
   PeerForwarding,
   {
+    readonly authorizeSavedPreview: (
+      scope: Scope,
+      environmentId: EnvironmentId,
+      parameters: Tool.Parameters<typeof PreviewSnapshotTool>,
+      request: RequestReceipts.RequestIdentity,
+    ) => Effect.Effect<void, OrchestratorMcpFailure>;
     /** Runs `tool` in the linked environment `environmentId` with `params`. */
     readonly call: <T extends Tool.Any>(
       scope: Scope,
@@ -112,12 +133,19 @@ const decodeLaunchedChild = Schema.decodeUnknownEffect(
     runId: PeerReturnPair.fields.childRunId,
   }),
 );
+const decodeAttachment = Schema.decodeUnknownEffect(ChatAttachment);
+const uploadParameters = Schema.Struct({
+  upload: AttachmentCreateUploadUrlInput,
+  digest: Schema.optional(Schema.String),
+  clientRequestId: Schema.optional(Schema.String),
+});
 const make = Effect.gen(function* () {
   const peers = yield* PeerMcpClient.PeerMcpClient;
   const links = yield* PeerLinks.PeerLinks;
   const crypto = yield* Crypto.Crypto;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+  const requestOwner = yield* Effect.serviceOption(RequestReceipts.McpRequestReceipts);
 
   /**
    * The caller's own limits here, which travel with every call it forwards.
@@ -177,7 +205,7 @@ const make = Effect.gen(function* () {
       readonly pair?: PeerAuthority.Authority["pair"];
     },
     readOnly = false,
-  ) =>
+  ): Effect.Effect<A, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
       const encoded = (yield* Schema.encodeUnknownEffect(parameters as Schema.Encoder<unknown>)(
         params,
@@ -252,6 +280,18 @@ const make = Effect.gen(function* () {
       }
       const caller = yield* forwardingCaller(scope);
       const limits = caller.limits;
+      if (!readOnly && Option.isSome(requestOwner) && typeof args.clientRequestId !== "string")
+        args.clientRequestId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+      const callerRequestId =
+        typeof args.clientRequestId === "string" ? args.clientRequestId : undefined;
+      let requestProtocol: PeerRequestProtocol | undefined;
+      if (!readOnly && Option.isSome(requestOwner)) {
+        if (peers.requireRequestProtocol === undefined) return yield* unavailable();
+        requestProtocol = yield* peers.requireRequestProtocol(
+          environmentId,
+          options?.expectedLinkIdentity,
+        );
+      }
       const carriesBare = (value: unknown): boolean =>
         Predicate.isObject(value) &&
         (("bare" in value && value.bare !== undefined) ||
@@ -318,27 +358,180 @@ const make = Effect.gen(function* () {
         }
       }
       // A pending upload lives here, so it cannot go with the call.
+      const receipts = yield* Effect.serviceOption(RequestReceipts.McpRequestReceipts);
+      let expectedLinkIdentity = options?.expectedLinkIdentity;
+      if (Option.isSome(receipts) && typeof args.clientRequestId === "string" && !readOnly) {
+        const identity =
+          (yield* RequestReceipts.CurrentRequest) ??
+          (yield* receipts.value.identify(
+            scope,
+            toolName,
+            { environmentId, ...args },
+            args.clientRequestId,
+          ));
+        const destination = yield* links.get(environmentId).pipe(Effect.mapError(unavailable));
+        if (Option.isNone(destination)) return yield* unavailable();
+        if (
+          expectedLinkIdentity !== undefined &&
+          destination.value.launchIdentity !== expectedLinkIdentity
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "The original destination grant was replaced.",
+          });
+        // Keep this obligation on the source as well: a replacement peer or an
+        // imported destination ledger cannot reinterpret historical source intent.
+        // A batch has one distinct caller key per actual downstream operation.
+        yield* receipts.value.bindDestination(
+          identity,
+          RequestReceipts.requestDigest([toolName, args.clientRequestId]),
+          environmentId,
+          destination.value.launchIdentity,
+        );
+        expectedLinkIdentity = destination.value.launchIdentity;
+      }
+      // Transfer explicitly source-owned bytes, never a source path or an unqualified foreign id.
       if (
-        (toolName === "t3_thread_launch" || toolName === "delegate_task") &&
+        (toolName === "t3_thread_launch" || toolName === "t3_thread_send_attachments") &&
         Array.isArray(args.attachments) &&
         args.attachments.length > 0
       ) {
-        return yield* new OrchestratorMcpFailure({
-          code: "invalid_request",
-          message: "A launch in a linked environment cannot carry attachments yet.",
-        });
+        const staging = yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging);
+        const fs = yield* Effect.serviceOption(FileSystem.FileSystem);
+        const destination = yield* links.get(environmentId).pipe(Effect.mapError(unavailable));
+        if (
+          Option.isNone(staging) ||
+          Option.isNone(fs) ||
+          Option.isNone(destination) ||
+          Option.isNone(authority)
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "Durable peer attachment transfer is unavailable.",
+          });
+        if (
+          expectedLinkIdentity !== undefined &&
+          expectedLinkIdentity !== destination.value.launchIdentity
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message: "The original attachment destination grant was replaced.",
+          });
+        if (requestProtocol?.attachments !== true)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message:
+              "The destination does not support peer attachments v1; no transfer or launch was accepted.",
+          });
+        const key =
+          typeof args.clientRequestId === "string"
+            ? args.clientRequestId
+            : yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+        args.clientRequestId = key;
+        const sourceAttachments = yield* decodeAttachments(args.attachments).pipe(
+          Effect.mapError(unavailable),
+        );
+        const sourceOwned = sourceAttachments.filter(
+          (attachment) => attachment.environmentId !== environmentId,
+        );
+        if (
+          sourceOwned.some(
+            (attachment) =>
+              attachment.environmentId !== undefined &&
+              attachment.environmentId !== scope.environmentId,
+          )
+        )
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "An attachment belongs to another environment.",
+          });
+        const consumer = `peer-request:${RequestReceipts.requestDigest([requestNamespace(scope), toolName, key])}`;
+        yield* staging.value.reserveTransfer(scope, consumer, `peer:${environmentId}`, sourceOwned);
+        args.attachments = yield* Effect.forEach(args.attachments, (raw, index) =>
+          Effect.gen(function* () {
+            const attachment = yield* decodeAttachment(raw).pipe(Effect.mapError(unavailable));
+            const ownerEnvironment =
+              Predicate.isObject(raw) && "environmentId" in raw
+                ? raw.environmentId
+                : scope.environmentId;
+            if (ownerEnvironment === environmentId) return attachment;
+            if (ownerEnvironment !== scope.environmentId)
+              return yield* new OrchestratorMcpFailure({
+                code: "invalid_request",
+                message: "Stage an attachment from its owning environment before forwarding it.",
+              });
+            const digest = yield* staging.value.transferDigest(
+              scope,
+              consumer,
+              `peer:${environmentId}`,
+              attachment,
+            );
+            const request = {
+              upload: {
+                type: attachment.type,
+                name: attachment.name,
+                mimeType: attachment.mimeType,
+                sizeBytes: attachment.sizeBytes,
+              },
+              digest,
+              clientRequestId: `transfer:${RequestReceipts.requestDigest([toolName, key, index, attachment.id])}`,
+            };
+            const uploaded = yield* forward<PeerAttachmentUploadResult>(
+              scope,
+              "t3_attachment_prepare_upload",
+              uploadParameters,
+              PeerAttachmentUploadResult,
+              environmentId,
+              request,
+              { expectedLinkIdentity: destination.value.launchIdentity },
+            );
+            if (
+              uploaded.transferState?.stage === "staged" ||
+              uploaded.transferState?.stage === "native-accepted"
+            ) {
+              if (uploaded.transferState.digest !== digest)
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message:
+                    "The destination's original attachment manifest does not match this verified source.",
+                });
+            } else {
+              const source = yield* staging.value.verify(scope, attachment);
+              if (source.digest !== digest)
+                return yield* new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: "The prepared source bytes changed before transfer.",
+                });
+              yield* peers.uploadAttachment({
+                environmentId,
+                generation: destination.value.launchIdentity,
+                relativeUrl: uploaded.relativeUrl,
+                bytes: fs.value.stream(source.path),
+                sizeBytes: attachment.sizeBytes,
+              });
+            }
+            return { ...attachment, id: uploaded.attachmentId };
+          }),
+        );
       }
       if (typeof args.clientRequestId === "string") {
         args.clientRequestId = yield* scopedRequestId(
-          scope.thread === undefined
-            ? scope.requestNamespace
-            : `thread:${scope.environmentId}:${scope.thread.threadId}`,
+          requestNamespace(scope),
           args.clientRequestId,
         );
       }
       const link = Option.isSome(authority)
         ? yield* links.get(environmentId).pipe(Effect.mapError(unavailable))
         : Option.none();
+      if (
+        expectedLinkIdentity !== undefined &&
+        Option.isSome(link) &&
+        link.value.launchIdentity !== expectedLinkIdentity
+      )
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "The destination grant changed before dispatch.",
+        });
       const envelope =
         Option.isSome(authority) && Option.isSome(link)
           ? yield* authority.value.prepare(
@@ -350,23 +543,37 @@ const make = Effect.gen(function* () {
               limits,
               options?.pair,
               readOnly,
+              !readOnly && Option.isSome(requestOwner),
             )
           : undefined;
-      const result = yield* peers.call({
-        environmentId,
-        tool: toolName,
-        arguments: args,
-        limits,
-        success: success as Schema.Decoder<A>,
-        ...(envelope === undefined ? {} : { authority: envelope }),
-        ...(options === undefined ? {} : options),
-        // The peer decides whether the Promachos may answer there (toolboxmd/chromeria#532).
-        ...(toolName.startsWith("t3_pending_request_") &&
-        caller.caller !== undefined &&
-        isPromachosThread(caller.caller)
-          ? { promachosThreadId: caller.caller.id }
-          : {}),
-      });
+      const result = yield* peers
+        .call({
+          environmentId,
+          tool: toolName,
+          arguments: args,
+          limits,
+          success: success as Schema.Decoder<A>,
+          ...(envelope === undefined ? {} : { authority: envelope }),
+          ...(options === undefined ? {} : options),
+          ...(expectedLinkIdentity === undefined ? {} : { expectedLinkIdentity }),
+        })
+        .pipe(
+          Effect.catchTags({
+            OrchestratorMcpFailure: (error) =>
+              Effect.fail(
+                error.code === "outcome_unknown" && callerRequestId !== undefined
+                  ? new OrchestratorMcpFailure({
+                      code: error.code,
+                      message: error.message,
+                      requestId: callerRequestId,
+                      ...(error.lastConfirmedStage === undefined
+                        ? {}
+                        : { lastConfirmedStage: error.lastConfirmedStage }),
+                    })
+                  : error,
+              ),
+          }),
+        );
       if (envelope !== undefined && options?.pair !== undefined && Option.isSome(authority)) {
         const child = yield* decodeLaunchedChild(result).pipe(Effect.mapError(unavailable));
         yield* authority.value.registerPair(envelope, {
@@ -390,7 +597,8 @@ const make = Effect.gen(function* () {
       environmentId,
       params,
       options,
-      Context.get(tool.annotations, Tool.Readonly),
+      (toolEffect(tool, params) ??
+        (Context.get(tool.annotations, Tool.Readonly) ? "read" : "owned")) === "read",
     );
 
   const route: PeerForwarding["Service"]["route"] = (scope, tool, params, here) => {
@@ -471,7 +679,85 @@ const make = Effect.gen(function* () {
       })),
     );
 
+  const authorizeSavedPreview: PeerForwarding["Service"]["authorizeSavedPreview"] = (
+    scope,
+    environmentId,
+    parameters,
+    request,
+  ) =>
+    Effect.gen(function* () {
+      if (
+        Option.isNone(authority) ||
+        Option.isNone(requestOwner) ||
+        peers.authorizeSavedPreview === undefined ||
+        parameters.contextThreadId === undefined ||
+        !scope.capabilities.has("preview")
+      )
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message:
+            "Saved-preview authorization needs its verified source, preview capability and destination context.",
+        });
+      const limits = yield* callerLimits(scope);
+      const link = yield* links.get(environmentId).pipe(Effect.mapError(unavailable));
+      if (Option.isNone(link))
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "The original saved-preview link is no longer available.",
+        });
+      const receipts = requestOwner.value;
+      const operation = "saved-preview-authorization";
+      const recorded = yield* receipts.destination(request, operation);
+      if (Option.isNone(recorded) && Option.isSome(yield* receipts.replay(request))) {
+        // A pre-path accepted save can use only its exact existing forwarding proof.
+        // Missing proof is unsupported, never bound to today's replacement grant.
+        const root = yield* receipts.identify(
+          scope,
+          "preview_snapshot",
+          { ...parameters, environmentId, contextCapabilities: [...scope.capabilities] },
+          request.clientRequestId,
+        );
+        const original = yield* receipts.destination(
+          root,
+          RequestReceipts.requestDigest(["preview_snapshot", request.clientRequestId]),
+        );
+        if (Option.isNone(original))
+          return yield* new OrchestratorMcpFailure({
+            code: "capability_denied",
+            message:
+              "The saved preview has no verified original destination binding; automatic replay is unsupported.",
+          });
+        yield* receipts.bindDestination(
+          request,
+          operation,
+          original.value.environmentId,
+          original.value.generation,
+        );
+      }
+      yield* receipts.bindDestination(request, operation, environmentId, link.value.launchIdentity);
+      const input = {
+        version: 1 as const,
+        purpose: "saved-preview-authorization" as const,
+        environmentId,
+        generation: link.value.launchIdentity,
+        contextThreadId: parameters.contextThreadId,
+        operationId: request.id,
+      };
+      const envelope = yield* authority.value.prepare(
+        scope,
+        environmentId,
+        link.value.launchIdentity,
+        "preview_snapshot",
+        input,
+        limits,
+        undefined,
+        true,
+        true,
+      );
+      yield* peers.authorizeSavedPreview({ request: input, authority: envelope, limits });
+    });
   return PeerForwarding.of({
+    authorizeSavedPreview,
     call,
     route,
     readThread,

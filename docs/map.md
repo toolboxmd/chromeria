@@ -98,6 +98,9 @@ flowchart TD
     RTL["Remote delegated task lifecycle"]
     %% RTL: #381 PR #392
     PGR --> RTL
+    PAR["Peer attachments and request recovery"]
+    %% PAR: #382 PR #410
+    RTL --> PAR
     NR["Network routes"]
     %% NR: #292 #358 PR #498 PR #497
     EP["Execution purpose"]
