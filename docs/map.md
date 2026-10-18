@@ -60,7 +60,7 @@ flowchart TD
     TIW["Turn-item writes"]
     %% TIW: #425 PR #433
     RO["Run observers"]
-    %% RO: #456
+    %% RO: #456 PR #457
     PU["Provider updates"]
     %% PU: #263
     RS["Resume after restart"]
