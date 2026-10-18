@@ -12,6 +12,12 @@ export function createRestartCutProjector() {
   return (projection: Pick<OrchestrationV2ThreadProjection, "visibleTurnItems" | "runs">): Rows => {
     const { visibleTurnItems: rows, runs } = projection;
     if (rows === previousRows && runs === previousRuns && previousResult) return previousResult;
+    if (
+      !runs.some(
+        (run) => run.restartCut !== undefined || run.restartContinuationOfRunId !== undefined,
+      )
+    )
+      return rows;
     const lastRowByRun = new Map(
       rows.flatMap((row, index) =>
         row.visibility === "local" && row.item.runId !== null

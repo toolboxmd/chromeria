@@ -67,6 +67,13 @@ describe("parseFeatureMapFile", () => {
     expect(live.every((part) => !part.context && part.refs.length === 0)).toBe(true);
     expect(parsed.parts.some((part) => part.context)).toBe(true);
     expect(parsed.undeclaredRefLines).toEqual([]);
+    expect(
+      parsed.parts.find((part) => part.id === "RS")?.refs.map(({ kind, number }) => [kind, number]),
+    ).toEqual([
+      ["issue", 264],
+      ["issue", 255],
+      ["pull", 417],
+    ]);
     // Bare launch's pre-existing comma remains diagnostic after citation equivalence proof.
     expect(parsed.unreadableRefs).toEqual([{ id: "BL", text: "#289," }]);
   });
