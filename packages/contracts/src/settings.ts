@@ -1,5 +1,5 @@
 import { forkOpaqueSettingsFields } from "./forkSettings.ts";
-import { PrismRoleKits, PrismRoleKitsPatch } from "./prism.ts";
+import { PrismProjectRoleKits, PrismRoleKits, PrismRoleKitsPatch } from "./prism.ts";
 import { SshDeviceHostConfigs } from "./device.ts";
 import {
   AuthOrchestrationOperateScope,
@@ -921,9 +921,13 @@ export type ProjectProviderInstanceOverride = typeof ProjectProviderInstanceOver
  * the environment type is nullable (no default model, no dedicated writer
  * model, never auto-settle).
  *
- * `providerInstances` sits outside `PROJECT_SCOPED_SERVER_SETTING_KEYS`: every
- * other key replaces its `ServerSettings` field whole, while this one keeps the
- * settings.json shape but overrides field by field, per `ProviderInstanceId`.
+ * `prismRoles` is a partial role map that overlays the environment kits
+ * (see `PrismProjectRoleKits`); every other scoped key replaces its
+ * `ServerSettings` field whole.
+ *
+ * `providerInstances` sits outside `PROJECT_SCOPED_SERVER_SETTING_KEYS`:
+ * it keeps the settings.json shape but overrides field by field, per
+ * `ProviderInstanceId`.
  */
 export const ProjectSettingsOverrides = Schema.Struct({
   ...forkOpaqueSettingsFields,
@@ -952,7 +956,7 @@ export const ProjectSettingsOverrides = Schema.Struct({
   sidebarAutoSettleKeepPullRequests: Schema.optionalKey(Schema.Boolean),
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
-  prismRoles: Schema.optionalKey(PrismRoleKits),
+  prismRoles: Schema.optionalKey(PrismProjectRoleKits),
   providerInstances: Schema.optionalKey(
     Schema.Record(ProviderInstanceId, ProjectProviderInstanceOverride),
   ),
@@ -1106,6 +1110,14 @@ export const ServerSettings = Schema.Struct({
    * next server start.
    */
   projectSettingsFolded: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * Whether project `prismRoles` overrides are partial role maps. Earlier
+   * builds stored a whole kit whose unset roles were empty lists, which ran
+   * those roles on the caller's model; the one-time rewrite drops them so
+   * the roles inherit the environment again. A write that declares partial
+   * overrides also sets it, so a later deliberate empty list is never rewritten.
+   */
+  prismRoleOverridesPartial: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 
   enableAgentDeviceAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /**
@@ -1421,6 +1433,15 @@ export const ServerSettingsPatch = Schema.Struct({
   projectSettingsOverrides: Schema.optionalKey(
     Schema.Record(ProjectId, Schema.NullOr(ProjectSettingsOverrides)),
   ),
+  /**
+   * The writer stores partial Prism project overrides. Clients built before
+   * that decode an override as whole kits and send unset roles back as empty
+   * lists, so a write without this flag drops empty Prism lists from its
+   * entries; only a declared write can store an empty list (the caller's
+   * model). Client runtime sets it on every project override write; it
+   * never clears the stored marker.
+   */
+  prismRoleOverridesPartial: Schema.optionalKey(Schema.Boolean),
   enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
   enableDeviceSupport: Schema.optionalKey(Schema.Boolean),
   deviceOnboardingCompleted: Schema.optionalKey(Schema.Boolean),
@@ -1504,7 +1525,7 @@ export function requiredScopesForServerSettingsPatch(
   let changesProviders = false;
   let changesSettings = false;
   for (const [key, value] of Object.entries(patch)) {
-    if (value === undefined) continue;
+    if (value === undefined || key === "prismRoleOverridesPartial") continue;
     if (key === "providers" || key === "providerInstances" || key === "usageLimitSources") {
       changesProviders = true;
     } else {

@@ -190,6 +190,44 @@ describe("PrismService", () => {
       assert.strictEqual(result.kitText, "Project kit");
     }),
   );
+  it.effect(
+    "a project override of one role still routes other roles through the environment kit",
+    () =>
+      Effect.gen(function* () {
+        const p = yield* provider;
+        const caller = { instanceId: ProviderInstanceId.make("claudeAgent"), model: "caller" };
+        const result = yield* Effect.gen(function* () {
+          const service = yield* Prism.PrismService;
+          return yield* service.resolve({ projectId, role: "reviewer", inherited: caller });
+        }).pipe(
+          Effect.provide(
+            Prism.layer.pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  registry([
+                    p,
+                    {
+                      ...p,
+                      instanceId: caller.instanceId,
+                      models: [
+                        { slug: "caller", name: "Caller", isCustom: false, capabilities: null },
+                      ],
+                    },
+                  ]),
+                  Settings.layerTest({
+                    prismRoles: { reviewer: { models: [selection] } },
+                    projectSettingsOverrides: {
+                      [projectId]: { prismRoles: { worker: { lanes: { hard: [selection] } } } },
+                    },
+                  }),
+                ),
+              ),
+            ),
+          ),
+        );
+        assert.deepStrictEqual(result.modelSelection, selection);
+      }),
+  );
   it.effect("does not hide invalid options behind capacity fallback", () =>
     Effect.gen(function* () {
       const p = yield* provider;

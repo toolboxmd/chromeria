@@ -48,6 +48,7 @@ import {
   isModelSelectionProviderEnabled,
 } from "@t3tools/shared/serverSettings";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
+import { migratePrismRoleOverrides } from "./prism/PrismRoleOverrides.ts";
 import {
   readSecretFieldValues,
   sourceControlHostSecretName,
@@ -745,7 +746,7 @@ const make = Effect.gen(function* () {
         : migrateLegacyProviderSettings(settings, legacyProviders, providerHistory),
     );
     const folded = settingsFileTrusted
-      ? foldLegacyProjectSettings(loaded, legacyProjectRows)
+      ? migratePrismRoleOverrides(foldLegacyProjectSettings(loaded, legacyProjectRows))
       : loaded;
     // Copied, not moved: the old entry is removed only after the new file is written. A token
     // that cannot be read or copied leaves the retired keys in place, so the migration runs again
