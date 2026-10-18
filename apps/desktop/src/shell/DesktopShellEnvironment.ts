@@ -1,4 +1,8 @@
-import { listLoginShellCandidates, setWindowsPath } from "@t3tools/shared/shell";
+import {
+  listLoginShellCandidates,
+  LOGIN_SHELL_CAPTURE_TIMEOUT_MS,
+  setWindowsPath,
+} from "@t3tools/shared/shell";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -97,7 +101,8 @@ const WINDOWS_PROFILE_ENV_NAMES = ["PATH", "FNM_DIR", "FNM_MULTISHELL_PATH"] as 
 const LOCALE_ENV_NAMES = ["LANG", "LC_ALL", "LC_CTYPE"] as const;
 const FALLBACK_LC_CTYPE = "en_US.UTF-8";
 const WINDOWS_SHELL_CANDIDATES = ["pwsh.exe", "powershell.exe"] as const;
-const LOGIN_SHELL_TIMEOUT = Duration.seconds(5);
+const LOGIN_SHELL_TIMEOUT = Duration.millis(LOGIN_SHELL_CAPTURE_TIMEOUT_MS);
+const WINDOWS_SHELL_TIMEOUT = Duration.seconds(5);
 const LAUNCHCTL_TIMEOUT = Duration.seconds(2);
 const PROCESS_TERMINATE_GRACE = Duration.seconds(1);
 
@@ -351,7 +356,7 @@ const readWindowsEnvironment = Effect.fn("desktop.shellEnvironment.readWindowsEn
         probe: options.loadProfile ? "powershell-profile" : "powershell-no-profile",
         command,
         args,
-        timeout: LOGIN_SHELL_TIMEOUT,
+        timeout: WINDOWS_SHELL_TIMEOUT,
       });
       const environment = extractEnvironment(output, names);
       if (Object.keys(environment).length > 0) {
@@ -403,19 +408,23 @@ const installPosixEnvironment = Effect.fn("desktop.shellEnvironment.installPosix
   function* (
     config: ShellEnvironmentConfig,
   ): Effect.fn.Return<
-    void,
+    boolean,
     never,
     ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
   > {
     const fileSystem = yield* FileSystem.FileSystem;
     const shellEnvironment: EnvironmentPatch = {};
+    let capturedLoginShellPath = false;
 
     for (const shell of listLoginShellCandidates(config.platform, config.env.SHELL)) {
       Object.assign(
         shellEnvironment,
         yield* readLoginShellEnvironment(shell, LOGIN_SHELL_ENV_NAMES),
       );
-      if (shellEnvironment.PATH) break;
+      if (shellEnvironment.PATH) {
+        capturedLoginShellPath = true;
+        break;
+      }
     }
 
     const launchctlPath =
@@ -510,6 +519,8 @@ const installPosixEnvironment = Effect.fn("desktop.shellEnvironment.installPosix
         }
       }
     }
+
+    return capturedLoginShellPath;
   },
 );
 
@@ -524,7 +535,7 @@ const installShellEnvironment = (
     return installWindowsEnvironment(config);
   }
   if (config.platform === "darwin" || config.platform === "linux") {
-    return installPosixEnvironment(config).pipe(Effect.as(true));
+    return installPosixEnvironment(config);
   }
   return Effect.succeed(false);
 };

@@ -120,6 +120,11 @@ export interface WindowsEnvironmentProbeOptions {
   readonly loadProfile?: boolean;
 }
 
+// A warm interactive zsh already takes about 3.5s, and the old 5s cap killed
+// probes that had not finished. 12s covers that startup with headroom and
+// still stops a hang.
+export const LOGIN_SHELL_CAPTURE_TIMEOUT_MS = 12_000;
+
 function trimNonEmpty(value: string | null | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : undefined;
@@ -270,7 +275,7 @@ export const readEnvironmentFromLoginShell: ShellEnvironmentReader = (
 
   const output = execFile(shell, ["-ilc", buildEnvironmentCaptureCommand(names)], {
     encoding: "utf8",
-    timeout: 5000,
+    timeout: LOGIN_SHELL_CAPTURE_TIMEOUT_MS,
   });
 
   const environment: Partial<Record<string, string>> = {};
