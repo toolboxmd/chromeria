@@ -253,28 +253,43 @@ interface CandidateRow {
 
 /** Collects the parts of one output under the per-output byte limit and one budget. */
 class Composer {
-  readonly parts: Array<{ text: string; claim: Claim }> = [];
+  readonly parts: Array<{ text: string; claim: Claim; startup: boolean }> = [];
   private head: string;
   private readonly limit: number;
   private budgetLeft: number;
   private used: number;
-  constructor(head: string, limit: number, budgetLeft: number) {
+  private startupUsed = 0;
+  private readonly startupLimit: number;
+  constructor(head: string, limit: number, budgetLeft: number, startupLimit = limit) {
     this.head = head;
     this.limit = limit;
+    this.startupLimit = Math.max(limit, startupLimit);
     this.budgetLeft = budgetLeft;
     this.used = utf8(head);
   }
   private cost = (text: string) => utf8(text) + 2;
-  fits = (text: string) =>
-    this.used + this.cost(text) <= this.limit &&
-    this.cost(text) + (this.parts.length ? 0 : utf8(this.head)) <= this.budgetLeft;
-  overLimit = (text: string) => this.used + this.cost(text) > this.limit;
-  exceedsLimitAlone = (text: string) => utf8(this.head) + this.cost(text) > this.limit;
-  add = (text: string, claim: Claim) => {
-    const cost = this.cost(text) + (this.parts.length ? 0 : utf8(this.head));
+  private outputLimit = (startup: boolean) =>
+    startup || this.startupUsed > 0 ? this.startupLimit : this.limit;
+  private budgetCost = (text: string) =>
+    this.cost(text) + (this.parts.some((p) => !p.startup) ? 0 : utf8(this.head));
+  fits = (text: string, startup = false) =>
+    !this.overLimit(text, startup) && (startup || this.budgetCost(text) <= this.budgetLeft);
+  overLimit = (text: string, startup = false) =>
+    this.used + this.cost(text) > this.outputLimit(startup) ||
+    (!startup && this.used - this.startupUsed + this.cost(text) > this.limit);
+  exceedsLimitAlone = (text: string, startup = false) =>
+    utf8(this.head) + this.cost(text) > (startup ? this.startupLimit : this.limit);
+  add = (text: string, claim: Claim, startup = false) => {
+    if (startup) this.startupUsed += this.cost(text);
+    else this.budgetLeft -= this.budgetCost(text);
     this.used += this.cost(text);
-    this.budgetLeft -= cost;
-    this.parts.push({ text, claim });
+    this.parts.push({ text, claim, startup });
+  };
+  /** Startup files keep their budget exemption even when carried to a later hook. */
+  budgetBytes = () => {
+    const normal = this.parts.filter((p) => !p.startup);
+    if (normal.length === 0) return 0;
+    return utf8((this.head ? this.head + "\n\n" : "") + normal.map((p) => p.text).join("\n\n"));
   };
   /** Room left for one more part under the output limit. */
   room = () => this.limit - this.used - 2;
@@ -1480,14 +1495,19 @@ export class ServingState {
     if (fires.length > 0) sel = { ...sel, candidates: [...sel.candidates, ...fires] };
     this.expireCarries(harness, m.session, joined.runId);
     if (input.deliveryMode === "retained_startup") {
-      if (sel.profile.delivering.includes(m.kind)) {
+      if (
+        sel.profile.delivering.includes(m.kind) ||
+        (m.kind === "user_message" && sel.profile.carry_to !== null)
+      ) {
         this.carry(
           harness,
           {
             ...sel,
             candidates: [
               ...(sel.greatLibrary == null ? [] : [sel.greatLibrary]),
-              ...sel.candidates,
+              ...(m.kind === "user_message"
+                ? this.dropAfterAction(sel, momentId).candidates
+                : sel.candidates),
             ],
           },
           epoch,
@@ -1804,15 +1824,15 @@ export class ServingState {
       carried,
       delivering ? sel.candidates.filter((c) => c.matcher === "session_start") : [],
     );
-    const carriedBytes = utf8(carryOutput.text() ?? "");
+    const carriedBytes = carryOutput.budgetBytes();
     if (carriedBytes > 0) {
       this.charge(runId, carriedBytes, 0);
-      this.writeClaims(delivery, sel.profile.harness, sel.moment.session, epoch, runId, carried);
       charged += carriedBytes;
     }
-    // Files share the output limit, but only the carried parts spend the serve budget.
+    this.writeClaims(delivery, sel.profile.harness, sel.moment.session, epoch, runId, carried);
+    // Files share the output limit; only ordinary carries spend the serve budget.
     const out = new Composer("", limit, Number.POSITIVE_INFINITY);
-    for (const part of carryOutput.parts) out.add(part.text, part.claim);
+    for (const part of carryOutput.parts) out.add(part.text, part.claim, part.startup);
     if (
       pointer !== null &&
       !carried.some((claim) => claim.entry === pointer.entry && claim.version === pointer.version)
@@ -2239,6 +2259,7 @@ export class ServingState {
       sel.profile.heads.context,
       sel.profile.limit_bytes,
       Math.max(left.serve, 0),
+      sel.profile.session_start_limit_bytes,
     );
     const claims: Claim[] = [];
     const pointer = this.eligiblePointer(sel, epoch);
@@ -2293,7 +2314,7 @@ export class ServingState {
     }
     const text = out.text();
     if (text === null) return [{ status: 204 }];
-    const bytes = utf8(text);
+    const bytes = out.budgetBytes();
     this.charge(runId, bytes, 0);
     this.writeClaims(delivery, sel.profile.harness, sel.moment.session, epoch, runId, claims);
     return [this.render(sel, "context", text), { runId, serve: bytes, deny: 0 }];
@@ -2376,12 +2397,13 @@ export class ServingState {
       sel.profile.heads.context,
       sel.profile.limit_bytes,
       Math.max(left.serve - (sel.greatLibraryBytes ?? 0), 0),
+      sel.profile.session_start_limit_bytes,
     );
     const claims: Claim[] = [];
     this.appendCarries(harness, sel, epoch, momentId, runId, out, claims);
     const text = out.text();
     if (text === null) return [{ status: 204 }];
-    const bytes = utf8(text);
+    const bytes = out.budgetBytes();
     this.charge(runId, bytes, 0);
     this.writeClaims(delivery, harness, sel.moment.session, epoch, runId, claims);
     return [this.render(sel, "context", text), { runId, serve: bytes, deny: 0 }];
@@ -2438,15 +2460,22 @@ export class ServingState {
         version: w.version,
         score: w.score,
       };
-      if (!out.fits(w.text)) {
+      const startup = w.matcher === "session_start" && sel.profile.session_start_limit_bytes > 0;
+      if (
+        startup &&
+        out.exceedsLimitAlone(w.text, true) &&
+        utf8(w.text) + 2 <= sel.profile.session_start_limit_bytes
+      )
+        out.dropHead();
+      if (!out.fits(w.text, startup)) {
         this.insertCandidate(momentId, {
           ...base,
           seam: "carry_print",
           outcome: "cut_budget",
-          reason: out.overLimit(w.text) ? "moment" : "turn",
+          reason: out.overLimit(w.text, startup) ? "moment" : "turn",
         });
         // A carry larger than this seam can never succeed on retry. Finish it as cut.
-        if (out.exceedsLimitAlone(w.text)) {
+        if (out.exceedsLimitAlone(w.text, startup)) {
           this.run("UPDATE carries SET state = 'cut_budget' WHERE id = ?", w.id);
           this.run(
             "UPDATE candidates SET outcome = 'cut_budget', reason = 'moment' WHERE id = (SELECT candidate_id FROM carries WHERE id = ?)",
@@ -2471,7 +2500,7 @@ export class ServingState {
         candidateId: id,
         carryId: w.id,
       };
-      out.add(w.text, claim);
+      out.add(w.text, claim, startup);
       claims.push(claim);
     }
   }

@@ -1140,11 +1140,44 @@ describe("ServingState epochs and carries", () => {
     );
   });
 
-  it("cuts a startup carry that cannot fit the next hook instead of leaving it waiting", () => {
+  it("settles an exempt startup carry on SessionStart without a fresh copy", () => {
     const h = makeHarness();
     h.fire({
       kind: "session_start",
-      candidates: [entry("pack", "p".repeat(3000), { matcher: "session_start" })],
+      candidates: [entry("pack", "p".repeat(7000), { matcher: "session_start" })],
+      deliveryMode: "retained_startup",
+    });
+    assert.equal(h.fire({ kind: "session_start" }).status, 200);
+    assert.deepEqual(h.db.prepare("SELECT state FROM carries").get(), { state: "printed" });
+    assert.equal(h.fire({ kind: "session_start" }).status, 204);
+  });
+
+  it("keeps ordinary context under its own limit beside a large startup carry", () => {
+    const h = makeHarness();
+    h.fire({
+      kind: "session_start",
+      candidates: [entry("pack", "p".repeat(7000), { matcher: "session_start" })],
+      deliveryMode: "retained_startup",
+    });
+    const reply = h.fire({
+      kind: "tool_result",
+      candidates: [entry("ordinary", "r".repeat(2500))],
+    });
+    assert.equal(reply.status, 200);
+    assert.include(h.text(reply)!, "p".repeat(7000));
+    assert.notInclude(h.text(reply)!, "r".repeat(2500));
+    assert.equal(h.db.prepare("SELECT serve_used FROM budgets").get()!.serve_used, 0);
+    assert.equal(
+      h.fire({ kind: "tool_result", candidates: [entry("later", "r".repeat(1500))] }).status,
+      200,
+    );
+  });
+
+  it("cuts a startup carry larger than its original session-start limit", () => {
+    const h = makeHarness();
+    h.fire({
+      kind: "session_start",
+      candidates: [entry("pack", "p".repeat(9600), { matcher: "session_start" })],
       deliveryMode: "retained_startup",
     });
     assert.equal(h.fire({ kind: "pre_tool" }).status, 204);
@@ -1152,6 +1185,23 @@ describe("ServingState epochs and carries", () => {
     assert.deepEqual(h.outcomes("pack"), ["cut_budget", "cut_budget"]);
     h.fire({ kind: "pre_tool" });
     assert.deepEqual(h.outcomes("pack"), ["cut_budget", "cut_budget"]);
+  });
+
+  it("recovers a retained Grok user message through its PreToolUse carry seam", () => {
+    const h = makeHarness();
+    assert.equal(
+      h.fire({
+        kind: "user_message",
+        profile: GROK,
+        candidates: [entry("prompt", "Recovered prompt rule.")],
+        deliveryMode: "retained_startup",
+      }).status,
+      204,
+    );
+    const next = h.fire({ kind: "pre_tool", profile: GROK });
+    assert.equal(next.status, 200);
+    assert.include(h.text(next)!, "Recovered prompt rule.");
+    assert.equal(h.fire({ kind: "pre_tool", profile: GROK }).status, 204);
   });
 
   it("starts a new epoch on a compaction moment", () => {

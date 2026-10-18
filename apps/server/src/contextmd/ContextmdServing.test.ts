@@ -444,6 +444,56 @@ describe("ContextMD startup run registration", () => {
       ),
   );
 
+  it.effect.each(["UserPromptSubmit", "PreToolUse"])(
+    "delivers a retained large Claude startup file through %s at its original limit",
+    (nextEvent) =>
+      withNode(
+        Effect.gen(function* () {
+          const h = yield* startupHarness();
+          const text = "p".repeat(nextEvent === "PreToolUse" ? 9490 : 8200);
+          const start = NodePath.join(h.config.baseDir, "session-start.md");
+          NodeFS.writeFileSync(start, text);
+          NodeFS.writeFileSync(
+            h.configPath,
+            JSON.stringify({ exact_keys: [], session_start: [{ path: start, max_chars: 9600 }] }),
+          );
+          assert.equal((yield* h.request("claude", "SessionStart")).status, 204);
+          yield* TestClock.adjust("1300 millis");
+          yield* h.persist();
+          yield* h.service.nativeSessionRegistered({
+            nativeSessionId: "startup-session",
+            runId: "startup-run",
+          });
+          const next = yield* h.moment(
+            "claude",
+            "startup-session",
+            { hook_event_name: nextEvent },
+            false,
+          );
+          assert.equal(next.reply.status, 200);
+          if (next.reply.status === 200) assert.include(next.reply.body, text);
+          assert.equal(
+            h.db.prepare("SELECT coalesce(sum(serve_used), 0) AS used FROM budgets").get()!.used,
+            0,
+          );
+          yield* h.service.release(next.delivery);
+          const retry = yield* h.moment(
+            "claude",
+            "startup-session",
+            { hook_event_name: nextEvent },
+            false,
+          );
+          assert.equal(retry.reply.status, 200);
+          yield* h.service.settle(retry.delivery);
+          assert.equal(
+            (yield* h.moment("claude", "startup-session", { hook_event_name: nextEvent }, false))
+              .reply.status,
+            204,
+          );
+        }).pipe(Effect.scoped),
+      ),
+  );
+
   it.effect(
     "rechecks identity when the last starting run registers before retention installation",
     () =>
