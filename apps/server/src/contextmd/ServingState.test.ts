@@ -1189,19 +1189,24 @@ describe("ServingState epochs and carries", () => {
 
   it("recovers a retained Grok user message through its PreToolUse carry seam", () => {
     const h = makeHarness();
+    const session = sessionIn(false, "grok");
     assert.equal(
       h.fire({
         kind: "user_message",
         profile: GROK,
-        candidates: [entry("prompt", "Recovered prompt rule.")],
+        session,
+        cue: {
+          ...cueOk({ prompt: 1 }),
+          candidates: [cueEntry("prompt", "Recovered prompt rule.")],
+        },
         deliveryMode: "retained_startup",
       }).status,
       204,
     );
-    const next = h.fire({ kind: "pre_tool", profile: GROK });
+    const next = h.fire({ kind: "pre_tool", profile: GROK, session });
     assert.equal(next.status, 200);
     assert.include(h.text(next)!, "Recovered prompt rule.");
-    assert.equal(h.fire({ kind: "pre_tool", profile: GROK }).status, 204);
+    assert.equal(h.fire({ kind: "pre_tool", profile: GROK, session }).status, 204);
   });
 
   it("starts a new epoch on a compaction moment", () => {
