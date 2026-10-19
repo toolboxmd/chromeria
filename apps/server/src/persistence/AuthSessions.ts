@@ -1,5 +1,4 @@
 import * as PeerLinkEvents from "../peer/PeerLinkEvents.ts";
-import { EnvironmentId } from "@t3tools/contracts";
 import { invalidateAutomationSessions } from "../scheduledTasks/DestinationAutomationAuthority.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -288,14 +287,9 @@ export const make = Effect.gen(function* () {
   });
 
   const linkEvents = yield* Effect.serviceOption(PeerLinkEvents.PeerLinkEvents);
-  const wakeAutomationDisables = Effect.gen(function* () {
-    if (Option.isNone(linkEvents)) return;
-    const pending = yield* sql<{
-      next_environment_id: string;
-    }>`SELECT DISTINCT next_environment_id FROM fork_automation_obligations WHERE pending=1 AND ack_json IS NULL LIMIT 32`;
-    for (const row of pending)
-      yield* linkEvents.value.changed(EnvironmentId.make(row.next_environment_id));
-  }).pipe(Effect.ignoreCause({ log: true }));
+  const wakeAutomationDisables = Option.isSome(linkEvents)
+    ? linkEvents.value.automationChanged
+    : Effect.void;
 
   const revokeActiveSessionsForReplacement = SqlSchema.findAll({
     Request: CreateReplacingActiveAuthSessionInput,

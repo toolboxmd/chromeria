@@ -1,5 +1,6 @@
 import { expect, it } from "@effect/vitest";
 import { AuthSessionId, EnvironmentId, ProjectId } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -242,4 +243,66 @@ it.effect(
       expect(yield* authority.pending).toEqual([]);
       expect((yield* authority.claim("replacement-384")).id).toBe("replacement-384");
     }).pipe(Effect.provide(fixture)),
+);
+
+it.effect(
+  "bounded disable batches reach every pending obligation across owner reconstruction",
+  () =>
+    Effect.gen(function* () {
+      const authority = yield* Authority.DestinationAutomationAuthority;
+      for (let index = 0; index < 33; index++) {
+        const dep = dependency(certificate(`fair-${index}`));
+        yield* authority.registerDependency(
+          dep,
+          { environmentId: destination, generation: dep.grantGeneration },
+          ["fair-session"],
+          true,
+        );
+      }
+      yield* Authority.invalidateAutomationSessions(["fair-session"]);
+      const first = yield* authority.pending;
+      expect(first).toHaveLength(32);
+      const reopened = yield* Authority.layer.pipe(Layer.fresh, Layer.build);
+      const second = yield* Context.get(reopened, Authority.DestinationAutomationAuthority).pending;
+      expect(second.length).toBeLessThanOrEqual(32);
+      expect(
+        new Set([...first, ...second].map((entry) => entry.dependency.certificateId)).size,
+      ).toBe(33);
+      const sql = yield* SqlClient.SqlClient;
+      expect(
+        yield* sql`SELECT 1 FROM fork_automation_obligations WHERE pending=1 AND ack_json IS NULL`,
+      ).toHaveLength(33);
+    }).pipe(Effect.provide(fixture)),
+);
+
+it.effect("new obligation arrivals do not starve an older pending retry", () =>
+  Effect.gen(function* () {
+    const authority = yield* Authority.DestinationAutomationAuthority;
+    const original = dependency(certificate("older-retry"));
+    yield* authority.registerDependency(
+      original,
+      { environmentId: destination, generation: original.grantGeneration },
+      ["older-session"],
+      true,
+    );
+    yield* Authority.invalidateAutomationSessions(["older-session"]);
+    expect((yield* authority.pending).map((row) => row.dependency)).toEqual([original]);
+    let retried = false;
+    for (let wave = 0; wave < 2; wave++) {
+      for (let index = 0; index < 33; index++) {
+        const dep = dependency(certificate(`new-arrival-${wave}-${index}`));
+        yield* authority.registerDependency(
+          dep,
+          { environmentId: destination, generation: dep.grantGeneration },
+          [`arrival-session-${wave}`],
+          true,
+        );
+      }
+      yield* Authority.invalidateAutomationSessions([`arrival-session-${wave}`]);
+      const batch = yield* authority.pending;
+      expect(batch.length).toBeLessThanOrEqual(32);
+      retried ||= batch.some((row) => row.dependency.certificateId === original.certificateId);
+    }
+    expect(retried).toBe(true);
+  }).pipe(Effect.provide(fixture)),
 );

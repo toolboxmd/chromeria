@@ -1,4 +1,4 @@
-import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import * as PeerLinkEvents from "../peer/PeerLinkEvents.ts";
 import { checkAutomationCommit } from "../scheduledTasks/DestinationAutomationAuthority.ts";
 import { PeerDispatchAuthority, PeerAcceptedAutomation } from "../peer/peerEffectAuthority.ts";
 import {
@@ -239,7 +239,7 @@ const layerBase: Layer.Layer<
   EventSinkV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    const peerAuthority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+    const peerLinkEvents = yield* Effect.serviceOption(PeerLinkEvents.PeerLinkEvents);
     yield* initializePeerEffectAuthority.pipe(Effect.orDie);
     const commandReceipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
     const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
@@ -928,8 +928,8 @@ const layerBase: Layer.Layer<
               yield* effectOutbox.notifyAvailable(result.enqueuedEffectCount);
             }
             if (result.committed) {
-              if ((input.forkPlans?.length ?? 0) !== 0 && Option.isSome(peerAuthority))
-                yield* peerAuthority.value.notifyAutomationChanges;
+              if ((input.forkPlans?.length ?? 0) !== 0 && Option.isSome(peerLinkEvents))
+                yield* peerLinkEvents.value.automationChanged;
               yield* publishStoredEvents(result.storedEvents);
             }
           }),

@@ -234,21 +234,23 @@ const plan = Effect.fn("Spectrum.commandPlan")(function* (
                 : ["orchestration", "worktree", "pull-requests", "preview", "device"],
             },
           );
-          const admitted = yield* authority.value.automationAdmission(
-            acceptance,
-            binding,
-            command.commandId,
-          );
-          acceptanceCommit = admitted.commit.pipe(
-            Effect.mapError(
-              () =>
-                new ForkCommitGuardRejected({
-                  threadId: state.threadId,
-                  kind: "invalid_transition",
-                }),
-            ),
-          );
-          next = { ...next, automationCertificateId: acceptance.certificate.id };
+          if (acceptance !== undefined) {
+            const admitted = yield* authority.value.automationAdmission(
+              acceptance,
+              binding,
+              command.commandId,
+            );
+            acceptanceCommit = admitted.commit.pipe(
+              Effect.mapError(
+                () =>
+                  new ForkCommitGuardRejected({
+                    threadId: state.threadId,
+                    kind: "invalid_transition",
+                  }),
+              ),
+            );
+            next = { ...next, automationCertificateId: acceptance.certificate.id };
+          }
         }
         // The reopened Spectrum is working again; its next report settles the row anew.
         events.push(

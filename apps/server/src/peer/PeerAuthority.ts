@@ -220,7 +220,7 @@ export class PeerAuthority extends Context.Service<
       binding: Automation.AutomationBinding,
       action: RequestIdentity | { readonly nativeCommandId: string },
       limits: PeerCeiling,
-    ) => Effect.Effect<Automation.ValidatedAcceptance, OrchestratorMcpFailure>;
+    ) => Effect.Effect<Automation.ValidatedAcceptance | undefined, OrchestratorMcpFailure>;
     readonly automationAdmission: (
       value: Automation.ValidatedAcceptance,
       binding: Automation.AutomationBinding,
@@ -347,11 +347,7 @@ const make = Effect.gen(function* () {
   const automation = yield* Automation.DestinationAutomationAuthority;
   const linkEvents = yield* Effect.serviceOption(LinkEvents.PeerLinkEvents);
   const policySettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
-  const wakeDisables = Effect.gen(function* () {
-    if (Option.isNone(linkEvents)) return;
-    for (const pending of yield* automation.pending)
-      yield* linkEvents.value.changed(pending.environmentId);
-  }).pipe(Effect.ignoreCause({ log: true }));
+  const wakeDisables = Option.isSome(linkEvents) ? linkEvents.value.automationChanged : Effect.void;
   const authSessions = yield* AuthSessions.AuthSessionRepository;
   const crypto = yield* Crypto.Crypto;
   const threads = yield* ProjectionStore.ProjectionStoreV2;
@@ -1907,6 +1903,21 @@ const make = Effect.gen(function* () {
               },
             }),
           ).pipe(Effect.mapError(unavailable));
+          if (upstream.records.some((node) => node.environmentId === here))
+            return yield* denied(
+              "A peer cannot supply this destination's local automation authority.",
+            );
+          for (const dependency of upstream.dependencies)
+            if (
+              dependency.certificateId !== input.certificateId ||
+              dependency.destinationEnvironmentId !== input.audience ||
+              dependency.resourceId !== input.binding.resourceId ||
+              dependency.definitionGeneration !== input.binding.definitionGeneration ||
+              dependency.definitionDigest !== input.binding.definitionDigest
+            )
+              return yield* denied(
+                "The upstream disable dependency does not match this exact automation capture.",
+              );
           for (const dependency of upstream.dependencies)
             yield* automation.registerRecovery(
               dependency,
@@ -2208,6 +2219,12 @@ const make = Effect.gen(function* () {
       }
       for (const owner of legacyOwners) graphs.push(yield* captureLegacy(owner, input));
       const graph = yield* mergeGraphs(graphs);
+      if (
+        graph.records.length === 0 &&
+        graph.legacy.length === 0 &&
+        graph.dependencies.length === 0
+      )
+        return undefined;
       for (const node of graph.records) ceiling = intersect(ceiling, node.ceiling);
       for (const owner of graph.legacy) ceiling = intersect(ceiling, owner.ceiling);
       if (
@@ -2894,7 +2911,10 @@ const make = Effect.gen(function* () {
   return PeerAuthority.of({
     notifyAutomationChanges: wakeDisables,
     pendingAutomationDisables: automation.pending,
-    acknowledgeAutomationDisable: automation.acknowledge,
+    acknowledgeAutomationDisable: (acknowledgement, peer, generation) =>
+      automation
+        .acknowledge(acknowledgement, peer, generation)
+        .pipe(Effect.tap(() => wakeDisables)),
     receiveAutomationDisable: (input, identity) =>
       automation.receiveDisable(input, identity).pipe(Effect.tap(() => wakeDisables)),
     captureAutomation,

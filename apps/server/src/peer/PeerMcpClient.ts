@@ -21,6 +21,8 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as Queue from "effect/Queue";
+import * as PubSub from "effect/PubSub";
 import * as Option from "effect/Option";
 import * as Scope from "effect/Scope";
 import * as Schedule from "effect/Schedule";
@@ -412,44 +414,71 @@ const make = Effect.gen(function* () {
         Effect.forkIn(lifetime),
       );
     });
-  const drainAutomationDisables = Effect.gen(function* () {
-    if (Option.isNone(authority)) return;
-    for (const pending of yield* authority.value.pendingAutomationDisables) {
-      yield* Effect.gen(function* () {
-        if (links.resolveAutomationRecovery === undefined)
-          return yield* new OrchestratorMcpFailure({
-            code: "orchestration_error",
-            message: "The original disable-only recovery resolver is unavailable.",
-          });
-        const resolved = yield* links
-          .resolveAutomationRecovery(pending.environmentId, pending.generation)
-          .pipe(Effect.mapError(fromLinkError));
-        const response = yield* httpClient.execute(
-          HttpClientRequest.post(`${resolved.url}/mcp/peer-control/automation-disable`).pipe(
-            HttpClientRequest.setHeaders({ authorization: `Bearer ${resolved.token}` }),
-            HttpClientRequest.setBody(
-              HttpBody.text(
-                json({ version: 1, dependency: pending.dependency }),
-                "application/json",
+  const deliverAutomationDisableBatch = Effect.gen(function* () {
+    if (Option.isNone(authority)) return false;
+    const batch = yield* authority.value.pendingAutomationDisables;
+    yield* Effect.forEach(
+      batch,
+      (pending) =>
+        Effect.gen(function* () {
+          if (links.resolveAutomationRecovery === undefined)
+            return yield* new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "The original disable-only recovery resolver is unavailable.",
+            });
+          const resolved = yield* links
+            .resolveAutomationRecovery(pending.environmentId, pending.generation)
+            .pipe(Effect.mapError(fromLinkError));
+          const response = yield* httpClient.execute(
+            HttpClientRequest.post(`${resolved.url}/mcp/peer-control/automation-disable`).pipe(
+              HttpClientRequest.setHeaders({ authorization: `Bearer ${resolved.token}` }),
+              HttpClientRequest.setBody(
+                HttpBody.text(
+                  json({ version: 1, dependency: pending.dependency }),
+                  "application/json",
+                ),
               ),
             ),
-          ),
-        );
-        if (response.status !== 200) return;
-        const acknowledgement = yield* decodeAutomationDisableAck(yield* response.text);
-        if (json(acknowledgement.dependency) !== json(pending.dependency))
-          return yield* new OrchestratorMcpFailure({
-            code: "capability_denied",
-            message: "The automation acknowledgement does not match its exact original dependency.",
-          });
-        yield* authority.value.acknowledgeAutomationDisable(
-          acknowledgement,
-          pending.environmentId,
-          pending.generation,
-        );
-      }).pipe(Effect.ignoreCause({ log: true }));
-    }
+          );
+          if (response.status !== 200) return;
+          const acknowledgement = yield* decodeAutomationDisableAck(yield* response.text);
+          if (json(acknowledgement.dependency) !== json(pending.dependency))
+            return yield* new OrchestratorMcpFailure({
+              code: "capability_denied",
+              message:
+                "The automation acknowledgement does not match its exact original dependency.",
+            });
+          yield* authority.value.acknowledgeAutomationDisable(
+            acknowledgement,
+            pending.environmentId,
+            pending.generation,
+          );
+        }).pipe(Effect.timeout("10 seconds"), Effect.ignoreCause({ log: true })),
+      { concurrency: 4, discard: true },
+    );
+    return batch.length !== 0;
   });
+  const drainAutomationDisables = deliverAutomationDisableBatch.pipe(Effect.asVoid);
+  const disableWakeups = yield* Queue.sliding<void>(1);
+  const recoverAutomationDisables = Effect.forever(
+    Queue.take(disableWakeups).pipe(
+      Effect.andThen(
+        Effect.gen(function* () {
+          while (
+            yield* deliverAutomationDisableBatch.pipe(
+              Effect.catch(() =>
+                Effect.logWarning(
+                  "Pending automation disable recovery is unavailable; retrying.",
+                ).pipe(Effect.as(true)),
+              ),
+            )
+          )
+            yield* Effect.sleep("2 seconds");
+        }),
+      ),
+    ),
+  );
+
   const reconnect = (id: EnvironmentId) =>
     Effect.gen(function* () {
       if (Option.isNone(environment) || Option.isNone(authority)) return;
@@ -469,7 +498,16 @@ const make = Effect.gen(function* () {
     ? Effect.void
     : forkParked(
         Effect.gen(function* () {
-          yield* drainAutomationDisables;
+          if (Option.isSome(changes)) {
+            const automationChanges = yield* changes.value.subscribeAutomationChanges;
+            yield* Effect.forever(
+              PubSub.take(automationChanges).pipe(
+                Effect.andThen(Queue.offer(disableWakeups, undefined)),
+              ),
+            ).pipe(Effect.forkIn(lifetime));
+          }
+          yield* Queue.offer(disableWakeups, undefined);
+          yield* recoverAutomationDisables.pipe(Effect.forkIn(lifetime));
           const stored = yield* links.list;
           const updates = Option.isSome(changes) ? changes.value.changes : Stream.empty;
           yield* Stream.merge(
@@ -477,17 +515,19 @@ const make = Effect.gen(function* () {
             updates,
           ).pipe(
             Stream.runForEach((id) =>
-              drainAutomationDisables.pipe(Effect.andThen(reconnect(id))).pipe(
-                Effect.retry({
-                  schedule: Schedule.spaced("2 seconds"),
-                  while: (error) =>
-                    error._tag === "HttpClientError" ||
-                    (error._tag === "OrchestratorMcpFailure" &&
-                      error.code === "orchestration_error"),
-                }),
-                Effect.ignoreCause({ log: true }),
-                Effect.forkIn(lifetime),
-              ),
+              Queue.offer(disableWakeups, undefined)
+                .pipe(Effect.andThen(reconnect(id)))
+                .pipe(
+                  Effect.retry({
+                    schedule: Schedule.spaced("2 seconds"),
+                    while: (error) =>
+                      error._tag === "HttpClientError" ||
+                      (error._tag === "OrchestratorMcpFailure" &&
+                        error.code === "orchestration_error"),
+                  }),
+                  Effect.ignoreCause({ log: true }),
+                  Effect.forkIn(lifetime),
+                ),
             ),
           );
         }).pipe(Effect.ignoreCause({ log: true })),

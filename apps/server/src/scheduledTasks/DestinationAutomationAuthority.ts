@@ -170,6 +170,12 @@ export const ensureAutomationAuthoritySchema = Effect.gen(function* () {
     )
   )
     yield* sql`ALTER TABLE fork_automation_obligations ADD COLUMN expires_at REAL`;
+  if (
+    !(yield* sql<{ name: string }>`PRAGMA table_info(fork_automation_obligations)`).some(
+      (column) => column.name === "selection_order",
+    )
+  )
+    yield* sql`ALTER TABLE fork_automation_obligations ADD COLUMN selection_order INTEGER NOT NULL DEFAULT 0`;
   yield* sql`CREATE TABLE IF NOT EXISTS fork_automation_dependency_grants (dependency_id TEXT NOT NULL,session_id TEXT NOT NULL,PRIMARY KEY(dependency_id,session_id))`;
   yield* sql`CREATE TABLE IF NOT EXISTS fork_automation_dependency_certificates (dependency_id TEXT NOT NULL,certificate_id TEXT NOT NULL,PRIMARY KEY(dependency_id,certificate_id))`;
 });
@@ -600,7 +606,7 @@ const make = Effect.gen(function* () {
       .withTransaction(
         Effect.gen(function* () {
           const key = requestDigest(dependency);
-          yield* sql`INSERT INTO fork_automation_obligations(dependency_id,dependency_json,next_environment_id,next_generation,originating) VALUES (${key},${json(dependency)},${next.environmentId},${next.generation},${originating ? 1 : 0}) ON CONFLICT DO NOTHING`;
+          yield* sql`INSERT INTO fork_automation_obligations(dependency_id,dependency_json,next_environment_id,next_generation,originating,selection_order) VALUES (${key},${json(dependency)},${next.environmentId},${next.generation},${originating ? 1 : 0},(SELECT coalesce(max(selection_order),0) FROM fork_automation_obligations)) ON CONFLICT DO NOTHING`;
           const stored = (yield* sql<{
             next_environment_id: string;
             next_generation: string;
@@ -671,13 +677,24 @@ const make = Effect.gen(function* () {
     yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND dependency_id IN (SELECT d.dependency_id FROM fork_automation_dependency_certificates d JOIN fork_automation_certificates c ON c.id=d.certificate_id WHERE c.disabled=1 OR (json_extract(c.certificate_json,'$.expiresAt') IS NOT NULL AND json_extract(c.certificate_json,'$.expiresAt')<=${yield* Clock.currentTimeMillis}))`.pipe(
       Effect.mapError(unavailable),
     );
-    const rows = yield* sql<{
-      dependency_json: string;
-      next_environment_id: string;
-      next_generation: string;
-    }>`SELECT dependency_json,next_environment_id,next_generation FROM fork_automation_obligations WHERE pending=1 AND ack_json IS NULL ORDER BY dependency_id LIMIT 32`.pipe(
-      Effect.mapError(unavailable),
-    );
+    const rows = yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const batch = yield* sql<{
+            dependency_id: string;
+            dependency_json: string;
+            next_environment_id: string;
+            next_generation: string;
+          }>`SELECT dependency_id,dependency_json,next_environment_id,next_generation FROM fork_automation_obligations WHERE pending=1 AND ack_json IS NULL ORDER BY selection_order,dependency_id LIMIT 32`;
+          if (batch.length !== 0)
+            yield* sql`UPDATE fork_automation_obligations SET selection_order=(SELECT coalesce(max(selection_order),0)+1 FROM fork_automation_obligations) WHERE ${sql.in(
+              "dependency_id",
+              batch.map((row) => row.dependency_id),
+            )}`;
+          return batch;
+        }),
+      )
+      .pipe(Effect.mapError(unavailable));
     return yield* Effect.forEach(rows, (row) =>
       Effect.gen(function* () {
         return {
