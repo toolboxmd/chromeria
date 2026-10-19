@@ -323,7 +323,7 @@ const make = Effect.gen(function* () {
             callerRunId: input.callerRunId,
           }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     let state = yield* validateState({
-      version: 1,
+      version: 2,
       threadId: input.threadId,
       callerThreadId: caller.id,
       callerRunId: input.callerRunId,
@@ -337,7 +337,6 @@ const make = Effect.gen(function* () {
       participants: resolved,
       generation: 0,
       revision: 0,
-      cursor: 0,
       status: "active",
       cycle: 0,
       round: null,

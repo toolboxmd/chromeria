@@ -17,7 +17,7 @@ export const NOW = DateTime.makeUnsafe("2026-10-08T12:00:00Z");
 const selection = { instanceId: ProviderInstanceId.make("codex"), model: "test-model" };
 export function makeState(overrides: Partial<SpectrumState> = {}): SpectrumState {
   return {
-    version: 1,
+    version: 2,
     threadId: ThreadId.make("spectrum.test"),
     callerThreadId: ThreadId.make("caller"),
     callerRunId: RunId.make("caller-run"),
@@ -34,7 +34,6 @@ export function makeState(overrides: Partial<SpectrumState> = {}): SpectrumState
     ],
     generation: 0,
     revision: 0,
-    cursor: 0,
     status: "active",
     cycle: 0,
     round: null,
