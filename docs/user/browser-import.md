@@ -1,6 +1,10 @@
 # Reuse browser logins
 
-On macOS, Chromeria continuously mirrors Chrome's logins while the desktop app runs,
+On macOS, the Chrome login source is off by default on each machine.
+[Configure the Chrome key command](../fork.md#desktop-and-data-isolation) on the source
+Mac to enable continuous mirroring. Removing the command stops Chrome observation.
+
+On the enabled Mac, Chromeria continuously mirrors Chrome's logins while the desktop app runs,
 including while Chrome is open. Chrome's Default profile uses Chromeria's default
 profile; other Chrome profiles get separate profiles, initially named from Chrome.
 After creation, your Chromeria profile names take precedence.

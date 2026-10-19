@@ -30,7 +30,7 @@ with its existing Electron `chromeria` profile. Development keeps upstream's
 identified by their embedded commit SHA; upstream package versions are unchanged.
 There is no Chromeria desktop update feed.
 
-For the continuous macOS Chrome login mirror, set `chromeCookieKeyCommand` in
+The continuous macOS Chrome source is off by default on each machine. To enable it, set `chromeCookieKeyCommand` in
 `desktop-settings.json` in the desktop state directory:
 
 ```json
@@ -42,8 +42,9 @@ For the continuous macOS Chrome login mirror, set `chromeCookieKeyCommand` in
 The command runs as argv without a shell. Its stdout must contain Chrome's Safe
 Storage secret, optionally followed by one newline. The app derives the existing
 macOS v10 key and caches successful reads only in memory. Remove the
-setting to use Keychain. A configured command that fails or is invalid stops Chrome
-observation; it never falls back to Keychain. Failed reads retry with bounded
+setting to stop Chrome observation. An empty or invalid command leaves the source
+off; a failed command never falls back to Keychain. One-time imports still use
+Keychain, with native reads isolated from Electron main in a worker. Failed reads retry with bounded
 backoff. Command changes take effect on the next scan, within about 30 seconds,
 and discard the cached key. Ad-hoc signed builds lose Keychain's
 "Always Allow" grant after rebuilds, so the command avoids repeated prompts.
