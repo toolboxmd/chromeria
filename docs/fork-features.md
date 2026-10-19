@@ -240,6 +240,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/t3code/issues/6",
     "https://github.com/toolboxmd/t3code/issues/20",
     "https://github.com/toolboxmd/chromeria/issues/308",
+    "https://github.com/toolboxmd/chromeria/issues/287",
     "https://github.com/toolboxmd/chromeria/issues/370",
     "https://github.com/toolboxmd/chromeria/issues/411"
   ],
@@ -247,6 +248,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/t3code/pull/9",
     "https://github.com/toolboxmd/t3code/pull/24",
     "https://github.com/toolboxmd/chromeria/pull/309",
+    "https://github.com/toolboxmd/chromeria/compare/main...fix/287-dev-runner-tailscale-serve",
     "https://github.com/toolboxmd/chromeria/pull/373",
     "https://github.com/toolboxmd/chromeria/pull/419"
   ],
@@ -273,6 +275,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/server/src/orchestration-v2/V1ImportBoundary.test.ts",
     "apps/server/src/vcs/GitVcsDriverCore.test.ts",
     "knip.jsonc",
+    "scripts/dev-runner.ts",
+    "scripts/dev-runner.test.ts",
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",
     "packages/source-control-github/graphql.config.ts",
