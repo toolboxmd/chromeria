@@ -10,6 +10,8 @@ import {
   type ToolActivityIcon,
   type ThreadId,
   type PreviewAutomationOperation,
+  type PreviewAutomationEndLoginResult,
+  type PreviewAutomationFillCredentialResult,
   type PreviewAutomationOpenInput,
   type PreviewAutomationRecordingStatus,
   type PreviewAutomationResizeResult,
@@ -28,6 +30,8 @@ import {
 } from "../../../attachmentStore.ts";
 import { resolveAttachmentRelativePath } from "../../../attachmentPaths.ts";
 import * as ServerConfig from "../../../config.ts";
+import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
+import { recordCredentialFill } from "../../../preview/CredentialAudit.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
@@ -224,6 +228,57 @@ const handlers = {
   ),
   preview_upload: McpToolAccess.actsAsCaller((input) =>
     invokeTargeted<object>("upload", input, input.timeoutMs),
+  ),
+  preview_fill_credential: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+      const audit = (outcome: { origin?: string; tabId?: string; result: string }) =>
+        threads.getThreadShell(scope.thread.threadId).pipe(
+          Effect.orElseSucceed(() => null),
+          Effect.flatMap((shell) =>
+            recordCredentialFill({
+              environmentId: scope.environmentId,
+              threadId: scope.thread.threadId,
+              projectId: shell?.projectId ?? null,
+              providerInstanceId: scope.thread.providerInstanceId,
+              providerSessionId: scope.thread.providerSessionId,
+              item: input.item,
+              field: input.field,
+              origin: outcome.origin ?? null,
+              tabId: outcome.tabId ?? input.tabId ?? null,
+              result: outcome.result,
+            }),
+          ),
+        );
+      return yield* invokeTargeted<PreviewAutomationFillCredentialResult>(
+        "fillCredential",
+        input,
+        input.timeoutMs,
+      ).pipe(
+        Effect.tap((result) =>
+          audit({
+            origin: result.origin,
+            ...(result.tabId === undefined ? {} : { tabId: result.tabId }),
+            result: "filled",
+          }),
+        ),
+        Effect.tapError((error) =>
+          audit(
+            error._tag === "PreviewCredentialError"
+              ? {
+                  ...(error.origin === undefined ? {} : { origin: error.origin }),
+                  ...(error.tabId === undefined ? {} : { tabId: error.tabId }),
+                  result: error.reason,
+                }
+              : { result: error._tag },
+          ),
+        ),
+      );
+    }),
+  ),
+  preview_end_login: McpToolAccess.actsAsCaller((input) =>
+    invokeTargeted<PreviewAutomationEndLoginResult>("endLogin", input ?? {}),
   ),
   preview_press: McpToolAccess.actsAsCaller((input) => invokeTargeted<object>("press", input)),
   preview_scroll: McpToolAccess.actsAsCaller((input) => invokeTargeted<object>("scroll", input)),

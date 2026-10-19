@@ -7,6 +7,9 @@ import {
   PreviewAutomationDragInput,
   PreviewAutomationError,
   PreviewAutomationEvaluateInput,
+  PreviewAutomationFillCredentialInput,
+  PreviewAutomationFillCredentialResult,
+  PreviewAutomationEndLoginResult,
   PreviewAutomationHoverInput,
   PreviewAutomationNavigateInput,
   PreviewAutomationOpenInput,
@@ -29,6 +32,7 @@ import {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import { Tool, Toolkit } from "effect/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -233,6 +237,34 @@ const PreviewUploadTool = browserTool(
   }).annotate(Tool.Title, "Upload files to preview page"),
 );
 
+const PreviewFillCredentialTool = browserTool(
+  Tool.make("preview_fill_credential", {
+    description:
+      "Fill one login input in the tab selected by tabId, or this agent session's current tab when omitted, with a value from this environment's credential vault: the username, the password, or the current one-time code (totp) of a vault item. You never see the value; the result says only whether it was filled. The input's page must be https and one of the item's sites. The fill starts a login: the tab and every tab linked to it by opener, including popups opened later, can no longer be read (no snapshot, evaluate, recording, URL or title). Finish signing in with more fills, preview_click or preview_type with a locator, preview_press and preview_wait_for, then call preview_end_login, which closes those tabs; open a new tab to continue, signed in through the profile's cookies. Server browser tabs only.",
+    parameters: McpRouting.parameters(PreviewAutomationFillCredentialInput),
+    success: Schema.Struct({
+      ...PreviewAutomationFillCredentialResult.fields,
+      ...presentationFields,
+    }),
+    failure: PreviewToolFailure,
+    dependencies: [...dependencies, FileSystem.FileSystem, Path.Path, ServerConfig.ServerConfig],
+  }).annotate(Tool.Title, "Fill credential in preview page"),
+);
+
+const PreviewEndLoginTool = browserTool(
+  Tool.make("preview_end_login", {
+    description:
+      "End the login started by preview_fill_credential in the tab selected by tabId, or this agent session's current tab when omitted: closes that tab and every tab in its login. Then call preview_open for a new tab; the profile's cookies keep the session. Returns the closed tab ids, or none when the tab was not in a login.",
+    parameters: McpRouting.parameters(PreviewAutomationTabTargetInput),
+    success: Schema.Struct({
+      ...PreviewAutomationEndLoginResult.fields,
+      ...presentationFields,
+    }),
+    failure: PreviewToolFailure,
+    dependencies,
+  }).annotate(Tool.Title, "End browser login"),
+);
+
 const PreviewPressTool = browserTool(
   Tool.make("preview_press", {
     description:
@@ -325,6 +357,8 @@ export const PreviewToolkit = Toolkit.make(
   PreviewSelectTool,
   PreviewDragTool,
   PreviewUploadTool,
+  PreviewFillCredentialTool,
+  PreviewEndLoginTool,
   PreviewPressTool,
   PreviewScrollTool,
   PreviewEvaluateTool,
@@ -346,6 +380,8 @@ export const PreviewStandardToolkit = Toolkit.make(
   PreviewSelectTool,
   PreviewDragTool,
   PreviewUploadTool,
+  PreviewFillCredentialTool,
+  PreviewEndLoginTool,
   PreviewPressTool,
   PreviewScrollTool,
   PreviewEvaluateTool,

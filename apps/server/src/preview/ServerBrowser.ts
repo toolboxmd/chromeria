@@ -21,6 +21,7 @@ import {
   type PreviewAutomationConsoleEntry,
   type PreviewAutomationDragInput,
   type PreviewAutomationEvaluateInput,
+  type PreviewAutomationFillCredentialInput,
   type PreviewAutomationHoverInput,
   type PreviewAutomationNavigateInput,
   type PreviewAutomationNetworkEntry,
@@ -79,6 +80,8 @@ import * as ServerConfig from "../config.ts";
 import { resolveRootCliCommand } from "../cli/invocation.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
+import { fillCredential, loginInProgress, LOGIN_OPERATIONS } from "./CredentialFill.ts";
+import { CredentialVault } from "./CredentialVault.ts";
 import * as DesktopBrowserChannel from "./DesktopBrowserChannel.ts";
 import * as PreviewManager from "./Manager.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
@@ -293,6 +296,11 @@ interface ServerTab {
   readonly networkEntries: Array<PreviewAutomationNetworkEntry>;
   readonly actionTimeline: Array<PreviewAutomationActionEvent>;
   readonly control: SessionControl;
+  /**
+   * The login this tab belongs to after a credential fill, shared by its opener
+   * group. Nothing in the tab can be read while it is set; only closing ends it.
+   */
+  quarantine: string | null;
 
   readonly isolatedContext: boolean;
 
@@ -467,6 +475,7 @@ const make = Effect.gen(function* () {
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const previewBrowser = yield* PreviewBrowser.PreviewBrowser;
   const desktopChannel = yield* DesktopBrowserChannel.DesktopBrowserChannel;
+  const vault = yield* CredentialVault;
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const launchServices = yield* Effect.context<ChildProcessSpawner.ChildProcessSpawner>();
   const setupCommand = yield* resolveRootCliCommand(PreviewBrowserHost.SETUP_SUBCOMMAND);
@@ -554,7 +563,11 @@ const make = Effect.gen(function* () {
     broadcastControl(tab);
   };
 
-  const report = (tab: ServerTab, navStatus: PreviewNavStatus) => {
+  const report = (tab: ServerTab, status: PreviewNavStatus) => {
+    // Session state reaches every client; a login page's URL or title can hold a value.
+    const navStatus: PreviewNavStatus = tab.quarantine
+      ? { _tag: "Success", url: "about:blank", title: "Login in progress" }
+      : status;
     void tab.cdp
       .send("Page.getNavigationHistory")
       .catch(() => null)
@@ -769,6 +782,11 @@ const make = Effect.gen(function* () {
       networkEntries: [],
       actionTimeline: [],
       control,
+      // A popup from a login joins it.
+      quarantine:
+        adopted === undefined
+          ? null
+          : (tabs.get(tabKey(snapshot.threadId, adopted.openerTabId))?.quarantine ?? null),
       isolatedContext,
       desktop: desktop === null ? null : { close: desktop.close },
       profileId: snapshot.profileId,
@@ -1180,7 +1198,7 @@ const make = Effect.gen(function* () {
       await popup.close().catch(constVoid);
       return;
     }
-    const url = popup.url();
+    const url = opener.quarantine ? "" : popup.url();
 
     const controller = [...opener.viewers].find(
       (viewer) => viewer.id === opener.control.controller,
@@ -1398,6 +1416,7 @@ const make = Effect.gen(function* () {
           ownedByCaller: candidate.control.agentId === agentSessionId,
           visible: candidate.viewers.size > 0,
           ...(candidate.profileId === undefined ? {} : { profileId: candidate.profileId }),
+          ...(candidate.quarantine ? { url: null, loginInProgress: true } : {}),
         })),
       ...profileStatus(),
       downloads: tab.downloads.map(({ fileName, path, sizeBytes, url, completedAt }) => ({
@@ -1408,6 +1427,15 @@ const make = Effect.gen(function* () {
         completedAt,
       })),
     };
+    if (tab.quarantine)
+      return {
+        ...status,
+        url: null,
+        dialog: status.dialog === null ? null : { type: "", message: "", defaultValue: "" },
+        fileChooser: null,
+        downloads: [],
+        loginInProgress: true,
+      };
     if (status.url === null || tab.dialog) return status;
     return { ...status, title: (await tab.page.title().catch(() => "")) || null };
   };
@@ -1781,6 +1809,7 @@ const make = Effect.gen(function* () {
               }),
             ),
           ));
+        if (existing?.quarantine) throw loginInProgress();
         if (existing?.dialog)
           throw new BrowserControlInterrupted(
             "A browser dialog is pending. Read preview_status and use preview_dialog first.",
@@ -1863,6 +1892,25 @@ const make = Effect.gen(function* () {
       dropTab(tab, false);
       return {};
     }
+    if (request.operation === "endLogin") {
+      if (tab.quarantine === null) return { closed: [] };
+      const login = [...tabs.values()].filter(
+        (member) => member.threadId === tab.threadId && member.quarantine === tab.quarantine,
+      );
+      if (login.some((member) => member.control.controller !== null))
+        throw new BrowserControlInterrupted(
+          "A human controls a tab in this login.",
+          "humanControl",
+        );
+      for (const member of login) {
+        void member.control.close().catch(constVoid);
+        await Effect.runPromise(
+          manager.close({ threadId: member.threadId, tabId: member.tabId }).pipe(Effect.ignore),
+        );
+        dropTab(member, false);
+      }
+      return { closed: login.map((member) => member.tabId) };
+    }
     // A click can be waiting for its dialog. Resolve it outside the serial queue,
     // with the same owner check, so the operation can finish and control can drain.
     if (request.operation === "dialog") {
@@ -1902,7 +1950,112 @@ const make = Effect.gen(function* () {
     });
   };
 
-  const executeTabOperation = async (tab: ServerTab, request: PreviewAutomationRequest) => {
+  /**
+   * The tab's opener group: tabs linked by opener, and tabs of the same login,
+   * which stay together even when the tab between them closes.
+   */
+  const openerGroup = (tab: ServerTab) => {
+    const group = new Set([tab]);
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const candidate of tabs.values()) {
+        if (group.has(candidate) || candidate.threadId !== tab.threadId) continue;
+        const linked = [...group].some(
+          (member) =>
+            candidate.openerTabId === member.tabId ||
+            member.openerTabId === candidate.tabId ||
+            (member.quarantine !== null && member.quarantine === candidate.quarantine),
+        );
+        if (linked) {
+          group.add(candidate);
+          grew = true;
+        }
+      }
+    }
+    return [...group];
+  };
+
+  // Operations running inside a tab's queue. A fill waits for its group's before it
+  // types, so nothing that began before the quarantine can see the value.
+  const running = new Map<ServerTab, Set<Promise<unknown>>>();
+
+  const executeTabOperation = (tab: ServerTab, request: PreviewAutomationRequest) => {
+    // Checked inside the tab's queue, so it holds for what this operation does.
+    if (tab.quarantine && !LOGIN_OPERATIONS.has(request.operation)) throw loginInProgress();
+    if (
+      tab.quarantine &&
+      request.operation === "click" &&
+      (request.input as PreviewAutomationClickInput).locator === undefined &&
+      (request.input as PreviewAutomationClickInput).selector === undefined
+    )
+      throw loginInProgress();
+    const operation = runTabOperation(tab, request).catch((cause: unknown) => {
+      // Playwright's errors can quote the page; a login tab reports only what failed.
+      if (!tab.quarantine || cause instanceof BrowserControlInterrupted) throw cause;
+      const error = ServerBrowserPage.toOperationError(cause);
+      if (error.tag === "PreviewCredentialError") throw error;
+      throw new ServerBrowserPage.ServerBrowserOperationError(
+        error.tag,
+        `Preview automation ${request.operation} failed in a login tab.`,
+      );
+    });
+    if (request.operation !== "fillCredential") {
+      const set = running.get(tab) ?? new Set();
+      running.set(tab, set);
+      set.add(operation);
+      void operation.finally(() => set.delete(operation)).catch(constVoid);
+    }
+    return operation;
+  };
+
+  /**
+   * Quarantines the tab's opener group before reading the vault, and lifts it again
+   * only if the fill fails before the value enters the page.
+   */
+  const fillInLogin = async (tab: ServerTab, input: PreviewAutomationFillCredentialInput) => {
+    const recordingIn = (group: ReadonlyArray<ServerTab>) =>
+      group.some((member) => member.recording || member.recordingStart);
+    const recordingRunning = () =>
+      new ServerBrowserPage.ServerBrowserOperationError(
+        "PreviewAutomationExecutionError",
+        "A recording is running in this tab or a related one. Stop it before filling a credential.",
+      );
+    const group = openerGroup(tab);
+    if (recordingIn(group)) throw recordingRunning();
+    const login = NodeCrypto.randomUUID();
+    const previous = new Map(group.map((member) => [member, member.quarantine]));
+    for (const member of group) {
+      member.quarantine = login;
+      report(member, { _tag: "Idle" });
+    }
+    let typed = false;
+    try {
+      return await recordAction(tab, "fillCredential", () =>
+        fillCredential({
+          tabId: tab.tabId,
+          vault,
+          request: input,
+          locate: (locator) => ServerBrowserPage.targetLocator(tab.page, { locator })!,
+          beforeTyping: async () => {
+            const members = openerGroup(tab);
+            await Promise.allSettled(members.flatMap((member) => [...(running.get(member) ?? [])]));
+            if (recordingIn(members)) throw recordingRunning();
+            typed = true;
+          },
+        }),
+      );
+    } catch (cause) {
+      if (!typed)
+        for (const member of tabs.values())
+          if (member.quarantine === login) {
+            member.quarantine = previous.get(member) ?? null;
+            if (member.quarantine === null) void reportLoaded(member);
+          }
+      throw cause;
+    }
+  };
+
+  const runTabOperation = async (tab: ServerTab, request: PreviewAutomationRequest) => {
     const input = request.input;
     switch (request.operation) {
       case "readPage": {
@@ -2017,6 +2170,8 @@ const make = Effect.gen(function* () {
         return recordAction(tab, "scroll", () =>
           ServerBrowserPage.scroll(tab.page, input as PreviewAutomationScrollInput),
         );
+      case "fillCredential":
+        return fillInLogin(tab, input as PreviewAutomationFillCredentialInput);
       case "evaluate":
         return ServerBrowserPage.evaluate(
           tab.cdp,
