@@ -110,9 +110,13 @@ when you stop using it in Chromeria 1.
 Ask your agent to start a Spectrum with a question and two to eight named
 Colors. Each Color is a Drafter selected through Prism, with an optional role
 or explicit model. A Color can name fallback models; Chromeria tries them in
-order only when that Color's turn cannot start, never after it started. **Council** collects independent answers, runs at least two
-relay rounds, then asks the moderator Color to synthesize. **Free** lets Colors
-speak in order for a fixed number of turns.
+order only when that Color's turn cannot start, never after it started. One
+Color is White, the first unless the agent names another. **Council** collects
+independent answers, runs at least two relay rounds, then asks White to
+synthesize. **Free** lets each Color speak once in order; then White picks who
+speaks next after every turn, or ends the discussion, and writes a closing
+summary. Free mode allows three turns per Color unless the agent sets another
+number; at the limit, White summarizes.
 
 The Spectrum thread shows the full discussion. Send a message there to join at
 the next barrier. **Stop** cancels its owned Drafter work. After the report

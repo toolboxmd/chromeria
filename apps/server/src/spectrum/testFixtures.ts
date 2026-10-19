@@ -40,6 +40,7 @@ export function makeState(overrides: Partial<SpectrumState> = {}): SpectrumState
     transcript: [],
     inbox: [],
     outbox: [],
+    free: null,
     report: null,
     delegatedTaskId: null,
     reportAbandonment: null,

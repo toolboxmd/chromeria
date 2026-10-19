@@ -67,16 +67,18 @@ describe("Spectrum barriers", () => {
     expect(nextRound({ ...state, round: complete(round) })).toBeNull();
   });
 
-  it("starts free turns in Color order only after each reply", () => {
+  it("opens free mode in Color order only after each reply, then White moderates", () => {
     let state = makeState({ mode: "free", limit: 3 });
-    for (const color of ["blue", "red", "blue"]) {
+    for (const color of ["blue", "red"]) {
       const round = nextRound(state)!;
       expect(round.phase).toBe("free");
       expect(round.slots.map((slot) => slot.threadId)).toEqual([color]);
       expect(nextRound({ ...state, round })).toBeNull();
       state = Object.assign({}, state, { round: complete(round) });
     }
-    expect(nextRound(state)).toBeNull();
+    const moderation = nextRound(state)!;
+    expect(moderation.phase).toBe("moderation");
+    expect(moderation.slots.map((slot) => slot.threadId)).toEqual(["red"]);
   });
 
   it("does not cross a barrier until its transcript append outbox is consumed", () => {

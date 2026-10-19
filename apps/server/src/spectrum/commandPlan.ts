@@ -24,6 +24,7 @@ import {
   ForkProviderlessMessageReadError,
 } from "../fork/ForkProviderlessMessages.ts";
 import { ownedActiveRuns, ownedThreads, ownedRunsDrainedPlan } from "./cancellationPlan.ts";
+import { stoppedText } from "./freeMode.ts";
 import { lifecycleEvents } from "./lifecycle.ts";
 import { spectrumTaskUpdate } from "./delegatedTask.ts";
 import { readSpectrum } from "./store.ts";
@@ -104,11 +105,11 @@ const plan = Effect.fn("Spectrum.commandPlan")(function* (
         ],
       };
       if (state.report === null) {
-        next = makeInitialReport(next, "Spectrum stopped.", true);
+        next = makeInitialReport(next, stoppedText(state), true);
         events.push(
           ...(yield* spectrumTaskUpdate(
             next,
-            { status: "cancelled", result: "Spectrum stopped." },
+            { status: "cancelled", result: stoppedText(state) },
             command.commandId,
             now,
           )),

@@ -62,6 +62,11 @@ One harness, model and effort used together, such as Claude Opus 5.5 at high
 effort. A Drafter runs on one Color.
 _Avoid_: model config, route
 
+**White**:
+The Spectrum member that moderates: it writes a council's synthesis, and in
+free mode picks each next speaker and writes the closing summary.
+_Avoid_: moderator, host
+
 **Drafter**:
 Any agent working for the user on one Color, such as one the Promachos hands
 work to.

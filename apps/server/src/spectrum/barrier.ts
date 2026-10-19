@@ -8,6 +8,7 @@ import {
 
 import type { SpectrumRound, SpectrumState } from "./state.ts";
 import { runOutcome } from "../orchestration-v2/RestartBackgroundNote.ts";
+import { freeSpeaker } from "./freeMode.ts";
 
 /** Plans one round; dispatch and persistence belong to the serialized controller. */
 export function nextRound(state: SpectrumState): SpectrumRound | null {
@@ -22,22 +23,23 @@ export function nextRound(state: SpectrumState): SpectrumRound | null {
   if (previous !== null && previous.generation !== state.generation) return null;
   if (previous !== null && !barrierComplete(previous)) return null;
   const step = previous === null ? 0 : previous.step + 1;
+  const speaker = state.mode === "free" ? freeSpeaker(state) : null;
   if (
-    (state.mode === "free" && step >= state.limit) ||
+    (state.mode === "free" && speaker === null) ||
     (state.mode === "council" && step > state.limit + 1)
   )
     return null;
   const phase =
-    state.mode === "free"
-      ? "free"
+    speaker !== null
+      ? speaker.phase
       : step === 0
         ? "independent"
         : step === state.limit + 1
           ? "synthesis"
           : "relay";
   const participants =
-    phase === "free"
-      ? [state.participants[step % state.participants.length]!]
+    speaker !== null
+      ? [state.participants[speaker.participant]!]
       : phase === "synthesis"
         ? [state.participants[state.moderator]!]
         : state.participants;
