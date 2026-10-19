@@ -1240,12 +1240,13 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
         const answered = yield* orchestrator.getThreadProjection(threadId);
         assert.equal(answered.runtimeRequests[0]?.status, "resolved");
         assert.deepEqual(answered.runtimeRequests[0]?.answers, command.answers);
-         assert.deepEqual(answered.runtimeRequests[0]?.answeredBy, command.answeredBy);
+        assert.deepEqual(answered.runtimeRequests[0]?.answeredBy, command.answeredBy);
         assert.equal(answered.nodes.find((node) => node.id === nodeId)?.status, "completed");
         assert.equal(answered.turnItems.find((item) => item.id === itemId)?.status, "completed");
         const answeredItem = answered.turnItems.find((item) => item.id === itemId);
         assert.equal(answeredItem?.type, "user_input_request");
         if (answeredItem?.type === "user_input_request") {
+          assert.deepEqual(answeredItem.answeredBy, command.answeredBy);
           assert.deepEqual(answeredItem.questionAnswer, {
             requestId,
             answers: command.answers,

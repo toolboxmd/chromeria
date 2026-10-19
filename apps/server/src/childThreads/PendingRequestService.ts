@@ -25,6 +25,7 @@ import {
   assertTargetWithinLimits,
   unavailable,
 } from "../mcp/threadAccess.ts";
+import { assertSameLink } from "../mcp/linkOrigin.ts";
 import { isCallerAncestor, readPendingRequest } from "./pendingRequests.ts";
 import { PeerForwarding } from "../peer/PeerForwarding.ts";
 import * as Tools from "../mcp/toolkits/thread/tools.ts";
@@ -181,7 +182,12 @@ const make = Effect.gen(function* () {
       const root = input.threadId ?? caller.caller?.id;
       if (root === undefined) return yield* denied();
       if (input.requestTarget !== undefined) {
-        if (caller.caller?.id !== root && !(yield* isCallerAncestor(caller, root)))
+        if (
+          (input.requestTarget.environmentId !== caller.scope.environmentId ||
+            input.requestTarget.threadId !== root) &&
+          caller.caller?.id !== root &&
+          !(yield* isCallerAncestor(caller, root))
+        )
           return yield* denied();
         const { seen, tasks } = yield* subtree(root);
         const here = caller.scope.environmentId;
@@ -222,9 +228,11 @@ const make = Effect.gen(function* () {
         // every current contributor, rather than only the selected route root.
         yield* authority.value.checkThread(target);
         yield* authority.value.checkTarget(context.scope, { type: "thread", threadId: target });
+      } else if (context.answerer?.kind !== "promachos") {
+        yield* assertSameLink(context, context.projection.thread);
       }
       yield* assertTargetWithinLimits(context.limits, context.projection.thread);
-      if (!(yield* isCallerAncestor(context, target))) return yield* denied();
+      if (context.answerer === undefined || context.answerer.kind === "own") return yield* denied();
       if (action.type === "read") {
         const { item, revision } = context;
         const common = {
@@ -271,6 +279,9 @@ const make = Effect.gen(function* () {
           threadId: target,
           commandId: yield* newCommandId(),
           requestId: input.requestId,
+          ...(action.type === "respond" && context.answerer.kind === "promachos"
+            ? { answeredBy: context.answerer.answeredBy }
+            : {}),
           ...(input.expectedRevision === undefined
             ? {}
             : { expectedRevision: input.expectedRevision }),

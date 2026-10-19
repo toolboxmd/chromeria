@@ -7,13 +7,14 @@ import {
   EnvironmentId,
   ProviderInstanceId,
   RunId,
-  ThreadId,
   type SpectrumSettings,
   DEFAULT_SPECTRUM_SETTINGS,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as Invocation from "../mcp/McpInvocationContext.ts";
 import * as Access from "../mcp/McpToolAccess.ts";
@@ -25,8 +26,10 @@ import { ensureCheckSchema } from "../scheduledTaskChecks/store.ts";
 import * as Settings from "../serverSettings.ts";
 import { base, input, setup, spareInstanceId } from "./controllerTestkit.ts";
 import * as Launch from "./LaunchService.ts";
-import { SpectrumToolkit, StartSpectrumInput, layer } from "./mcpToolkit.ts";
+import { SpectrumToolkit, StartSpectrumInput, StartSpectrumResult, layer } from "./mcpToolkit.ts";
 import { readSpectrum } from "./store.ts";
+
+const decodeStart = Schema.decodeUnknownEffect(StartSpectrumResult);
 
 const primary = { instanceId: ProviderInstanceId.make("codex"), model: "test-model" };
 const defaults: SpectrumSettings = {
@@ -114,11 +117,18 @@ it.effect(
         Effect.provide(Access.HandlersLayer.layer(layer)),
       );
       const call = (value: typeof StartSpectrumInput.Type) =>
-        toolkit.handle("start_spectrum", value).pipe(Stream.unwrap, Stream.runCollect);
-      expect(yield* call({ question: "Question only", clientRequestId: "default" })).toEqual(
-        expect.arrayContaining([expect.objectContaining({ isFailure: false })]),
-      );
-      const id = ThreadId.make("spectrum:settings-test:default");
+        toolkit.handle("start_spectrum", value).pipe(
+          Stream.unwrap,
+          Stream.runCollect,
+          Effect.flatMap((results) => {
+            const success = results.find((result) => !result.isFailure);
+            return success === undefined
+              ? Effect.die("Expected a successful native start_spectrum result")
+              : decodeStart(success.result);
+          }),
+        );
+      const started = yield* call({ question: "Question only", clientRequestId: "default" });
+      const id = started.threadId;
       const first = Option.getOrThrow(yield* readSpectrum(id));
       expect(first).toMatchObject({
         question: "Question only",
@@ -142,17 +152,17 @@ it.effect(
       yield* (yield* Settings.ServerSettingsService).updateSettings({
         spectrum: { ...defaults, relayRounds: 7 },
       });
-      yield* call({ question: "Replay", clientRequestId: "default" });
+      const replayed = yield* call({ question: "Replay", clientRequestId: "default" });
+      expect(replayed.threadId).toBe(id);
+      expect(replayed).toEqual(started);
       expect(Option.getOrThrow(yield* readSpectrum(id))).toEqual(first);
       yield* (yield* Settings.ServerSettingsService).updateSettings({
         projectSettingsOverrides: {
           [callerRecord.projectId]: { spectrum: { ...defaults, mode: "free", turnsPerColor: 2 } },
         },
       });
-      yield* call({ question: "Project defaults", clientRequestId: "project" });
-      expect(
-        Option.getOrThrow(yield* readSpectrum(ThreadId.make("spectrum:settings-test:project"))),
-      ).toMatchObject({
+      const project = yield* call({ question: "Project defaults", clientRequestId: "project" });
+      expect(Option.getOrThrow(yield* readSpectrum(project.threadId))).toMatchObject({
         mode: "free",
         limit: 4,
         turnsPerColor: 2,
@@ -165,13 +175,10 @@ it.effect(
         yield* (yield* Settings.ServerSettingsService).updateSettings({
           projectSettingsOverrides: { [callerRecord.projectId]: { spectrum: preferences } },
         });
-        yield* call({ question: "Configured limit", clientRequestId: key });
-        expect(
-          Option.getOrThrow(yield* readSpectrum(ThreadId.make(`spectrum:settings-test:${key}`)))
-            .limit,
-        ).toBe(expected);
+        const configured = yield* call({ question: "Configured limit", clientRequestId: key });
+        expect(Option.getOrThrow(yield* readSpectrum(configured.threadId)).limit).toBe(expected);
       }
-      yield* call({
+      const explicitResult = yield* call({
         question: "Explicit",
         clientRequestId: "explicit",
         colors: [
@@ -183,9 +190,7 @@ it.effect(
         moderator: 0,
         turnsPerColor: 2,
       });
-      const explicit = Option.getOrThrow(
-        yield* readSpectrum(ThreadId.make("spectrum:settings-test:explicit")),
-      );
+      const explicit = Option.getOrThrow(yield* readSpectrum(explicitResult.threadId));
       expect(explicit).toMatchObject({ mode: "free", limit: 7, turnsPerColor: 2 });
       // A legacy moderator index copies that Color's model for White; the Color still speaks.
       expect(explicit.participants).toHaveLength(2);
@@ -207,12 +212,7 @@ it.effect(
           clientRequestId: key,
           colors: labels.map((label) => ({ label, ...primary })),
         });
-        expect(result).toEqual(
-          expect.arrayContaining([expect.objectContaining({ isFailure: false })]),
-        );
-        const stored = Option.getOrThrow(
-          yield* readSpectrum(ThreadId.make(`spectrum:settings-test:${key}`)),
-        );
+        const stored = Option.getOrThrow(yield* readSpectrum(result.threadId));
         // Explicit Colors ignore the saved White: White copies the first Color's model.
         expect(stored.white?.selection).toEqual(stored.participants[0]?.selection);
         expect(stored.white?.selection.instanceId).not.toBe(spareInstanceId);
@@ -228,19 +228,8 @@ it.effect(
         ],
         white: { ...primary, instanceId: spareInstanceId, fallbacks: [{ ...primary }] },
       });
-      expect(judged).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            isFailure: false,
-            result: expect.objectContaining({
-              white: expect.objectContaining({ label: "White", instanceId: spareInstanceId }),
-            }),
-          }),
-        ]),
-      );
-      const withWhite = Option.getOrThrow(
-        yield* readSpectrum(ThreadId.make("spectrum:settings-test:explicit-white-color")),
-      );
+      expect(judged.white).toMatchObject({ label: "White", instanceId: spareInstanceId });
+      const withWhite = Option.getOrThrow(yield* readSpectrum(judged.threadId));
       expect(withWhite.white).toMatchObject({
         selection: { instanceId: spareInstanceId },
         fallbacks: [{ instanceId: primary.instanceId }],
@@ -275,6 +264,9 @@ it.effect("start_spectrum rejects invalid values before persisting a Spectrum", 
       ],
     });
     const toolkit = yield* SpectrumToolkit.pipe(Effect.provide(Access.HandlersLayer.layer(layer)));
+    const sql = yield* SqlClient.SqlClient;
+    const persistedBefore =
+      yield* sql`SELECT thread_id,payload_json FROM fork_spectra ORDER BY thread_id`;
     for (const [patch, message] of [
       [{ limit: 1 }, /at least two relay rounds/],
       [{ mode: "free", limit: 1 }, /cap cannot be below the number of Colors/],
@@ -318,8 +310,8 @@ it.effect("start_spectrum rejects invalid values before persisting a Spectrum", 
           ]),
         );
       expect(
-        Option.isNone(yield* readSpectrum(ThreadId.make("spectrum:settings-test:invalid"))),
-      ).toBe(true);
+        yield* sql`SELECT thread_id,payload_json FROM fork_spectra ORDER BY thread_id`,
+      ).toEqual(persistedBefore);
     }
     yield* (yield* Settings.ServerSettingsService).updateSettings({
       spectrum: DEFAULT_SPECTRUM_SETTINGS,
@@ -337,6 +329,9 @@ it.effect("start_spectrum rejects invalid values before persisting a Spectrum", 
           }),
         }),
       ]),
+    );
+    expect(yield* sql`SELECT thread_id,payload_json FROM fork_spectra ORDER BY thread_id`).toEqual(
+      persistedBefore,
     );
   }).pipe(Effect.provide(runtime)),
 );
