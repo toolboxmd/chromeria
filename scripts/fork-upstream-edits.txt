@@ -463,3 +463,9 @@ packages/shared/src/composerContextLegacy.ts
 
 # Launcher test fixture ownership (#157)
 apps/server/src/serviceLauncher.test.ts
+
+# Shared account deregistration discovery refresh (#363, network-routes).
+apps/mobile/src/features/cloud/managedRelayState.ts
+apps/web/src/cloud/managedRelayState.ts
+packages/client-runtime/src/relay/managedRelayState.test.ts
+packages/client-runtime/src/relay/managedRelayState.ts

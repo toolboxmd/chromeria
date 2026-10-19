@@ -14,6 +14,7 @@ import type { RelayClientEnvironmentRecord } from "@t3tools/contracts/relay";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import * as Runtime from "../../lib/runtime";
+import { connectionAtomRuntime } from "../../connection/runtime";
 import { appAtomRegistry } from "../../state/atom-registry";
 
 const managedRelayAtomRuntime = Atom.runtime(Runtime.layer);
@@ -23,7 +24,7 @@ const managedRelayQueryManager = createManagedRelayQueryManager(managedRelayAtom
 const managedRelayMutationScheduler = createAtomCommandScheduler();
 
 export const deregisterManagedRelayEnvironmentCommand = createRuntimeCommand(
-  managedRelayAtomRuntime,
+  connectionAtomRuntime,
   {
     label: "mobile:managed-relay:deregister-environment",
     scheduler: managedRelayMutationScheduler,

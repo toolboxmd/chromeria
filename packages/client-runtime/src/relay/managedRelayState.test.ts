@@ -8,6 +8,8 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as RelayEnvironmentDiscovery from "./discovery.ts";
 import { Atom, AtomRegistry } from "effect/reactivity";
 import { afterEach, vi } from "vite-plus/test";
 
@@ -155,6 +157,12 @@ describe("createManagedRelayQueryManager", () => {
         environmentId: environment.environmentId,
       }).pipe(
         Effect.provideService(ManagedRelay.ManagedRelayClient, createClient({ unlinkEnvironment })),
+        Effect.provideService(RelayEnvironmentDiscovery.RelayEnvironmentDiscovery, {
+          state: yield* SubscriptionRef.make(
+            RelayEnvironmentDiscovery.EMPTY_RELAY_ENVIRONMENT_DISCOVERY_STATE,
+          ),
+          refresh: Effect.void,
+        }),
         Effect.flip,
       );
 

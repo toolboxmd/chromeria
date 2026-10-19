@@ -2167,10 +2167,20 @@ sources and reasons.
 {
   "id": "network-routes",
   "purpose": "Learn usable T3 Connect fallback routes from the signed-in account while preserving direct routes and sign-out cleanup.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/292"],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/364"],
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/292",
+    "https://github.com/toolboxmd/chromeria/issues/363"
+  ],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/364",
+    "https://github.com/toolboxmd/chromeria/compare/main...fix/363-deregister-refresh-discovery"
+  ],
   "newFiles": [],
   "upstreamFiles": [
+    "apps/mobile/src/features/cloud/managedRelayState.ts",
+    "apps/web/src/cloud/managedRelayState.ts",
+    "packages/client-runtime/src/relay/managedRelayState.test.ts",
+    "packages/client-runtime/src/relay/managedRelayState.ts",
     "apps/web/src/components/cloud/CloudEnvironmentConnectList.browser.test.tsx",
     "packages/client-runtime/src/connection/layer.ts",
     "packages/client-runtime/src/connection/onboarding.test.ts",
