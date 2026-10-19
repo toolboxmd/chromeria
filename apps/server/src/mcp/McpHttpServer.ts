@@ -73,6 +73,7 @@ import * as WebResearchHandlers from "./toolkits/webResearch/handlers.ts";
 import { WebResearchToolkit } from "./toolkits/webResearch/tools.ts";
 import * as WebResearch from "../webResearch/WebResearch.ts";
 import * as ResearchHost from "../webResearch/ResearchHost.ts";
+import * as SessionRead from "../webResearch/SessionRead.ts";
 import * as PageCache from "../webResearch/PageCache.ts";
 import * as PublicHttp from "../webResearch/PublicHttp.ts";
 import * as PublicRender from "../webResearch/PublicRender.ts";
@@ -929,6 +930,7 @@ export const layerWebResearchToolkit = Layer.effectDiscard(registerWebResearch()
 );
 
 const layerWebResearch = layerWebResearchToolkit.pipe(
+  Layer.provide(SessionRead.layer),
   Layer.provide(
     WebResearch.layer.pipe(
       Layer.provide(

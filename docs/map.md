@@ -104,6 +104,9 @@ flowchart TD
     WRS["Locale and site search"]
     %% WRS: #445 PR #505
     WR --- WRS
+    WRL["Existing session reads"]
+    %% WRL: #446 PR #513
+    WR --- WRL
     WRR["Headless page rendering"]
     %% WRR: #442
     WR --- WRR

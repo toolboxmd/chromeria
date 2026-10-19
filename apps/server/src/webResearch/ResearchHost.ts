@@ -7,21 +7,29 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { Tool } from "effect/ai";
 
 import * as Invocation from "../mcp/McpInvocationContext.ts";
+import * as McpRouting from "../mcp/McpRouting.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as Settings from "../serverSettings.ts";
 import * as PageCache from "./PageCache.ts";
 import * as Search from "./Search.ts";
+import * as SessionRead from "./SessionRead.ts";
 import * as TinyFish from "./TinyFish.ts";
 import * as WebResearch from "./WebResearch.ts";
-import { WebReadInput, WebReadPage, WebReadResult } from "./schemas.ts";
+import { SessionSelection, WebReadInput, WebReadPage, WebReadResult } from "./schemas.ts";
 
 export const HostedWebReadInput = Schema.Struct({
   ...WebReadInput.fields,
+  useSession: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Explicit opt-in, default false. Read only the selected existing session tab on its owner environment, outside the public page cache.",
+  }),
+  session: Schema.optional(SessionSelection),
   cacheEnvironmentId: Schema.optional(EnvironmentId).annotate({
     description: "Required with cacheId. Copy cacheEnvironmentId from the page's provenance.",
   }),
@@ -88,6 +96,7 @@ export class ResearchHost extends Context.Service<
       | PageCache.PageContinuationExpired
       | ResearchHostUnavailable
       | ResearchCacheOwnerError
+      | SessionRead.SessionReadError
       | OrchestratorMcpFailure,
       Invocation.McpInvocationContext
     >;
@@ -101,6 +110,11 @@ const peerTool = Tool.make("web_read", {
   success: HostedWebReadResult,
   failure: OrchestratorMcpFailure,
 });
+const sessionPeerTool = Tool.make("web_read", {
+  parameters: McpRouting.parameters(HostedWebReadInput),
+  success: HostedWebReadResult,
+  failure: OrchestratorMcpFailure,
+});
 const decodeInput = Schema.decodeUnknownEffect(HostedWebReadInput);
 
 const make = Effect.gen(function* () {
@@ -108,12 +122,84 @@ const make = Effect.gen(function* () {
   const settings = yield* Settings.ServerSettingsService;
   const forwarding = yield* PeerForwarding.PeerForwarding;
   const links = yield* PeerLinks.PeerLinks;
+  const sessionReader = yield* Effect.serviceOption(SessionRead.SessionRead);
 
   const read = Effect.fn("ResearchHost.read")(function* (raw: typeof HostedWebReadInput.Type) {
     const input = yield* decodeInput(raw).pipe(
       Effect.mapError(() => new WebResearch.WebResearchInputError({ reason: "invalid_input" })),
     );
     const scope = yield* Invocation.McpInvocationContext;
+    if (input.useSession === true) {
+      const selection = input.session;
+      if (selection === undefined)
+        return yield* new SessionRead.SessionReadError({ reason: "selection" });
+      if (
+        (input.cacheId !== undefined &&
+          (!input.cacheId.startsWith("session:") ||
+            input.cacheEnvironmentId !== selection.environmentId)) ||
+        (input.cacheId === undefined && input.cacheEnvironmentId !== undefined)
+      )
+        return yield* new SessionRead.SessionReadError({ reason: "continuation" });
+      if (selection.environmentId === scope.environmentId) {
+        if (Option.isNone(sessionReader))
+          return yield* new SessionRead.SessionReadError({ reason: "owner_unavailable" });
+        const page = yield* sessionReader.value.read({ ...input, session: selection });
+        return { ...page, cacheEnvironmentId: scope.environmentId, subpages: [] };
+      }
+      if (scope.client?.linked === true || selection.contextThreadId === undefined)
+        return yield* new SessionRead.SessionReadError({ reason: "forwarding" });
+      if (!scope.capabilities.has("preview"))
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "Session reads require the calling thread's preview capability.",
+        });
+      const resolved = yield* links
+        .resolve(selection.environmentId)
+        .pipe(
+          Effect.mapError((cause) =>
+            cause.reason === "expired"
+              ? new OrchestratorMcpFailure({ code: "capability_denied", message: cause.message })
+              : new SessionRead.SessionReadError({ reason: "owner_unavailable", cause }),
+          ),
+        );
+      if (resolved.link.access === "read-only")
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message: "Session reads require an agent-access peer link.",
+        });
+      const page = yield* forwarding
+        .call(
+          scope,
+          sessionPeerTool,
+          selection.environmentId,
+          {
+            ...input,
+            contextThreadId: selection.contextThreadId,
+            contextCapabilities: [...scope.capabilities],
+          },
+          { expectedLinkIdentity: resolved.link.launchIdentity },
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            cause.code === "orchestration_error"
+              ? new SessionRead.SessionReadError({ reason: "owner_unavailable", cause })
+              : cause,
+          ),
+        );
+      if (
+        page.cacheEnvironmentId !== selection.environmentId ||
+        page.session?.environmentId !== selection.environmentId ||
+        page.session.profileId !== selection.profileId ||
+        page.session.tabId !== selection.tabId ||
+        page.sourceRung !== "session" ||
+        !page.cacheId.startsWith("session:") ||
+        page.subpages.length !== 0
+      )
+        return yield* new SessionRead.SessionReadError({ reason: "response" });
+      return page;
+    }
+    if (input.cacheId?.startsWith("session:"))
+      return yield* new SessionRead.SessionReadError({ reason: "selection" });
     const host =
       (yield* settings.getSettings.pipe(
         Effect.mapError(
