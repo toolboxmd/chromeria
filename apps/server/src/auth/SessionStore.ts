@@ -756,10 +756,11 @@ export const make = Effect.gen(function* () {
       );
       const issuedAt = yield* DateTime.now;
       const expiresAt =
-        input?.expiresAt ??
-        DateTime.add(issuedAt, {
-          milliseconds: Duration.toMillis(input?.ttl ?? DEFAULT_SESSION_TTL),
-        });
+        input?.expiresAt === undefined
+          ? DateTime.add(issuedAt, {
+              milliseconds: Duration.toMillis(input?.ttl ?? DEFAULT_SESSION_TTL),
+            })
+          : DateTime.toUtc(input.expiresAt);
       const claims: SessionClaims = {
         v: 1,
         kind: "session",

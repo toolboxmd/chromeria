@@ -93,7 +93,7 @@ flowchart TD
     PRN["Paired session renewal"]
     %% PRN: #323 #336 PR #477 PR #504 PR #473
     OAG["Outside-agent grants"]
-    %% OAG: #553
+    %% OAG: #553 PR #558
     WR["Agent web research"]
     %% WR: #423 PR #453
     WRR["Headless page rendering"]
