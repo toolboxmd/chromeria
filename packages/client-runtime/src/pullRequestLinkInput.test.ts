@@ -1,9 +1,10 @@
-import { ThreadId, type ThreadPullRequestLink } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import { EnvironmentId, ThreadId, type ThreadPullRequestLink } from "@t3tools/contracts";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { sourceControlClients } from "./sourceControlClients.ts";
 
 import {
+  createThreadPullRequestWatchAction,
   parsePullRequestReference,
   resolveLinkPullRequestInput,
   threadPullRequestWatchInput,
@@ -277,4 +278,69 @@ describe("threadPullRequestWatchInput", () => {
       { ...watchInput, watching: false },
     );
   });
+});
+
+describe("createThreadPullRequestWatchAction", () => {
+  const threadRef = {
+    environmentId: EnvironmentId.make("parent-environment"),
+    threadId: ThreadId.make("parent"),
+  };
+  const descendant = {
+    id: ThreadId.make("child"),
+    pullRequests: [
+      {
+        host: "github.com",
+        repository: "acme/web",
+        number: 42,
+        url: "https://github.com/acme/web/pull/42",
+        source: "agent",
+        linkedAt: "2026-10-18T20:00:00.000Z",
+        snapshot: null,
+        stack: null,
+      } satisfies ThreadPullRequestLink,
+    ],
+  };
+  const reference = descendant.pullRequests[0]!;
+
+  it("sends the parent's Watch command for a descendant-only row", async () => {
+    const result = { _tag: "Success" };
+    const watch = vi.fn(() => Promise.resolve(result));
+    const onSetWatching = createThreadPullRequestWatchAction({ threadRef, ownLinks: [], watch });
+    await expect(onSetWatching(reference, true)).resolves.toBe(result);
+    expect(watch).toHaveBeenCalledOnce();
+    expect(watch).toHaveBeenCalledWith({
+      environmentId: "parent-environment",
+      input: {
+        threadId: "parent",
+        host: "github.com",
+        repository: "acme/web",
+        number: 42,
+        watching: true,
+        link: { url: "https://github.com/acme/web/pull/42", source: "manual" },
+      },
+    });
+  });
+
+  it.each([
+    { watching: true, ownLinks: [reference] },
+    { watching: false, ownLinks: [] },
+  ])(
+    "sends no link intent for a direct PR or Stop watching: %j",
+    async ({ watching, ownLinks }) => {
+      const watch = vi.fn(() => Promise.resolve());
+      const onSetWatching = createThreadPullRequestWatchAction({ threadRef, ownLinks, watch });
+      await onSetWatching(reference, watching);
+      expect(watch).toHaveBeenCalledOnce();
+      expect(watch).toHaveBeenCalledWith({
+        environmentId: "parent-environment",
+        input: {
+          threadId: "parent",
+          host: "github.com",
+          repository: "acme/web",
+          number: 42,
+          watching,
+        },
+      });
+    },
+  );
 });

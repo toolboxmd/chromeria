@@ -1,4 +1,7 @@
-import { threadPullRequestWatchInput } from "../../../../packages/client-runtime/src/pullRequestLinkInput.ts";
+import {
+  createThreadPullRequestWatchAction,
+  threadPullRequestWatchInput,
+} from "../../../../packages/client-runtime/src/pullRequestLinkInput.ts";
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import * as BareProviders from "../provider/ProviderRegistry.ts";
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
@@ -9,6 +12,7 @@ import { assert, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import {
   type ApplicationStoredEvent,
+  EnvironmentId,
   CheckpointId,
   CheckpointRef,
   CommandId,
@@ -2265,16 +2269,20 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         assert.isDefined(reference);
         const ownLinks = (yield* orchestrator.getThreadShell(parentId))?.pullRequests ?? [];
         assert.deepEqual(ownLinks, []);
-        yield* orchestrator.dispatch({
-          ...threadPullRequestWatchInput({
+        const onSetWatching = createThreadPullRequestWatchAction({
+          threadRef: {
+            environmentId: EnvironmentId.make("parent-environment"),
             threadId: parentId,
-            reference,
-            ownLinks,
-            watching: true,
-          }),
-          type: "thread.pull-request.watch",
-          commandId: CommandId.make("descendant-pr-watch-start-parent"),
+          },
+          ownLinks,
+          watch: ({ input }) =>
+            orchestrator.dispatch({
+              ...input,
+              type: "thread.pull-request.watch",
+              commandId: CommandId.make("descendant-pr-watch-start-parent"),
+            }),
         });
+        yield* onSetWatching(reference, true);
         const watchedParent = (yield* orchestrator.getThreadProjection(parentId)).thread;
         assert.lengthOf(watchedParent.pullRequests, 1);
         const watchedLink = watchedParent.pullRequests![0]!;

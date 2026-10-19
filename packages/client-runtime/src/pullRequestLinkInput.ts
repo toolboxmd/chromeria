@@ -1,6 +1,7 @@
 import {
   pullRequestHostOf,
   type RepositoryIdentity,
+  type ScopedThreadRef,
   type ThreadId,
   type ThreadPullRequestLink,
 } from "@t3tools/contracts";
@@ -127,4 +128,24 @@ export function threadPullRequestWatchInput(input: {
       ? { link: { url: input.reference.url, source: "manual" } }
       : {}),
   };
+}
+
+export function createThreadPullRequestWatchAction<Result>(input: {
+  readonly threadRef: ScopedThreadRef;
+  readonly ownLinks: ReadonlyArray<ThreadPullRequestLink>;
+  readonly watch: (command: {
+    readonly environmentId: ScopedThreadRef["environmentId"];
+    readonly input: WatchThreadPullRequestInput;
+  }) => Result;
+}) {
+  return (reference: ThreadPullRequestLink, watching: boolean) =>
+    input.watch({
+      environmentId: input.threadRef.environmentId,
+      input: threadPullRequestWatchInput({
+        threadId: input.threadRef.threadId,
+        ownLinks: input.ownLinks,
+        reference,
+        watching,
+      }),
+    });
 }
