@@ -296,6 +296,32 @@ it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
+  it.effect("closes a socket that starts watching after a tick already passed its revocation", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cross-process-late-" });
+      const storeLayer = yield* makeDiskSessionStoreLayer(baseDir);
+      const server = Context.get(yield* Layer.build(storeLayer), SessionStore.SessionStore);
+      const cli = Context.get(yield* Layer.build(storeLayer), SessionStore.SessionStore);
+      const marker = yield* server.issue({ subject: "marker" });
+      const late = yield* server.issue(relaySessionInput);
+      const markerWatcher = yield* server
+        .awaitInvalidation(marker.sessionId)
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+
+      // t0: the late socket passes its upgrade check.
+      yield* server.verify(late.token);
+      // t1: another process revokes it, and the marker so the tick is observable.
+      yield* cli.revoke(late.sessionId);
+      yield* cli.revoke(marker.sessionId);
+      // t2/t3: a tick reads the new version and snapshots without the late socket.
+      yield* TestClock.adjust(CROSS_PROCESS_REVOCATION_POLL_INTERVAL);
+      yield* Fiber.join(markerWatcher);
+      // t4: the late socket starts watching; no later commit or tick may be needed.
+      yield* server.awaitInvalidation(late.sessionId);
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
   it.effect("keeps reusable dev auth local across disk-backed stores and restarts", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

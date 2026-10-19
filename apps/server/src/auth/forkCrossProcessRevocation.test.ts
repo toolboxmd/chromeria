@@ -2,6 +2,7 @@ import { AuthSessionId } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
 
 import { PersistenceSqlError } from "../persistence/Errors.ts";
@@ -16,6 +17,11 @@ const lockError = new PersistenceSqlError({
   operation: "SessionStore.listActive:query",
   detail: "database is locked",
 });
+
+const watching = (sessionIds: ReadonlyArray<AuthSessionId>) =>
+  SubscriptionRef.make<ReadonlyMap<AuthSessionId, number>>(
+    new Map(sessionIds.map((sessionId) => [sessionId, 1])),
+  );
 
 const startWatcher = Effect.fn("startWatcher")(function* (state: {
   readonly version: Ref.Ref<number>;
@@ -37,7 +43,7 @@ const startWatcher = Effect.fn("startWatcher")(function* (state: {
           Effect.map((active) => sessionIds.filter((sessionId) => active.includes(sessionId))),
         ),
     },
-    openSessionIds: Effect.succeed([revoked, kept]),
+    watchedSessions: yield* watching([revoked, kept]),
     invalidate: (sessionId) => Ref.update(invalidated, (current) => [...current, sessionId]),
   }).pipe(Effect.forkScoped({ startImmediately: true }));
   return { invalidated, queries };
@@ -91,19 +97,43 @@ it.effect("keeps sessions open through a locked read and retries on the next tic
 it.effect("checks a socket that registers while the commit version is being read", () =>
   Effect.gen(function* () {
     const late = AuthSessionId.make("late-session");
-    const open = yield* Ref.make<ReadonlyArray<AuthSessionId>>([kept]);
+    const watched = yield* watching([kept]);
     const invalidated = yield* Ref.make<ReadonlyArray<AuthSessionId>>([]);
     yield* watchCrossProcessRevocations({
       source: {
         // The late socket registers during the version read, after a commit revoked it.
-        dataVersion: Ref.update(open, (current) => [...current, late]).pipe(Effect.as(1)),
+        dataVersion: SubscriptionRef.update(watched, (current) =>
+          new Map(current).set(late, 1),
+        ).pipe(Effect.as(1)),
         listActive: (sessionIds) => Effect.succeed(sessionIds.filter((id) => id === kept)),
       },
-      openSessionIds: Ref.get(open),
+      watchedSessions: watched,
       invalidate: (sessionId) => Ref.update(invalidated, (current) => [...current, sessionId]),
     }).pipe(Effect.forkScoped({ startImmediately: true }));
 
     yield* tick;
     expect(yield* Ref.get(invalidated)).toEqual([late]);
+  }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+);
+
+it.effect("stays idle with nothing watched and starts checking once a session is", () =>
+  Effect.gen(function* () {
+    const watched = yield* watching([]);
+    const reads = yield* Ref.make(0);
+    const invalidated = yield* Ref.make<ReadonlyArray<AuthSessionId>>([]);
+    yield* watchCrossProcessRevocations({
+      source: {
+        dataVersion: Ref.updateAndGet(reads, (count) => count + 1),
+        listActive: () => Effect.succeed([]),
+      },
+      watchedSessions: watched,
+      invalidate: (sessionId) => Ref.update(invalidated, (current) => [...current, sessionId]),
+    }).pipe(Effect.forkScoped({ startImmediately: true }));
+
+    yield* TestClock.adjust("3653 days");
+    expect(yield* Ref.get(reads)).toBe(0);
+    yield* SubscriptionRef.set(watched, new Map([[revoked, 1]]));
+    yield* tick;
+    expect(yield* Ref.get(invalidated)).toEqual([revoked]);
   }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
 );

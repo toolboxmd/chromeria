@@ -19,6 +19,7 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as Option from "effect/Option";
 
 import * as SqlClient from "effect/sql/SqlClient";
@@ -531,7 +532,9 @@ export const make = Effect.gen(function* () {
   const signingSecret = yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32);
   const connectedSessionsRef = yield* Ref.make(new Map<AuthSessionId, number>());
   // Sessions with a running awaitInvalidation; each registers before its first row read.
-  const watchedSessionsRef = yield* Ref.make(new Map<AuthSessionId, number>());
+  const watchedSessionsRef = yield* SubscriptionRef.make<ReadonlyMap<AuthSessionId, number>>(
+    new Map(),
+  );
   const changesPubSub = yield* PubSub.unbounded<SessionCredentialChange>();
   const cookieInput = {
     mode: serverConfig.mode,
@@ -598,9 +601,7 @@ export const make = Effect.gen(function* () {
           NodeSqliteClient.readOnly,
         ),
     },
-    openSessionIds: Ref.get(watchedSessionsRef).pipe(
-      Effect.map((watched) => Array.from(watched.keys())),
-    ),
+    watchedSessions: watchedSessionsRef,
     invalidate: emitRemoved,
   }).pipe(Effect.forkScoped);
 
@@ -1134,11 +1135,11 @@ export const make = Effect.gen(function* () {
         // Registered before the first read, so a revocation committed after that read
         // is covered by the cross-process check's next snapshot.
         yield* Effect.acquireRelease(
-          Ref.update(watchedSessionsRef, (current) =>
+          SubscriptionRef.update(watchedSessionsRef, (current) =>
             new Map(current).set(sessionId, (current.get(sessionId) ?? 0) + 1),
           ),
           () =>
-            Ref.update(watchedSessionsRef, (current) => {
+            SubscriptionRef.update(watchedSessionsRef, (current) => {
               const next = new Map(current);
               const remaining = (next.get(sessionId) ?? 0) - 1;
               if (remaining > 0) next.set(sessionId, remaining);
