@@ -434,6 +434,7 @@ const layerSpectrumProvided = Spectrum.layer.pipe(
       Prism.layer,
       layerProviderAdapterRegistryProvided,
       ThreadCommandExecutor.layer,
+      RecoveryWaitSignals.layerSignals,
     ),
   ),
 );

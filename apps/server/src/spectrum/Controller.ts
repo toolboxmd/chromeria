@@ -14,13 +14,11 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import { readRetirementState } from "../childThreads/retirement.ts";
 import type { ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
 import { ForkDispatchPlans } from "../fork/ForkDispatchPlans.ts";
 import * as Sink from "../orchestration-v2/EventSink.ts";
-import * as Events from "../orchestration-v2/EventStore.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as Projections from "../orchestration-v2/ProjectionStore.ts";
 import { followRun, runEndUnchanged } from "../scheduledTaskChecks/handoff.ts";
@@ -51,7 +49,6 @@ export class SpectrumController extends Context.Service<
   SpectrumController,
   {
     readonly resume: (threadId: ThreadId) => Effect.Effect<SpectrumState, SpectrumControllerError>;
-    readonly sweep: Effect.Effect<void>;
   }
 >()("t3/spectrum/Controller/SpectrumController") {}
 
@@ -59,7 +56,6 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const locks = yield* ThreadCommandExecutor;
   const sink = yield* Sink.EventSinkV2;
-  const events = yield* Events.EventStoreV2;
   const projections = yield* Projections.ProjectionStoreV2;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const rounds = yield* Rounds.SpectrumRoundService;
@@ -287,17 +283,6 @@ const make = Effect.gen(function* () {
         if (state.status !== "retired" || (yield* ownedWorkDrained(id))) yield* reports.deliver(id);
         return yield* read(id);
       }
-      // Consume raw stored rows. Wire projections are deliberately excluded from durable recovery.
-      const batch = yield* events
-        .read({ afterSequence: state.cursor, limit: 256 })
-        .pipe(Stream.runCollect);
-      const last = batch.at(-1);
-      if (last !== undefined)
-        state = yield* save(
-          state,
-          { ...state, revision: state.revision + 1, cursor: last.sequence },
-          `spectrum:${id}:${state.generation}:cursor:${last.sequence}`,
-        );
       if (state.round === null) {
         if (state.transcript.length === 0)
           state = yield* append(
@@ -419,18 +404,6 @@ const make = Effect.gen(function* () {
     locks
       .withLock(id, effect)
       .pipe(Effect.mapError((cause) => new SpectrumControllerError({ threadId: id, cause })));
-  const resume = (id: ThreadId) => guarded(id, pump(id));
-  return SpectrumController.of({
-    resume,
-    sweep: Effect.gen(function* () {
-      const rows = yield* sql<{ thread_id: string }>`SELECT thread_id FROM fork_spectra`;
-      for (const row of rows)
-        yield* resume(ThreadId.make(row.thread_id)).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Spectrum reconciliation failed", { threadId: row.thread_id, cause }),
-          ),
-        );
-    }).pipe(Effect.catchCause((cause) => Effect.logWarning("Spectrum sweep failed", { cause }))),
-  });
+  return SpectrumController.of({ resume: (id) => guarded(id, pump(id)) });
 });
 export const layer = Layer.effect(SpectrumController, make);

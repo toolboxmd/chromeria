@@ -76,11 +76,10 @@ it.effect(
     }).pipe(Effect.provide(database)),
 );
 
-it.effect("recovers exact persisted inbox, outbox, cursor and request identities", () =>
+it.effect("recovers exact persisted inbox, outbox and request identities", () =>
   Effect.gen(function* () {
     yield* ensureSpectrumSchema;
     const state = makeState({
-      cursor: 193,
       inbox: [MessageId.make("user-input")],
       outbox: [APPEND],
       schedulerRunId: "scheduler-original-run",
@@ -98,7 +97,7 @@ it.effect("atomically advances a revision and refuses a stale outbox replay", ()
     const mutation = {
       expectedRevision: 0,
       expectedGeneration: 0,
-      state: { ...old, revision: 1, cursor: 22, outbox: [] },
+      state: { ...old, revision: 1, outbox: [] },
     };
     yield* applySpectrumMutation(mutation);
     assert.deepStrictEqual(yield* read, mutation.state);
@@ -131,13 +130,31 @@ it.effect("rolls back mutations and inbox/outbox consumption when a later operat
   }).pipe(Effect.provide(database)),
 );
 
-it.effect("refuses cursor rewind and modification of original report ownership", () =>
+it.effect("migrates a version 1 row once by dropping its event cursor", () =>
   Effect.gen(function* () {
     yield* ensureSpectrumSchema;
-    const old = makeState({ cursor: 42, schedulerRunId: "run-one" });
+    const state = makeState({ outbox: [APPEND] });
+    yield* insertSpectrum(state);
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE fork_spectra
+      SET payload_json = json_set(payload_json, '$.version', 1, '$.cursor', 193)`;
+    assert.instanceOf(yield* readSpectrum(state.threadId).pipe(Effect.flip), SpectrumStoreError);
+    yield* ensureSpectrumSchema;
+    yield* ensureSpectrumSchema;
+    assert.deepStrictEqual(yield* read, state);
+    const [row] = yield* sql<{
+      readonly payload_json: string;
+    }>`SELECT payload_json FROM fork_spectra`;
+    assert.notInclude(row!.payload_json, "cursor");
+  }).pipe(Effect.provide(database)),
+);
+
+it.effect("refuses modification of original report ownership", () =>
+  Effect.gen(function* () {
+    yield* ensureSpectrumSchema;
+    const old = makeState({ schedulerRunId: "run-one" });
     yield* insertSpectrum(old);
     for (const next of [
-      { ...old, revision: 1, cursor: 41 },
       { ...old, revision: 1, schedulerRunId: "run-two" },
       { ...old, revision: 3 },
     ]) {

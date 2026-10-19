@@ -128,7 +128,7 @@ export const bindSpectrum = (input: {
         : encodeCommand(reportCommand(input.callerThreadId, input.report));
     const selection = { instanceId: "codex", model: "test-model" };
     const payload = {
-      version: 1,
+      version: 2,
       threadId: spectrumThreadId,
       callerThreadId: input.callerThreadId,
       callerRunId: "run:caller",
@@ -144,7 +144,6 @@ export const bindSpectrum = (input: {
       ],
       generation: 0,
       revision: 0,
-      cursor: 0,
       status: input.status,
       cycle: 0,
       round: null,

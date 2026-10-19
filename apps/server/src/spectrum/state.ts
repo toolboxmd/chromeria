@@ -68,7 +68,7 @@ export type FreeProgress = typeof FreeProgress.Type;
 // Only durable command data goes in the outbox, never closures or provider handles.
 const OutboxCommand = Schema.Union([OrchestrationV2Command, SpectrumTranscriptAppend]);
 export const SpectrumState = Schema.Struct({
-  version: Schema.Literal(1),
+  version: Schema.Literal(2),
   threadId: ThreadId,
   callerThreadId: ThreadId,
   callerRunId: Schema.NullOr(RunId),
@@ -92,7 +92,6 @@ export const SpectrumState = Schema.Struct({
   ),
   generation: NonNegativeInt,
   revision: NonNegativeInt,
-  cursor: NonNegativeInt,
   status: Schema.Literals(["active", "settled", "retired"]),
   cycle: NonNegativeInt,
   round: Schema.NullOr(SpectrumRound),
