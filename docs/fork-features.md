@@ -1852,7 +1852,7 @@ sources and reasons.
 ```json
 {
   "id": "peer-links",
-  "purpose": "Port upstream server peer links and record-first remote delegation until absorption replaces the port; retain permanent pairing-code sessions, target Prism launch intent and recovery-aware waits. Extend routing to all MCP toolkit groups while retaining caller capabilities and link-mode narrowing. Own explicit peer consent, including its mobile settings entry and destination permission checks. Replay delegated lifecycle results durably and open qualified destination work through the source client connection. Bind negotiated requests to verified durable caller identity, transfer attachment bytes through destination staging, reconcile native acceptance and retain truthful unknown outcomes for unreconcilable effects. Surface qualified descendant questions and approvals through verified mixed ancestry and the authenticated source client, with native revision guards and receipt replay. Keep source viewers and question choices readable across clients, with exact transport diagnostics behind a disclosure. Align sparse remote follow-up selection with full projections so initial work appears once. Execute typed device commands on their exact native session with current originating authority, pre-open authenticated command discovery and qualified native artifact output. Retain real remote-parent provenance in client shells, hide destination delegated children from default navigation and keep them in scoped existing search even when the parent is offline.",
+  "purpose": "Port upstream server peer links and record-first remote delegation until absorption replaces the port; retain permanent pairing-code sessions, target Prism launch intent and recovery-aware waits. Extend routing to all MCP toolkit groups while retaining caller capabilities and link-mode narrowing. Own explicit peer consent, including its mobile settings entry and destination permission checks. Replay delegated lifecycle results durably and open qualified destination work through the source client connection. Bind negotiated requests to verified durable caller identity, transfer attachment bytes through destination staging, reconcile native acceptance and retain truthful unknown outcomes for unreconcilable effects. Surface qualified descendant questions and approvals through verified mixed ancestry and the authenticated source client, with native revision guards and receipt replay. Keep source viewers and question choices readable across clients, with exact transport diagnostics behind a disclosure. Align sparse remote follow-up selection with full projections so initial work appears once. Execute typed device commands on their exact native session with current originating authority, pre-open authenticated command discovery and qualified native artifact output. Retain real remote-parent provenance in client shells, hide destination delegated children from default navigation and keep them in scoped existing search even when the parent is offline. Apply default-child hiding to phone Home, Promachos conversations and legacy rendered/jump lists while keeping existing search on full qualified shells.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/164",
     "https://github.com/toolboxmd/chromeria/issues/302",
@@ -1926,7 +1926,9 @@ sources and reasons.
     "apps/server/src/device/AgentDeviceCommand.test.ts",
     "apps/server/src/device/DeviceCommands.registered.test.ts",
     "apps/server/src/device/testing/LegacyDeviceTools.fixture.ts",
-    "apps/server/src/device/testing/LegacyDeviceHandlers.fixture.ts"
+    "apps/server/src/device/testing/LegacyDeviceHandlers.fixture.ts",
+    "apps/mobile/src/features/home/HomeRouteScreen.search.test.tsx",
+    "apps/web/src/components/LegacySidebar.test.ts"
   ],
   "upstreamFiles": [
     "apps/web/src/state/entities.ts",
@@ -2090,7 +2092,12 @@ sources and reasons.
     "apps/mobile/src/features/threads/threadListV2.test.ts",
     "apps/web/src/components/Sidebar.logic.ts",
     "apps/web/src/components/Sidebar.logic.test.ts",
-    "apps/web/src/components/Sidebar.tsx"
+    "apps/web/src/components/Sidebar.tsx",
+    "apps/mobile/src/features/home/HomeRouteScreen.tsx",
+    "apps/mobile/src/features/home/HomeScreen.tsx",
+    "apps/web/src/components/LegacySidebar.tsx",
+    "apps/web/src/components/promachos/promachosConversations.ts",
+    "apps/web/src/components/promachos/promachosConversations.test.ts"
   ],
   "keywords": [
     "peer_environment_links",
