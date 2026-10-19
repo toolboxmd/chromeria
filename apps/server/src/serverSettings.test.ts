@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   DEFAULT_PRISM_ROLE_KITS,
   DEFAULT_SERVER_SETTINGS,
+  EnvironmentId,
   ModelSelection,
   PrismRoleKits,
   ProjectId,
@@ -98,6 +99,31 @@ const recordProviderUsage = (provider: string, instanceId: string | null = provi
   });
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect(
+    "persists the search endpoint independently of research host selection and clearing",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const host = EnvironmentId.make("bestia");
+        const searxngUrl = "http://configured-search.internal:8888/base";
+        yield* service.updateSettings({ webResearch: { searxngUrl } });
+        yield* service.updateSettings({ webResearch: { host } });
+        assert.deepEqual((yield* service.getSettings).webResearch, { host, searxngUrl });
+        assert.deepEqual(
+          (yield* decodeServerSettingsJson(yield* fs.readFileString(config.settingsPath)))
+            .webResearch,
+          { host, searxngUrl },
+        );
+        yield* service.updateSettings({ webResearch: { host: null } });
+        assert.deepEqual(
+          (yield* decodeServerSettingsJson(yield* fs.readFileString(config.settingsPath)))
+            .webResearch,
+          { host: null, searxngUrl },
+        );
+      }).pipe(Effect.provide(layerServerSettings())),
+  );
   it.effect("serializes concurrent model preference edits without cancelling duplicate adds", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsModule.ServerSettingsService;

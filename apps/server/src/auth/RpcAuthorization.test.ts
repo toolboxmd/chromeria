@@ -7,6 +7,7 @@ import {
   AuthProvidersManageScope,
   AuthSettingsWriteScope,
   DEFAULT_SERVER_SETTINGS,
+  EnvironmentId,
   ProviderInstanceId,
   ThreadId,
   AuthOrchestrationOperateScope,
@@ -155,6 +156,40 @@ describe("settings mutation authorization", () => {
     operation: "remove" as const,
     instanceId: ProviderInstanceId.make("codex_work"),
   };
+
+  it.effect.each([false, true])(
+    "authorizes research host and search endpoint settings (grant=%s)",
+    (granted) =>
+      Effect.gen(function* () {
+        let handled = 0;
+        const client = yield* RpcTest.makeClient(group).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              group.toLayerHandler(WS_METHODS.serverUpdateSettings, () =>
+                Effect.sync(() => {
+                  handled++;
+                  return DEFAULT_SERVER_SETTINGS;
+                }),
+              ),
+              RpcAuthorization.layer(granted ? [AuthSettingsWriteScope] : []),
+            ),
+          ),
+        );
+        for (const webResearch of [
+          { host: null },
+          { host: EnvironmentId.make("research-bestia") },
+          { searxngUrl: "http://configured-search.internal:8888" },
+        ]) {
+          const request = client[WS_METHODS.serverUpdateSettings]({ patch: { webResearch } });
+          if (granted) yield* request;
+          else
+            expect(yield* request.pipe(Effect.flip)).toMatchObject({
+              requiredPermission: AuthSettingsWriteScope,
+            });
+        }
+        expect(handled).toBe(granted ? 3 : 0);
+      }).pipe(Effect.scoped),
+  );
 
   it.effect("allows provider-only mutations while denying mixed settings without their grant", () =>
     Effect.gen(function* () {

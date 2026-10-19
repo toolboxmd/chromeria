@@ -557,3 +557,6 @@ packages/contracts/src/secretRequest.ts
 apps/server/src/auth/McpOAuth.test.ts
 apps/server/src/auth/mcpOAuthHttp.ts
 apps/web/src/components/auth/ConnectAgentSurface.tsx
+
+# Session research reads reuse the existing browser controller (#446)
+packages/contracts/src/previewAutomation.ts

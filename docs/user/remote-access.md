@@ -222,6 +222,70 @@ again on its next connect.
 For Antigravity's Google callback on a remote host, see
 [remote sign-in](./providers-antigravity.md#sign-in-from-a-remote-device).
 
+## Share research across environments
+
+Agents in Chromeria can share one environment's public-page cache and request
+limits through `web_read` and discovery budgets through `web_search`. Link each source environment to the research
+environment with agent access, then find its ID with `t3 environment list`.
+In each source server's `userdata/settings.json`, set:
+
+```json
+{ "webResearch": { "host": "<linked-environment-id>" } }
+```
+
+Merge this entry into your existing settings. Leave it unset, or set `host` to
+`null`, on the research environment itself. An unavailable or revoked link
+returns an error; reads and searches do not fall back to the source machine. These server
+settings apply to agents used from web, desktop and mobile.
+
+Logged-in reading is off by default. With your explicit account authorization,
+an agent can pass `useSession:true` and `session:{environmentId,profileId,tabId}`
+to read one page through an existing Chromeria profile tab selected with
+`preview_status`. The tab stays on its owning environment, even when your public
+research uses another server. A remote owner requires a direct agent-access link
+and `session.contextThreadId` for a live thread owned by that link with browser
+access; unrelated threads and forwarding through a second environment are refused.
+Human control, expired logins and account warnings stop the read. The reader
+does not log in or perform account actions, and adds no session pacing or quotas.
+Private results stay outside the public cache. Continue with the same session
+selection and explicit opt-in within five minutes, or read the URL again.
+
+Use `web_search(query, locale?)` for site/social and non-English community
+queries, preserving `site:` and `-site:` filters and a locale such as `pl-PL`.
+Keep the harness's own search for bulk discovery. Results include attributed
+snippets and each engine's health; an unhealthy engine's empty output does not
+mean no matches. Search results are not cached, and shared 25-second spacing
+and provider budgets can delay or limit new queries.
+
+The research server uses the existing SearXNG JSON service at
+`https://bestia.napoleon-sun.ts.net:8888`. Set `webResearch.searxngUrl` on that
+server to use another configured service. TinyFish search uses the same server
+secret as its page-reading fallback and only accepts observed zero-cost calls.
+
+For long pages, pass the returned `cacheId`, `cacheEnvironmentId` and
+`nextOffset` (as `offset`) to continue. Changing the research host requires
+reading the URL again. Outside MCP clients and links with read-only access
+cannot spend the research environment's request budget.
+
+When a maintainer provisions `web-research-treg-token` in the research
+environment's server secret store, TinyFish can read public pages after an
+eligible local render failure, through a pinned zero-cost endpoint. Its bounded
+attempt must fit the active reader's remaining budget. A traversal keeps its
+30-second limit and returns the local typed status when there is too little
+time for hosted work. Root provider/budget errors stay explicit; a failed child
+reports `providerError` while preserving the root and prior children.
+
+Results identify TinyFish and the observed charge. Hosted pages have
+`cacheStorage: "memory"`: continue them on the same research server before
+`cacheExpiresAt`, at most 15 minutes. Buffers can be evicted sooner and are lost
+on restart; an expired continuation asks you to read the URL again. Reading the
+URL again repeats the local ladder rather than reusing a hosted buffer.
+Provider retention permission, including this temporary buffer, remains
+unresolved; persistent hosted caching stays disabled. Local pages keep their
+persistent cache. Requested and final hosted URLs are checked here; TinyFish
+owns networking inside its service, whose DNS and subresource isolation remain
+unverified.
+
 ## Browser on a remote environment
 
 Browser tabs belong to the environment, so you and your agents see the same

@@ -26,6 +26,7 @@ import {
   type PreviewAutomationNavigateInput,
   type PreviewAutomationNetworkEntry,
   type PreviewAutomationOpenInput,
+  PreviewAutomationReadPageInput,
   type PreviewAutomationPressInput,
   type PreviewAutomationRequest,
   type PreviewAutomationResizeInput,
@@ -104,6 +105,7 @@ const DESKTOP_ATTACH_TIMEOUT = "10 seconds";
 const VIEWER_OUTPUT_LIMIT = 64;
 const RECORDING_SCREENCAST = { format: "jpeg", quality: 90, everyNthFrame: 1 } as const;
 const decodeViewportSetting = Schema.decodeUnknownSync(PreviewViewportSettingSchema);
+const decodeReadPage = Schema.decodeUnknownSync(PreviewAutomationReadPageInput);
 const AGENT_CURSOR_MOVE_MS = 160;
 const AGENT_CURSOR_CLICK_LEAD_MS = 40;
 
@@ -1974,6 +1976,46 @@ const make = Effect.gen(function* () {
   const executeTabOperation = async (tab: ServerTab, request: PreviewAutomationRequest) => {
     const input = request.input;
     switch (request.operation) {
+      case "readPage": {
+        const read = decodeReadPage(input);
+        const generation = tab.control.generation;
+        if (
+          !request.tabIdExplicit ||
+          tab.isolatedContext ||
+          (tab.profileId ?? DEFAULT_BROWSER_PROFILE_ID) !== read.profileId ||
+          read.profileId === INCOGNITO_BROWSER_PROFILE_ID
+        )
+          throw new ServerBrowserPage.ServerBrowserOperationError(
+            "PreviewAutomationExecutionError",
+            "Select an existing tab in the requested persistent browser profile.",
+          );
+        const response = await tab.page.goto(normalizePreviewUrl(read.url), {
+          waitUntil: "domcontentloaded",
+          timeout: request.timeoutMs,
+        });
+        // A human may reserve control while navigation is in flight.
+        if (!tab.control.agentCanActNow(request.agentSessionId!))
+          throw new BrowserControlInterrupted("Browser control changed during the read.");
+        const html = await tab.page.content();
+        if (
+          generation !== tab.control.generation ||
+          !tab.control.agentCanActNow(request.agentSessionId!)
+        )
+          throw new BrowserControlInterrupted("Browser control changed during the read.");
+        if (Buffer.byteLength(html, "utf8") > 4 * 1024 * 1024)
+          throw new ServerBrowserPage.ServerBrowserOperationError(
+            "PreviewAutomationResultTooLargeError",
+            "The session page exceeds the research extraction limit.",
+          );
+        return {
+          tabId: tab.tabId,
+          profileId: read.profileId,
+          generation: tab.control.generation,
+          finalUrl: tab.page.url(),
+          httpStatus: response?.status() ?? null,
+          html,
+        };
+      }
       case "navigate": {
         const navigateInput = input as PreviewAutomationNavigateInput;
         await recordAction(tab, "navigate", () =>

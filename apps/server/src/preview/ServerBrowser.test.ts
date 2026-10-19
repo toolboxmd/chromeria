@@ -175,6 +175,7 @@ function makeContext(onClose?: (context: BrowserContext) => void) {
     reload: vi.fn(async () => {}),
     emulateMedia: vi.fn(async () => {}),
     waitForLoadState: vi.fn(async () => {}),
+    content: vi.fn(async () => "<h1>Existing account page</h1><p>Private reading fixture</p>"),
     evaluate: vi.fn(async () => ({
       url,
       title: "test page",
@@ -1243,6 +1244,92 @@ it.live("a session's own tab stays its default while other sessions' tabs are li
           expect.objectContaining({ tabId: other.tabId, owner: "agent", ownedByCaller: false }),
         ]),
       );
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live(
+  "session research reuses the selected controller and cannot read another profile or a human-controlled tab",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const browser = yield* ServerBrowser.ServerBrowser;
+        const broker = yield* Broker.PreviewAutomationBroker;
+        yield* Effect.yieldNow;
+        const opened = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false, profileId: "default" },
+        });
+        const tabId = PreviewTabId.make(opened.tabId!);
+        const page = contexts[0]!.page;
+        page.goto.mockClear();
+        const read = (profileId = "default") =>
+          broker.invoke<object>({
+            scope,
+            tabId,
+            operation: "readPage",
+            input: { profileId, url: "https://account.example/reading" },
+          });
+        yield* read("incognito").pipe(Effect.flip);
+        expect(page.goto).not.toHaveBeenCalled();
+        expect(yield* read()).toMatchObject({
+          profileId: "default",
+          tabId,
+          finalUrl: "https://account.example/reading",
+          html: expect.stringContaining("Private reading fixture"),
+        });
+        expect(contextRequests).toEqual([{ profileId: "default", isolated: false }]);
+        expect(page.goto).toHaveBeenCalledTimes(1);
+        const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+        yield* viewer.input({ type: "takeControl" });
+        expect(yield* read().pipe(Effect.flip)).toMatchObject({ reason: "humanControl" });
+        expect(page.goto).toHaveBeenCalledTimes(1);
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
+it.live("session research discards HTML when a human takes control during extraction", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const browser = yield* ServerBrowser.ServerBrowser;
+      const broker = yield* Broker.PreviewAutomationBroker;
+      yield* Effect.yieldNow;
+      const opened = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        operation: "open",
+        input: { reuseExistingTab: false, show: false, profileId: "default" },
+      });
+      const tabId = PreviewTabId.make(opened.tabId!);
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      contexts[0]!.page.content.mockImplementationOnce(async () => {
+        entered.resolve();
+        await release.promise;
+        return "private content after takeover";
+      });
+      yield* Effect.addFinalizer(() => Effect.sync(() => release.resolve()));
+      const reading = yield* broker
+        .invoke({
+          scope,
+          tabId,
+          operation: "readPage",
+          input: {
+            profileId: "default",
+            url: "https://account.example/reading",
+          },
+        })
+        .pipe(Effect.exit, Effect.forkScoped);
+      yield* Effect.promise(() => entered.promise);
+      const taking = yield* viewer.input({ type: "takeControl" }).pipe(Effect.forkScoped);
+      let control = yield* Queue.take(viewer.output);
+      while (control._tag !== "control" || control.controller !== "you")
+        control = yield* Queue.take(viewer.output);
+      release.resolve();
+      const exit = yield* Fiber.join(reading);
+      expect(exit._tag).toBe("Failure");
+      yield* Fiber.join(taking);
     }),
   ).pipe(Effect.provide(layer)),
 );

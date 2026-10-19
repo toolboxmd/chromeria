@@ -106,9 +106,27 @@ const requireThreadCaller = McpInvocationContext.McpInvocationContext.pipe(
 export const reads = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare((params: P) => McpRouting.invoke(params, handle));
 
-export const readsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
+// Peer agents have no destination thread; opt-in keeps other caller reads from widening.
+export const readsAsCaller = <P, A, E, R>(
+  handle: (params: P) => Effect.Effect<A, E, R>,
+  options?: { readonly linkedCallers: "allowed" },
+) =>
   declare((params: P) =>
-    requireThreadCaller.pipe(Effect.flatMap(() => McpRouting.invoke(params, handle))),
+    McpInvocationContext.McpInvocationContext.pipe(
+      Effect.flatMap((scope) =>
+        options?.linkedCallers === "allowed" && scope.client?.linked === true
+          ? scope.client.access === "read-only"
+            ? Effect.fail(
+                new OrchestratorMcpFailure({
+                  code: "capability_denied",
+                  message: "This read requires a peer link with agent access.",
+                }),
+              )
+            : Effect.void
+          : requireThreadCaller,
+      ),
+      Effect.flatMap(() => McpRouting.invoke(params, handle)),
+    ),
   );
 
 export const actsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
