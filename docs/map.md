@@ -43,7 +43,7 @@ flowchart TD
     BLM --> PBI
 
     PZ["Prism routing"]
-    %% PZ: #92 PR #408 PR #430 PR #479 PR #489 PR #512 PR #471 PR #476
+    %% PZ: #92 PR #556 #554 PR #408 PR #430 PR #479 PR #489 PR #512 PR #471 PR #476
     VT["Visible T3 threads"]
     %% VT: #10
     PM["Promachos bubbles and persona"]
