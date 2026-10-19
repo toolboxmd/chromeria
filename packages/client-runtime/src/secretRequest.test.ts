@@ -47,18 +47,73 @@ describe("secretRequestDisplay", () => {
 });
 
 describe("secretRequestAnswerInput", () => {
-  it("refuses a blank save and trims the value the server will store", () => {
-    expect(secretRequestAnswerInput(item, { type: "save", secret: "   " })).toBeNull();
-    expect(secretRequestAnswerInput(item, { type: "save", secret: " whsec_1 " })).toEqual({
+  const single = { ...item, label: "Webhook secret" };
+  it("refuses a blank save and sends the value exactly as typed", () => {
+    expect(
+      secretRequestAnswerInput(single, { type: "save", values: new Map([["secret", "   "]]) }),
+    ).toBeNull();
+    expect(
+      secretRequestAnswerInput(single, {
+        type: "save",
+        values: new Map([["secret", " whsec_1 "]]),
+      }),
+    ).toEqual({
       threadId: item.threadId,
       turnItemId: item.id,
-      answer: { type: "save", secret: "whsec_1" },
+      answer: { type: "save", secret: " whsec_1 " },
     });
-    expect(secretRequestAnswerInput(item, { type: "decline" })).toEqual({
+    expect(secretRequestAnswerInput(single, { type: "decline" })).toEqual({
       threadId: item.threadId,
       turnItemId: item.id,
       answer: { type: "decline" },
     });
+  });
+
+  it("saves every field of a multi-field card together, or not at all", () => {
+    const card = {
+      ...single,
+      fields: [
+        { name: "client_id", label: "Client ID" },
+        { name: "client_secret", label: "Client secret" },
+      ],
+    };
+    expect(
+      secretRequestAnswerInput(card, { type: "save", values: new Map([["client_id", "id-1"]]) }),
+    ).toBeNull();
+    expect(
+      secretRequestAnswerInput(card, {
+        type: "save",
+        values: new Map([
+          ["client_id", " id-1 "],
+          ["client_secret", "cs-2"],
+          ["stray", "x"],
+        ]),
+      }),
+    ).toEqual({
+      threadId: item.threadId,
+      turnItemId: item.id,
+      answer: { type: "save", secrets: { client_id: " id-1 ", client_secret: "cs-2" } },
+    });
+  });
+
+  it("reads fields named like Object properties from their own values", () => {
+    const card = {
+      ...single,
+      fields: [
+        { name: "constructor", label: "Constructor" },
+        { name: "tostring", label: "To string" },
+      ],
+    };
+    expect(secretRequestAnswerInput(card, { type: "save", values: new Map() })).toBeNull();
+    expect(
+      secretRequestAnswerInput(card, {
+        type: "save",
+        values: new Map([
+          ["constructor", "c-1"],
+          ["tostring", "t-2"],
+        ]),
+      })?.answer,
+    ).toEqual({ type: "save", secrets: { constructor: "c-1", tostring: "t-2" } });
   });
 });
 
