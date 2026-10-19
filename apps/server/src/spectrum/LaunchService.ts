@@ -157,6 +157,7 @@ const make = Effect.gen(function* () {
         (color) => color.label.trim().length === 0 || color.label.toLowerCase() === "user",
       ) ||
       (input.mode === "council" && input.limit < 2) ||
+      (input.mode === "free" && input.limit < input.colors.length) ||
       input.moderator < 0 ||
       input.moderator >= input.colors.length
     )
@@ -322,6 +323,7 @@ const make = Effect.gen(function* () {
       transcript: [],
       inbox: [],
       outbox: [],
+      free: null,
       report: null,
       delegatedTaskId:
         input.delegatedTask === true ? spectrumTaskId({ threadId: input.threadId }) : null,

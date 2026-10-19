@@ -690,7 +690,7 @@ it.effect(
       assert.strictEqual(current.round!.slots.length, 1);
       assert.strictEqual(current.round!.slots[0]!.threadId, current.participants[0]!.threadId);
       const firstReply = "First line\n" + "🟦".repeat(20000) + " verbatim";
-      for (const text of [firstReply, "Second answer exactly."]) {
+      for (const text of [firstReply, "Second answer exactly.", "DONE", "Summary."]) {
         const slot = current.round!.slots[0]!;
         const records = yield* projections.getThreadRecords(slot.threadId, ["runs"]);
         const run = records.runs.find((run) => run.id === slot.runId)!;

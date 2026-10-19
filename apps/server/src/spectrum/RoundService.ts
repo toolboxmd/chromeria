@@ -12,6 +12,7 @@ import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { bindRun, fallBack, nextRound } from "./barrier.ts";
+import { whiteInstruction } from "./freeMode.ts";
 import { spectrumLaunchAdmission } from "./launchAdmission.ts";
 import { spectrumPlan } from "./spectrumPlan.ts";
 import type { SpectrumState } from "./state.ts";
@@ -93,11 +94,13 @@ const make = Effect.gen(function* () {
     const commands: ReadonlyArray<OrchestrationV2Command> = round.slots.map((slot) => {
       const participant = state.participants.find((color) => color.threadId === slot.threadId)!;
       const instruction =
-        round.phase === "synthesis"
-          ? "Synthesize the council's final answer."
-          : round.phase === "independent"
-            ? "Answer independently before reading other Colors."
-            : "Respond to the discussion and improve the answer.";
+        round.phase === "moderation" || round.phase === "summary"
+          ? whiteInstruction(state, round.phase)
+          : round.phase === "synthesis"
+            ? "Synthesize the council's final answer."
+            : round.phase === "independent"
+              ? "Answer independently before reading other Colors."
+              : "Respond to the discussion and improve the answer.";
       return {
         type: "message.dispatch",
         commandId: slot.commandId,

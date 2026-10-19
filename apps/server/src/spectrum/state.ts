@@ -43,10 +43,27 @@ export type SpectrumSlot = typeof SpectrumSlot.Type;
 export const SpectrumRound = Schema.Struct({
   generation: NonNegativeInt,
   step: NonNegativeInt,
-  phase: Schema.Literals(["independent", "relay", "synthesis", "free"]),
+  phase: Schema.Literals(["independent", "relay", "synthesis", "free", "moderation", "summary"]),
   slots: Schema.Array(SpectrumSlot),
 });
 export type SpectrumRound = typeof SpectrumRound.Type;
+
+/** Free mode's persisted moderation progress, so a restart never repeats a White call. */
+export const FreeProgress = Schema.Struct({
+  cycle: NonNegativeInt,
+  /** Color turns taken this cycle, the opening round included. */
+  turns: NonNegativeInt,
+  next: Schema.Union([
+    Schema.Struct({ type: Schema.Literal("color"), participant: NonNegativeInt }),
+    Schema.Struct({
+      type: Schema.Literal("moderation"),
+      reask: Schema.Boolean,
+      retried: Schema.Boolean,
+    }),
+    Schema.Struct({ type: Schema.Literal("summary"), retried: Schema.Boolean }),
+  ]),
+});
+export type FreeProgress = typeof FreeProgress.Type;
 
 // Only durable command data goes in the outbox, never closures or provider handles.
 const OutboxCommand = Schema.Union([OrchestrationV2Command, SpectrumTranscriptAppend]);
@@ -79,6 +96,7 @@ export const SpectrumState = Schema.Struct({
   transcript: Schema.Array(MessageId),
   inbox: Schema.Array(MessageId),
   outbox: Schema.Array(OutboxCommand),
+  free: Schema.NullOr(FreeProgress).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   report: Schema.NullOr(SpectrumReport).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   /** The caller's delegated task row for an agent-started Spectrum; user starts have none. */
   delegatedTaskId: Schema.NullOr(NodeId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
