@@ -1,3 +1,4 @@
+import * as Search from "./Search.ts";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -83,6 +84,7 @@ const readerLayer = (
     Effect.die("A forwarding source or plain HTTP fixture must not render locally."),
 ) =>
   WebResearch.layer.pipe(
+    Layer.provide(Layer.mock(Search.Search)({})),
     Layer.provide(Layer.succeed(TinyFish.TinyFish, { fetch: () => Effect.succeed(undefined) })),
     Layer.provide(PageCache.layer),
     Layer.provide(Layer.succeed(PublicHttp.PublicHttp, { get })),

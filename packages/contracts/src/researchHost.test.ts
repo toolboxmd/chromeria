@@ -15,7 +15,10 @@ const encode = Schema.encodeSync(ServerSettings);
 
 describe("environment research host settings", () => {
   it("defaults to local, round-trips a host, and permits clearing it", () => {
-    expect(decode({}).webResearch).toEqual({ host: null });
+    expect(decode({}).webResearch).toMatchObject({
+      host: null,
+      searxngUrl: "https://bestia.napoleon-sun.ts.net:8888",
+    });
     const selected = { webResearch: { host: "bestia" } };
     expect(encode(decode(selected))).toMatchObject(selected);
     expect(patch(selected)).toEqual(selected);
@@ -32,5 +35,22 @@ describe("environment research host settings", () => {
         AuthSettingsWriteScope,
       ]);
     }
+  });
+  it("validates the configured provider endpoint and keeps its writes under settings permission", () => {
+    for (const searxngUrl of [
+      "file:///etc/passwd",
+      "https://user:secret@example.com",
+      "https://example.com/?token=secret",
+      "https://example.com/#secret",
+      "",
+      42,
+    ]) {
+      expect(() => decode({ webResearch: { searxngUrl } })).toThrow();
+      expect(() => patch({ webResearch: { searxngUrl } })).toThrow();
+    }
+    const selected = { webResearch: { searxngUrl: "http://configured-search.internal:8888/base" } };
+    expect(patch(selected)).toEqual(selected);
+    expect(encode(decode(selected))).toMatchObject(selected);
+    expect(requiredScopesForServerSettingsPatch(patch(selected))).toEqual([AuthSettingsWriteScope]);
   });
 });

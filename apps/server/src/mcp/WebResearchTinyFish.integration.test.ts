@@ -1,3 +1,4 @@
+import * as Search from "../webResearch/Search.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -125,6 +126,7 @@ const fixture = Effect.fnUntraced(function* (
     Layer.provideMerge(dependencies),
   );
   const reader = WebResearch.layer.pipe(
+    Layer.provide(Layer.mock(Search.Search)({})),
     Layer.provide(
       Layer.succeed(PublicHttp.PublicHttp, {
         get: (url) =>

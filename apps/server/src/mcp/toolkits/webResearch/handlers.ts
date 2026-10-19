@@ -6,6 +6,23 @@ import * as McpToolAccess from "../../McpToolAccess.ts";
 import { WebResearchToolkit } from "./tools.ts";
 
 export const layer = McpToolAccess.toLayer(WebResearchToolkit, {
+  web_search: McpToolAccess.readsAsCaller(
+    (input) =>
+      ResearchHost.ResearchHost.use((research) => research.search(input)).pipe(
+        Effect.mapError((error) =>
+          error._tag === "OrchestratorMcpFailure"
+            ? error
+            : new OrchestratorMcpFailure({
+                code:
+                  error._tag === "ResearchHostUnavailable"
+                    ? "research_host_unavailable"
+                    : "invalid_request",
+                message: error.message,
+              }),
+        ),
+      ),
+    { linkedCallers: "allowed" },
+  ),
   web_read: McpToolAccess.readsAsCaller(
     (input) =>
       ResearchHost.ResearchHost.use((research) => research.read(input)).pipe(
