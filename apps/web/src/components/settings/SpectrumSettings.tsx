@@ -147,7 +147,10 @@ function SpectrumEditor({
       () => {},
     );
     setSaving(false);
-    if (confirmed) {
+    if (
+      confirmed &&
+      result.savedEnvironments.some((value) => value.environmentId === target?.environmentId)
+    ) {
       setDirty(false);
       setDraft(confirmed);
       setSlotKeys(confirmed.slots.map((_, index) => index));

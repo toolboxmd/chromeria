@@ -107,6 +107,30 @@ afterEach(async () => {
   container.remove();
   vi.unstubAllGlobals();
 });
+it("retains an edited draft when the displayed environment ignores the setting", async () => {
+  state.persist.mockImplementation(async ({ environmentId, input }) => {
+    if (environmentId === ids[0]) {
+      return { _tag: "Success", value: state.settings[0]! };
+    }
+    state.settings[1] = applyServerSettingsPatch(state.settings[1]!, input.patch);
+    return { _tag: "Success", value: state.settings[1]! };
+  });
+  await render();
+  const rounds = container.querySelector<HTMLInputElement>("#spectrum-rounds")!;
+  await act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(rounds, "3");
+    rounds.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const save = [...container.querySelectorAll("button")].find(
+    (button) => button.textContent === "Save Spectrum settings",
+  )!;
+  expect(save.disabled).toBe(false);
+  await act(() => save.click());
+  expect(state.persist).toHaveBeenCalled();
+  expect(rounds.value).toBe("3");
+  expect(save.disabled).toBe(false);
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("one");
+});
 it("adopts the displayed environment's reset when another environment fails later", async () => {
   let failOther: ((response: Response) => void) | undefined;
   state.persist.mockImplementation(async ({ environmentId, input }) => {
