@@ -2228,7 +2228,8 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/pull/453",
     "https://github.com/toolboxmd/chromeria/pull/455",
     "https://github.com/toolboxmd/chromeria/pull/502",
-    "https://github.com/toolboxmd/chromeria/pull/505"
+    "https://github.com/toolboxmd/chromeria/pull/505",
+    "https://github.com/toolboxmd/chromeria/pull/513"
   ],
   "newFiles": [
     "apps/server/src/webResearch/Search.ts",

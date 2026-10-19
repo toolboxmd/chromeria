@@ -90,7 +90,7 @@ flowchart TD
     %% WRS: #445 PR #505
     WR --- WRS
     WRL["Existing session reads"]
-    %% WRL: #446
+    %% WRL: #446 PR #513
     WR --- WRL
     WRR["Headless page rendering"]
     %% WRR: #442
