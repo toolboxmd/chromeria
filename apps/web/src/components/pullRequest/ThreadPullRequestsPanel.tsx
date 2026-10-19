@@ -1,3 +1,4 @@
+import { createThreadPullRequestWatchAction } from "@t3tools/client-runtime/pull-request-link-input";
 import type { ProjectId, ScopedThreadRef, ThreadPullRequestLink } from "@t3tools/contracts";
 import {
   sourceControlClients,
@@ -453,18 +454,11 @@ function EnabledThreadPullRequestsPanel({
       },
     });
   };
-  const handleSetWatching = (link: ThreadPullRequestLink, watching: boolean) => {
-    void watch({
-      environmentId: threadRef.environmentId,
-      input: {
-        threadId: threadRef.threadId,
-        host: link.host,
-        repository: link.repository,
-        number: link.number,
-        watching,
-      },
-    });
-  };
+  const handleSetWatching = createThreadPullRequestWatchAction({
+    threadRef,
+    ownLinks: thread?.pullRequests ?? [],
+    watch,
+  });
 
   // Legend rows update only for data/extraData changes; include all external inputs.
   const rowInputs = {

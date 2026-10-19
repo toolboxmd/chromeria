@@ -628,7 +628,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
   "purpose": "Link GitHub Issues to threads, show them beside PRs and start a linked thread from an Issue.",
   "issues": [
     "https://github.com/toolboxmd/t3code/issues/28",
-    "https://github.com/toolboxmd/chromeria/issues/171"
+    "https://github.com/toolboxmd/chromeria/issues/171",
+    "https://github.com/toolboxmd/chromeria/issues/314"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/34",
@@ -661,6 +662,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "packages/contracts/src/issueLinks.ts"
   ],
   "upstreamFiles": [
+    "apps/mobile/src/features/threads/useLinkedPullRequestActions.ts",
     "apps/server/src/environment/ServerEnvironment.ts",
     "apps/server/src/mcp/McpHttpServer.ts",
     "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
@@ -672,6 +674,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/web/src/reopenClosedView.ts",
     "apps/web/src/rightPanelStore.test.ts",
     "apps/web/src/rightPanelStore.ts",
+    "packages/client-runtime/src/pullRequestLinkInput.test.ts",
+    "packages/client-runtime/src/pullRequestLinkInput.ts",
     "packages/client-runtime/src/rpc/client.ts",
     "packages/contracts/src/environment.ts"
   ],

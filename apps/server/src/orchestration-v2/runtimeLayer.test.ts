@@ -1,3 +1,7 @@
+import {
+  createThreadPullRequestWatchAction,
+  threadPullRequestWatchInput,
+} from "../../../../packages/client-runtime/src/pullRequestLinkInput.ts";
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import * as BareProviders from "../provider/ProviderRegistry.ts";
 import { limitRecoveryCommand } from "./UsageLimitRecoveryWorker.ts";
@@ -8,6 +12,7 @@ import { assert, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import {
   type ApplicationStoredEvent,
+  EnvironmentId,
   CheckpointId,
   CheckpointRef,
   CommandId,
@@ -2584,6 +2589,118 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         "manual",
       );
     }),
+  );
+
+  it.effect(
+    "watches a descendant-only pull request on its parent using the client action payload",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+        const parentId = ThreadId.make("descendant-pr-watch-parent");
+        const childId = ThreadId.make("descendant-pr-watch-child");
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make("descendant-pr-watch-create-parent"),
+          threadId: parentId,
+          projectId: ProjectId.make("descendant-pr-watch-project"),
+          title: "Parent",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+        });
+        const parent = yield* orchestrator.getThreadProjection(parentId);
+        const now = yield* DateTime.now;
+        yield* eventSink.write({
+          events: [
+            {
+              id: EventId.make("descendant-pr-watch-create-child"),
+              type: "thread.created",
+              threadId: childId,
+              providerInstanceId: modelSelection.instanceId,
+              occurredAt: now,
+              payload: {
+                ...parent.thread,
+                id: childId,
+                title: "Child",
+                lineage: {
+                  parentThreadId: parentId,
+                  rootThreadId: parentId,
+                  relationshipToParent: "subagent",
+                },
+              },
+            },
+          ],
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.pull-request.link",
+          commandId: CommandId.make("descendant-pr-watch-link-child"),
+          threadId: childId,
+          host: "github.com",
+          repository: "acme/web",
+          number: 42,
+          url: "https://github.com/acme/web/pull/42",
+          source: "agent",
+        });
+        const child = yield* orchestrator.getThreadShell(childId);
+        const reference = child?.pullRequests?.[0];
+        assert.isDefined(reference);
+        const ownLinks = (yield* orchestrator.getThreadShell(parentId))?.pullRequests ?? [];
+        assert.deepEqual(ownLinks, []);
+        const onSetWatching = createThreadPullRequestWatchAction({
+          threadRef: {
+            environmentId: EnvironmentId.make("parent-environment"),
+            threadId: parentId,
+          },
+          ownLinks,
+          watch: ({ input }) =>
+            orchestrator.dispatch({
+              ...input,
+              type: "thread.pull-request.watch",
+              commandId: CommandId.make("descendant-pr-watch-start-parent"),
+            }),
+        });
+        yield* onSetWatching(reference, true);
+        const watchedParent = (yield* orchestrator.getThreadProjection(parentId)).thread;
+        assert.isDefined(watchedParent.pullRequests);
+        assert.lengthOf(watchedParent.pullRequests, 1);
+        const watchedLink = watchedParent.pullRequests[0]!;
+        assert.equal(watchedLink.host, "github.com");
+        assert.equal(watchedLink.repository, "acme/web");
+        assert.equal(watchedLink.number, 42);
+        assert.equal(watchedLink.url, "https://github.com/acme/web/pull/42");
+        assert.equal(watchedLink.source, "manual");
+        assert.isDefined(watchedLink.watch);
+        assert.isTrue((yield* maintenance.rebuild).valid);
+        assert.deepEqual(
+          (yield* orchestrator.getThreadProjection(parentId)).thread.pullRequests,
+          watchedParent.pullRequests,
+        );
+        const refused = yield* orchestrator
+          .dispatch({
+            ...threadPullRequestWatchInput({
+              threadId: childId,
+              reference,
+              ownLinks: [reference],
+              watching: true,
+            }),
+            type: "thread.pull-request.watch",
+            commandId: CommandId.make("descendant-pr-watch-refuse-child"),
+          })
+          .pipe(Effect.flip);
+        assert.instanceOf(refused, Orchestrator.OrchestratorDispatchError);
+        assert.include(
+          String(refused.cause),
+          "is a subagent; its parent thread watches pull requests",
+        );
+        assert.deepEqual((yield* orchestrator.getThreadShell(childId))?.pullRequests, [reference]);
+        assert.isUndefined(reference.watch);
+      }),
   );
 
   it.effect("starts, records, and stops a pull request watch", () =>
