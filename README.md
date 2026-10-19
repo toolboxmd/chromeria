@@ -139,3 +139,5 @@ Read [CONTRIBUTING.md](./CONTRIBUTING.md) before reporting a bug or opening a PR
 Have a feature request? Start an [Ideas discussion](https://github.com/pingdotgg/t3code/discussions/categories/ideas).
 
 Need support? Join the [Discord](https://discord.gg/jn4EGJjrvv).
+
+<!-- Disposable docs-only CI proof for #547; do not merge. -->
