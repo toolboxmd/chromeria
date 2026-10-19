@@ -2480,8 +2480,11 @@ sources and reasons.
 ```json
 {
   "id": "preview-chrome-identity",
-  "purpose": "Apply a paired Chrome identity before preview document requests, reconcile aborts with the committed page and restore after debugger reattachment.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/460"],
+  "purpose": "Apply a paired Chrome identity to listed preview main-frame navigations without holding their requests, reconcile aborts with the committed page and restore after debugger reattachment.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/460",
+    "https://github.com/toolboxmd/chromeria/issues/524"
+  ],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/470"],
   "newFiles": [
     "apps/desktop/src/preview/ChromeUserAgent.ts",

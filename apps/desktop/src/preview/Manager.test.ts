@@ -609,7 +609,7 @@ describe("PreviewManager", () => {
                   );
                 }),
             );
-          expect(yield* navigate("https://web.whatsapp.com/")).toEqual({ cancel: false });
+          expect(yield* navigate("https://web.whatsapp.com/")).toEqual({});
           const commit = (url: string) =>
             Effect.promise(() =>
               Promise.resolve(events.get("did-frame-navigate")?.({}, url, 200, "OK", true, 1, 1)),
@@ -626,7 +626,7 @@ describe("PreviewManager", () => {
               }),
             }),
           );
-          expect(yield* navigate("https://dash.cloudflare.com/login")).toEqual({ cancel: false });
+          expect(yield* navigate("https://dash.cloudflare.com/login")).toEqual({});
           yield* commit("https://dash.cloudflare.com/login");
           expect(debuggee.sendCommand).toHaveBeenLastCalledWith("Emulation.setUserAgentOverride", {
             userAgent: "",
@@ -711,7 +711,7 @@ describe("PreviewManager", () => {
                   ),
                 ),
             );
-            expect(requestStarted).toEqual({ cancel: false });
+            expect(requestStarted).toEqual({});
             const commit = () => {
               currentUrl = "https://web.whatsapp.com/";
               return Promise.all(
