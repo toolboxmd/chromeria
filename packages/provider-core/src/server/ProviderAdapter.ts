@@ -1,3 +1,4 @@
+import { ThreadTools } from "@t3tools/contracts";
 import type { ExecutionPurpose } from "@t3tools/contracts";
 import { ThreadBare, type BareSupport } from "@t3tools/contracts";
 import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
@@ -49,6 +50,7 @@ import type {
 
 export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   bare: Schema.optional(ThreadBare),
+  tools: Schema.optional(ThreadTools),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   cwd: Schema.NullOr(Schema.String),

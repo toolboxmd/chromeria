@@ -119,3 +119,42 @@ adapters currently refuse bare launches.
 Bare is fixed when the thread starts. Native forks inherit it; importing or
 transferring portable history is unsupported. Start a normal thread to use ordinary
 context. A bare schedule without an explicit bind starts a fresh thread each time.
+
+## Restrict a thread's tools
+
+`delegate_task` and `t3_thread_launch` accept an optional exact allowlist:
+
+```json
+{
+  "bare": {},
+  "tools": {
+    "allow": ["mcp:outreach:read_venue", "mcp:outreach:submit_result"],
+    "mcpServers": {
+      "outreach": {
+        "type": "http",
+        "url": "http://localhost:8080/mcp",
+        "headers": { "Authorization": "Bearer <venue-generation-token>" }
+      }
+    }
+  }
+}
+```
+
+With this option, built-in tools such as `Bash` and `Read` must be listed by name;
+`allow: []` disables every tool. Wildcards and permission patterns are rejected.
+Without `tools`, existing launches keep their normal permissions, including bare
+launches. Claude supports this restriction; other harnesses reject the launch
+until they have a proven exact-tool enforcement path. An older linked environment
+that does not advertise support also rejects restricted requests.
+
+An outside OAuth client can pass both options to `t3_thread_launch` with its
+project and model selection. MCP attachments can use HTTP headers or a `stdio`
+command with `args` and `env`. Configuration stays in the private secret store;
+thread state, exports and `t3_thread_configuration` contain only the allowlist and
+an opaque reference. Follow-ups, restart and compaction retain the restriction and
+restore the private configuration.
+
+Use `t3_thread_mcp_configure` with `threadId` and `servers` to replace one idle
+thread's attachments without changing its allowlist; `servers: {}` removes them.
+Other threads keep their own configuration. Revoke the old token at its issuer
+when rotating a generation. Stop active work before changing its configuration.

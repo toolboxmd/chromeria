@@ -2,6 +2,7 @@ import { expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
   BareLaunchRequest,
+  ThreadToolsRequest,
   EnvironmentId,
   OrchestratorMcpCapabilitiesResult,
   OrchestratorMcpFailure,
@@ -22,6 +23,7 @@ import * as PeerMcpClient from "./PeerMcpClient.ts";
 const probe = Tool.make("bare_probe", {
   parameters: Schema.Struct({
     bare: Schema.optional(BareLaunchRequest),
+    tools: Schema.optional(ThreadToolsRequest),
     threads: Schema.optional(
       Schema.Array(Schema.Struct({ bare: Schema.optional(BareLaunchRequest) })),
     ),
@@ -55,7 +57,9 @@ it.effect.each([{ bare: {} }, { threads: [{ bare: {} }] }, { colors: [{ bare: {}
         const result =
           input.tool === "orchestrator_capabilities"
             ? OrchestratorMcpCapabilitiesResult.make({
-                ...(supported === undefined ? {} : { bareLaunch: supported }),
+                ...(supported === undefined
+                  ? {}
+                  : { bareLaunch: supported, toolAllowlist: supported }),
                 parentThreadId: null,
                 inheritedProviderInstanceId: null,
                 inheritedModel: null,
@@ -119,6 +123,11 @@ it.effect.each([{ bare: {} }, { threads: [{ bare: {} }] }, { colors: [{ bare: {}
         // Ordinary forwarding keeps the existing wire path and needs no new capability.
         expect(yield* forwarding.call(scope, probe, target, {})).toEqual({ ok: true });
         expect(called.at(-1)).toBe("bare_probe");
+        const policy = { tools: { allow: ["mcp:outreach:read_venue"] } };
+        const policyError = yield* forwarding.call(scope, probe, target, policy).pipe(Effect.flip);
+        expect(policyError.message).toContain("does not advertise tool allowlists");
+        supported = true;
+        expect(yield* forwarding.call(scope, probe, target, policy)).toEqual({ ok: true });
       }).pipe(Effect.provide(layer));
     }),
 );

@@ -36,6 +36,15 @@ import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
 
 const prismDependencies = Layer.mergeAll(
   Layer.mock(AdapterRegistry.ProviderAdapterRegistryV2)({
+    get: (instanceId) =>
+      Effect.succeed({
+        instanceId,
+        driver: ProviderDriverKind.make("claudeAgent"),
+        bareSupport: Effect.succeed({ supported: true }),
+        getCapabilities: () => Effect.die("unused"),
+        planSelectionTransition: () => Effect.die("unused"),
+        openSession: () => Effect.die("unused"),
+      }),
     list: () =>
       Effect.succeed([
         ProviderInstanceId.make("codex"),
@@ -587,9 +596,24 @@ it.effect("a client launches at its ceiling with the project's default model", (
     const escalated = yield* handle({ title: "Fix", projectId, runtimeMode: "full-access" });
     expect(escalated.at(-1)?.result).toMatchObject({ code: "runtime_mode_escalation_denied" });
 
+    const tools = {
+      allow: ["mcp:outreach:read_venue", "mcp:outreach:submit_result"],
+      mcpServers: {
+        outreach: {
+          type: "http" as const,
+          url: "http://localhost/mcp",
+          headers: { Authorization: "test-only-generation-token" },
+        },
+      },
+    };
+    yield* handle({ title: "Restricted venue", projectId, bare: {}, tools });
+    expect(launched[1]?.bare).toEqual({});
+    expect(launched[1]?.tools).toEqual(tools);
+    expect(launched[1]?.initialMessage?.text).toBeUndefined();
+
     const untargeted = yield* handle({ title: "Fix" });
     expect(untargeted.at(-1)?.result).toMatchObject({ code: "target_required" });
-    expect(launched).toHaveLength(1);
+    expect(launched).toHaveLength(2);
   }),
 );
 

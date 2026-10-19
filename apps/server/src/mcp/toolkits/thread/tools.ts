@@ -1,3 +1,4 @@
+import { ThreadTools } from "@t3tools/contracts";
 import { ThreadBare } from "@t3tools/contracts";
 import * as McpRouting from "../../McpRouting.ts";
 import {
@@ -223,6 +224,7 @@ const ThreadConfigurationTool = Tool.make("t3_thread_configuration", {
   parameters: McpRouting.parameters(Schema.Struct({ threadId: Schema.optional(ThreadId) })),
   success: Schema.Struct({
     bare: Schema.optional(ThreadBare),
+    tools: Schema.optional(ThreadTools),
     threadId: ThreadId,
     modelSelection: ModelSelection,
     runtimeMode: RuntimeMode,

@@ -1995,6 +1995,7 @@ const layerWsRpc = (
                     ...(input.generateTitle === undefined
                       ? {}
                       : { generateTitle: input.generateTitle }),
+                    ...(input.tools === undefined ? {} : { tools: input.tools }),
                     ...(input.bare === undefined
                       ? {}
                       : {

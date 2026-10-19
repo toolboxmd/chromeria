@@ -208,6 +208,28 @@ const make = Effect.gen(function* () {
         (("bare" in value && value.bare !== undefined) ||
           ("threads" in value && Array.isArray(value.threads) && value.threads.some(carriesBare)) ||
           ("colors" in value && Array.isArray(value.colors) && value.colors.some(carriesBare)));
+      const carriesTools = (value: unknown): boolean =>
+        Predicate.isObject(value) &&
+        (("tools" in value && value.tools !== undefined) ||
+          ("threads" in value &&
+            Array.isArray(value.threads) &&
+            value.threads.some(carriesTools)) ||
+          ("colors" in value && Array.isArray(value.colors) && value.colors.some(carriesTools)));
+      if (carriesTools(args) || toolName === "t3_thread_mcp_configure") {
+        const capabilities = yield* peers.call({
+          environmentId,
+          tool: "orchestrator_capabilities",
+          arguments: {},
+          limits,
+          success: OrchestratorMcpCapabilitiesResult,
+          ...(options === undefined ? {} : options),
+        });
+        if (capabilities.toolAllowlist !== true)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message: "The destination does not advertise tool allowlists; nothing was forwarded.",
+          });
+      }
       if (carriesBare(args)) {
         const capabilities = yield* peers.call({
           environmentId,
