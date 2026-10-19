@@ -670,10 +670,10 @@ const make = Effect.gen(function* () {
                   : { interactionMode: launch.interactionMode }),
                 delegatedFrom: launch.delegatedFrom,
                 ...(launch.delegatedFrom.purposeLaunch === undefined
-              ? {}
-              : {
-                  purposeIntent: { version: 1, intent: { type: "inherit" } },
-                }),
+                  ? {}
+                  : {
+                      purposeIntent: { version: 1, intent: { type: "inherit" } },
+                    }),
                 message: task.prompt,
                 clientRequestId: launch.clientRequestId,
               },

@@ -183,7 +183,6 @@ const make = Effect.gen(function* () {
                     }),
                   ),
         ),
-        Effect.map((caller) => caller.limits),
         Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
         Effect.provideService(ThreadManagement.ThreadManagementService, threads),
       );
@@ -601,6 +600,11 @@ const make = Effect.gen(function* () {
           arguments: args,
           limits,
           success: success as Schema.Decoder<A>,
+          ...(toolName.startsWith("t3_pending_request_") &&
+          caller.caller !== undefined &&
+          isPromachosThread(caller.caller)
+            ? { promachosThreadId: caller.caller.id }
+            : {}),
           ...(envelope === undefined ? {} : { authority: envelope }),
           ...(options === undefined ? {} : options),
           ...(expectedLinkIdentity === undefined ? {} : { expectedLinkIdentity }),
@@ -746,7 +750,7 @@ const make = Effect.gen(function* () {
           message:
             "Saved-preview authorization needs its verified source, preview capability and destination context.",
         });
-      const limits = yield* callerLimits(scope);
+      const { limits } = yield* forwardingCaller(scope);
       const link = yield* links.get(environmentId).pipe(Effect.mapError(unavailable));
       if (Option.isNone(link))
         return yield* new OrchestratorMcpFailure({

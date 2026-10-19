@@ -47,7 +47,7 @@ flowchart TD
     T3M --> VCF --> PBI
 
     PZ["Prism routing"]
-    %% PZ: #92 PR #556 #554 PR #408 PR #430 PR #479 PR #489 PR #512 PR #471 PR #476
+    %% PZ: #92 PR #556 #554 PR #408 PR #430 PR #479 PR #489 PR #512 PR #471 PR #476 PR #539
     VT["Visible T3 threads"]
     %% VT: #10
     PM["Promachos bubbles and persona"]
@@ -102,7 +102,7 @@ flowchart TD
     %% PAR: #382 PR #410
     RTL --> PAR
     RPR["Remote descendant requests"]
-    %% RPR: #369 PR #420
+    %% RPR: #369 #379 #532 PR #420 PR #539
     RTL --> RPR
     PAR --> RPR
     RBD["Remote browser and device control"]

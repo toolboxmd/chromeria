@@ -194,6 +194,9 @@ import type { McpThreadInvocationScope } from "../mcp/McpInvocationContext.ts";
 const instanceId = ProviderInstanceId.make("codex");
 const driver = ProviderDriverKind.make("codex");
 const selection = { instanceId, model: "gpt-5.4" };
+const decodeWorktreeBinding = Schema.decodeUnknownEffect(
+  Schema.Struct({ worktreePath: Schema.String }),
+);
 const decodeSavedPngReceipt = Schema.decodeUnknownEffect(McpSavedSnapshotReceipt);
 const decodeScheduledTaskList = Schema.decodeUnknownEffect(
   OrchestratorToolkit.tools.list_scheduled_tasks.successSchema,
@@ -313,9 +316,7 @@ const makeNode = (
     const enrichment = ProjectEnrichment.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
-          Layer.succeed(RepositoryIdentity.RepositoryIdentityResolver, {
-            resolve: () => Effect.succeed(null),
-          }),
+          RepositoryIdentity.layer,
           Layer.succeed(ProjectFavicon.ProjectFaviconResolver, {
             resolvePath: () => Effect.succeed(null),
           }),
@@ -378,11 +379,20 @@ const makeNode = (
         }),
       ),
       Layer.provide(projectLayer),
+      Layer.provide(RepositoryIdentity.layer),
       Layer.provide(nodeConfig),
       Layer.provide(settings),
       Layer.provide(db),
     );
-    const runtime = yield* productionKernel
+    const runtime: Context.Context<
+      | EffectOutbox.EffectOutboxV2
+      | EventSink.EventSinkV2
+      | EffectWorker.OrchestrationEffectWorkerV2
+      | Orchestrator.OrchestratorV2
+      | ProjectionStore.ProjectionStoreV2
+      | ProviderSessionManager.ProviderSessionManagerV2
+      | Threads.ThreadManagementService
+    > = yield* productionKernel
       ? production.pipe(Layer.fresh, Layer.build)
       : Runtime.layerWithRegistry(
           { name: `peer-authority-${descriptor.label}` },
@@ -441,7 +451,11 @@ const makeNode = (
         };
       }),
     ).pipe(Layer.provide(PeerNoticeDelivery.layer));
-    const baseServices = yield* Layer.mergeAll(noticeDelivery, PeerAuthority.layer).pipe(
+    const baseServices = yield* Layer.mergeAll(
+      noticeDelivery,
+      PeerAuthority.layer,
+      RepositoryIdentity.layer,
+    ).pipe(
       Layer.provideMerge(PeerLinks.layer),
       Layer.provideMerge(Secrets.layer),
       Layer.provide(Layer.succeedContext(runtime)),
@@ -553,7 +567,7 @@ const makeNode = (
           Layer.provide(db),
           Layer.provide(nodeConfig),
           Layer.provide(projectLayer),
-          Layer.provide(Layer.mock(RepositoryIdentity.RepositoryIdentityResolver)({})),
+          Layer.provide(RepositoryIdentity.layer),
           Layer.provide(environment),
           Layer.provide(FetchHttpClient.layer),
           Layer.fresh,
@@ -677,6 +691,7 @@ const makeNode = (
       yield* CheckStore.ensureCheckSchema.pipe(Effect.provide(db));
     }
     const spectrumLayer = SpectrumLaunch.layer.pipe(
+      Layer.provide(Adapters.layerFromAdapters([adapter])),
       Layer.provide(Prism.layer.pipe(Layer.provide(settings), Layer.provide(layerLaunchCatalog))),
       Layer.provide(ProjectStore.layer.pipe(Layer.provide(db))),
       Layer.provide(launchDependencies),
@@ -1337,6 +1352,7 @@ it.live(
         const parent = ThreadId.make("scheduler-replay382-parent");
         yield* seedParent(node, parent);
         const input = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           prompt: "Original isolated schedule intent",
           title: "Original title",
           schedule: { type: "interval", everyMs: 60_000 },
@@ -1348,6 +1364,7 @@ it.live(
           Schema.Struct({ scheduledTaskId: Schema.String }),
         )(first.structuredContent);
         const later = yield* nativeCall(node, parent, "update_scheduled_task", {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           scheduledTaskId: result.scheduledTaskId,
           title: "Later independent title",
           clientRequestId: "scheduler-replay382-later-edit",
@@ -1379,6 +1396,7 @@ it.live(
         const firstPrivate = "ISOLATED_SCHEDULE_PROMPT_382_ALPHA_NEVER_IN_RECEIPTS";
         const changedPrivate = "ISOLATED_SCHEDULE_PROMPT_382_BETA_CHANGED_INPUT";
         const create = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           prompt: firstPrivate,
           title: "Original",
           schedule: { type: "interval", everyMs: 60_000 },
@@ -1410,6 +1428,7 @@ it.live(
         ]);
         const id = receipt.scheduledTaskId;
         const edit1 = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           scheduledTaskId: id,
           title: "First edit",
           prompt: "Independent prompt",
@@ -1418,6 +1437,7 @@ it.live(
           clientRequestId: "history382-edit1",
         };
         const edit2 = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           scheduledTaskId: id,
           title: "Second edit",
           checkCommand: "test -f isolated-second",
@@ -1486,11 +1506,13 @@ it.live(
         const rivalEdits = yield* Effect.all(
           [
             nativeCall(active, parent, "update_scheduled_task", {
+              purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
               scheduledTaskId: id,
               title: "Rival A",
               clientRequestId: "history382-rival-a",
             }),
             nativeCall(active, parent, "update_scheduled_task", {
+              purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
               scheduledTaskId: id,
               prompt: "ISOLATED_RIVAL_PRIVATE_PROMPT_382",
               clientRequestId: "history382-rival-b",
@@ -1504,6 +1526,7 @@ it.live(
         expect(rivalTask?.prompt).toBe("ISOLATED_RIVAL_PRIVATE_PROMPT_382");
         expect(yield* sql`SELECT * FROM scheduled_mutation_receipts`).toHaveLength(5);
         const failure = yield* nativeCall(active, parent, "update_scheduled_task", {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           scheduledTaskId: id,
           schedule: { type: "once", at: "2000-01-01T00:00:00.000Z" },
           clientRequestId: "history382-before-commit",
@@ -1585,6 +1608,7 @@ it.live(
         const firstHex = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         yield* seed(firstHex);
         const input = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           environmentId: b.environmentId,
           projectId: b.project.id,
           title: "Webhook",
@@ -1796,7 +1820,6 @@ it.live(
         const capabilities = new Set(["orchestration", "worktree"] as const);
         const input = {
           branch: "worktree382-accepted",
-          path: `${root}/accepted`,
           baseRef: "main",
           startFromOrigin: false,
           runSetupScript: false,
@@ -1804,11 +1827,15 @@ it.live(
         };
         const first = yield* nativeCall(node, parent, "t3_worktree_handoff", input, capabilities);
         expect(first.isError, json(first)).not.toBe(true);
-        yield* fs.writeFileString(`${root}/accepted/README.md`, "Later independent edit");
+        const accepted = yield* decodeWorktreeBinding(first.structuredContent);
+        expect((yield* node.threads.getThreadShell(parent))?.worktreePath).toBe(
+          accepted.worktreePath,
+        );
+        yield* fs.writeFileString(`${accepted.worktreePath}/README.md`, "Later independent edit");
         const replay = yield* nativeCall(node, parent, "t3_worktree_handoff", input, capabilities);
         expect(replay.isError, json(replay)).not.toBe(true);
         expect(replay.structuredContent).toEqual(first.structuredContent);
-        expect(yield* fs.readFileString(`${root}/accepted/README.md`)).toBe(
+        expect(yield* fs.readFileString(`${accepted.worktreePath}/README.md`)).toBe(
           "Later independent edit",
         );
         const next = ThreadId.make("worktree382-ambiguous-parent");
@@ -1817,7 +1844,6 @@ it.live(
         const ambiguousInput = {
           ...input,
           branch: "worktree382-ambiguous",
-          path: `${root}/ambiguous`,
           clientRequestId: "worktree382-lost-native-reply",
         };
         const lost = yield* nativeCall(
@@ -1829,7 +1855,11 @@ it.live(
         );
         expect(lost.isError).toBe(true);
         expect(json(lost)).toContain("outcome_unknown");
-        expect(yield* fs.exists(`${root}/ambiguous/README.md`)).toBe(true);
+        const ambiguousPath = (yield* node.threads.getThreadShell(next))?.worktreePath;
+        if (ambiguousPath == null)
+          throw new Error("Expected the native worktree binding after reply loss");
+        expect(ambiguousPath).not.toBe(accepted.worktreePath);
+        expect(yield* fs.exists(`${ambiguousPath}/README.md`)).toBe(true);
         const again = yield* nativeCall(
           node,
           next,
@@ -1839,8 +1869,8 @@ it.live(
         );
         expect(again.isError).toBe(true);
         expect(json(again)).toContain("native_binding_accepted");
-        expect((yield* node.threads.getThreadShell(next))?.worktreePath).toBe(`${root}/ambiguous`);
-        expect(yield* fs.exists(`${root}/ambiguous/README.md`)).toBe(true);
+        expect((yield* node.threads.getThreadShell(next))?.worktreePath).toBe(ambiguousPath);
+        expect(yield* fs.exists(`${ambiguousPath}/README.md`)).toBe(true);
         const sql = Context.get(node.database, SqlClient.SqlClient);
         expect(
           yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_type='thread.metadata.update' AND command_id LIKE 'worktree-handoff:%'`,
@@ -1884,6 +1914,7 @@ it.live(
         const parent = ThreadId.make("manual382-command-parent");
         yield* seedParent(node, parent);
         const scheduled = yield* nativeCall(node, parent, "schedule_task", {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           prompt: "Isolated external command",
           command: "isolated-external-boundary-382",
           title: "One command",
@@ -3980,6 +4011,7 @@ it.live(
         const parent = ThreadId.make("manual382-parent");
         yield* seedParent(node, parent);
         const { task } = yield* node.scheduled.upsert({
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           commandId: CommandId.make("manual382-schedule"),
           title: "One native action",
           prompt: "Isolated manual work",
@@ -4067,6 +4099,7 @@ it.live(
         expect(denied._tag).toBe("Failure");
         yield* node.scheduled.delete({ id: task.id });
         yield* node.scheduled.upsert({
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           id: task.id,
           title: "Replacement",
           prompt: "Other action",
@@ -5016,7 +5049,12 @@ const activate = (node: Node, threadId: ThreadId) =>
     });
     return run.id;
   });
-const seedParent = (node: Node, threadId: ThreadId, linkOrigin?: OrchestrationV2LinkOrigin) =>
+const seedParent = (
+  node: Node,
+  threadId: ThreadId,
+  linkOrigin?: OrchestrationV2LinkOrigin,
+  prismRole?: "promachos",
+) =>
   Effect.gen(function* () {
     yield* node.threads.dispatch({
       type: "thread.create",
@@ -5032,6 +5070,7 @@ const seedParent = (node: Node, threadId: ThreadId, linkOrigin?: OrchestrationV2
       createdBy: "user",
       creationSource: "web",
       ...(linkOrigin === undefined ? {} : { linkOrigin }),
+      ...(prismRole === undefined ? {} : { prismRole }),
     });
     yield* node.threads.dispatch({
       type: "message.dispatch",
@@ -5705,6 +5744,7 @@ it.live(
           { runtimeMode: "auto", interactionMode: "plan" },
         ] as const) {
           const fixture = yield* b.scheduled.upsert({
+            purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
             title: `Legacy ${modes.runtimeMode}/${modes.interactionMode}`,
             prompt: "Never executed",
             enabled: false,
@@ -6541,6 +6581,7 @@ it.live(
             });
           }
           const fixture = yield* b.scheduled.upsert({
+            purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
             title: `fixture-${key}`,
             prompt: "Not executed",
             enabled: false,
@@ -6555,6 +6596,7 @@ it.live(
             creationSource: "web",
           });
           const created = yield* nativeCall(b, child, "schedule_task", {
+            purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
             title: `created-${key}`,
             prompt: "Not executed",
             enabled: false,
@@ -6563,6 +6605,7 @@ it.live(
             clientRequestId: `r2-schedule-${key}`,
           });
           const updated = yield* nativeCall(b, child, "update_scheduled_task", {
+            purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
             scheduledTaskId: fixture.task.id,
             title: `updated-${key}`,
           });
@@ -7201,6 +7244,7 @@ it.live.each([
             (grant) => grant.environmentId === source.environmentId,
           )!;
           const created = yield* b.scheduled.upsert({
+            purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
             title: `Webhook ${source.environmentId}`,
             prompt: "Not executed",
             enabled: false,
@@ -8068,6 +8112,7 @@ it.live("legacy direct full access keeps unstamped schedule operations and the t
         config: { ...native.config, endpoint: `${b.url}/mcp`, authorizationHeader },
       };
       const fixture = yield* b.scheduled.upsert({
+        purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
         title: "Unstamped legacy fixture",
         prompt: "Not executed",
         enabled: false,
@@ -8086,6 +8131,7 @@ it.live("legacy direct full access keeps unstamped schedule operations and the t
         unrelated,
         "update_scheduled_task",
         {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           scheduledTaskId: fixture.task.id,
           title: "Direct legacy updated",
         },
@@ -8401,6 +8447,7 @@ it.live(
         yield* activate(b, child);
         expect((yield* b.authority.checkThread(child))?.ceiling.runtimeMode).toBe("auto");
         const fixture = yield* b.scheduled.upsert({
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           title: "Full access webhook",
           prompt: "Never executed",
           enabled: false,
@@ -8435,6 +8482,7 @@ it.live(
         expect((yield* b.authority.checkThread(child))?.ceiling.runtimeMode).toBe("auto");
         const elevated = yield* list();
         const write = yield* nativeCall(b, child, "update_scheduled_task", {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           scheduledTaskId: fixture.task.id,
           title: "Forbidden higher-mode edit",
         });
@@ -8487,6 +8535,7 @@ it.live(
         yield* activate(b, child);
         expect((yield* b.authority.checkThread(child))?.ceiling.runtimeMode).toBe("full-access");
         const fixture = yield* b.scheduled.upsert({
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           title: "Full access webhook",
           prompt: "Never executed",
           enabled: false,
@@ -8521,6 +8570,7 @@ it.live(
         expect((yield* b.authority.checkThread(child))?.ceiling.runtimeMode).toBe("auto");
         const elevated = yield* list();
         const write = yield* nativeCall(b, child, "update_scheduled_task", {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           scheduledTaskId: fixture.task.id,
           title: "Forbidden higher-mode edit",
         });
@@ -10693,6 +10743,7 @@ it.live(
           });
           expect(renamed.isError, json(renamed)).not.toBe(true);
           const scheduled = yield* nativeCall(node, thread, "schedule_task", {
+            purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
             title: "Independent task",
             prompt: "Independent prompt",
             bindToCurrentThread: true,
@@ -10768,6 +10819,7 @@ it.live(
         const parent = ThreadId.make("reviewer382-rivals-parent");
         yield* seedParent(node, parent);
         const created = yield* nativeCall(node, parent, "schedule_task", {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           prompt: "Original prompt",
           title: "Original title",
           schedule: { type: "interval", everyMs: 60000 },
@@ -10794,11 +10846,13 @@ it.live(
         const results = yield* Effect.all(
           [
             nativeCall(node, parent, "update_scheduled_task", {
+              purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
               scheduledTaskId: receipt.scheduledTaskId,
               title: "Title A",
               clientRequestId: "reviewer-rival-a",
             }),
             nativeCall(node, parent, "update_scheduled_task", {
+              purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
               scheduledTaskId: receipt.scheduledTaskId,
               prompt: "Prompt B",
               clientRequestId: "reviewer-rival-b",
@@ -10837,6 +10891,7 @@ it.live(
         const parent = ThreadId.make("runtime382-parent");
         yield* seedParent(a, parent);
         const input = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           environmentId: b.environmentId,
           projectId: b.project.id,
           title: "Original title",
@@ -10861,6 +10916,7 @@ it.live(
           }),
         );
         const update = yield* nativeCall(a, parent, "update_scheduled_task", {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           environmentId: b.environmentId,
           scheduledTaskId: receipt.scheduledTaskId,
           title: "Later independent title",
@@ -10907,6 +10963,7 @@ it.live(
         yield* seedParent(a, parent);
         yield* seedParent(b, target);
         const created = yield* nativeCall(b, target, "schedule_task", {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           title: "Manual target",
           prompt: "One queued message",
           bindToCurrentThread: true,
@@ -11056,6 +11113,7 @@ it.live(
         const parent = ThreadId.make("fence382-parent");
         yield* seedParent(node, parent);
         const created = yield* nativeCall(node, parent, "schedule_task", {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           title: "Original title",
           prompt: "Original prompt",
           enabled: false,
@@ -11079,6 +11137,7 @@ it.live(
           }),
         );
         const pending = yield* nativeCall(node, parent, "update_scheduled_task", {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           scheduledTaskId: receipt.scheduledTaskId,
           title: "Must not overwrite",
           clientRequestId: "fence382-update",
@@ -11499,6 +11558,7 @@ it.live(
         yield* seedParent(a, parent);
         yield* seedParent(a, other);
         const create = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           environmentId: b.environmentId,
           projectId: b.project.id,
           title: "Original",
@@ -11513,6 +11573,7 @@ it.live(
           first.structuredContent,
         );
         const edit = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           environmentId: b.environmentId,
           scheduledTaskId: receipt.scheduledTaskId,
           title: "Later",
@@ -11642,6 +11703,7 @@ it.live(
         const second = yield* delegate(b, c, first.childId, "history-chain382-b-c");
         yield* activate(c, second.childId);
         const create = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           title: "Original downstream acceptance",
           prompt: "Isolated chain fixture",
           enabled: false,
@@ -11826,6 +11888,7 @@ it.live(
         yield* seedParent(c, other);
         yield* seedParent(b, local);
         const fields = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           title: "Original",
           prompt: "Do nothing",
           enabled: false,
@@ -11932,6 +11995,7 @@ it.live(
         yield* seedParent(c, other);
         yield* seedParent(b, local);
         const fields = {
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           title: "Original",
           prompt: "Do nothing",
           enabled: false,
@@ -13689,7 +13753,7 @@ it.live(
         });
         expect(launched.isError, json(launched.content)).not.toBe(true);
         const local = yield* decodePending369LocalTask(launched.structuredContent);
-        if (local.childThreadId === null)
+        if (!("childThreadId" in local) || local.childThreadId === null)
           return yield* Effect.die("Expected a real native local child");
         expect((yield* a.threads.getThreadShell(local.childThreadId))?.lineage).toMatchObject({
           parentThreadId: root,
@@ -14208,6 +14272,116 @@ it.live.each(["android", "ios"] as const)(
           clientRequestId: "later-click",
         });
         expect(click.isError, json(click)).not.toBe(true);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+  30_000,
+);
+
+it.live(
+  "pending532: actual source role and destination policy compose with native ancestry and concurrent answers",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const a = yield* makeNode(descriptorOf("pending532-a", "A", { peerAuthority: 1 }), "disk", {
+          attachmentRequests: true,
+          productionKernel: true,
+        });
+        const b = yield* makeNode(descriptorOf("pending532-b", "B", { peerAuthority: 1 }), "disk", {
+          attachmentRequests: true,
+          productionKernel: true,
+        });
+        yield* linkTo(a.links, b, "full-access");
+        const promachos = ThreadId.make("pending532-promachos");
+        const worker = ThreadId.make("pending532-worker");
+        const target = ThreadId.make("pending532-target");
+        yield* seedParent(a, promachos, undefined, "promachos");
+        yield* seedParent(a, worker);
+        yield* seedParent(b, target);
+        const requestId = yield* seedPending369(b, target);
+        const args = {
+          environmentId: b.environmentId,
+          threadId: target,
+          requestId,
+          requestTarget: { environmentId: b.environmentId, threadId: target },
+        };
+        // A full runtime mode does not widen the default created-work resource grant.
+        expect((yield* nativeCall(a, promachos, "t3_pending_request_read", args)).isError).toBe(
+          true,
+        );
+        const grant = (yield* b.authority.grants)[0];
+        if (grant === undefined) return yield* Effect.die("Missing fixture grant");
+        yield* b.authority.setGrant({ ...grant, resourceScope: "environment-resources" });
+        expect((yield* nativeCall(a, worker, "t3_pending_request_read", args)).isError).toBe(true);
+        const read = yield* nativeCall(a, promachos, "t3_pending_request_read", args);
+        expect(read.isError, json(read)).not.toBe(true);
+        const content = yield* decodePending369Content(read.structuredContent);
+        const answer = {
+          ...args,
+          expectedRevision: content.revision,
+          answers: { color: "Gold" },
+          clientRequestId: "pending532-answer",
+        };
+        // Current source mode is revalidated instead of borrowing the destination's full access.
+        yield* a.threads.dispatch({
+          type: "thread.interaction-mode.set",
+          commandId: CommandId.make("pending532-plan"),
+          threadId: promachos,
+          interactionMode: "plan",
+        });
+        expect(
+          (yield* nativeCall(a, promachos, "t3_pending_request_respond", answer)).isError,
+        ).toBe(true);
+        yield* a.threads.dispatch({
+          type: "thread.interaction-mode.set",
+          commandId: CommandId.make("pending532-default"),
+          threadId: promachos,
+          interactionMode: "default",
+        });
+        const concurrent = yield* Effect.all(
+          [
+            nativeCall(a, promachos, "t3_pending_request_respond", answer),
+            nativeCall(a, promachos, "t3_pending_request_respond", {
+              ...answer,
+              clientRequestId: "pending532-rival",
+              answers: { color: "Silver" },
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(concurrent.filter((result) => result.isError !== true)).toHaveLength(1);
+        const records = yield* b.threads.getThreadRecords(target, [
+          "runtimeRequests",
+          "turnItems",
+          "messages",
+        ]);
+        const answeredBy = { kind: "promachos", threadId: promachos, via: "T3 Code · A" };
+        expect(records.runtimeRequests.find((request) => request.id === requestId)).toMatchObject({
+          status: "resolved",
+          answeredBy,
+        });
+        expect(
+          records.turnItems.find(
+            (item) => item.type === "user_input_request" && item.requestId === requestId,
+          ),
+        ).toMatchObject({ answeredBy });
+        expect(
+          records.messages.filter((message) => message.text.startsWith("Which color?\n")),
+        ).toHaveLength(1);
+        // A remote delegated child stays with its actual parent, even for a real Promachos.
+        const delegated = yield* delegate(a, b, worker, "pending532-owned");
+        yield* activate(b, delegated.childId);
+        const childRequest = yield* seedPending369(b, delegated.childId);
+        const childArgs = {
+          environmentId: b.environmentId,
+          threadId: delegated.childId,
+          requestId: childRequest,
+        };
+        expect(
+          (yield* nativeCall(a, promachos, "t3_pending_request_read", childArgs)).isError,
+        ).toBe(true);
+        expect(
+          (yield* nativeCall(a, worker, "t3_pending_request_read", childArgs)).isError,
+        ).not.toBe(true);
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
   30_000,

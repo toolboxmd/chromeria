@@ -1878,7 +1878,8 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/pull/410",
     "https://github.com/toolboxmd/chromeria/pull/416",
     "https://github.com/toolboxmd/chromeria/pull/420",
-    "https://github.com/toolboxmd/chromeria/pull/421"
+    "https://github.com/toolboxmd/chromeria/pull/421",
+    "https://github.com/toolboxmd/chromeria/pull/539"
   ],
   "newFiles": [
     "packages/contracts/src/peerTask.ts",
@@ -1895,6 +1896,7 @@ sources and reasons.
     "apps/server/src/mcp/linkOrigin.ts",
     "apps/server/src/orchestration-v2/RemoteDelegatedTask.test.ts",
     "apps/server/src/peer/*",
+    "apps/web/src/components/settings/PeerGrantSettings.tsx",
     "apps/server/src/persistence/forkPeerLinksSchema.test.ts",
     "apps/server/src/persistence/forkPeerLinksSchema.ts",
     "packages/contracts/src/peerLink.ts",
@@ -1917,7 +1919,7 @@ sources and reasons.
     "packages/contracts/src/peerAuthority.ts",
     "apps/mobile/src/features/threads/RemotePendingRequest.test.tsx",
     "apps/mobile/src/features/threads/RemotePendingRequest.tsx",
-    "apps/web/src/components/chat/RemotePendingRequest.test.tsx",
+    "apps/web/src/components/chat/RemotePendingRequest.browser.test.tsx",
     "apps/web/src/components/chat/RemotePendingRequest.tsx",
     "apps/server/src/device/AgentDeviceCommand.ts",
     "apps/server/src/device/AgentDeviceCommand.test.ts",
@@ -2003,10 +2005,8 @@ sources and reasons.
     "apps/server/src/orchestration-v2/AttachmentClaims.ts",
     "apps/server/src/project/ManagedProjectFolders.test.ts",
     "apps/server/src/project/ManagedProjectFolders.ts",
-    "apps/server/src/device/DeviceService.ts",
     "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",
     "packages/client-runtime/src/state/models.ts",
-    "packages/client-runtime/src/state/threadDetail.ts",
     "packages/client-runtime/src/state/threadShell.test.ts",
     "packages/client-runtime/src/state/threadShell.ts",
     "packages/shared/src/agentAwareness.test.ts",
@@ -2015,10 +2015,12 @@ sources and reasons.
     "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
     "packages/client-runtime/src/t3ToolSummary.test.ts",
     "apps/server/src/device/DeviceToolchain.ts",
-    "apps/server/src/mcp/McpDeviceToolkit.test.ts",
-    "packages/contracts/src/device.ts"
+    "apps/server/src/mcp/McpDeviceToolkit.test.ts"
   ],
   "sharedFiles": [
+    "packages/client-runtime/src/state/threadDetail.ts",
+    "apps/server/src/device/DeviceService.ts",
+    "packages/contracts/src/device.ts",
     "apps/server/src/orchestration-v2/EffectWorker.ts",
     "packages/client-runtime/package.json",
     "apps/server/src/childThreads/delegatedFollowups.ts",
@@ -2677,21 +2679,21 @@ sources and reasons.
   "upstreamFiles": [
     "apps/mobile/src/features/threads/McpAppWebView.tsx",
     "apps/mobile/src/features/threads/NewTaskDraftScreen.tsx",
-    "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",
     "apps/mobile/src/state/pending-thread-creation.ts",
     "apps/mobile/src/state/thread-outbox-model.ts",
     "apps/mobile/src/state/thread-outbox.test.ts",
     "apps/mobile/src/state/use-thread-composer-state.ts",
     "apps/mobile/src/state/use-thread-outbox-drain.ts",
-    "apps/server/src/mcp/toolkits/pullRequests/handlers.test.ts",
-    "apps/server/src/mcp/toolkits/pullRequests/handlers.ts",
-    "packages/client-runtime/src/state/models.ts",
     "packages/contracts/src/threadPullRequest.ts",
     "packages/provider-core/src/server/ProviderContinuationRequests.ts",
     "packages/provider-muse/src/server/adapter.ts",
     "packages/provider-pi/src/server/adapter.ts"
   ],
   "sharedFiles": [
+    "apps/server/src/mcp/toolkits/pullRequests/handlers.test.ts",
+    "apps/server/src/mcp/toolkits/pullRequests/handlers.ts",
+    "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",
+    "packages/client-runtime/src/state/models.ts",
     "GLOSSARY.md",
     "apps/mobile/src/features/settings/SettingsScheduledTasksRouteScreen.tsx",
     "apps/mobile/src/features/settings/scheduledTaskDraft.ts",
