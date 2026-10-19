@@ -50,7 +50,7 @@ flowchart TD
     DR["Drafters in any project"]
     %% DR: #114 #429 PR #475
     SC["Spectrum council and free"]
-    %% SC: #118 PR #494 PR #509 PR #508 #401
+    %% SC: #118 PR #494 PR #509 PR #508 #401 PR #514
     JT["Spectrum judged tests"]
     %% JT: #119
     OB["OpenBot: Bots, Channels, Computer"]
