@@ -8825,6 +8825,76 @@ describe("CodexAdapterV2 cut-in cohort", () => {
       }).pipe(Effect.scoped, Effect.provide(layers)),
   );
 
+  it.effect.each(["completed", "failed"] as const)(
+    "lets ordinary Stop reach a live child after a natural %s root end (#332)",
+    (rootStatus) =>
+      Effect.gen(function* () {
+        const h = yield* makeBoundary();
+        yield* h.start();
+        yield* h.child;
+        yield* h.end(nativeThreadId, rootTurnId, rootStatus);
+        const call = yield* forkCall(h.stop);
+        const child = yield* takeBeforeExit(h, call, "turn/interrupt");
+        assert.equal(child.params.turnId, childTurnId);
+        yield* h.reply(child);
+        yield* h.end(childThreadId, childTurnId, "interrupted");
+        const terminate = yield* h.take("thread/backgroundTerminals/terminate");
+        assert.equal(terminate.params.processId, "77");
+        yield* h.reply(terminate, { terminated: true });
+        yield* Fiber.join(call);
+        yield* h.watch((event) => event.type === "turn.terminal");
+        assertReleased(h, rootStatus);
+        assert.isFalse(yield* h.pending);
+        assert.equal(h.turnUpdates(childTurnId).at(-1)?.status, "interrupted");
+        assert.deepEqual(
+          h.itemUpdates("child-command").map((item) => item.status),
+          ["running", "interrupted"],
+        );
+      }).pipe(Effect.scoped, Effect.provide(layers)),
+  );
+
+  it.effect("keeps a failed root's process tracking for Stop while its child runs (#332)", () =>
+    Effect.gen(function* () {
+      const h = yield* makeBoundary();
+      yield* h.start();
+      yield* h.item(nativeThreadId, rootTurnId, "root-command", "99");
+      yield* h.child;
+      yield* h.end(nativeThreadId, rootTurnId, "failed");
+      const call = yield* forkCall(h.stop);
+      const child = yield* takeBeforeExit(h, call, "turn/interrupt");
+      assert.equal(child.params.turnId, childTurnId);
+      yield* h.reply(child);
+      yield* h.end(childThreadId, childTurnId, "interrupted");
+      const terminated = new Set<unknown>();
+      for (let index = 0; index < 2; index++) {
+        const terminate = yield* takeBeforeExit(h, call, "thread/backgroundTerminals/terminate");
+        terminated.add(terminate.params.processId);
+        yield* h.reply(terminate, { terminated: true });
+      }
+      assert.deepEqual([...terminated].sort(), ["77", "99"]);
+      yield* Fiber.join(call);
+      yield* h.watch((event) => event.type === "turn.terminal");
+      assertReleased(h, "failed");
+      assert.isFalse(yield* h.pending);
+    }).pipe(Effect.scoped, Effect.provide(layers)),
+  );
+
+  it.effect("releases a failed root's process tracking with its deferred terminal (#332)", () =>
+    Effect.gen(function* () {
+      const h = yield* makeBoundary();
+      yield* h.start();
+      yield* h.item(nativeThreadId, rootTurnId, "root-command", "99");
+      yield* h.child;
+      yield* h.end(nativeThreadId, rootTurnId, "failed");
+      assert.lengthOf(h.terminals(), 0);
+      yield* h.item(childThreadId, childTurnId, "child-command", "77", true);
+      yield* h.end(childThreadId, childTurnId, "completed");
+      yield* h.watch((event) => event.type === "turn.terminal");
+      assertReleased(h, "failed");
+      assert.isFalse(yield* h.pending);
+    }).pipe(Effect.scoped, Effect.provide(layers)),
+  );
+
   it.effect("reports exact deferred and cut-in ownership without changing a native failure", () =>
     Effect.gen(function* () {
       const h = yield* makeBoundary();
