@@ -30,6 +30,13 @@ import * as Rounds from "./RoundService.ts";
 import * as Transcript from "./TranscriptService.ts";
 import { spectrumPlan } from "./spectrumPlan.ts";
 import { lifecycleEvents, lifecyclePlan } from "./lifecycle.ts";
+import {
+  acceptFreeReply,
+  failedSummaryText,
+  isWhiteCall,
+  retryWhiteCall,
+  stoppedText,
+} from "./freeMode.ts";
 import { readSpectrum } from "./store.ts";
 import type { SpectrumState } from "./state.ts";
 
@@ -235,6 +242,13 @@ const make = Effect.gen(function* () {
     }
     return state;
   });
+  const discussion = Effect.fn("SpectrumController.discussion")(function* (state: SpectrumState) {
+    const records = yield* projections.getThreadRecords(state.threadId, ["messages"]);
+    return records.messages
+      .filter((message) => state.transcript.includes(message.id) && message.role === "assistant")
+      .map((message) => message.text)
+      .join("\n\n");
+  });
   const pump = Effect.fn("SpectrumController.resume")(function* (id: ThreadId) {
     let state = yield* read(id);
     const shell = yield* projections.getThread(id);
@@ -250,7 +264,7 @@ const make = Effect.gen(function* () {
     );
     if (state.status === "active" && (retirement.retired || !retirement.complete)) {
       state = yield* cancelOwned(state, `spectrum:${id}:${state.generation}:retirement`);
-      yield* reports.settle(id, "Spectrum stopped.", "cancelled");
+      yield* reports.settle(id, stoppedText(state), "cancelled");
     }
     for (let step = 0; step < 128; step++) {
       if (state.status === "retired") state = yield* reconcileRetired(state);
@@ -307,18 +321,47 @@ const make = Effect.gen(function* () {
           recoveryPending: false,
         });
         if (reply.type === "failed") {
+          const white = state.mode === "free" && isWhiteCall(state.round);
+          const retry = white ? retryWhiteCall(state) : null;
+          if (retry !== null) {
+            // An empty reply list closes this call's barrier; the retry is the next round.
+            state = yield* save(
+              state,
+              {
+                ...state,
+                revision: state.revision + 1,
+                free: retry,
+                round: {
+                  ...linked,
+                  slots: linked.slots.map((current) =>
+                    current.commandId === slot.commandId ? { ...current, replyIds: [] } : current,
+                  ),
+                },
+              },
+              `${slot.commandId}:retry`,
+              [completion],
+            );
+            accepted = true;
+            break;
+          }
+          const text = white
+            ? failedSummaryText(reply.reason, yield* discussion(state))
+            : `Spectrum could not finish: ${reply.reason}.`;
           state = yield* cancelOwned(
             state,
             `spectrum:${id}:${state.generation}:failed:${slot.commandId}`,
             [completion],
           );
-          yield* reports.settle(id, `Spectrum could not finish: ${reply.reason}.`, "failed");
+          yield* reports.settle(id, text, "failed");
           return yield* drain(id);
         }
         if (reply.type !== "accepted") continue;
         const key = `${slot.commandId}:reply`;
         const revision = state.revision + 1;
         const label = state.participants.find((color) => color.threadId === slot.threadId)!.label;
+        const text = reply.messages.map((message) => message.text).join("\n\n");
+        const free = state.mode === "free" ? acceptFreeReply(state, state.round.phase, text) : null;
+        const said = free === null ? text : free.transcript;
         const command: SpectrumTranscriptAppend = {
           type: "spectrum.transcript.append",
           commandId: CommandId.make(key),
@@ -327,11 +370,17 @@ const make = Effect.gen(function* () {
           revision,
           messageId: MessageId.make(key),
           role: "assistant",
-          text: `[${label}]\n${reply.messages.map((message) => message.text).join("\n\n")}`,
+          text: `[${label}]\n${said}`,
         };
         state = yield* save(
           state,
-          { ...state, revision, round: reply.round, outbox: [command] },
+          {
+            ...state,
+            revision,
+            round: reply.round,
+            outbox: said === null ? [] : [command],
+            ...(free === null ? {} : { free: free.free }),
+          },
           `${key}:enqueue`,
           [completion],
         );
@@ -345,14 +394,7 @@ const make = Effect.gen(function* () {
           yield* rounds.prepare(id);
           continue;
         }
-        const records = yield* projections.getThreadRecords(id, ["messages"]);
-        const text = records.messages
-          .filter(
-            (message) => state.transcript.includes(message.id) && message.role === "assistant",
-          )
-          .map((message) => message.text)
-          .join("\n\n");
-        yield* reports.settle(id, `Spectrum completed.\n\n${text}`);
+        yield* reports.settle(id, `Spectrum completed.\n\n${yield* discussion(state)}`);
         return yield* drain(id);
       }
       return state;
