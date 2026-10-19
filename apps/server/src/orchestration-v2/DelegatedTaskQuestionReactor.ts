@@ -46,9 +46,23 @@ const make = Effect.gen(function* () {
             task.runId !== event.payload.id ||
             task.completionWake !== "settled_only" ||
             task.completionDelivery?.state === "disposed" ||
-            task.childThreadId === null ||
             ["completed", "failed", "cancelled", "interrupted"].includes(task.status)
           ) {
+            continue;
+          }
+          if (task.childThreadId === null) {
+            const request = task.remoteChild?.snapshot?.requests.find(
+              (request) =>
+                request.responseType === "live" &&
+                request.kind !== "auth_refresh" &&
+                request.kind !== "dynamic_tool_call",
+            );
+            if (request !== undefined)
+              yield* engine.reconcileDelegatedTaskQuestion(
+                task.threadId,
+                task.id,
+                request.requestId,
+              );
             continue;
           }
           const child = yield* projections.getThreadRecords(task.childThreadId, [

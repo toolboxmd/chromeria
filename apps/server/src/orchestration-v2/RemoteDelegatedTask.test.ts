@@ -17,6 +17,7 @@ import {
   ProviderThreadId,
   RunId,
   RuntimeRequestId,
+  type OrchestrationV2DomainEvent,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -27,6 +28,7 @@ import * as Ref from "effect/Ref";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EventSink from "./EventSink.ts";
+import * as QuestionReactor from "./DelegatedTaskQuestionReactor.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -206,6 +208,93 @@ const remoteChild = {
 };
 
 it.layer(layerTest)("a delegated task in a linked environment", (it) => {
+  it.effect.each(["user_input", "command"] as const)(
+    "wait-mode remote %s wakes when the parent run ends without a new peer observation",
+    (kind) =>
+      Effect.gen(function* () {
+        const engine = yield* Orchestrator.OrchestratorV2;
+        const reactor = yield* QuestionReactor.DelegatedTaskQuestionReactor;
+        const sink = yield* EventSink.EventSinkV2;
+        for (const status of ["completed", "failed", "waiting"] as const) {
+          const parent = yield* seedLiveParent(`wait-notice:${kind}:${status}`);
+          yield* engine.dispatch({
+            type: "delegated_task.remote.request",
+            commandId: CommandId.make(`wait:create:${kind}:${status}`),
+            parentThreadId: parent.threadId,
+            parentRunId: parent.runId,
+            parentNodeId: parent.rootNodeId,
+            task: "Wait for remote work",
+            driver,
+            modelSelection,
+            remoteChild,
+            completionWake: "settled_only",
+          });
+          const taskId = (yield* engine.getThreadProjection(parent.threadId)).subagents[0]!.id;
+          const requestId = RuntimeRequestId.make(`wait-request:${kind}:${status}`);
+          yield* engine.dispatch({
+            type: "delegated_task.remote.observe",
+            commandId: CommandId.make(`wait:observe:${kind}:${status}`),
+            parentThreadId: parent.threadId,
+            taskId,
+            availability: "current",
+            observation: {
+              cursor: 0,
+              snapshot: {
+                sequence: 10,
+                observedAt: "2026-10-19T10:00:00Z",
+                title: "Waiting remote worker",
+                workState: "working",
+                pendingChildren: 0,
+                queuedRuns: 0,
+                recoveryWaiting: false,
+                incomplete: false,
+                executionSettled: false,
+                pendingQuestions: kind === "user_input" ? 1 : 0,
+                requestCount: 1,
+                requests: [
+                  {
+                    environmentId: remoteChild.environmentId,
+                    threadId: remoteChild.threadId,
+                    requestId,
+                    revision: 10,
+                    kind,
+                    responseType: "live",
+                  },
+                ],
+              },
+            },
+          });
+          const before = yield* engine.getThreadProjection(parent.threadId);
+          assert.lengthOf(
+            before.messages.filter((message) => message.text.includes(requestId)),
+            0,
+          );
+          const run = before.runs.find((run) => run.id === parent.runId)!;
+          const now = yield* DateTime.now;
+          const event = {
+            type: "run.updated",
+            id: EventId.make(`wait:parent-ended:${kind}:${status}`),
+            threadId: parent.threadId,
+            occurredAt: now,
+            payload: { ...run, status, completedAt: status === "waiting" ? null : now },
+          } satisfies OrchestrationV2DomainEvent;
+          yield* sink.write({ events: [event] });
+          yield* reactor.handle(event);
+          const notices = (yield* engine.getThreadProjection(parent.threadId)).messages.filter(
+            (message) => message.text.includes(requestId),
+          );
+          assert.lengthOf(notices, 1);
+          yield* reactor.handle(event);
+          assert.lengthOf(
+            (yield* engine.getThreadProjection(parent.threadId)).messages.filter((message) =>
+              message.text.includes(requestId),
+            ),
+            1,
+          );
+        }
+      }).pipe(Effect.provide(QuestionReactor.layer)),
+  );
+
   it.effect(
     "committed remote pending requests wake once per identity and clear when answered",
     () =>
@@ -341,7 +430,20 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
           ),
           1,
         );
-        yield* observe(15, []);
+        const relatedRequest = { ...request, requestId: RuntimeRequestId.make("prefix:other") };
+        yield* observe(16, [relatedRequest]);
+        const prefixRequest = { ...request, requestId: RuntimeRequestId.make("prefix") };
+        yield* observe(17, [prefixRequest]);
+        const prefixId = MessageId.make(
+          `message:remote-delegated-question:${taskId}:${prefixRequest.environmentId}:${prefixRequest.threadId}:${prefixRequest.requestId}`,
+        );
+        assert.lengthOf(
+          (yield* engine.getThreadProjection(parent.threadId)).messages.filter(
+            (message) => message.id === prefixId,
+          ),
+          1,
+        );
+        yield* observe(18, []);
         assert.lengthOf(
           (yield* engine.getThreadProjection(parent.threadId)).runs.filter(
             (run) => run.status === "queued" && run.userMessageId === legacyMessageId,

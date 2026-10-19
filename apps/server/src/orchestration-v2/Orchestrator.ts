@@ -363,7 +363,7 @@ export interface OrchestratorV2Shape {
   readonly recoverDelegatedTasks: Effect.Effect<void>;
   /** Settles one delegated child; sourceRunId also releases a declined restart continuation. */
   readonly recoverDelegatedTask: (threadId: ThreadId, sourceRunId?: RunId) => Effect.Effect<void>;
-  /** Reconciles native question lifetime and delivery under the parent lock. */
+  /** Reconciles local or qualified remote request delivery under the parent lock. */
   readonly reconcileDelegatedTaskQuestion: (
     parentThreadId: ThreadId,
     taskId: NodeId,
@@ -14028,7 +14028,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           const task = parent.subagents.find(
             (task) => task.id === taskId && task.origin === "app_owned",
           );
-          if (task !== undefined)
+          if (task?.remoteChild !== undefined)
+            yield* reconcileRemoteRequestsWithParentLockHeld(parentThreadId, taskId);
+          else if (task !== undefined)
             yield* reconcileDelegatedTaskQuestionWithParentLockHeld(task, requestId);
         }),
       )

@@ -150,7 +150,11 @@ export const reconcileRemoteDelegatedTaskQuestions = Effect.fnUntraced(function*
     const messageId = MessageId.make(`message:remote-delegated-question:${key}`);
     pending.add(messageId);
     // Older builds used revision-qualified identities. Preserve their accepted delivery.
-    const prior = parent.messages.filter((message) => message.id.startsWith(`${messageId}:`));
+    const prior = parent.messages.filter(
+      (message) =>
+        message.id.startsWith(`${messageId}:`) &&
+        /^\d+$/.test(message.id.slice(messageId.length + 1)),
+    );
     for (const message of prior) pending.add(message.id);
     if (prior.length > 0) continue;
     const receipts = yield* CommandReceiptStoreV2;
