@@ -88,7 +88,9 @@ export class TinyFish extends Context.Service<
       // Latest deadline among active readers, rechecked before reserving quota.
       readonly deadline?: () => number;
     }) => Effect.Effect<
+      | { readonly _tag: "DeadlineDeclined" }
       | {
+          readonly _tag: "Fetched";
           readonly page: ReturnType<typeof extract>;
           readonly finalUrl: string;
           readonly callId: string;
@@ -231,13 +233,13 @@ const make = Effect.gen(function* () {
         input.deadline !== undefined &&
         (yield* Clock.currentTimeMillis) + FETCH_TIMEOUT_MS >= input.deadline()
       )
-        return undefined;
+        return { _tag: "DeadlineDeclined" as const };
       const url = targetUrl(input.url.href, input.sameOrigin);
       if (!url)
         return yield* new TinyFishProviderError({ reason: "blocked_target", httpStatus: null });
       yield* validate(url);
       const queuedAt = yield* Clock.currentTimeMillis;
-      if (!(yield* reserve(input.deadline))) return undefined;
+      if (!(yield* reserve(input.deadline))) return { _tag: "DeadlineDeclined" as const };
       const delayMs = (yield* Clock.currentTimeMillis) - queuedAt;
       // Transport errors contain the authenticated request. Never retain them in domain errors.
       const response = yield* HttpClient.withScope(client)
@@ -334,7 +336,14 @@ const make = Effect.gen(function* () {
           reason: "contract",
           httpStatus: response.status,
         });
-      return { page: document, finalUrl: final.href, callId, chargedMicro: 0 as const, delayMs };
+      return {
+        _tag: "Fetched" as const,
+        page: document,
+        finalUrl: final.href,
+        callId,
+        chargedMicro: 0 as const,
+        delayMs,
+      };
     },
     Effect.scoped,
     Effect.provideServiceEffect(

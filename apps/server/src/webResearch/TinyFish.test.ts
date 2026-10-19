@@ -528,7 +528,7 @@ it.effect("rechecks hosted deadline after DNS before reserving shared quota", ()
       yield* Effect.promise(() => started.promise);
       yield* TestClock.adjust(10_000);
       release.resolve([{ address: "93.184.216.34", family: 4 }]);
-      expect(yield* Fiber.join(pending)).toBeUndefined();
+      expect(yield* Fiber.join(pending)).toEqual({ _tag: "DeadlineDeclined" });
       expect(f.requests).toHaveLength(0);
       expect(yield* f.fs.exists(f.quotaFile)).toBe(false);
     }).pipe(Effect.provide(f.layer));

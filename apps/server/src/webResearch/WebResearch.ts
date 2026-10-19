@@ -577,7 +577,6 @@ const make = Effect.gen(function* () {
               : "provider_unavailable",
           message: error.message,
         };
-        httpStatus = error._tag === "TinyFishProviderError" ? error.httpStatus : null;
         retryAfterMs = error._tag === "TinyFishBudgetError" ? error.retryAfterMs : null;
         content = { status: "provider_error", title: "", text: "" };
         return Effect.succeed(undefined);
@@ -594,7 +593,10 @@ const make = Effect.gen(function* () {
             TinyFishProviderError: childFailure,
           }),
         );
-      if (hosted !== undefined) {
+      if (hosted?._tag === "DeadlineDeclined") {
+        // A reader's deadline refusal must never become shared URL freshness.
+        cacheable = false;
+      } else if (hosted !== undefined) {
         sourceRung = "tinyfish";
         finalUrl = hosted.finalUrl;
         httpStatus = null;

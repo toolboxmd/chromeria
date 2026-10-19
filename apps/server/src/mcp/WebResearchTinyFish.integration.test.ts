@@ -641,6 +641,13 @@ it.effect.each(["circuit", "http", "contract", "charge"] as const)(
                   : shell,
             ),
           ),
+        render: (input) =>
+          Effect.succeed({
+            body: wall,
+            finalUrl: input.url.href,
+            httpStatus: 403,
+            headers: {},
+          }),
         hosted: (r) =>
           Effect.succeed(
             HttpClientResponse.fromWeb(
@@ -687,6 +694,7 @@ it.effect.each(["circuit", "http", "contract", "charge"] as const)(
         expect(result.subpages[1]).toMatchObject({
           url: `${ROOT}camere`,
           status: "provider_error",
+          httpStatus: 403,
           text: "",
           nextOffset: null,
           providerError: {
@@ -896,4 +904,107 @@ it.effect(
         expect(yield* fs.exists(`${config.stateDir}/web-cache/tinyfish-quota.json`)).toBe(false);
       }).pipe(Effect.provide(f.layer));
     }),
+);
+
+it.effect.each(["root", "restricted child"] as const)(
+  "a deadline-declined %s does not block an immediate single-page hosted reread",
+  (kind) =>
+    Effect.gen(function* () {
+      const target = kind === "root" ? ROOT : `${ROOT}camere`;
+      const rendering = yield* Deferred.make<void>();
+      let renders = 0;
+      const f = yield* fixture({
+        http: (url) =>
+          Effect.succeed(
+            response(
+              kind === "restricted child" && url.pathname === "/"
+                ? rootWithTwoChildren.replace("<a href='/rooms'>Rooms</a>", "")
+                : shell,
+            ),
+          ),
+        render: (input) => {
+          renders++;
+          return renders === 1
+            ? Deferred.succeed(rendering, undefined).pipe(Effect.andThen(Effect.never))
+            : Effect.succeed({
+                body: wall,
+                finalUrl: input.url.href,
+                httpStatus: 200,
+                headers: {},
+              });
+        },
+        hosted: (request) =>
+          Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              new Response(
+                JSON.stringify({
+                  results: [{ url: target, final_url: target, format: "html", text: article }],
+                  errors: [],
+                }),
+                {
+                  headers: {
+                    "x-treg-cost-micro": "0",
+                    "x-treg-call-id": "immediate-reread",
+                  },
+                },
+              ),
+            ),
+          ),
+      });
+      yield* Effect.gen(function* () {
+        yield* setup;
+        const first = yield* Effect.forkScoped(read({ url: ROOT }));
+        expect(yield* Queue.take(f.requests)).toBe(`${ROOT}robots.txt`);
+        yield* TestClock.adjust(3000);
+        expect(yield* Queue.take(f.requests)).toBe(ROOT);
+        if (kind === "restricted child") {
+          yield* TestClock.adjust(3000);
+          expect(yield* Queue.take(f.requests)).toBe(target);
+        }
+        yield* Deferred.await(rendering);
+        yield* TestClock.adjust(20_000);
+        const result = yield* Fiber.join(first);
+        const page = kind === "root" ? result : result.subpages[0];
+        expect(page).toMatchObject({ status: "timeout", rung: "render", text: "" });
+        expect(yield* Queue.size(f.providerRequests)).toBe(0);
+        const before = f.order.filter((step) => step === "http").length;
+        // No freshness override or TTL advance: this caller has its own unrestricted budget.
+        const reread = yield* read({ url: target, followSubpages: false });
+        expect(reread).toMatchObject({
+          status: "ok",
+          rung: "tinyfish",
+          sourceRung: "tinyfish",
+          providerCall: { callId: "immediate-reread", chargedMicro: 0 },
+        });
+        expect(reread.text).toContain("Eight rooms face the garden.");
+        expect(f.order.filter((step) => step === "http")).toHaveLength(before + 1);
+        expect(renders).toBe(2);
+        expect(yield* Queue.size(f.providerRequests)).toBe(1);
+      }).pipe(Effect.provide(f.layer));
+    }),
+);
+
+it.effect("missing credentials retain the local timeout cache on an immediate reread", () =>
+  Effect.gen(function* () {
+    const rendering = yield* Deferred.make<void>();
+    const f = yield* fixture({
+      render: () => Deferred.succeed(rendering, undefined).pipe(Effect.andThen(Effect.never)),
+    });
+    yield* Effect.gen(function* () {
+      yield* setup;
+      yield* SecretStore.ServerSecretStore.use((s) => s.remove(TinyFish.TREG_SECRET_NAME));
+      const first = yield* Effect.forkScoped(read({ url: ROOT }));
+      expect(yield* Queue.take(f.requests)).toBe(`${ROOT}robots.txt`);
+      yield* TestClock.adjust(3000);
+      expect(yield* Queue.take(f.requests)).toBe(ROOT);
+      yield* Deferred.await(rendering);
+      yield* TestClock.adjust(20_000);
+      expect(yield* Fiber.join(first)).toMatchObject({ status: "timeout", rung: "render" });
+      const reread = yield* read({ url: ROOT, followSubpages: false });
+      expect(reread).toMatchObject({ status: "timeout", rung: "cache", sourceRung: "render" });
+      expect(f.order.filter((step) => step === "http")).toHaveLength(1);
+      expect(yield* Queue.size(f.providerRequests)).toBe(0);
+    }).pipe(Effect.provide(f.layer));
+  }),
 );
