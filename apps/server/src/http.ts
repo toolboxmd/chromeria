@@ -3,6 +3,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   EnvironmentHttpApi,
+  type NativeBrowserDownloadAssetResource,
 } from "@t3tools/contracts";
 import { isDevProxiedPath } from "@t3tools/shared/devProxy";
 import { injectMcpAppCookieBootstrap, injectMcpAppThemeBootstrap } from "@t3tools/shared/mcpApp";
@@ -29,7 +30,14 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import { OtlpTracer, OtlpSerialization } from "effect/observability";
 
 import * as ServerConfig from "./config.ts";
-import { ASSET_ROUTE_PREFIX, readMcpAppHtml, resolveAsset } from "./assets/AssetAccess.ts";
+import {
+  ASSET_ROUTE_PREFIX,
+  readMcpAppHtml,
+  resolveAsset,
+  qualifiedAttachmentReader,
+  qualifiedNativeDownloadReader,
+  nativeDownloadStream,
+} from "./assets/AssetAccess.ts";
 import { githubMediaResponse } from "./assets/GitHubMediaFetch.ts";
 import { statMediaFile, streamMediaFile, type OpenMediaFile } from "./assets/MediaFile.ts";
 import {
@@ -41,6 +49,7 @@ import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { traceRelayRequest } from "./cloud/traceRelayRequest.ts";
 import {
+  authenticateMediaRequest,
   annotateEnvironmentRequest,
   failEnvironmentScopeRequired,
   failEnvironmentAuthInvalid,
@@ -401,55 +410,222 @@ const layerUntracedRequests = Layer.succeed(HttpMiddleware.TracerDisabledWhen)((
 
 export const withUntracedRequests = Layer.provide(layerUntracedRequests);
 
-export const layerAssetRoute = HttpRouter.add(
-  "GET",
-  `${ASSET_ROUTE_PREFIX}/*`,
+/** Shared native download response for source assets and resource-bound viewer downloads. */
+export const nativeDownloadResponse = (
+  reference: NativeBrowserDownloadAssetResource,
+  admitted: Parameters<typeof nativeDownloadStream>[0],
+  method: string,
+  rangeHeader?: string,
+  ifRange?: string,
+) =>
   Effect.gen(function* () {
-    const request = yield* HttpServerRequest.HttpServerRequest;
-    const url = HttpServerRequest.toURL(request);
-    if (Option.isNone(url)) {
-      return HttpServerResponse.text("Bad Request", { status: 400 });
-    }
-
-    const suffix = url.value.pathname.slice(`${ASSET_ROUTE_PREFIX}/`.length);
-    const separatorIndex = suffix.indexOf("/");
-    if (separatorIndex <= 0) {
-      return HttpServerResponse.text("Not Found", { status: 404 });
-    }
-
-    const asset = yield* resolveAsset(
-      suffix.slice(0, separatorIndex),
-      suffix.slice(separatorIndex + 1),
-    );
-    if (!asset) {
-      return HttpServerResponse.text("Not Found", { status: 404 });
-    }
-    if (asset.kind === "bytes") {
-      return HttpServerResponse.uint8Array(asset.bytes, {
-        contentType: asset.mimeType,
-        headers: { "cache-control": "private, max-age=3600", "x-content-type-options": "nosniff" },
+    const headers = assetResponseHeaders(reference.name, {
+      fileName: reference.name,
+      mimeType: reference.mimeType,
+      download: true,
+    });
+    const etag = `"sha256-${reference.digest}"`;
+    headers["Cache-Control"] = "private, no-store";
+    headers.ETag = etag;
+    headers["Accept-Ranges"] = "bytes";
+    headers["Content-Length"] = String(reference.sizeBytes);
+    yield* admitted.authorize;
+    if (method === "HEAD") return HttpServerResponse.empty({ status: 200, headers });
+    const range =
+      rangeHeader && (ifRange === undefined || ifRange === etag)
+        ? assetByteRange(rangeHeader, BigInt(reference.sizeBytes))
+        : null;
+    if (range?._tag === "Unsatisfiable") {
+      delete headers["Content-Length"];
+      return HttpServerResponse.empty({
+        status: 416,
+        headers: { ...headers, "Content-Range": `bytes */${reference.sizeBytes}` },
       });
     }
-    if (asset.kind === "github-media") {
-      return yield* githubMediaResponse(asset, request.headers).pipe(
-        Effect.tapError((cause) =>
-          Effect.logWarning("Failed to fetch GitHub media.", { url: asset.url, cause }),
+    if (range?._tag === "Range") {
+      headers["Content-Range"] = range.contentRange;
+      headers["Content-Length"] = String(range.bytesToRead);
+      return HttpServerResponse.stream(
+        nativeDownloadStream(
+          admitted,
+          reference.sizeBytes,
+          Number(range.offset),
+          Number(range.bytesToRead),
         ),
-        Effect.orElseSucceed(() =>
-          HttpServerResponse.empty({
-            status: 502,
-            headers: { "cache-control": "private, no-store", "x-content-type-options": "nosniff" },
-          }),
-        ),
+        { status: 206, headers },
       );
     }
-    return yield* assetFileResponse(
-      asset,
-      request.method === "GET" ? request.headers.range : undefined,
-      request.headers["if-range"],
-      request.method === "HEAD" ? "HEAD" : "GET",
-    ).pipe(
-      Effect.orElseSucceed(() => HttpServerResponse.text("Internal Server Error", { status: 500 })),
+    return HttpServerResponse.stream(nativeDownloadStream(admitted, reference.sizeBytes), {
+      status: 200,
+      headers,
+    });
+  });
+
+export const layerAssetRoute = Layer.unwrap(
+  Effect.gen(function* () {
+    const readQualifiedAttachment = yield* qualifiedAttachmentReader;
+    const readNativeDownload = yield* qualifiedNativeDownloadReader;
+    return HttpRouter.add(
+      "GET",
+      `${ASSET_ROUTE_PREFIX}/*`,
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const url = HttpServerRequest.toURL(request);
+        if (Option.isNone(url)) {
+          return HttpServerResponse.text("Bad Request", { status: 400 });
+        }
+
+        const suffix = url.value.pathname.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+        const separatorIndex = suffix.indexOf("/");
+        if (separatorIndex <= 0) {
+          return HttpServerResponse.text("Not Found", { status: 404 });
+        }
+
+        const asset = yield* resolveAsset(
+          suffix.slice(0, separatorIndex),
+          suffix.slice(separatorIndex + 1),
+        );
+        if (!asset) {
+          return HttpServerResponse.text("Not Found", { status: 404 });
+        }
+        if (asset.kind === "native-browser-download") {
+          if (
+            [...url.value.searchParams.keys()].some((key) => key !== "wsTicket") ||
+            url.value.searchParams.getAll("wsTicket").length > 1
+          )
+            return HttpServerResponse.empty({ status: 403 });
+          return yield* Effect.gen(function* () {
+            const session = yield* authenticateMediaRequest(AuthOrchestrationReadScope);
+            if (session.sessionId !== asset.sessionId)
+              return HttpServerResponse.empty({ status: 403 });
+            const admitted = yield* readNativeDownload(session, asset.resource, asset.generation);
+            return yield* nativeDownloadResponse(
+              asset.resource,
+              admitted,
+              request.method,
+              request.headers.range,
+              request.headers["if-range"],
+            );
+          }).pipe(
+            Effect.catch(() =>
+              Effect.succeed(
+                HttpServerResponse.empty({ status: 403, headers: { "cache-control": "no-store" } }),
+              ),
+            ),
+          );
+        }
+        if (asset.kind === "peer-attachment") {
+          if (
+            [...url.value.searchParams.keys()].some((key) => key !== "wsTicket") ||
+            url.value.searchParams.getAll("wsTicket").length > 1
+          )
+            return HttpServerResponse.empty({ status: 403 });
+          return yield* Effect.gen(function* () {
+            const session = yield* authenticateMediaRequest(AuthOrchestrationReadScope);
+            if (session.sessionId !== asset.sessionId)
+              return HttpServerResponse.empty({ status: 403 });
+            const { bytes, authorize } = yield* readQualifiedAttachment(
+              session,
+              asset.resource,
+              asset.generation,
+            );
+            const reference = asset.resource.reference;
+            const inline = reference.mimeType.split(";", 1)[0]!.trim();
+            const headers = assetResponseHeaders(reference.name, {
+              fileName: reference.name,
+              mimeType: reference.mimeType,
+              download:
+                asset.resource.disposition === "attachment" ||
+                !(isSafeInlineMediaMimeType(inline) || isSafeInlineDocumentMimeType(inline)),
+            });
+            const etag = `"sha256-${reference.digest}"`;
+            headers["Cache-Control"] = "private, no-store";
+            headers.ETag = etag;
+            headers["Accept-Ranges"] = "bytes";
+            headers["Content-Length"] = String(bytes.byteLength);
+            if (request.method === "HEAD")
+              return HttpServerResponse.empty({ status: 200, headers });
+            const range =
+              request.headers.range &&
+              (request.headers["if-range"] === undefined || request.headers["if-range"] === etag)
+                ? assetByteRange(request.headers.range, BigInt(bytes.byteLength))
+                : null;
+            if (range?._tag === "Unsatisfiable") {
+              delete headers["Content-Length"];
+              return HttpServerResponse.empty({
+                status: 416,
+                headers: { ...headers, "Content-Range": `bytes */${bytes.byteLength}` },
+              });
+            }
+            const response = (body: Uint8Array, status: number) =>
+              HttpServerResponse.stream(
+                Stream.fromIterable({
+                  *[Symbol.iterator]() {
+                    for (let offset = 0; offset < body.byteLength; offset += 1024 * 1024)
+                      yield body.subarray(offset, offset + 1024 * 1024);
+                  },
+                }).pipe(Stream.mapEffect((chunk) => authorize.pipe(Effect.as(chunk)))),
+                { status, headers },
+              );
+            if (range?._tag === "Range") {
+              headers["Content-Range"] = range.contentRange;
+              headers["Content-Length"] = String(range.bytesToRead);
+              return response(
+                bytes.subarray(Number(range.offset), Number(range.offset + range.bytesToRead)),
+                206,
+              );
+            }
+            return response(bytes, 200);
+          }).pipe(
+            Effect.tapError((error) =>
+              Effect.logWarning("Qualified attachment access refused", {
+                reason: error._tag,
+                message: error.message,
+              }),
+            ),
+            Effect.catch(() =>
+              Effect.succeed(
+                HttpServerResponse.empty({ status: 403, headers: { "cache-control": "no-store" } }),
+              ),
+            ),
+          );
+        }
+        if (asset.kind === "bytes") {
+          return HttpServerResponse.uint8Array(asset.bytes, {
+            contentType: asset.mimeType,
+            headers: {
+              "cache-control": "private, max-age=3600",
+              "x-content-type-options": "nosniff",
+            },
+          });
+        }
+        if (asset.kind === "github-media") {
+          return yield* githubMediaResponse(asset, request.headers).pipe(
+            Effect.tapError((cause) =>
+              Effect.logWarning("Failed to fetch GitHub media.", { url: asset.url, cause }),
+            ),
+            Effect.orElseSucceed(() =>
+              HttpServerResponse.empty({
+                status: 502,
+                headers: {
+                  "cache-control": "private, no-store",
+                  "x-content-type-options": "nosniff",
+                },
+              }),
+            ),
+          );
+        }
+        return yield* assetFileResponse(
+          asset,
+          request.method === "GET" ? request.headers.range : undefined,
+          request.headers["if-range"],
+          request.method === "HEAD" ? "HEAD" : "GET",
+        ).pipe(
+          Effect.orElseSucceed(() =>
+            HttpServerResponse.text("Internal Server Error", { status: 500 }),
+          ),
+        );
+      }),
     );
   }),
 );

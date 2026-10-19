@@ -3,6 +3,64 @@ import { describe, expect, it } from "vite-plus/test";
 import { BrowserControlInterrupted, SessionControl } from "./SessionControl.ts";
 
 describe("SessionControl", () => {
+  it("checks action authorization after draining earlier navigation", async () => {
+    const control = new SessionControl("agent");
+    const drained = Promise.withResolvers<void>();
+    const effects: string[] = [];
+    await control.agent("agent", async () => control.track(drained.promise));
+    let current = true;
+    const action = control.agent(
+      "agent",
+      async () => effects.push("click"),
+      async () => {
+        if (!current) throw new BrowserControlInterrupted("Invocation retired");
+      },
+    );
+    const refused = expect(action).rejects.toThrow("Invocation retired");
+    current = false;
+    drained.resolve();
+    await refused;
+    expect(effects).toEqual([]);
+    await expect(
+      control.agent(
+        "agent",
+        async () => "lawful",
+        async () => {},
+      ),
+    ).resolves.toBe("lawful");
+  });
+
+  it("retired takeover releases only its own reservation after drain", async () => {
+    const control = new SessionControl("agent");
+    const drained = Promise.withResolvers<void>();
+    await control.agent("agent", async () => control.track(drained.promise));
+    let checks = 0;
+    const takeover = control.take("viewer", async () => {
+      if (++checks === 1) return;
+      throw new BrowserControlInterrupted("Invocation retired during drain");
+    });
+    const refused = expect(takeover).rejects.toThrow("Invocation retired during drain");
+    drained.resolve();
+    await refused;
+    expect(control.controller).toBe(null);
+    await expect(control.take("later", async () => {})).resolves.toBeUndefined();
+    expect(control.controller).toBe("later");
+  });
+
+  it("refuses takeover before changing the existing control generation", async () => {
+    const control = new SessionControl("agent");
+    const generation = control.generation;
+    await expect(
+      control.take("viewer", async () => {
+        throw new BrowserControlInterrupted("Invocation retired");
+      }),
+    ).rejects.toThrow("Invocation retired");
+    expect(control.controller).toBe(null);
+    expect(control.generation).toBe(generation);
+    await control.take("lawful");
+    expect(control.controller).toBe("lawful");
+  });
+
   it("returns an action result before tracked navigation but drains it before already queued actions", async () => {
     const control = new SessionControl("agent");
     const committed = Promise.withResolvers<void>();

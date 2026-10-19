@@ -17,6 +17,11 @@ const accessStore = {
 };
 vi.mock(import("~/state/device"), async (original) => ({
   ...(await original()),
+  useDeviceHubAccessState: () => ({
+    access: useSyncExternalStore(accessStore.subscribe, () => accessStore.value),
+    error: null,
+    refresh: () => accessStore.refresh(),
+  }),
   useDeviceHubAccess: () => useSyncExternalStore(accessStore.subscribe, () => accessStore.value),
   refreshDeviceHubAccess: () => accessStore.refresh(),
 }));

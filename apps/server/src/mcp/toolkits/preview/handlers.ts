@@ -1,3 +1,6 @@
+import * as PeerAuthority from "../../../peer/PeerAuthority.ts";
+import * as ServerBrowser from "../../../preview/ServerBrowser.ts";
+import { externalReplay, requestDigest } from "../../McpRequestReceipts.ts";
 import { CurrentRequest } from "../../McpRequestReceipts.ts";
 import { loadCaller } from "../../threadAccess.ts";
 import { assertSameLink } from "../../linkOrigin.ts";
@@ -7,6 +10,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import {
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+  NativeBrowserDownloadAssetResource,
+  PreviewAutomationUploadInput,
   PREVIEW_RECORDING_STOP_TIMEOUT_MS,
   PreviewAutomationRecordingTransferError,
   PreviewAutomationRecordingDesktopUpdateRequiredError,
@@ -55,6 +60,17 @@ export function normalizePreviewOpenInput(
   };
 }
 
+const decodePortableDownloads = Schema.decodeUnknownEffect(
+  Schema.Array(
+    Schema.Struct({
+      fileName: Schema.String.check(Schema.isMaxLength(255)),
+      resource: NativeBrowserDownloadAssetResource,
+      sizeBytes: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1024 * 1024 * 1024 })),
+      completedAt: Schema.String.check(Schema.isMaxLength(64)),
+    }),
+  ),
+);
+
 const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
   operation: PreviewAutomationOperation,
   input: unknown,
@@ -69,7 +85,7 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
   const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
   const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
   let targetTabId = tabId;
-  const result = yield* broker.invoke<A>({
+  const response = yield* broker.invoke<A>({
     onTargetTab: (resolvedTabId) => {
       targetTabId = resolvedTabId;
     },
@@ -79,6 +95,26 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
     ...(tabId === undefined ? {} : { tabId }),
   });
+  // A remote caller cannot use a destination-local path or private download URL.
+  const result =
+    scope.client?.linked === true &&
+    scope.authority?.envelope.requestOwner !== undefined &&
+    typeof response === "object" &&
+    response !== null &&
+    "downloads" in response
+      ? {
+          ...response,
+          downloads: yield* decodePortableDownloads(response.downloads).pipe(
+            Effect.mapError(
+              () =>
+                new OrchestratorMcpFailure({
+                  code: "invalid_request",
+                  message: "Portable native browser downloads are unsupported by this host.",
+                }),
+            ),
+          ),
+        }
+      : response;
   if (["status", "open", "navigate", "snapshot", "recordingStop"].includes(operation))
     return { result };
   const statusTabId =
@@ -119,6 +155,97 @@ const invokeTargeted = <A extends object>(
     })),
   );
 };
+
+const decodeUploadIntent = Schema.decodeUnknownEffect(PreviewAutomationUploadInput);
+const uploadPreviewFiles = Effect.fn("PreviewToolkit.upload")(function* (untrusted: unknown) {
+  const refused = () =>
+    new OrchestratorMcpFailure({
+      code: "invalid_request",
+      message:
+        "Provide either local paths or verified artifacts for the exact current browser opening (20 files/100 MiB).",
+    });
+  const input = yield* decodeUploadIntent(untrusted).pipe(Effect.mapError(refused));
+  const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
+  if (input.artifacts === undefined) {
+    if (input.paths === undefined || (scope.client?.linked === true && input.paths.length > 0))
+      return yield* refused();
+    return yield* invokeTargeted<object>("upload", input, input.timeoutMs);
+  }
+  const resource = input.resource;
+  const request = yield* CurrentRequest;
+  const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+  const staging = yield* Effect.serviceOption(AttachmentStaging.AttachmentStaging);
+  const browser = yield* Effect.serviceOption(ServerBrowser.ServerBrowser);
+  if (
+    resource === undefined ||
+    request === undefined ||
+    Option.isNone(authority) ||
+    Option.isNone(staging) ||
+    Option.isNone(browser) ||
+    browser.value.authorizeViewer === undefined ||
+    resource.environmentId !== scope.environmentId ||
+    resource.threadId !== scope.thread.threadId ||
+    (input.tabId !== undefined && input.tabId !== resource.tabId)
+  )
+    return yield* refused();
+  const broker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+  const actual = browser.value.authorizeViewer;
+  const current = authority.value
+    .recheckInvocation(scope, "preview", resource.threadId)
+    .pipe(Effect.andThen(actual(resource).pipe(Effect.mapError(refused))), Effect.asVoid);
+  yield* current;
+  const previous = yield* externalReplay<object>();
+  if (Option.isSome(previous)) return { ...previous.value };
+  const status = yield* broker.invoke<PreviewAutomationStatus>({
+    scope,
+    operation: "status",
+    input: {},
+    tabId: resource.tabId,
+    updateCurrentTab: false,
+  });
+  if (
+    status.resource === undefined ||
+    requestDigest(status.resource) !== requestDigest(resource) ||
+    status.control?.owner === "human" ||
+    (status.control?.owner === "agent" && status.control.ownedByCaller !== true)
+  )
+    return yield* refused();
+  const attachments = input.artifacts.map((reference) => ({
+    type: "file" as const,
+    id: reference.attachmentId,
+    name: reference.name,
+    mimeType: reference.mimeType,
+    sizeBytes: reference.sizeBytes,
+  }));
+  const verifiedPaths: Array<string> = [];
+  for (const [index, reference] of input.artifacts.entries()) {
+    yield* current;
+    if (reference.environmentId !== scope.environmentId) return yield* refused();
+    const verified = yield* staging.value.verify(scope, attachments[index]!);
+    if (requestDigest(verified.reference) !== requestDigest(reference)) return yield* refused();
+    yield* current;
+    verifiedPaths.push(verified.path);
+  }
+  yield* staging.value.reserveTransfer(
+    scope,
+    `preview-input:${request.id}`,
+    `preview:${requestDigest(resource)}`,
+    attachments,
+    input.artifacts,
+  );
+  yield* current;
+  return yield* invokeTargeted<object>(
+    "upload",
+    {
+      paths: verifiedPaths,
+      tabId: resource.tabId,
+      ...(input.selector === undefined ? {} : { selector: input.selector }),
+      ...(input.locator === undefined ? {} : { locator: input.locator }),
+      ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+    },
+    input.timeoutMs,
+  );
+});
 
 const UploadedRecordingArtifact = Schema.Struct({
   ...PreviewAutomationRecordingArtifact.fields,
@@ -177,7 +304,12 @@ export const claimPreviewRecording = Effect.fn("PreviewToolkit.claimRecording")(
   if (Option.isSome(staging) && Option.isSome(scope)) {
     if (scope.value.thread?.threadId !== threadId)
       return yield* new PreviewAutomationRecordingTransferError({ threadId });
-    const resource = yield* staging.value.claimRecording(scope.value, pendingId, attachment);
+    const resource = yield* staging.value.claimRecording(
+      scope.value,
+      pendingId,
+      attachment,
+      "preview",
+    );
     return { ...recording, id: finalId, path: finalPath, resource };
   }
   // Minimal legacy compositions have no durable acceptance evidence. First
@@ -273,7 +405,7 @@ const handlers = {
     "external-unknown",
   ),
   preview_upload: McpToolAccess.actsAsCaller(
-    (input) => invokeTargeted<object>("upload", input, input.timeoutMs),
+    (input) => uploadPreviewFiles(input),
     "external-unknown",
   ),
   preview_press: McpToolAccess.actsAsCaller(

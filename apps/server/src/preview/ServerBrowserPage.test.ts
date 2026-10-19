@@ -7,6 +7,8 @@ import {
 } from "playwright-core";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 
+import { makeExternalBrowserContext } from "./testing/BrowserExternal.fixture.ts";
+import { BrowserControlInterrupted } from "./SessionControl.ts";
 import { presentAsChrome } from "./ServerBrowserContexts.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 
@@ -367,5 +369,102 @@ describe("server browser drag", () => {
     } finally {
       process.off("unhandledRejection", onUnhandled);
     }
+  });
+});
+
+// These cases exercise deterministic driver leaves only. Their selection does not
+// run the Chromium suite above; installed-runtime/browser proof belongs to the parent.
+describe("page dispatch authorization", () => {
+  const retired = () => new BrowserControlInterrupted("Original invocation retired");
+  it("checks again after geometry and pointer waits, with explicit local compatibility", async () => {
+    for (const boundary of ["geometry", "pointer"] as const) {
+      const external = makeExternalBrowserContext();
+      const page = external.page as unknown as Page;
+      let current = true;
+      const authorize = async () => {
+        if (!current) throw retired();
+      };
+      if (boundary === "geometry")
+        external.controls.beforeBounds = async () => {
+          current = false;
+        };
+      await expect(
+        ServerBrowserPage.click(
+          page,
+          { selector: "#button" },
+          async () => {
+            if (boundary === "pointer") current = false;
+          },
+          authorize,
+        ),
+      ).rejects.toThrow("Original invocation retired");
+      expect(external.effects).not.toContain("click");
+      external.controls.beforeBounds = async () => {};
+      await ServerBrowserPage.click(page, { selector: "#button" });
+      expect(external.effects.filter((effect) => effect === "click")).toHaveLength(1);
+    }
+  });
+
+  it("refuses screenshot dispatch after the layout read retires authorization", async () => {
+    const external = makeExternalBrowserContext();
+    const page = external.page as unknown as Page;
+    const cdp = external.cdp as unknown as CDPSession;
+    let current = true;
+    const authorize = async () => {
+      if (!current) throw retired();
+    };
+    await ServerBrowserPage.captureViewport(page, cdp, { format: "png", scale: 0.5 }, authorize);
+    expect(external.effects.filter((effect) => effect === "capture")).toHaveLength(1);
+    external.controls.beforeLayout = async () => {
+      current = false;
+    };
+    await expect(
+      ServerBrowserPage.captureViewport(page, cdp, { format: "png", scale: 0.5 }, authorize),
+    ).rejects.toThrow("Original invocation retired");
+    expect(external.effects.filter((effect) => effect === "capture")).toHaveLength(1);
+  });
+
+  it("dispatches only resolved file paths, including clear, under its current callback", async () => {
+    const external = makeExternalBrowserContext();
+    const page = external.page as unknown as Page;
+    const calls: Array<ReadonlyArray<string>> = [];
+    external.controls.afterSetFiles = async (paths) => {
+      calls.push(paths);
+    };
+    await ServerBrowserPage.setInputFiles(page, {
+      paths: ["/verified/staging/report.txt"],
+      locator: "input[type=file]",
+    });
+    await ServerBrowserPage.setInputFiles(page, { paths: [], locator: "input[type=file]" });
+    expect(calls).toEqual([["/verified/staging/report.txt"], []]);
+    await expect(
+      ServerBrowserPage.setInputFiles(
+        page,
+        { paths: ["/verified/retired.txt"], locator: "input[type=file]" },
+        async () => {
+          throw retired();
+        },
+      ),
+    ).rejects.toThrow("Original invocation retired");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("checks every dispatch in a focused clear sequence", async () => {
+    const external = makeExternalBrowserContext();
+    const page = external.page as unknown as Page;
+    let current = true;
+    const authorize = async () => {
+      if (!current) throw retired();
+    };
+    await ServerBrowserPage.type(page, { text: "lawful", clear: true }, authorize);
+    expect(external.effects).toEqual(["key:ControlOrMeta+A", "key:Delete", "text:lawful"]);
+    external.effects.length = 0;
+    external.controls.afterKey = async () => {
+      current = false;
+    };
+    await expect(
+      ServerBrowserPage.type(page, { text: "retired", clear: true }, authorize),
+    ).rejects.toThrow("Original invocation retired");
+    expect(external.effects).toEqual(["key:ControlOrMeta+A"]);
   });
 });

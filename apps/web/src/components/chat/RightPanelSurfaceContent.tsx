@@ -92,6 +92,7 @@ export function RightPanelSurfaceContent(props: {
             mode="embedded"
             threadRef={threadRef}
             tabId={surface.resourceId}
+            {...(surface.resource === undefined ? {} : { resource: surface.resource })}
             configuredUrls={props.configuredPreviewUrls}
             visible={visible}
             onSendAnnotation={props.onSendAnnotation}

@@ -9,7 +9,11 @@ import {
   type PreviewStreamFileChooser,
   type PreviewStreamInput,
 } from "@t3tools/client-runtime/preview/server-browser-stream";
-import type { EnvironmentId, PreviewStreamHostSetup } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  PreviewStreamHostSetup,
+  PreviewViewerResource,
+} from "@t3tools/contracts";
 import {
   useEffect,
   useEffectEvent,
@@ -50,6 +54,7 @@ type NativeStreamBridge = {
   readonly ref?: Ref<PreviewStreamRef>;
   readonly onUnauthorized: () => void;
   readonly onGone?: () => void;
+  readonly onPopup?: (resource: PreviewViewerResource) => void;
   readonly onViewport?: (viewport: { readonly width: number; readonly height: number }) => void;
   readonly onControl?: (control: PreviewStreamControl | null) => void;
   readonly onPictureInPicture?: (state: PreviewPictureInPictureState, detail?: string) => void;
@@ -115,7 +120,11 @@ export function PreviewStreamWebView(
       readonly paused?: boolean;
     },
 ) {
-  const { access, error, refresh } = usePreviewStreamAccess(props.environmentId);
+  const { access, error, refresh } = usePreviewStreamAccess(
+    props.environmentId,
+    props.resource,
+    !props.paused,
+  );
   if (access && !props.paused) {
     return <AuthorizedPreviewStream {...props} access={access} onUnauthorized={refresh} />;
   }
@@ -177,7 +186,8 @@ function AuthorizedPreviewStream({
     access: props.access,
     threadId: props.threadId,
     tabId: props.tabId,
-    interactive: props.interactive,
+    ...(props.resource === undefined ? {} : { resource: props.resource }),
+    interactive: props.interactive && props.access.canOperate !== false,
     background: props.background,
   } satisfies PreviewStreamConfiguration);
   return (
@@ -186,6 +196,7 @@ function AuthorizedPreviewStream({
       {...props}
       ref={ref}
       configuration={configuration}
+      interactive={props.interactive && props.access.canOperate !== false}
       onUnauthorized={() => {
         const refusals = ++unauthorized.current;
         if (refusals >= MAX_REFUSALS) return false;
@@ -223,8 +234,11 @@ function PreviewStreamDocumentView({
   configuration,
   background,
   compact,
+  interactive,
   onUnauthorized,
   onGone,
+  onPopup,
+  resource,
   onViewport,
   onControl,
   onPictureInPicture,
@@ -234,6 +248,8 @@ function PreviewStreamDocumentView({
   onRecoverProcess,
 }: Omit<NativeStreamBridge, "onUnauthorized"> & {
   readonly configuration: string;
+  readonly resource?: PreviewViewerResource;
+  readonly interactive: boolean;
   readonly background: string;
   readonly onUnauthorized: () => boolean;
   readonly onRetry: () => void;
@@ -320,7 +336,7 @@ function PreviewStreamDocumentView({
           <AppText className="text-xs text-foreground-muted">
             {previewStreamControlLabel(control)}
           </AppText>
-          {control?.canOperate ? (
+          {interactive && control?.canOperate ? (
             <Pressable
               accessibilityRole="button"
               disabled={control.controller === "another-viewer"}
@@ -376,6 +392,16 @@ function PreviewStreamDocumentView({
                 fail("This session can't open the browser stream. Reconnect to try again.");
               }
               return;
+            case "popup":
+              if (
+                message.resource !== undefined &&
+                resource !== undefined &&
+                message.resource.environmentId === resource.environmentId &&
+                message.resource.threadId === resource.threadId &&
+                message.resource.serverEpoch === resource.serverEpoch
+              )
+                onPopup?.(message.resource);
+              break;
             case "gone":
               setGone(true);
               fail("This tab was closed.");

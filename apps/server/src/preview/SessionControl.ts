@@ -62,11 +62,16 @@ export class SessionControl {
     this.onGenerationChange();
   }
 
-  private async action<A>(allowed: () => boolean, run: () => Promise<A>) {
+  private async action<A>(
+    allowed: () => boolean,
+    run: () => Promise<A>,
+    authorize?: () => Promise<void>,
+  ) {
     this.assertOpen();
     if (!allowed()) throw new BrowserControlInterrupted("You do not control this browser tab.");
     const epoch = this.epoch;
     return this.enqueue(async () => {
+      if (authorize) await authorize();
       this.assertOpen();
       if (epoch !== this.epoch || !allowed()) throw new BrowserControlInterrupted();
       return run();
@@ -77,7 +82,11 @@ export class SessionControl {
     return this.agentId === null || this.agentId === agentId;
   }
 
-  agent<A>(agentId: string, run: () => Promise<A>) {
+  /**
+   * An agent action. It may act on its own tab or on one a human opened, but
+   * never while a human controls the tab; taking control interrupts it.
+   */
+  agent<A>(agentId: string, run: () => Promise<A>, authorize?: () => Promise<void>) {
     if (!this.agentMayAct(agentId))
       return Promise.reject(
         new BrowserControlInterrupted("This tab belongs to another agent.", "agentMismatch"),
@@ -86,7 +95,7 @@ export class SessionControl {
       return Promise.reject(
         new BrowserControlInterrupted("A human controls this tab.", "humanControl"),
       );
-    return this.action(() => this.agentMayAct(agentId) && this.owner === null, run);
+    return this.action(() => this.agentMayAct(agentId) && this.owner === null, run, authorize);
   }
 
   agentCanActNow(agentId: string) {
@@ -110,17 +119,27 @@ export class SessionControl {
     });
   }
 
-  human<A>(viewerId: string, run: () => Promise<A>) {
-    return this.action(() => this.owner === viewerId, run);
+  human<A>(viewerId: string, run: () => Promise<A>, authorize?: () => Promise<void>) {
+    return this.action(() => this.owner === viewerId, run, authorize);
   }
 
-  async take(viewerId: string) {
+  async take(viewerId: string, authorize?: () => Promise<void>, onReserved: () => void = () => {}) {
+    if (authorize) await authorize();
     this.assertOpen();
     if (this.owner !== null && this.owner !== viewerId) {
       throw new BrowserControlInterrupted("Another viewer controls this browser tab.");
     }
-    if (this.owner !== viewerId) this.changeOwner(viewerId);
-    return this.human(viewerId, async () => {});
+    const changed = this.owner !== viewerId;
+    if (changed) this.changeOwner(viewerId);
+    const generation = this.epoch;
+    try {
+      onReserved();
+      await this.human(viewerId, async () => {}, authorize);
+    } catch (cause) {
+      // Retire only this failed reservation, never a later takeover or reopening.
+      if (changed && this.owner === viewerId && this.epoch === generation) this.changeOwner(null);
+      throw cause;
+    }
   }
 
   async release(viewerId: string, afterDrain: () => Promise<void> = async () => {}) {

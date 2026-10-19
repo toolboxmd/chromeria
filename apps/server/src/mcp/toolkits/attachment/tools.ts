@@ -2,6 +2,11 @@ import * as McpRouting from "../../McpRouting.ts";
 import { McpAttachmentInput } from "./input.ts";
 import {
   AttachmentCreateUploadUrlInput,
+  PeerAttachmentInspectSource,
+  PeerAttachmentInspectResult,
+  PeerAttachmentAcquireInput,
+  PeerAttachmentAcquisitionResult,
+  closedAttachmentInput,
   PeerAttachmentUploadResult,
   AttachmentDeleteInput,
   AttachmentDigest,
@@ -44,6 +49,33 @@ const AttachmentUploadTool = Tool.make("t3_attachment_prepare_upload", {
   ),
   success: PeerAttachmentUploadResult,
 }).annotate(Tool.Destructive, true);
+const AttachmentInspectTool = Tool.make("t3_attachment_inspect", {
+  ...shared,
+  description:
+    "Inspect attachment transfer support or an upload owned by this caller. Awaiting bytes and reserved uploads have no reusable reference. A staged reference describes verified current bytes; native-accepted records historical consumption and does not promise current file readiness.",
+  parameters: closedAttachmentInput(
+    McpRouting.parameters(Schema.Struct({ source: PeerAttachmentInspectSource })).fields,
+  ),
+  success: PeerAttachmentInspectResult,
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+const AttachmentAcquireTool = Tool.make("t3_attachment_acquire", {
+  ...shared,
+  description:
+    "Acquire a qualified permitted device/browser artifact into this caller's native attachment owner. Requires a durable clientRequestId. Native acceptance and its source-local path survive retries without replacing accepted files; acceptance is historical and does not promise current file readiness. No destination path or signed URL is accepted.",
+  parameters: closedAttachmentInput({
+    ...McpRouting.parameters(PeerAttachmentAcquireInput).fields,
+    clientRequestId: PeerAttachmentAcquireInput.fields.clientRequestId,
+  }),
+  success: PeerAttachmentAcquisitionResult,
+})
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
 const AttachmentDiscardTool = Tool.make("t3_attachment_discard", {
   ...shared,
   description:
@@ -76,6 +108,8 @@ const AttachmentSendTool = Tool.make("t3_thread_send_attachments", {
   .annotate(Tool.OpenWorld, true);
 export const AttachmentToolkit = Toolkit.make(
   AttachmentUploadTool,
+  AttachmentInspectTool,
+  AttachmentAcquireTool,
   AttachmentDiscardTool,
   AttachmentSendTool,
 );

@@ -1,3 +1,4 @@
+import { qualifiedAttachmentReader, qualifiedNativeDownloadReader } from "./assets/AssetAccess.ts";
 import { clientHandlers as pendingRequestClientHandlers } from "./childThreads/PendingRequestIngress.ts";
 import * as PendingRequestService from "./childThreads/PendingRequestService.ts";
 import * as RemoteDelegation from "./peer/RemoteDelegation.ts";
@@ -17,14 +18,12 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Base64 from "effect/encoding/Base64";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
-import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
@@ -39,6 +38,7 @@ import {
   AuthAccessStreamError,
   type AuthAccessStreamEvent,
   AuthOrchestrationOperateScope,
+  AuthPreviewOperateScope,
   type AuthEnvironmentScope,
   type ScheduledTaskListResult,
   AuthSessionId,
@@ -198,6 +198,8 @@ import { withTerminalOutputWindow } from "./terminal/OutputProtocol.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as DeviceService from "./device/DeviceService.ts";
+import * as DeviceHubProxy from "./device/DeviceHubProxy.ts";
+import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
@@ -224,7 +226,6 @@ import * as ProjectEnrichmentService from "./project/ProjectEnrichmentService.ts
 import * as ProjectService from "./project/ProjectService.ts";
 import * as ManagedProjectFolders from "./project/ManagedProjectFolders.ts";
 import { projectMutationOperation } from "./project/ProjectMutation.ts";
-import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as WorktreeSetupTracker from "./project/WorktreeSetupTracker.ts";
@@ -1188,6 +1189,8 @@ const layerWsRpc = (
   Layer.unwrap(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
+      const qualifiedReader = yield* qualifiedAttachmentReader;
+      const downloadReader = yield* qualifiedNativeDownloadReader;
       const sql = yield* SqlClient.SqlClient;
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;
       const intakeContext = yield* Effect.context<
@@ -1230,6 +1233,8 @@ const layerWsRpc = (
       const issueLinkHandlers = yield* makeIssueLinkRpcHandlers;
       const pullRequestSync = yield* PullRequestSyncReactor.PullRequestSyncReactor;
       const deviceService = yield* DeviceService.DeviceService;
+      const deviceViewers = yield* DeviceHubProxy.DeviceViewers;
+      const previewViewers = yield* ServerBrowserStream.PreviewViewers;
       const deviceHostContext =
         yield* Effect.context<Effect.Services<ReturnType<typeof remoteSshDeviceHosts>>>();
       const orchestrationEngine = yield* Orchestrator.OrchestratorV2;
@@ -1250,7 +1255,6 @@ const layerWsRpc = (
             );
       const usage = yield* UsageService.UsageService;
       const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
-      const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
       const repositoryIdentityResolver =
@@ -1327,6 +1331,11 @@ const layerWsRpc = (
       const withPullRequestViewer = pullRequests.withRoutingCredential;
       const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
       const sessions = yield* SessionStore.SessionStore;
+      const checkPreviewClient = yield* EnvironmentAuth.nativeSessionAuthorization(
+        currentSession,
+        AuthPreviewOperateScope,
+      );
+      const authorizePreviewClient = () => Effect.runPromise(checkPreviewClient);
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
       const hostResources = yield* HostResources.HostResources;
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
@@ -2790,13 +2799,20 @@ const layerWsRpc = (
           Effect.gen(function* () {
             const path = yield* Path.Path;
             if (
+              input.resource._tag === "peer-attachment" ||
+              input.resource._tag === "native-browser-download" ||
               input.resource._tag === "attachment" ||
               input.resource._tag === "native-app-icon" ||
               input.resource._tag === "tool-output-image" ||
               input.resource._tag === "github-media" ||
               (input.resource._tag === "media-file" && path.isAbsolute(input.resource.path))
             ) {
-              return yield* issueAssetUrl({ resource: input.resource });
+              return yield* issueAssetUrl({
+                resource: input.resource,
+                session: currentSession,
+                qualifiedReader,
+                downloadReader,
+              });
             }
             if (input.resource._tag === "draft-workspace-file") {
               return yield* issueAssetUrl({
@@ -2977,10 +2993,11 @@ const layerWsRpc = (
               (unsubscribe) => Effect.sync(unsubscribe),
             ),
           ),
-        [WS_METHODS.previewOpen]: (input) => previewManager.open(input),
+        [WS_METHODS.previewOpen]: (input) =>
+          previewManager.open({ ...input, authorize: authorizePreviewClient }),
         [WS_METHODS.previewNavigate]: (input) => previewManager.navigate(input),
-        [WS_METHODS.previewResize]: (input) => previewManager.resize(input),
-        [WS_METHODS.previewAdjust]: (input) => previewManager.adjust(input),
+        [WS_METHODS.previewResize]: (input) => previewManager.resize(input, authorizePreviewClient),
+        [WS_METHODS.previewAdjust]: (input) => previewManager.adjust(input, authorizePreviewClient),
         [WS_METHODS.previewRefresh]: (input) => previewManager.refresh(input),
         [WS_METHODS.previewClose]: (input) => previewManager.close(input),
         [WS_METHODS.previewList]: (input) => previewManager.list(input),
@@ -3002,6 +3019,8 @@ const layerWsRpc = (
                     : deviceService.list,
               ),
         [WS_METHODS.deviceOpen]: (input) => deviceService.open(input),
+        ...DeviceHubProxy.clientHandlers(currentSession, deviceViewers),
+        ...ServerBrowserStream.clientHandlers(currentSession, previewViewers),
         [WS_METHODS.deviceClose]: (input) => deviceService.close(input),
         [WS_METHODS.deviceShutdown]: (input) => deviceService.shutdown(input),
         [WS_METHODS.deviceDetail]: (input) => deviceService.detail(input),
@@ -3220,6 +3239,8 @@ export const layer = Layer.unwrap(
     const issueLinks = yield* IssueLinks.IssueLinks;
     const peerLinks = yield* PeerLinks.PeerLinks;
     const peerAuthority = yield* PeerAuthority.PeerAuthority;
+    const deviceViewers = yield* DeviceHubProxy.DeviceViewers;
+    const previewViewers = yield* ServerBrowserStream.PreviewViewers;
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3296,6 +3317,8 @@ export const layer = Layer.unwrap(
               Layer.provide(Layer.succeed(IssueLinks.IssueLinks, issueLinks)),
               Layer.provide(Layer.succeed(PeerLinks.PeerLinks, peerLinks)),
               Layer.provide(Layer.succeed(PeerAuthority.PeerAuthority, peerAuthority)),
+              Layer.provide(Layer.succeed(DeviceHubProxy.DeviceViewers, deviceViewers)),
+              Layer.provide(Layer.succeed(ServerBrowserStream.PreviewViewers, previewViewers)),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(

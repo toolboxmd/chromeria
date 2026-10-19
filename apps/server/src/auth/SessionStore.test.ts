@@ -5,7 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import * as Clock from "effect/Clock";
-import { AuthStandardClientScopes, EnvironmentId } from "@t3tools/contracts";
+import { AuthStandardClientScopes, EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -126,6 +126,102 @@ const layerFailingSessionLookupCredential = Layer.effect(
 );
 
 it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
+  it.effect(
+    "binds viewer credentials to an exact resource, opening, operation, generation and live source session",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* SessionStore.SessionStore;
+        const owner = yield* sessions.issue({ subject: "source-client" });
+        const rival = yield* sessions.issue({ subject: "rival-client" });
+        const resource = {
+          type: "device" as const,
+          environmentId: EnvironmentId.make("destination-B"),
+          threadId: ThreadId.make("destination-context"),
+          hostId: "local",
+          deviceId: "same-device-id",
+          toolSessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          platform: "ios" as const,
+        };
+        const input = {
+          sessionId: owner.sessionId,
+          resource,
+          operation: "view" as const,
+          generation: "actual-link-generation",
+        };
+        const ticket = yield* sessions.issueViewerToken(input);
+        const verification = { ...input, token: ticket.token };
+        const verified = yield* sessions.verifyViewerToken(verification);
+        expect(verified.session.sessionId).toBe(owner.sessionId);
+        expect(verified.session.sessionId).not.toBe(rival.sessionId);
+        expect(verified.viewerId).toBe(ticket.viewerId);
+        // A viewer credential is not an ordinary credential for /ws, /mcp or HTTP APIs.
+        expect((yield* sessions.verify(ticket.token).pipe(Effect.result))._tag).toBe("Failure");
+        expect((yield* sessions.verifyWebSocketToken(ticket.token).pipe(Effect.result))._tag).toBe(
+          "Failure",
+        );
+        expect(
+          (yield* sessions
+            .verifyViewerToken({ ...verification, operation: "control" })
+            .pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        expect(
+          (yield* sessions
+            .verifyViewerToken({ ...verification, generation: "replacement-link" })
+            .pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        for (const replacement of [
+          { ...resource, environmentId: EnvironmentId.make("another-environment") },
+          { ...resource, threadId: ThreadId.make("another-context") },
+          { ...resource, hostId: "another-host" },
+          { ...resource, deviceId: "another-device" },
+          { ...resource, toolSessionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+          { ...resource, platform: "android" as const },
+        ])
+          expect(
+            (yield* sessions
+              .verifyViewerToken({ ...verification, resource: replacement })
+              .pipe(Effect.result))._tag,
+          ).toBe("Failure");
+        const control = yield* sessions.issueViewerToken({ ...input, operation: "control" });
+        expect(control.viewerId).not.toBe(ticket.viewerId);
+        expect(
+          (yield* sessions.verifyViewerToken({
+            ...verification,
+            token: control.token,
+            operation: "control",
+          })).session.sessionId,
+        ).toBe(owner.sessionId);
+        const observer = yield* sessions
+          .awaitViewerInvalidation(ticket.viewerId)
+          .pipe(Effect.forkScoped({ startImmediately: true }));
+        expect(yield* sessions.closeViewer(rival.sessionId, ticket.viewerId)).toBe(false);
+        expect((yield* sessions.verifyViewerToken(verification)).viewerId).toBe(ticket.viewerId);
+        expect(yield* sessions.closeViewer(owner.sessionId, ticket.viewerId)).toBe(true);
+        yield* Fiber.join(observer);
+        expect((yield* sessions.verifyViewerToken(verification).pipe(Effect.flip))._tag).toBe(
+          "UnknownWebSocketSessionError",
+        );
+        expect((yield* sessions.authenticateViewerToken(control.token)).viewerId).toBe(
+          control.viewerId,
+        );
+        yield* TestClock.adjust(Duration.seconds(60));
+        expect(
+          (yield* sessions.authenticateViewerToken(control.token).pipe(Effect.flip))._tag,
+        ).toBe("WebSocketTokenExpiredError");
+        const current = yield* sessions.issueViewerToken(input);
+        yield* sessions.revoke(owner.sessionId);
+        expect(
+          (yield* sessions
+            .verifyViewerToken({ ...verification, token: current.token })
+            .pipe(Effect.flip))._tag,
+        ).toBe("SessionTokenRevokedError");
+        expect((yield* sessions.issueViewerToken(input).pipe(Effect.flip))._tag).toBe(
+          "SessionTokenRevokedError",
+        );
+        expect((yield* sessions.verify(rival.token)).sessionId).toBe(rival.sessionId);
+      }).pipe(Effect.scoped, Effect.provide(Layer.merge(layerSessionStore(), TestClock.layer()))),
+  );
+
   it.effect.each(["revoke", "revokeAllExcept", "replace"] as const)(
     "invalidates every connection for a session on %s and leaves other sessions active",
     (operation) =>
