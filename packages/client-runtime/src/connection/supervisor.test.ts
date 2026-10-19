@@ -13,6 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Random from "effect/Random";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -1550,12 +1551,18 @@ describe("EnvironmentSupervisor", () => {
       }).pipe(Effect.provide(TestClock.layer())),
   );
 
-  it.effect.each([1, 0, -1])(
-    "retries immediately when the server reports %s ms remaining",
+  it.effect.each([1, 0, -1, 1_000])(
+    "bounds repeated current replies with %s ms remaining",
     (remainingMs) =>
       Effect.gen(function* () {
         yield* TestClock.adjust("1 hour");
         const attempts: number[] = [];
+        const responses = yield* Queue.unbounded<void>();
+        // Bound a broken loop without changing any reply to Unsupported or an error.
+        yield* Queue.offerAll(
+          responses,
+          Array.from({ length: 16 }, () => undefined),
+        );
         const record: AuthRenewalLocalRecord = {
           revision: 1,
           active: {
@@ -1580,7 +1587,7 @@ describe("EnvironmentSupervisor", () => {
           ensure: () =>
             Effect.gen(function* () {
               attempts.push(yield* Clock.currentTimeMillis);
-              if (attempts.length === 2) return { _tag: "Unsupported" };
+              yield* Queue.take(responses);
               return {
                 _tag: "Renewed",
                 result: decodeRenewalResult({
@@ -1600,10 +1607,19 @@ describe("EnvironmentSupervisor", () => {
           Effect.provide(harness.dependencies),
           Effect.provideService(Renewal.SessionRenewal, renewal),
         );
-        yield* awaitState(supervisor.state, (state) => state.phase === "connected");
         yield* TestClock.adjust(0);
-        expect(attempts).toEqual([3_600_000, 3_600_000]);
-        expect((yield* SubscriptionRef.get(supervisor.state)).phase).toBe("connected");
+        expect(attempts).toEqual(remainingMs === 1 ? [3_600_000, 3_600_000] : [3_600_000]);
+        if (remainingMs > 0) yield* TestClock.adjust(remainingMs);
+        expect(attempts.length).toBeLessThanOrEqual(12);
+        expect((yield* SubscriptionRef.get(supervisor.state)).phase).toBe("blocked");
+        expect((yield* SubscriptionRef.get(supervisor.state)).lastFailure).toMatchObject({
+          _tag: "ConnectionBlockedError",
+          reason: "authentication",
+          detail: "Pair this environment again.",
+        });
+        const attemptsAtExpiry = attempts.length;
+        yield* TestClock.adjust("1 minute");
+        expect(attempts).toHaveLength(attemptsAtExpiry);
         yield* supervisor.disconnect;
       }).pipe(Effect.provide(TestClock.layer())),
   );
