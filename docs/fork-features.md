@@ -1264,7 +1264,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "id": "run-groups",
   "purpose": "Let one delegate_task call run several Colors of a read-only Prism role (Researcher, Designer, Roast, Reviewer, Judge) as one Run group: one command commits every member that can start, members share the caller's checkout, and the parent wakes once after every member is terminal. task_status and task_cancel take the groupId or a member; Run 1 keeps the single-task result.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/402"],
-  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...feat/402-run-groups"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/512"],
   "newFiles": [
     "apps/server/src/mcp/RunGroups.integration.test.ts",
     "apps/server/src/orchestration-v2/RunGroups.ts"
