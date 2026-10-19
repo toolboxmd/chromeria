@@ -2969,6 +2969,16 @@ describe("orchestrator MCP toolkit", () => {
               runId: activeRun.id,
               delivery: "steered",
             });
+            const steerReplayCall = yield* invoke("t3_thread_send", {
+              threadId: activeThread.threadId,
+              message: "Ignore the changed retry payload.",
+              mode: "restart",
+              clientRequestId: "managed-active-steer-1",
+            });
+            const steerReplay = yield* decodeThreadSendResult(
+              steerReplayCall.structuredContent,
+            ).pipe(Effect.orDie);
+            expect(steerReplay).toEqual(steered);
             const steeredSource = yield* orchestrator.getThreadProjection(activeThread.threadId);
             expect(
               steeredSource.messages.find((message) => message.id === steered.messageId),
