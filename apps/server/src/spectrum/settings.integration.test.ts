@@ -70,6 +70,24 @@ it.effect(
     Effect.gen(function* () {
       const callerRecord = yield* setup;
       yield* ensureCheckSchema;
+      yield* (yield* Events.EventSinkV2).write({
+        events: [
+          {
+            id: EventId.make("caller-effort"),
+            type: "thread.model-selection-updated",
+            threadId: callerRecord.id,
+            occurredAt: NOW,
+            payload: {
+              ...callerRecord,
+              modelSelection: {
+                ...callerRecord.modelSelection,
+                options: [{ id: "reasoningEffort", value: "high" }],
+              },
+            },
+          },
+        ],
+      });
+
       const run = makeRun(
         {
           threadId: caller.id,
@@ -108,6 +126,8 @@ it.effect(
         turnsPerColor: 5,
         moderator: 1,
       });
+      expect(first.participants[0]?.selection.options).toBeUndefined();
+      expect(first.participants[0]?.fallbacks[0]?.options).toBeUndefined();
       expect(first.participants[0]?.fallbacks).toEqual([
         { ...primary, instanceId: spareInstanceId },
       ]);
@@ -125,6 +145,19 @@ it.effect(
       expect(
         Option.getOrThrow(yield* readSpectrum(ThreadId.make("spectrum:settings-test:project"))),
       ).toMatchObject({ mode: "free", limit: 4, turnsPerColor: 2, moderator: 1 });
+      for (const [key, preferences, expected] of [
+        ["large-council", { ...defaults, relayRounds: 101 }, 101],
+        ["large-free", { ...defaults, mode: "free" as const, turnsPerColor: 51 }, 102],
+      ] as const) {
+        yield* (yield* Settings.ServerSettingsService).updateSettings({
+          projectSettingsOverrides: { [callerRecord.projectId]: { spectrum: preferences } },
+        });
+        yield* call({ question: "Configured limit", clientRequestId: key });
+        expect(
+          Option.getOrThrow(yield* readSpectrum(ThreadId.make(`spectrum:settings-test:${key}`)))
+            .limit,
+        ).toBe(expected);
+      }
       yield* call({
         question: "Explicit",
         clientRequestId: "explicit",
@@ -143,7 +176,11 @@ it.effect(
       expect(explicit).toMatchObject({ mode: "free", limit: 7, moderator: 0, turnsPerColor: 2 });
       expect(explicit.participants[0]?.fallbacks).toEqual([]);
       expect(explicit.participants[1]?.fallbacks).toEqual([
-        { ...primary, instanceId: spareInstanceId },
+        {
+          ...primary,
+          instanceId: spareInstanceId,
+          options: [{ id: "reasoningEffort", value: "high" }],
+        },
       ]);
     }).pipe(Effect.provide(runtime)),
 );

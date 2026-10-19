@@ -2,9 +2,15 @@ import {
   SpectrumRelayRounds,
   SpectrumTurnsPerColor,
   type SpectrumSettings,
+  type Color,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import type { SpectrumStart, SpectrumStartRequest } from "./LaunchService.ts";
+
+const colorCandidate = (color: Color) => ({
+  selection: { instanceId: color.instanceId, model: color.model },
+  ...(color.effort === undefined ? {} : { effort: color.effort }),
+});
 
 const decodeSyncSpectrumRelayRounds = Schema.decodeSync(SpectrumRelayRounds);
 const decodeSyncSpectrumTurnsPerColor = Schema.decodeSync(SpectrumTurnsPerColor);
@@ -15,8 +21,8 @@ export function resolveSpectrumStart(input: SpectrumStartRequest, settings: Spec
     input.colors ??
     settings.slots.map(({ label, primary, fallbacks }) => ({
       label,
-      ...primary,
-      fallbacks,
+      ...colorCandidate(primary),
+      fallbacks: fallbacks.map(colorCandidate),
     }));
   const mode = input.mode ?? settings.mode;
   const relayRounds = decodeSyncSpectrumRelayRounds(input.relayRounds ?? settings.relayRounds);
@@ -39,7 +45,13 @@ export function resolveSpectrumStart(input: SpectrumStartRequest, settings: Spec
   if (colors.some((slot) => slot.label.trim().length === 0 || slot.label.toLowerCase() === "user"))
     throw new Error("Spectrum slot labels must be non-empty and cannot be User.");
   const limit = input.limit ?? (mode === "council" ? relayRounds : colors.length * turnsPerColor);
-  if (!Number.isInteger(limit) || limit < (mode === "council" ? 2 : 1) || limit > 100)
-    throw new Error("Spectrum limit must be an integer between the mode minimum and 100.");
+  if (
+    !Number.isInteger(limit) ||
+    limit < (mode === "council" ? 2 : 1) ||
+    (input.limit !== undefined && limit > 100)
+  )
+    throw new Error(
+      "Spectrum limits must meet the mode minimum; explicit legacy limit cannot exceed 100.",
+    );
   return { ...input, colors, mode, limit, moderator, turnsPerColor };
 }

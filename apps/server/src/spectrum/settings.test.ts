@@ -34,7 +34,12 @@ const request = {
 it("resolves configured slots, White and both mode limits", () => {
   const result = resolveSpectrumStart(request, settings);
   expect(result).toMatchObject({ mode: "council", limit: 4, moderator: 1, turnsPerColor: 5 });
-  expect(result.colors[0]?.fallbacks).toEqual([fallback]);
+  expect(result.colors[0]?.fallbacks).toEqual([
+    {
+      selection: { instanceId: fallback.instanceId, model: fallback.model },
+      effort: fallback.effort,
+    },
+  ]);
   expect(resolveSpectrumStart({ ...request, mode: "free" }, settings).limit).toBe(10);
 });
 it("explicit Colors never inherit saved fallbacks, while supplied fallbacks survive", () => {
@@ -66,4 +71,12 @@ it.each([
   },
 ])("rejects invalid start overrides %j", (patch) => {
   expect(() => resolveSpectrumStart({ ...request, ...patch }, settings)).toThrow();
+});
+
+it("honors configured limits above the legacy tool cap, while explicit legacy limit stays capped", () => {
+  expect(resolveSpectrumStart(request, { ...settings, relayRounds: 101 }).limit).toBe(101);
+  expect(
+    resolveSpectrumStart({ ...request, mode: "free" }, { ...settings, turnsPerColor: 51 }).limit,
+  ).toBe(102);
+  expect(() => resolveSpectrumStart({ ...request, limit: 101 }, settings)).toThrow();
 });
