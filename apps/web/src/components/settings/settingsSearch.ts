@@ -21,6 +21,7 @@ export type SettingsPath =
   | "/settings/keybindings"
   | "/settings/snap-shot"
   | "/settings/prism"
+  | "/settings/promachos"
   | "/settings/providers"
   | "/settings/integrations"
   | "/settings/scheduled-tasks"
@@ -81,6 +82,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/snap-shot": "SnapShots",
   "/settings/providers": "Providers",
   "/settings/prism": "Prism",
+  "/settings/promachos": "Promachos",
   "/settings/integrations": "Integrations",
   "/settings/scheduled-tasks": "Scheduled Tasks",
   "/settings/source-control": "Source Control",
@@ -155,6 +157,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     targetId: "prism-roles",
     scope: "project-defaults",
     searchTerms: ["model", "routing", "worker", "lane", "kit", "effort"],
+  },
+  {
+    id: "promachos-colors",
+    title: "Promachos Colors",
+    to: "/settings/promachos",
+    targetId: "promachos-colors",
+    scope: "project-defaults",
+    searchTerms: ["model", "provider", "effort", "fallback", "persona"],
   },
   {
     id: "prism-capacity",
@@ -1023,6 +1033,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/keybindings": null,
   "/settings/providers": null,
   "/settings/prism": "project-defaults",
+  "/settings/promachos": "project-defaults",
   "/settings/integrations": null,
   "/settings/source-control": "environment-defaults",
   "/settings/storage": "project-defaults",

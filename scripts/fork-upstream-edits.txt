@@ -116,6 +116,7 @@ apps/web/src/components/settings/ProviderSettingsPanel.tsx
 apps/web/src/components/settings/SettingsPanels.tsx
 apps/web/src/components/settings/ThemePreviewCircles.tsx
 apps/web/src/components/settings/settingsSearch.ts
+apps/web/src/components/settings/settingsSearch.test.ts
 apps/web/src/components/sidebar/SidebarChrome.tsx
 apps/web/src/lib/bootError.ts
 apps/web/src/lib/openPullRequestLink.ts

@@ -6,7 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { ColorProviderChoice } from "./ColorPicker.logic";
-import { ModelList } from "./PrismSettings";
+import { ColorList } from "./ColorList";
 
 const first = { instanceId: ProviderInstanceId.make("codex"), model: "first" };
 const second = { instanceId: ProviderInstanceId.make("opencode"), model: "second" };
@@ -39,7 +39,11 @@ afterEach(async () => {
  * Mirrors the page: one write at a time, and `saving` turns on in the same render as the edit,
  * as the save store does, until its snapshot lands or it fails.
  */
-function harness(initial: readonly Color[], providers: readonly ColorProviderChoice[] = []) {
+function harness(
+  initial: readonly Color[],
+  providers: readonly ColorProviderChoice[] = [],
+  title = "Reviewer",
+) {
   let saved = initial;
   let saving = false;
   let settle: { resolve: () => void; reject: (cause: Error) => void } | null = null;
@@ -58,9 +62,9 @@ function harness(initial: readonly Color[], providers: readonly ColorProviderCho
     });
   });
   const element = () => (
-    <ModelList
+    <ColorList
       key="list"
-      title="Reviewer"
+      title={title}
       saved={saved}
       providers={providers}
       mixed={false}
@@ -96,7 +100,7 @@ const moveUp = (position: number) =>
       .click(),
   );
 
-describe("ModelList while a save is pending", () => {
+describe("ColorList while a save is pending", () => {
   it("keeps the first edit, ignores the second, and keeps rows mounted when the save lands", async () => {
     const list = harness([first, second]);
     await list.render();
@@ -131,7 +135,7 @@ describe("ModelList while a save is pending", () => {
   });
 });
 
-describe("ModelList adding a Color", () => {
+describe("ColorList adding a Color", () => {
   it("appends the picked Color and keeps existing rows mounted when the save lands", async () => {
     const codex: ColorProviderChoice = {
       instanceId: first.instanceId,
@@ -155,4 +159,19 @@ describe("ModelList adding a Color", () => {
     expect(rows()).toHaveLength(3);
     expect(rows().slice(0, 2)).toEqual([firstRow, secondRow]);
   });
+});
+
+it("keeps Promachos rows mounted while its reordered Color draft saves", async () => {
+  const list = harness([first, second], [], "Promachos");
+  await list.render();
+  const [firstRow, secondRow] = rows();
+  await act(() =>
+    container
+      .querySelector<HTMLButtonElement>('[aria-label="Move Promachos preference 1 down"]')!
+      .click(),
+  );
+  expect(list.save).toHaveBeenCalledWith([second, first]);
+  expect(rows()).toEqual([secondRow, firstRow]);
+  await list.finish("success");
+  expect(rows()).toEqual([secondRow, firstRow]);
 });
