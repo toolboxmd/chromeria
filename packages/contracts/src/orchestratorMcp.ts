@@ -37,6 +37,7 @@ import {
 import { ProviderInteractionMode, RuntimeMode } from "./providerPolicy.ts";
 import * as ScheduledTaskFork from "./scheduledTaskChecks.ts";
 import { ThreadLinkedPullRequest } from "./threadPullRequest.ts";
+import { SecretRequestField, SecretRequestFieldName } from "./secretRequest.ts";
 import { ThreadTitleRegeneration } from "./threadTitle.ts";
 import {
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
@@ -761,7 +762,21 @@ export const OrchestratorMcpRequestSecretInput = Schema.Struct({
       "One or two sentences on what it is for and where the user gets or also enters it.",
   }),
   placeholder: Schema.optional(TrimmedNonEmptyString).annotate({
-    description: "Hint inside the input, e.g. 'Paste your GitHub token'.",
+    description:
+      "Hint inside the input, e.g. 'Paste your GitHub token'. Single-field requests only; each entry in fields has its own.",
+  }),
+  fields: Schema.optional(
+    Schema.Array(SecretRequestField).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(5),
+      Schema.makeFilter(
+        (fields) => new Set(fields.map((field) => field.name)).size === fields.length,
+        { expected: "fields with unique names" },
+      ),
+    ),
+  ).annotate({
+    description:
+      "Ask for several values on one card, e.g. [{name:'client_id', label:'Client ID'}, {name:'client_secret', label:'Client secret'}]. 1-5 entries; names are unique, lowercase [a-z0-9_-], and become the keys of files. Omit for one value.",
   }),
   timeoutMs: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 60 * 60 * 1_000 })),
@@ -775,10 +790,16 @@ export type OrchestratorMcpRequestSecretInput = typeof OrchestratorMcpRequestSec
 
 export const OrchestratorMcpRequestSecretResult = Schema.Union([
   Schema.Struct({
-    status: Schema.Literal("saved").annotate({ description: "secretRef holds the value." }),
-    secretRef: SecretRef.annotate({
+    status: Schema.Literal("saved").annotate({
+      description: "files holds the values; secretRef too for a single-field request.",
+    }),
+    files: Schema.Record(SecretRequestFieldName, TrimmedNonEmptyString).annotate({
       description:
-        "Pass it to a tool that accepts a secretRef; it works once, and you never see the value.",
+        "Absolute path of a private file per field name ('secret' without fields), holding exactly that value. Use it without printing it, e.g. \"$(cat path)\" or stdin, and delete the file when done. It expires after 24 hours.",
+    }),
+    secretRef: Schema.optional(SecretRef).annotate({
+      description:
+        "Single-field requests only. Pass it to a tool that accepts a secretRef (schedule_task's signature.secretRef); it works once.",
     }),
   }),
   Schema.Struct({

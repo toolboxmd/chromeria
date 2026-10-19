@@ -12,6 +12,7 @@ import {
   SavedPurposeIntent,
 } from "./executionPurpose.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
+import { SecretRequestField } from "./secretRequest.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
@@ -1574,6 +1575,8 @@ const OrchestrationV2SecretRequestFields = {
   label: TrimmedNonEmptyString,
   reason: Schema.String,
   placeholder: Schema.optional(Schema.String),
+  /** Absent for a single-field request, which asks for `label` alone. */
+  fields: Schema.optional(Schema.Array(SecretRequestField)),
   secretStatus: OrchestrationV2SecretRequestStatus,
 } as const;
 
@@ -3474,6 +3477,7 @@ const OrchestrationV2InternalCommand = Schema.Union([
     label: TrimmedNonEmptyString,
     reason: Schema.String,
     placeholder: Schema.optional(Schema.String),
+    fields: Schema.optional(Schema.Array(SecretRequestField)),
     secretStatus: OrchestrationV2SecretRequestStatus,
   }),
 ]);

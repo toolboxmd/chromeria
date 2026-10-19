@@ -2361,6 +2361,12 @@ const make = Effect.gen(function* () {
     requestSecret: (scope, input) =>
       Effect.gen(function* () {
         const { scope: threadScope, parent } = yield* loadThreadCaller(scope, "request_secret");
+        if (input.fields !== undefined && input.placeholder !== undefined) {
+          return yield* failure(
+            "invalid_request",
+            "placeholder is for single-field requests; give each entry in fields its own.",
+          );
+        }
         const threadId = threadScope.thread.threadId;
         const run = ThreadManagementService.latestActiveRun(parent);
         if (
@@ -2395,6 +2401,7 @@ const make = Effect.gen(function* () {
               label: input.label,
               reason: input.reason,
               ...(input.placeholder === undefined ? {} : { placeholder: input.placeholder }),
+              ...(input.fields === undefined ? {} : { fields: input.fields }),
               secretStatus,
             })
             .pipe(
@@ -2473,14 +2480,16 @@ const make = Effect.gen(function* () {
         yield* Effect.annotateCurrentSpan({ "secret_request.status": status });
         yield* Metrics.increment(Metrics.secretRequestsTotal, { status });
         if (status !== "saved") return { status };
-        const secretRef = yield* secretRequests.savedRef({ threadId: threadId, turnItemId });
-        if (Option.isNone(secretRef)) {
+        // Saved means the files were written before the card said so; none
+        // left means a storage fault, or the agent already used and deleted them.
+        const saved = yield* secretRequests.saved({ threadId: threadId, turnItemId });
+        if (Option.isNone(saved)) {
           return yield* failure(
             "orchestration_error",
             "The user saved the secret, but it could not be read. Ask again with a new clientRequestId.",
           );
         }
-        return { status, secretRef: secretRef.value };
+        return { status, ...saved.value };
       }).pipe(Effect.withSpan("OrchestratorMcpService.requestSecret")),
 
     capabilities: (scope) =>

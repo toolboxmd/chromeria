@@ -1136,6 +1136,11 @@ describe("orchestrator MCP toolkit", () => {
               SecretRequests.layer.pipe(
                 Layer.provide(layerMemorySecretStore),
                 Layer.provide(layerOrchestration),
+                Layer.provide(
+                  ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-secret-requests-" }).pipe(
+                    Layer.provide(NodeServices.layer),
+                  ),
+                ),
               ),
             ),
             Layer.provide(
@@ -2057,6 +2062,7 @@ describe("orchestrator MCP toolkit", () => {
             expect(secretCall.isError).toBe(false);
             const secretResult = secretCall.structuredContent as {
               status: string;
+              files: Record<string, string>;
               secretRef?: string;
             };
             expect(secretResult.status).toBe("saved");
@@ -2064,9 +2070,19 @@ describe("orchestrator MCP toolkit", () => {
               (yield* orchestrator.getThreadShell(parentThreadId))?.pendingRuntimeRequest ?? null,
             ).toBeNull();
             expect(secretResult.secretRef).toMatch(/^secret-ref:[0-9a-f]{32}$/);
+            // The agent gets the value only as a file it reads by path.
+            const secretFileSystem = yield* FileSystem.FileSystem.pipe(
+              Effect.provide(NodeServices.layer),
+            );
+            expect(Object.keys(secretResult.files)).toEqual(["secret"]);
+            expect(yield* secretFileSystem.readFileString(secretResult.files.secret!)).toBe(
+              "github-webhook-secret",
+            );
+            // The value appears nowhere in what the agent received or the thread recorded.
             const received = [
               ...secretCall.content.map((part) => ("text" in part ? part.text : "")),
-              ...Object.values(secretResult),
+              JSON.stringify(secretResult),
+              JSON.stringify(yield* orchestrator.getThreadProjection(parentThreadId)),
             ];
             expect(received.some((value) => value.includes("github-webhook-secret"))).toBe(false);
 
@@ -2092,6 +2108,63 @@ describe("orchestrator MCP toolkit", () => {
               .consume({ ref: secretResult.secretRef as never, projectId })
               .pipe(Effect.flip);
             expect(reused.message).toContain("already used");
+
+            // Several values on one card: one file per field, and no ref.
+            const pairFiber = yield* invoke("request_secret", {
+              label: "Cloudflare API credentials",
+              reason: "Stored in OpenBao for the deploy job.",
+              fields: [
+                { name: "account_id", label: "Account ID" },
+                { name: "api_token", label: "API token", placeholder: "Paste the token" },
+              ],
+              clientRequestId: "cloudflare-credentials",
+            }).pipe(Effect.forkChild);
+            const pairCard = yield* Effect.gen(function* () {
+              while (true) {
+                const projection = yield* orchestrator.getThreadProjection(parentThreadId);
+                const found = projection.turnItems.find(
+                  (item) =>
+                    item.type === "secret_request" &&
+                    item.secretStatus === "pending" &&
+                    item.label === "Cloudflare API credentials",
+                );
+                if (found?.type === "secret_request") return found;
+                yield* Effect.sleep("5 millis");
+              }
+            });
+            expect(pairCard.fields?.map((field) => field.name)).toEqual([
+              "account_id",
+              "api_token",
+            ]);
+            yield* secretRequests.answer({
+              threadId: parentThreadId,
+              turnItemId: pairCard.id,
+              answer: {
+                type: "save",
+                secrets: { account_id: "acct-77", api_token: "cf-token-88" },
+              },
+            });
+            const pairCall = yield* Fiber.join(pairFiber);
+            expect(pairCall.isError).toBe(false);
+            const pairResult = pairCall.structuredContent as {
+              status: string;
+              files: Record<string, string>;
+              secretRef?: string;
+            };
+            expect(pairResult.status).toBe("saved");
+            expect(pairResult.secretRef).toBeUndefined();
+            expect(yield* secretFileSystem.readFileString(pairResult.files.account_id!)).toBe(
+              "acct-77",
+            );
+            expect(yield* secretFileSystem.readFileString(pairResult.files.api_token!)).toBe(
+              "cf-token-88",
+            );
+            const pairReceived = [
+              ...pairCall.content.map((part) => ("text" in part ? part.text : "")),
+              JSON.stringify(pairResult),
+              JSON.stringify(yield* orchestrator.getThreadProjection(parentThreadId)),
+            ].join("\n");
+            expect(pairReceived).not.toMatch(/acct-77|cf-token-88/);
 
             const delegatedCall = yield* invoke("delegate_task", {
               task: delegatedPrompt,
@@ -4310,6 +4383,11 @@ describe("orchestrator MCP toolkit", () => {
             SecretRequests.layer.pipe(
               Layer.provide(layerMemorySecretStore),
               Layer.provide(layerOrchestration),
+              Layer.provide(
+                ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-secret-requests-" }).pipe(
+                  Layer.provide(NodeServices.layer),
+                ),
+              ),
             ),
           ),
           Layer.provide(
