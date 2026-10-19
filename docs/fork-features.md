@@ -306,6 +306,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
   ],
   "upstreamFiles": [
     ".github/workflows/ci.yml",
+    ".github/workflows/pr-size.yml",
+    ".github/workflows/pr-vouch.yml",
     ".github/workflows/mobile-fingerprint-check.yml",
     "AGENTS.md",
     "apps/server/scripts/acp-replay-agent.ts",
