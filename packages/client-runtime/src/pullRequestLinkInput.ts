@@ -1,6 +1,7 @@
 import {
   pullRequestHostOf,
   type RepositoryIdentity,
+  type OrchestrationV2Command,
   type ScopedThreadRef,
   type ThreadId,
   type ThreadPullRequestLink,
@@ -8,8 +9,12 @@ import {
 import { parseChangeRequestUrl } from "@t3tools/shared/changeRequestUrl";
 import { threadPullRequestKeysEqual } from "@t3tools/shared/threadPullRequests";
 
-import type { WatchThreadPullRequestInput } from "./operations/commands.ts";
 import { sourceControlClients } from "./sourceControlClients.ts";
+
+type WatchThreadPullRequestInput = Omit<
+  Extract<OrchestrationV2Command, { type: "thread.pull-request.watch" }>,
+  "type" | "commandId"
+>;
 
 const PULL_REQUEST_NUMBER_PATTERN = /^#?(\d+)$/;
 

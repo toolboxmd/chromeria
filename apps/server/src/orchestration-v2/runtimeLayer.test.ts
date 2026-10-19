@@ -2284,8 +2284,9 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         });
         yield* onSetWatching(reference, true);
         const watchedParent = (yield* orchestrator.getThreadProjection(parentId)).thread;
+        assert.isDefined(watchedParent.pullRequests);
         assert.lengthOf(watchedParent.pullRequests, 1);
-        const watchedLink = watchedParent.pullRequests![0]!;
+        const watchedLink = watchedParent.pullRequests[0]!;
         assert.equal(watchedLink.host, "github.com");
         assert.equal(watchedLink.repository, "acme/web");
         assert.equal(watchedLink.number, 42);
