@@ -19,7 +19,8 @@ const CredentialAuditLine = Schema.Struct({
   providerSessionId: Schema.String,
   item: Schema.String,
   field: PreviewCredentialField,
-  origin: Schema.NullOr(Schema.String),
+  /** The matched vault host, or the page origin of a refusal before any value was typed. */
+  site: Schema.NullOr(Schema.String),
   tabId: Schema.NullOr(Schema.String),
   /** `filled`, a PreviewCredentialError reason, or another error's tag. */
   result: Schema.String,

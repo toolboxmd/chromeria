@@ -1870,7 +1870,7 @@ it.effect("a fill puts its tab in a login: every read refused, actions content-f
         filled: true,
         item: "Example",
         field: "password",
-        origin: "https://login.example.test",
+        site: "example.test",
         tabId,
       });
       expect(input.value()).toBe(SENTINEL);

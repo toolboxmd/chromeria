@@ -32,7 +32,7 @@ import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as McpToolAccessTestkit from "../mcp/McpToolAccess.testkit.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
 import { CREDENTIAL_AUDIT_FILE } from "./CredentialAudit.ts";
-import { fillCredential, originMatchesItem } from "./CredentialFill.ts";
+import { fillCredential, matchingItemHost } from "./CredentialFill.ts";
 import type { CredentialVault } from "./CredentialVault.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 
@@ -52,7 +52,7 @@ const expectNoSentinel = (value: unknown) => {
   }
 };
 
-describe("originMatchesItem", () => {
+describe("matchingItemHost", () => {
   const table: ReadonlyArray<[string, ReadonlyArray<string>, boolean]> = [
     ["https://shopify.com/login", ["shopify.com"], true],
     ["https://accounts.shopify.com/login", ["shopify.com"], true],
@@ -71,7 +71,7 @@ describe("originMatchesItem", () => {
     ["https://shopify.com", ["not a uri::"], false],
   ];
   it.each(table)("%s against %j is %s", (page, uris, expected) => {
-    expect(originMatchesItem(page, uris)).toBe(expected);
+    expect(matchingItemHost(page, uris) !== undefined).toBe(expected);
   });
 });
 
@@ -172,6 +172,7 @@ describe("fillCredential in a real browser", () => {
   let typing: Array<string>;
   const fill = (field: PreviewCredentialField, locator: string, item = "Example") =>
     fillCredential({
+      revealOrigin: true,
       tabId: "tab-1",
       vault,
       request: { item, field, locator, timeoutMs: 5_000 },
@@ -210,21 +211,21 @@ describe("fillCredential in a real browser", () => {
         filled: true,
         item: "Example",
         field: "username",
-        origin: "https://login.example.test",
+        site: "example.test",
         tabId: "tab-1",
       },
       {
         filled: true,
         item: "Example",
         field: "password",
-        origin: "https://login.example.test",
+        site: "example.test",
         tabId: "tab-1",
       },
       {
         filled: true,
         item: "Example",
         field: "totp",
-        origin: "https://login.example.test",
+        site: "example.test",
         tabId: "tab-1",
       },
     ]);
@@ -250,7 +251,7 @@ describe("fillCredential in a real browser", () => {
       String((await snapshot()).accessibilityTree),
     )![1];
     const result = await fill("password", `aria-ref=${frameRef}`);
-    expect(result.origin).toBe("https://idp.other.test");
+    expect(result.site).toBe("other.test");
     const frame = page.frames().find((candidate) => candidate.url().startsWith("https://idp"))!;
     expect(await frame.inputValue("#frame-pw")).toBe(SENTINELS.password);
   });
@@ -303,6 +304,7 @@ describe("fillCredential in a real browser", () => {
   it("passes vault refusals through with their reason", async () => {
     const error = await refused(
       fillCredential({
+        revealOrigin: true,
         tabId: "tab-1",
         vault: {
           ...vault,
@@ -315,9 +317,24 @@ describe("fillCredential in a real browser", () => {
     expect(error.detail).toMatchObject({ reason: "vaultLocked" });
   });
 
+  it("names no origin in a refusal once the login holds a value", async () => {
+    itemUris = ["shopify.com"];
+    const error = await refused(
+      fillCredential({
+        revealOrigin: false,
+        tabId: "tab-1",
+        vault,
+        request: { item: "Example", field: "password", locator: "#pw" },
+        locate: (selector) => ServerBrowserPage.targetLocator(page, { locator: selector })!,
+      }),
+    );
+    expect(error.detail).toEqual({ reason: "originMismatch", tabId: "tab-1" });
+  });
+
   it("types nothing when the caller refuses just before typing", async () => {
     const error = await refused(
       fillCredential({
+        revealOrigin: true,
         tabId: "tab-1",
         vault,
         request: { item: "Example", field: "password", locator: "#pw" },
@@ -400,6 +417,7 @@ describe("fillCredential in a real browser", () => {
               });
             return Effect.promise(() =>
               fillCredential({
+                revealOrigin: true,
                 tabId: "tab-1",
                 vault,
                 request: request.input as PreviewAutomationFillCredentialInput,
@@ -436,7 +454,7 @@ describe("fillCredential in a real browser", () => {
             filled: true,
             item: "Example",
             field: "password",
-            origin: "https://login.example.test",
+            site: "example.test",
           });
           itemUris = ["shopify.com"];
           const mismatch = yield* call({ item: "Example", field: "username", locator: "#user" });
@@ -466,14 +484,14 @@ describe("fillCredential in a real browser", () => {
               providerInstanceId: "codex",
               item: "Example",
               field: "password",
-              origin: "https://login.example.test",
+              site: "example.test",
               tabId: "tab-1",
               result: "filled",
             },
             {
               item: "Example",
               field: "username",
-              origin: "https://login.example.test",
+              site: "https://login.example.test",
               result: "originMismatch",
             },
           ]);

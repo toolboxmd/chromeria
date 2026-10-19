@@ -233,7 +233,7 @@ const handlers = {
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
       const threads = yield* ThreadManagementService.ThreadManagementService;
-      const audit = (outcome: { origin?: string; tabId?: string; result: string }) =>
+      const audit = (outcome: { site?: string; tabId?: string; result: string }) =>
         threads.getThreadShell(scope.thread.threadId).pipe(
           Effect.orElseSucceed(() => null),
           Effect.flatMap((shell) =>
@@ -245,7 +245,7 @@ const handlers = {
               providerSessionId: scope.thread.providerSessionId,
               item: input.item,
               field: input.field,
-              origin: outcome.origin ?? null,
+              site: outcome.site ?? null,
               tabId: outcome.tabId ?? input.tabId ?? null,
               result: outcome.result,
             }),
@@ -258,7 +258,7 @@ const handlers = {
       ).pipe(
         Effect.tap((result) =>
           audit({
-            origin: result.origin,
+            site: result.site,
             ...(result.tabId === undefined ? {} : { tabId: result.tabId }),
             result: "filled",
           }),
@@ -267,7 +267,7 @@ const handlers = {
           audit(
             error._tag === "PreviewCredentialError"
               ? {
-                  ...(error.origin === undefined ? {} : { origin: error.origin }),
+                  ...(error.origin === undefined ? {} : { site: error.origin }),
                   ...(error.tabId === undefined ? {} : { tabId: error.tabId }),
                   result: error.reason,
                 }

@@ -69,7 +69,9 @@ export const PreviewAutomationFillCredentialResult = Schema.Struct({
   filled: Schema.Boolean,
   item: Schema.String,
   field: PreviewCredentialField,
-  origin: Schema.String,
+  site: Schema.String.annotate({
+    description: "The vault item's host that the input's page matched, such as shopify.com.",
+  }),
   tabId: Schema.optional(PreviewTabId),
 });
 export type PreviewAutomationFillCredentialResult =

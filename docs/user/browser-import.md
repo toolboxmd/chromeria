@@ -83,13 +83,13 @@ recordings, console or network entries, downloads, URLs or titles. Chromeria sho
 **Login in progress**. The agent can still fill, click and type by locator, press keys and wait
 for an element, URL or text. The agent ends the login with `preview_end_login`, which closes those
 tabs, and continues in a new tab that is signed in through the profile's cookies. Closing the tabs
-yourself also ends it. A login in an incognito profile loses its session when its tabs close.
+yourself also ends it. A desktop tab whose connection drops and returns stays in its login. A login in an incognito profile loses its session when its tabs close.
 
 You still see the page in the live view.
 
 Each attempt appends a line to `credential-fills.jsonl` in the `userdata` directory. The line
-records the time, thread, project, provider, item, field, origin, tab and outcome, but never the
-value.
+records the time, thread, project, provider, item, field, the vault site that matched, the tab and
+the outcome, but never the value or the page's address.
 
 This keeps values out of agent transcripts and logs, and stops fills on the wrong site. It does
 not stop an agent with shell access from running `rbw` itself, or the agent using the signed-in

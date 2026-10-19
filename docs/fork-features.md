@@ -2862,6 +2862,7 @@ sources and reasons.
     "apps/server/src/preview/CredentialAudit.ts",
     "apps/server/src/preview/CredentialFill.test.ts",
     "apps/server/src/preview/CredentialFill.ts",
+    "apps/server/src/preview/CredentialLogin.integration.test.ts",
     "apps/server/src/preview/CredentialVault.test.ts",
     "apps/server/src/preview/CredentialVault.ts",
     "packages/contracts/src/previewCredential.ts"
