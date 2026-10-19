@@ -2728,6 +2728,7 @@ sources and reasons.
     "packages/shared/src/browserCookieMirror.ts"
   ],
   "upstreamFiles": [
+    "apps/desktop/scripts/main-process-bundle.test.mjs",
     "apps/desktop/src/preview/BrowserImport/ChromiumKeys.module.test.ts",
     "apps/desktop/src/preview/BrowserImport/ChromiumKeys.test.ts",
     "apps/desktop/vite.config.ts",
