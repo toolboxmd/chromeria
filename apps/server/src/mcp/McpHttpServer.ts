@@ -76,6 +76,7 @@ import * as ResearchHost from "../webResearch/ResearchHost.ts";
 import * as PageCache from "../webResearch/PageCache.ts";
 import * as PublicHttp from "../webResearch/PublicHttp.ts";
 import * as PublicRender from "../webResearch/PublicRender.ts";
+import * as Search from "../webResearch/Search.ts";
 import * as TinyFish from "../webResearch/TinyFish.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
@@ -847,78 +848,82 @@ export const layerHtmlToolkit = Layer.mergeAll(
 
 // Effect's generic registration displays Error.message instead of encoding the
 // declared error schema. Research peers need the code as well as the message.
-const registerWebRead = Effect.fn("McpHttpServer.registerWebRead")(function* () {
+const registerWebResearch = Effect.fn("McpHttpServer.registerWebResearch")(function* () {
   const server = yield* McpServer.McpServer;
   const research = yield* ResearchHost.ResearchHost;
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const built = yield* WebResearchToolkit;
-  const tool = WebResearchToolkit.tools.web_read;
-  yield* server.addTool({
-    tool: new McpSchema.Tool({
-      name: tool.name,
-      description: Tool.getDescription(tool),
-      inputSchema: Tool.getJsonSchema(tool),
-      outputSchema: Tool.getJsonSchemaFromSchema(tool.successSchema),
-      annotations: {
-        ...Context.getOption(tool.annotations, Tool.Title).pipe(
-          Option.map((title) => ({ title })),
-          Option.getOrUndefined,
-        ),
-        readOnlyHint: Context.get(tool.annotations, Tool.Readonly),
-        destructiveHint: Context.get(tool.annotations, Tool.Destructive),
-        idempotentHint: Context.get(tool.annotations, Tool.Idempotent),
-        openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
-      },
-    }),
-    annotations: tool.annotations,
-    handle: (payload) =>
-      Effect.withFiber((fiber) =>
-        built.handle("web_read", payload).pipe(
-          Stream.unwrap,
-          Stream.run(Sink.last()),
-          Effect.flatMap(Effect.fromOption),
-          Effect.provideService(ResearchHost.ResearchHost, research),
-          Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
-          Effect.provideService(
-            McpInvocationContext.McpInvocationContext,
-            Context.getUnsafe(fiber.context, McpInvocationContext.McpInvocationContext),
+  for (const name of ["web_read", "web_search"] as const) {
+    const tool = WebResearchToolkit.tools[name];
+    yield* server.addTool({
+      tool: new McpSchema.Tool({
+        name: tool.name,
+        description: Tool.getDescription(tool),
+        inputSchema: Tool.getJsonSchema(tool),
+        outputSchema: Tool.getJsonSchemaFromSchema(tool.successSchema),
+        annotations: {
+          ...Context.getOption(tool.annotations, Tool.Title).pipe(
+            Option.map((title) => ({ title })),
+            Option.getOrUndefined,
           ),
-          Effect.map(
-            ({ encodedResult }) =>
-              new McpSchema.CallToolResult({
-                structuredContent: encodedResult,
-                content: [{ type: "text", text: encodeJsonText(encodedResult) }],
-              }),
-          ),
-          Effect.catchTags({
-            AiError: (error) =>
-              Effect.fail(
-                error.reason._tag === "ToolParameterValidationError"
-                  ? new McpSchema.InvalidParams({ message: error.reason.message })
-                  : new McpSchema.InternalError({ message: "The research read failed." }),
-              ),
-            NoSuchElementError: () =>
-              Effect.fail(
-                new McpSchema.InternalError({ message: "The research read returned no result." }),
-              ),
-            OrchestratorMcpFailure: (error) => {
-              const failure = { code: error.code, message: error.message };
-              // outputSchema describes pages. SDK clients also validate error structuredContent.
-              return Effect.succeed(
+          readOnlyHint: Context.get(tool.annotations, Tool.Readonly),
+          destructiveHint: Context.get(tool.annotations, Tool.Destructive),
+          idempotentHint: Context.get(tool.annotations, Tool.Idempotent),
+          openWorldHint: Context.get(tool.annotations, Tool.OpenWorld),
+        },
+      }),
+      annotations: tool.annotations,
+      handle: (payload) =>
+        Effect.withFiber((fiber) =>
+          built.handle(name, payload).pipe(
+            Stream.unwrap,
+            Stream.run(Sink.last()),
+            Effect.flatMap(Effect.fromOption),
+            Effect.provideService(ResearchHost.ResearchHost, research),
+            Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
+            Effect.provideService(
+              McpInvocationContext.McpInvocationContext,
+              Context.getUnsafe(fiber.context, McpInvocationContext.McpInvocationContext),
+            ),
+            Effect.map(
+              ({ encodedResult }) =>
                 new McpSchema.CallToolResult({
-                  isError: true,
-                  content: [{ type: "text", text: encodeJsonText(failure) }],
+                  structuredContent: encodedResult,
+                  content: [{ type: "text", text: encodeJsonText(encodedResult) }],
                 }),
-              );
-            },
-          }),
+            ),
+            Effect.catchTags({
+              AiError: (error) =>
+                Effect.fail(
+                  error.reason._tag === "ToolParameterValidationError"
+                    ? new McpSchema.InvalidParams({ message: error.reason.message })
+                    : new McpSchema.InternalError({ message: "The research request failed." }),
+                ),
+              NoSuchElementError: () =>
+                Effect.fail(
+                  new McpSchema.InternalError({
+                    message: "The research request returned no result.",
+                  }),
+                ),
+              OrchestratorMcpFailure: (error) => {
+                const failure = { code: error.code, message: error.message };
+                // outputSchema describes success. SDK clients also validate error structuredContent.
+                return Effect.succeed(
+                  new McpSchema.CallToolResult({
+                    isError: true,
+                    content: [{ type: "text", text: encodeJsonText(failure) }],
+                  }),
+                );
+              },
+            }),
+          ),
         ),
-      ),
-  });
+    });
+  }
 });
 
 // One environment-owned reader/cache/limiter is shared by all MCP sessions.
-export const layerWebResearchToolkit = Layer.effectDiscard(registerWebRead()).pipe(
+export const layerWebResearchToolkit = Layer.effectDiscard(registerWebResearch()).pipe(
   Layer.provide(McpToolAccess.HandlersLayer.layer(WebResearchHandlers.layer)),
   Layer.provide(ResearchHost.layer),
 );
@@ -926,6 +931,12 @@ export const layerWebResearchToolkit = Layer.effectDiscard(registerWebRead()).pi
 const layerWebResearch = layerWebResearchToolkit.pipe(
   Layer.provide(
     WebResearch.layer.pipe(
+      Layer.provide(
+        Search.layer.pipe(
+          Layer.provide(NodeHttpClient.layerNodeHttp),
+          Layer.provide(ServerSecretStore.layer),
+        ),
+      ),
       Layer.provide(PageCache.layer),
       Layer.provide(PublicHttp.layer),
       Layer.provide(PublicRender.layer),

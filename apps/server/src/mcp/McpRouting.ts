@@ -149,7 +149,7 @@ export const invoke = <P, A, E, R>(
     if (Option.isNone(scopeOption)) return yield* here;
     const scope = scopeOption.value;
     const environmentId = PeerForwarding.remoteTarget(scope, decoded.value.environmentId);
-    if (tool.name === "web_read" && environmentId !== undefined)
+    if ((tool.name === "web_read" || tool.name === "web_search") && environmentId !== undefined)
       return yield* new OrchestratorMcpFailure({
         code: "invalid_request",
         message: "Select the research host with webResearch.host instead of environmentId.",

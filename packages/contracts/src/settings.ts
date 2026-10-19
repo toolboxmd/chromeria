@@ -1,4 +1,5 @@
 import { SpectrumSettings, DEFAULT_SPECTRUM_SETTINGS } from "./spectrumSettings.ts";
+import { WebResearchSettings, WebResearchSettingsPatch } from "./webResearch.ts";
 import { forkOpaqueSettingsFields } from "./forkSettings.ts";
 import { PrismProjectRoleKits, PrismRoleKits, PrismRoleKitsPatch } from "./prism.ts";
 import { SshDeviceHostConfigs } from "./device.ts";
@@ -16,7 +17,6 @@ import {
   ForwardCompatibleNullable,
   ForwardCompatibleOptional,
   OmittedWhenNull,
-  EnvironmentId,
   ProjectId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -1053,9 +1053,14 @@ export const StorageCleanupSettings = Schema.Struct({
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
 export const ServerSettings = Schema.Struct({
-  webResearch: Schema.Struct({
-    host: Schema.NullOr(EnvironmentId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
-  }).pipe(Schema.withDecodingDefault(Effect.succeed({ host: null }))),
+  webResearch: WebResearchSettings.pipe(
+    Schema.withDecodingDefault(
+      Effect.succeed({
+        host: null,
+        searxngUrl: "https://bestia.napoleon-sun.ts.net:8888",
+      }),
+    ),
+  ),
   // Null means no client has migrated this preference yet; an empty value is
   // authoritative so another device cannot resurrect cleared preferences.
   favorites: Schema.NullOr(ModelFavorites).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -1364,7 +1369,7 @@ const ModelSelectionPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
-  webResearch: Schema.optionalKey(Schema.Struct({ host: Schema.NullOr(EnvironmentId) })),
+  webResearch: Schema.optionalKey(WebResearchSettingsPatch),
   setModelFavorites: Schema.optionalKey(
     Schema.Array(Schema.Struct({ ...ModelFavorite.fields, favorite: Schema.Boolean })),
   ),

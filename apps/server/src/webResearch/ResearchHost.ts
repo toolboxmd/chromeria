@@ -1,4 +1,9 @@
-import { EnvironmentId, OrchestratorMcpFailure } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  OrchestratorMcpFailure,
+  WebSearchInput,
+  WebSearchResult,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -10,6 +15,7 @@ import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 import * as Settings from "../serverSettings.ts";
 import * as PageCache from "./PageCache.ts";
+import * as Search from "./Search.ts";
 import * as TinyFish from "./TinyFish.ts";
 import * as WebResearch from "./WebResearch.ts";
 import { WebReadInput, WebReadPage, WebReadResult } from "./schemas.ts";
@@ -30,6 +36,11 @@ export const HostedWebReadResult = Schema.Struct({
   ...WebReadResult.fields,
   ...HostedWebReadPage.fields,
   subpages: Schema.Array(HostedWebReadPage),
+});
+
+export const HostedWebSearchResult = Schema.Struct({
+  ...WebSearchResult.fields,
+  researchEnvironmentId: EnvironmentId,
 });
 
 export class ResearchHostUnavailable extends Schema.TaggedError<ResearchHostUnavailable>()(
@@ -54,9 +65,17 @@ export class ResearchCacheOwnerError extends Schema.TaggedError<ResearchCacheOwn
   }
 }
 
+/** @effect-expect-leaking McpInvocationContext -- forwarding preserves the current request caller, never the registering caller. */
 export class ResearchHost extends Context.Service<
   ResearchHost,
   {
+    readonly search: (
+      input: typeof WebSearchInput.Type,
+    ) => Effect.Effect<
+      typeof HostedWebSearchResult.Type,
+      Search.WebSearchInputError | ResearchHostUnavailable | OrchestratorMcpFailure,
+      Invocation.McpInvocationContext
+    >;
     readonly read: (
       input: typeof HostedWebReadInput.Type,
     ) => Effect.Effect<
@@ -158,7 +177,59 @@ const make = Effect.gen(function* () {
       });
     return page;
   });
-  return ResearchHost.of({ read });
+  const searchTool = Tool.make("web_search", {
+    parameters: WebSearchInput,
+    success: HostedWebSearchResult,
+    failure: OrchestratorMcpFailure,
+  });
+  const search = Effect.fn("ResearchHost.search")(function* (input: typeof WebSearchInput.Type) {
+    const scope = yield* Invocation.McpInvocationContext;
+    const host =
+      (yield* settings.getSettings.pipe(
+        Effect.mapError(
+          (cause) =>
+            new ResearchHostUnavailable({
+              environmentId: scope.environmentId,
+              reason: "link",
+              cause,
+            }),
+        ),
+      )).webResearch.host ?? scope.environmentId;
+    if (host === scope.environmentId)
+      return { ...(yield* research.search(input)), researchEnvironmentId: host };
+    if (scope.client?.linked === true)
+      return yield* new ResearchHostUnavailable({ environmentId: host, reason: "forwarding_loop" });
+    const resolved = yield* links
+      .resolve(host)
+      .pipe(
+        Effect.mapError((cause) =>
+          cause.reason === "expired"
+            ? new OrchestratorMcpFailure({ code: "capability_denied", message: cause.message })
+            : new ResearchHostUnavailable({ environmentId: host, reason: "link", cause }),
+        ),
+      );
+    if (resolved.link.access === "read-only")
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "Research searches require a peer link with agent access.",
+      });
+    const result = yield* forwarding
+      .call(scope, searchTool, host, input, { expectedLinkIdentity: resolved.link.launchIdentity })
+      .pipe(
+        Effect.mapError((cause) =>
+          cause._tag === "OrchestratorMcpFailure" && cause.code === "orchestration_error"
+            ? new ResearchHostUnavailable({ environmentId: host, reason: "transport", cause })
+            : cause,
+        ),
+      );
+    if (result.researchEnvironmentId !== host)
+      return yield* new ResearchHostUnavailable({
+        environmentId: host,
+        reason: "invalid_response",
+      });
+    return result;
+  });
+  return ResearchHost.of({ read, search });
 });
 
 export const layer = Layer.effect(ResearchHost, make);

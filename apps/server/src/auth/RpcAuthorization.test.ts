@@ -287,7 +287,7 @@ describe("settings mutation authorization", () => {
   };
 
   it.effect.each([false, true])(
-    "authorizes research host selection and clearing (grant=%s)",
+    "authorizes research host and search endpoint settings (grant=%s)",
     (granted) =>
       Effect.gen(function* () {
         let handled = 0;
@@ -304,17 +304,19 @@ describe("settings mutation authorization", () => {
             ),
           ),
         );
-        for (const host of [null, EnvironmentId.make("research-bestia")]) {
-          const request = client[WS_METHODS.serverUpdateSettings]({
-            patch: { webResearch: { host } },
-          });
+        for (const webResearch of [
+          { host: null },
+          { host: EnvironmentId.make("research-bestia") },
+          { searxngUrl: "http://configured-search.internal:8888" },
+        ]) {
+          const request = client[WS_METHODS.serverUpdateSettings]({ patch: { webResearch } });
           if (granted) yield* request;
           else
             expect(yield* request.pipe(Effect.flip)).toMatchObject({
               requiredPermission: AuthSettingsWriteScope,
             });
         }
-        expect(handled).toBe(granted ? 2 : 0);
+        expect(handled).toBe(granted ? 3 : 0);
       }).pipe(Effect.scoped),
   );
 

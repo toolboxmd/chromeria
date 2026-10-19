@@ -1,3 +1,4 @@
+import * as Search from "../webResearch/Search.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
@@ -78,6 +79,7 @@ const fixture = Effect.fnUntraced(function* (
     { runEffectWorker: false },
   );
   const reader = WebResearch.layer.pipe(
+    Layer.provide(Layer.mock(Search.Search)({})),
     Layer.provide(Layer.succeed(TinyFish.TinyFish, { fetch: () => Effect.succeed(undefined) })),
     Layer.provide(cacheLayer),
     Layer.provide(

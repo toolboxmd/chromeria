@@ -198,10 +198,10 @@ again on its next connect.
 For Antigravity's Google callback on a remote host, see
 [remote sign-in](./providers-antigravity.md#sign-in-from-a-remote-device).
 
-## Share research reads across environments
+## Share research across environments
 
 Agents in Chromeria can share one environment's public-page cache and request
-limits through `web_read`. Link each source environment to the research
+limits through `web_read` and discovery budgets through `web_search`. Link each source environment to the research
 environment with agent access, then find its ID with `t3 environment list`.
 In each source server's `userdata/settings.json`, set:
 
@@ -211,8 +211,20 @@ In each source server's `userdata/settings.json`, set:
 
 Merge this entry into your existing settings. Leave it unset, or set `host` to
 `null`, on the research environment itself. An unavailable or revoked link
-returns an error; reads do not fall back to the source machine. These server
+returns an error; reads and searches do not fall back to the source machine. These server
 settings apply to agents used from web, desktop and mobile.
+
+Use `web_search(query, locale?)` for site/social and non-English community
+queries, preserving `site:` and `-site:` filters and a locale such as `pl-PL`.
+Keep the harness's own search for bulk discovery. Results include attributed
+snippets and each engine's health; an unhealthy engine's empty output does not
+mean no matches. Search results are not cached, and shared 25-second spacing
+and provider budgets can delay or limit new queries.
+
+The research server uses the existing SearXNG JSON service at
+`https://bestia.napoleon-sun.ts.net:8888`. Set `webResearch.searxngUrl` on that
+server to use another configured service. TinyFish search uses the same server
+secret as its page-reading fallback and only accepts observed zero-cost calls.
 
 For long pages, pass the returned `cacheId`, `cacheEnvironmentId` and
 `nextOffset` (as `offset`) to continue. Changing the research host requires
