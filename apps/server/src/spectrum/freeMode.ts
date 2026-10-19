@@ -130,7 +130,7 @@ export function whiteInstruction(state: SpectrumState, phase: SpectrumRound["pha
       ? "Your previous moderation reply did not end with a valid control line. "
       : "";
   return [
-    `${reask}You are White, moderating this free discussion. ${budget}`,
+    `${reask}You are ${state.white?.label ?? "White"}, moderating this free discussion. ${budget}`,
     "You may write a short message for the discussion. Then end with one final line:",
     `NEXT: <label> to choose who speaks next (one of: ${labels}), or DONE to close the discussion.`,
   ].join("\n");

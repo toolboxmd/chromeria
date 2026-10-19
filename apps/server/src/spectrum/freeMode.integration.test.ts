@@ -245,6 +245,45 @@ it.effect("White's NEXT decides the next speaker, including repeats, then DONE s
   }).pipe(Effect.provide(runtime)),
 );
 
+it.effect("a Color labelled White speaks as a Color; the moderator is White (moderator)", () =>
+  Effect.gen(function* () {
+    yield* boot;
+    let state = yield* register(free(["White", "Red"], 6));
+    const spoken: string[] = [];
+    const prompts: string[] = [];
+    for (const text of [
+      "White opens.",
+      "Red opens.",
+      "Back to the White Color.\nNEXT: White",
+      "The White Color again.",
+      "Enough.\nDONE",
+      "Summary.",
+    ]) {
+      const step = yield* answer(state, { text });
+      spoken.push(step.spoke);
+      prompts.push(step.prompt);
+      state = step.next;
+    }
+    // NEXT: White names the Color, never the moderator.
+    assert.deepStrictEqual(spoken, [
+      "free:White",
+      "free:Red",
+      "moderation:White (moderator)",
+      "free:White",
+      "moderation:White (moderator)",
+      "summary:White (moderator)",
+    ]);
+    assert.include(prompts[2]!, "You are White (moderator), moderating");
+    assert.include(prompts[2]!, "(one of: White, Red)");
+    const transcript = yield* transcriptTexts(state.threadId);
+    assert.includeMembers(transcript, [
+      "[White]\nThe White Color again.",
+      "[White (moderator)]\nBack to the White Color.",
+      "[White (moderator)]\nSummary.",
+    ]);
+  }).pipe(Effect.provide(runtime)),
+);
+
 it.effect("the cap ends the discussion and White always moderates after the opening round", () =>
   Effect.gen(function* () {
     yield* boot;

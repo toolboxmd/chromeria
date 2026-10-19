@@ -320,8 +320,12 @@ const make = Effect.gen(function* () {
     const resolved = yield* Effect.forEach(input.colors, (color, index) =>
       resolveMember(color, ThreadId.make(`sub.${input.threadId}.color.${index}`)),
     );
+    // A Color may be called White; the separate member then takes a name no Color shares.
+    const whiteLabel = input.colors.some((color) => color.label.trim().toLowerCase() === "white")
+      ? "White (moderator)"
+      : "White";
     const white = yield* resolveMember(
-      { ...input.white, label: "White" },
+      { ...input.white, label: whiteLabel },
       ThreadId.make(`sub.${input.threadId}.white`),
     );
     const binding =

@@ -335,8 +335,9 @@ function SpectrumEditor({
                 }
               />
               <p className="text-xs text-muted-foreground">
-                How many times each Color may speak in a free discussion. It ends after this many
-                turns per Color, or earlier when White says it is done.
+                Sets the length of a free discussion: it ends after this many turns per Color in
+                total (for example 3 with 4 Colors allows 12 turns), or earlier when White says it
+                is done.
               </p>
             </div>
             <Button disabled={disabled || saving || !dirty} onClick={() => void save()}>

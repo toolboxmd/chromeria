@@ -775,6 +775,44 @@ it.effect(
 );
 
 it.effect(
+  "a Color labelled White keeps its name and the separate White becomes White (moderator)",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      yield* initializeRecoveryHistory;
+      const state = yield* (yield* Launch.SpectrumLaunchService).register({
+        ...input,
+        colors: input.colors.map((color, index) =>
+          index === 0 ? { ...color, label: "White" } : color,
+        ),
+      });
+      const projections = yield* Projection.ProjectionStoreV2;
+      const color = state.participants[0]!;
+      assert.strictEqual(color.label, "White");
+      assert.strictEqual(state.white!.label, "White (moderator)");
+      assert.strictEqual((yield* projections.getThread(color.threadId)).title, "White");
+      assert.strictEqual(
+        (yield* projections.getThread(state.white!.threadId)).title,
+        "White (moderator)",
+      );
+      const { current } = yield* runCouncil(state.threadId);
+      assert.strictEqual(current.status, "settled");
+      const transcript = (yield* projections.getThreadRecords(state.threadId, [
+        "messages",
+      ])).messages
+        .map((message) => message.text)
+        .filter((text) => text.startsWith("[White"));
+      // The Color answers and relays as White; only the synthesis is tagged as the moderator.
+      assert.deepStrictEqual(transcript, [
+        "[White]\n0/0 reply",
+        "[White]\n1/0 reply",
+        "[White]\n2/0 reply",
+        "[White (moderator)]\n3/0 reply",
+      ]);
+    }).pipe(Effect.provide(runtime)),
+);
+
+it.effect(
   "a Spectrum persisted before White was its own member resumes with the Color as White",
   () =>
     Effect.gen(function* () {
