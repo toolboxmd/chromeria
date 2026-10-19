@@ -596,6 +596,27 @@ it.effect("a client launches at its ceiling with the project's default model", (
     const escalated = yield* handle({ title: "Fix", projectId, runtimeMode: "full-access" });
     expect(escalated.at(-1)?.result).toMatchObject({ code: "runtime_mode_escalation_denied" });
 
+    const untargeted = yield* handle({ title: "Fix" });
+    expect(untargeted.at(-1)?.result).toMatchObject({ code: "target_required" });
+    expect(launched).toHaveLength(1);
+  }),
+);
+
+it.effect("an outside full-access client forwards bare and private HTTP MCP configuration", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { projectId, dependencies } = clientLaunchHarness({
+      runtimeModeCeiling: "full-access",
+      launched,
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+          Layer.provide(prismDependencies),
+          Layer.provide(dependencies),
+        ),
+      ),
+    );
     const tools = {
       allow: ["mcp:outreach:read_venue", "mcp:outreach:submit_result"],
       mcpServers: {
@@ -606,14 +627,14 @@ it.effect("a client launches at its ceiling with the project's default model", (
         },
       },
     };
-    yield* handle({ title: "Restricted venue", projectId, bare: {}, tools });
-    expect(launched[1]?.bare).toEqual({});
-    expect(launched[1]?.tools).toEqual(tools);
-    expect(launched[1]?.initialMessage?.text).toBeUndefined();
+    yield* toolkit
+      .handle("t3_thread_launch", { title: "Restricted venue", projectId, bare: {}, tools })
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+    expect(launched[0]?.bare).toEqual({});
+    expect(launched[0]?.tools).toEqual(tools);
+    expect(launched[0]?.initialMessage?.text).toBeUndefined();
 
-    const untargeted = yield* handle({ title: "Fix" });
-    expect(untargeted.at(-1)?.result).toMatchObject({ code: "target_required" });
-    expect(launched).toHaveLength(2);
+    expect(launched[0]?.runtimeMode).toBe("full-access");
   }),
 );
 

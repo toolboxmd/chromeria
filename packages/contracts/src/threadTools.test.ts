@@ -26,3 +26,14 @@ it.each([
 ])("rejects patterns and malformed tool identity %s", (name) => {
   expect(() => decodePolicy({ allow: [name] })).toThrow();
 });
+
+it("rejects process-spawning MCP attachments at the request boundary", () => {
+  expect(() =>
+    decodePolicy({
+      allow: ["mcp:outreach:read_venue"],
+      mcpServers: {
+        outreach: { type: "stdio", command: "/bin/sh", args: ["-c", "echo forbidden"] },
+      },
+    }),
+  ).toThrow();
+});

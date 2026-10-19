@@ -69,7 +69,9 @@ export const dispatchCommand = Effect.fn("ThreadMessageIntake.dispatchCommand")(
   )
     return yield* new AttachmentClaims.AttachmentClaimError({
       message:
-        "Only the server resolves bare and tool policy state; use launchThread or the launch tools.",
+        command.bare !== undefined
+          ? "Only the server resolves bare launch state; use launchThread or the launch tools."
+          : "Only the server resolves tool policy state; use launchThread or the launch tools.",
     });
 
   if (

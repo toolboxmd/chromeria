@@ -1,3 +1,4 @@
+import { TOOL_POLICY_MODE_ERROR, ToolPolicyError } from "@t3tools/provider-core/server/toolPolicy";
 import * as ThreadMcpConfig from "../ThreadMcpConfig.ts";
 import { executionPurposeOf, type NativeExecutionSegment } from "@t3tools/contracts";
 import {
@@ -1222,15 +1223,15 @@ export function makeClaudeQueryOptions(input: {
           },
         };
   if (input.toolPolicy === undefined) return result;
+  if (input.permissionMode !== "bypassPermissions")
+    throw new ToolPolicyError({ reason: TOOL_POLICY_MODE_ERROR });
   const allowed = input.toolPolicy.allow.map((name) =>
     name.startsWith("mcp:") ? `mcp__${name.slice(4).replace(":", "__")}` : name,
   );
   const threadServers: NonNullable<ClaudeQueryOptions["mcpServers"]> = Object.fromEntries(
     Object.entries(input.threadMcpServers ?? {}).map(([name, server]) => [
       name,
-      server.type === "stdio"
-        ? { ...server, args: [...(server.args ?? [])], env: { ...server.env } }
-        : { ...server, headers: { ...server.headers } },
+      { ...server, headers: { ...server.headers } },
     ]),
   );
   const servers = { ...result.mcpServers, ...threadServers };
@@ -1240,15 +1241,7 @@ export function makeClaudeQueryOptions(input: {
       (name) =>
         !name.startsWith("mcp:") && (!Array.isArray(input.tools) || input.tools.includes(name)),
     ),
-    allowedTools:
-      input.permissionMode === "bypassPermissions"
-        ? allowed
-        : allowed.filter((name) =>
-            input.allowedTools?.some(
-              (rule) =>
-                rule === name || (rule.endsWith("__*") && name.startsWith(rule.slice(0, -1))),
-            ),
-          ),
+    allowedTools: allowed,
     disallowedTools: [],
     permissionMode: "dontAsk",
     allowDangerouslySkipPermissions: false,
@@ -8725,6 +8718,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const shouldResume =
             resumeSessionAt !== undefined || openedWithResume || hasPersistedProviderTurn;
           const toolPolicy = turnInput.runtimePolicy.tools;
+          if (toolPolicy !== undefined && queryPolicy.permissionMode !== "bypassPermissions")
+            return yield* queryRunnerError(TOOL_POLICY_MODE_ERROR, "query");
           let threadMcpServers: import("@t3tools/contracts").ThreadMcpServers | undefined;
           if (toolPolicy?.mcpConfigId !== undefined) {
             if (adapterOptions.threadMcpConfig === undefined)

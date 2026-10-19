@@ -4059,6 +4059,25 @@ it.effect(
         first.projection.thread.tools?.mcpConfigId,
       );
       expect(untouched.thread.tools).toEqual(second.projection.thread.tools);
+      yield* threads
+        .dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("restricted-lower-mode"),
+          threadId: first.threadId,
+          runtimeMode: "approval-required",
+        })
+        .pipe(Effect.flip);
+      yield* threads
+        .dispatch({
+          type: "thread.interaction-mode.set",
+          commandId: CommandId.make("restricted-plan-mode"),
+          threadId: first.threadId,
+          interactionMode: "plan",
+        })
+        .pipe(Effect.flip);
+      const admitted = yield* threads.getThreadRecords(first.threadId, []);
+      expect(admitted.thread.runtimeMode).toBe("full-access");
+      expect(admitted.thread.interactionMode).toBe("default");
       yield* threads.dispatch({
         type: "message.dispatch",
         commandId: CommandId.make("restricted-busy"),
@@ -4101,3 +4120,36 @@ it.effect(
     }).pipe(Effect.provide(h.layer));
   },
 );
+
+it.effect.each([
+  { runtimeMode: "approval-required" as const, interactionMode: "default" as const },
+  { runtimeMode: "auto-accept-edits" as const, interactionMode: "default" as const },
+  { runtimeMode: "auto" as const, interactionMode: "default" as const },
+  { runtimeMode: "full-access" as const, interactionMode: "plan" as const },
+])("rejects restricted launches in unsupported modes: $runtimeMode/$interactionMode", (modes) => {
+  const h = makeHarness({
+    adapters: [{ ...adapter, driver: ProviderDriverKind.make("claudeAgent") }],
+  });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const error = yield* launches
+      .launch({
+        ...launchInput({ command: "unsupported-mode", thread: "unsupported-mode" }),
+        ...modes,
+        tools: {
+          allow: ["mcp:outreach:read_venue"],
+          mcpServers: {
+            outreach: { type: "http", url: "http://localhost/outreach" },
+          },
+        },
+      })
+      .pipe(Effect.flip);
+    expect(error.message).toContain("full-access");
+    expect(
+      yield* (yield* ThreadManagement.ThreadManagementService).listProjectThreads({
+        projectId,
+        includeSubagents: true,
+      }),
+    ).toHaveLength(0);
+  }).pipe(Effect.provide(h.layer));
+});

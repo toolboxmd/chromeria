@@ -1,4 +1,7 @@
-import { toolAllowlistsEqual } from "@t3tools/provider-core/server/toolPolicy";
+import {
+  toolAllowlistsEqual,
+  toolPolicyModeRejection,
+} from "@t3tools/provider-core/server/toolPolicy";
 import * as ThreadMcpConfig from "../orchestration-v2/ThreadMcpConfig.ts";
 import * as Prism from "../prism/PrismService.ts";
 import { executionPurposeOf } from "@t3tools/contracts";
@@ -300,6 +303,14 @@ const make = Effect.gen(function* () {
           code: "invalid_request",
           message: "Launch tool allowlist changed.",
         });
+      if (input.tools !== undefined) {
+        const modeError = toolPolicyModeRejection({
+          runtimeMode: runtimeMode ?? inheritedRuntimeMode,
+          interactionMode: interactionMode ?? parent.thread.interactionMode,
+        });
+        if (modeError !== undefined)
+          return yield* new OrchestratorMcpFailure({ code: "invalid_request", message: modeError });
+      }
       let safeTools = earlier?.tools;
       if (input.tools !== undefined && earlier === undefined) {
         if (Option.isNone(configs))

@@ -1,4 +1,5 @@
 import {
+  toolPolicyModeRejection,
   toolPolicyRejection,
   toolAllowlistsEqual,
   ToolPolicyError,
@@ -1172,7 +1173,7 @@ const make = Effect.gen(function* () {
           const adapter = yield* toolAdapters.value
             .get(input.modelSelection.instanceId)
             .pipe(Effect.mapError(mapError(input, "create-thread")));
-          const rejection = toolPolicyRejection(adapter.driver, input.tools);
+          const rejection = toolPolicyRejection(adapter.driver, input.tools, input);
           if (rejection !== undefined)
             return yield* mapError(
               input,
@@ -1534,6 +1535,8 @@ const make = Effect.gen(function* () {
       .getThreadRecords(input.threadId, [])
       .pipe(Effect.mapError(failed));
     if (thread.tools === undefined || Option.isNone(threadMcpConfig)) return yield* failed();
+    const modeError = toolPolicyModeRejection(thread);
+    if (modeError !== undefined) return yield* new ToolPolicyError({ reason: modeError });
     const replacement = yield* threadMcpConfig.value.prepare({
       allow: thread.tools.allow,
       mcpServers: input.servers,

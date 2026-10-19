@@ -45,13 +45,27 @@ it("keeps full-access defaults unchanged when the option is absent", () => {
   expect(options.allowedTools).toEqual(["mcp__t3-code__*"]);
 });
 
-it("does not raise a read-only sandbox's native tool inventory", () => {
-  const options = makeClaudeQueryOptions({
-    ...input,
-    permissionMode: "default",
-    tools: ["Read", "Glob", "Grep"],
-    toolPolicy: { allow: ["Bash", "Read", "Write"] },
-  });
-  expect(options.tools).toEqual(["Read"]);
-  expect(options.allowedTools).not.toContain("Bash");
+it("rejects a read-only sandbox rather than overriding its admitted native mode", () => {
+  expect(() =>
+    makeClaudeQueryOptions({
+      ...input,
+      permissionMode: "default",
+      tools: ["Read", "Glob", "Grep"],
+      toolPolicy: { allow: ["Bash", "Read"] },
+    }),
+  ).toThrow(/full-access/);
 });
+
+it.each(["default", "acceptEdits", "auto", "plan", "dontAsk"] as const)(
+  "rejects an allowlist under native mode %s instead of attaching unusable tools",
+  (permissionMode) => {
+    expect(() =>
+      makeClaudeQueryOptions({
+        ...input,
+        permissionMode,
+        toolPolicy: { allow: ["mcp:outreach:read_venue"] },
+        threadMcpServers: { outreach: { type: "http", url: "http://localhost/outreach" } },
+      }),
+    ).toThrow(/full-access/);
+  },
+);

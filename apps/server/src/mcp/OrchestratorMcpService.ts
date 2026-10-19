@@ -2682,6 +2682,15 @@ const make = Effect.gen(function* () {
         });
         if (input.bare !== undefined && !isRetryOfAcceptedDelegation)
           yield* bareTarget(target.modelSelection);
+        const runtimeMode = yield* resolveRuntimeMode(
+          parent.thread.runtimeMode,
+          input.runtimeMode,
+          runtimeTarget,
+        );
+        const interactionMode = yield* resolveInteractionMode(
+          parent.thread.interactionMode,
+          input.interactionMode,
+        );
         let resolvedTools: import("@t3tools/contracts").ThreadTools | undefined;
         if (input.tools !== undefined && !isRetryOfAcceptedDelegation) {
           const adapter = yield* providerAdapters
@@ -2691,7 +2700,10 @@ const make = Effect.gen(function* () {
                 failure("invalid_request", "Tool allowlist provider is unavailable."),
               ),
             );
-          const rejection = toolPolicyRejection(adapter.driver, input.tools);
+          const rejection = toolPolicyRejection(adapter.driver, input.tools, {
+            runtimeMode,
+            interactionMode,
+          });
           if (rejection !== undefined) return yield* failure("invalid_request", rejection);
           if (Option.isNone(threadMcpConfig))
             return yield* failure(
@@ -2703,15 +2715,6 @@ const make = Effect.gen(function* () {
             .prepare(input.tools)
             .pipe(Effect.mapError((error) => failure("invalid_request", error.message)));
         }
-        const runtimeMode = yield* resolveRuntimeMode(
-          parent.thread.runtimeMode,
-          input.runtimeMode,
-          runtimeTarget,
-        );
-        const interactionMode = yield* resolveInteractionMode(
-          parent.thread.interactionMode,
-          input.interactionMode,
-        );
         let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
         if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
           const projectId = input.projectId ?? parent.thread.projectId;

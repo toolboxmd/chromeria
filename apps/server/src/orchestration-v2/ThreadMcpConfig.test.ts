@@ -33,9 +33,9 @@ it.effect(
         allow: ["mcp:outreach:read_venue"],
         mcpServers: {
           outreach: {
-            type: "stdio",
-            command: "/project/outreach",
-            env: { TOKEN: "venue-b-generation-1" },
+            type: "http",
+            url: "http://localhost/mcp",
+            headers: { Authorization: "venue-b-generation-1" },
           },
         },
       });
@@ -46,7 +46,7 @@ it.effect(
         outreach: { headers: { Authorization: "venue-a-generation-1" } },
       });
       expect(yield* restarted.read(b.mcpConfigId!)).toMatchObject({
-        outreach: { env: { TOKEN: "venue-b-generation-1" } },
+        outreach: { headers: { Authorization: "venue-b-generation-1" } },
       });
       const error = yield* restarted.read("00000000-0000-0000-0000-000000000000").pipe(Effect.flip);
       expect(error.message).toBe("Thread MCP configuration is unavailable.");

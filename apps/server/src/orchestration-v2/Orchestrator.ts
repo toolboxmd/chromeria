@@ -1,3 +1,4 @@
+import { TOOL_POLICY_MODE_ERROR } from "@t3tools/provider-core/server/toolPolicy";
 import { ProjectionStoreThreadNotFoundError } from "./ProjectionStore.ts";
 import { ForkCommandInterceptor } from "../fork/ForkCommandInterceptor.ts";
 import * as ExecutionPurpose from "./ExecutionPurpose.ts";
@@ -2815,6 +2816,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Thread ${command.threadId} is deleted.`,
       });
     }
+    if (
+      thread.tools !== undefined &&
+      ((command.type === "thread.runtime-mode.set" && command.runtimeMode !== "full-access") ||
+        (command.type === "thread.interaction-mode.set" && command.interactionMode !== "default"))
+    )
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: TOOL_POLICY_MODE_ERROR,
+      });
     const sharingRefusal =
       command.type === "thread.share" ||
       command.type === "thread.unshare" ||
@@ -2911,6 +2922,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         .pipe(mapDispatchError(command));
       if (
         thread.tools === undefined ||
+        thread.runtimeMode !== "full-access" ||
+        thread.interactionMode !== "default" ||
         (thread.tools.mcpConfigId ?? null) !== command.mcpConfigUpdate.expectedConfigId ||
         records.runs.some((run) =>
           ["queued", "running", "waiting", "preparing", "starting"].includes(run.status),

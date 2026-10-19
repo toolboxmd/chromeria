@@ -1,5 +1,4 @@
 import * as Schema from "effect/Schema";
-import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 const Name = Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/));
 const ToolName = Schema.String.check(
@@ -8,19 +7,11 @@ const ToolName = Schema.String.check(
   ),
 );
 const Allow = Schema.Array(ToolName).check(Schema.isMaxLength(128));
-export const ThreadMcpServer = Schema.Union([
-  Schema.Struct({
-    type: Schema.Literal("http"),
-    url: Schema.String.check(Schema.isPattern(/^https?:\/\/[^\s]+$/)),
-    headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("stdio"),
-    command: TrimmedNonEmptyString,
-    args: Schema.optional(Schema.Array(Schema.String)),
-    env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-  }),
-]);
+export const ThreadMcpServer = Schema.Struct({
+  type: Schema.Literal("http"),
+  url: Schema.String.check(Schema.isPattern(/^https?:\/\/[^\s]+$/)),
+  headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+});
 export type ThreadMcpServer = typeof ThreadMcpServer.Type;
 export const ThreadMcpServers = Schema.Record(Name, ThreadMcpServer);
 export type ThreadMcpServers = typeof ThreadMcpServers.Type;

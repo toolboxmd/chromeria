@@ -2115,6 +2115,7 @@ export const layerWithOptions = (
                 const rejection = toolPolicyRejection(
                   toolAdapter.driver,
                   input.runtimePolicy.tools,
+                  input.runtimePolicy,
                 );
                 if (rejection !== undefined)
                   return yield* new ProviderSessionOpenError({
