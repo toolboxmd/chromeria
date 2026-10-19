@@ -1,6 +1,7 @@
 import { unsupportedBare } from "@t3tools/provider-core/server/bareLaunch";
 import {
   DEFAULT_PRISM_LANE,
+  isPrismRunGroupRole,
   isProviderAvailable,
   OrchestratorMcpFailure,
   prismRoleModels,
@@ -9,6 +10,7 @@ import {
   type PrismDelegateRole,
   type PrismLane,
   type PrismRole,
+  type PrismRoleKits,
   type ProjectId,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -133,30 +135,51 @@ export class PrismService extends Context.Service<
       readonly validate?:
         | ((selection: ModelSelection) => Effect.Effect<ModelSelection, OrchestratorMcpFailure>)
         | undefined;
+      /**
+       * How many Colors to start, for a Run group: the first that many that
+       * can start, in list order. Defaults to 1; an explicit selection is one.
+       */
+      readonly count?: number | undefined;
     }) => Effect.Effect<
-      { readonly modelSelection: ModelSelection; readonly kitText: string },
+      {
+        readonly modelSelection: ModelSelection;
+        /** `modelSelection` first, then any further Colors `count` asked for. */
+        readonly modelSelections: readonly [ModelSelection, ...Array<ModelSelection>];
+        readonly kitText: string;
+      },
       OrchestratorMcpFailure
     >;
+    /** The role's Run: how many Colors one delegation starts. Always 1 for roles that change things. */
+    readonly run: (input: {
+      readonly projectId: ProjectId;
+      readonly role: PrismRole;
+    }) => Effect.Effect<number, OrchestratorMcpFailure>;
   }
 >()("t3/prism/PrismService") {}
+
+function roleRun(kits: PrismRoleKits, role: PrismRole): number {
+  return isPrismRunGroupRole(role) ? kits[role].run : 1;
+}
 
 const make = Effect.gen(function* () {
   const registry = yield* ProviderRegistry.ProviderRegistry;
   const settings = yield* ServerSettings.ServerSettingsService;
+  const readKits = (projectId: ProjectId) =>
+    settings.getSettings.pipe(
+      Effect.mapError(
+        () =>
+          new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "Unable to read Prism settings.",
+          }),
+      ),
+      Effect.map((saved) => resolveProjectSettings(saved, projectId).settings.prismRoles),
+    );
+  const run: PrismService["Service"]["run"] = (input) =>
+    readKits(input.projectId).pipe(Effect.map((kits) => roleRun(kits, input.role)));
   const resolve: PrismService["Service"]["resolve"] = Effect.fn("PrismService.resolve")(
     function* (input) {
-      const kits = resolveProjectSettings(
-        yield* settings.getSettings.pipe(
-          Effect.mapError(
-            () =>
-              new OrchestratorMcpFailure({
-                code: "orchestration_error",
-                message: "Unable to read Prism settings.",
-              }),
-          ),
-        ),
-        input.projectId,
-      ).settings.prismRoles;
+      const kits = yield* readKits(input.projectId);
       const kit = kits[input.role];
       const kitText = input.bare
         ? ""
@@ -170,14 +193,17 @@ const make = Effect.gen(function* () {
         const modelSelection = input.validate
           ? yield* input.validate(input.explicit)
           : input.explicit;
-        return { modelSelection, kitText };
+        return { modelSelection, modelSelections: [modelSelection], kitText };
       }
       const providers = yield* registry.getProviders;
       const now = DateTime.toEpochMillis(yield* DateTime.now);
       const preferences = prismRoleModels(kits, input.role, input.lane ?? DEFAULT_PRISM_LANE);
       const candidates =
         preferences.length > 0 ? preferences : input.inherited ? [input.inherited] : [];
+      const count = Math.max(1, input.count ?? 1);
+      const started: Array<ModelSelection> = [];
       for (const candidate of candidates) {
+        if (started.length >= count) break;
         const provider = providers.find((p) => p.instanceId === candidate.instanceId);
         if (!provider?.enabled || blocked(provider, now)) continue;
         // A validator can re-probe stale unavailable snapshots before refusing the candidate.
@@ -207,14 +233,17 @@ const make = Effect.gen(function* () {
               : Effect.fail(error),
           ),
         );
-        if (validated !== null) return { modelSelection: validated, kitText };
+        if (validated !== null) started.push(validated);
       }
+      const [first, ...rest] = started;
+      if (first !== undefined)
+        return { modelSelection: first, modelSelections: [first, ...rest], kitText };
       return yield* new OrchestratorMcpFailure({
         code: "provider_unavailable",
         message: "No eligible model with usage headroom for this Prism role and lane.",
       });
     },
   );
-  return PrismService.of({ resolve });
+  return PrismService.of({ resolve, run });
 });
 export const layer = Layer.effect(PrismService, make);

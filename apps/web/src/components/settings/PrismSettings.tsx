@@ -1,4 +1,9 @@
-import { PRISM_ROLE_DESCRIPTIONS, PRISM_ROLE_LABELS, PrismLane } from "@t3tools/contracts";
+import {
+  isPrismRunGroupRole,
+  PRISM_ROLE_DESCRIPTIONS,
+  PRISM_ROLE_LABELS,
+  PrismLane,
+} from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
 import { type ReactNode, useState } from "react";
 import { useEnvironmentProviders } from "../../state/environments";
@@ -90,6 +95,48 @@ function RoleRow({
           </span>
         </span>
       </div>
+    </div>
+  );
+}
+
+/** Run N starts the role's first N Colors that can start as one Run group. */
+function RunControl({
+  run,
+  colors,
+  disabled,
+  save,
+}: {
+  run: number;
+  colors: number;
+  disabled: boolean;
+  save: (run: number) => void;
+}) {
+  const choices = Array.from({ length: Math.max(colors, run, 1) }, (_, index) => index + 1);
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-medium">Run</p>
+        <p className="text-xs text-muted-foreground">
+          Colors one delegation starts together. Above 1 they share the caller's checkout and wake
+          it once when all finish.
+        </p>
+      </div>
+      <ToggleGroup
+        aria-label="Run"
+        variant="segmented"
+        value={[String(run)]}
+        disabled={disabled}
+        onValueChange={(next) => {
+          const chosen = Number(next[0]);
+          if (Number.isInteger(chosen) && chosen >= 1 && chosen !== run) save(chosen);
+        }}
+      >
+        {choices.map((choice) => (
+          <Toggle key={choice} value={String(choice)}>
+            {choice}
+          </Toggle>
+        ))}
+      </ToggleGroup>
     </div>
   );
 }
@@ -242,6 +289,15 @@ export function PrismSettings() {
                     JSON.stringify(settings.prismRoles[selectedRole].models),
                 )}
                 save={(models) => saveRole({ kind: "models", role: selectedRole, models })}
+              />
+            )}
+            {isPrismRunGroupRole(selectedRole) && (
+              <RunControl
+                key={`run:${selectedRole}`}
+                run={settings.prismRoles[selectedRole].run}
+                colors={settings.prismRoles[selectedRole].models.length}
+                disabled={!target || pendingWrite !== null}
+                save={(run) => saveRole({ kind: "run", role: selectedRole, run })}
               />
             )}
           </div>
