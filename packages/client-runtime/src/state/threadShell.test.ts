@@ -145,6 +145,41 @@ describe("v2 thread shell lists", () => {
     registry.dispose();
   });
 
+  it("keeps a user fork visible with inherited remote provenance and an absent parent", () => {
+    const { registry, threads, snapshotAtom } = makeHarness();
+    const child = {
+      ...v2ThreadShell,
+      delegatedFrom: {
+        environmentId: remoteEnvironmentId,
+        threadId: ThreadId.make("remote-parent"),
+        title: "Offline parent",
+      },
+    };
+    const fork = {
+      ...child,
+      id: ThreadId.make("user-fork"),
+      title: "User fork",
+      lineage: {
+        parentThreadId: child.id,
+        relationshipToParent: "fork" as const,
+        rootThreadId: child.lineage.rootThreadId,
+      },
+      forkedFrom: { type: "run" as const, threadId: child.id, runId: RunId.make("source-run") },
+    };
+    registry.set(snapshotAtom(environmentId), { ...v2ShellSnapshot, threads: [child, fork] });
+    const all = registry.get(threads.threadShellsAtom);
+    expect(all.map((thread) => thread.id)).toEqual([child.id, fork.id]);
+    const navigation = registry.get(threads.navigationThreadShellsAtom);
+    expect(navigation.map((thread) => thread.id)).toEqual([fork.id]);
+    expect(navigation[0]?.delegatedFrom).toBe(child.delegatedFrom);
+    expect(navigation[0]?.forkedFrom).toEqual({
+      type: "run",
+      threadId: child.id,
+      runId: RunId.make("source-run"),
+    });
+    registry.dispose();
+  });
+
   it("keeps navigation stable on hidden subagent updates and retains user forks", () => {
     const { registry, threads, snapshotAtom } = makeHarness();
     const root = v2ThreadShell;

@@ -509,6 +509,44 @@ describe("sidebar thread lineage helpers", () => {
     expect(all).toHaveLength(5);
   });
 
+  it("keeps inherited-provenance user forks in normal navigation and offline search", () => {
+    const environmentId = EnvironmentId.make("destination");
+    const raw = makeThreadFixture({ environmentId, title: "Remote child" }).source;
+    const child = presentThreadShell(environmentId, {
+      ...raw,
+      delegatedFrom: {
+        environmentId: EnvironmentId.make("offline-parent"),
+        threadId: ThreadId.make("parent"),
+        title: "Parent",
+      },
+    });
+    const fork = presentThreadShell(environmentId, {
+      ...child.source,
+      id: ThreadId.make("user-fork"),
+      title: "User fork",
+      lineage: {
+        parentThreadId: child.id,
+        relationshipToParent: "fork",
+        rootThreadId: child.lineage.rootThreadId,
+      },
+      forkedFrom: { type: "run", threadId: child.id, runId: RunId.make("source-run") },
+    });
+    const archivedFork = {
+      ...fork,
+      id: ThreadId.make("archived-fork"),
+      archivedAt: "2026-01-02T00:00:00.000Z",
+    };
+    const all = [child, fork, archivedFork];
+    expect(filterSidebarV2VisibleThreads(all, null)).toEqual([fork]);
+    expect(isSidebarSubagentThread(fork)).toBe(false);
+    expect(fork.delegatedFrom).toBe(child.delegatedFrom);
+    const searchable = filterSidebarV2VisibleThreads(all, null, "User fork");
+    expect(searchSidebarThreads(searchable, "User fork")).toEqual([fork]);
+    expect(searchable.filter(isSidebarSubagentThread)).toEqual([child]);
+    expect(searchSidebarThreads(searchable, "Remote child")).toEqual([child]);
+    expect(filterSidebarV2VisibleThreads(all, null, " ")).toEqual([fork]);
+  });
+
   it("keeps only top-level, unarchived threads in the Sidebar V2 project scope", () => {
     const parentId = ThreadId.make("thread-parent");
     const projectId = ProjectId.make("project-visible");

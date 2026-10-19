@@ -1707,15 +1707,17 @@ it("finds destination children offline in qualified search and hides them again 
       linkOrigin: { sessionId: "link", label: "Other machine" },
     }),
   );
-  const fork = presentThreadShell(
-    destination,
-    makeRawThreadShell({
-      id: ThreadId.make("fork"),
-      projectId,
-      title: "Fork work",
-      lineage: { parentThreadId: id, rootThreadId: id, relationshipToParent: "fork" },
-    }),
-  );
+  const fork = presentThreadShell(destination, {
+    ...raw,
+    id: ThreadId.make("fork"),
+    title: "Fork work",
+    lineage: {
+      parentThreadId: id,
+      rootThreadId: raw.lineage.rootThreadId,
+      relationshipToParent: "fork",
+    },
+    forkedFrom: { type: "run", threadId: id, runId: RunId.make("source-run") },
+  });
   const all = [
     child,
     otherChild,
@@ -1741,6 +1743,8 @@ it("finds destination children offline in qualified search and hides them again 
     }).items.map((item) => item.thread);
   expect(layout("").map((thread) => thread.id)).toEqual([fork.id, linked.id]);
   expect(layout("Remote audit")).toEqual([child]);
+  expect(layout("Fork work")).toEqual([fork]);
+  expect(fork.delegatedFrom).toBe(raw.delegatedFrom);
   expect(
     layout(
       "contents",

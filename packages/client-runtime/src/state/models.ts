@@ -206,7 +206,9 @@ export function isThreadVisibleInNavigation(
   return (
     thread.archivedAt === null &&
     thread.lineage.relationshipToParent !== "subagent" &&
-    (thread.delegatedFrom === undefined || searchQuery.trim().length > 0)
+    (thread.delegatedFrom === undefined ||
+      thread.lineage.relationshipToParent === "fork" ||
+      searchQuery.trim().length > 0)
   );
 }
 

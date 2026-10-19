@@ -536,7 +536,10 @@ export function buildMultiSelectThreadContextMenuItems(input: {
 export function isSidebarSubagentThread(
   thread: Pick<SidebarThreadSummary, "lineage" | "delegatedFrom">,
 ): boolean {
-  return thread.lineage.relationshipToParent === "subagent" || thread.delegatedFrom !== undefined;
+  return (
+    thread.lineage.relationshipToParent === "subagent" ||
+    (thread.delegatedFrom !== undefined && thread.lineage.relationshipToParent !== "fork")
+  );
 }
 
 export function filterSidebarV2VisibleThreads<

@@ -198,6 +198,7 @@ import {
   firstValidTimestampMs,
   hasUnseenCompletion,
   isSidebarNestedLinkClick,
+  isSidebarSubagentThread,
   isSidebarThreadWorking,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
@@ -586,7 +587,7 @@ function useSidebarThreads(input: {
       ...snoozedThreads,
       ...settledThreads,
       ...filterSidebarV2VisibleThreads(threads, scopedProjectKeys, input.searchQuery).filter(
-        (thread) => thread.delegatedFrom !== undefined,
+        isSidebarSubagentThread,
       ),
     ],
     settledVisibleCount,
