@@ -1977,6 +1977,45 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(layerServerSettings())),
   );
 
+  it.effect("rewrites a saved White slot label once into White's own Colors", () =>
+    Effect.gen(function* () {
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const sol = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
+      const opus = {
+        instanceId: ProviderInstanceId.make("claude"),
+        model: "opus-5.5",
+        effort: "high",
+      };
+      const slots = [
+        { label: "White", primary: sol, fallbacks: [] },
+        { label: "Red", primary: opus, fallbacks: [sol] },
+      ];
+      const project = ProjectId.make("project-spectrum");
+      yield* fileSystem.writeFileString(
+        serverConfig.settingsPath,
+        JSON.stringify({
+          projectSettingsFolded: true,
+          spectrum: { slots, white: "Red", mode: "free" },
+          projectSettingsOverrides: { [project]: { spectrum: { slots, white: "White" } } },
+        }),
+      );
+
+      const settings = yield* serverSettings.getSettings;
+      assert.deepEqual(settings.spectrum.white, { primary: opus, fallbacks: [sol] });
+      assert.deepEqual(settings.spectrum.slots, slots);
+      assert.equal(settings.spectrum.mode, "free");
+      const raw = JSON.parse(yield* fileSystem.readFileString(serverConfig.settingsPath));
+      assert.deepEqual(raw.spectrum.white, { primary: opus, fallbacks: [sol] });
+      assert.deepEqual(raw.spectrum.slots, slots);
+      assert.deepEqual(raw.projectSettingsOverrides[project].spectrum.white, {
+        primary: sol,
+        fallbacks: [],
+      });
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
   it.effect("leaves an unreadable settings.json untouched instead of folding over it", () =>
     Effect.gen(function* () {
       const serverConfig = yield* ServerConfig.ServerConfig;

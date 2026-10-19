@@ -20,7 +20,7 @@ export const SpectrumReport = OrchestrationV2Command.pipe(
   ),
 );
 
-const Participant = Schema.Struct({
+export const Participant = Schema.Struct({
   threadId: ThreadId,
   label: Schema.String,
   selection: ModelSelection,
@@ -30,6 +30,7 @@ const Participant = Schema.Struct({
   attempted: Schema.Array(ModelSelection).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   instructions: Schema.optional(Schema.String),
 });
+export type Participant = typeof Participant.Type;
 
 export const SpectrumSlot = Schema.Struct({
   threadId: ThreadId,
@@ -80,7 +81,10 @@ export const SpectrumState = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(3)),
   ),
   limit: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
-  moderator: NonNegativeInt,
+  /** Spectra started before #525 have no separate White: the Color at this index acts as White. */
+  moderator: Schema.optionalKey(NonNegativeInt),
+  /** White's own member: it writes the synthesis, moderation and summary, never a Color turn. */
+  white: Schema.optionalKey(Participant),
   participants: Schema.Array(Participant).check(
     Schema.isMinLength(2),
     Schema.isMaxLength(8),
@@ -109,8 +113,29 @@ export const SpectrumState = Schema.Struct({
       abandonedAt: Schema.DateTimeUtcFromString,
     }),
   ).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
-});
+}).check(
+  Schema.makeFilter((state) => {
+    if (state.white === undefined)
+      return state.moderator !== undefined && state.moderator < state.participants.length
+        ? true
+        : "White must be its own member or a participating Color.";
+    if (state.moderator !== undefined) return "White cannot be both a member and a Color.";
+    return state.participants.every((color) => color.threadId !== state.white!.threadId)
+      ? true
+      : "White must have its own thread.";
+  }),
+);
 export type SpectrumState = typeof SpectrumState.Type;
+
+export const whiteOf = (state: SpectrumState): Participant =>
+  state.white ?? state.participants[state.moderator!]!;
+
+/** Every member with a thread: the Colors, then a separate White. */
+export const membersOf = (state: SpectrumState): ReadonlyArray<Participant> =>
+  state.white === undefined ? state.participants : [...state.participants, state.white];
+
+export const memberOf = (state: SpectrumState, threadId: string): Participant | undefined =>
+  membersOf(state).find((member) => member.threadId === threadId);
 
 /** Consumed by the shared fork commit seam, inside the command transaction. */
 export const SpectrumMutation = Schema.Struct({

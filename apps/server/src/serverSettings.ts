@@ -52,6 +52,7 @@ import {
 } from "@t3tools/shared/serverSettings";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import { migratePrismRoleOverrides } from "./prism/PrismRoleOverrides.ts";
+import { savesSpectrumWhiteLabel } from "./spectrum/settings.ts";
 import {
   readSecretFieldValues,
   sourceControlHostSecretName,
@@ -651,9 +652,11 @@ const make = Effect.gen(function* () {
     let legacyProviders: Readonly<Record<string, unknown>> | undefined;
     let legacySourceControl: Parameters<typeof migrateLegacySourceControlSettings>[1] = {};
     let parseFailure = Option.none<unknown>();
+    let spectrumWhiteLabel = false;
 
     if (yield* readConfigExists) {
       const raw = yield* readRawConfig;
+      spectrumWhiteLabel = savesSpectrumWhiteLabel(raw);
       const decoded = decodeServerSettingsJsonExit(raw);
       const legacySettings = decodeLegacyProviderSettingsJsonExit(raw);
       if (legacySettings._tag === "Success") {
@@ -775,7 +778,7 @@ const make = Effect.gen(function* () {
       : folded;
     if (
       migrated !== loaded ||
-      (settingsFileTrusted && legacyProviders !== undefined) ||
+      (settingsFileTrusted && (legacyProviders !== undefined || spectrumWhiteLabel)) ||
       hasLegacySourceControl
     ) {
       yield* writeSettingsAtomically(migrated);

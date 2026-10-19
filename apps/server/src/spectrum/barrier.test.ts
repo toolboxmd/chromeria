@@ -1,10 +1,42 @@
-import { MessageId, RunId } from "@t3tools/contracts";
+import {
+  MessageId,
+  type OrchestrationV2Command,
+  ProviderInstanceId,
+  RunId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { acceptReply, barrierComplete, bindRun, continueRun, nextRound } from "./barrier.ts";
+import * as Schema from "effect/Schema";
+import {
+  acceptReply,
+  barrierComplete,
+  bindRun,
+  continueRun,
+  fallBack,
+  nextRound,
+} from "./barrier.ts";
 import { makeMessage, makeRun, makeState } from "./testFixtures.ts";
 import { APPEND } from "./testFixtures.ts";
-import type { SpectrumRound } from "./state.ts";
+import { SpectrumState, type SpectrumRound } from "./state.ts";
+
+const spare = { instanceId: ProviderInstanceId.make("codex-spare"), model: "test-model" };
+/** A Spectrum started after #525: White is its own member, not one of the Colors. */
+function withWhite(overrides: Partial<SpectrumState> = {}): SpectrumState {
+  const { moderator: _moderator, ...state } = makeState(overrides);
+  return {
+    ...state,
+    white: {
+      threadId: ThreadId.make("white"),
+      label: "White",
+      selection: { ...spare, model: "judge" },
+      fallbacks: [spare],
+      attempted: [],
+    },
+  };
+}
+const encodeState = Schema.encodeSync(SpectrumState);
+const decodeState = Schema.decodeUnknownSync(SpectrumState);
 
 function complete(round: SpectrumRound): SpectrumRound {
   for (const slot of round.slots) {
@@ -89,10 +121,56 @@ describe("Spectrum barriers", () => {
     expect(nextRound({ ...state, generation: 1, round })).toBeNull();
   });
 
-  it("refuses a short council and an unknown moderator", () => {
+  it("refuses a short council, and a stored White that is neither a member nor a Color", () => {
     expect(() => nextRound(makeState({ limit: 1 }))).toThrow("at least two");
-    expect(() => nextRound(makeState({ moderator: 2 }))).toThrow("participating Color");
     expect(nextRound(makeState({ status: "retired" }))).toBeNull();
+    expect(decodeState(encodeState(makeState())).moderator).toBe(1);
+    expect(decodeState(encodeState(withWhite())).white?.threadId).toBe("white");
+    const { moderator: _moderator, ...neither } = encodeState(makeState());
+    expect(() => decodeState(neither)).toThrow("White");
+    expect(() => decodeState({ ...encodeState(makeState()), moderator: 2 })).toThrow("White");
+    expect(() => decodeState({ ...encodeState(withWhite()), moderator: 1 })).toThrow("White");
+  });
+
+  it("council with a separate White: every Color answers and relays, then only White synthesizes", () => {
+    let state = withWhite();
+    for (const phase of ["independent", "relay", "relay"]) {
+      const round = nextRound(state)!;
+      expect(round.phase).toBe(phase);
+      expect(round.slots.map((slot) => slot.threadId)).toEqual(["blue", "red"]);
+      state = Object.assign({}, state, { round: complete(round) });
+    }
+    const synthesis = nextRound(state)!;
+    expect(synthesis.phase).toBe("synthesis");
+    expect(synthesis.slots.map((slot) => slot.threadId)).toEqual(["white"]);
+    expect(nextRound({ ...state, round: complete(synthesis) })).toBeNull();
+  });
+
+  it("falls back White's model only on a refused start, like a slot's", () => {
+    let state = withWhite();
+    for (let step = 0; step < 3; step++)
+      state = Object.assign({}, state, { round: complete(nextRound(state)!) });
+    const round = nextRound(state)!;
+    const slot = round.slots[0]!;
+    const start: OrchestrationV2Command = {
+      type: "message.dispatch",
+      commandId: slot.commandId,
+      messageId: slot.messageId,
+      threadId: slot.threadId,
+      senderThreadId: state.threadId,
+      createdBy: "system",
+      creationSource: "server",
+      attachments: [],
+      modelSelection: state.white!.selection,
+      dispatchMode: { type: "start_immediately" },
+      text: "Synthesize.",
+    };
+    const next = fallBack({ ...state, round, outbox: [start] }, slot.commandId)!;
+    expect(next.white?.selection).toEqual(spare);
+    expect(next.white?.fallbacks).toEqual([]);
+    expect(next.white?.attempted).toEqual([{ ...spare, model: "judge" }]);
+    expect(next.participants).toEqual(state.participants);
+    expect(next.outbox[0]).toMatchObject({ threadId: "white", modelSelection: spare });
   });
 
   it("ignores a successor run, wrong request, and an old generation", () => {

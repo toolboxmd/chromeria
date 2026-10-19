@@ -47,6 +47,17 @@ interface SpectrumCandidate {
   readonly effort?: string | undefined;
 }
 
+export type SpectrumColorSpec = SpectrumCandidate & {
+  readonly bare?: import("@t3tools/contracts").BareLaunchRequest | undefined;
+  readonly label: string;
+  readonly role?: PrismRole | undefined;
+  readonly lane?: PrismLane | undefined;
+  readonly instructions?: string | undefined;
+  readonly fallbacks?: ReadonlyArray<SpectrumCandidate> | undefined;
+};
+/** White is configured like a Color but is not one, so it has no label. */
+export type SpectrumWhiteSpec = Omit<SpectrumColorSpec, "label" | "instructions">;
+
 export interface SpectrumStart {
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
@@ -57,30 +68,20 @@ export interface SpectrumStart {
   readonly question: string;
   readonly title?: string;
   readonly mode: "council" | "free";
-  readonly white?: string | undefined;
+  readonly white: SpectrumWhiteSpec;
   readonly relayRounds?: number | undefined;
   readonly turnsPerColor?: number | undefined;
   readonly limit: number;
-  readonly moderator: number;
-  readonly colors: ReadonlyArray<
-    SpectrumCandidate & {
-      readonly bare?: import("@t3tools/contracts").BareLaunchRequest | undefined;
-      readonly label: string;
-      readonly role?: PrismRole | undefined;
-      readonly lane?: PrismLane | undefined;
-      readonly instructions?: string | undefined;
-      readonly fallbacks?: ReadonlyArray<SpectrumCandidate> | undefined;
-    }
-  >;
+  readonly colors: ReadonlyArray<SpectrumColorSpec>;
 }
 
-export type SpectrumStartRequest = Omit<
-  SpectrumStart,
-  "mode" | "colors" | "limit" | "moderator"
-> & {
+export type SpectrumStartRequest = Omit<SpectrumStart, "mode" | "colors" | "limit" | "white"> & {
   readonly mode?: SpectrumStart["mode"] | undefined;
   readonly colors?: SpectrumStart["colors"] | undefined;
   readonly limit?: number | undefined;
+  /** White's own Color, or (legacy) the label of a passed Color whose model White copies. */
+  readonly white?: string | SpectrumWhiteSpec | undefined;
+  /** Legacy zero-based index of the passed Color whose model White copies. */
   readonly moderator?: number | undefined;
 };
 
@@ -99,6 +100,15 @@ export class SpectrumLaunchService extends Context.Service<
 >()("t3/spectrum/LaunchService/SpectrumLaunchService") {}
 
 const validateState = Schema.decodeEffect(SpectrumState);
+
+/** A Color may be called White, so the separate member takes the first name no Color uses. */
+export function whiteMemberLabel(colorLabels: ReadonlyArray<string>): string {
+  const taken = new Set(colorLabels.map((label) => label.trim().toLowerCase()));
+  for (let n = 1; ; n++) {
+    const label = n === 1 ? "White" : n === 2 ? "White (moderator)" : `White (moderator ${n - 1})`;
+    if (!taken.has(label.toLowerCase())) return label;
+  }
+}
 
 /** No provider is attached while shells are registered; durable round dispatch launches Drafters. */
 function shell(
@@ -187,7 +197,9 @@ const make = Effect.gen(function* () {
             : new SpectrumLaunchError({ threadId: request.threadId, cause }),
     });
     if (
-      input.colors.some((color) => color.bare !== undefined && (color.fallbacks?.length ?? 0) > 0)
+      [...input.colors, input.white].some(
+        (color) => color.bare !== undefined && (color.fallbacks?.length ?? 0) > 0,
+      )
     )
       return yield* new SpectrumLaunchError({
         threadId: input.threadId,
@@ -219,7 +231,7 @@ const make = Effect.gen(function* () {
           : { options: [{ id: effortOption, value: spec.effort }] }),
       } satisfies ModelSelection;
     });
-    const resolved = yield* Effect.forEach(input.colors, (color, index) =>
+    const resolveMember = (color: SpectrumColorSpec, threadId: ThreadId) =>
       Effect.gen(function* () {
         const primary =
           color.selection ?? (color.role === undefined ? caller.modelSelection : undefined);
@@ -301,7 +313,7 @@ const make = Effect.gen(function* () {
               });
         return {
           ...(bare === undefined ? {} : { bare }),
-          threadId: ThreadId.make(`sub.${input.threadId}.color.${index}`),
+          threadId,
           label: color.label,
           selection,
           fallbacks,
@@ -313,7 +325,14 @@ const make = Effect.gen(function* () {
             .filter(Boolean)
             .join("\n\n"),
         };
-      }),
+      });
+    const resolved = yield* Effect.forEach(input.colors, (color, index) =>
+      resolveMember(color, ThreadId.make(`sub.${input.threadId}.color.${index}`)),
+    );
+    const whiteLabel = whiteMemberLabel(input.colors.map((color) => color.label));
+    const white = yield* resolveMember(
+      { ...input.white, label: whiteLabel },
+      ThreadId.make(`sub.${input.threadId}.white`),
     );
     const binding =
       input.callerRunId === null
@@ -333,7 +352,7 @@ const make = Effect.gen(function* () {
       mode: input.mode,
       turnsPerColor: input.turnsPerColor,
       limit: input.limit,
-      moderator: input.moderator,
+      white,
       participants: resolved,
       generation: 0,
       revision: 0,
@@ -377,7 +396,7 @@ const make = Effect.gen(function* () {
         selection: caller.modelSelection,
         now,
       }),
-      ...resolved.map((color) => ({
+      ...[...resolved, white].map((color) => ({
         ...shell(caller, {
           id: color.threadId,
           parentId: state.threadId,

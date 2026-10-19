@@ -27,6 +27,7 @@ import {
 } from "../mcp/threadAccess.ts";
 import * as Launch from "./LaunchService.ts";
 import { assertSameLink } from "../mcp/linkOrigin.ts";
+import { whiteOf, type Participant } from "./state.ts";
 
 const Candidate = Schema.Struct({
   selection: Schema.optional(ModelSelection),
@@ -46,6 +47,23 @@ const Color = Schema.Struct({
   effort: Schema.optional(TrimmedNonEmptyString),
   fallbacks: Schema.optional(Schema.Array(Candidate).check(Schema.isMaxLength(4))),
 });
+const White = Schema.Struct({
+  bare: Schema.optional(BareLaunchRequest),
+  role: Schema.optional(PrismRole),
+  lane: Schema.optional(PrismLane),
+  selection: Schema.optional(ModelSelection),
+  instanceId: Schema.optional(TrimmedNonEmptyString),
+  model: Schema.optional(TrimmedNonEmptyString),
+  effort: Schema.optional(TrimmedNonEmptyString),
+  fallbacks: Schema.optional(Schema.Array(Candidate).check(Schema.isMaxLength(4))),
+});
+const Member = Schema.Struct({
+  threadId: ThreadId,
+  label: Schema.String,
+  instanceId: Schema.String,
+  model: Schema.String,
+  selection: ModelSelection,
+});
 export const StartSpectrumInput = Schema.Struct({
   callerThreadId: Schema.optional(ThreadId),
   clientRequestId: Schema.optional(TrimmedNonEmptyString),
@@ -54,7 +72,7 @@ export const StartSpectrumInput = Schema.Struct({
   colors: Schema.optional(Schema.Array(Color).check(Schema.isMinLength(2), Schema.isMaxLength(8))),
   mode: Schema.optional(Schema.Literals(["council", "free"])),
   limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
-  white: Schema.optional(TrimmedNonEmptyString),
+  white: Schema.optional(Schema.Union([White, TrimmedNonEmptyString])),
   relayRounds: Schema.optional(SpectrumRelayRounds),
   turnsPerColor: Schema.optional(SpectrumTurnsPerColor),
   moderator: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
@@ -64,20 +82,20 @@ export const StartSpectrumResult = Schema.Struct({
   taskId: Schema.NullOr(NodeId),
   callerThreadId: ThreadId,
   mode: Schema.Literals(["council", "free"]),
-  participants: Schema.Array(
-    Schema.Struct({
-      threadId: ThreadId,
-      label: Schema.String,
-      instanceId: Schema.String,
-      model: Schema.String,
-      selection: ModelSelection,
-    }),
-  ),
+  participants: Schema.Array(Member),
+  white: Member,
+});
+const member = (participant: Participant) => ({
+  threadId: participant.threadId,
+  label: participant.label,
+  instanceId: participant.selection.instanceId,
+  model: participant.selection.model,
+  selection: participant.selection,
 });
 export const SpectrumToolkit = Toolkit.make(
   Tool.make("start_spectrum", {
     description:
-      "Open a visible provider-less Spectrum transcript with Drafter Colors chosen through Prism. Council runs independent answers, at least two relay barriers and White's synthesis. Free mode opens in Color order, then White picks each next speaker with NEXT: <label> or DONE and writes the closing summary. All replies are relayed verbatim. Send normal messages to join at the next barrier, reopen to continue after the report finishes or is explicitly abandoned, and Stop to cancel owned Drafter work. Omitted colors, White, mode and limits use Spectrum settings for the caller’s project/environment. Configure default slots in Settings > Spectrum, then pass only question. Explicit colors replace all slots and inherit no fallbacks. Explicit colors ignore saved White: if white and moderator are omitted, the first explicit Color is White. white names a slot label; moderator is its legacy zero-based index. relayRounds is council relay rounds (minimum 2); turnsPerColor (1-12) times the number of Colors sets the free-mode cap on Color turns. Legacy limit overrides the current mode’s total limit. A Color's fallbacks are tried in order only when its turn cannot start. Started by an agent from its own thread, the Spectrum is that thread's delegated task: taskId works with task_status (the report is its result) and task_cancel (Stop); the report message is the only wake.",
+      "Open a visible provider-less Spectrum transcript with Drafter Colors chosen through Prism. Council runs independent answers, at least two relay barriers and White's synthesis. Free mode opens in Color order, then White picks each next speaker with NEXT: <label> or DONE and writes the closing summary. All replies are relayed verbatim. Send normal messages to join at the next barrier, reopen to continue after the report finishes or is explicitly abandoned, and Stop to cancel owned Drafter work. Omitted colors, White, mode and limits use Spectrum settings for the caller’s project/environment. Configure default slots and White in Settings > Spectrum, then pass only question. Explicit colors replace all slots and inherit no fallbacks. White is a separate member, not a Color: it gives no council answer and takes no free-mode turn. Pass white as a Color (selection or instanceId/model/effort, role, lane, fallbacks); with saved slots an omitted white uses the saved White, and with explicit colors a copy of the first Color's model. For compatibility, white as a Color label or moderator as a zero-based Color index makes White a copy of that Color's model, and that Color still speaks. relayRounds is council reply rounds (minimum 2); turnsPerColor (1-12) times the number of Colors sets the free-mode cap on Color turns. Legacy limit overrides the current mode’s total limit. A Color's or White's fallbacks are tried in order only when its turn cannot start. Started by an agent from its own thread, the Spectrum is that thread's delegated task: taskId works with task_status (the report is its result) and task_cancel (Stop); the report message is the only wake.",
     parameters: McpRouting.parameters(StartSpectrumInput),
     success: StartSpectrumResult,
     failure: OrchestratorMcpFailure,
@@ -139,13 +157,8 @@ export const layer = McpToolAccess.toLayer(SpectrumToolkit, {
           taskId: state.delegatedTaskId,
           callerThreadId: state.callerThreadId,
           mode: state.mode,
-          participants: state.participants.map((color) => ({
-            threadId: color.threadId,
-            label: color.label,
-            instanceId: color.selection.instanceId,
-            model: color.selection.model,
-            selection: color.selection,
-          })),
+          participants: state.participants.map(member),
+          white: member(whiteOf(state)),
         };
       }),
     { refused: "Spectrum cannot be started through a peer link." },

@@ -80,7 +80,7 @@ export const base = Layer.mergeAll(
     runEffectWorker: false,
   }),
 );
-export const input: Launch.SpectrumStart = {
+export const input = {
   commandId: CommandId.make("register:spectrum"),
   threadId: ThreadId.make("spectrum:launch"),
   callerThreadId: ThreadId.make("caller"),
@@ -93,7 +93,7 @@ export const input: Launch.SpectrumStart = {
     { label: "Blue", selection },
     { label: "Red", role: "reviewer" },
   ],
-};
+} satisfies Launch.SpectrumStartRequest;
 export const setup = Effect.gen(function* () {
   yield* ensureSpectrumSchema;
   const sink = yield* EventSink.EventSinkV2;

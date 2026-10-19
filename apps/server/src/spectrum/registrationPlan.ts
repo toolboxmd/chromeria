@@ -4,7 +4,7 @@ import * as Option from "effect/Option";
 import { ForkCommitGuardRejected, type ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
 import { retirementAdmission } from "../childThreads/retirement.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
-import type { SpectrumState } from "./state.ts";
+import { membersOf, type SpectrumState } from "./state.ts";
 import { insertSpectrum } from "./store.ts";
 
 /** Shells copy the caller's acknowledgements, so the commit requires the exact list that was read. */
@@ -44,10 +44,7 @@ export function spectrumRegistrationPlan(
           if (!records.runs.some((run) => run.id === state.callerRunId))
             return yield* new ForkCommitGuardRejected({ threadId, kind: "state_conflict" });
         }
-        for (const id of [
-          threadId,
-          ...state.participants.map((participant) => participant.threadId),
-        ]) {
+        for (const id of [threadId, ...membersOf(state).map((member) => member.threadId)]) {
           const existing = yield* projections
             .getThread(id)
             .pipe(
