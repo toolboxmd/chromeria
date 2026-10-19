@@ -2524,11 +2524,13 @@ const make = Effect.gen(function* () {
           stableCommandId({ scope, requestKey: key, operation: "cancel-task" }),
         );
         if (spectrum !== null) {
+          // The report may have settled after `current` was read; its row then reads terminal.
+          const latest = spectrum === "reported" ? yield* readTask(scope, input.taskId) : current;
           return {
             taskId: input.taskId,
             status:
-              spectrum === "reported" && isTerminalTaskStatus(current.status)
-                ? current.status
+              spectrum === "reported" && isTerminalTaskStatus(latest.status)
+                ? latest.status
                 : "cancel_requested",
           } satisfies OrchestratorMcpTaskCancelResult;
         }

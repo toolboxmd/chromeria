@@ -610,3 +610,30 @@ it.effect("a Stop planned after the report settles still delivers that report", 
     assert.strictEqual(status.status, "completed");
   }).pipe(Effect.provide(runtime)),
 );
+
+it.effect(
+  "task_cancel racing the report's settle returns the settled status and stops nothing",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      yield* initializeRecoveryHistory;
+      const state = yield* (yield* Launch.SpectrumLaunchService).register(agentStart);
+      const reports = yield* Reports.SpectrumReportService;
+      const hook = yield* McpInterrupt.SpectrumMcpInterrupt;
+      // Settle commits after cancelTask has read the task as running, before the hook runs.
+      const cancelled = yield* (yield* Mcp.OrchestratorMcpService)
+        .cancelTask(callerScope, { taskId: state.delegatedTaskId! })
+        .pipe(
+          Effect.provideService(McpInterrupt.SpectrumMcpInterrupt, {
+            ...hook,
+            stop: (threads, request, commandId) =>
+              reports
+                .settle(state.threadId, "Spectrum completed.\n\nThe answer.")
+                .pipe(Effect.orDie, Effect.andThen(hook.stop(threads, request, commandId))),
+          }),
+        );
+      assert.strictEqual(cancelled.status, "completed");
+      assert.strictEqual((yield* read(state.threadId)).status, "settled");
+      assert.isTrue(yield* reportReachedCaller(state.threadId));
+    }).pipe(Effect.provide(runtime)),
+);
