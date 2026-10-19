@@ -282,6 +282,10 @@ apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts
 # Vitest transport-copy cache repair (#308), owned by fork-maintenance.
 pnpm-lock.yaml
 pnpm-workspace.yaml
+
+# Isolated dev backend Serve configuration (#287), owned by fork-maintenance.
+scripts/dev-runner.ts
+scripts/dev-runner.test.ts
 # Full MCP capability forwarding (#302)
 apps/server/src/mcp/McpSessionRegistry.test.ts
 apps/server/src/mcp/McpSessionRegistry.testkit.ts
