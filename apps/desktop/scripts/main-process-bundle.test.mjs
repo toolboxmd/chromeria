@@ -11,16 +11,18 @@ import desktopConfig from "../vite.config.ts";
 it("keeps lazy Linux imports and worker bundles from executing desktop startup twice", async () => {
   const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-desktop-bundle-"));
   try {
-    const workerEntries = [
-      "src/electron/WindowsForegroundFocusWorker.ts",
-      "src/snapShot/GlobalShiftShortcutWorker.ts",
-      "src/snapShot/RegionSnapShotWorker.ts",
-      "src/snapShot/SnapShotAccessibilityWorker.ts",
-    ];
-    await Promise.all([
-      NodeFSP.mkdir(NodePath.join(directory, "src/electron"), { recursive: true }),
-      NodeFSP.mkdir(NodePath.join(directory, "src/snapShot"), { recursive: true }),
-    ]);
+    assert.ok(Array.isArray(desktopConfig.pack));
+    const workerEntries = desktopConfig.pack.flatMap((config) =>
+      Array.isArray(config.entry)
+        ? config.entry.filter((entry) => entry.endsWith("Worker.ts"))
+        : [],
+    );
+    assert.ok(workerEntries.length > 0);
+    await Promise.all(
+      workerEntries.map((entry) =>
+        NodeFSP.mkdir(NodePath.dirname(NodePath.join(directory, entry)), { recursive: true }),
+      ),
+    );
     await Promise.all([
       NodeFSP.writeFile(
         NodePath.join(directory, "src/main.ts"),
@@ -39,7 +41,7 @@ void import("./linux.ts").then(({ result }) => process.emit("ready", result));`,
       ...workerEntries.map((entry) =>
         NodeFSP.writeFile(
           NodePath.join(directory, entry),
-          'import { shared } from "../shared.ts"; process.emit("worker", shared.value);',
+          `import { shared } from ${JSON.stringify(`./${NodePath.posix.relative(NodePath.posix.dirname(entry), "src/shared.ts")}`)}; process.emit("worker", shared.value);`,
         ),
       ),
     ]);
@@ -103,7 +105,10 @@ void import("./linux.ts").then(({ result }) => process.emit("ready", result));`,
     for (const entry of workerEntries) {
       load(NodePath.join(outputDirectory, entry.replace(/^src\//, "").replace(/\.ts$/, ".cjs")));
     }
-    assert.deepEqual(workers, [42, 42, 42, 42]);
+    assert.deepEqual(
+      workers,
+      workerEntries.map(() => 42),
+    );
     assert.deepEqual(startups, [42]);
   } finally {
     await NodeFSP.rm(directory, { recursive: true, force: true });
