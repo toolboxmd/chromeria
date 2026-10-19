@@ -535,6 +535,21 @@ export const OrchestratorMcpThreadDetail = Schema.Struct({
 });
 export type OrchestratorMcpThreadDetail = typeof OrchestratorMcpThreadDetail.Type;
 
+const OrchestratorMcpRunRecovery = Schema.Union([
+  Schema.Struct({ state: Schema.Literal("none") }),
+  Schema.Struct({ state: Schema.Literal("waiting_on_quota"), resetAt: IsoDateTime }),
+  Schema.Struct({
+    state: Schema.Literal("recovery_scheduled"),
+    reason: Schema.Literal("retry"),
+    expectedStartAt: Schema.NullOr(IsoDateTime).annotate({
+      description:
+        "Expected start time, or null for an immediate retry with no persisted scheduled instant.",
+    }),
+  }),
+  Schema.Struct({ state: Schema.Literal("continued_by"), successorRunId: RunId }),
+  Schema.Struct({ state: Schema.Literal("given_up"), reason: Schema.String }),
+]);
+
 export const OrchestratorMcpThreadRun = Schema.Struct({
   purpose: Schema.optional(ExecutionPurpose),
   runId: RunId,
@@ -546,6 +561,8 @@ export const OrchestratorMcpThreadRun = Schema.Struct({
   startedAt: Schema.NullOr(IsoDateTime),
   completedAt: Schema.NullOr(IsoDateTime),
   restartCut: Schema.optional(OrchestrationV2RestartCutView),
+  // Older linked environments omit this field; absence means unknown, not no recovery.
+  recovery: Schema.optional(OrchestratorMcpRunRecovery),
 });
 export type OrchestratorMcpThreadRun = typeof OrchestratorMcpThreadRun.Type;
 

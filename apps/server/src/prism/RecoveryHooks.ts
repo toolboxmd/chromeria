@@ -1,4 +1,7 @@
+import * as History from "./RecoveryHistory.ts";
 import type {
+  OrchestrationV2Run,
+  OrchestratorMcpThreadRun,
   OrchestrationV2ServerCommand,
   OrchestrationV2DomainEvent,
   ServerSettingsError,
@@ -21,6 +24,9 @@ import { retryAdmission } from "./recoveryAdmission.ts";
 
 /** Optional fork behavior; upstream orchestration retains its ordinary finalization. */
 export class RecoveryHooks extends Context.Reference<{
+  readonly readRunRecovery: (
+    run: OrchestrationV2Run,
+  ) => Effect.Effect<NonNullable<OrchestratorMcpThreadRun["recovery"]>, SqlError>;
   readonly holdsFinalization: (
     threadId: ThreadId,
     expectedRunId: RunId,
@@ -30,7 +36,11 @@ export class RecoveryHooks extends Context.Reference<{
     events?: ReadonlyArray<OrchestrationV2DomainEvent>,
   ) => ReadonlyArray<ForkCommitPlan>;
 }>("t3/prism/RecoveryHooks", {
-  defaultValue: () => ({ holdsFinalization: () => Effect.succeed(false), commitPlans: () => [] }),
+  defaultValue: () => ({
+    readRunRecovery: () => Effect.succeed({ state: "none" }),
+    holdsFinalization: () => Effect.succeed(false),
+    commitPlans: () => [],
+  }),
 }) {}
 
 /** The retirement implementation stays owned by child-threads; this layer holds no ancestry state. */
@@ -41,6 +51,8 @@ export const layer = Layer.effect(
     const projections = yield* Projection.ProjectionStoreV2;
     const sql = yield* SqlClient.SqlClient;
     return {
+      readRunRecovery: (run) =>
+        History.readRunRecovery(run).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       holdsFinalization: (threadId: ThreadId, expectedRunId: RunId) =>
         Effect.gen(function* () {
           // Arm current recovery before result transfer; historical catch-up belongs to the reactor.

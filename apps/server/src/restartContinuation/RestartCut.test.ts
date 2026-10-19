@@ -278,6 +278,7 @@ it("encodes every derived outcome on the additive MCP run schema", () => {
   const decode = Schema.decodeUnknownSync(OrchestratorMcpThreadRun);
   const base = {
     runId: source.id,
+    recovery: { state: "none" as const },
     ordinal: 1,
     status: source.status,
     providerInstanceId: source.providerInstanceId,
