@@ -91,8 +91,9 @@ const settlesNothing = (event: OrchestrationV2DomainEvent) =>
 /**
  * Spectrums advance on events (#404). Every Spectrum thread is known; a live
  * Spectrum also follows its watch. Wakes for one Spectrum coalesce into one
- * pending resume, and each resume re-reads its watch. A slow reconcile runs
- * only while some Spectrum is live, so nothing periodic runs while none is.
+ * pending resume, and each resume re-reads its watch. A slow tick wakes every
+ * active or live Spectrum, the fallback for any lost wake; with none it costs
+ * one indexed read.
  */
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -173,60 +174,19 @@ export const layer = Layer.effectDiscard(
         spectra.add(id);
         yield* wake(id);
       }
+      yield* Effect.logInfo("Spectrum catch-up", { woken: rows.length });
     }).pipe(Effect.catchCause((cause) => Effect.logWarning("Spectrum catch-up failed", { cause })));
-
-    /**
-     * The fallback for a lost wake (a failed resume, routing or subscription):
-     * while any Spectrum is live or suspect, every live and active one is woken
-     * each interval. It ends on the first pass that finds none.
-     */
-    let reconciling = false;
-    let suspect = false;
-    const reconcile = Effect.gen(function* () {
-      for (;;) {
-        yield* Effect.sleep(RECONCILE_INTERVAL);
-        const rows = yield* sql<{ readonly thread_id: string }>`SELECT thread_id FROM fork_spectra
-          WHERE json_extract(payload_json, '$.status') = 'active'`.pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Spectrum reconcile read failed", { cause }).pipe(Effect.as(null)),
-          ),
-        );
-        const due = new Set(watches.keys());
-        for (const row of rows ?? []) due.add(ThreadId.make(row.thread_id));
-        if (rows !== null) suspect = false;
-        if (due.size === 0 && !suspect) {
-          reconciling = false;
-          return;
-        }
-        for (const id of due) {
-          spectra.add(id);
-          yield* wake(id);
-        }
-      }
-    });
-    const ensureReconcile = Effect.suspend(() => {
-      if (reconciling) return Effect.void;
-      reconciling = true;
-      return Effect.forkIn(reconcile, scope).pipe(Effect.asVoid);
-    });
-    const suspectLost = Effect.suspend(() => {
-      suspect = true;
-      return ensureReconcile;
-    });
 
     const refresh = (id: ThreadId) =>
       Effect.gen(function* () {
         const found = yield* readSpectrum(id);
         const watch = Option.isNone(found) ? null : yield* readSpectrumWatch(found.value);
         if (yield* index(id, watch)) yield* wake(id);
-        if (watch !== null) yield* ensureReconcile;
       }).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
         Effect.provideService(Projections.ProjectionStoreV2, projections),
         Effect.catchCause((cause) =>
-          Effect.logWarning("Spectrum watch refresh failed", { threadId: id, cause }).pipe(
-            Effect.andThen(suspectLost),
-          ),
+          Effect.logWarning("Spectrum watch refresh failed", { threadId: id, cause }),
         ),
       );
 
@@ -259,7 +219,7 @@ export const layer = Layer.effectDiscard(
           Effect.logWarning("Spectrum event routing failed", {
             sequence: stored.sequence,
             cause,
-          }).pipe(Effect.andThen(suspectLost)),
+          }),
         ),
       );
 
@@ -270,9 +230,7 @@ export const layer = Layer.effectDiscard(
         .resume(id)
         .pipe(
           Effect.catchCause((cause) =>
-            Effect.logWarning("Spectrum resume failed", { threadId: id, cause }).pipe(
-              Effect.andThen(suspectLost),
-            ),
+            Effect.logWarning("Spectrum resume failed", { threadId: id, cause }),
           ),
         );
       yield* refresh(id);
@@ -303,7 +261,6 @@ export const layer = Layer.effectDiscard(
         if (typeof cause !== "string" && Cause.hasInterruptsOnly(cause)) return;
         if (cursor > seen) failures = 1;
         yield* Effect.logWarning("Spectrum event stream failed; resubscribing", { cause });
-        yield* suspectLost;
         yield* Effect.sleep(Duration.seconds(2 ** (failures - 1)));
         yield* catchUp;
       }
@@ -319,5 +276,22 @@ export const layer = Layer.effectDiscard(
       ),
     );
     yield* forkParked(catchUp.pipe(Effect.andThen(work)));
+    // Read and resume failures are logged where they occur and retried on the next tick.
+    yield* forkParked(
+      Effect.gen(function* () {
+        const rows = yield* sql<{ readonly thread_id: string }>`SELECT thread_id FROM fork_spectra
+          WHERE json_extract(payload_json, '$.status') = 'active'`.pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Spectrum reconcile read failed", { cause }).pipe(Effect.as([])),
+          ),
+        );
+        for (const row of rows) {
+          const id = ThreadId.make(row.thread_id);
+          spectra.add(id);
+          yield* wake(id);
+        }
+        for (const id of watches.keys()) yield* wake(id);
+      }).pipe(Effect.delay(RECONCILE_INTERVAL), Effect.forever),
+    );
   }),
 );

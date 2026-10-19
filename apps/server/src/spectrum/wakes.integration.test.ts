@@ -9,9 +9,9 @@ import {
   type OrchestrationV2Run,
   type ThreadId,
 } from "@t3tools/contracts";
-import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
@@ -71,8 +71,10 @@ interface Faults {
   /** Subscriptions up to this count fail at once; each subscription is recorded. */
   readonly failSubscriptions: number;
   readonly subscriptions: Queue.Queue<number>;
-  /** Sleeps the wake layer scheduled. */
-  sleeps: number;
+  /** While set, thread creation reaches routing without its lineage, so routing fails. */
+  corruptCreated: boolean;
+  /** Every message the wake layer logs. */
+  readonly logs: Queue.Queue<string>;
 }
 
 const faults = (failSubscriptions = 0) =>
@@ -82,7 +84,8 @@ const faults = (failSubscriptions = 0) =>
       failed: yield* Queue.unbounded<number>(),
       failSubscriptions,
       subscriptions: yield* Queue.unbounded<number>(),
-      sleeps: 0,
+      corruptCreated: false,
+      logs: yield* Queue.unbounded<string>(),
     } satisfies Faults as Faults;
   });
 
@@ -128,28 +131,38 @@ const wakes = (resumed: Queue.Queue<Resumed>, fault?: Faults) =>
               if (fault !== undefined) Queue.offerUnsafe(fault.subscriptions, count);
               return count <= (fault?.failSubscriptions ?? 0)
                 ? Stream.fail(new Events.EventSinkStreamError({ cause: "fixture" }))
-                : sink.stream(input);
+                : sink.stream(input).pipe(
+                    Stream.map((stored) =>
+                      fault?.corruptCreated === true && stored.event.type === "thread.created"
+                        ? ({
+                            ...stored,
+                            event: { ...stored.event, payload: { id: stored.event.threadId } },
+                          } as unknown as typeof stored)
+                        : stored,
+                    ),
+                  );
             },
           } satisfies Events.EventSinkV2Shape;
         }),
       ),
     ),
     Layer.provide(
-      Layer.effect(
-        Clock.Clock,
-        Effect.gen(function* () {
-          const clock = yield* Clock.clockWith(Effect.succeed);
-          return {
-            ...clock,
-            sleep: (duration) => {
-              if (fault !== undefined) fault.sleeps += 1;
-              return clock.sleep(duration);
-            },
-          } satisfies Clock.Clock;
-        }),
+      Logger.layer(
+        [
+          Logger.make(({ message }) => {
+            if (fault !== undefined)
+              Queue.offerUnsafe(fault.logs, String(Array.isArray(message) ? message[0] : message));
+          }),
+        ],
+        { mergeWithExisting: true },
       ),
     ),
   );
+
+const logged = (fault: Faults, text: string) =>
+  Effect.gen(function* () {
+    while ((yield* Queue.take(fault.logs)) !== text);
+  });
 
 /** Waits until a resume that started after a fresh marker on the Spectrum thread has failed. */
 const failedSince = (fault: Faults, threadId: ThreadId) =>
@@ -569,7 +582,7 @@ it.effect("a failed resume is retried by the reconcile without any new event", (
   ),
 );
 
-it.effect("a failed event stream resubscribes and a later event wakes the Spectrum", () =>
+it.effect("a failed event stream resubscribes after its backoff and replays the gap", () =>
   scenario((resumed) =>
     Effect.gen(function* () {
       const fault = yield* faults(1);
@@ -577,11 +590,13 @@ it.effect("a failed event stream resubscribes and a later event wakes the Spectr
       yield* Effect.gen(function* () {
         assert.strictEqual(yield* Queue.take(fault.subscriptions), 1);
         // The start-up catch-up still dispatches round 1 without a subscription.
-        yield* until(resumed, dispatched);
+        const running = yield* until(resumed, dispatched);
+        yield* logged(fault, "Spectrum catch-up");
+        yield* finish(yield* slotRun(running, 0), "Blue answer.");
+        assert.strictEqual(yield* Queue.size(fault.subscriptions), 0);
         yield* TestClock.adjust("1 second");
         assert.strictEqual(yield* Queue.take(fault.subscriptions), 2);
-        const running = yield* quiesce(resumed, state.threadId);
-        yield* finish(yield* slotRun(running, 0), "Blue answer.");
+        yield* quiesce(resumed, state.threadId);
         yield* finish(yield* slotRun(running, 1), "Red answer.");
         const relay = yield* until(resumed, (entry) => entry.state.round?.step === 1);
         assert.strictEqual(relay.status, "active");
@@ -590,36 +605,55 @@ it.effect("a failed event stream resubscribes and a later event wakes the Spectr
   ),
 );
 
-it.effect("the reconcile timer runs only while a Spectrum is live", () =>
+it.effect("a failed start-up catch-up is recovered by the next tick", () =>
+  scenario((resumed) =>
+    Effect.gen(function* () {
+      const fault = yield* faults();
+      yield* (yield* Launch.SpectrumLaunchService).register(input);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`ALTER TABLE fork_spectra RENAME TO fork_spectra_hidden`;
+      yield* Effect.gen(function* () {
+        yield* logged(fault, "Spectrum catch-up failed");
+        yield* sql`ALTER TABLE fork_spectra_hidden RENAME TO fork_spectra`;
+        assert.strictEqual(yield* Queue.size(resumed), 0);
+        yield* TestClock.adjust("60 seconds");
+        yield* until(resumed, dispatched);
+      }).pipe(Effect.provide(wakes(resumed, fault)));
+    }),
+  ),
+);
+
+it.effect("a Spectrum whose registration routing fails is resumed by the next tick", () =>
   scenario((resumed) =>
     Effect.gen(function* () {
       const fault = yield* faults();
       yield* Effect.gen(function* () {
-        const state = yield* (yield* Launch.SpectrumLaunchService).register(input);
-        yield* until(resumed, dispatched);
-        yield* quiesce(resumed, state.threadId);
-        assert.strictEqual(fault.sleeps, 1);
-        const projections = yield* Projection.ProjectionStoreV2;
-        const caller = yield* projections.getThread(input.callerThreadId);
-        yield* commit([
-          {
-            id: EventId.make("caller:retire"),
-            type: "thread.metadata-updated",
-            threadId: caller.id,
-            occurredAt: NOW,
-            payload: { ...caller, forkRetirement: { token: CommandId.make("caller:stop") } },
-          },
-        ]);
-        yield* until(resumed, (entry) => entry.state.status === "retired");
-        const settled = yield* quiesce(resumed, state.threadId);
-        assert.strictEqual(settled.status, "retired");
-        // The pass after the last live Spectrum settles finds none and ends the timer.
-        yield* TestClock.adjust("60 seconds");
-        yield* quiesce(resumed, state.threadId);
-        const sleeps = fault.sleeps;
-        yield* TestClock.adjust("10 minutes");
-        assert.strictEqual(fault.sleeps, sleeps);
+        yield* logged(fault, "Spectrum catch-up");
+        fault.corruptCreated = true;
+        yield* (yield* Launch.SpectrumLaunchService).register(input);
+        yield* logged(fault, "Spectrum event routing failed");
+        fault.corruptCreated = false;
         assert.strictEqual(yield* Queue.size(resumed), 0);
+        yield* TestClock.adjust("60 seconds");
+        yield* until(resumed, dispatched);
+      }).pipe(Effect.provide(wakes(resumed, fault)));
+    }),
+  ),
+);
+
+it.effect("with no active Spectrum a tick is one indexed read and no resume", () =>
+  scenario((resumed) =>
+    Effect.gen(function* () {
+      const fault = yield* faults();
+      const sql = yield* SqlClient.SqlClient;
+      const plan = yield* sql<{ readonly detail: string }>`EXPLAIN QUERY PLAN
+        SELECT thread_id FROM fork_spectra WHERE json_extract(payload_json, '$.status') = 'active'`;
+      assert.isTrue(plan.some((row) => row.detail.includes("fork_spectra_status")));
+      yield* Effect.gen(function* () {
+        yield* logged(fault, "Spectrum catch-up");
+        yield* TestClock.adjust("3 minutes");
+        assert.strictEqual(yield* Queue.size(resumed), 0);
+        assert.strictEqual(yield* Queue.size(fault.failed), 0);
       }).pipe(Effect.provide(wakes(resumed, fault)));
     }),
   ),
