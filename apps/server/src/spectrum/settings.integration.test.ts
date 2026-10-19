@@ -185,7 +185,7 @@ it.effect(
       ]);
       for (const [key, labels, moderator] of [
         ["explicit-white-first", ["Sol", "Grok"], 0],
-        ["explicit-white-saved", ["Sol", "Red"], 1],
+        ["explicit-white-matching-label", ["Sol", "Red"], 0],
       ] as const) {
         const result = yield* call({
           question: "Explicit slots choose White",

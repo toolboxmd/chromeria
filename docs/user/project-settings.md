@@ -111,9 +111,9 @@ Settings apply to the selected environment; a project override replaces the
 Spectrum defaults for that project, and resetting it restores inheritance.
 
 You can also supply explicit values when starting. Explicit slots replace the
-saved slots and have no fallbacks unless supplied. If you omit White, the saved
-White label is used when present among those slots; otherwise the first slot is
-White. A new environment starts without configured slots.
+saved slots and have no fallbacks unless supplied. With explicit slots, White is
+the first Color unless you choose another. Saved White applies when you use the
+saved slots. A new environment starts without configured slots.
 
 **Council** collects independent answers, runs at least two relay rounds, then
 asks White to synthesize. **Free** lets each Color speak once in order; then
