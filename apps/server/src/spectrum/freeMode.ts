@@ -1,4 +1,10 @@
-import type { FreeProgress, SpectrumRound, SpectrumState } from "./state.ts";
+import {
+  whiteOf,
+  type FreeProgress,
+  type Participant,
+  type SpectrumRound,
+  type SpectrumState,
+} from "./state.ts";
 
 /**
  * White-moderated free mode (#398). `state.limit` is the cap on Color turns,
@@ -32,14 +38,14 @@ function freeProgress(state: SpectrumState): FreeProgress {
 /** Who speaks next and in which phase, or null once the summary is in. */
 export function freeSpeaker(
   state: SpectrumState,
-): { readonly participant: number; readonly phase: SpectrumRound["phase"] } | null {
+): { readonly member: Participant; readonly phase: SpectrumRound["phase"] } | null {
   // A failed call closes its barrier with no replies; only a written summary ends the cycle.
   if (state.round?.phase === "summary" && state.round.slots.every((slot) => slot.replyIds?.length))
     return null;
   const { next } = freeProgress(state);
   return next.type === "color"
-    ? { participant: next.participant, phase: "free" }
-    : { participant: state.moderator, phase: next.type };
+    ? { member: state.participants[next.participant]!, phase: "free" }
+    : { member: whiteOf(state), phase: next.type };
 }
 
 type Moderation =

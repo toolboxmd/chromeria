@@ -49,6 +49,7 @@ import {
 } from "@t3tools/shared/serverSettings";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import { migratePrismRoleOverrides } from "./prism/PrismRoleOverrides.ts";
+import { savesSpectrumWhiteLabel } from "./spectrum/settings.ts";
 import {
   readSecretFieldValues,
   sourceControlHostSecretName,
@@ -662,9 +663,11 @@ const make = Effect.gen(function* () {
     // A file that failed to decode must stay on disk for the user to repair;
     // the fold below only writes when it started from the file's real contents.
     let settingsFileTrusted = true;
+    let spectrumWhiteLabel = false;
 
     if (yield* readConfigExists) {
       const raw = yield* readRawConfig;
+      spectrumWhiteLabel = savesSpectrumWhiteLabel(raw);
       const decoded = decodeServerSettingsJsonExit(raw);
       const legacySettings = decodeLegacyProviderSettingsJsonExit(raw);
       if (legacySettings._tag === "Success") {
@@ -780,7 +783,7 @@ const make = Effect.gen(function* () {
       : folded;
     if (
       migrated !== loaded ||
-      (settingsFileTrusted && legacyProviders !== undefined) ||
+      (settingsFileTrusted && (legacyProviders !== undefined || spectrumWhiteLabel)) ||
       hasLegacySourceControl
     ) {
       yield* writeSettingsAtomically(migrated);

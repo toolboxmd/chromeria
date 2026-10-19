@@ -27,6 +27,7 @@ import { ownedActiveRuns, ownedThreads, ownedRunsDrainedPlan } from "./cancellat
 import { stoppedText } from "./freeMode.ts";
 import { lifecycleEvents } from "./lifecycle.ts";
 import { spectrumTaskUpdate } from "./delegatedTask.ts";
+import { membersOf } from "./state.ts";
 import { readSpectrum } from "./store.ts";
 import {
   makeInitialReport,
@@ -183,7 +184,7 @@ const plan = Effect.fn("Spectrum.commandPlan")(function* (
         events.push(
           ...(yield* spectrumTaskUpdate(next, { status: "running" }, command.commandId, now)),
         );
-        for (const color of state.participants) {
+        for (const color of membersOf(state)) {
           const child = yield* projections.getThread(color.threadId);
           const retirement = yield* readRetirementState(child.id);
           events.push({
