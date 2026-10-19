@@ -42,7 +42,14 @@ export function resolveBrowserProfiles(
   userProfiles: ReadonlyArray<BrowserProfile>,
 ): ReadonlyArray<BrowserProfile> {
   const seen = new Set(BUILT_IN_BROWSER_PROFILES.map((profile) => profile.id));
-  const resolved = [...BUILT_IN_BROWSER_PROFILES];
+  const defaultLabel = userProfiles.find(
+    (profile) => profile.id === DEFAULT_BROWSER_PROFILE_ID,
+  )?.name;
+  const resolved = BUILT_IN_BROWSER_PROFILES.map((profile) =>
+    profile.id === DEFAULT_BROWSER_PROFILE_ID && defaultLabel
+      ? { ...profile, name: defaultLabel }
+      : profile,
+  );
   for (const profile of userProfiles) {
     if (seen.has(profile.id)) continue;
     seen.add(profile.id);

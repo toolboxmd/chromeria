@@ -69,6 +69,7 @@ import * as DesktopRendererHistory from "./telemetry/DesktopRendererHistory.ts";
 import * as DesktopUpdates from "./updates/DesktopUpdates.ts";
 import * as BrowserImport from "./preview/BrowserImport/BrowserImport.ts";
 import * as LinuxBrowserSecret from "./preview/BrowserImport/LinuxBrowserSecret.ts";
+import * as DesktopCookieMirror from "./preview/DesktopCookieMirror.ts";
 import * as BrowserSession from "./preview/BrowserSession.ts";
 import * as DesktopBrowserHost from "./preview/DesktopBrowserHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
@@ -203,6 +204,12 @@ const layerDesktopLocalEnvironmentAuth = DesktopLocalEnvironmentAuth.layer.pipe(
   Layer.provideMerge(layerDesktopBackend),
 );
 
+const layerDesktopCookieMirror = DesktopCookieMirror.layer.pipe(
+  Layer.provideMerge(layerDesktopBackend),
+  Layer.provideMerge(layerDesktopSsh),
+  Layer.provideMerge(layerDesktopPreview),
+);
+
 const layerDesktopApplication = Layer.mergeAll(
   DesktopLifecycle.layer,
   layerDesktopAppActivation,
@@ -216,6 +223,7 @@ const layerDesktopApplication = Layer.mergeAll(
   Layer.provideMerge(DesktopUpdates.layer),
   Layer.provideMerge(layerDesktopWslBackend),
   Layer.provideMerge(layerDesktopLocalEnvironmentAuth),
+  Layer.provideMerge(layerDesktopCookieMirror),
 );
 
 // Clerk resolves userData before Electron is ready, so it gets the synchronous FileSystem.

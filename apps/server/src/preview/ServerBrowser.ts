@@ -3,6 +3,8 @@
 // --disable-gpu uses cheaper software compositing while preserving SwiftShader WebGL.
 import {
   BUILT_IN_BROWSER_PROFILES,
+  CookieMirrorError,
+  type CookieMirrorBatch,
   DEFAULT_BROWSER_PROFILE_ID,
   DEFAULT_BROWSER_RECORDING_FRAME_RATE,
   FILL_PREVIEW_VIEWPORT,
@@ -54,6 +56,7 @@ import * as Effect from "effect/Effect";
 import { constVoid } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
@@ -82,6 +85,8 @@ import * as PreviewManager from "./Manager.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
+import { ServerCookieMirrorProfiles } from "./ServerCookieMirrorProfiles.ts";
+import { ServerCookieMirror } from "./ServerCookieMirror.ts";
 import { presentAsChrome, ServerBrowserContexts } from "./ServerBrowserContexts.ts";
 import { BrowserControlInterrupted, SessionControl } from "./SessionControl.ts";
 import { installPdfDocumentNavigation, isPdfAssetUrl } from "./PdfDocumentNavigation.ts";
@@ -240,6 +245,9 @@ export class ServerBrowser extends Context.Service<
     }) => Effect.Effect<Option.Option<{ readonly path: string; readonly fileName: string }>>;
 
     readonly clearProfile: (profileId: string) => Effect.Effect<void, PreviewClearProfileError>;
+
+    readonly mirrorResets: Stream.Stream<string>;
+    readonly mirrorCookies: (input: CookieMirrorBatch) => Effect.Effect<void, CookieMirrorError>;
 
     readonly reportProfiles: (input: PreviewReportProfilesInput) => Effect.Effect<void>;
   }
@@ -470,6 +478,19 @@ const make = Effect.gen(function* () {
   let hostConnectionId: string | null = null;
   let viewerResizeOrder = 0;
 
+  const mirrorResets = yield* PubSub.unbounded<string>();
+  const mirroredContexts = new WeakMap<BrowserContext, string>();
+  const catalog = new ServerCookieMirrorProfiles(
+    NodePath.join(config.stateDir, "server-browser", "mirrored-profiles.json"),
+  );
+  const catalogRead = yield* Effect.tryPromise({
+    try: () => catalog.read(),
+    catch: () => new CookieMirrorError({ reason: "unavailable" }),
+  }).pipe(Effect.result);
+  if (catalogRead._tag === "Failure")
+    yield* Effect.logWarning(
+      "Mirrored browser profile catalog unavailable; cookie mirroring stopped.",
+    );
   const contexts = new ServerBrowserContexts({
     profilesDir: NodePath.join(config.stateDir, "server-browser", "profiles"),
     executable: () => runPromise(previewBrowser.executable),
@@ -485,11 +506,14 @@ const make = Effect.gen(function* () {
         }),
       ),
     onContextClose: (context) => {
+      const profileId = mirroredContexts.get(context);
+      if (profileId !== undefined) runFork(PubSub.publish(mirrorResets, profileId));
       for (const tab of tabs.values()) {
         if (tab.page.context() === context) dropTab(tab, true);
       }
     },
   });
+  const cookieMirror = new ServerCookieMirror(contexts);
 
   const dialogStatus = (tab: ServerTab) =>
     tab.dialog
@@ -1306,6 +1330,16 @@ const make = Effect.gen(function* () {
         ? ("agent" as const)
         : ("unclaimed" as const);
 
+  const mirroredProfiles = new Map<string, BrowserProfile>(
+    catalogRead._tag === "Success"
+      ? catalogRead.success.map((profile) => [profile.id, profile])
+      : [],
+  );
+  const availableProfiles = () =>
+    resolveBrowserProfiles([
+      ...mirroredProfiles.values(),
+      ...(reportedProfiles?.profiles ?? BUILT_IN_BROWSER_PROFILES),
+    ]);
   let reportedProfiles: {
     readonly profiles: ReadonlyArray<BrowserProfile>;
     readonly defaultProfileId: string;
@@ -1326,20 +1360,28 @@ const make = Effect.gen(function* () {
     });
 
   const profileStatus = () => {
-    const profiles = reportedProfiles?.profiles ?? BUILT_IN_BROWSER_PROFILES;
+    const profiles = availableProfiles();
     return {
       profiles: profiles.map((profile) => ({
         id: profile.id,
         name: profile.name,
         ...(profile.kind === "incognito" ? { incognito: true } : {}),
       })),
-      ...(reportedProfiles ? { defaultProfileId: reportedProfiles.defaultProfileId } : {}),
+      ...(reportedProfiles
+        ? { defaultProfileId: reportedProfiles.defaultProfileId }
+        : mirroredProfiles.has(DEFAULT_BROWSER_PROFILE_ID)
+          ? { defaultProfileId: DEFAULT_BROWSER_PROFILE_ID }
+          : {}),
     };
   };
 
   const resolveOpenProfile = (requested: string | undefined): string | undefined => {
-    if (requested === undefined) return reportedProfiles?.defaultProfileId;
-    const profiles = reportedProfiles?.profiles ?? BUILT_IN_BROWSER_PROFILES;
+    if (requested === undefined)
+      return (
+        reportedProfiles?.defaultProfileId ??
+        (mirroredProfiles.has(DEFAULT_BROWSER_PROFILE_ID) ? DEFAULT_BROWSER_PROFILE_ID : undefined)
+      );
+    const profiles = availableProfiles();
     const wanted = requested.toLowerCase();
     const match =
       findBrowserProfile(profiles, requested) ??
@@ -2531,6 +2573,21 @@ const make = Effect.gen(function* () {
     });
 
   return ServerBrowser.of({
+    mirrorResets: Stream.fromPubSub(mirrorResets),
+    mirrorCookies: (batch) =>
+      Effect.tryPromise({
+        try: async () => {
+          if (catalogRead._tag === "Failure")
+            throw new Error("Mirrored profile catalog unavailable.");
+          if (batch.mutations.length > 0) {
+            const context = await cookieMirror.apply(batch);
+            mirroredContexts.set(context, batch.profile.id);
+          }
+          await catalog.put(batch.profile);
+          mirroredProfiles.set(batch.profile.id, batch.profile);
+        },
+        catch: () => new CookieMirrorError({ reason: "unavailable" }),
+      }),
     attachViewer,
     clearProfile,
     reportProfiles,

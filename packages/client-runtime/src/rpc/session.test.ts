@@ -32,6 +32,7 @@ import {
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import * as Persistence from "../platform/persistence.ts";
 import * as RpcSession from "./session.ts";
+import * as ManagedRelay from "../relay/managedRelay.ts";
 import { makeEnvironmentServerConfigState } from "../state/server.ts";
 import { applyServerConfigProjection } from "../state/serverConfigProjection.ts";
 
@@ -275,6 +276,78 @@ const publishConfigEvents = Effect.fn("TestRpcSessionFactory.publishConfigEvents
 });
 
 describe("RpcSessionFactory", () => {
+  it.effect.each(["Bearer", "Dpop"] as const)(
+    "scopes the desktop lifecycle hook to a ready authenticated %s connection",
+    (kind) =>
+      Effect.gen(function* () {
+        const authorized = yield* Deferred.make<unknown>();
+        const closed = yield* Deferred.make<void>();
+        const proofs: ManagedRelay.ManagedRelayDpopProofInput[] = [];
+        const { factory, sockets } = yield* makeFactory({
+          onReady: (connection, _client, authorizeHttp) =>
+            Effect.gen(function* () {
+              yield* Effect.addFinalizer(() => Deferred.succeed(closed, undefined));
+              const headers = yield* authorizeHttp(
+                "https://environment.example.test/api/browser-cookie-mirror/grant",
+              ).pipe(Effect.orDie);
+              yield* Deferred.succeed(authorized, {
+                environmentId: connection.environmentId,
+                headers,
+              });
+              return yield* Effect.never;
+            }),
+        }).pipe(
+          Effect.provideService(ManagedRelay.ManagedRelayDpopSigner, {
+            thumbprint: Effect.succeed("synthetic-thumbprint"),
+            createProof: (input) =>
+              Effect.sync(() => {
+                proofs.push(input);
+                return "synthetic-proof";
+              }),
+          }),
+        );
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const session = yield* factory.connect({
+              ...PREPARED,
+              httpAuthorization:
+                kind === "Bearer"
+                  ? { _tag: "Bearer", token: "synthetic-parent-token" }
+                  : {
+                      _tag: "Dpop",
+                      accessToken: "synthetic-parent-token",
+                      expiresAtEpochMs: 10000,
+                    },
+            });
+            const socket = yield* awaitSocket(sockets);
+            socket.open();
+            expect(yield* Deferred.isDone(authorized)).toBe(false);
+            yield* completeInitialConfig(socket);
+            yield* session.ready;
+            expect(yield* Deferred.await(authorized)).toEqual({
+              environmentId: TARGET.environmentId,
+              headers:
+                kind === "Bearer"
+                  ? { authorization: "Bearer synthetic-parent-token" }
+                  : { authorization: "DPoP synthetic-parent-token", dpop: "synthetic-proof" },
+            });
+            expect(proofs).toEqual(
+              kind === "Bearer"
+                ? []
+                : [
+                    {
+                      method: "POST",
+                      url: "https://environment.example.test/api/browser-cookie-mirror/grant",
+                      accessToken: "synthetic-parent-token",
+                    },
+                  ],
+            );
+          }),
+        );
+        expect(yield* Deferred.isDone(closed)).toBe(true);
+      }),
+  );
+
   it.effect("owns one scoped websocket attempt and exposes readiness and closure", () =>
     Effect.gen(function* () {
       const { factory, sockets } = yield* makeFactory();

@@ -1,3 +1,5 @@
+import * as BrowserCookieMirror from "./preview/BrowserCookieMirror.ts";
+import * as CookieMirrorRoute from "./preview/CookieMirrorRoute.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ForkProviderMaintenance from "./provider/forkProviderMaintenance.ts";
 import * as ProviderAutoUpdate from "./provider/providerAutoUpdate.ts";
@@ -746,6 +748,7 @@ const layerMakeRoutes = Layer.mergeAll(
     ContextmdRoute.layer,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
+    CookieMirrorRoute.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
   ),
@@ -769,6 +772,7 @@ const layerMakeRoutes = Layer.mergeAll(
   // Share the service so HTTP/WS clients single-flight reads and invalidate each other's cached patches.
   Layer.provide(layerPullRequestService),
   Layer.provide(layerIssues),
+  Layer.provide(BrowserCookieMirror.layer),
   // The same activity instance RunExecutionService reports to, by layer memoization.
   Layer.provide(
     ServerBrowser.layer.pipe(

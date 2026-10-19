@@ -1,3 +1,4 @@
+import { mirrorDesktopCookies } from "../rpc/cookieMirrorConnection.ts";
 import { Connection } from "@t3tools/client-runtime/connection";
 import { ShellSnapshotLoader } from "@t3tools/client-runtime/state/shell";
 import {
@@ -36,6 +37,7 @@ const layerProvidedClientConnection = layerSnapshotLoader.pipe(
   Layer.provideMerge(
     Connection.layerWithOptions({
       environmentThemes: true,
+      onReady: mirrorDesktopCookies,
       usageLimitSources: true,
       usageLimitsCommand: true,
     }),

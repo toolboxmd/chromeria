@@ -1,3 +1,5 @@
+import * as ManagedRelay from "../relay/managedRelay.ts";
+import * as RemoteEnvironmentAuthorization from "../authorization/service.ts";
 import {
   type ServerConfig,
   type ServerConfigStreamEvent,
@@ -59,6 +61,16 @@ export interface RpcSession {
 }
 
 export interface RpcSessionOptions {
+  readonly onReady?: (
+    connection: PreparedConnection,
+    client: WsRpcProtocolClient,
+    authorizeHttp: (
+      url: string,
+    ) => Effect.Effect<
+      { readonly authorization: string; readonly dpop?: string },
+      ConnectionAttemptError
+    >,
+  ) => Effect.Effect<void, never, Scope.Scope>;
   readonly environmentThemes?: boolean;
   readonly usageLimitSources?: boolean;
   readonly usageLimitsCommand?: boolean;
@@ -167,6 +179,10 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
   options: RpcSessionOptions = {},
 ) {
   const webSocketConstructor = yield* Socket.WebSocketConstructor;
+  const signer = yield* Effect.serviceOption(ManagedRelay.ManagedRelayDpopSigner);
+  const remote = yield* Effect.serviceOption(
+    RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization,
+  );
   const serverConfigInput: ServerConfigSubscriptionInput = {
     ...(options.environmentThemes === true ? { environmentThemes: true } : {}),
     ...(options.usageLimitSources === true ? { usageLimitSources: true } : {}),
@@ -411,6 +427,44 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
       Effect.asVoid,
       Effect.withSpan("clientRuntime.connection.rpcSession.probe"),
     );
+
+    if (options.onReady) {
+      yield* Deferred.await(connected).pipe(
+        Effect.andThen(initialConfig),
+        Effect.andThen(
+          options.onReady(connection, protocolClient, (url) =>
+            Effect.gen(function* () {
+              let authorization = connection.httpAuthorization;
+              if (authorization?._tag === "Dpop" && Option.isSome(remote)) {
+                authorization = (yield* remote.value.authorizeDpopHttp({
+                  expectedEnvironmentId: connection.environmentId,
+                })).httpAuthorization;
+              }
+              if (authorization?._tag === "Bearer")
+                return { authorization: `Bearer ${authorization.token}` };
+              if (authorization?._tag !== "Dpop" || Option.isNone(signer))
+                return yield* new ConnectionBlockedError({
+                  reason: "authentication",
+                  detail: "Browser mirroring requires an authenticated desktop connection.",
+                });
+              const dpop = yield* signer.value
+                .createProof({ method: "POST", url, accessToken: authorization.accessToken })
+                .pipe(
+                  Effect.mapError(
+                    () =>
+                      new ConnectionBlockedError({
+                        reason: "authentication",
+                        detail: "Could not authorize browser mirroring.",
+                      }),
+                  ),
+                );
+              return { authorization: `DPoP ${authorization.accessToken}`, dpop };
+            }),
+          ),
+        ),
+        Effect.forkScoped,
+      );
+    }
 
     return {
       client: protocolClient,

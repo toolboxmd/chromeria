@@ -11,6 +11,7 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopAppSettings from "./DesktopAppSettings.ts";
 
 const DesktopSettingsPatch = Schema.Struct({
+  chromeCookieKeyCommand: Schema.optionalKey(Schema.Unknown),
   linuxPasswordStore: Schema.optionalKey(
     Schema.Literals(["auto", "gnome-libsecret", "kwallet", "kwallet5", "kwallet6"]),
   ),
@@ -122,6 +123,28 @@ describe("DesktopSettings", () => {
     }),
   );
 
+  it.effect("preserves the Chrome key argv across unrelated settings writes", () =>
+    withSettings(
+      Effect.gen(function* () {
+        const settings = yield* DesktopAppSettings.DesktopAppSettings;
+        const command = ["bao", "kv", "get", "-field=synthetic", "synthetic/path"];
+        yield* writeSettingsPatch({ chromeCookieKeyCommand: command });
+        assert.deepEqual((yield* settings.load).chromeCookieKeyCommand, command);
+        yield* settings.setLocalEnvironmentEnabled(false);
+        assert.deepEqual((yield* settings.load).chromeCookieKeyCommand, command);
+      }),
+    ),
+  );
+
+  it.effect("keeps an invalid configured command distinct from an unset Keychain fallback", () =>
+    withSettings(
+      Effect.gen(function* () {
+        const settings = yield* DesktopAppSettings.DesktopAppSettings;
+        yield* writeSettingsPatch({ chromeCookieKeyCommand: "invalid-command" });
+        assert.deepEqual((yield* settings.load).chromeCookieKeyCommand, []);
+      }),
+    ),
+  );
   it.effect(
     "persists disabling and re-enabling local execution without clearing backend settings",
     () =>

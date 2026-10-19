@@ -37,6 +37,11 @@ flowchart TD
     %% PBI: #460 PR #470 PR #527
     T3C --> PBI
 
+    BLM["Chrome login mirror"]
+    %% BLM: #520 PR #530
+    T3C --> BLM --> T3R
+    BLM --> PBI
+
     PZ["Prism routing"]
     %% PZ: #92 PR #408 PR #430 PR #479 PR #489 PR #512 PR #471 PR #476
     VT["Visible T3 threads"]

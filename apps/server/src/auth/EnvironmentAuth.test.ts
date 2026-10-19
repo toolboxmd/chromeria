@@ -2,7 +2,13 @@
 import * as NodeCrypto from "node:crypto";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { authScopeResponse, AuthStandardClientScopes } from "@t3tools/contracts";
+import { currentDesktopBootstrapToken } from "@t3tools/shared/desktopBootstrapToken";
+import * as Clock from "effect/Clock";
+import {
+  authScopeResponse,
+  AuthStandardClientScopes,
+  AuthCookieMirrorWriteScope,
+} from "@t3tools/contracts";
 import {
   computeDpopAccessTokenHash,
   computeDpopJwkThumbprint,
@@ -112,6 +118,22 @@ const makeDpopKey = () => {
 
 it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
   // Fork: device people (toolboxmd/chromeria#170).
+  it.effect("rejects cookie mirror access requested with a renderer desktop bootstrap token", () =>
+    Effect.gen(function* () {
+      const auth = yield* EnvironmentAuth.EnvironmentAuth;
+      const result = yield* auth
+        .exchangeBootstrapCredentialForAccessToken(
+          "desktop-bootstrap-token",
+          [AuthCookieMirrorWriteScope],
+          requestMetadata,
+        )
+        .pipe(Effect.result);
+      expect(result._tag).toBe("Failure");
+    }).pipe(
+      Effect.provide(layerEnvironmentAuth({ desktopBootstrapToken: "desktop-bootstrap-token" })),
+    ),
+  );
+
   it.effect(
     "persists device person, exposes it to non-admin sessions and publishes live changes",
     () =>
@@ -437,6 +459,60 @@ it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
     }).pipe(
       Effect.provide(layerEnvironmentAuth({ desktopBootstrapToken: "desktop-bootstrap-token" })),
     ),
+  );
+
+  it.effect(
+    "keeps the dedicated main mirror credential separate from renderer session rotation",
+    () =>
+      Effect.gen(function* () {
+        const auth = yield* EnvironmentAuth.EnvironmentAuth;
+        const now = yield* Clock.currentTimeMillis;
+        const rendererCredential = currentDesktopBootstrapToken("desktop-secret", now);
+        const mainCredential = currentDesktopBootstrapToken("desktop-secret", now, "cookie-mirror");
+        const renderer = yield* auth.exchangeBootstrapCredentialForAccessToken(
+          rendererCredential,
+          undefined,
+          requestMetadata,
+        );
+        const first = yield* auth.exchangeBootstrapCredentialForAccessToken(
+          mainCredential,
+          [AuthCookieMirrorWriteScope],
+          requestMetadata,
+        );
+        const mirror = yield* auth.authenticateHttpRequest(makeBearerRequest(first.access_token));
+        expect(mirror.scopes).toEqual([AuthCookieMirrorWriteScope]);
+        expect(
+          (yield* auth.authenticateHttpRequest(makeBearerRequest(renderer.access_token))).scopes,
+        ).toEqual(AuthStandardClientScopes);
+        expect(
+          (yield* auth
+            .exchangeBootstrapCredentialForAccessToken(
+              rendererCredential,
+              [AuthCookieMirrorWriteScope],
+              requestMetadata,
+            )
+            .pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        expect(
+          (yield* auth.authenticateHttpRequest(makeBearerRequest(first.access_token))).scopes,
+        ).toEqual([AuthCookieMirrorWriteScope]);
+        const second = yield* auth.exchangeBootstrapCredentialForAccessToken(
+          mainCredential,
+          [AuthCookieMirrorWriteScope],
+          requestMetadata,
+        );
+        expect(
+          (yield* auth
+            .authenticateHttpRequest(makeBearerRequest(first.access_token))
+            .pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        expect(
+          (yield* auth.authenticateHttpRequest(makeBearerRequest(second.access_token))).scopes,
+        ).toEqual([AuthCookieMirrorWriteScope]);
+        expect(
+          (yield* auth.authenticateHttpRequest(makeBearerRequest(renderer.access_token))).scopes,
+        ).toEqual(AuthStandardClientScopes);
+      }).pipe(Effect.provide(layerEnvironmentAuth({ desktopBootstrapSecret: "desktop-secret" }))),
   );
 
   it.effect("rotates desktop bearer sessions without accumulating authorized clients", () =>

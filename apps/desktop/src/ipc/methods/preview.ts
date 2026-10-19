@@ -20,8 +20,6 @@ import {
   DesktopPreviewWebviewConfigSchema,
   PreviewAnnotationSubmissionResultSchema,
   PreviewCaptureFailure,
-  DEFAULT_BROWSER_PROFILE_ID,
-  INCOGNITO_BROWSER_PROFILE_ID,
   PreviewForwardedShortcut,
   MAX_KEYBINDINGS_COUNT,
 } from "@t3tools/contracts";
@@ -30,6 +28,7 @@ import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 import * as NodeURL from "node:url";
 
+import { resolvePartitionScope } from "../../preview/PartitionScope.ts";
 import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import * as BrowserImport from "../../preview/BrowserImport/BrowserImport.ts";
 import * as PreviewManager from "../../preview/Manager.ts";
@@ -259,27 +258,11 @@ const clearCache = DesktopIpc.makeIpcMethod({
   }),
 });
 
-/** Keep the default profile's bare environment id so existing logins retain their partition. */
-export function resolvePartitionScope(
-  environmentId: string,
-  profileId: string | undefined,
-): {
-  readonly scope: string;
-  readonly persistent: boolean;
-  readonly namespace?: "profile";
-} {
-  if (profileId === undefined || profileId === DEFAULT_BROWSER_PROFILE_ID) {
-    return { scope: environmentId, persistent: true };
-  }
-  // JSON framing preserves lone UTF-16 surrogates; URI encoding throws and replacement would collide.
-  return {
-    scope: JSON.stringify([environmentId, profileId]),
-    persistent: profileId !== INCOGNITO_BROWSER_PROFILE_ID,
-    namespace: "profile" as const,
-  };
-}
-
-/** Omitting a profile clears every partition; a named profile clears only its own partition. */
+/**
+ * Clearing without a profile keeps the historical "everything" behaviour for
+ * an explicit all-profiles action; naming a profile confines it to that
+ * profile's partition so one profile's sign-out cannot reach the others.
+ */
 const resolveClearPartitions = Effect.fn("desktop.ipc.preview.resolveClearPartitions")(function* (
   manager: PreviewManager.PreviewManager["Service"],
   environmentId: string,

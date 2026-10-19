@@ -1,3 +1,4 @@
+import { resolvePartitionScope } from "../../preview/PartitionScope.ts";
 import { it as effectIt } from "@effect/vitest";
 import {
   DEFAULT_BROWSER_PROFILE_ID,
@@ -112,8 +113,8 @@ describe("preview IPC methods", () => {
   });
 
   it("derives distinct partition scopes when identifiers contain the delimiter", () => {
-    const first = PreviewIpc.resolvePartitionScope("a", "b::c");
-    const second = PreviewIpc.resolvePartitionScope("a::b", "c");
+    const first = resolvePartitionScope("a", "b::c");
+    const second = resolvePartitionScope("a::b", "c");
 
     expect(first).toEqual({ scope: '["a","b::c"]', persistent: true, namespace: "profile" });
     expect(second).toEqual({ scope: '["a::b","c"]', persistent: true, namespace: "profile" });
@@ -121,16 +122,15 @@ describe("preview IPC methods", () => {
   });
 
   it("keeps the legacy default partition scope and incognito persistence", () => {
-    expect(PreviewIpc.resolvePartitionScope("environment::legacy", undefined)).toEqual({
+    expect(resolvePartitionScope("environment::legacy", undefined)).toEqual({
       scope: "environment::legacy",
       persistent: true,
     });
-    expect(
-      PreviewIpc.resolvePartitionScope("environment::legacy", DEFAULT_BROWSER_PROFILE_ID),
-    ).toEqual({ scope: "environment::legacy", persistent: true });
-    expect(
-      PreviewIpc.resolvePartitionScope("environment::legacy", INCOGNITO_BROWSER_PROFILE_ID),
-    ).toEqual({
+    expect(resolvePartitionScope("environment::legacy", DEFAULT_BROWSER_PROFILE_ID)).toEqual({
+      scope: "environment::legacy",
+      persistent: true,
+    });
+    expect(resolvePartitionScope("environment::legacy", INCOGNITO_BROWSER_PROFILE_ID)).toEqual({
       scope: '["environment::legacy","incognito"]',
       persistent: false,
       namespace: "profile",

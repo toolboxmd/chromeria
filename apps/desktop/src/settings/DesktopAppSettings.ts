@@ -1,4 +1,5 @@
 import {
+  ChromeCookieKeyCommand,
   DesktopServerExposureModeSchema,
   DesktopUpdateChannelSchema,
   type DesktopServerExposureMode,
@@ -26,6 +27,7 @@ import { resolveDefaultDesktopUpdateChannel } from "../updates/updateChannels.ts
 import { isValidDistroName } from "../wsl/wslPathParsing.ts";
 
 export interface DesktopSettings {
+  readonly chromeCookieKeyCommand?: ChromeCookieKeyCommand;
   readonly localEnvironmentEnabled: boolean;
   readonly linuxPasswordStore: LinuxPasswordStorePreference;
   readonly mainWindowBounds: DesktopWindowBounds | null;
@@ -85,7 +87,9 @@ const DesktopWindowBoundsDocument = Schema.Struct({
   height: Schema.Number,
 });
 
+const isChromeCookieKeyCommand = Schema.is(ChromeCookieKeyCommand);
 const DesktopSettingsDocument = Schema.Struct({
+  chromeCookieKeyCommand: Schema.optionalKey(Schema.Unknown),
   localEnvironmentEnabled: Schema.optionalKey(Schema.Boolean),
   linuxPasswordStore: Schema.optionalKey(Schema.Unknown),
   mainWindowBounds: Schema.optionalKey(Schema.NullOr(DesktopWindowBoundsDocument)),
@@ -215,6 +219,14 @@ function normalizeDesktopSettingsDocument(
     (parsed.wslBackendEnabled === undefined && parsed.wslMode === "wsl");
 
   return {
+    // A configured but invalid command must not silently select Keychain.
+    ...(parsed.chromeCookieKeyCommand === undefined
+      ? {}
+      : {
+          chromeCookieKeyCommand: isChromeCookieKeyCommand(parsed.chromeCookieKeyCommand)
+            ? parsed.chromeCookieKeyCommand
+            : [],
+        }),
     localEnvironmentEnabled: parsed.localEnvironmentEnabled !== false,
     linuxPasswordStore: normalizeLinuxPasswordStorePreference(parsed.linuxPasswordStore),
     mainWindowBounds,
@@ -238,6 +250,8 @@ function toDesktopSettingsDocument(
   defaults: DesktopSettings,
 ): DesktopSettingsDocument {
   const document: Mutable<DesktopSettingsDocument> = {};
+  if (settings.chromeCookieKeyCommand !== undefined)
+    document.chromeCookieKeyCommand = settings.chromeCookieKeyCommand;
 
   if (settings.localEnvironmentEnabled !== defaults.localEnvironmentEnabled) {
     document.localEnvironmentEnabled = settings.localEnvironmentEnabled;

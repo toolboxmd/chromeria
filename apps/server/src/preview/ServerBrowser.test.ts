@@ -1301,3 +1301,48 @@ it.live(
       }),
     ).pipe(Effect.provide(layer)),
 );
+
+it.live("opens mirrored profiles after a server restart with no desktop connected", () =>
+  Effect.gen(function* () {
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const browser = yield* ServerBrowser.ServerBrowser;
+        for (const profile of [
+          { id: "default", name: "Chrome account", kind: "persistent" },
+          { id: "chrome-work", name: "Work", kind: "persistent" },
+        ] as const) {
+          yield* browser.mirrorCookies({
+            environmentId: scope.environmentId,
+            sequence: 0,
+            profile,
+            mutations: [],
+          });
+        }
+        expect(contextRequests).toEqual([]);
+      }).pipe(Effect.provide(ServerBrowser.layer)),
+    );
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        yield* ServerBrowser.ServerBrowser;
+        const broker = yield* Broker.PreviewAutomationBroker;
+        yield* Effect.yieldNow;
+        const work = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { profileId: "Work", reuseExistingTab: false, show: false },
+        });
+        const defaultProfile = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        });
+        expect(work.profiles).toContainEqual({ id: "chrome-work", name: "Work" });
+        expect(defaultProfile.defaultProfileId).toBe("default");
+        expect(contextRequests).toEqual([
+          { profileId: "chrome-work", isolated: false },
+          { profileId: "default", isolated: false },
+        ]);
+      }).pipe(Effect.provide(Layer.fresh(ServerBrowser.layer))),
+    );
+  }).pipe(Effect.scoped, Effect.provide(dependencies)),
+);

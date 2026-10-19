@@ -28,21 +28,18 @@ afterAll(() => {
 async function renderedSvg(source: string): Promise<SVGSVGElement> {
   const host = document.createElement("div");
   document.body.append(host);
-  let svg: SVGSVGElement | null = null;
+  let onRendered!: (element: SVGSVGElement) => void;
+  const rendered = new Promise<SVGSVGElement>((resolve) => {
+    onRendered = resolve;
+  });
   await act(async () => {
     createRoot(host).render(
       <Suspense fallback={null}>
-        <MermaidDiagram
-          source={source}
-          onRendered={(element) => {
-            svg = element;
-          }}
-        />
+        <MermaidDiagram source={source} onRendered={onRendered} />
       </Suspense>,
     );
   });
-  await vi.waitFor(() => expect(svg).not.toBeNull());
-  return svg!;
+  return rendered;
 }
 
 describe("the feature map on the pinned Mermaid", () => {

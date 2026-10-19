@@ -4,6 +4,7 @@ import { APP_BASE_NAME } from "../../branding";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { DeviceSourcesSettings } from "./DeviceSourcesSettings";
+import { ChromeCookieMirrorStatus } from "./ChromeCookieMirrorStatus";
 import {
   AuthSettingsWriteScope,
   BrowserImportFailureReason,
@@ -1558,7 +1559,8 @@ export function BrowserSettingsPanel() {
       </SettingsSection>
       <SettingsSection id="browser" title="Browsing">
         <SettingsUnavailableGroup message={desktopOnlyMessage}>
-          <BrowserProfilesSetting disabled={desktopOnly} />
+          {isElectron ? <ChromeCookieMirrorStatus /> : null}
+      <BrowserProfilesSetting disabled={desktopOnly} />
           <BrowserLinkTargetSetting disabled={desktopOnly} />
           <BrowserAutoShowFloatingPreviewSetting disabled={desktopOnly} />
         </SettingsUnavailableGroup>

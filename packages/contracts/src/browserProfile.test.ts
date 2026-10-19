@@ -11,14 +11,18 @@ import {
 const work: BrowserProfile = { id: "profile-work", name: "Work", kind: "persistent" };
 
 describe("resolveBrowserProfiles", () => {
-  it("drops stored entries that collide with a built-in id", () => {
+  it("keeps built-in identities and persistence while allowing Chrome's default profile label", () => {
     const resolved = resolveBrowserProfiles([
-      { id: DEFAULT_BROWSER_PROFILE_ID, name: "Hijacked", kind: "persistent" },
+      { id: DEFAULT_BROWSER_PROFILE_ID, name: "Chrome account", kind: "incognito" },
       { id: INCOGNITO_BROWSER_PROFILE_ID, name: "Not incognito", kind: "persistent" },
       work,
     ]);
 
-    expect(resolved).toEqual([...BUILT_IN_BROWSER_PROFILES, work]);
+    expect(resolved).toEqual([
+      { id: DEFAULT_BROWSER_PROFILE_ID, name: "Chrome account", kind: "persistent" },
+      BUILT_IN_BROWSER_PROFILES[1],
+      work,
+    ]);
   });
 });
 

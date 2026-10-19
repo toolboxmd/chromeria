@@ -16,6 +16,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import { HttpRouter, HttpServer } from "effect/http";
@@ -87,6 +88,8 @@ it.effect.each([
       ack: Effect.sync(() => acked.resolve()),
     });
     const browser = ServerBrowser.ServerBrowser.of({
+      mirrorCookies: () => Effect.void,
+      mirrorResets: Stream.empty,
       clearProfile: () => Effect.void,
       reportProfiles: () => Effect.void,
       openDownload: () => Effect.succeedNone,
@@ -233,6 +236,8 @@ it.effect.each([
     const auth = makeAuth(testCase.scopes, testCase.error);
     let attachments = 0;
     const browser = ServerBrowser.ServerBrowser.of({
+      mirrorCookies: () => Effect.void,
+      mirrorResets: Stream.empty,
       clearProfile: () => Effect.void,
       reportProfiles: () => Effect.void,
       openDownload: () => Effect.succeedNone,
@@ -274,6 +279,8 @@ it.effect("serves a tab's download only to an authorized session", () =>
     yield* fs.writeFileString(path, "report contents");
     const requests: Array<unknown> = [];
     const browser = ServerBrowser.ServerBrowser.of({
+      mirrorCookies: () => Effect.void,
+      mirrorResets: Stream.empty,
       clearProfile: () => Effect.void,
       reportProfiles: () => Effect.void,
       openDownload: (input) =>
@@ -322,6 +329,8 @@ it.effect("passes uploaded files to the page's open picker and needs operate sco
   Effect.gen(function* () {
     const answers: Array<{ chooserId: string; files: Array<{ name: string; text: string }> }> = [];
     const browser = ServerBrowser.ServerBrowser.of({
+      mirrorCookies: () => Effect.void,
+      mirrorResets: Stream.empty,
       clearProfile: () => Effect.void,
       reportProfiles: () => Effect.void,
       openDownload: () => Effect.succeedNone,
@@ -391,6 +400,8 @@ it.effect.each([
 ])("tells viewers the command that sets up the host ($need)", ({ error, need }) =>
   Effect.gen(function* () {
     const browser = ServerBrowser.ServerBrowser.of({
+      mirrorCookies: () => Effect.void,
+      mirrorResets: Stream.empty,
       clearProfile: () => Effect.void,
       reportProfiles: () => Effect.void,
       openDownload: () => Effect.succeedNone,

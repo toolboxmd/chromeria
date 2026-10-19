@@ -522,6 +522,10 @@
     "./forkToolInstructions": {
       "types": "./src/forkToolInstructions.ts",
       "import": "./src/forkToolInstructions.ts"
+    },
+    "./browserCookieMirror": {
+      "types": "./src/browserCookieMirror.ts",
+      "import": "./src/browserCookieMirror.ts"
     }
   },
   "scripts": {

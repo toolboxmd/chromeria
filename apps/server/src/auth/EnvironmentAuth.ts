@@ -2,6 +2,7 @@ import { permanentPeerSessionTtl } from "../peer/permanentSession.ts";
 import {
   AuthAccessTokenType,
   AuthAccessWriteScope,
+  AuthCookieMirrorWriteScope,
   AuthOrchestrationOperateScope,
   AuthStandardClientScopes,
   type AuthAccessTokenResult,
@@ -895,7 +896,10 @@ export const make = Effect.gen(function* () {
           ? {}
           : { renewalCommitment }),
         subject: grant.subject,
-        scopes: grant.scopes,
+        scopes:
+          grant.method === "desktop-bootstrap"
+            ? grant.scopes.filter((scope) => scope !== AuthCookieMirrorWriteScope)
+            : grant.scopes,
         ...(previousSession?.method === "browser-session-cookie"
           ? { replaceSessionId: previousSession.sessionId }
           : {}),
@@ -967,7 +971,9 @@ export const make = Effect.gen(function* () {
           Effect.gen(function* () {
             const grantedScopes =
               requestedScopes === undefined
-                ? grant.scopes
+                ? grant.method === "desktop-bootstrap"
+                  ? grant.scopes.filter((scope) => scope !== AuthCookieMirrorWriteScope)
+                  : grant.scopes
                 : [...new Set(requestedScopes)].filter((scope) => grant.scopes.includes(scope));
             if (grantedScopes.length === 0) {
               return yield* new ServerAuthScopeNotGrantedError({});
@@ -975,7 +981,12 @@ export const make = Effect.gen(function* () {
             return yield* sessions
               .issue({
                 method: input?.proofKeyThumbprint ? "dpop-access-token" : "bearer-access-token",
-                subject: grant.subject,
+                subject:
+                  grant.method === "desktop-bootstrap" &&
+                  grantedScopes.length === 1 &&
+                  grantedScopes.includes(AuthCookieMirrorWriteScope)
+                    ? "desktop-cookie-mirror"
+                    : grant.subject,
                 ...(input?.renewalCommitment === undefined ||
                 input.proofKeyThumbprint ||
                 grant.method !== "one-time-token"

@@ -14,6 +14,7 @@ vi.mock("~/localApi", () => ({
 import {
   __resetClientSettingsPersistenceForTests,
   __setClientSettingsForTests,
+  adoptDesktopBrowserProfiles,
   ensureClientSettingsHydrated,
   getClientSettings,
   mergeEnvironmentSettings,
@@ -31,6 +32,58 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe("Chrome profile discovery", () => {
+  it("preserves user labels for mapped profiles and Default across later discovery polls", async () => {
+    const chrome = { id: "chrome-work", name: "Chrome Work", kind: "persistent" as const };
+    await adoptDesktopBrowserProfiles([chrome]);
+    await persistClientSettingsPatch({
+      browserProfiles: [
+        { ...chrome, name: "My work account" },
+        { id: "default", name: "Personal account", kind: "persistent" },
+      ],
+    });
+    const renamed = getClientSettings().browserProfiles;
+    persistenceMocks.setClientSettings.mockClear();
+    await adoptDesktopBrowserProfiles([
+      { ...chrome, name: "Renamed in Chrome" },
+      { id: "default", name: "Chrome Person 1", kind: "persistent" },
+    ]);
+    expect(getClientSettings().browserProfiles).toEqual(renamed);
+    expect(
+      persistenceMocks.setClientSettings.mock.calls.at(-1)?.[0].browserProfiles ?? renamed,
+    ).toEqual(renamed);
+  });
+
+  it("adds discovered profiles without replacing user edits or restoring deletions after restart", async () => {
+    const native = { id: "personal", name: "Personal", kind: "persistent" as const };
+    const chrome = { id: "chrome-work", name: "Work", kind: "persistent" as const };
+    const added = { id: "manual", name: "Manual", kind: "persistent" as const };
+    persistenceMocks.getClientSettings.mockResolvedValue({
+      ...DEFAULT_CLIENT_SETTINGS,
+      browserProfiles: [native],
+    });
+    await ensureClientSettingsHydrated();
+    await adoptDesktopBrowserProfiles([chrome]);
+    expect(getClientSettings().browserProfiles).toEqual(expect.arrayContaining([native, chrome]));
+    await persistClientSettingsPatch({
+      browserProfiles: [...getClientSettings().browserProfiles, added],
+    });
+    await adoptDesktopBrowserProfiles([chrome]);
+    expect(getClientSettings().browserProfiles).toEqual(
+      expect.arrayContaining([native, chrome, added]),
+    );
+    await persistClientSettingsPatch({ browserProfiles: [added] });
+    await adoptDesktopBrowserProfiles([chrome]);
+    await persistClientSettingsPatch({ wordWrap: false });
+    const saved = persistenceMocks.setClientSettings.mock.lastCall![0];
+    expect(saved.browserProfiles).toEqual([added]);
+    __resetClientSettingsPersistenceForTests();
+    persistenceMocks.getClientSettings.mockResolvedValue(saved);
+    await adoptDesktopBrowserProfiles([chrome]);
+    expect(getClientSettings().browserProfiles).toEqual([added]);
+  });
 });
 
 describe("client settings hydration", () => {

@@ -1,4 +1,4 @@
-import { AuthStandardClientScopes } from "@t3tools/contracts";
+import { AuthStandardClientScopes, AuthCookieMirrorWriteScope } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as Duration from "effect/Duration";
@@ -176,6 +176,12 @@ it.layer(NodeServices.layer)("PairingGrantStore.layer", (it) => {
         currentDesktopBootstrapToken("desktop-secret", now),
       );
       expect(current.method).toBe("desktop-bootstrap");
+      expect(current.scopes).not.toContain(AuthCookieMirrorWriteScope);
+      const main = yield* bootstrapCredentials.consume(
+        currentDesktopBootstrapToken("desktop-secret", now, "cookie-mirror"),
+      );
+      expect(main.scopes).toEqual([AuthCookieMirrorWriteScope]);
+      expect(main.subject).toBe("desktop-cookie-mirror");
 
       const stale = yield* Effect.flip(
         bootstrapCredentials.consume(
