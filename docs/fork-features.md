@@ -2018,7 +2018,9 @@ sources and reasons.
     "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
     "packages/client-runtime/src/t3ToolSummary.test.ts",
     "apps/server/src/device/DeviceToolchain.ts",
-    "apps/server/src/mcp/McpDeviceToolkit.test.ts"
+    "apps/server/src/mcp/McpDeviceToolkit.test.ts",
+    "apps/mobile/src/features/home/HomeRouteScreen.tsx",
+    "apps/web/src/components/LegacySidebar.tsx"
   ],
   "sharedFiles": [
     "packages/client-runtime/src/state/threadDetail.ts",
@@ -2093,9 +2095,7 @@ sources and reasons.
     "apps/web/src/components/Sidebar.logic.ts",
     "apps/web/src/components/Sidebar.logic.test.ts",
     "apps/web/src/components/Sidebar.tsx",
-    "apps/mobile/src/features/home/HomeRouteScreen.tsx",
     "apps/mobile/src/features/home/HomeScreen.tsx",
-    "apps/web/src/components/LegacySidebar.tsx",
     "apps/web/src/components/promachos/promachosConversations.ts",
     "apps/web/src/components/promachos/promachosConversations.test.ts"
   ],
