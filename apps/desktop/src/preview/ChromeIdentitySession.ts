@@ -23,7 +23,7 @@ export const installChromeIdentity = (
   const observed = new WeakMap<
     WebContents,
     {
-      readonly start: (url: string) => Promise<boolean>;
+      readonly start: (url: string) => void;
       readonly restore: () => Promise<void>;
     }
   >();
@@ -37,14 +37,16 @@ export const installChromeIdentity = (
     if (!controller) {
       let committedUrl = contents.getURL();
       let pendingUrl: string | undefined;
-      let requestVersion = 0;
       let disposed = false;
-      let appliedListed: boolean | undefined;
+      // A fresh WebContents starts on Electron's native identity, so non-listed pages need no command.
+      let appliedListed: boolean | undefined = false;
       let debuggerGeneration = 0;
       let pending = Promise.resolve();
-      const apply = (url: string, force = false) => {
-        const listed = usesChromeIdentity(url);
+      const apply = (force = false) => {
+        // Read the destination when the command runs, so a superseded navigation queued behind a
+        // held command never applies its identity to the page that replaced it.
         const command = async () => {
+          const listed = usesChromeIdentity(pendingUrl ?? committedUrl);
           if (disposed || contents.isDestroyed() || (!force && appliedListed === listed)) return;
           // A failed transport call may still have changed Chromium, so invalidate before sending.
           appliedListed = undefined;
@@ -68,13 +70,12 @@ export const installChromeIdentity = (
         // Store the document even if DevTools currently prevents its emulation command.
         committedUrl = url;
         if (pendingUrl === url) pendingUrl = undefined;
-        return apply(pendingUrl ?? committedUrl);
+        return apply();
       };
       const stopped = () => {
         if (pendingUrl === undefined) return;
         pendingUrl = undefined;
-        requestVersion++;
-        return apply(committedUrl);
+        return apply();
       };
       const failed = (
         _event: Electron.Event,
@@ -91,7 +92,6 @@ export const installChromeIdentity = (
       };
       const destroyed = () => {
         disposed = true;
-        requestVersion++;
         contents.off("did-frame-navigate", committed);
         contents.off("did-fail-load", failed);
         contents.off("did-fail-provisional-load", failed);
@@ -109,22 +109,21 @@ export const installChromeIdentity = (
       contents.on("render-process-gone", invalidated);
       contents.on("destroyed", destroyed);
       controller = {
-        start: async (url) => {
-          const version = ++requestVersion;
-          const generation = debuggerGeneration;
+        start: (url) => {
           pendingUrl = url;
-          await apply(url);
-          return !disposed && version === requestVersion && generation === debuggerGeneration;
+          void apply();
         },
-        restore: () => apply(pendingUrl ?? committedUrl, true),
+        restore: () => apply(true),
       };
       observed.set(contents, controller);
     }
-    // Hold the document request until Chromium has the matching JS and network identity.
-    void controller.start(details.url).then(
-      (current) => callback({ cancel: !current }),
-      () => callback({ cancel: true }),
-    );
+    // Never hold the request on the command. Chromium suspends renderer-bound CDP messages from
+    // DidStartNavigation to DidFinishNavigation, and Emulation.setUserAgentOverride falls through
+    // to the renderer, so its reply cannot arrive while this navigation is paused (#524). This
+    // request's headers were fixed before this hook anyway; later requests and the committed
+    // document get the identity.
+    callback({});
+    controller.start(details.url);
   });
   return (contents: WebContents) => observed.get(contents)?.restore() ?? Promise.resolve();
 };
