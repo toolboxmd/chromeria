@@ -171,7 +171,7 @@ const make = Effect.gen(function* () {
             sourceFiles.set(database, { ...observed, fingerprint: "" });
         }
         const chrome =
-          environment.platform === "darwin"
+          environment.platform === "darwin" && command !== null && command.length > 0
             ? BROWSER_IMPORT_SOURCES.find((source) => source.id === "chrome")
             : undefined;
         const root = chrome?.userDataDirectory(sourceContext);

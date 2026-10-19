@@ -2677,9 +2677,16 @@ sources and reasons.
 {
   "id": "chrome-login-mirror",
   "purpose": "Continuously mirror macOS Chrome cookies into persistent desktop partitions and authenticated environment browser profiles, preserving source-only removals and complete partition keys.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/520"],
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/520",
+    "https://github.com/toolboxmd/chromeria/issues/541"
+  ],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/530"],
   "newFiles": [
+    "apps/desktop/src/preview/BrowserImport/ChromiumKeychainWorker.ts",
+    "apps/desktop/src/preview/BrowserImport/ChromiumKeychainWorker.test.ts",
+    "apps/desktop/src/preview/BrowserImport/ChromiumKeychain.test.ts",
+    "apps/desktop/src/preview/DesktopCookieMirror.startup.test.ts",
     "apps/desktop/src/ipc/methods/cookieMirror.ts",
     "apps/desktop/src/preview/ChromeCookieKey.test.ts",
     "apps/desktop/src/preview/ChromeCookieKey.ts",
@@ -2718,6 +2725,9 @@ sources and reasons.
     "packages/shared/src/browserCookieMirror.ts"
   ],
   "upstreamFiles": [
+    "apps/desktop/src/preview/BrowserImport/ChromiumKeys.module.test.ts",
+    "apps/desktop/src/preview/BrowserImport/ChromiumKeys.test.ts",
+    "apps/desktop/vite.config.ts",
     "apps/desktop/src/backend/DesktopLocalEnvironmentAuth.ts",
     "apps/desktop/src/ipc/methods/preview.test.ts",
     "apps/desktop/src/ipc/methods/preview.ts",
@@ -2744,6 +2754,7 @@ sources and reasons.
     "packages/shared/src/desktopBootstrapToken.ts"
   ],
   "sharedFiles": [
+    "knip.jsonc",
     "apps/desktop/src/ipc/DesktopIpcHandlers.ts",
     "apps/desktop/src/ipc/channels.ts",
     "apps/desktop/src/main.ts",
