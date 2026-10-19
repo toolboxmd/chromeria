@@ -58,6 +58,7 @@ export const PeerTaskSnapshot = Schema.Struct({
       revision: NonNegativeInt,
       kind: Schema.String,
       responseType: Schema.String,
+      detail: Schema.optional(Schema.String.check(Schema.isMaxLength(4096))),
       route: Schema.optional(
         Schema.Array(Schema.Struct({ environmentId: EnvironmentId, threadId: ThreadId })),
       ),
