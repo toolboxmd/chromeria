@@ -146,6 +146,15 @@ const fixture = Effect.fnUntraced(function* (
       const entry = { request, at: yield* Clock.currentTimeMillis };
       seen.push(entry);
       yield* Queue.offer(requests, entry);
+      const language = requestUrl(request).searchParams.get("language");
+      // SearXNG webadapter.parse_lang rejects scripts and numeric regions with HTTP 400.
+      if (
+        request.url.startsWith(searxng) &&
+        language !== null &&
+        language !== "auto" &&
+        !/^[a-z]{2,3}(-[a-zA-Z]{2})?$/.test(language)
+      )
+        return reply(request, "Invalid search parameter: language", 400);
       return yield* respond(request, signal);
     }),
   );
@@ -305,21 +314,33 @@ it.effect("distinguishes a healthy empty engine from CAPTCHA, blocked and provid
   }).pipe(Effect.provide(base)),
 );
 
-it.effect(
-  "reports legitimate emptiness and preserves region/script locales without fetching results",
-  () =>
+it.effect.each([
+  { locale: "zh-Hant-TW", searxngLanguage: "zh-TW", hostedLanguage: "zh-Hant", location: "TW" },
+  { locale: "sr-Latn-RS", searxngLanguage: "sr-RS", hostedLanguage: "sr-Latn", location: "RS" },
+  { locale: "es-419", searxngLanguage: "es", hostedLanguage: "es", location: "419" },
+  { locale: "pl-PL", searxngLanguage: "pl-PL", hostedLanguage: "pl", location: "PL" },
+  { locale: "pl", searxngLanguage: "pl", hostedLanguage: "pl", location: null },
+  { locale: "en", searxngLanguage: "en", hostedLanguage: "en", location: null },
+])(
+  "reports healthy emptiness for $locale with provider-specific languages and no fetched results",
+  ({ locale, searxngLanguage, hostedLanguage, location }) =>
     Effect.gen(function* () {
       const f = yield* fixture((r) => Effect.succeed(reply(r, envelope(r, []))));
       yield* Effect.gen(function* () {
         yield* f.provision;
-        const result = yield* search({ query: "no matching results", locale: "zh-Hant-TW" });
-        expect(result).toMatchObject({ status: "ok", results: [], locale: "zh-Hant-TW" });
+        const result = yield* search({ query: "no matching results", locale });
+        expect(result).toMatchObject({ status: "ok", results: [], locale });
         expect(result.engines.every((engine) => engine.status === "empty")).toBe(true);
+        const local = requestUrl(
+          f.seen.find((entry) => entry.request.url.startsWith(searxng))!.request,
+        );
+        expect(local.searchParams.get("language")).toBe(searxngLanguage);
         const hosted = requestUrl(
           f.seen.find((entry) => entry.request.url.startsWith("https://treg.to"))!.request,
         );
-        expect(hosted.searchParams.get("language")).toBe("zh-Hant");
-        expect(hosted.searchParams.get("location")).toBe("TW");
+        expect(hosted.searchParams.get("language")).toBe(hostedLanguage);
+        expect(hosted.searchParams.get("location")).toBe(location);
+        expect(hosted.searchParams.get("fetch")).toBeNull();
       }).pipe(Effect.provide(f.layer));
     }).pipe(Effect.provide(base)),
 );

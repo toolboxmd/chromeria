@@ -304,7 +304,14 @@ const make = Effect.gen(function* () {
       } else {
         url.searchParams.set("format", "json");
         url.searchParams.set("engines", SEARXNG_ENGINES.join(","));
-        if (key.locale) url.searchParams.set("language", key.locale);
+        if (key.locale) {
+          const locale = new Intl.Locale(key.locale);
+          // SearXNG accepts language[-REGION], with two-letter regions only.
+          url.searchParams.set(
+            "language",
+            locale.region?.length === 2 ? `${locale.language}-${locale.region}` : locale.language,
+          );
+        }
       }
       const response = yield* HttpClient.withScope(client)
         .get(url.href, {
