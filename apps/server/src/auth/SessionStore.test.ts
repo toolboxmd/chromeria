@@ -1045,7 +1045,7 @@ it.effect("outside OAuth renews past 30 days without widening and revokes the wh
         store.refreshMcpOAuthToken(renewed.refreshToken, "client-a", "https://box/mcp"),
       ))._tag,
     ).toBe("Failure");
-  }).pipe(Effect.provide(layerSessionStore()), Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.provide(layerSessionStore().pipe(Layer.provide(NodeServices.layer)))),
 );
 
 it.effect("outside OAuth refresh authority survives closing and reopening its database", () =>
@@ -1099,5 +1099,5 @@ it.effect(
       ).toBe(true);
       expect(yield* store.revoke(issued.sessionId)).toBe(true);
       expect((yield* Effect.result(store.verify(issued.token)))._tag).toBe("Failure");
-    }).pipe(Effect.provide(layerSessionStore()), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(layerSessionStore().pipe(Layer.provide(NodeServices.layer)))),
 );
