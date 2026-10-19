@@ -1478,6 +1478,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "issues": ["https://github.com/toolboxmd/chromeria/issues/175"],
   "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/175-promachos-v2"],
   "newFiles": [
+    "apps/server/src/promachos/PromachosClientCommands.test.ts",
+    "apps/server/src/promachos/PromachosClientCommands.ts",
     "apps/server/src/promachos/PromachosHome.test.ts",
     "apps/server/src/promachos/PromachosHome.ts",
     "apps/server/src/promachos/PromachosLaunch.ts",
