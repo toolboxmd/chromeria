@@ -83,7 +83,7 @@ flowchart TD
     %% PAR: #382 PR #410
     RTL --> PAR
     RPR["Remote descendant requests and notices"]
-    %% RPR: #369 PR #420
+    %% RPR: #369 PR #531
     RTL --> RPR
     PAR --> RPR
     RBD["Remote browser and device control"]
