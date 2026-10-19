@@ -13,6 +13,7 @@ import { CommandReceiptStoreV2 } from "../orchestration-v2/CommandReceiptStore.t
 import { ProjectionStoreV2 } from "../orchestration-v2/ProjectionStore.ts";
 import { ThreadCommandExecutor } from "../orchestration-v2/ThreadCommandExecutor.ts";
 import { readRetirementState } from "./retirement.ts";
+import { readStopDescendants } from "./stopDescendants.ts";
 
 const isUndeliveredKind = (request: { readonly kind: string }) =>
   request.kind === "dynamic_tool_call" || request.kind === "auth_refresh";
@@ -139,5 +140,33 @@ export const reconcilePendingChildRequests = Effect.fn("childThreads.reconcilePe
       if (thread.lineage.relationshipToParent === "subagent")
         yield* reconcileChildRequests(thread.id, dispatch, reconcileNativeQuestion);
     }
+  },
+);
+
+/** Stop and resume change retirement only for this thread and its descendants. */
+export const reconcileSubtreeChildRequests = Effect.fn("childThreads.reconcileSubtreeRequests")(
+  function* <E>(
+    threadId: ThreadId,
+    dispatch: (command: OrchestrationV2ServerCommand) => Effect.Effect<unknown, E>,
+    reconcileNativeQuestion: (
+      task: OrchestrationV2Subagent,
+      request: OrchestrationV2RuntimeRequest,
+    ) => Effect.Effect<unknown, E>,
+  ) {
+    const projections = yield* ProjectionStoreV2;
+    const snapshot = yield* projections.getShellSnapshot();
+    const descendants = yield* readStopDescendants(
+      threadId,
+      [...snapshot.threads, ...snapshot.archivedThreads],
+      (id) =>
+        projections
+          .getThread(id)
+          .pipe(
+            Effect.map(Option.some),
+            Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeedNone }),
+          ),
+    );
+    for (const id of [threadId, ...descendants])
+      yield* reconcileChildRequests(id, dispatch, reconcileNativeQuestion);
   },
 );
