@@ -2261,7 +2261,10 @@ sources and reasons.
   ],
   "upstreamFiles": [
     "apps/server/src/htmlRender/publicProxy.ts",
-    "apps/server/src/preview/ServerBrowserContexts.ts"
+    "apps/server/src/preview/ServerBrowserContexts.ts",
+    "apps/server/src/preview/ServerBrowser.test.ts",
+    "apps/server/src/preview/ServerBrowser.ts",
+    "packages/contracts/src/previewAutomation.ts"
   ],
   "sharedFiles": [
     "GLOSSARY.md",
@@ -2277,9 +2280,6 @@ sources and reasons.
     "packages/contracts/src/settings.ts",
     "packages/contracts/src/index.ts",
     "packages/contracts/src/orchestratorMcp.ts",
-    "packages/contracts/src/previewAutomation.ts",
-    "apps/server/src/preview/ServerBrowser.ts",
-    "apps/server/src/preview/ServerBrowser.test.ts",
     "packages/provider-core/src/server/orchestrationInstructions.ts",
     "pnpm-lock.yaml"
   ],

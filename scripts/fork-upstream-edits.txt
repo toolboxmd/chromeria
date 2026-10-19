@@ -461,3 +461,8 @@ apps/server/src/htmlRender/publicProxy.ts
 
 # Public research rendering reuses the pinned browser/context owner (#442)
 apps/server/src/preview/ServerBrowserContexts.ts
+
+# Session research reads reuse the existing browser controller (#446)
+apps/server/src/preview/ServerBrowser.test.ts
+apps/server/src/preview/ServerBrowser.ts
+packages/contracts/src/previewAutomation.ts
