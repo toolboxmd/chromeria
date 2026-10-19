@@ -66,33 +66,49 @@ const harness = (
   const emit = (event: string, ...args: unknown[]) => listeners.get(event)?.(...args);
   const commit = (url = listed, isMainFrame = true) =>
     emit("did-frame-navigate", {}, url, 200, "OK", isMainFrame, 1, 1);
-  return { configure, contents, request, commit, emit, onBeforeSendHeaders, listeners, restore };
+  // Identity commands run on a promise chain; fakes that settle immediately finish within one turn.
+  const drain = () => new Promise<void>((resolve) => setImmediate(resolve));
+  return {
+    configure,
+    contents,
+    request,
+    commit,
+    emit,
+    drain,
+    onBeforeSendHeaders,
+    listeners,
+    restore,
+  };
 };
 
 describe("preview main-frame identity lifecycle", () => {
-  it("waits for the paired override before sending the FIRST listed request", async () => {
-    let release = () => {};
-    const blocked = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let begin = () => {};
-    const beginning = new Promise<void>((resolve) => {
-      begin = resolve;
-    });
+  it("resumes main-frame requests while Chromium queues the identity reply behind the navigation", async () => {
+    // Chromium answers Emulation.setUserAgentOverride only after the navigation finishes (#524).
+    const finishNavigation: Array<() => void> = [];
     const test = harness(
-      vi.fn(async () => {
-        begin();
-        await blocked;
-      }),
+      vi.fn(() => new Promise<void>((resolve) => finishNavigation.push(resolve))),
     );
-    const request = test.request();
-    expect(request.resumed).not.toHaveBeenCalled();
-    await beginning;
-    expect(test.configure).toHaveBeenCalledWith(test.contents, chromeIdentity(native, host));
-    expect(request.resumed).not.toHaveBeenCalled();
-    release();
-    expect(await request.completed).toEqual({ cancel: false });
+    const whatsapp = test.request(listed);
+    expect(whatsapp.resumed).toHaveBeenCalledWith({});
+    await test.drain();
+    expect(test.configure).toHaveBeenCalledExactlyOnceWith(
+      test.contents,
+      chromeIdentity(native, host),
+    );
+    const committed = test.commit(listed);
+    for (const finish of finishNavigation) finish();
+    await committed;
+    expect(test.configure).toHaveBeenCalledOnce();
     expect(test.onBeforeSendHeaders).not.toHaveBeenCalled();
+  });
+
+  it("loads non-listed pages in a fresh tab without touching the debugger", async () => {
+    const test = harness(vi.fn(() => new Promise<void>(() => {})));
+    const page = test.request("https://example.com/");
+    expect(page.resumed).toHaveBeenCalledWith({});
+    await test.commit("https://example.com/");
+    await test.emit("did-stop-loading");
+    expect(test.configure).not.toHaveBeenCalled();
   });
 
   it("keeps the committed WhatsApp pair after an aborted WhatsApp reload", async () => {
@@ -135,13 +151,12 @@ describe("preview main-frame identity lifecycle", () => {
     },
   );
 
-  it("clears BEFORE sending a non-listed request and restores WhatsApp if it aborts", async () => {
+  it("clears when leaving WhatsApp and restores it if that load aborts", async () => {
     const test = harness();
     await test.request().completed;
     await test.commit();
-    const leaving = test.request(ordinary);
-    expect(leaving.resumed).not.toHaveBeenCalled();
-    await leaving.completed;
+    expect(await test.request(ordinary).completed).toEqual({});
+    await test.drain();
     expect(test.configure).toHaveBeenLastCalledWith(test.contents, null);
     await test.emit("did-stop-loading");
     expect(test.configure).toHaveBeenLastCalledWith(test.contents, chromeIdentity(native, host));
@@ -158,47 +173,39 @@ describe("preview main-frame identity lifecycle", () => {
     expect(test.configure).toHaveBeenLastCalledWith(test.contents, null);
   });
 
-  it("clears UA and metadata before a listed HTTP redirect hop resumes and stays native at commit", async () => {
+  it("clears UA and metadata for a listed HTTP redirect to a non-listed host and stays native", async () => {
     let finishClear = () => {};
     const clearing = new Promise<void>((resolve) => {
       finishClear = resolve;
     });
-    let clearStarted = () => {};
-    const started = new Promise<void>((resolve) => {
-      clearStarted = resolve;
-    });
     const test = harness(
       vi.fn(async (_contents: WebContents, identity: ChromeIdentity | null) => {
-        if (identity === null) {
-          clearStarted();
-          await clearing;
-        }
+        if (identity === null) await clearing;
       }),
     );
-    expect(await test.request("https://web.whatsapp.com/").completed).toEqual({ cancel: false });
-    expect(test.configure).toHaveBeenLastCalledWith(test.contents, chromeIdentity(native, host));
+    expect(await test.request("https://web.whatsapp.com/").completed).toEqual({});
     // The redirect is another main-frame request with the same id, without a listed commit.
-    const redirect = test.request(ordinary);
-    await started;
-    expect(redirect.resumed).not.toHaveBeenCalled();
+    expect(await test.request(ordinary).completed).toEqual({});
+    await test.drain();
     expect(test.configure).toHaveBeenLastCalledWith(test.contents, null);
+    const committed = test.commit(ordinary);
     finishClear();
-    expect(await redirect.completed).toEqual({ cancel: false });
-    await test.commit(ordinary);
+    await committed;
     await test.emit("did-stop-loading");
-    expect(test.configure).toHaveBeenLastCalledWith(test.contents, null);
-    expect(test.configure).toHaveBeenCalledTimes(2);
+    expect(test.configure.mock.calls).toEqual([
+      [test.contents, chromeIdentity(native, host)],
+      [test.contents, null],
+    ]);
   });
 
-  it("re-applies the Chrome pair before a same-host reload after a renderer crash", async () => {
+  it("re-applies the Chrome pair on a same-host reload after a renderer crash", async () => {
     const test = harness();
     await test.request(listed).completed;
     await test.commit(listed);
     test.configure.mockClear();
     test.emit("render-process-gone", {}, { reason: "crashed", exitCode: 1 });
-    const reload = test.request(listed);
-    expect(reload.resumed).not.toHaveBeenCalled();
-    expect(await reload.completed).toEqual({ cancel: false });
+    expect(await test.request(listed).completed).toEqual({});
+    await test.drain();
     expect(test.configure).toHaveBeenCalledExactlyOnceWith(
       test.contents,
       chromeIdentity(native, host),
@@ -218,6 +225,7 @@ describe("preview main-frame identity lifecycle", () => {
     await test.request().completed;
     await test.commit();
     await test.request("https://example.com/challenge.js", "script").completed;
+    await test.drain();
     expect(test.configure).toHaveBeenCalledTimes(1);
     expect(test.onBeforeSendHeaders).not.toHaveBeenCalled();
   });
@@ -227,6 +235,7 @@ describe("preview main-frame identity lifecycle", () => {
     await test.request().completed;
     await test.request(ordinary).completed;
     await test.emit("did-fail-provisional-load", {}, -3, "ERR_ABORTED", listed, true, 1, 1);
+    await test.drain();
     expect(test.configure).toHaveBeenLastCalledWith(test.contents, null);
     expect(test.configure).toHaveBeenCalledTimes(2);
   });
@@ -254,16 +263,16 @@ describe("preview main-frame identity lifecycle", () => {
     expect(configure).toHaveBeenLastCalledWith(test.contents, chromeIdentity(native, host));
   });
 
-  it("does not resume a listed request if its identity could not be applied", async () => {
+  it("still loads a listed page whose identity setup fails", async () => {
     const test = harness(
       vi.fn(async () => {
         throw new Error("debugger unavailable");
       }),
     );
-    expect(await test.request().completed).toEqual({ cancel: true });
+    expect(await test.request().completed).toEqual({});
   });
 
-  it("cancels a superseded request while the next navigation applies its own identity", async () => {
+  it("applies the latest destination when a navigation supersedes one in flight", async () => {
     let release = () => {};
     const blocked = new Promise<void>((resolve) => {
       release = resolve;
@@ -274,11 +283,10 @@ describe("preview main-frame identity lifecycle", () => {
       await blocked;
     });
     const test = harness(configure);
-    const first = test.request();
-    const second = test.request(ordinary);
+    expect(await test.request().completed).toEqual({});
+    expect(await test.request(ordinary).completed).toEqual({});
     release();
-    expect(await first.completed).toEqual({ cancel: true });
-    expect(await second.completed).toEqual({ cancel: false });
+    await test.restore(test.contents);
     expect(configure).toHaveBeenLastCalledWith(test.contents, null);
   });
 
@@ -303,7 +311,7 @@ describe("preview main-frame identity lifecycle", () => {
     const stopped = test.emit("did-stop-loading");
     release();
     await stopped;
-    expect(await request.completed).toEqual({ cancel: true });
+    expect(await request.completed).toEqual({});
     expect(configure).toHaveBeenLastCalledWith(test.contents, null);
   });
 
@@ -327,7 +335,7 @@ describe("preview main-frame identity lifecycle", () => {
     await beginning;
     const restored = test.restore(test.contents);
     release();
-    expect(await request.completed).toEqual({ cancel: false });
+    expect(await request.completed).toEqual({});
     await restored;
     expect(
       configure.mock.calls.every(([, identity]) =>
@@ -336,7 +344,7 @@ describe("preview main-frame identity lifecycle", () => {
     ).toBe(true);
   });
 
-  it("cancels a request if DevTools detached its identity command before it completed", async () => {
+  it("re-applies identity after DevTools detached an in-flight command", async () => {
     let release = () => {};
     const blocked = new Promise<void>((resolve) => {
       release = resolve;
@@ -355,7 +363,7 @@ describe("preview main-frame identity lifecycle", () => {
     await beginning;
     test.emit("devtools-opened");
     release();
-    expect(await request.completed).toEqual({ cancel: true });
+    expect(await request.completed).toEqual({});
     await test.emit("did-stop-loading");
     await test.restore(test.contents);
     expect(test.configure).toHaveBeenCalledTimes(3);
