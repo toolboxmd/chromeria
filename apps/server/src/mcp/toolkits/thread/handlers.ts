@@ -12,11 +12,10 @@ import * as Effect from "effect/Effect";
 import * as PendingRequests from "../../../childThreads/PendingRequestService.ts";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
 
-import { isCallerAncestor } from "../../../childThreads/pendingRequests.ts";
+import { requestAnswerer } from "../../../childThreads/pendingRequests.ts";
 import { assertSameLink } from "../../linkOrigin.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import {
-  assertTargetWithinLimits,
   dispatchFailure,
   newCommandId,
   readCaller,
@@ -229,7 +228,8 @@ export const layer = McpToolAccess.toLayer(
         Effect.gen(function* () {
           const context = yield* readThread(input.threadId, ["runtimeRequests"]);
           const { projection } = context;
-          const descendant = yield* isCallerAncestor(context, projection.thread.id);
+          const answerer = yield* requestAnswerer(context, projection.thread);
+          const descendant = answerer !== undefined && answerer.kind !== "own";
           return {
             requestIds: projection.runtimeRequests
               .filter(
@@ -245,15 +245,18 @@ export const layer = McpToolAccess.toLayer(
         }),
       ),
       t3_pending_request_read: McpToolAccess.reads((input) => pending.read(input)),
-      t3_pending_request_respond: writesThread((input) =>
-        pending.respond(input, {
-          type: "respond",
-          answers: input.answers,
-          decision: input.decision,
-        }),
+      t3_pending_request_respond: McpToolAccess.writesThreads(
+        () => [],
+        (input) =>
+          pending.respond(input, {
+            type: "respond",
+            answers: input.answers,
+            decision: input.decision,
+          }),
       ),
-      t3_pending_request_dismiss: writesThread((input) =>
-        pending.respond(input, { type: "dismiss" }),
+      t3_pending_request_dismiss: McpToolAccess.writesThreads(
+        () => [],
+        (input) => pending.respond(input, { type: "dismiss" }),
       ),
       t3_queue_list: McpToolAccess.reads((input) =>
         Effect.gen(function* () {

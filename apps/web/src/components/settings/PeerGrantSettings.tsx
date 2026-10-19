@@ -81,19 +81,18 @@ function GrantEditor({
         variant="outline"
         onClick={async () => {
           setSaving(true);
-          try {
-            const result = await save({ environmentId, input: draft });
-            if (AsyncResult.isFailure(result) && !isAtomCommandInterrupted(result)) {
-              const error = squashAtomCommandFailure(result);
-              toastManager.add({
-                type: "error",
-                title: "Could not save link permissions",
-                description: error instanceof Error ? error.message : String(error),
-              });
-            }
-          } finally {
-            setSaving(false);
-          }
+          await save({ environmentId, input: draft })
+            .then((result) => {
+              if (AsyncResult.isFailure(result) && !isAtomCommandInterrupted(result)) {
+                const error = squashAtomCommandFailure(result);
+                toastManager.add({
+                  type: "error",
+                  title: "Could not save link permissions",
+                  description: error instanceof Error ? error.message : String(error),
+                });
+              }
+            })
+            .finally(() => setSaving(false));
         }}
       >
         Save link permissions
