@@ -2051,6 +2051,7 @@ sources and reasons.
     "packages/client-runtime/src/connection/index.ts",
     "packages/client-runtime/src/connection/onboarding.ts",
     "packages/client-runtime/src/connection/resolver.ts",
+    "packages/client-runtime/src/connection/supervisor.test.ts",
     "packages/client-runtime/src/connection/supervisor.ts",
     "packages/contracts/src/ipc.ts"
   ],

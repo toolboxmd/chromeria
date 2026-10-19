@@ -311,6 +311,7 @@ export const layer = HttpApiBuilder.group(
                 generation: result.generation,
                 expiresAt: result.expiresAt.epochMilliseconds,
                 renewAfter: result.renewAfter,
+                serverTime: yield* Clock.currentTimeMillis,
                 ...(result.method === "bearer-access-token" ? { accessToken: result.token } : {}),
               };
             }),

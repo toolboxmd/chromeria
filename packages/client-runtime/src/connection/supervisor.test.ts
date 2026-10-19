@@ -1,15 +1,25 @@
-import { AuthStandardClientScopes, EnvironmentId, type ServerConfig } from "@t3tools/contracts";
+import {
+  AuthStandardClientScopes,
+  AuthSessionRenewResult,
+  EnvironmentId,
+  type AuthRenewalLocalRecord,
+  type ServerConfig,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Random from "effect/Random";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as Renewal from "../authorization/renewal.ts";
 import * as RemoteEnvironmentAuthorization from "../authorization/service.ts";
 import * as TokenStore from "../authorization/tokenStore.ts";
 import * as ClientCapabilities from "../platform/capabilities.ts";
@@ -73,6 +83,7 @@ const PREPARED_CONNECTION: PreparedConnection = {
 };
 
 const TEST_RPC_CLIENT = {} as WsRpcProtocolClient;
+const decodeRenewalResult = Schema.decodeUnknownSync(AuthSessionRenewResult);
 
 const LAN_TARGET = new BearerConnectionTarget({
   environmentId: TARGET.environmentId,
@@ -1053,6 +1064,242 @@ describe("EnvironmentSupervisor", () => {
 
       expect(yield* Ref.get(harness.releaseCount)).toBe(1);
     }),
+  );
+
+  it.effect.each(["cookie", "bearer"] as const)(
+    "paces %s renewal when the client is ahead of the server",
+    (kind) =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust("1 minute");
+        const attempts = yield* Ref.make(0);
+        const record = yield* Ref.make<AuthRenewalLocalRecord>({
+          revision: 1,
+          active: {
+            epoch: "epoch",
+            environmentId: TARGET.environmentId,
+            origin: TARGET.httpBaseUrl,
+            kind,
+            current: "current-secret",
+            generation: 0,
+            pending: null,
+            accessToken: kind === "bearer" ? "old-token" : null,
+            expiresAt: 3_600_000,
+            renewAfter: 30_000,
+          },
+          provisional: [],
+        });
+        const renewal = Renewal.SessionRenewal.of({
+          stage: () => Effect.die("Unexpected enrollment"),
+          complete: () => Effect.die("Unexpected completion"),
+          enrollExisting: () => Effect.void,
+          read: () => Ref.get(record),
+          ensure: () =>
+            Effect.gen(function* () {
+              const attempt = yield* Ref.updateAndGet(attempts, (count) => count + 1);
+              // Stop the broken loop so the regression fails by count instead of hanging.
+              if (attempt === 4) return { _tag: "Unsupported" };
+              const result = {
+                outcome: attempt === 3 ? ("rotated" as const) : ("current" as const),
+                generation: attempt === 3 ? 1 : 0,
+                expiresAt: attempt === 3 ? 7_200_000 : 3_600_000,
+                renewAfter: attempt === 3 ? 480_000 : 30_000,
+                ...(kind === "bearer"
+                  ? { accessToken: attempt === 3 ? "renewed-token" : "old-token" }
+                  : {}),
+              };
+              if (attempt === 3) {
+                yield* Ref.update(record, (value) => ({
+                  ...value,
+                  active: value.active ? { ...value.active, ...result } : null,
+                }));
+              }
+              return { _tag: "Renewed", result };
+            }),
+        });
+        const harness = yield* makeHarness({
+          prepare: () =>
+            Effect.succeed(
+              kind === "bearer"
+                ? {
+                    ...PREPARED_CONNECTION,
+                    target: LAN_TARGET,
+                    httpAuthorization: { _tag: "Bearer", token: "old-token" },
+                  }
+                : PREPARED_CONNECTION,
+            ),
+        });
+        const supervisor = yield* EnvironmentSupervisor.make(
+          kind === "bearer" ? LAN_THEN_RELAY_ENTRY : TARGET_ENTRY,
+          { initiallyDesired: true },
+        ).pipe(
+          Effect.provide(harness.dependencies),
+          Effect.provideService(Renewal.SessionRenewal, renewal),
+        );
+        yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+        yield* TestClock.adjust(0);
+        expect(yield* Ref.get(attempts)).toBe(1);
+        yield* TestClock.adjust(59_999);
+        expect(yield* Ref.get(attempts)).toBe(1);
+        yield* TestClock.adjust(1);
+        expect(yield* Ref.get(attempts)).toBe(2);
+        yield* TestClock.adjust("1 minute");
+        expect(yield* Ref.get(attempts)).toBe(3);
+        if (kind === "bearer") {
+          expect(
+            Option.getOrThrow(yield* SubscriptionRef.get(supervisor.prepared)).httpAuthorization,
+          ).toEqual({ _tag: "Bearer", token: "renewed-token" });
+        }
+        yield* TestClock.adjust(299_999);
+        expect(yield* Ref.get(attempts)).toBe(3);
+        yield* TestClock.adjust(1);
+        expect(yield* Ref.get(attempts)).toBe(4);
+        expect(yield* Ref.get(harness.sessionCount)).toBe(1);
+        yield* supervisor.disconnect;
+      }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect.each([true, false])(
+    "renews before server expiry with an ahead clock (serverTime supplied: %s)",
+    (includeServerTime) =>
+      Effect.gen(function* () {
+        const clientOffset = 3_600_000;
+        yield* TestClock.adjust(clientOffset);
+        const attempts: number[] = [];
+        const rotations: number[] = [];
+        const record: AuthRenewalLocalRecord = {
+          revision: 1,
+          active: {
+            epoch: "epoch",
+            environmentId: TARGET.environmentId,
+            origin: TARGET.httpBaseUrl,
+            kind: "cookie",
+            current: "current-secret",
+            generation: 0,
+            pending: null,
+            accessToken: null,
+            expiresAt: 30_000,
+            renewAfter: 15_000,
+          },
+          provisional: [],
+        };
+        const renewal = Renewal.SessionRenewal.of({
+          stage: () => Effect.die("Unexpected enrollment"),
+          complete: () => Effect.die("Unexpected completion"),
+          enrollExisting: () => Effect.void,
+          read: () => Effect.succeed(record),
+          ensure: () =>
+            Effect.gen(function* () {
+              const serverTime = (yield* Clock.currentTimeMillis) - clientOffset;
+              attempts.push(serverTime);
+              if (serverTime >= 30_000) return yield* new Renewal.RenewalRejected({});
+              const due = serverTime >= 15_000;
+              if (due) rotations.push(serverTime);
+              return {
+                _tag: "Renewed",
+                result: decodeRenewalResult({
+                  outcome: due ? "rotated" : "current",
+                  generation: due ? 1 : 0,
+                  expiresAt: due ? serverTime + 30_000 : 30_000,
+                  renewAfter: due ? serverTime + 15_000 : 15_000,
+                  ...(includeServerTime ? { serverTime } : {}),
+                }),
+              };
+            }),
+        });
+        const harness = yield* makeHarness();
+        const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+          initiallyDesired: true,
+        }).pipe(
+          Effect.provide(harness.dependencies),
+          Effect.provideService(Renewal.SessionRenewal, renewal),
+        );
+        yield* awaitState(supervisor.state, (state) => state.phase === "connected");
+        yield* TestClock.adjust(0);
+        expect(attempts).toEqual([0]);
+        const firstDelay = includeServerTime ? 15_000 : 7_500;
+        yield* TestClock.adjust(firstDelay - 1);
+        expect(attempts).toEqual([0]);
+        yield* TestClock.adjust(1);
+        expect(attempts).toEqual([0, firstDelay]);
+        if (!includeServerTime) yield* TestClock.adjust(7_500);
+        expect(rotations).toEqual([15_000]);
+        expect((yield* SubscriptionRef.get(supervisor.state)).phase).toBe("connected");
+        expect(yield* Ref.get(harness.sessionCount)).toBe(1);
+        yield* supervisor.disconnect;
+      }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect.each([1, 0, -1, 1_000])(
+    "bounds repeated current replies with %s ms remaining",
+    (remainingMs) =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust("1 hour");
+        const attempts: number[] = [];
+        const responses = yield* Queue.unbounded<void>();
+        // Bound a broken loop without changing any reply to Unsupported or an error.
+        yield* Queue.offerAll(
+          responses,
+          Array.from({ length: 16 }, () => undefined),
+        );
+        const record: AuthRenewalLocalRecord = {
+          revision: 1,
+          active: {
+            epoch: "epoch",
+            environmentId: TARGET.environmentId,
+            origin: TARGET.httpBaseUrl,
+            kind: "cookie",
+            current: "current-secret",
+            generation: 0,
+            pending: null,
+            accessToken: null,
+            expiresAt: 10_000 + remainingMs,
+            renewAfter: 5_000,
+          },
+          provisional: [],
+        };
+        const renewal = Renewal.SessionRenewal.of({
+          stage: () => Effect.die("Unexpected enrollment"),
+          complete: () => Effect.die("Unexpected completion"),
+          enrollExisting: () => Effect.void,
+          read: () => Effect.succeed(record),
+          ensure: () =>
+            Effect.gen(function* () {
+              attempts.push(yield* Clock.currentTimeMillis);
+              yield* Queue.take(responses);
+              return {
+                _tag: "Renewed",
+                result: decodeRenewalResult({
+                  outcome: "current",
+                  generation: 0,
+                  expiresAt: 10_000 + remainingMs,
+                  renewAfter: 5_000,
+                  serverTime: 10_000,
+                }),
+              };
+            }),
+        });
+        const harness = yield* makeHarness();
+        const supervisor = yield* EnvironmentSupervisor.make(TARGET_ENTRY, {
+          initiallyDesired: true,
+        }).pipe(
+          Effect.provide(harness.dependencies),
+          Effect.provideService(Renewal.SessionRenewal, renewal),
+        );
+        yield* TestClock.adjust(0);
+        expect(attempts).toEqual(remainingMs === 1 ? [3_600_000, 3_600_000] : [3_600_000]);
+        if (remainingMs > 0) yield* TestClock.adjust(remainingMs);
+        expect(attempts.length).toBeLessThanOrEqual(12);
+        expect((yield* SubscriptionRef.get(supervisor.state)).phase).toBe("blocked");
+        expect((yield* SubscriptionRef.get(supervisor.state)).lastFailure).toMatchObject({
+          _tag: "ConnectionBlockedError",
+          reason: "authentication",
+          detail: "Pair this environment again.",
+        });
+        const attemptsAtExpiry = attempts.length;
+        yield* TestClock.adjust("1 minute");
+        expect(attempts).toHaveLength(attemptsAtExpiry);
+        yield* supervisor.disconnect;
+      }).pipe(Effect.provide(TestClock.layer())),
   );
 
   it.effect("does not churn a healthy session when credentials change", () =>

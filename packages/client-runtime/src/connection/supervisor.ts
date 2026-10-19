@@ -942,6 +942,17 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
             : {}),
         })
         .pipe(Effect.ignore);
+      let pacing:
+        | { expiresAt: number; deadlineNanos: bigint | undefined; immediateRetryUsed: boolean }
+        | undefined;
+      const expired = Effect.gen(function* () {
+        // A current reply cannot recover a session beyond its confirmed expiry.
+        renewalRecoveryTried = true;
+        return yield* new ConnectionBlockedError({
+          reason: "authentication",
+          detail: "Pair this environment again.",
+        });
+      });
       while (true) {
         const record = yield* renewal.value.read(key);
         const slot = record?.active ?? record?.provisional[0];
@@ -949,6 +960,13 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
         const now = yield* Clock.currentTimeMillis;
         if (slot.renewAfter !== null && slot.renewAfter > now)
           yield* Effect.sleep(slot.renewAfter - now);
+        const renewalStartedAt = yield* Clock.monotonicTimeNanos;
+        if (
+          pacing?.deadlineNanos !== undefined &&
+          pacing.expiresAt === slot.expiresAt &&
+          renewalStartedAt >= pacing.deadlineNanos
+        )
+          return yield* expired;
         const renewed = yield* renewal.value.ensure(key, lease.httpBaseUrl).pipe(
           Effect.catchTags({
             ConnectionTransientError: () => Effect.succeed({ _tag: "Retry" as const }),
@@ -989,6 +1007,45 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
         }
         if (renewed._tag === "Pending") yield* Effect.sleep("1 hour");
         else if (renewed._tag === "Retry") yield* Effect.sleep("1 minute");
+        else if (renewed._tag === "Renewed") {
+          // On older servers, a not-due reply has at least expiresAt - renewAfter left.
+          const serverRemainingMs =
+            renewed.result.expiresAt - (renewed.result.serverTime ?? renewed.result.renewAfter);
+          const replyDeadline =
+            renewed.result.serverTime === undefined
+              ? undefined
+              : renewalStartedAt + BigInt(Math.floor(serverRemainingMs * 1_000_000));
+          if (pacing?.expiresAt !== renewed.result.expiresAt) {
+            pacing = {
+              expiresAt: renewed.result.expiresAt,
+              deadlineNanos: replyDeadline,
+              immediateRetryUsed: false,
+            };
+          } else if (
+            replyDeadline !== undefined &&
+            (pacing.deadlineNanos === undefined || replyDeadline < pacing.deadlineNanos)
+          ) {
+            // Repeated current replies must not refresh the same expiry's local budget.
+            pacing.deadlineNanos = replyDeadline;
+          }
+          const completedAt = yield* Clock.monotonicTimeNanos;
+          const remainingMs =
+            pacing.deadlineNanos === undefined
+              ? serverRemainingMs - Number(completedAt - renewalStartedAt) / 1_000_000
+              : Number(pacing.deadlineNanos - completedAt) / 1_000_000;
+          if (pacing.deadlineNanos !== undefined && remainingMs <= 0) return yield* expired;
+          if (remainingMs <= 2) {
+            if (!pacing.immediateRetryUsed) {
+              pacing.immediateRetryUsed = true;
+              continue;
+            }
+            // Without server time, an exhausted lower bound does not prove expiry.
+            yield* Effect.sleep(remainingMs > 0 ? remainingMs : 250);
+          } else {
+            // Leave half the remaining lifetime for rotation, independent of the client clock.
+            yield* Effect.sleep(Math.min(60_000, remainingMs / 2));
+          }
+        }
       }
     });
     const connectedExit = yield* Effect.raceFirst(

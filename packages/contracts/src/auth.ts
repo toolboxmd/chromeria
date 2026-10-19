@@ -192,6 +192,7 @@ export const AuthSessionRenewResult = Schema.Struct({
   generation: Schema.Int,
   expiresAt: Schema.Number,
   renewAfter: Schema.Number,
+  serverTime: Schema.optionalKey(Schema.Number),
   accessToken: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type AuthSessionRenewResult = typeof AuthSessionRenewResult.Type;
