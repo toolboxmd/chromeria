@@ -92,6 +92,8 @@ flowchart TD
     %% EP: #377 PR #388 #526
     PRN["Paired session renewal"]
     %% PRN: #323 #336 PR #477 PR #504 PR #473
+    OAG["Outside-agent grants"]
+    %% OAG: #553 PR #558
     WR["Agent web research"]
     %% WR: #423 PR #453
     WRR["Headless page rendering"]
@@ -121,6 +123,7 @@ flowchart TD
     T3R --- XM
     T3R --- NR
     T3R --- PRN
+    T3M --- OAG
     T3M --- WR
     T3S --- EP
     EP --- DR

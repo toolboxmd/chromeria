@@ -2754,3 +2754,31 @@ sources and reasons.
   ]
 }
 ```
+
+## outside-agent-oauth-grants
+
+```json
+{
+  "id": "outside-agent-oauth-grants",
+  "purpose": "Approve renewable outside OAuth clients until revoked, with fixed project-id and operation limits. Drop when upstream supports durable scoped outside-agent grants.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/553"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/558"],
+  "newFiles": ["apps/server/src/mcp/outsideGrant.ts", "apps/server/src/mcp/outsideGrant.test.ts"],
+  "upstreamFiles": [
+    "apps/server/src/auth/McpOAuth.test.ts",
+    "apps/server/src/auth/mcpOAuthHttp.ts",
+    "apps/web/src/components/auth/ConnectAgentSurface.tsx"
+  ],
+  "sharedFiles": [
+    "apps/server/src/auth/EnvironmentAuth.ts",
+    "apps/server/src/auth/McpOAuth.ts",
+    "apps/server/src/auth/SessionStore.ts",
+    "apps/server/src/auth/SessionStore.test.ts",
+    "apps/server/src/mcp/McpInvocationContext.ts",
+    "apps/server/src/mcp/McpToolAccess.ts",
+    "packages/contracts/src/auth.ts",
+    "docs/user/outside-agents.md"
+  ],
+  "keywords": ["until-revoked", "mcp-refresh", "AuthMcpGrantLimits"]
+}
+```

@@ -50,8 +50,23 @@ Then choose what the agent may do:
 - **Read only** is the default. The agent can read projects and threads and see
   the available providers and models. It cannot change anything.
 - **Supervised** through **Full access** also let it start, message and stop
-  threads in every project. A thread it starts or steers cannot run with more
+  threads in the projects you approve. A thread it starts or steers cannot run with more
   permissions than the mode you chose.
+
+To keep an unattended service connected, choose **Until revoked** instead of the
+30-day default. Its OAuth client must save and use refresh tokens, including the
+replacement refresh token returned by each renewal. It can renew without another
+approval, including after the environment restarts. Immediate retries of the last
+refresh return the same replacement for five seconds. Reusing an older token, or
+retrying after that window, revokes the sign-in.
+
+Enable **Limit this agent's access** to restrict it to an immutable project id
+and named operations: launch, send, read, interrupt and settle. The read operation
+allows reading a project or a specific thread and waiting for a thread; settle
+allows settling a thread, not other organization actions. Other MCP tools are
+unavailable with these limits. Leave the project id empty only when you intend
+to allow those operations across all projects. Renewal keeps the exact approved
+limits and permission mode.
 
 ## Claude Code
 
@@ -117,8 +132,9 @@ result that always includes the thread id.
 ## Remove an agent
 
 Approved agents appear under **Settings → Sharing & access** like other clients.
-Revoke one there to cut off its access immediately. A sign-in lasts 30 days;
-after that the agent asks you to approve it again.
+Revoke one there to cut off its access and renewal immediately. By default a
+sign-in lasts 30 days; after that the agent asks you to approve it again. An
+agent approved **Until revoked** renews its sign-in automatically.
 
 ## Launch with only named context
 

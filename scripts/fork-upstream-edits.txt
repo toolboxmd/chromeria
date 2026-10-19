@@ -553,3 +553,7 @@ packages/client-runtime/src/secretRequest.test.ts
 packages/client-runtime/src/secretRequest.ts
 packages/contracts/src/orchestratorMcp.test.ts
 packages/contracts/src/secretRequest.ts
+
+apps/server/src/auth/McpOAuth.test.ts
+apps/server/src/auth/mcpOAuthHttp.ts
+apps/web/src/components/auth/ConnectAgentSurface.tsx
