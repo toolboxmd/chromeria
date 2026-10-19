@@ -125,6 +125,30 @@ export const extract = (html: string, url: string) => {
   return { title: title ?? "", text, refresh, password, visibleText: compact(rendered), links };
 };
 
+// One whole line. A sentence before or after it, on this line or another, does not match.
+const JAVASCRIPT_INSTRUCTION_LINE =
+  /^(?:please\s+)?(?:you\s+(?:need|must)\s+to\s+)?enable\s+javascript(?:\s+to\s+[A-Za-z0-9][A-Za-z0-9'’,-]*(?:\s+[A-Za-z0-9][A-Za-z0-9'’,-]*){0,5})?[.!]?(?:\s+(?:javascript\s+is\s+(?:required|disabled)|this\s+(?:page|site|app)\s+requires\s+javascript)[.!]?)?$/i;
+const HEADING_LINE = /^#{1,6} .+$/;
+const MARKDOWN_LINK = /\[[^\]\n]{1,256}\]\((?:https?:\/\/|mailto:|tel:)[^)\s]+\)/g;
+
+const linksOnlyLine = (line: string) =>
+  line.includes("](") && line.replace(MARKDOWN_LINK, "").trim() === "";
+
+/** Headings and links stay on their own lines in page text, so prose beside an instruction stays readable. */
+const instructionalJavascriptShell = (text: string) => {
+  let instruction = false;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (line === "" || HEADING_LINE.test(line) || linksOnlyLine(line)) continue;
+    if (!instruction && JAVASCRIPT_INSTRUCTION_LINE.test(line)) {
+      instruction = true;
+      continue;
+    }
+    return false;
+  }
+  return instruction;
+};
+
 /** Classify the document itself, so a footer's login link is not mistaken for a wall. */
 export const classify = (
   page: ReturnType<typeof extract>,
@@ -173,5 +197,10 @@ export const classify = (
       ))
   )
     return "consent";
-  return page.visibleText.length < 80 && !page.text.includes("JSON-LD:") ? "thin" : "ok";
+  // A short page of headings, links, and one instruction line has no readable prose.
+  // Longer input skips this check, so a plain-text heading run cannot blow the regex stack.
+  return (page.visibleText.length < 80 || (short && instructionalJavascriptShell(page.text))) &&
+    !page.text.includes("JSON-LD:")
+    ? "thin"
+    : "ok";
 };

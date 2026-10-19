@@ -2386,44 +2386,84 @@ sources and reasons.
 ```json
 {
   "id": "agent-web-research",
-  "purpose": "Read research pages through one caller-gated MCP service with full text, typed failures, isolated headless rendering for thin/consent pages, a shared page cache, an origin limiter and provenance.",
+  "purpose": "Read research pages through one caller-gated MCP service with full text, typed failures, isolated headless rendering for thin/consent pages, a shared page cache, an origin limiter and provenance; optionally share one linked environment's reader with caller limits and cache ownership preserved; use a pinned zero-charge TinyFish fallback with shared quotas and bounded, nonpersistent hosted continuation; fan out locale/site discovery through SearXNG and pinned TinyFish search with per-engine health, shared spacing and budgets, and no stored SERPs. Explicit default-off session reads reuse an existing profile tab on its owner, with caller/session-private continuation and no enforced pacing.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/423",
     "https://github.com/toolboxmd/chromeria/issues/440",
-    "https://github.com/toolboxmd/chromeria/issues/442"
+    "https://github.com/toolboxmd/chromeria/issues/442",
+    "https://github.com/toolboxmd/chromeria/issues/443",
+    "https://github.com/toolboxmd/chromeria/issues/444",
+    "https://github.com/toolboxmd/chromeria/issues/445",
+    "https://github.com/toolboxmd/chromeria/issues/446"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/449",
-    "https://github.com/toolboxmd/chromeria/pull/453"
+    "https://github.com/toolboxmd/chromeria/pull/453",
+    "https://github.com/toolboxmd/chromeria/pull/455",
+    "https://github.com/toolboxmd/chromeria/pull/502",
+    "https://github.com/toolboxmd/chromeria/pull/505",
+    "https://github.com/toolboxmd/chromeria/pull/513"
   ],
   "newFiles": [
+    "apps/server/src/webResearch/Search.ts",
+    "apps/server/src/webResearch/SessionRead.ts",
+    "apps/server/src/mcp/WebResearchSession.integration.test.ts",
+    "apps/server/src/webResearch/WebSearchHost.test.ts",
+    "apps/server/src/mcp/WebSearch.integration.test.ts",
+    "packages/contracts/src/webResearch.ts",
     "apps/server/src/mcp/WebResearch.integration.test.ts",
     "apps/server/src/mcp/WebResearchRender.integration.test.ts",
     "apps/server/src/mcp/toolkits/webResearch/handlers.test.ts",
     "apps/server/src/mcp/toolkits/webResearch/handlers.ts",
     "apps/server/src/mcp/toolkits/webResearch/tools.ts",
     "apps/server/src/webResearch/PageCache.ts",
+    "apps/server/src/webResearch/PageCache.test.ts",
+    "apps/server/src/webResearch/TinyFish.ts",
+    "apps/server/src/webResearch/TinyFish.test.ts",
+    "apps/server/src/mcp/WebResearchTinyFish.integration.test.ts",
     "apps/server/src/webResearch/PublicHttp.test.ts",
     "apps/server/src/webResearch/PublicHttp.ts",
     "apps/server/src/webResearch/PublicRender.test.ts",
     "apps/server/src/webResearch/PublicRender.ts",
+    "apps/server/src/webResearch/ResearchHost.test.ts",
+    "apps/server/src/webResearch/ResearchHost.ts",
     "apps/server/src/webResearch/WebResearch.ts",
     "apps/server/src/webResearch/extract.ts",
-    "apps/server/src/webResearch/schemas.ts"
+    "apps/server/src/webResearch/schemas.ts",
+    "packages/contracts/src/researchHost.test.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/htmlRender/publicProxy.ts",
-    "apps/server/src/preview/ServerBrowserContexts.ts"
+    "apps/server/src/preview/ServerBrowserContexts.ts",
+    "packages/contracts/src/previewAutomation.ts"
   ],
   "sharedFiles": [
+    "apps/server/src/preview/ServerBrowser.test.ts",
+    "apps/server/src/preview/ServerBrowser.ts",
     "GLOSSARY.md",
     "apps/server/package.json",
     "apps/server/src/mcp/McpHttpServer.ts",
+    "apps/server/src/mcp/McpRouting.ts",
+    "apps/server/src/mcp/McpToolAccess.ts",
+    "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
+    "apps/server/src/auth/RpcAuthorization.test.ts",
+    "apps/server/src/serverSettings.test.ts",
     "docs/map.md",
+    "docs/user/remote-access.md",
+    "packages/contracts/src/settings.ts",
+    "packages/contracts/src/index.ts",
+    "packages/contracts/src/orchestratorMcp.ts",
     "packages/provider-core/src/server/orchestrationInstructions.ts",
     "pnpm-lock.yaml"
   ],
-  "keywords": ["web_read", "WebResearch", "web-cache", "ChromeriaResearch"]
+  "keywords": [
+    "web_read",
+    "web_search",
+    "WebResearch",
+    "ResearchHost",
+    "web-cache",
+    "ChromeriaResearch"
+  ]
 }
 ```
 

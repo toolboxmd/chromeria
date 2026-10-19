@@ -9,6 +9,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
@@ -19,7 +20,19 @@ const gunzip = NodeUtil.promisify(NodeZlib.gunzip);
 const decode = Schema.decodeUnknownEffect(Schema.fromJsonString(CachedPage));
 const encode = Schema.encodeEffect(Schema.fromJsonString(CachedPage));
 // JSON escapes control characters in both page text and the retained link labels.
+// This limits encoded payload bytes, not total live heap used by strings and link objects.
 const MAX_CACHE_JSON_BYTES = 64 * 1024 * 1024;
+
+export const HOSTED_CONTINUATION_TTL_MS = 15 * 60_000;
+
+export class PageContinuationExpired extends Schema.TaggedError<PageContinuationExpired>()(
+  "PageContinuationExpired",
+  {},
+) {
+  override get message() {
+    return "That TinyFish continuation expired, was evicted, or was lost on restart. Hosted pages stay only in this research server’s memory for at most 15 minutes. Read the URL again.";
+  }
+}
 
 type CacheKey =
   | { readonly url: string; readonly sameOrigin?: string }
@@ -40,12 +53,15 @@ export class PageCacheError extends Schema.TaggedError<PageCacheError>()("PageCa
 export class PageCache extends Context.Service<
   PageCache,
   {
-    readonly get: (key: CacheKey) => Effect.Effect<CachedPage | null, PageCacheError>;
+    readonly get: (
+      key: CacheKey,
+    ) => Effect.Effect<CachedPage | null, PageCacheError | PageContinuationExpired>;
     readonly put: (page: CachedPage) => Effect.Effect<void, PageCacheError>;
   }
 >()("t3/webResearch/PageCache") {}
 
 const make = Effect.gen(function* () {
+  const ownerScope = yield* Scope.Scope;
   const sql = yield* SqlClient.SqlClient;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -70,7 +86,41 @@ const make = Effect.gen(function* () {
     yield* sql`CREATE INDEX IF NOT EXISTS pages_final_url ON pages(final_url, indexed_at DESC)`;
   }).pipe(Effect.mapError((cause) => new PageCacheError({ operation: "open", cause })));
 
+  // Provider retention permission, including these transient buffers, remains unresolved.
+  // Final admission needs that acceptance; hosted bodies never enter SQLite or compressed files.
+  const continuations = new Map<string, { page: CachedPage; bytes: number }>();
+  let continuationBytes = 0;
+  const forget = (id: string) => {
+    continuationBytes -= continuations.get(id)?.bytes ?? 0;
+    continuations.delete(id);
+  };
+  const prune = (now: number) => {
+    for (const [id, entry] of continuations) if (entry.page.expiresAt <= now) forget(id);
+  };
+
+  const expire = (id: string, expiresAt: number) =>
+    Clock.currentTimeMillis.pipe(
+      Effect.flatMap((now) => Effect.sleep(Math.max(0, expiresAt - now))),
+      Effect.andThen(
+        Effect.sync(() => {
+          if (continuations.get(id)?.page.expiresAt === expiresAt) forget(id);
+        }),
+      ),
+    );
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      continuations.clear();
+      continuationBytes = 0;
+    }),
+  );
+
   const get = Effect.fn("PageCache.get")(function* (key: CacheKey) {
+    prune(yield* Clock.currentTimeMillis);
+    if ("cacheId" in key) {
+      const buffered = continuations.get(key.cacheId);
+      if (buffered) return buffered.page;
+      if (key.cacheId.startsWith("tinyfish:")) return yield* new PageContinuationExpired();
+    }
     const rows = yield* (
       "redirectTarget" in key
         ? sql<{ readonly id: string }>`SELECT id FROM pages
@@ -102,9 +152,10 @@ const make = Effect.gen(function* () {
       try: () => gunzip(compressed, { maxOutputLength: MAX_CACHE_JSON_BYTES }),
       catch: (cause) => new PageCacheError({ operation: "read", cause }),
     });
-    return yield* decode(json.toString("utf8")).pipe(
+    const page = yield* decode(json.toString("utf8")).pipe(
       Effect.mapError((cause) => new PageCacheError({ operation: "read", cause })),
     );
+    return page.sourceRung === "tinyfish" ? null : page;
   });
   const put = Effect.fn("PageCache.put")(function* (page: CachedPage) {
     const json = yield* encode(page).pipe(
@@ -115,6 +166,26 @@ const make = Effect.gen(function* () {
         operation: "write",
         cause: new RangeError("Research page exceeds the cache body limit."),
       });
+    if (page.sourceRung === "tinyfish") {
+      const now = yield* Clock.currentTimeMillis;
+      prune(now);
+      if (continuations.has(page.cacheId)) return;
+      const expiresAt = Math.min(page.expiresAt, now + HOSTED_CONTINUATION_TTL_MS);
+      if (expiresAt <= now) return;
+      const bytes = Buffer.byteLength(json, "utf8");
+      for (const id of continuations.keys()) {
+        if (continuations.size < 32 && continuationBytes + bytes <= MAX_CACHE_JSON_BYTES) break;
+        forget(id);
+      }
+      continuations.set(page.cacheId, {
+        page: { ...page, expiresAt },
+        bytes,
+      });
+      continuationBytes += bytes;
+      // The cache owns expiry even after the request scope closes. The timer captures only identity/time.
+      yield* expire(page.cacheId, expiresAt).pipe(Effect.forkIn(ownerScope));
+      return;
+    }
     const body = yield* Effect.tryPromise({
       try: () => gzip(json),
       catch: (cause) => new PageCacheError({ operation: "write", cause }),

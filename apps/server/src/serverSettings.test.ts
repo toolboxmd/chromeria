@@ -5,6 +5,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   globalIdleCompaction,
   type ManagedPolicyDocument,
+  EnvironmentId,
   ModelSelection,
   PrismRoleKits,
   ProjectId,
@@ -139,6 +140,31 @@ function strictSecretReferencePaths(
 }
 
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings", (it) => {
+  it.effect(
+    "persists the search endpoint independently of research host selection and clearing",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const host = EnvironmentId.make("bestia");
+        const searxngUrl = "http://configured-search.internal:8888/base";
+        yield* service.updateSettings({ webResearch: { searxngUrl } });
+        yield* service.updateSettings({ webResearch: { host } });
+        assert.deepEqual((yield* service.getSettings).webResearch, { host, searxngUrl });
+        assert.deepEqual(
+          (yield* decodeServerSettingsJson(yield* fs.readFileString(config.settingsPath)))
+            .webResearch,
+          { host, searxngUrl },
+        );
+        yield* service.updateSettings({ webResearch: { host: null } });
+        assert.deepEqual(
+          (yield* decodeServerSettingsJson(yield* fs.readFileString(config.settingsPath)))
+            .webResearch,
+          { host: null, searxngUrl },
+        );
+      }).pipe(Effect.provide(layerServerSettings())),
+  );
   it.effect("serializes concurrent model preference edits without cancelling duplicate adds", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsModule.ServerSettingsService;

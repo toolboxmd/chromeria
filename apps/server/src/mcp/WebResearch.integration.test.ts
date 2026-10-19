@@ -1,3 +1,4 @@
+import * as Search from "../webResearch/Search.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
@@ -26,10 +27,14 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
 import * as Registry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as Replay from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as TinyFish from "../webResearch/TinyFish.ts";
 import * as WebResearch from "../webResearch/WebResearch.ts";
 import * as PageCache from "../webResearch/PageCache.ts";
 import * as PublicHttp from "../webResearch/PublicHttp.ts";
 import * as PublicRender from "../webResearch/PublicRender.ts";
+import * as Settings from "../serverSettings.ts";
+import * as PeerForwarding from "../peer/PeerForwarding.ts";
+import * as PeerLinks from "../peer/PeerLinks.ts";
 import { type CachedPage, WebReadResult } from "../webResearch/schemas.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as Invocation from "./McpInvocationContext.ts";
@@ -74,6 +79,8 @@ const fixture = Effect.fnUntraced(function* (
     { runEffectWorker: false },
   );
   const reader = WebResearch.layer.pipe(
+    Layer.provide(Layer.mock(Search.Search)({})),
+    Layer.provide(Layer.succeed(TinyFish.TinyFish, { fetch: () => Effect.succeed(undefined) })),
     Layer.provide(cacheLayer),
     Layer.provide(
       Layer.succeed(PublicRender.PublicRender, {
@@ -95,6 +102,9 @@ const fixture = Effect.fnUntraced(function* (
   const layer = McpHttpServer.layerWebResearchToolkit.pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provide(reader),
+    Layer.provide(Settings.layerTest()),
+    Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+    Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
     Layer.provideMerge(runtime),
     Layer.provide(NodeCrypto.layer),
   );

@@ -51,6 +51,7 @@ export const PREVIEW_AUTOMATION_SERVER_OPERATIONS = [
   "hover",
   "select",
   "drag",
+  "readPage",
 ] as const;
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_SERVER_OPERATIONS);
 export type PreviewAutomationOperation = typeof PreviewAutomationOperation.Type;
@@ -128,6 +129,21 @@ export const PreviewAutomationStatus = Schema.Struct({
   defaultProfileId: Schema.optional(BrowserProfileId),
 });
 export type PreviewAutomationStatus = typeof PreviewAutomationStatus.Type;
+
+// Research reads target an existing tab and expose no script or account-action input.
+export const PreviewAutomationReadPageInput = Schema.Struct({
+  profileId: BrowserProfileId,
+  url: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096)),
+});
+
+export const PreviewAutomationReadPageResult = Schema.Struct({
+  tabId: PreviewTabId,
+  profileId: BrowserProfileId,
+  generation: Schema.Int,
+  finalUrl: Schema.String.check(Schema.isMaxLength(4096)),
+  httpStatus: Schema.NullOr(Schema.Int),
+  html: Schema.String.check(Schema.isMaxLength(4 * 1024 * 1024)),
+});
 
 export const PreviewAutomationDialogInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,

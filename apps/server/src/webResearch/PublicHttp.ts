@@ -65,17 +65,20 @@ const resolve = async (host: string) => {
   return addresses;
 };
 
+export const validateDestination = (url: URL) =>
+  Effect.tryPromise({
+    try: () => resolve(url.hostname),
+    catch: (cause) =>
+      isNetworkBlocked(cause)
+        ? cause
+        : new PublicHttpError({ host: url.hostname, stage: "resolve", cause }),
+  });
+
 const make = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
   const get = Effect.fn("PublicHttp.get")(function* (url: URL) {
     // Literal IPs bypass an agent's DNS lookup, so validate them here too.
-    yield* Effect.tryPromise({
-      try: () => resolve(url.hostname),
-      catch: (cause) =>
-        isNetworkBlocked(cause)
-          ? cause
-          : new PublicHttpError({ host: url.hostname, stage: "resolve", cause }),
-    });
+    yield* validateDestination(url);
     const response = yield* client
       .get(url.href, {
         headers: {
