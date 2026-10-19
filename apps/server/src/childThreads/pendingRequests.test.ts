@@ -276,6 +276,25 @@ it.effect("an active grandparent keeps first say over a stale parent", () =>
   }),
 );
 
+it.effect("an active grandparent keeps first say over a deleted parent", () =>
+  Effect.gen(function* () {
+    yield* clockAt(STALE_NOW);
+    const shells = defaultShells();
+    shells.set(child, {
+      ...shells.get(child)!,
+      activeRunId: null,
+      deletedAt: DateTime.makeUnsafe("2026-01-01T00:10:00.000Z"),
+    });
+    const command = yield* respond({
+      scope: scope(promachos),
+      target: grandchild,
+      kind: "question",
+      shells,
+    });
+    assert.isUndefined(command);
+  }),
+);
+
 it.effect("a child delegated from another environment stays with its remote parent", () =>
   Effect.gen(function* () {
     const shells = defaultShells();
@@ -324,6 +343,24 @@ it.effect.each([
         : undefined,
     );
     assert.equal(command !== undefined, accepted);
+  }),
+);
+
+it.effect("a full-access link answers an approval for its Promachos", () =>
+  Effect.gen(function* () {
+    const command = yield* respond({ scope: linked({}), target: topLevel, kind: "approval" });
+    assert.equal(command?.answeredBy?.kind, "promachos");
+  }),
+);
+
+it.effect("a full-access link narrowed below full access keeps its fence", () =>
+  Effect.gen(function* () {
+    const command = yield* respond({
+      scope: linked({ narrowedTo: { runtimeMode: "auto", interactionMode: "default" } }),
+      target: topLevel,
+      kind: "question",
+    });
+    assert.isUndefined(command);
   }),
 );
 

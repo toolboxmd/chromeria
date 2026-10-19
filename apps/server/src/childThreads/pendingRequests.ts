@@ -60,12 +60,13 @@ const ancestorHasFirstSay = Effect.fn("childThreads.ancestorHasFirstSay")(functi
     const parent = yield* context.threads
       .getThreadShell(lineage.parentThreadId)
       .pipe(Effect.mapError(unavailable));
-    // A deleted parent breaks the chain: nothing above it is an ancestor any more.
-    if (parent === null || parent.deletedAt !== null) return false;
+    if (parent === null) return false;
+    // A deleted parent has no say, but an active ancestor above it still does.
     if (
-      parent.delegatedFrom !== undefined ||
-      parent.activeRunId !== null ||
-      DateTime.toEpochMillis(parent.updatedAt) > staleBefore
+      parent.deletedAt === null &&
+      (parent.delegatedFrom !== undefined ||
+        parent.activeRunId !== null ||
+        DateTime.toEpochMillis(parent.updatedAt) > staleBefore)
     )
       return true;
     lineage = parent.lineage;

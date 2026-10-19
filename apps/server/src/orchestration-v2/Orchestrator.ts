@@ -4111,13 +4111,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       })
       .pipe(mapDispatchError(command));
 
+    // Fork: a fork is not the Promachos, whoever forks it (toolboxmd/chromeria#532).
+    const { prismRole: _prismRole, ...forkedThread } = targetThread;
     yield* emitEvent({
       type: "thread.created",
       threadId: command.targetThreadId,
       providerInstanceId: targetThread.providerInstanceId,
       occurredAt: now,
       // Fork: a fork belongs to the forking person and starts unshared (toolboxmd/chromeria#170).
-      payload: { ...targetThread, owner: command.owner ?? null, coOwners: [] },
+      payload: { ...forkedThread, owner: command.owner ?? null, coOwners: [] },
     });
     yield* emitEvent({
       type: "context-transfer.created",
