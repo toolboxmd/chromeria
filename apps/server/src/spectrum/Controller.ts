@@ -39,7 +39,7 @@ import {
 import { spectrumTaskUpdate } from "./delegatedTask.ts";
 import { makeInitialReport } from "./reportPolicy.ts";
 import { readSpectrum } from "./store.ts";
-import type { SpectrumState } from "./state.ts";
+import { memberOf, type SpectrumState } from "./state.ts";
 
 export class SpectrumControllerError extends Schema.TaggedError<SpectrumControllerError>()(
   "SpectrumControllerError",
@@ -357,7 +357,7 @@ const make = Effect.gen(function* () {
         if (reply.type !== "accepted") continue;
         const key = `${slot.commandId}:reply`;
         const revision = state.revision + 1;
-        const label = state.participants.find((color) => color.threadId === slot.threadId)!.label;
+        const label = memberOf(state, slot.threadId)!.label;
         const text = reply.messages.map((message) => message.text).join("\n\n");
         const free = state.mode === "free" ? acceptFreeReply(state, state.round.phase, text) : null;
         const said = free === null ? text : free.transcript;

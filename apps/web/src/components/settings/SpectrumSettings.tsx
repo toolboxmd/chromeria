@@ -25,6 +25,7 @@ import {
   removeSpectrumSlot,
   renameSpectrumSlot,
   spectrumSlotColors,
+  spectrumWhiteColors,
 } from "./SpectrumSettings.logic";
 import { SettingsGroup } from "./SettingsGroup";
 import { useSettingsScope } from "./SettingsScopeContext";
@@ -117,7 +118,7 @@ function SpectrumEditor({
     const decoded = decodeUnknownExitSpectrumPreferences(draft);
     if (!reset && decoded._tag === "Failure") {
       setError(
-        "Use two to eight unique labels, a primary Color for every slot, White from those slots, at least two relay rounds and one to twelve turns per Color.",
+        "Use two to eight unique labels, a primary Color for every slot and for White, at least two reply rounds and one to twelve turns per Color.",
       );
       return;
     }
@@ -187,8 +188,8 @@ function SpectrumEditor({
       >
         <p className="px-3 text-sm text-muted-foreground sm:px-4">
           Choose default slots and White, then ask an agent to start a Spectrum with just a
-          question. Each slot tries its primary Color, then its fallbacks, only before a turn
-          starts. Save when you finish editing.
+          question. Each slot and White try their primary Color, then their fallbacks, only before a
+          turn starts. Save when you finish editing.
         </p>
         {mixed && (
           <p role="status" className="px-3 text-sm text-muted-foreground sm:px-4">
@@ -264,28 +265,27 @@ function SpectrumEditor({
                 Configure two to eight slots before starting with only a question.
               </p>
             )}
-            <div className="space-y-2">
-              <Label htmlFor="spectrum-white">White</Label>
-              <Select
-                value={draft.white ?? ""}
-                disabled={disabled || saving}
-                onValueChange={(white) => change({ ...draft, white: white || null })}
-              >
-                <SelectTrigger id="spectrum-white">
-                  <SelectValue>{draft.white || "Choose a slot"}</SelectValue>
-                </SelectTrigger>
-                <SelectPopup>
-                  {draft.slots.map((slot, index) => (
-                    <SelectItem key={slotKeys[index]} value={slot.label}>
-                      {slot.label || `Slot ${index + 1}`}
-                    </SelectItem>
-                  ))}
-                </SelectPopup>
-              </Select>
+            <section className="space-y-3">
+              <Label>White</Label>
               <p className="text-xs text-muted-foreground">
-                White synthesizes council discussions and moderates free discussions.
+                White is not a Color: it writes the council's final answer, and in a free discussion
+                picks who speaks next and writes the closing summary.
               </p>
-            </div>
+              <ColorList
+                title="White"
+                saved={draft.white === null ? [] : [draft.white.primary, ...draft.white.fallbacks]}
+                providers={providers}
+                disabled={disabled || saving}
+                saving={false}
+                mixed={false}
+                minItems={1}
+                maxItems={5}
+                save={(colors) => {
+                  change({ ...draft, white: spectrumWhiteColors(draft.white, colors) });
+                  return Promise.resolve();
+                }}
+              />
+            </section>
             <div className="space-y-2">
               <Label htmlFor="spectrum-mode">Default mode</Label>
               <Select
@@ -305,7 +305,7 @@ function SpectrumEditor({
               </Select>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="spectrum-rounds">Council relay rounds</Label>
+              <Label htmlFor="spectrum-rounds">Council: reply rounds</Label>
               <Input
                 id="spectrum-rounds"
                 type="number"
@@ -315,9 +315,13 @@ function SpectrumEditor({
                 disabled={disabled || saving}
                 onChange={(event) => change({ ...draft, relayRounds: event.target.valueAsNumber })}
               />
+              <p className="text-xs text-muted-foreground">
+                After every Color answers on its own, each Color reads the others' answers and
+                replies this many times before White writes the final answer. At least 2.
+              </p>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="spectrum-turns">Free turns per Color</Label>
+              <Label htmlFor="spectrum-turns">Free discussion: turns per Color</Label>
               <Input
                 id="spectrum-turns"
                 type="number"
@@ -330,6 +334,11 @@ function SpectrumEditor({
                   change({ ...draft, turnsPerColor: event.target.valueAsNumber })
                 }
               />
+              <p className="text-xs text-muted-foreground">
+                Sets the length of a free discussion: it ends after this many turns per Color in
+                total (for example 3 with 4 Colors allows 12 turns), or earlier when White says it
+                is done.
+              </p>
             </div>
             <Button disabled={disabled || saving || !dirty} onClick={() => void save()}>
               {saving ? "Saving…" : "Save Spectrum settings"}

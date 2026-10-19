@@ -236,6 +236,11 @@ const makeFixture = (realHtml = false) =>
                 callerThreadId: input.callerThreadId,
                 mode: input.mode,
                 participants: [],
+                white: {
+                  threadId: input.threadId,
+                  label: "White",
+                  selection: { instanceId: "codex", model: "gpt-5" },
+                },
                 delegatedTaskId: null,
               } as never,
               input,

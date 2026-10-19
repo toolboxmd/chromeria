@@ -720,37 +720,147 @@ it.effect(
     }).pipe(Effect.provide(runtime)),
 );
 
+/** Answers every slot of each council round in turn, recording who was asked in which phase. */
+const runCouncil = Effect.fn("test.Spectrum.runCouncil")(function* (threadId: ThreadId) {
+  const controller = yield* Controller.SpectrumController;
+  const projections = yield* Projection.ProjectionStoreV2;
+  let current = yield* controller.resume(threadId);
+  const rounds: Array<{ readonly phase: string; readonly threads: ReadonlyArray<string> }> = [];
+  for (let step = 0; step < 4; step++) {
+    const slots = current.round!.slots;
+    rounds.push({ phase: current.round!.phase, threads: slots.map((slot) => slot.threadId) });
+    for (let index = 0; index < slots.length; index++) {
+      const slot = slots[index]!;
+      const child = yield* projections.getThreadRecords(slot.threadId, ["runs"]);
+      yield* finish(
+        child.runs.find((run) => run.id === slot.runId)!,
+        `${step}/${index} reply`,
+      );
+      current = yield* controller.resume(threadId);
+      if (index < slots.length - 1) assert.strictEqual(current.round!.step, step);
+    }
+  }
+  return { current, rounds };
+});
+
 it.effect(
-  "council waits for every Color before relays and then only the moderator synthesizes",
+  "council gives every Color's answer and relays, then only the separate White synthesizes",
   () =>
     Effect.gen(function* () {
       yield* setup;
       yield* initializeRecoveryHistory;
       const state = yield* (yield* Launch.SpectrumLaunchService).register(input);
-      const controller = yield* Controller.SpectrumController;
+      const colors = state.participants.map((color) => color.threadId);
+      assert.strictEqual(colors.length, 2);
+      assert.notInclude(colors, state.white!.threadId);
+      const { current, rounds } = yield* runCouncil(state.threadId);
+      assert.deepStrictEqual(rounds, [
+        { phase: "independent", threads: colors },
+        { phase: "relay", threads: colors },
+        { phase: "relay", threads: colors },
+        { phase: "synthesis", threads: [state.white!.threadId] },
+      ]);
+      assert.strictEqual(current.status, "settled");
+      const transcript = (yield* (yield* Projection.ProjectionStoreV2).getThreadRecords(
+        state.threadId,
+        ["messages"],
+      )).messages.map((message) => message.text);
+      // Two Color answers, then White's synthesis under White's own name.
+      assert.deepStrictEqual(
+        transcript.filter((text) => text.endsWith("0/0 reply") || text.endsWith("0/1 reply")),
+        ["[Blue]\n0/0 reply", "[Red]\n0/1 reply"],
+      );
+      assert.include(transcript, "[White]\n3/0 reply");
+    }).pipe(Effect.provide(runtime)),
+);
+
+it.effect(
+  "a Color labelled White keeps its name and the separate White becomes White (moderator)",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      yield* initializeRecoveryHistory;
+      const state = yield* (yield* Launch.SpectrumLaunchService).register({
+        ...input,
+        colors: input.colors.map((color, index) =>
+          index === 0 ? { ...color, label: "White" } : color,
+        ),
+      });
       const projections = yield* Projection.ProjectionStoreV2;
-      let current = yield* controller.resume(state.threadId);
-      const phases = [];
-      for (let step = 0; step < 4; step++) {
-        phases.push(current.round!.phase);
-        const slots = current.round!.slots;
-        if (step === 3)
-          assert.deepStrictEqual(
-            slots.map((slot) => slot.threadId),
-            [state.participants[1]!.threadId],
-          );
-        for (let index = 0; index < slots.length; index++) {
-          const slot = slots[index]!;
-          const child = yield* projections.getThreadRecords(slot.threadId, ["runs"]);
-          yield* finish(
-            child.runs.find((run) => run.id === slot.runId)!,
-            `${step}/${index} reply`,
-          );
-          current = yield* controller.resume(state.threadId);
-          if (index < slots.length - 1) assert.strictEqual(current.round!.step, step);
-        }
-      }
-      assert.deepStrictEqual(phases, ["independent", "relay", "relay", "synthesis"]);
+      const color = state.participants[0]!;
+      assert.strictEqual(color.label, "White");
+      assert.strictEqual(state.white!.label, "White (moderator)");
+      assert.strictEqual((yield* projections.getThread(color.threadId)).title, "White");
+      assert.strictEqual(
+        (yield* projections.getThread(state.white!.threadId)).title,
+        "White (moderator)",
+      );
+      const { current } = yield* runCouncil(state.threadId);
+      assert.strictEqual(current.status, "settled");
+      const transcript = (yield* projections.getThreadRecords(state.threadId, [
+        "messages",
+      ])).messages
+        .map((message) => message.text)
+        .filter((text) => text.startsWith("[White"));
+      // The Color answers and relays as White; only the synthesis is tagged as the moderator.
+      assert.deepStrictEqual(transcript, [
+        "[White]\n0/0 reply",
+        "[White]\n1/0 reply",
+        "[White]\n2/0 reply",
+        "[White (moderator)]\n3/0 reply",
+      ]);
+    }).pipe(Effect.provide(runtime)),
+);
+
+it.effect("Colors called White and White (moderator) leave the separate White a third name", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    yield* initializeRecoveryHistory;
+    const labels = ["White", "White (moderator)"];
+    const state = yield* (yield* Launch.SpectrumLaunchService).register({
+      ...input,
+      colors: input.colors.map((color, index) => ({ ...color, label: labels[index]! })),
+    });
+    const projections = yield* Projection.ProjectionStoreV2;
+    assert.deepStrictEqual(
+      state.participants.map((color) => color.label),
+      labels,
+    );
+    assert.strictEqual(state.white!.label, "White (moderator 2)");
+    const titles = yield* Effect.forEach([...state.participants, state.white!], (member) =>
+      projections.getThread(member.threadId).pipe(Effect.map((thread) => thread.title)),
+    );
+    assert.deepStrictEqual(titles, ["White", "White (moderator)", "White (moderator 2)"]);
+    const { current } = yield* runCouncil(state.threadId);
+    assert.strictEqual(current.status, "settled");
+    const tags = (yield* projections.getThreadRecords(state.threadId, ["messages"])).messages
+      .filter((message) => message.role === "assistant")
+      .map((message) => message.text.slice(0, message.text.indexOf("\n")));
+    assert.deepStrictEqual(tags, [
+      ...Array.from({ length: 3 }, () => ["[White]", "[White (moderator)]"]).flat(),
+      "[White (moderator 2)]",
+    ]);
+  }).pipe(Effect.provide(runtime)),
+);
+
+it.effect(
+  "a Spectrum persisted before White was its own member resumes with the Color as White",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      yield* initializeRecoveryHistory;
+      const state = yield* (yield* Launch.SpectrumLaunchService).register(input);
+      // The row shape of earlier builds: no White member, White is the Color at index 1.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE fork_spectra
+      SET payload_json = json_set(json_remove(payload_json, '$.white'), '$.moderator', 1)
+      WHERE thread_id = ${state.threadId}`;
+      const legacy = Option.getOrThrow(yield* readSpectrum(state.threadId));
+      assert.isUndefined(legacy.white);
+      assert.strictEqual(legacy.moderator, 1);
+      const colors = state.participants.map((color) => color.threadId);
+      const { current, rounds } = yield* runCouncil(state.threadId);
+      assert.deepStrictEqual(rounds.at(-1), { phase: "synthesis", threads: [colors[1]!] });
       assert.strictEqual(current.status, "settled");
     }).pipe(Effect.provide(runtime)),
 );

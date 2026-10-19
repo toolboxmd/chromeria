@@ -6,7 +6,7 @@ import {
   type RunId,
 } from "@t3tools/contracts";
 
-import type { SpectrumRound, SpectrumState } from "./state.ts";
+import { memberOf, whiteOf, type SpectrumRound, type SpectrumState } from "./state.ts";
 import { runOutcome } from "../orchestration-v2/RestartBackgroundNote.ts";
 import { freeSpeaker } from "./freeMode.ts";
 
@@ -15,9 +15,6 @@ export function nextRound(state: SpectrumState): SpectrumRound | null {
   if (state.status !== "active" || state.outbox.length > 0) return null;
   if (state.mode === "council" && state.limit < 2) {
     throw new RangeError("Council requires at least two relay rounds.");
-  }
-  if (state.moderator >= state.participants.length) {
-    throw new RangeError("Moderator must name a participating Color.");
   }
   const previous = state.round;
   if (previous !== null && previous.generation !== state.generation) return null;
@@ -39,9 +36,9 @@ export function nextRound(state: SpectrumState): SpectrumRound | null {
           : "relay";
   const participants =
     speaker !== null
-      ? [state.participants[speaker.participant]!]
+      ? [speaker.member]
       : phase === "synthesis"
-        ? [state.participants[state.moderator]!]
+        ? [whiteOf(state)]
         : state.participants;
   return {
     generation: state.generation,
@@ -71,9 +68,15 @@ export function barrierComplete(round: SpectrumRound): boolean {
 export function fallBack(state: SpectrumState, commandId: CommandId): SpectrumState | null {
   const pending = state.outbox.find((command) => command.commandId === commandId);
   if (pending?.type !== "message.dispatch" || state.round === null) return null;
-  const participant = state.participants.find((color) => color.threadId === pending.threadId);
+  const participant = memberOf(state, pending.threadId);
   const [next, ...rest] = participant?.fallbacks ?? [];
   if (participant === undefined || next === undefined) return null;
+  const replacement = {
+    ...participant,
+    selection: next,
+    fallbacks: rest,
+    attempted: [...participant.attempted, participant.selection],
+  };
   const retry = {
     commandId: CommandId.make(`${pending.commandId}:fallback`),
     messageId: MessageId.make(`${pending.messageId}:fallback`),
@@ -81,16 +84,8 @@ export function fallBack(state: SpectrumState, commandId: CommandId): SpectrumSt
   return {
     ...state,
     revision: state.revision + 1,
-    participants: state.participants.map((color) =>
-      color === participant
-        ? {
-            ...color,
-            selection: next,
-            fallbacks: rest,
-            attempted: [...color.attempted, color.selection],
-          }
-        : color,
-    ),
+    participants: state.participants.map((color) => (color === participant ? replacement : color)),
+    ...(state.white === participant ? { white: replacement } : {}),
     round: {
       ...state.round,
       slots: state.round.slots.map((slot) =>
