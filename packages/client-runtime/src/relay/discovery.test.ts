@@ -20,6 +20,8 @@ import * as Connectivity from "../connection/connectivity.ts";
 import { ConnectionBlockedError, type NetworkStatus } from "../connection/model.ts";
 import * as ConnectionWakeups from "../connection/wakeups.ts";
 import * as RelayEnvironmentDiscovery from "./discovery.ts";
+import { AtomRegistry } from "effect/reactivity";
+import { deregisterManagedRelayEnvironment, setManagedRelaySession } from "./managedRelayState.ts";
 import { NETWORK_BLOCKING_HINT } from "../errors/network.ts";
 import { createRelayEnvironmentDiscoveryAtoms } from "../state/relayDiscovery.ts";
 
@@ -60,9 +62,11 @@ function status(
 
 const makeHarness = Effect.fn("RelayDiscoveryTest.makeHarness")(function* () {
   const networkStatus = yield* SubscriptionRef.make<NetworkStatus>("online");
-  const listCalls = yield* Ref.make(0);
   const listedEnvironments =
     yield* Ref.make<ReadonlyArray<RelayClientEnvironmentRecord>>(environments);
+  const unlinkFailure = yield* Ref.make<ManagedRelay.ManagedRelayClientError | null>(null);
+  const listCalls = yield* Ref.make(0);
+
   const listFailure = yield* Ref.make<ManagedRelay.ManagedRelayClientError | null>(null);
   const beforeList = yield* Ref.make<Effect.Effect<void>>(Effect.void);
   const secondListCall = yield* Deferred.make<void>();
@@ -116,7 +120,15 @@ const makeHarness = Effect.fn("RelayDiscoveryTest.makeHarness")(function* () {
     listDevices: () => Effect.die("unused"),
     createEnvironmentLinkChallenge: () => Effect.die("unused"),
     linkEnvironment: () => Effect.die("unused"),
-    unlinkEnvironment: () => Effect.die("unused"),
+    unlinkEnvironment: ({ environmentId }) =>
+      Effect.gen(function* () {
+        const failure = yield* Ref.get(unlinkFailure);
+        if (failure) return yield* failure;
+        yield* Ref.update(listedEnvironments, (current) =>
+          current.filter((environment) => environment.environmentId !== environmentId),
+        );
+        return { ok: true };
+      }),
     getT3ChatLink: () => Effect.die("unused"),
     createT3ChatLinkRequest: () => Effect.die("unused"),
     unlinkT3Chat: () => Effect.die("unused"),
@@ -171,6 +183,8 @@ const makeHarness = Effect.fn("RelayDiscoveryTest.makeHarness")(function* () {
 
   return {
     layer,
+    client,
+    unlinkFailure,
     listCalls,
     listedEnvironments,
     listFailure,
@@ -232,6 +246,61 @@ describe("RelayEnvironmentDiscovery", () => {
         }).pipe(Effect.provide(harness.layer));
       }),
     ),
+  );
+
+  it.effect.each([
+    { succeeds: true, outcome: "refreshes membership after successful deregistration" },
+    { succeeds: false, outcome: "preserves membership when deregistration fails" },
+  ])("$outcome", ({ succeeds }) =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const registry = AtomRegistry.make();
+      yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
+      setManagedRelaySession(registry, {
+        accountId: "account-1",
+        readClerkToken: () => Promise.resolve("clerk-token"),
+      });
+      const requests = yield* Ref.get(harness.statusRequests);
+      for (const environment of environments) {
+        yield* Deferred.succeed(
+          requests.get(environment.environmentId)!,
+          status(environment, "online"),
+        );
+      }
+      yield* Effect.gen(function* () {
+        const discovery = yield* RelayEnvironmentDiscovery.RelayEnvironmentDiscovery;
+        yield* discovery.refresh;
+        const before = yield* SubscriptionRef.get(discovery.state);
+        expect([...before.environments.keys()]).toEqual(["environment-1", "environment-2"]);
+        if (!succeeds) {
+          yield* Ref.set(
+            harness.unlinkFailure,
+            new ManagedRelay.ManagedRelayRequestFailedError({
+              action: "unlink relay environment",
+              cause: new Error("Relay unavailable"),
+            }),
+          );
+        }
+        const result = yield* deregisterManagedRelayEnvironment(registry, {
+          accountId: "account-1",
+          environmentId: environments[0]!.environmentId,
+        }).pipe(Effect.result);
+        expect(result._tag).toBe(succeeds ? "Success" : "Failure");
+        const after = yield* SubscriptionRef.get(discovery.state);
+        if (succeeds) {
+          expect([...after.environments.keys()]).toEqual(["environment-2"]);
+          expect(after.refreshing).toBe(false);
+          expect(Option.getOrThrow(after.listedSession)).toBe(harness.sessionIdentity);
+          expect(yield* Ref.get(harness.listCalls)).toBe(2);
+        } else {
+          expect(after).toBe(before);
+          expect(yield* Ref.get(harness.listCalls)).toBe(1);
+        }
+      }).pipe(
+        Effect.provide(harness.layer),
+        Effect.provideService(ManagedRelay.ManagedRelayClient, harness.client),
+      );
+    }),
   );
 
   it.effect("publishes each environment status as soon as that lookup completes", () =>
