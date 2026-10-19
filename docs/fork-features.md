@@ -22,7 +22,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/176-spectrum-v2",
-    "https://github.com/toolboxmd/chromeria/pull/494"
+    "https://github.com/toolboxmd/chromeria/pull/494",
+    "https://github.com/toolboxmd/chromeria/pull/508"
   ],
   "newFiles": [
     "apps/mobile/src/features/settings/spectrumReportAction.tsx",
