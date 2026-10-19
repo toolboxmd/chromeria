@@ -18,14 +18,12 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Base64 from "effect/encoding/Base64";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
-import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
@@ -123,6 +121,7 @@ import {
 } from "effect/http";
 import { RpcSerialization, RpcServer } from "effect/rpc";
 import * as Struct from "effect/Struct";
+import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as ForkWsRpc from "./forkWsRpc.ts";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
@@ -225,7 +224,6 @@ import * as ProjectEnrichmentService from "./project/ProjectEnrichmentService.ts
 import * as ProjectService from "./project/ProjectService.ts";
 import * as ManagedProjectFolders from "./project/ManagedProjectFolders.ts";
 import { projectMutationOperation } from "./project/ProjectMutation.ts";
-import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as WorktreeSetupTracker from "./project/WorktreeSetupTracker.ts";
@@ -564,7 +562,29 @@ const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 
 // Middleware added later wraps middleware added earlier, so instrumentation wraps authorization.
 const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
-const CoreServerWsRpcGroup = ServerWsRpcGroup.omit(...ForkWsRpc.methods);
+const NonForkServerWsRpcGroup = ServerWsRpcGroup.omit(...ForkWsRpc.methods);
+// Infer handler services per domain to stay within the compiler's instantiation budget.
+type CoreRpc = RpcGroup.Rpcs<typeof NonForkServerWsRpcGroup>;
+type OrchestrationRpc = Extract<
+  CoreRpc,
+  {
+    readonly _tag: (typeof ORCHESTRATION_V2_WS_METHODS)[keyof typeof ORCHESTRATION_V2_WS_METHODS];
+  }
+>;
+const orchestrationMethodSet = new Set<string>(Object.values(ORCHESTRATION_V2_WS_METHODS));
+const isOrchestrationRpc = (rpc: CoreRpc): rpc is OrchestrationRpc =>
+  orchestrationMethodSet.has(rpc._tag);
+const coreRpcs = Array.from(NonForkServerWsRpcGroup.requests.values());
+const OrchestrationServerWsRpcGroup = RpcGroup.make(
+  ...coreRpcs.filter(isOrchestrationRpc),
+).annotateMerge(NonForkServerWsRpcGroup.annotations);
+const CoreServerWsRpcGroup = RpcGroup.make(
+  ...coreRpcs.filter((rpc): rpc is Exclude<CoreRpc, OrchestrationRpc> => !isOrchestrationRpc(rpc)),
+).annotateMerge(NonForkServerWsRpcGroup.annotations);
+const orchestrationMethods = Array.from(
+  OrchestrationServerWsRpcGroup.requests.values(),
+  (rpc) => rpc._tag,
+);
 // Replaying each intervening event costs a shell refetch; past this gap a
 // single O(active-threads) snapshot is cheaper and bounded.
 const SHELL_RESUME_MAX_GAP = 1_000;
@@ -1251,7 +1271,6 @@ const layerWsRpc = (
             );
       const usage = yield* UsageService.UsageService;
       const usageLimitSources = yield* UsageLimitSources.UsageLimitSources;
-      const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
       const repositoryIdentityResolver =
@@ -3197,8 +3216,11 @@ const layerWsRpc = (
             ),
           ),
       });
-      return Layer.merge(
-        CoreServerWsRpcGroup.toLayer(Struct.omit(handlers, ForkWsRpc.methods)),
+      return Layer.mergeAll(
+        CoreServerWsRpcGroup.toLayer(
+          Struct.omit(handlers, [...ForkWsRpc.methods, ...orchestrationMethods]),
+        ),
+        OrchestrationServerWsRpcGroup.toLayer(Struct.pick(handlers, orchestrationMethods)),
         ForkWsRpc.group.toLayer(Struct.pick(handlers, ForkWsRpc.methods)),
       );
     }),

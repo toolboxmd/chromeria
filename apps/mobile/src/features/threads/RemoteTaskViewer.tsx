@@ -5,9 +5,9 @@ import { AsyncResult } from "effect/reactivity";
 import { useEffect, useState } from "react";
 import { ScrollView, View } from "react-native";
 import * as Crypto from "expo-crypto";
-import { AppSheet } from "../../components/AppSheet";
+import { Sheet } from "../../components/ui/Sheet";
 import { RequestActionButton } from "./RequestActionButton";
-import { AppText as Text } from "../../components/AppText";
+import { AppText as Text } from "../../components/ui/AppText";
 import { remoteTasks } from "../../state/remote-tasks";
 import { useAtomCommand } from "../../state/use-atom-command";
 
@@ -41,7 +41,7 @@ export function RemoteTaskViewer(props: {
   const view = AsyncResult.isSuccess(result) ? result.value : null;
   const destinationLabel = props.task.remoteChild?.label ?? "Remote environment";
   return (
-    <AppSheet
+    <Sheet
       title={view?.snapshot.title ?? props.task.title ?? "Remote delegated task"}
       onClose={props.onClose}
     >
@@ -200,6 +200,6 @@ export function RemoteTaskViewer(props: {
           />
         </View>
       </ScrollView>
-    </AppSheet>
+    </Sheet>
   );
 }

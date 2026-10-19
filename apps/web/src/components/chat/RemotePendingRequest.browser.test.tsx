@@ -13,18 +13,14 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import { act, type ComponentProps } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
 const state = vi.hoisted(() => ({
   nextKey: 0,
-  getRemote: (): unknown => {
-    throw new Error("Uninitialized");
-  },
+  remoteTasks: {},
 }));
 vi.mock("../../state/remoteTasks", () => ({
-  get remoteTasks() {
-    return state.getRemote();
-  },
+  remoteTasks: state.remoteTasks,
 }));
 vi.mock("../ui/button", () => ({
   Button: (props: ComponentProps<"button">) => <button {...props} />,
@@ -81,9 +77,11 @@ it.each([false, true])(
       { permissionAtom: (_id: EnvironmentId) => mayRespond },
     );
     const remote = { readRequest: () => query, request: command };
-    state.getRemote = () => remote;
+    Object.assign(state.remoteTasks, remote);
     let resolved = 0;
-    let renderer: ReactTestRenderer | undefined;
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
     const props: ComponentProps<typeof RemotePendingRequest> = {
       environmentId: EnvironmentId.make("A-only-profile"),
       task: { id: NodeId.make("A-task"), threadId: ThreadId.make("A-parent") },
@@ -102,59 +100,41 @@ it.each([false, true])(
         resolved++;
       },
     };
+    const button = (label: string) =>
+      [...container.querySelectorAll("button")].find((node) => node.textContent?.includes(label));
     const click = async (label: string) => {
-      const button = renderer!.root
-        .findAllByType("button")
-        .find((node) => node.findAll((child) => child.children.includes(label)).length > 0);
-      expect(button, label).toBeDefined();
-      await act(async () => {
-        await button!.props.onClick();
-      });
+      const target = button(label);
+      expect(target, label).toBeDefined();
+      await act(async () => target!.click());
     };
     try {
       await act(async () => {
-        renderer = create(
+        root.render(
           <RegistryContext.Provider value={registry}>
             <RemotePendingRequest {...props} />
           </RegistryContext.Provider>,
         );
       });
-      const text = (value: unknown): string => {
-        if (typeof value === "string") return value;
-        if (Array.isArray(value)) return value.map(text).join(" ");
-        return value && typeof value === "object" && "children" in value
-          ? text(value.children)
-          : "";
-      };
-      expect(text(renderer!.toJSON())).not.toContain("C-no-profile");
-      const sendButton = () =>
-        renderer!.root
-          .findAllByType("button")
-          .find((node) => node.children.includes("Send answer"));
-      expect(sendButton()?.props.disabled).toBe(true);
+      expect(container.textContent).not.toContain("C-no-profile");
+      const sendButton = () => button("Send answer");
+      expect(sendButton()?.disabled).toBe(true);
       await click("Request details");
-      expect(text(renderer!.toJSON())).toContain("C-no-profile");
+      expect(container.textContent).toContain("C-no-profile");
       await click("Request details");
-      expect(text(renderer!.toJSON())).not.toContain("C-no-profile");
+      expect(container.textContent).not.toContain("C-no-profile");
       if (empty) await click("Submit empty value");
       else {
         await click("Blue");
         await click("Green");
       }
-      expect(sendButton()?.props.disabled).toBe(false);
-      const chosen = renderer!.root
-        .findAllByType("button")
-        .find(
-          (node) =>
-            node.findAll((child) => child.children.includes(empty ? "Submit empty value" : "Blue"))
-              .length > 0,
-        );
-      expect(chosen?.props["aria-pressed"]).toBe(true);
+      expect(sendButton()?.disabled).toBe(false);
+      const chosen = button(empty ? "Submit empty value" : "Blue");
+      expect(chosen?.getAttribute("aria-pressed")).toBe("true");
       await act(async () => registry.set(mayRespond, false));
-      expect(sendButton()?.props.disabled).toBe(true);
+      expect(sendButton()?.disabled).toBe(true);
       expect(calls).toEqual([]);
       await act(async () => registry.set(mayRespond, true));
-      expect(sendButton()?.props.disabled).toBe(false);
+      expect(sendButton()?.disabled).toBe(false);
       await click("Send answer");
       expect(resolved).toBe(0);
       expect(calls[0]).toMatchObject({
@@ -179,7 +159,8 @@ it.each([false, true])(
       expect(calls[2]?.input.operation).not.toEqual(calls[1]?.input.operation);
       expect(calls.every((call) => call.environmentId === props.environmentId)).toBe(true);
     } finally {
-      await act(async () => renderer?.unmount());
+      await act(async () => root.unmount());
+      container.remove();
       registry.dispose();
       vi.unstubAllGlobals();
     }
@@ -252,8 +233,10 @@ it("keeps source-only navigation and pagination qualified while revealing task d
     },
     stop,
   };
-  state.getRemote = () => remote;
-  let renderer: ReactTestRenderer | undefined;
+  Object.assign(state.remoteTasks, remote);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
   const task = {
     id: NodeId.make("A-task"),
     threadId: ThreadId.make("A-parent"),
@@ -276,24 +259,16 @@ it("keeps source-only navigation and pagination qualified while revealing task d
       },
     },
   };
+  const button = (label: string) =>
+    [...container.querySelectorAll("button")].find((node) => node.textContent?.includes(label));
   const click = async (label: string) => {
-    const button = renderer!.root
-      .findAllByType("button")
-      .find((node) => node.findAll((child) => child.children.includes(label)).length > 0);
-    expect(button, label).toBeDefined();
-    await act(async () => button!.props.onClick());
+    const target = button(label);
+    expect(target, label).toBeDefined();
+    await act(async () => target!.click());
   };
-  const visible = (value: unknown): string =>
-    typeof value === "string"
-      ? value
-      : Array.isArray(value)
-        ? value.map(visible).join(" ")
-        : value && typeof value === "object" && "children" in value
-          ? visible(value.children)
-          : "";
   try {
     await act(async () => {
-      renderer = create(
+      root.render(
         <RegistryContext.Provider value={registry}>
           <RemoteTaskViewer
             environmentId={EnvironmentId.make("A-only-profile")}
@@ -303,25 +278,19 @@ it("keeps source-only navigation and pagination qualified while revealing task d
         </RegistryContext.Provider>,
       );
     });
-    expect(visible(renderer!.toJSON())).toContain("Useful answer");
-    expect(visible(renderer!.toJSON())).toContain("Original result text");
-    expect(visible(renderer!.toJSON())).toContain("Latest follow-up result");
-    expect(visible(renderer!.toJSON())).toContain("Build machine");
-    expect(visible(renderer!.toJSON())).not.toContain("private-latest-run");
-    expect(visible(renderer!.toJSON())).not.toContain("C-private-id");
-    expect(
-      renderer!.root
-        .findAllByType("button")
-        .find(
-          (node) => node.findAll((child) => child.children.includes("Stop remote work")).length > 0,
-        )?.props.disabled,
-    ).toBe(true);
+    expect(container.textContent).toContain("Useful answer");
+    expect(container.textContent).toContain("Original result text");
+    expect(container.textContent).toContain("Latest follow-up result");
+    expect(container.textContent).toContain("Build machine");
+    expect(container.textContent).not.toContain("private-latest-run");
+    expect(container.textContent).not.toContain("C-private-id");
+    expect(button("Stop remote work")?.disabled).toBe(true);
     expect(stopCalls).toEqual([]);
     await click("Task details");
-    expect(visible(renderer!.toJSON())).toContain("C-private-id");
-    expect(visible(renderer!.toJSON())).toContain("private-latest-run");
+    expect(container.textContent).toContain("C-private-id");
+    expect(container.textContent).toContain("private-latest-run");
     await click("Hide task details");
-    expect(visible(renderer!.toJSON())).not.toContain("C-private-id");
+    expect(container.textContent).not.toContain("C-private-id");
     await click("Next messages");
     expect(queries.at(-1)).toMatchObject({
       environmentId: "A-only-profile",
@@ -342,7 +311,8 @@ it("keeps source-only navigation and pagination qualified while revealing task d
       input: { parentThreadId: "A-parent", taskId: "A-task", after: 0, textOffset: 0 },
     });
   } finally {
-    await act(async () => renderer?.unmount());
+    await act(async () => root.unmount());
+    container.remove();
     registry.dispose();
     vi.unstubAllGlobals();
   }
