@@ -276,6 +276,25 @@ it.effect("an active grandparent keeps first say over a stale parent", () =>
   }),
 );
 
+it.effect("a subagent child that copied the Promachos role cannot answer", () =>
+  Effect.gen(function* () {
+    const shells = defaultShells();
+    const worker = ThreadId.make("worker");
+    shells.set(worker, {
+      ...shells.get(promachos)!,
+      id: worker,
+      lineage: subagentOf(promachos),
+    });
+    const command = yield* respond({
+      scope: scope(worker),
+      target: topLevel,
+      kind: "question",
+      shells,
+    });
+    assert.isUndefined(command);
+  }),
+);
+
 it.effect("an active grandparent keeps first say over a deleted parent", () =>
   Effect.gen(function* () {
     yield* clockAt(STALE_NOW);

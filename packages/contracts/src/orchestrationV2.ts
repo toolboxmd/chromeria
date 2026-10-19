@@ -127,6 +127,15 @@ export const OrchestrationV2ThreadPrismRole = Schema.Literal("promachos");
 export type OrchestrationV2ThreadPrismRole = typeof OrchestrationV2ThreadPrismRole.Type;
 
 /**
+ * A Promachos conversation is always top-level. Subagent children copy their
+ * parent's record, so only a thread with no parent may act on the role.
+ */
+export const isPromachosThread = (thread: {
+  readonly prismRole?: OrchestrationV2ThreadPrismRole | undefined;
+  readonly lineage: { readonly parentThreadId: ThreadId | null };
+}): boolean => thread.prismRole === "promachos" && thread.lineage.parentThreadId === null;
+
+/**
  * Fork: the Promachos thread that answered a request for the user
  * (toolboxmd/chromeria#532). Absent when the user or an ancestor answered.
  */

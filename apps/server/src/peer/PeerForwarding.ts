@@ -1,4 +1,8 @@
-import { OrchestratorMcpCapabilitiesResult, PurposeIntent } from "@t3tools/contracts";
+import {
+  isPromachosThread,
+  OrchestratorMcpCapabilitiesResult,
+  PurposeIntent,
+} from "@t3tools/contracts";
 import * as Predicate from "effect/Predicate";
 import {
   type EnvironmentId,
@@ -264,7 +268,9 @@ const make = Effect.gen(function* () {
         success: success as Schema.Decoder<A>,
         ...(options === undefined ? {} : options),
         // The peer decides whether the Promachos may answer there (toolboxmd/chromeria#532).
-        ...(toolName === "t3_pending_request_respond" && caller.caller?.prismRole === "promachos"
+        ...(toolName.startsWith("t3_pending_request_") &&
+        caller.caller !== undefined &&
+        isPromachosThread(caller.caller)
           ? { promachosThreadId: caller.caller.id }
           : {}),
       });

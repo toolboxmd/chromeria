@@ -1,4 +1,5 @@
 import {
+  isPromachosThread,
   OrchestratorMcpFailure,
   type OrchestrationV2RequestAnsweredBy,
   type OrchestrationV2ThreadShell,
@@ -107,7 +108,7 @@ export const requestAnswerer = Effect.fn("childThreads.requestAnswerer")(functio
   if (caller !== undefined && caller.id === target.id) return { kind: "own" } as const;
   if (yield* isCallerAncestor(context, target.id)) return { kind: "ancestor" } as const;
   const promachos: OrchestrationV2RequestAnsweredBy | undefined =
-    caller?.prismRole === "promachos"
+    caller !== undefined && isPromachosThread(caller)
       ? { kind: "promachos", threadId: caller.id }
       : linkedPromachos(context);
   if (promachos !== undefined && !(yield* ancestorHasFirstSay(context, target)))

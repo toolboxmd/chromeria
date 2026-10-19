@@ -40,6 +40,9 @@ const scope: McpInvocationScope = {
 it.effect.each([
   ["t3_pending_request_respond", "promachos", caller],
   ["t3_pending_request_respond", undefined, undefined],
+  ["t3_pending_request_list", "promachos", caller],
+  // A subagent child copies its parent's record, role included, but is not the Promachos.
+  ["t3_pending_request_respond", "child", undefined],
   ["t3_thread_read", "promachos", undefined],
 ] as const)("forwards %s from a %s caller with Promachos thread %s", ([name, role, expected]) =>
   Effect.gen(function* () {
@@ -62,7 +65,16 @@ it.effect.each([
             getThreadShell: () =>
               Effect.succeed({
                 ...liveThreadShell(caller),
-                ...(role === undefined ? {} : { prismRole: role }),
+                ...(role === undefined ? {} : { prismRole: "promachos" as const }),
+                ...(role === "child"
+                  ? {
+                      lineage: {
+                        rootThreadId: ThreadId.make("parent"),
+                        parentThreadId: ThreadId.make("parent"),
+                        relationshipToParent: "subagent" as const,
+                      },
+                    }
+                  : {}),
               }),
           }),
         ),
