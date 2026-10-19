@@ -321,7 +321,7 @@ export function overlayPrismRoleKits<Kits extends PrismRoleKits | PrismRoleKitsP
 }
 
 /**
- * Drop the empty lists and blank instructions that a
+ * Drop the empty lists, blank instructions and Run of 1 that a
  * whole-kit Prism override carries for roles the project never set, so those
  * roles inherit the environment. Set values are kept; `undefined` when
  * nothing is left.
@@ -334,7 +334,8 @@ function dropUnsetPrismRoleFields(kits: PrismProjectRoleKits): PrismProjectRoleK
     const fields: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(kit ?? {})) {
       if (key !== "lanes") {
-        if (isSet(value)) fields[key] = value;
+        // A whole kit fills Run with its default of 1, which the project never chose.
+        if (isSet(value) && !(key === "run" && value === 1)) fields[key] = value;
         continue;
       }
       const lanes = Object.fromEntries(
