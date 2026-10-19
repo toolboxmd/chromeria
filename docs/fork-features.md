@@ -1500,9 +1500,11 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "packages/contracts/src/promachosHome.ts"
   ],
   "upstreamFiles": [
+    "apps/mobile/src/lib/threadActivity.ts",
     "apps/server/src/auth/RpcAuthorization.test.ts",
     "apps/web/src/components/AppSidebarLayout.tsx",
     "apps/web/src/components/chat/ChatComposer.tsx",
+    "apps/web/src/session-logic.ts",
     "packages/client-runtime/src/operations/commands.test.ts",
     "packages/client-runtime/src/operations/commands.ts"
   ],
