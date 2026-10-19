@@ -86,6 +86,11 @@ const layerLaunches = Layer.effect(
   Effect.gen(function* () {
     const threads = yield* ThreadManagement.ThreadManagementService;
     return ThreadLaunch.ThreadLaunchService.of({
+      replayOrLaunch,
+      configureMcp: () => Effect.die("unused MCP configuration"),
+      checkWorktreeBase: () => Effect.void,
+      prepareRun: () => Effect.die("No workspace preparation needed for link-origin commands"),
+      retryPreparation: () => Effect.die("No workspace retry needed for link-origin commands"),
       launch: (input: ThreadLaunch.ThreadLaunchInput) =>
         threads
           .dispatch({

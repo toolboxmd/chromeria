@@ -1,3 +1,4 @@
+import { ThreadTools } from "@t3tools/contracts";
 import { ThreadBare } from "@t3tools/contracts";
 import * as McpRouting from "../../McpRouting.ts";
 import {
@@ -171,6 +172,7 @@ const PendingRequestTool = Tool.make("t3_pending_request", {
   .annotate(Tool.OpenWorld, true);
 
 const threadConfiguration = Schema.Struct({
+  tools: Schema.optional(ThreadTools),
   bare: Schema.optional(ThreadBare),
   threadId: ThreadId,
   modelSelection: ModelSelection,

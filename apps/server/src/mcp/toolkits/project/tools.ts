@@ -1,3 +1,4 @@
+import { ThreadToolsRequest } from "@t3tools/contracts";
 import { BareLaunchRequest, PurposeIntent, ExecutionPurpose } from "@t3tools/contracts";
 import * as McpRouting from "../../McpRouting.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
@@ -144,6 +145,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     lane: Schema.optional(PrismLane),
     prismRole: Schema.optional(PrismRole),
     bare: Schema.optional(BareLaunchRequest),
+    tools: Schema.optional(ThreadToolsRequest),
     runtimeMode: Schema.optional(RuntimeMode),
     interactionMode: Schema.optional(ProviderInteractionMode),
     workspaceStrategy: Schema.optional(

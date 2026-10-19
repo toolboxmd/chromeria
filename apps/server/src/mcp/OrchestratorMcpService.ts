@@ -1,3 +1,5 @@
+import * as ThreadMcpConfig from "../orchestration-v2/ThreadMcpConfig.ts";
+import { toolPolicyRejection, toolAllowlistsEqual } from "@t3tools/provider-core/server/toolPolicy";
 import {
   executionPurposeOf,
   executionPurposesEqual,
@@ -1090,6 +1092,7 @@ function timelineItem(input: {
 }
 
 const make = Effect.gen(function* () {
+  const threadMcpConfig = yield* Effect.serviceOption(ThreadMcpConfig.ThreadMcpConfig);
   const crypto = yield* Crypto.Crypto;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const bareLaunch = yield* BareLaunch.BareLaunch;
@@ -2152,7 +2155,7 @@ const make = Effect.gen(function* () {
           (target.model !== undefined ||
             target.providerInstanceId !== undefined ||
             target.driverKind !== undefined);
-        if (role === undefined || explicit || input.bare !== undefined)
+        if (role === undefined || explicit || input.bare !== undefined || input.tools !== undefined)
           return yield* single.delegateTask(callerScope, input);
         const scope = yield* requireThreadScope(callerScope, "delegate_task");
         const caller = yield* loadProjection(scope.thread.threadId);
@@ -2743,6 +2746,7 @@ const make = Effect.gen(function* () {
       );
       return {
         bareLaunch: true,
+        toolAllowlist: true,
         executionPurposeVersions: [1],
         parentThreadId: parent?.thread.id ?? null,
         inheritedProviderInstanceId: inherited?.instanceId ?? null,
@@ -2922,6 +2926,30 @@ const make = Effect.gen(function* () {
         parent.thread.interactionMode,
         input.interactionMode,
       );
+      let resolvedTools: import("@t3tools/contracts").ThreadTools | undefined;
+      if (input.tools !== undefined && !isRetryOfAcceptedDelegation) {
+        const adapter = yield* providerAdapters
+          .get(target.modelSelection.instanceId)
+          .pipe(
+            Effect.mapError(() =>
+              failure("invalid_request", "Tool allowlist provider is unavailable."),
+            ),
+          );
+        const rejection = toolPolicyRejection(adapter.driver, input.tools, {
+          runtimeMode,
+          interactionMode,
+        });
+        if (rejection !== undefined) return yield* failure("invalid_request", rejection);
+        if (Option.isNone(threadMcpConfig))
+          return yield* failure(
+            "invalid_request",
+            "Thread MCP configuration service is unavailable.",
+          );
+        const configs = threadMcpConfig.value;
+        resolvedTools = yield* configs
+          .prepare(input.tools)
+          .pipe(Effect.mapError((error) => failure("invalid_request", error.message)));
+      }
       let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
       if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
         const projectId = input.projectId ?? parent.thread.projectId;
@@ -3002,6 +3030,7 @@ const make = Effect.gen(function* () {
       const result = yield* threadManagement
         .dispatch({
           type: "delegated_task.request",
+          ...(resolvedTools === undefined ? {} : { tools: resolvedTools }),
           ...(input.purposeIntent === undefined ? {} : { purposeIntent: input.purposeIntent }),
           createdBy: "agent",
           creationSource: "mcp",
@@ -3051,10 +3080,16 @@ const make = Effect.gen(function* () {
       }
       const taskId = taskEvent.event.payload.id;
       const childThreadId = taskEvent.event.payload.childThreadId;
-      if (input.bare !== undefined && isRetryOfAcceptedDelegation && childThreadId !== null) {
+      if (
+        (input.bare !== undefined || input.tools !== undefined) &&
+        isRetryOfAcceptedDelegation &&
+        childThreadId !== null
+      ) {
         const child = yield* threadManagement
           .getThreadRecords(childThreadId, [])
           .pipe(Effect.mapError(threadManagementFailure));
+        if (input.tools !== undefined && !toolAllowlistsEqual(input.tools, child.thread.tools))
+          return yield* failure("invalid_request", "Delegation tool allowlist changed.");
         if ((input.bare !== undefined) !== (child.thread.bare !== undefined))
           return yield* failure("invalid_request", "Delegation bare intent changed.");
       }

@@ -1,3 +1,4 @@
+import { ThreadTools, ThreadToolsRequest } from "./threadTools.ts";
 import { NativeInputEvidence, NativeExecutionSegment } from "./nativeExecution.ts";
 import { BareLaunchRequest, ThreadBare, BareReceipt } from "./bareLaunch.ts";
 import { PrismLane, StoredPrismRole } from "./prism.ts";
@@ -506,6 +507,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   purposeSelection: Schema.optional(PurposeSelection),
   purposeDeliveries: Schema.optional(Schema.Array(ExecutionPurposeDelivery)),
   bare: Schema.optional(ThreadBare),
+  tools: Schema.optional(ThreadTools),
   ...OrchestrationV2CreationFields,
   // Fork: thread people (toolboxmd/chromeria#170). Unset owner is the default person.
   owner: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
@@ -975,6 +977,7 @@ export type OrchestrationV2SubagentWorkflow = typeof OrchestrationV2SubagentWork
 /** Durable launch inputs and the original retry identity. No credentials. */
 export const OrchestrationV2RemoteTaskLaunch = Schema.Struct({
   bare: Schema.optional(BareLaunchRequest),
+  tools: Schema.optional(ThreadTools),
   requestNamespace: Schema.String,
   clientRequestId: Schema.String,
   /** Nonsecret grant-generation identity; relinking must not create a replacement child. */
@@ -3114,6 +3117,7 @@ export const OrchestrationV2Command = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("thread.create"),
     bare: Schema.optional(ThreadBare),
+    tools: Schema.optional(ThreadTools),
     ...OrchestrationV2CreationFields,
     /** Fork: the person who owns the new thread, stamped by the server (toolboxmd/chromeria#170). */
     owner: Schema.optional(TrimmedNonEmptyString),
@@ -3266,6 +3270,12 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("thread.metadata.update"),
+    mcpConfigUpdate: Schema.optional(
+      Schema.Struct({
+        expectedConfigId: Schema.NullOr(Schema.String),
+        configId: Schema.String.check(Schema.isPattern(/^[a-f0-9-]{36}$/)),
+      }),
+    ),
     commandId: CommandId,
     threadId: ThreadId,
     title: Schema.optional(TrimmedNonEmptyString),
@@ -3556,6 +3566,7 @@ export const OrchestrationV2Command = Schema.Union([
     type: Schema.Literal("delegated_task.request"),
     purposeIntent: Schema.optional(PurposeIntent),
     bare: Schema.optional(ThreadBare),
+    tools: Schema.optional(ThreadTools),
     projectId: Schema.optional(ProjectId),
     ...OrchestrationV2CreationFields,
     commandId: CommandId,
@@ -3924,6 +3935,7 @@ export type OrchestrationV2ArchivedShellSnapshot = typeof OrchestrationV2Archive
 export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
   purposeIntent: Schema.optional(PurposeIntent),
   bare: Schema.optional(BareLaunchRequest),
+  tools: Schema.optional(ThreadToolsRequest),
   prismRole: Schema.optional(Schema.Literal("promachos")),
   commandId: CommandId,
   creationSource: Schema.optional(OrchestrationV2CreationSource),

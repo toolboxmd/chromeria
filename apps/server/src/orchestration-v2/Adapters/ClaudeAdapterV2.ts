@@ -1,4 +1,6 @@
 import * as DocumentText from "../../provider/DocumentText.ts";
+import { TOOL_POLICY_MODE_ERROR, ToolPolicyError } from "@t3tools/provider-core/server/toolPolicy";
+import * as ThreadMcpConfig from "../ThreadMcpConfig.ts";
 import { executionPurposeOf, type NativeExecutionSegment } from "@t3tools/contracts";
 import {
   bareReceipt,
@@ -1456,6 +1458,7 @@ const CLAUDE_BACKGROUND_WAIT_INSTRUCTIONS = `
 
 To wait for a background command or Monitor you started (tests, a build), call \`t3_background_wait\` with its task ID before you end your turn. Do not mark work you leave running, or PRs. T3 MCP tools are deferred: load one with ToolSearch before you call it.
 `;
+const encodeToolPolicyKey = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 // Native subagents start from their task, not this session's system prompt.
 const subagentDeviceInstructions: HookCallback = () =>
@@ -1468,6 +1471,8 @@ const subagentDeviceInstructions: HookCallback = () =>
 
 export function makeClaudeQueryOptions(input: {
   readonly bare?: import("@t3tools/contracts").ThreadBare;
+  readonly toolPolicy?: import("@t3tools/contracts").ThreadTools;
+  readonly threadMcpServers?: import("@t3tools/contracts").ThreadMcpServers;
   readonly modelSelection: ModelSelection;
   readonly nativeThreadId: string;
   readonly resume: boolean;
@@ -1617,29 +1622,75 @@ export function makeClaudeQueryOptions(input: {
   const withDirectories =
     additionalDirectories.length === 0 ? options : { ...options, additionalDirectories };
   const final = input.cwd === null ? withDirectories : { ...withDirectories, cwd: input.cwd };
-  if (input.bare === undefined) return final;
+  const result: ClaudeAgentSdkQueryOptions =
+    input.bare === undefined
+      ? final
+      : {
+          ...final,
+          systemPrompt: ".",
+          settingSources: [],
+          strictMcpConfig: true,
+          skills: [],
+          tools: ["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
+          mcpServers: namesT3Mcp(input.bare) ? (input.mcpServers ?? {}) : {},
+          permissionMode: input.permissionMode ?? "default",
+          settings: {
+            ...(typeof final.settings === "object" ? final.settings : {}),
+            disableAllHooks: true,
+            disableBundledSkills: true,
+            autoMemoryEnabled: false,
+            disableClaudeAiConnectors: true,
+          },
+          extraArgs: { "disable-slash-commands": null },
+          env: {
+            ...input.environment,
+            CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
+            CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+          },
+        };
+  if (input.toolPolicy === undefined) return result;
+  if (input.permissionMode !== "bypassPermissions")
+    throw new ToolPolicyError({ reason: TOOL_POLICY_MODE_ERROR });
+  const allowed = input.toolPolicy.allow.map((name) =>
+    name.startsWith("mcp:") ? `mcp__${name.slice(4).replace(":", "__")}` : name,
+  );
+  const threadServers: NonNullable<ClaudeQueryOptions["mcpServers"]> = Object.fromEntries(
+    Object.entries(input.threadMcpServers ?? {}).map(([name, server]) => [
+      name,
+      { ...server, headers: { ...server.headers } },
+    ]),
+  );
+  const servers = { ...result.mcpServers, ...threadServers };
   return {
-    ...final,
-    systemPrompt: ".",
-    settingSources: [],
+    ...result,
+    tools: input.toolPolicy.allow.filter(
+      (name) =>
+        !name.startsWith("mcp:") && (!Array.isArray(input.tools) || input.tools.includes(name)),
+    ),
+    allowedTools: allowed,
+    disallowedTools: [],
+    permissionMode: "dontAsk",
+    allowDangerouslySkipPermissions: false,
     strictMcpConfig: true,
+    settingSources: [],
     skills: [],
-    tools: ["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
-    mcpServers: namesT3Mcp(input.bare) ? (input.mcpServers ?? {}) : {},
-    permissionMode: input.permissionMode ?? "default",
+    // Launch arguments and hooks must never override the native tool boundary.
+    extraArgs: { "disable-slash-commands": null },
     settings: {
-      ...(typeof final.settings === "object" ? final.settings : {}),
+      ...(typeof result.settings === "object" ? result.settings : {}),
       disableAllHooks: true,
       disableBundledSkills: true,
-      autoMemoryEnabled: false,
       disableClaudeAiConnectors: true,
     },
-    extraArgs: { "disable-slash-commands": null },
-    env: {
-      ...input.environment,
-      CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
-      CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
-    },
+    mcpServers: Object.fromEntries(
+      Object.entries(servers).filter(([server]) =>
+        input.toolPolicy!.allow.some((name) => name.startsWith(`mcp:${server}:`)),
+      ),
+    ),
+    canUseTool: async () => ({
+      behavior: "deny",
+      message: "Tool is outside the thread allowlist.",
+    }),
   };
 }
 
@@ -4465,6 +4516,7 @@ export interface ClaudeAdapterV2Options {
   readonly crypto: Crypto.Crypto;
   readonly idAllocator: IdAllocator.IdAllocatorV2["Service"];
   readonly queryRunner: ClaudeAgentSdkQueryRunnerShape;
+  readonly threadMcpConfig?: ThreadMcpConfig.ThreadMcpConfig["Service"];
   readonly scopedLimitNames?: Ref.Ref<ClaudeScopedLimitNames>;
   readonly onUsageLimits?: ManagedServerProvider["applyUsageLimits"];
   readonly continuationRequests?: {
@@ -10339,7 +10391,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ? {}
               : { allowedTools: queryPolicy.allowedTools }),
           });
-          const queryPolicyKey = claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides);
+          const queryPolicyKey = yield* encodeToolPolicyKey([
+            claudeEffectiveQueryPolicyKey(queryPolicy, mcpOverrides),
+            turnInput.runtimePolicy.tools ?? null,
+          ]).pipe(Effect.orDie);
           const compiledSelection = compileClaudeModelSelection(turnInput.modelSelection);
           const resumeSessionAt = yield* getNativeConversationHeadId(turnInput.providerThread);
           const existing = yield* Ref.get(queryContext);
@@ -10445,7 +10500,27 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             turnInput.runtimePolicy.cwd,
             launchArgSettings,
           );
+          const toolPolicy = turnInput.runtimePolicy.tools;
+          if (toolPolicy !== undefined && queryPolicy.permissionMode !== "bypassPermissions")
+            return yield* queryRunnerError(TOOL_POLICY_MODE_ERROR, "query");
+          let threadMcpServers: import("@t3tools/contracts").ThreadMcpServers | undefined;
+          if (toolPolicy?.mcpConfigId !== undefined) {
+            if (adapterOptions.threadMcpConfig === undefined)
+              return yield* queryRunnerError(
+                "Thread MCP configuration reader is unavailable.",
+                "query",
+              );
+            threadMcpServers = yield* adapterOptions.threadMcpConfig
+              .read(toolPolicy.mcpConfigId)
+              .pipe(
+                Effect.mapError(() =>
+                  queryRunnerError("Thread MCP configuration is unavailable.", "query"),
+                ),
+              );
+          }
           const queryOptions = makeClaudeQueryOptions({
+            ...(toolPolicy === undefined ? {} : { toolPolicy }),
+            ...(threadMcpServers === undefined ? {} : { threadMcpServers }),
             ...(turnInput.runtimePolicy.bare === undefined
               ? {}
               : { bare: turnInput.runtimePolicy.bare }),
@@ -10561,19 +10636,22 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     message.subtype === "init"
                   ) {
                     const source = `Claude system/init ${message.session_id}; observed after prompt offered, pre-inference timing not certified`;
-                    const namedMcp = namesT3Mcp(input.runtimePolicy.bare);
+                    const namedMcp = Object.keys(queryOptions.mcpServers ?? {});
                     const tools = message.tools.filter(
                       (name) =>
-                        !(
-                          namedMcp &&
-                          (name.startsWith("mcp__t3-code__") || name.startsWith("mcp__t3_code__"))
+                        !namedMcp.some(
+                          (server) =>
+                            name.startsWith(`mcp__${server}__`) ||
+                            name.startsWith(`mcp__${server.replaceAll("-", "_")}__`),
                         ),
                     );
                     bareEvidence = [
                       bareInventoryEvidence(
                         "tools",
                         tools,
-                        ["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
+                        Array.isArray(queryOptions.tools)
+                          ? queryOptions.tools
+                          : ["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
                         source,
                       ),
                       bareInventoryEvidence("skills", message.skills, [], source),
@@ -10587,7 +10665,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       bareInventoryEvidence(
                         "mcp",
                         message.mcp_servers.map((server) => server.name),
-                        namedMcp ? ["t3-code"] : [],
+                        namedMcp,
                         source,
                       ),
                       bareInventoryEvidence("slash_commands", message.slash_commands, [], source),
@@ -11332,6 +11410,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                         "disableClaudeAiConnectors",
                         "CLAUDE_CODE_DISABLE_CLAUDE_MDS",
                         "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+                        ...(input.runtimePolicy.tools === undefined
+                          ? []
+                          : [
+                              `tool allowlist: ${input.runtimePolicy.tools.allow.join(", ") || "none"}`,
+                              "native dontAsk; only listed tools may be pre-approved",
+                            ]),
                       ],
                       retained: [
                         "system text '.'",
@@ -11339,6 +11423,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                         "managed policy settings and hooks",
                         "environment/date/session metadata",
                         "native tool schemas",
+                        ...(input.runtimePolicy.tools === undefined
+                          ? []
+                          : [
+                              "attached MCP tool schemas can remain visible; unlisted calls are denied",
+                            ]),
                       ],
                       root: `${nativeHome(adapterOptions.environment ?? {}, "CLAUDE_CONFIG_DIR", ".claude")}/projects`,
                       sessionId: thread.nativeThreadRef?.nativeId ?? null,
@@ -11840,6 +11929,7 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
     hooks: Pick<ClaudeAdapterV2Options, "scopedLimitNames" | "onUsageLimits"> = {},
   ) {
     const { instanceId, environment, enabled, config } = input;
+    const threadMcpConfig = yield* Effect.serviceOption(ThreadMcpConfig.ThreadMcpConfig);
     const fileSystem = yield* FileSystem.FileSystem;
     const hostEnvironment = yield* HostProcess.Environment;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -11856,6 +11946,7 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
     );
     return yield* makeClaudeAdapterV2({
       instanceId,
+      ...(Option.isNone(threadMcpConfig) ? {} : { threadMcpConfig: threadMcpConfig.value }),
       settings: { ...config, enabled, binaryPath },
       environment: claudeEnvironment,
       attachmentsDir: serverConfig.attachmentsDir,

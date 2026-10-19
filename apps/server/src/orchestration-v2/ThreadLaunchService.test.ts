@@ -1,4 +1,6 @@
 import * as DocumentText from "../provider/DocumentText.ts";
+import * as ThreadMcpConfig from "./ThreadMcpConfig.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as BareLaunch from "./BareLaunch.ts";
 import { registerPromachosLaunchTests } from "../promachos/PromachosLaunch.tests.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
@@ -253,6 +255,16 @@ function makeHarness(options: HarnessOptions = {}) {
     : Layer.mock(BareLaunch.BareLaunch)({});
   const layerLaunch = ThreadLaunch.layer
     .pipe(Layer.provide(bareLayer))
+    .pipe(Layer.provide(layerRegistry))
+    .pipe(
+      Layer.provide(
+        ThreadMcpConfig.layer.pipe(
+          Layer.provide(ServerSecretStore.layer),
+          Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-tool-policy-" })),
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+    )
     .pipe(
       Layer.provide(
         Layer.mergeAll(
@@ -2103,6 +2115,7 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
               }),
             ),
           ),
+        configureMcp: launches.configureMcp,
         checkWorktreeBase: launches.checkWorktreeBase,
         replayOrLaunch: launches.replayOrLaunch,
         retryPreparation: launches.retryPreparation,
@@ -3188,3 +3201,154 @@ it.effect.each(["full-access", "approval-required"] as const)(
       }).pipe(Effect.provide(Layer.merge(h.layer, mcp)));
     }).pipe(Effect.provide(NodeServices.layer)),
 );
+
+const encodeToolPolicyProjection = Schema.encodeEffect(
+  Schema.fromJsonString(OrchestrationV2ThreadProjectionJson),
+);
+
+it.effect(
+  "restricted launch persists only the allowlist and private config reference, rejects other drivers, and rotates one thread independently",
+  () => {
+    const h = makeHarness({
+      adapters: [{ ...adapter, driver: ProviderDriverKind.make("claudeAgent") }],
+    });
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const tools = {
+        allow: ["mcp:outreach:read_venue", "mcp:outreach:submit_result"],
+        mcpServers: {
+          outreach: {
+            type: "http" as const,
+            url: "http://localhost/outreach",
+            headers: { Authorization: "test-venue-secret" },
+          },
+        },
+      };
+      const firstInput = {
+        ...launchInput({ command: "restricted-one", thread: "restricted-one" }),
+        tools,
+      };
+      const first = yield* launches.launch(firstInput);
+      const second = yield* launches.launch({
+        ...launchInput({ command: "restricted-two", thread: "restricted-two" }),
+        tools,
+      });
+      expect(first.projection.thread.tools?.allow).toEqual(tools.allow);
+      expect(first.projection.thread.tools?.mcpConfigId).toBeDefined();
+      expect(first.projection.thread.tools?.mcpConfigId).not.toEqual(
+        second.projection.thread.tools?.mcpConfigId,
+      );
+      const encoded = yield* encodeToolPolicyProjection(first.projection);
+      expect(encoded).not.toContain("test-venue-secret");
+      expect(encoded).not.toContain("localhost/outreach");
+      const replay = yield* launches.replayOrLaunch(
+        { ...firstInput, tools: { ...tools, allow: [...tools.allow] } },
+        Effect.die("must replay"),
+      );
+      expect(replay.threadId).toBe(first.threadId);
+      yield* launches
+        .replayOrLaunch({ ...firstInput, tools: { allow: ["Bash"] } }, Effect.die("must reject"))
+        .pipe(Effect.flip);
+      yield* launches.configureMcp({ threadId: first.threadId, servers: {} });
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const updated = yield* threads.getThreadRecords(first.threadId, []);
+      const untouched = yield* threads.getThreadRecords(second.threadId, []);
+      expect(updated.thread.tools?.allow).toEqual(tools.allow);
+      expect(updated.thread.tools?.mcpConfigId).not.toEqual(
+        first.projection.thread.tools?.mcpConfigId,
+      );
+      expect(untouched.thread.tools).toEqual(second.projection.thread.tools);
+      yield* threads
+        .dispatch({
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("restricted-lower-mode"),
+          threadId: first.threadId,
+          runtimeMode: "approval-required",
+        })
+        .pipe(Effect.flip);
+      yield* threads
+        .dispatch({
+          type: "thread.interaction-mode.set",
+          commandId: CommandId.make("restricted-plan-mode"),
+          threadId: first.threadId,
+          interactionMode: "plan",
+        })
+        .pipe(Effect.flip);
+      const admitted = yield* threads.getThreadRecords(first.threadId, []);
+      expect(admitted.thread.runtimeMode).toBe("full-access");
+      expect(admitted.thread.interactionMode).toBe("default");
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("restricted-busy"),
+        threadId: second.threadId,
+        messageId: MessageId.make("restricted-busy"),
+        text: "Stay active",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "agent",
+        creationSource: "mcp",
+      });
+      const busy = yield* launches
+        .configureMcp({ threadId: second.threadId, servers: {} })
+        .pipe(Effect.flip);
+      expect(busy.message).toContain("idle restricted thread");
+    }).pipe(Effect.provide(h.layer));
+  },
+);
+
+it.effect(
+  "tool allowlists reject providers without proven native enforcement before creating a thread",
+  () => {
+    const h = makeHarness();
+    return Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const error = yield* launches
+        .launch({
+          ...launchInput({ command: "reject-tools", thread: "reject-tools" }),
+          tools: { allow: [] },
+        })
+        .pipe(Effect.flip);
+      expect(error.cause).toMatchObject({
+        reason: expect.stringContaining("not supported on codex"),
+      });
+      expect(error.message).toContain("not supported on codex");
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      expect(yield* threads.listProjectThreads({ projectId, includeSubagents: true })).toHaveLength(
+        0,
+      );
+    }).pipe(Effect.provide(h.layer));
+  },
+);
+
+it.effect.each([
+  { runtimeMode: "approval-required" as const, interactionMode: "default" as const },
+  { runtimeMode: "auto-accept-edits" as const, interactionMode: "default" as const },
+  { runtimeMode: "auto" as const, interactionMode: "default" as const },
+  { runtimeMode: "full-access" as const, interactionMode: "plan" as const },
+])("rejects restricted launches in unsupported modes: $runtimeMode/$interactionMode", (modes) => {
+  const h = makeHarness({
+    adapters: [{ ...adapter, driver: ProviderDriverKind.make("claudeAgent") }],
+  });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const error = yield* launches
+      .launch({
+        ...launchInput({ command: "unsupported-mode", thread: "unsupported-mode" }),
+        ...modes,
+        tools: {
+          allow: ["mcp:outreach:read_venue"],
+          mcpServers: {
+            outreach: { type: "http", url: "http://localhost/outreach" },
+          },
+        },
+      })
+      .pipe(Effect.flip);
+    expect(error.message).toContain("full-access");
+    expect(
+      yield* (yield* ThreadManagement.ThreadManagementService).listProjectThreads({
+        projectId,
+        includeSubagents: true,
+      }),
+    ).toHaveLength(0);
+  }).pipe(Effect.provide(h.layer));
+});

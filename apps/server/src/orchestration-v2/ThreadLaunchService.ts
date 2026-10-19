@@ -1,3 +1,11 @@
+import {
+  toolPolicyModeRejection,
+  toolPolicyRejection,
+  toolAllowlistsEqual,
+  ToolPolicyError,
+} from "@t3tools/provider-core/server/toolPolicy";
+import * as ThreadMcpConfig from "./ThreadMcpConfig.ts";
+import * as ToolPolicyAdapters from "./ProviderAdapterRegistry.ts";
 import { executionPurposesEqual } from "@t3tools/contracts";
 import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
 import {
@@ -95,6 +103,7 @@ export interface ThreadLaunchInput {
   readonly purposeSource?: ExecutionPurpose | undefined;
   readonly purposeParentRun?: { readonly threadId: ThreadId; readonly runId: RunId } | undefined;
   readonly bare?: BareLaunchRequest | undefined;
+  readonly tools?: import("@t3tools/contracts").ThreadToolsRequest | undefined;
   readonly bareReadGrant?: BareReadGrant | undefined;
   readonly commandId: CommandId;
   readonly threadId?: ThreadId;
@@ -162,6 +171,7 @@ type ThreadLaunchReplayInput = Pick<
   | "createdBy"
   | "linkOrigin"
   | "bare"
+  | "tools"
   | "purposeIntent"
   | "purposeSource"
   | "purposeParentRun"
@@ -169,6 +179,7 @@ type ThreadLaunchReplayInput = Pick<
 > & { readonly messageId?: MessageId };
 
 const isBareLaunchError = Schema.is(BareLaunchError);
+const isToolPolicyError = Schema.is(ToolPolicyError);
 
 export class ThreadLaunchError extends Schema.TaggedError<ThreadLaunchError>()(
   "ThreadLaunchError",
@@ -192,7 +203,7 @@ export class ThreadLaunchError extends Schema.TaggedError<ThreadLaunchError>()(
   },
 ) {
   override get message(): string {
-    if (isBareLaunchError(this.cause)) return this.cause.reason;
+    if (isBareLaunchError(this.cause) || isToolPolicyError(this.cause)) return this.cause.reason;
     return `Thread launch ${this.commandId} failed during ${this.operation}.`;
   }
 }
@@ -214,6 +225,10 @@ export class ThreadLaunchBaseRefError extends Schema.TaggedError<ThreadLaunchBas
 export class ThreadLaunchService extends Context.Service<
   ThreadLaunchService,
   {
+    readonly configureMcp: (input: {
+      readonly threadId: ThreadId;
+      readonly servers: import("@t3tools/contracts").ThreadMcpServers;
+    }) => Effect.Effect<{ readonly sequence: number }, ToolPolicyError>;
     readonly launch: (
       input: ThreadLaunchInput,
     ) => Effect.Effect<
@@ -253,6 +268,8 @@ function failureDetail(error: unknown): string {
 }
 
 const make = Effect.gen(function* () {
+  const threadMcpConfig = yield* Effect.serviceOption(ThreadMcpConfig.ThreadMcpConfig);
+  const toolAdapters = yield* Effect.serviceOption(ToolPolicyAdapters.ProviderAdapterRegistryV2);
   const bareLaunch = yield* BareLaunch.BareLaunch;
   const projects = yield* ProjectService.ProjectService;
   const setupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
@@ -313,6 +330,12 @@ const make = Effect.gen(function* () {
     const projection = yield* threads
       .getThreadProjection(threadId)
       .pipe(Effect.mapError(mapError(input, "create-thread", threadId)));
+    if (!toolAllowlistsEqual(input.tools, projection.thread.tools))
+      return yield* mapError(
+        input,
+        "read-receipt",
+        projection.thread.id,
+      )(new ToolPolicyError({ reason: "Launch tool allowlist changed." }));
     if ((input.bare !== undefined) !== (projection.thread.bare !== undefined))
       return yield* mapError(
         input,
@@ -1133,6 +1156,41 @@ const make = Effect.gen(function* () {
                 },
               )
             : input.workspaceStrategy;
+        let resolvedTools: import("@t3tools/contracts").ThreadTools | undefined;
+        if (input.tools !== undefined) {
+          if (Option.isNone(toolAdapters))
+            return yield* mapError(
+              input,
+              "create-thread",
+            )(new ToolPolicyError({ reason: "Tool policy provider registry is unavailable." }));
+          const adapter = yield* toolAdapters.value
+            .get(input.modelSelection.instanceId)
+            .pipe(Effect.mapError(mapError(input, "create-thread")));
+          const rejection = toolPolicyRejection(adapter.driver, input.tools, input);
+          if (rejection !== undefined)
+            return yield* mapError(
+              input,
+              "create-thread",
+            )(new ToolPolicyError({ reason: rejection }));
+          if (input.reuseExistingThread || input.importedNativeThread !== undefined)
+            return yield* mapError(
+              input,
+              "create-thread",
+            )(new ToolPolicyError({ reason: "Tool allowlists require a new thread." }));
+          if (Option.isNone(launchReceipt)) {
+            if (Option.isNone(threadMcpConfig))
+              return yield* mapError(
+                input,
+                "create-thread",
+              )(
+                new ToolPolicyError({ reason: "Thread MCP configuration service is unavailable." }),
+              );
+            const configs = threadMcpConfig.value;
+            resolvedTools = yield* configs
+              .prepare(input.tools)
+              .pipe(Effect.mapError(mapError(input, "create-thread")));
+          }
+        }
         let resolvedBare: import("@t3tools/contracts").ThreadBare | undefined;
         if (
           Option.isSome(launchReceipt) &&
@@ -1150,7 +1208,14 @@ const make = Effect.gen(function* () {
               "read-receipt",
               candidateThreadId,
             )(new BareLaunchError({ reason: "Launch bare intent changed." }));
+          if (!toolAllowlistsEqual(input.tools, stored.thread.tools))
+            return yield* mapError(
+              input,
+              "read-receipt",
+              candidateThreadId,
+            )(new ToolPolicyError({ reason: "Launch tool allowlist changed." }));
           resolvedBare = stored.thread.bare;
+          resolvedTools = stored.thread.tools;
           if (resolvedBare !== undefined) {
             workspaceStrategy =
               stored.thread.worktreePath === null
@@ -1228,6 +1293,7 @@ const make = Effect.gen(function* () {
             : threads.dispatch({
                 type: "thread.create",
                 ...(resolvedBare === undefined ? {} : { bare: resolvedBare }),
+                ...(resolvedTools === undefined ? {} : { tools: resolvedTools }),
                 commandId: input.commandId,
                 threadId: candidateThreadId,
                 projectId: input.projectId,
@@ -1463,7 +1529,40 @@ const make = Effect.gen(function* () {
     );
   };
 
+  const configureMcp: ThreadLaunchService["Service"]["configureMcp"] = Effect.fn(
+    "ThreadLaunchService.configureMcp",
+  )(function* (input) {
+    const failed = () =>
+      new ToolPolicyError({
+        reason:
+          "MCP configuration requires an idle restricted thread with unchanged configuration.",
+      });
+    const { thread } = yield* threads
+      .getThreadRecords(input.threadId, [])
+      .pipe(Effect.mapError(failed));
+    if (thread.tools === undefined || Option.isNone(threadMcpConfig)) return yield* failed();
+    const modeError = toolPolicyModeRejection(thread);
+    if (modeError !== undefined) return yield* new ToolPolicyError({ reason: modeError });
+    const replacement = yield* threadMcpConfig.value.prepare({
+      allow: thread.tools.allow,
+      mcpServers: input.servers,
+    });
+    if (replacement.mcpConfigId === undefined) return yield* failed();
+    const result = yield* threads
+      .dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make(`mcp-config:${yield* randomUuidV4}`),
+        threadId: thread.id,
+        mcpConfigUpdate: {
+          expectedConfigId: thread.tools.mcpConfigId ?? null,
+          configId: replacement.mcpConfigId,
+        },
+      })
+      .pipe(Effect.mapError(failed));
+    return { sequence: result.sequence };
+  });
   return ThreadLaunchService.of({
+    configureMcp,
     launch,
     replayOrLaunch,
     checkWorktreeBase,

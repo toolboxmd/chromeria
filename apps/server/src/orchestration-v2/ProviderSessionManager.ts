@@ -1,3 +1,4 @@
+import { toolPolicyRejection, ToolPolicyError } from "@t3tools/provider-core/server/toolPolicy";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import {
   BareLaunchError,
@@ -2072,6 +2073,20 @@ export const layerWithOptions = (
                     }),
                 ),
               );
+              if (input.runtimePolicy.tools !== undefined) {
+                const toolAdapter = yield* loadAdapter;
+                const rejection = toolPolicyRejection(
+                  toolAdapter.driver,
+                  input.runtimePolicy.tools,
+                  input.runtimePolicy,
+                );
+                if (rejection !== undefined)
+                  return yield* new ProviderSessionOpenError({
+                    instanceId: input.modelSelection.instanceId,
+                    providerSessionId: input.providerSessionId,
+                    cause: new ToolPolicyError({ reason: rejection }),
+                  });
+              }
               const bareAdapter =
                 input.runtimePolicy.bare === undefined ? undefined : yield* loadAdapter;
               if (bareAdapter !== undefined) {
@@ -2091,7 +2106,9 @@ export const layerWithOptions = (
               if (existing !== undefined) {
                 if (
                   existing.bareThreadId !==
-                  (input.runtimePolicy.bare === undefined ? null : input.threadId)
+                  (input.runtimePolicy.bare === undefined && input.runtimePolicy.tools === undefined
+                    ? null
+                    : input.threadId)
                 )
                   return yield* new ProviderSessionOpenError({
                     instanceId: input.modelSelection.instanceId,
@@ -2200,7 +2217,10 @@ export const layerWithOptions = (
                   mcpCredentialId === undefined
                     ? new Map()
                     : new Map([[input.threadId, mcpCredentialId]]),
-                bareThreadId: input.runtimePolicy.bare === undefined ? null : input.threadId,
+                bareThreadId:
+                  input.runtimePolicy.bare === undefined && input.runtimePolicy.tools === undefined
+                    ? null
+                    : input.threadId,
                 supportsMultipleProviderThreads:
                   input.runtimePolicy.bare === undefined &&
                   runtime.providerSession.capabilities.sessions

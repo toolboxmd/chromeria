@@ -161,3 +161,55 @@ adapters currently refuse bare launches.
 Bare is fixed when the thread starts. Native forks inherit it; importing or
 transferring portable history is unsupported. Start a normal thread to use ordinary
 context. A bare schedule without an explicit bind starts a fresh thread each time.
+
+## Restrict a thread's tools
+
+`delegate_task` and `t3_thread_launch` accept an optional exact allowlist:
+
+```json
+{
+  "runtimeMode": "full-access",
+  "bare": {},
+  "tools": {
+    "allow": ["mcp:outreach:read_venue", "mcp:outreach:submit_result"],
+    "mcpServers": {
+      "outreach": {
+        "type": "http",
+        "url": "http://localhost:8080/mcp",
+        "headers": { "Authorization": "Bearer <venue-generation-token>" }
+      }
+    }
+  }
+}
+```
+
+With this option, built-in tools such as `Bash` and `Read` must be listed by name;
+`allow: []` disables every tool. Wildcards and permission patterns are rejected.
+Without `tools`, existing launches keep their normal permissions, including bare
+launches. Restrictions require a Claude thread with full-access runtime and default
+interaction mode. Other modes are rejected at launch; changing a restricted thread
+to an unsupported mode is also rejected. Pass a Claude model selection explicitly
+if your Prism kit normally selects another harness. Other harnesses reject the
+launch until they have a proven exact-tool enforcement path. An older linked environment
+that does not advertise support also rejects restricted requests.
+
+An outside OAuth client can pass both options to `t3_thread_launch` with its
+project and model selection. MCP attachments use HTTP URLs and headers. Process-spawning `stdio` attachments
+are rejected. Configuration stays in the private secret store;
+thread state, exports and `t3_thread_configuration` contain only the allowlist and
+an opaque reference. Follow-ups, restart and compaction retain the restriction and
+restore the private configuration.
+
+Use `t3_thread_mcp_configure` with `threadId` and `servers` to replace one idle
+thread's attachments without changing its allowlist; `servers: {}` removes them.
+Other threads keep their own configuration. Revoke the old token at its issuer
+when rotating a generation. Superseded configuration records remain in the private
+secret store; removal detaches them from the thread rather than erasing that store.
+Stop active work before changing its configuration.
+
+To keep credentials out of every conversation, pass them from an outside OAuth
+client, as in the venue service. A model that supplies a token in its own tool
+arguments has already exposed it in its caller conversation; private child
+configuration cannot erase that caller history. Non-bare restricted threads report
+their safe policy through `t3_thread_configuration`; bare threads also include it
+in their receipt.

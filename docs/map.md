@@ -52,6 +52,8 @@ flowchart TD
     %% WG: #117
     BL["Bare launch and receipts"]
     %% BL: #289 PR #335 PR #467 PR #469 PR #480
+    TL["Opt-in thread tool allowlist"]
+    %% TL: #552
     DR["Drafters in any project"]
     %% DR: #114 #429 PR #475
     SC["Spectrum council and free"]
@@ -133,6 +135,7 @@ flowchart TD
     PZ --> DR --> VT --> XM
     NR --> XM
     PRN --> XM
+    BL --> TL --> DR
     BL --> DR
     BL --> SC
     DR --> SC --> JT

@@ -1,3 +1,4 @@
+import { TOOL_POLICY_MODE_ERROR } from "@t3tools/provider-core/server/toolPolicy";
 import { ProjectionStoreThreadNotFoundError } from "./ProjectionStore.ts";
 import { ForkCommandInterceptor } from "../fork/ForkCommandInterceptor.ts";
 import * as ExecutionPurpose from "./ExecutionPurpose.ts";
@@ -1162,10 +1163,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly providerInstanceId: ProviderInstanceId;
     readonly threadId: ThreadId;
     readonly bare?: import("@t3tools/contracts").ThreadBare | undefined;
+    readonly tools?: import("@t3tools/contracts").ThreadTools | undefined;
   }) =>
     input.adapter.getCapabilities().pipe(
       Effect.flatMap((capabilities) =>
-        input.bare === undefined && capabilities.sessions.supportsMultipleProviderThreadsPerSession
+        input.bare === undefined &&
+        input.tools === undefined &&
+        capabilities.sessions.supportsMultipleProviderThreadsPerSession
           ? Effect.succeed(
               idAllocator.derive.providerSession({
                 providerInstanceId: input.providerInstanceId,
@@ -2114,6 +2118,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           Effect.flatMap((adapter) =>
             providerSessionIdFor({
               bare: projection.thread.bare,
+              tools: projection.thread.tools,
               adapter,
               providerInstanceId: queuedRun.providerInstanceId,
               threadId,
@@ -2836,6 +2841,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ...(command.bare === undefined
         ? {}
         : { bare: { ...command.bare, nativeHomeOwnerThreadId: command.threadId } }),
+      ...(command.tools === undefined ? {} : { tools: command.tools }),
       ...(command.owner === undefined ? {} : { owner: command.owner }),
       ...(command.prismRole === undefined ? {} : { prismRole: command.prismRole }),
       createdBy: command.createdBy,
@@ -3210,6 +3216,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Thread ${command.threadId} is deleted.`,
       });
     }
+    if (
+      thread.tools !== undefined &&
+      ((command.type === "thread.runtime-mode.set" && command.runtimeMode !== "full-access") ||
+        (command.type === "thread.interaction-mode.set" && command.interactionMode !== "default"))
+    )
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: TOOL_POLICY_MODE_ERROR,
+      });
     const sharingRefusal =
       command.type === "thread.share" ||
       command.type === "thread.unshare" ||
@@ -3297,6 +3313,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandType: command.type,
         cause: `Thread ${command.threadId} branch changed before the metadata update could be applied.`,
       });
+    }
+    if (command.type === "thread.metadata.update" && command.mcpConfigUpdate !== undefined) {
+      const records = yield* projectionStore
+        .getThreadRecords(command.threadId, ["runs", "nodes"])
+        .pipe(mapDispatchError(command));
+      if (
+        thread.tools === undefined ||
+        thread.runtimeMode !== "full-access" ||
+        thread.interactionMode !== "default" ||
+        (thread.tools.mcpConfigId ?? null) !== command.mcpConfigUpdate.expectedConfigId ||
+        records.runs.some((run) =>
+          ["queued", "running", "waiting", "preparing", "starting"].includes(run.status),
+        ) ||
+        records.nodes.some((node) => ["pending", "running", "waiting"].includes(node.status))
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause:
+            "MCP configuration requires an idle restricted thread with unchanged configuration.",
+        });
+      }
     }
     if (command.type === "thread.metadata.update" && command.expectedEmpty === true) {
       const records = yield* projectionStore
@@ -3475,8 +3513,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.type === "thread.archive" ||
       command.type === "thread.settle" ||
       (command.type === "thread.metadata.update" &&
-        command.worktreePath !== undefined &&
-        command.worktreePath !== thread.worktreePath);
+        (command.mcpConfigUpdate !== undefined ||
+          (command.worktreePath !== undefined && command.worktreePath !== thread.worktreePath)));
     const providerContext = needsProviderState
       ? yield* projectionStore
           .getThreadProviderContext(
@@ -3779,6 +3817,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     revision: purposeSelectionOf(thread).revision + 1,
                     scope: ExecutionPurpose.normalizePurposeScope(command.purposeSelection.scope),
                   },
+                }),
+            ...(command.mcpConfigUpdate === undefined || thread.tools === undefined
+              ? {}
+              : {
+                  tools: { ...thread.tools, mcpConfigId: command.mcpConfigUpdate.configId },
                 }),
             ...(command.title === undefined ? {} : { title: command.title }),
             ...(command.limitRecovery === undefined ? {} : { limitRecovery }),
@@ -4312,8 +4355,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command.type === "thread.archive" || command.type === "thread.settle"
         ? (providerContext?.providerSessions ?? []).map((session) => session.id)
         : command.type === "thread.metadata.update" &&
-            command.worktreePath !== undefined &&
-            command.worktreePath !== thread.worktreePath
+            (command.mcpConfigUpdate !== undefined ||
+              (command.worktreePath !== undefined && command.worktreePath !== thread.worktreePath))
           ? (providerContext?.providerSessions ?? []).map((session) => session.id)
           : command.type === "thread.runtime-mode.set"
             ? (providerContext?.providerSessions ?? [])
@@ -5173,6 +5216,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (yield* mapDispatchError(input.command)(
           providerSessionIdFor({
             bare: input.projection.thread.bare,
+            tools: input.projection.thread.tools,
             adapter: targetAdapter,
             providerInstanceId: input.modelSelection.instanceId,
             threadId: input.command.threadId,
@@ -6689,6 +6733,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (yield* mapDispatchError(command)(
           providerSessionIdFor({
             bare: projection.thread.bare,
+            tools: projection.thread.tools,
             adapter,
             providerInstanceId: modelSelection.instanceId,
             threadId: command.threadId,
@@ -7078,6 +7123,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       (yield* mapDispatchError(command)(
         providerSessionIdFor({
           bare: projection.thread.bare,
+          tools: projection.thread.tools,
           adapter,
           providerInstanceId: modelSelection.instanceId,
           threadId: command.threadId,
@@ -8062,7 +8108,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ? { type: "worktree" as const, baseRef: "HEAD" }
             : { type: "root" as const }))
         : undefined;
-      const { bare: _parentBare, ...childTemplate } = makeSubagentChildThread({
+      const {
+        bare: _parentBare,
+        tools: _parentTools,
+        ...childTemplate
+      } = makeSubagentChildThread({
         parentThread: parentProjection.thread,
         childThreadId,
         parentNodeId: taskNodeId,
@@ -8076,6 +8126,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
       const childThread: OrchestrationV2AppThread = {
         ...childTemplate,
+        ...(command.tools === undefined ? {} : { tools: command.tools }),
         purposeSelection: { revision: 1, scope: delegatedPurpose.purpose.scope },
         ...(command.bare === undefined
           ? {}

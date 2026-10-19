@@ -44,6 +44,15 @@ import { liveThreadShell } from "../../McpToolAccess.testkit.ts";
 
 const prismDependencies = Layer.mergeAll(
   Layer.mock(AdapterRegistry.ProviderAdapterRegistryV2)({
+    get: (instanceId) =>
+      Effect.succeed({
+        instanceId,
+        driver: ProviderDriverKind.make("claudeAgent"),
+        bareSupport: Effect.succeed({ supported: true }),
+        getCapabilities: () => Effect.die("unused"),
+        planSelectionTransition: () => Effect.die("unused"),
+        openSession: () => Effect.die("unused"),
+      }),
     list: () =>
       Effect.succeed([
         ProviderInstanceId.make("codex"),
@@ -697,6 +706,42 @@ it.effect(
       });
       expect(fromSettings.launched[0]?.modelSelection).toEqual(overrideModel);
     }),
+);
+
+it.effect("an outside full-access client forwards bare and private HTTP MCP configuration", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { projectId, dependencies } = clientLaunchHarness({
+      runtimeModeCeiling: "full-access",
+      launched,
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+          Layer.provide(prismDependencies),
+          Layer.provide(dependencies),
+        ),
+      ),
+    );
+    const tools = {
+      allow: ["mcp:outreach:read_venue", "mcp:outreach:submit_result"],
+      mcpServers: {
+        outreach: {
+          type: "http" as const,
+          url: "http://localhost/mcp",
+          headers: { Authorization: "test-only-generation-token" },
+        },
+      },
+    };
+    yield* toolkit
+      .handle("t3_thread_launch", { title: "Restricted venue", projectId, bare: {}, tools })
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+    expect(launched[0]?.bare).toEqual({});
+    expect(launched[0]?.tools).toEqual(tools);
+    expect(launched[0]?.initialMessage?.text).toBeUndefined();
+
+    expect(launched[0]?.runtimeMode).toBe("full-access");
+  }),
 );
 
 it.effect("a launch retried with the same clientRequestId replays the first one", () =>

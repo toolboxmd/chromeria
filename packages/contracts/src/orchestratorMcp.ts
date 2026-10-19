@@ -1,3 +1,4 @@
+import { ThreadToolsRequest } from "./threadTools.ts";
 import { BareLaunchRequest, BareSupport } from "./bareLaunch.ts";
 import {
   ExecutionPurpose,
@@ -182,6 +183,7 @@ export type OrchestratorMcpTerminalDelegatedTaskStatus =
 export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   purposeIntent: Schema.optional(PurposeIntent),
   bare: Schema.optional(BareLaunchRequest),
+  tools: Schema.optional(ThreadToolsRequest),
   projectId: Schema.optional(ProjectId),
   workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
   lane: Schema.optional(PrismLane),
@@ -750,6 +752,7 @@ export type OrchestratorMcpEnvironmentLinksResult =
 export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   executionPurposeVersions: Schema.optional(Schema.Array(Schema.Literal(1))),
   bareLaunch: Schema.optional(Schema.Boolean),
+  toolAllowlist: Schema.optional(Schema.Boolean),
   /** The calling thread, or null when the caller is not a T3 thread. */
   parentThreadId: Schema.NullOr(ThreadId),
   inheritedProviderInstanceId: Schema.NullOr(ProviderInstanceId),

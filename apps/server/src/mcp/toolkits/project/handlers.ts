@@ -151,6 +151,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 : { purposeParentRun: { threadId: caller.id, runId: caller.activeRunId } }),
               ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),
               ...(input.bare === undefined ? {} : { bare: input.bare }),
+              ...(input.tools === undefined ? {} : { tools: input.tools }),
               ...(linkOrigin === undefined ? {} : { linkOrigin }),
               ...(input.message === undefined && attachments.length === 0 ? {} : { messageId }),
             },
@@ -284,6 +285,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                   : { purposeParentRun: { threadId: caller.id, runId: caller.activeRunId } }),
                 commandId,
                 threadId,
+                ...(input.tools === undefined ? {} : { tools: input.tools }),
                 ...(input.bare === undefined
                   ? {}
                   : {
