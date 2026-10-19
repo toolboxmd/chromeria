@@ -306,3 +306,57 @@ it.effect("new obligation arrivals do not starve an older pending retry", () =>
     expect(retried).toBe(true);
   }).pipe(Effect.provide(fixture)),
 );
+
+it.effect(
+  "lifecycle retirement preserves original birth facts while source invalidation remains permanent",
+  () =>
+    Effect.gen(function* () {
+      const authority = yield* Authority.DestinationAutomationAuthority;
+      const value = certificate("birth-retired-384");
+      yield* accept(value);
+      yield* authority.registerRecovery(
+        dependency(value),
+        "birth-source-session",
+        "fixture-original-identity",
+      );
+      yield* authority.disableLocal("schedule", value.binding.resourceId);
+      expect((yield* Effect.result(authority.claim(value.id)))._tag).toBe("Failure");
+      expect(yield* authority.birth(value.id)).toEqual(value);
+      yield* accept(certificate("new-definition-384"));
+      expect(yield* authority.birth(value.id)).toEqual(value);
+      const reopened = Context.get(
+        yield* Authority.layer.pipe(Layer.fresh, Layer.build),
+        Authority.DestinationAutomationAuthority,
+      );
+      expect(yield* reopened.birth(value.id)).toEqual(value);
+      yield* Authority.invalidateAutomationSessions(["birth-source-session"]);
+      expect((yield* Effect.result(authority.birth(value.id)))._tag).toBe("Failure");
+      yield* accept(certificate("later-definition-384"));
+      expect((yield* Effect.result(authority.birth(value.id)))._tag).toBe("Failure");
+    }).pipe(Effect.provide(fixture)),
+);
+
+it.effect(
+  "a durable source disable still denies a retired birth and cannot be undone by local replacement",
+  () =>
+    Effect.gen(function* () {
+      const authority = yield* Authority.DestinationAutomationAuthority;
+      const value = certificate("birth-tombstone-384");
+      yield* accept(value);
+      yield* authority.registerRecovery(
+        dependency(value),
+        "birth-source-session",
+        "fixture-original-identity",
+      );
+      yield* authority.disableLocal("schedule", value.binding.resourceId);
+      expect(yield* authority.birth(value.id)).toEqual(value);
+      const acknowledgement = yield* authority.receiveDisable(
+        { version: 1, dependency: dependency(value) },
+        "fixture-original-identity",
+      );
+      expect(acknowledgement?.disabled).toBe(true);
+      expect((yield* Effect.result(authority.birth(value.id)))._tag).toBe("Failure");
+      yield* accept(certificate("replacement-after-source-disable-384"));
+      expect((yield* Effect.result(authority.birth(value.id)))._tag).toBe("Failure");
+    }).pipe(Effect.provide(fixture)),
+);

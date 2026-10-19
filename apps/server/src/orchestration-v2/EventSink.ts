@@ -1,6 +1,11 @@
 import * as PeerLinkEvents from "../peer/PeerLinkEvents.ts";
 import { checkAutomationCommit } from "../scheduledTasks/DestinationAutomationAuthority.ts";
-import { PeerDispatchAuthority, PeerAcceptedAutomation } from "../peer/peerEffectAuthority.ts";
+import {
+  PeerDispatchAuthority,
+  PeerAcceptedAutomation,
+  NativeAuthorityValidation,
+  nativeAuthorityOwners,
+} from "../peer/peerEffectAuthority.ts";
 import {
   initializePeerEffectAuthority,
   recordPeerEffectAuthority,
@@ -239,6 +244,7 @@ const layerBase: Layer.Layer<
   EventSinkV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const nativeAuthority = yield* Effect.serviceOption(NativeAuthorityValidation);
     const peerLinkEvents = yield* Effect.serviceOption(PeerLinkEvents.PeerLinkEvents);
     yield* initializePeerEffectAuthority.pipe(Effect.orDie);
     const commandReceipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
@@ -694,6 +700,57 @@ const layerBase: Layer.Layer<
       input: Parameters<EventSinkV2Shape["commitCommand"]>[0],
     ) {
       let drained: Effect.Effect<void> = Effect.void;
+      const execution = input.effects.some((effect) =>
+        [
+          "provider-turn.start",
+          "provider-runtime.continue",
+          "provider-turn.steer",
+          "provider-turn.restart",
+          "runtime-request.respond",
+          "provider-thread.rollback",
+        ].includes(effect.request.type),
+      );
+      const dispatch = yield* PeerDispatchAuthority;
+      const automation = yield* PeerAcceptedAutomation;
+      const explicit = [dispatch, automation].filter((id) => id !== undefined);
+      const threadIds = [
+        ...new Set([input.threadId, ...input.events.map((event) => event.threadId)]),
+      ];
+      const runIds = input.events.flatMap((event) => [
+        ...(event.runId == null ? [] : [event.runId]),
+        ...(event.type === "run.created"
+          ? [
+              event.payload.restartContinuationOfRunId,
+              event.payload.forkPrismContinuationSourceRunId,
+            ].filter((id) => id !== undefined)
+          : []),
+      ]);
+      runIds.push(
+        ...input.effects.flatMap((effect) =>
+          effect.request.type === "provider-runtime.continue"
+            ? [effect.request.sourceRunId]
+            : "runId" in effect.request
+              ? [effect.request.runId]
+              : [],
+        ),
+      );
+      const capturedOwners = execution
+        ? yield* nativeAuthorityOwners(explicit, threadIds, runIds).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          )
+        : [];
+      const admission =
+        execution && Option.isSome(nativeAuthority)
+          ? yield* nativeAuthority.value.preflight(capturedOwners, threadIds).pipe(
+              Effect.mapError(
+                () =>
+                  new ForkCommitGuardRejected({
+                    threadId: input.threadId,
+                    kind: "invalid_transition",
+                  }),
+              ),
+            )
+          : undefined;
       const result = yield* commitThenPublish(
         Effect.gen(function* () {
           let standaloneDeclineEvent: OrchestrationV2DomainEvent | undefined;
@@ -791,46 +848,33 @@ const layerBase: Layer.Layer<
                 Effect.provideService(ProjectionStore.ProjectionStoreV2, projectionStore),
               );
           }
-          const dispatchOwner = yield* PeerDispatchAuthority;
-          const acceptedAutomation = yield* PeerAcceptedAutomation;
-          const executionCommit = input.effects.some((effect) =>
-            [
-              "provider-turn.start",
-              "provider-runtime.continue",
-              "provider-turn.steer",
-              "provider-turn.restart",
-              "runtime-request.respond",
-              "provider-thread.rollback",
-            ].includes(effect.request.type),
-          );
-          if (dispatchOwner !== undefined || acceptedAutomation !== undefined || executionCommit) {
-            const owners = [
-              ...(dispatchOwner === undefined ? [] : [dispatchOwner]),
-              ...(acceptedAutomation === undefined ? [] : [acceptedAutomation]),
-            ];
-            const threadIds = [
-              ...new Set([input.threadId, ...input.events.map((event) => event.threadId)]),
-            ];
-            const births = yield* sql<{
-              record_id: string;
-            }>`SELECT record_id FROM peer_thread_authority WHERE ${sql.in("thread_id", threadIds)}`;
-            owners.push(...births.map((row) => row.record_id));
-            const runIds = input.events.flatMap((event) => [
-              ...(event.runId == null ? [] : [event.runId]),
-              ...(event.type === "run.created"
-                ? [
-                    event.payload.restartContinuationOfRunId,
-                    event.payload.forkPrismContinuationSourceRunId,
-                  ].filter((id) => id !== undefined)
-                : []),
-            ]);
-            if (runIds.length !== 0) {
-              const runs = yield* sql<{
-                record_id: string;
-              }>`SELECT record_id FROM peer_run_authority WHERE ${sql.in("run_id", runIds)}`;
-              owners.push(...runs.map((row) => row.record_id));
+          if (dispatch !== undefined || automation !== undefined || execution) {
+            const owners = yield* nativeAuthorityOwners(explicit, threadIds, runIds).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            );
+            if (admission !== undefined) {
+              yield* admission.check.pipe(
+                Effect.mapError(
+                  () =>
+                    new ForkCommitGuardRejected({
+                      threadId: input.threadId,
+                      kind: "invalid_transition",
+                    }),
+                ),
+              );
+              const actual = yield* nativeAuthorityOwners(explicit, threadIds, runIds).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              );
+              if (
+                actual.length !== capturedOwners.length ||
+                actual.some((id, index) => id !== capturedOwners[index])
+              )
+                return yield* new ForkCommitGuardRejected({
+                  threadId: input.threadId,
+                  kind: "invalid_transition",
+                });
             }
-            yield* checkAutomationCommit(owners).pipe(
+            yield* checkAutomationCommit(owners, admission?.births).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
               Effect.mapError(
                 () =>

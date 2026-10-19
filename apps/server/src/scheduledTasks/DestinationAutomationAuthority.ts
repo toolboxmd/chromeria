@@ -159,6 +159,15 @@ const decodeAck = Schema.decodeUnknownEffect(Schema.fromJsonString(AutomationDis
 export const ensureAutomationAuthoritySchema = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`CREATE TABLE IF NOT EXISTS fork_automation_certificates (id TEXT PRIMARY KEY, certificate_json TEXT NOT NULL, disabled INTEGER NOT NULL DEFAULT 0)`;
+  if (
+    !(yield* sql<{ name: string }>`PRAGMA table_info(fork_automation_certificates)`).some(
+      (column) => column.name === "revoked",
+    )
+  ) {
+    yield* sql`ALTER TABLE fork_automation_certificates ADD COLUMN revoked INTEGER NOT NULL DEFAULT 0`;
+    // Historical disabled rows have no trustworthy reason; preserve their denial.
+    yield* sql`UPDATE fork_automation_certificates SET revoked=disabled`;
+  }
   yield* sql`CREATE TABLE IF NOT EXISTS fork_automation_bindings (kind TEXT NOT NULL,resource_id TEXT NOT NULL,certificate_id TEXT NOT NULL,PRIMARY KEY(kind,resource_id))`;
   yield* sql`CREATE TABLE IF NOT EXISTS fork_automation_recovery (dependency_id TEXT PRIMARY KEY,dependency_json TEXT NOT NULL,session_id TEXT NOT NULL,credential_identity TEXT NOT NULL)`;
   yield* sql`CREATE TABLE IF NOT EXISTS fork_automation_disable_acks (dependency_id TEXT PRIMARY KEY,certificate_id TEXT NOT NULL,ack_json TEXT NOT NULL)`;
@@ -181,12 +190,15 @@ export const ensureAutomationAuthoritySchema = Effect.gen(function* () {
 });
 
 /** Persist downstream obligations before retiring an exact local generation. */
-const invalidateAutomationCertificates = (certificateIds: ReadonlyArray<string>) =>
+const invalidateAutomationCertificates = (
+  certificateIds: ReadonlyArray<string>,
+  reason: "retired" | "revoked",
+) =>
   Effect.gen(function* () {
     if (certificateIds.length === 0) return;
     const sql = yield* SqlClient.SqlClient;
     yield* sql`UPDATE fork_automation_obligations SET pending=1 WHERE ack_json IS NULL AND dependency_id IN (SELECT dependency_id FROM fork_automation_dependency_certificates WHERE ${sql.in("certificate_id", certificateIds)})`;
-    yield* sql`UPDATE fork_automation_certificates SET disabled=1 WHERE ${sql.in("id", certificateIds)}`;
+    yield* sql`UPDATE fork_automation_certificates SET disabled=1,revoked=CASE WHEN ${reason}='revoked' THEN 1 ELSE revoked END WHERE ${sql.in("id", certificateIds)}`;
   });
 
 /** SQL-only: call in the revocation owner's transaction, before invalidating credentials. */
@@ -199,7 +211,10 @@ export const invalidateAutomationSessions = (sessionIds: ReadonlyArray<string>) 
     const affected = yield* sql<{
       id: string;
     }>`SELECT id FROM fork_automation_certificates WHERE id IN (SELECT json_extract(dependency_json,'$.certificateId') FROM fork_automation_recovery WHERE ${sql.in("session_id", sessionIds)}) OR EXISTS (SELECT 1 FROM json_each(certificate_json,'$.graph.records') node JOIN json_each(${json(sessionIds)}) requested WHERE json_extract(node.value,'$.environmentId')=json_extract(certificate_json,'$.audience') AND requested.value IN (json_extract(node.value,'$.record.sessionId'),json_extract(node.value,'$.record.originClientId'),json_extract(node.value,'$.record.requestClientSessionId'),json_extract(node.value,'$.record.resourceSessionId'))) OR EXISTS (SELECT 1 FROM json_each(certificate_json,'$.graph.legacy') node JOIN json_each(${json(sessionIds)}) requested WHERE json_extract(node.value,'$.environmentId')=json_extract(certificate_json,'$.audience') AND json_extract(node.value,'$.sessionId')=requested.value)`;
-    yield* invalidateAutomationCertificates(affected.map((row) => row.id));
+    yield* invalidateAutomationCertificates(
+      affected.map((row) => row.id),
+      "revoked",
+    );
   });
 
 export const invalidateAutomationLink = (environmentId: string, generation: string) =>
@@ -217,6 +232,7 @@ export class DestinationAutomationAuthority extends Context.Service<
       binding: AutomationBinding,
     ) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly facts: (id: string) => Effect.Effect<AutomationCertificate, OrchestratorMcpFailure>;
+    readonly birth: (id: string) => Effect.Effect<AutomationCertificate, OrchestratorMcpFailure>;
     readonly claim: (id: string) => Effect.Effect<AutomationCertificate, OrchestratorMcpFailure>;
     readonly current: (
       kind: AutomationBinding["kind"],
@@ -265,6 +281,7 @@ const readCertificate = (id: string) =>
     const row = (yield* sql<{
       certificate_json: string;
       disabled: number;
+      revoked: number;
     }>`SELECT * FROM fork_automation_certificates WHERE id=${id}`.pipe(
       Effect.mapError(unavailable),
     ))[0];
@@ -272,7 +289,7 @@ const readCertificate = (id: string) =>
     const certificate = yield* decodeCertificate(row.certificate_json).pipe(
       Effect.mapError(unavailable),
     );
-    return { certificate, disabled: row.disabled !== 0 };
+    return { certificate, disabled: row.disabled !== 0, revoked: row.revoked !== 0 };
   });
 
 const checkDestinationSessions = (certificate: AutomationCertificate) =>
@@ -304,13 +321,14 @@ const checkDestinationSessions = (certificate: AutomationCertificate) =>
 const claimCertificate = (
   id: string,
   ancestors: ReadonlySet<string>,
+  purpose: "execution" | "birth" = "execution",
 ): Effect.Effect<AutomationCertificate, OrchestratorMcpFailure, SqlClient.SqlClient> =>
   Effect.gen(function* () {
     if (ancestors.has(id) || ancestors.size >= 256)
       return yield* denied("The local automation contributor graph is cyclic or too deep.");
     const visited = new Set([...ancestors, id]);
     const sql = yield* SqlClient.SqlClient;
-    const { certificate, disabled } = yield* readCertificate(id);
+    const { certificate, disabled, revoked } = yield* readCertificate(id);
     const current = (yield* sql<{
       certificate_id: string;
     }>`SELECT certificate_id FROM fork_automation_bindings WHERE kind=${certificate.binding.kind} AND resource_id=${certificate.binding.resourceId}`.pipe(
@@ -320,7 +338,11 @@ const claimCertificate = (
       yield* sql`SELECT 1 FROM fork_automation_disable_acks WHERE certificate_id=${id} LIMIT 1`.pipe(
         Effect.mapError(unavailable),
       );
-    if (disabled || current?.certificate_id !== id || tombstones.length !== 0)
+    if (
+      revoked ||
+      tombstones.length !== 0 ||
+      (purpose === "execution" && (disabled || current?.certificate_id !== id))
+    )
       return yield* denied("Destination automation authority is disabled or superseded.");
     if (certificate.expiresAt !== null && certificate.expiresAt <= (yield* Clock.currentTimeMillis))
       return yield* denied("Destination automation authority has expired.");
@@ -335,8 +357,13 @@ const claimCertificate = (
         prior.binding.resourceId === certificate.binding.resourceId &&
         prior.binding.projectId === certificate.binding.projectId &&
         prior.binding.workflowGeneration < certificate.binding.workflowGeneration;
-      if (!retainedBirth) yield* claimCertificate(prior.id, visited);
+      yield* claimCertificate(
+        prior.id,
+        visited,
+        node.record.kind === "automation-birth" || retainedBirth ? "birth" : purpose,
+      );
     }
+    if (purpose === "birth") return certificate;
     if (certificate.binding.kind === "schedule") {
       const row = (yield* sql<{
         project_id: string;
@@ -379,6 +406,8 @@ const claimCertificate = (
     return certificate;
   });
 
+const claimBirthCertificate = (id: string) => claimCertificate(id, new Set(), "birth");
+
 export const claimAutomationCertificate = (id: string) => claimCertificate(id, new Set());
 
 export const currentAutomationCertificate = (kind: AutomationBinding["kind"], resourceId: string) =>
@@ -393,7 +422,10 @@ export const currentAutomationCertificate = (kind: AutomationBinding["kind"], re
   });
 
 /** Native acceptance calls this inside the event/receipt transaction; no peer I/O is permitted. */
-export const checkAutomationCommit = (recordIds: ReadonlyArray<string>) =>
+export const checkAutomationCommit = (
+  recordIds: ReadonlyArray<string>,
+  liveBirths: ReadonlySet<string> = new Set(),
+) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const pending = [...recordIds];
@@ -456,14 +488,34 @@ export const checkAutomationCommit = (recordIds: ReadonlyArray<string>) =>
     const covered = new Map<string, typeof ExecutionRecord.Type>();
     const failures: { record: (typeof certificates)[number]; error: OrchestratorMcpFailure }[] = [];
     for (const record of certificates) {
-      const result = yield* Effect.result(claimAutomationCertificate(record.certificateId));
+      const result = yield* Effect.result(
+        record.kind === "automation-birth"
+          ? claimBirthCertificate(record.certificateId)
+          : claimAutomationCertificate(record.certificateId),
+      );
       if (result._tag === "Failure") {
+        if (record.kind === "automation-birth") return yield* result.failure;
         failures.push({ record, error: result.failure });
         continue;
       }
       const certificate = result.success;
+      if (
+        record.kind === "automation-birth" &&
+        !liveBirths.has(record.id) &&
+        !certificates.some(
+          (owner) =>
+            owner.kind === "automation-execution" && owner.certificateId === record.certificateId,
+        )
+      ) {
+        failures.push({
+          record,
+          error: denied("A native birth requires live original-contributor admission."),
+        });
+        continue;
+      }
       if (certificate.binding.projectId !== record.projectId)
         return yield* denied("The native automation project changed.");
+      if (record.kind === "automation-birth") continue;
       for (const node of certificate.graph.records)
         if (node.environmentId === certificate.audience) {
           const prior = covered.get(node.record.id);
@@ -530,10 +582,10 @@ const make = Effect.gen(function* () {
       }>`SELECT certificate_id FROM fork_automation_bindings WHERE kind=${binding.kind} AND resource_id=${binding.resourceId} AND certificate_id<>${certificate.id}`.pipe(
         Effect.mapError(unavailable),
       );
-      yield* invalidateAutomationCertificates(previous.map((row) => row.certificate_id)).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-        Effect.mapError(unavailable),
-      );
+      yield* invalidateAutomationCertificates(
+        previous.map((row) => row.certificate_id),
+        "retired",
+      ).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(unavailable));
       const encoded = json({ ...certificate, binding });
       yield* sql`INSERT INTO fork_automation_certificates(id,certificate_json) VALUES (${certificate.id},${encoded}) ON CONFLICT DO NOTHING`.pipe(
         Effect.mapError(unavailable),
@@ -569,9 +621,10 @@ const make = Effect.gen(function* () {
           const ids = yield* sql<{
             certificate_id: string;
           }>`SELECT certificate_id FROM fork_automation_bindings WHERE kind=${kind} AND resource_id=${resourceId}`;
-          yield* invalidateAutomationCertificates(ids.map((row) => row.certificate_id)).pipe(
-            Effect.provideService(SqlClient.SqlClient, sql),
-          );
+          yield* invalidateAutomationCertificates(
+            ids.map((row) => row.certificate_id),
+            "retired",
+          ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
         }),
       )
       .pipe(Effect.mapError(unavailable));
@@ -663,7 +716,7 @@ const make = Effect.gen(function* () {
             disabled: true,
           };
           yield* sql`INSERT INTO fork_automation_disable_acks VALUES (${key},${input.dependency.certificateId},${json(acknowledgement)})`;
-          yield* invalidateAutomationCertificates([input.dependency.certificateId]).pipe(
+          yield* invalidateAutomationCertificates([input.dependency.certificateId], "revoked").pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
           );
           return acknowledgement;
@@ -723,6 +776,7 @@ const make = Effect.gen(function* () {
   return DestinationAutomationAuthority.of({
     accept,
     claim,
+    birth: (id) => claimBirthCertificate(id).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
     facts: (id) => read(id).pipe(Effect.map((value) => value.certificate)),
     current,
     disableLocal,

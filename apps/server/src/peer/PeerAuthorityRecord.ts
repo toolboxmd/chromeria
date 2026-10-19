@@ -81,6 +81,11 @@ export const AutomationExecution = Schema.Struct({
 });
 export type AutomationExecution = typeof AutomationExecution.Type;
 
+const AutomationBirth = Schema.Struct({
+  ...AutomationExecution.fields,
+  kind: Schema.Literal("automation-birth"),
+});
+
 export const Conjunction = Schema.Struct({
   kind: Schema.Literal("conjunction"),
   id: Schema.String,
@@ -92,7 +97,12 @@ export const Conjunction = Schema.Struct({
 });
 export type Conjunction = typeof Conjunction.Type;
 
-export const ExecutionRecord = Schema.Union([Authority, AutomationExecution, Conjunction]);
+export const ExecutionRecord = Schema.Union([
+  Authority,
+  AutomationExecution,
+  AutomationBirth,
+  Conjunction,
+]);
 export type ExecutionRecord = typeof ExecutionRecord.Type;
 
 export const interactiveAuthority = (record: ExecutionRecord | undefined): Authority | undefined =>

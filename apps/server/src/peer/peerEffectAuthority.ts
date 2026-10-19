@@ -1,6 +1,10 @@
 import { sha256 } from "@noble/hashes/sha2";
 import * as Hex from "effect/encoding/Hex";
-import type { OrchestrationV2DomainEvent, ThreadId } from "@t3tools/contracts";
+import type {
+  OrchestrationV2DomainEvent,
+  ThreadId,
+  OrchestratorMcpFailure,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -19,6 +23,50 @@ export const PeerAcceptedAutomation = Context.Reference<string | undefined>(
   "t3/peer/PeerAcceptedAutomation",
   { defaultValue: () => undefined },
 );
+
+export class NativeAuthorityValidation extends Context.Service<
+  NativeAuthorityValidation,
+  {
+    readonly preflight: (
+      ownerIds: ReadonlyArray<string>,
+      threadIds: ReadonlyArray<ThreadId>,
+    ) => Effect.Effect<
+      {
+        readonly births: ReadonlySet<string>;
+        readonly check: Effect.Effect<void, OrchestratorMcpFailure>;
+      },
+      OrchestratorMcpFailure
+    >;
+  }
+>()("t3/peer/peerEffectAuthority/NativeAuthorityValidation") {}
+
+export const nativeAuthorityOwners = (
+  explicit: ReadonlyArray<string>,
+  threadIds: ReadonlyArray<ThreadId>,
+  runIds: ReadonlyArray<string>,
+) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const births =
+      threadIds.length === 0
+        ? []
+        : yield* sql<{
+            record_id: string;
+          }>`SELECT record_id FROM peer_thread_authority WHERE ${sql.in("thread_id", threadIds)}`;
+    const runs =
+      runIds.length === 0
+        ? []
+        : yield* sql<{
+            record_id: string;
+          }>`SELECT record_id FROM peer_run_authority WHERE ${sql.in("run_id", runIds)}`;
+    return [
+      ...new Set([
+        ...explicit,
+        ...births.map((row) => row.record_id),
+        ...runs.map((row) => row.record_id),
+      ]),
+    ].sort();
+  });
 
 /** Initialized with the event sink so local-only services need no peer runtime. */
 export const initializePeerEffectAuthority = Effect.gen(function* () {
@@ -92,6 +140,57 @@ export const recordPeerEffectAuthority = (
         yield* sql`INSERT INTO peer_authority_records (id, record_json) VALUES (${id}, ${encodeRecord(record)}) ON CONFLICT DO NOTHING`;
         return id;
       });
+    const birthOwner = (
+      id: string,
+      seen: ReadonlySet<string> = new Set(),
+    ): Effect.Effect<string, never> =>
+      Effect.gen(function* () {
+        if (seen.has(id) || seen.size >= 256)
+          return yield* Effect.die(new Error("Cyclic native birth owner"));
+        const visited = new Set([...seen, id]);
+        const record = yield* read(id).pipe(Effect.orDie);
+        if ("certificateId" in record) {
+          if (record.kind === "automation-birth") return id;
+          const birth = { ...record, kind: "automation-birth" as const, id: `birth:${record.id}` };
+          yield* sql`INSERT INTO peer_authority_records (id,record_json) VALUES (${birth.id},${encodeRecord(birth)}) ON CONFLICT DO NOTHING`.pipe(
+            Effect.orDie,
+          );
+          return birth.id;
+        }
+        const context = record.context;
+        if (context === undefined || context.type === "task-stop") return id;
+        const old =
+          context.type === "run-inputs"
+            ? context.recordIds
+            : context.type === "owned-thread"
+              ? [context.creationRecordId, context.runRecordId]
+              : [context.runRecordId];
+        const ids = yield* Effect.forEach(old, (key) => birthOwner(key, visited));
+        if (ids.every((key, index) => key === old[index])) return id;
+        const [first, ...rest] = yield* Effect.forEach(ids, (key) => read(key).pipe(Effect.orDie));
+        if (first === undefined)
+          return yield* Effect.die(new Error("Missing native birth contributor"));
+        const recordIds: [string, ...Array<string>] = [
+          first.id,
+          ...rest.map((record) => record.id),
+        ];
+        const birthContext =
+          context.type === "run-inputs"
+            ? { ...context, recordIds }
+            : context.type === "owned-thread"
+              ? { ...context, creationRecordId: recordIds[0], runRecordId: recordIds[1]! }
+              : { ...context, runRecordId: recordIds[0] };
+        const birth = conjunction(
+          `birth:${id}`,
+          birthContext,
+          [first, ...rest],
+          "resourceSessionId" in record ? record.resourceSessionId : undefined,
+        );
+        yield* sql`INSERT INTO peer_authority_records (id,record_json) VALUES (${birth.id},${encodeRecord(birth)}) ON CONFLICT DO NOTHING`.pipe(
+          Effect.orDie,
+        );
+        return birth.id;
+      });
     const runOwner = (runId: string) =>
       sql<{
         record_id: string;
@@ -153,7 +252,8 @@ export const recordPeerEffectAuthority = (
     );
     for (const event of events) {
       if (event.type === "thread.created") {
-        const owner = yield* combine(event.threadId, authority, automation);
+        const execution = yield* combine(event.threadId, authority, automation);
+        const owner = execution === undefined ? undefined : yield* birthOwner(execution);
         if (owner !== undefined)
           yield* sql`INSERT INTO peer_thread_authority (thread_id, record_id) VALUES (${event.threadId}, ${owner}) ON CONFLICT DO NOTHING`;
       }

@@ -226,6 +226,9 @@ export const captureResourceFence = (taskId: ScheduledTaskId, targetThreadId?: s
         const checks = tables.has("fork_scheduled_task_checks")
           ? yield* sql`SELECT * FROM fork_scheduled_task_checks WHERE task_id=${taskId}`
           : [];
+        const automation = tables.has("fork_automation_bindings")
+          ? yield* sql`SELECT b.certificate_id,c.disabled,c.revoked FROM fork_automation_bindings b JOIN fork_automation_certificates c ON c.id=b.certificate_id WHERE b.kind='schedule' AND b.resource_id=${taskId}`
+          : [];
         const births =
           threadIds.length !== 0 && tables.has("peer_thread_authority")
             ? yield* sql`SELECT * FROM peer_thread_authority WHERE ${sql.in("thread_id", threadIds)} ORDER BY thread_id`
@@ -240,7 +243,7 @@ export const captureResourceFence = (taskId: ScheduledTaskId, targetThreadId?: s
           threadIds.length === 0
             ? []
             : yield* sql`SELECT thread_id,project_id,runtime_mode,interaction_mode,deleted_at,json_extract(payload_json,'$.archivedAt') AS archived_at,json_extract(payload_json,'$.linkOrigin') AS link_origin,json_extract(payload_json,'$.lineage') AS lineage,json_extract(payload_json,'$.bare') AS bare,json_extract(payload_json,'$.modelSelection') AS model_selection,json_extract(payload_json,'$.createdAt') AS created_at FROM orchestration_v2_projection_threads WHERE ${sql.in("thread_id", threadIds)} ORDER BY thread_id`;
-        return { binding, checks, births, runs, targets };
+        return { binding, checks, automation, births, runs, targets };
       }).pipe(Effect.mapError(unavailable));
     const expected = requestDigest(yield* readOwners());
     return Effect.gen(function* () {

@@ -12,7 +12,7 @@ import {
 } from "./PeerAuthorityRecord.ts";
 export { ExecutionRecord as Authority, PeerSession } from "./PeerAuthorityRecord.ts";
 import { readStopDescendants } from "../childThreads/stopDescendants.ts";
-import { initializePeerEffectAuthority } from "./peerEffectAuthority.ts";
+import { initializePeerEffectAuthority, NativeAuthorityValidation } from "./peerEffectAuthority.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
 import { exceededDispatchModeLimit } from "../orchestration-v2/DispatchModeLimit.ts";
 import {
@@ -197,6 +197,7 @@ const unavailable = () =>
 export class PeerAuthority extends Context.Service<
   PeerAuthority,
   {
+    readonly nativePreflight: NativeAuthorityValidation["Service"]["preflight"];
     readonly notifyAutomationChanges: Effect.Effect<void>;
     readonly pendingAutomationDisables: Effect.Effect<
       ReadonlyArray<{
@@ -769,20 +770,27 @@ const make = Effect.gen(function* () {
             : true,
       );
     });
-  type Coverage = ReadonlyMap<string, Automation.AcceptedGraph["records"][number]>;
+  type Coverage = ReadonlyMap<string, Automation.AcceptedGraph["records"][number]> & {
+    readonly executions: ReadonlySet<string>;
+  };
+  const emptyCoverage = (): Coverage =>
+    Object.assign(new Map<string, Automation.AcceptedGraph["records"][number]>(), {
+      executions: new Set<string>(),
+    });
   const coverageFor = (record: ExecutionRecord): Effect.Effect<Coverage, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
       const covered = new Map<string, Automation.AcceptedGraph["records"][number]>();
       const pending = [record];
       const seen = new Set<string>();
       const certificates: Extract<ExecutionRecord, { readonly certificateId: string }>[] = [];
+      const executions = new Set<string>();
       while (pending.length !== 0) {
         const next = pending.pop()!;
         if (seen.has(next.id)) continue;
         seen.add(next.id);
         if (seen.size > 256) return yield* denied("The automation contributor bound was exceeded.");
         if ("certificateId" in next) {
-          certificates.push(next);
+          if (next.kind === "automation-execution") certificates.push(next);
         } else if (next.context !== undefined) {
           const context = next.context;
           const ids =
@@ -810,6 +818,7 @@ const make = Effect.gen(function* () {
           continue;
         }
         const certificate = claimed.success;
+        executions.add(certificate.id);
         if (certificate.audience !== here || certificate.binding.projectId !== next.projectId)
           return yield* denied("The automation authority belongs to another destination.");
         for (const node of certificate.graph.records) {
@@ -839,7 +848,7 @@ const make = Effect.gen(function* () {
         if (frozen === undefined || json(frozen.record) !== json(failure.record))
           return yield* failure.error;
       }
-      return covered;
+      return Object.assign(covered, { executions });
     });
   const validate = (
     record: ExecutionRecord,
@@ -853,7 +862,11 @@ const make = Effect.gen(function* () {
         coverage ??
         (purpose === "local"
           ? yield* coverageFor(record)
-          : new Map<string, Automation.AcceptedGraph["records"][number]>());
+          : Object.assign(new Map<string, Automation.AcceptedGraph["records"][number]>(), {
+              executions: new Set<string>(),
+            }));
+      if ("certificateId" in record && record.kind === "automation-birth")
+        yield* automation.birth(record.certificateId);
       const frozen = accepted.get(record.id);
       if (frozen !== undefined) {
         if (json(frozen.record) !== json(record))
@@ -875,16 +888,23 @@ const make = Effect.gen(function* () {
         return frozen.ceiling;
       }
       if ("certificateId" in record) {
+        const nextPurpose =
+          record.kind === "automation-birth" && !accepted.executions.has(record.certificateId)
+            ? "interactive"
+            : purpose;
         const certificate =
-          replacements.get(record.certificateId) ?? (yield* automation.claim(record.certificateId));
+          replacements.get(record.certificateId) ??
+          (yield* record.kind === "automation-birth"
+            ? automation.birth(record.certificateId)
+            : automation.claim(record.certificateId));
         if (certificate.audience !== here || certificate.binding.projectId !== record.projectId)
           return yield* denied("The automation authority belongs to another destination.");
         let ceiling = certificate.ceiling;
         const historical = new Map(replacements);
-        if (purpose === "interactive" && certificate.binding.kind === "spectrum") {
+        if (nextPurpose === "interactive" && certificate.binding.kind === "spectrum") {
           for (const node of certificate.graph.records) {
             if (node.environmentId !== here || !("certificateId" in node.record)) continue;
-            const prior = yield* automation.facts(node.record.certificateId);
+            const prior = yield* automation.birth(node.record.certificateId);
             if (
               prior.binding.kind === "spectrum" &&
               prior.binding.resourceId === certificate.binding.resourceId &&
@@ -896,10 +916,10 @@ const make = Effect.gen(function* () {
         for (const id of certificate.recordIds)
           ceiling = intersect(
             ceiling,
-            yield* validate(yield* read(id), stop, accepted, purpose, historical),
+            yield* validate(yield* read(id), stop, accepted, nextPurpose, historical),
           );
         if (
-          purpose === "interactive" &&
+          nextPurpose === "interactive" &&
           certificate.graph.legacy.some((owner) => owner.environmentId !== here)
         ) {
           for (const id of certificate.recordIds) {
@@ -922,7 +942,7 @@ const make = Effect.gen(function* () {
         for (const owner of certificate.graph.legacy) {
           if (owner.environmentId !== here) continue;
           yield* activeSession(owner.sessionId);
-          if (purpose === "interactive") {
+          if (nextPurpose === "interactive") {
             const live = yield* captureLegacy(owner, {
               certificateId: certificate.id,
               audience: certificate.audience,
@@ -1137,7 +1157,9 @@ const make = Effect.gen(function* () {
       if ("certificateId" in record) {
         const certificate = coverage?.has(record.id)
           ? yield* automation.facts(record.certificateId)
-          : yield* automation.claim(record.certificateId);
+          : yield* record.kind === "automation-birth"
+              ? automation.birth(record.certificateId)
+              : automation.claim(record.certificateId);
         return (
           certificate.graph.records.some(
             (node) => node.environmentId === here && resourceSession(node.record) === sessionId,
@@ -1187,7 +1209,9 @@ const make = Effect.gen(function* () {
       if ("certificateId" in record) {
         const certificate = accepted.has(record.id)
           ? yield* automation.facts(record.certificateId)
-          : yield* automation.claim(record.certificateId);
+          : yield* record.kind === "automation-birth"
+              ? automation.birth(record.certificateId)
+              : automation.claim(record.certificateId);
         if (target.type === "thread") {
           if (target.thread.projectId !== certificate.binding.projectId)
             return yield* denied("The automation cannot move to another project.");
@@ -1553,7 +1577,9 @@ const make = Effect.gen(function* () {
   const validateReturn = (record: ExecutionRecord): Effect.Effect<void, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
       if ("certificateId" in record) {
-        const certificate = yield* automation.claim(record.certificateId);
+        const certificate = yield* record.kind === "automation-birth"
+          ? automation.birth(record.certificateId)
+          : automation.claim(record.certificateId);
         for (const id of certificate.recordIds) yield* validateReturn(yield* read(id));
         return;
       }
@@ -1831,7 +1857,10 @@ const make = Effect.gen(function* () {
       }
       if ("certificateId" in record) {
         const previous =
-          replacements.get(record.certificateId) ?? (yield* automation.claim(record.certificateId));
+          replacements.get(record.certificateId) ??
+          (yield* record.kind === "automation-birth"
+            ? automation.birth(record.certificateId)
+            : automation.claim(record.certificateId));
         expiresAt = previous.expiresAt;
         if (expiresAt !== null && expiresAt <= (yield* Clock.currentTimeMillis))
           return yield* denied("The original automation contributor expired.");
@@ -2121,7 +2150,7 @@ const make = Effect.gen(function* () {
         const live = yield* validate(root, undefined, undefined, "interactive", replacements);
         ceiling = intersect(ceiling, live);
         if (existingSchedule !== undefined)
-          yield* checkResource(root, live, existingSchedule, undefined, new Map());
+          yield* checkResource(root, live, existingSchedule, undefined, emptyCoverage());
         if (
           targetThreadId !== null &&
           !("certificateId" in root && replacements.has(root.certificateId))
@@ -2131,7 +2160,7 @@ const make = Effect.gen(function* () {
             live,
             yield* loadResource({ type: "thread", threadId: targetThreadId }),
             undefined,
-            new Map(),
+            emptyCoverage(),
           );
         graphs.push(yield* captureRecord(root, input, new Set(), undefined, replacements));
       }
@@ -2908,7 +2937,84 @@ const make = Effect.gen(function* () {
     generation: certificate.generation,
     projectId: certificate.binding.projectId,
   });
+  const nativePreflight: NativeAuthorityValidation["Service"]["preflight"] = (
+    ownerIds,
+    threadIds,
+  ) =>
+    Effect.gen(function* () {
+      const grants = () =>
+        sql`SELECT session_id,generation,grant_json FROM peer_authority_sessions ORDER BY session_id`.pipe(
+          Effect.mapError(unavailable),
+        );
+      const expected = requestDigest(yield* grants());
+      const roots: ExecutionRecord[] = [];
+      for (const id of ownerIds) {
+        const rows = yield* sql<{
+          record_json: string;
+        }>`SELECT record_json FROM peer_authority_records WHERE id=${id}`.pipe(
+          Effect.mapError(unavailable),
+        );
+        // New fork-plan owners are persisted in the atomic commit and checked there.
+        if (rows[0] !== undefined)
+          roots.push(
+            yield* decodeAuthority(rows[0].record_json).pipe(Effect.mapError(unavailable)),
+          );
+      }
+      const pending = [...roots];
+      const seen = new Set<string>();
+      const births = new Set<string>();
+      while (pending.length !== 0) {
+        const record = pending.pop()!;
+        if (seen.has(record.id)) continue;
+        seen.add(record.id);
+        if (seen.size > 256)
+          return yield* denied("The native birth contributor bound was exceeded.");
+        if ("certificateId" in record) {
+          if (record.kind === "automation-birth") births.add(record.id);
+          continue;
+        }
+        const context = record.context;
+        if (context === undefined || context.type === "task-stop") continue;
+        for (const id of context.type === "run-inputs"
+          ? context.recordIds
+          : context.type === "owned-thread"
+            ? [context.creationRecordId, context.runRecordId]
+            : [context.runRecordId])
+          pending.push(yield* read(id));
+      }
+      if (births.size !== 0) {
+        const covered = new Map<string, Automation.AcceptedGraph["records"][number]>();
+        const executions = new Set<string>();
+        for (const root of roots) {
+          const coverage = yield* coverageFor(root);
+          for (const [id, node] of coverage) covered.set(id, node);
+          for (const id of coverage.executions) executions.add(id);
+        }
+        const coverage = Object.assign(covered, { executions });
+        for (const root of roots) {
+          const ceiling = yield* validate(root, undefined, coverage);
+          for (const threadId of threadIds) {
+            const thread = yield* threads
+              .getThreadShell(threadId)
+              .pipe(Effect.mapError(unavailable));
+            if (thread !== null) {
+              yield* checkResource(root, ceiling, { type: "thread", thread }, undefined, coverage);
+              if (exceededDispatchModeLimit(ceiling, thread) !== undefined)
+                return yield* denied("The native follow-up exceeds current destination modes.");
+            }
+          }
+        }
+      }
+      return {
+        births,
+        check: Effect.gen(function* () {
+          if (births.size !== 0 && requestDigest(yield* grants()) !== expected)
+            return yield* denied("An original contributor changed before native commit.");
+        }),
+      };
+    });
   return PeerAuthority.of({
+    nativePreflight,
     notifyAutomationChanges: wakeDisables,
     pendingAutomationDisables: automation.pending,
     acknowledgeAutomationDisable: (acknowledgement, peer, generation) =>
@@ -3149,7 +3255,14 @@ const make = Effect.gen(function* () {
         ),
   });
 });
-export const layer = Layer.effect(PeerAuthority, make).pipe(
-  Layer.provide(AuthSessions.layer),
-  Layer.provide(Automation.layer),
+export const layer = Layer.effect(
+  NativeAuthorityValidation,
+  Effect.map(PeerAuthority, (authority) => ({ preflight: authority.nativePreflight })),
+).pipe(
+  Layer.provideMerge(
+    Layer.effect(PeerAuthority, make).pipe(
+      Layer.provide(AuthSessions.layer),
+      Layer.provide(Automation.layer),
+    ),
+  ),
 );
