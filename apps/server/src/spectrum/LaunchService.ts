@@ -101,6 +101,15 @@ export class SpectrumLaunchService extends Context.Service<
 
 const validateState = Schema.decodeEffect(SpectrumState);
 
+/** A Color may be called White, so the separate member takes the first name no Color uses. */
+export function whiteMemberLabel(colorLabels: ReadonlyArray<string>): string {
+  const taken = new Set(colorLabels.map((label) => label.trim().toLowerCase()));
+  for (let n = 1; ; n++) {
+    const label = n === 1 ? "White" : n === 2 ? "White (moderator)" : `White (moderator ${n - 1})`;
+    if (!taken.has(label.toLowerCase())) return label;
+  }
+}
+
 /** No provider is attached while shells are registered; durable round dispatch launches Drafters. */
 function shell(
   caller: OrchestrationV2AppThread,
@@ -320,10 +329,7 @@ const make = Effect.gen(function* () {
     const resolved = yield* Effect.forEach(input.colors, (color, index) =>
       resolveMember(color, ThreadId.make(`sub.${input.threadId}.color.${index}`)),
     );
-    // A Color may be called White; the separate member then takes a name no Color shares.
-    const whiteLabel = input.colors.some((color) => color.label.trim().toLowerCase() === "white")
-      ? "White (moderator)"
-      : "White";
+    const whiteLabel = whiteMemberLabel(input.colors.map((color) => color.label));
     const white = yield* resolveMember(
       { ...input.white, label: whiteLabel },
       ThreadId.make(`sub.${input.threadId}.white`),

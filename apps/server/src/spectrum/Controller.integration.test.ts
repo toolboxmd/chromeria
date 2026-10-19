@@ -812,6 +812,37 @@ it.effect(
     }).pipe(Effect.provide(runtime)),
 );
 
+it.effect("Colors called White and White (moderator) leave the separate White a third name", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    yield* initializeRecoveryHistory;
+    const labels = ["White", "White (moderator)"];
+    const state = yield* (yield* Launch.SpectrumLaunchService).register({
+      ...input,
+      colors: input.colors.map((color, index) => ({ ...color, label: labels[index]! })),
+    });
+    const projections = yield* Projection.ProjectionStoreV2;
+    assert.deepStrictEqual(
+      state.participants.map((color) => color.label),
+      labels,
+    );
+    assert.strictEqual(state.white!.label, "White (moderator 2)");
+    const titles = yield* Effect.forEach([...state.participants, state.white!], (member) =>
+      projections.getThread(member.threadId).pipe(Effect.map((thread) => thread.title)),
+    );
+    assert.deepStrictEqual(titles, ["White", "White (moderator)", "White (moderator 2)"]);
+    const { current } = yield* runCouncil(state.threadId);
+    assert.strictEqual(current.status, "settled");
+    const tags = (yield* projections.getThreadRecords(state.threadId, ["messages"])).messages
+      .filter((message) => message.role === "assistant")
+      .map((message) => message.text.slice(0, message.text.indexOf("\n")));
+    assert.deepStrictEqual(tags, [
+      ...Array.from({ length: 3 }, () => ["[White]", "[White (moderator)]"]).flat(),
+      "[White (moderator 2)]",
+    ]);
+  }).pipe(Effect.provide(runtime)),
+);
+
 it.effect(
   "a Spectrum persisted before White was its own member resumes with the Color as White",
   () =>

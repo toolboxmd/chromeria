@@ -10,6 +10,7 @@ it("accepts a question-only Spectrum start", () => {
 
 import { CommandId, ProviderInstanceId, ThreadId, type SpectrumSettings } from "@t3tools/contracts";
 import { resolveSpectrumStart } from "./settings.ts";
+import { whiteMemberLabel } from "./LaunchService.ts";
 
 const decodeSyncStartSpectrumInput = Schema.decodeSync(StartSpectrumInput);
 const primary = { instanceId: ProviderInstanceId.make("codex"), model: "sol", effort: "medium" };
@@ -123,4 +124,13 @@ it("honors configured limits above the legacy tool cap, while explicit legacy li
     resolveSpectrumStart({ ...request, mode: "free" }, { ...settings, turnsPerColor: 12 }).limit,
   ).toBe(24);
   expect(() => resolveSpectrumStart({ ...request, limit: 101 }, settings)).toThrow();
+});
+
+it("names the separate White after the first label no Color uses, ignoring case", () => {
+  expect(whiteMemberLabel(["Blue", "Red"])).toBe("White");
+  expect(whiteMemberLabel(["white", "Red"])).toBe("White (moderator)");
+  expect(whiteMemberLabel(["White", "white (Moderator)"])).toBe("White (moderator 2)");
+  expect(whiteMemberLabel(["White", "White (moderator)", "White (moderator 2)"])).toBe(
+    "White (moderator 3)",
+  );
 });
