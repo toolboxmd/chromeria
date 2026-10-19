@@ -110,7 +110,7 @@ interface StoredRow {
 }
 
 /**
- * A live (not deleted) thread as Issue links read it, straight from the V2 thread projection the
+ * A thread as Issue links read it, straight from the V2 thread projection the
  * way upstream's `pullRequest/linkedThreads.ts` reads it: one pass over the table instead of a
  * shell snapshot per read.
  */
@@ -119,6 +119,7 @@ interface ThreadRow {
   readonly projectId: string;
   readonly title: string;
   readonly archivedAt: string | null;
+  readonly deletedAt: string | null;
   readonly updatedAt: string;
   readonly branch: string | null;
   readonly parentThreadId: string | null;
@@ -208,7 +209,7 @@ function descendantRowsOf(rows: ReadonlyArray<ThreadRow>, threadId: string): Arr
     for (const child of children.get(queue.shift()!) ?? []) {
       if (seen.has(child.threadId)) continue;
       seen.add(child.threadId);
-      descendants.push(child);
+      if (child.deletedAt === null) descendants.push(child);
       queue.push(child.threadId);
     }
   }
@@ -251,19 +252,20 @@ const make = Effect.gen(function* () {
       WHERE thread_id = ${threadId}
     `.pipe(Effect.map((rows) => rows.map(storedOf)));
 
-  /** Every live thread, archived ones included, oldest first. */
-  const liveThreads = sql<ThreadRow>`
+  const threadRows = (includeDeleted: boolean) => sql<ThreadRow>`
     SELECT thread_id AS "threadId", project_id AS "projectId", title,
-      archived_at AS "archivedAt", updated_at AS "updatedAt",
+      archived_at AS "archivedAt", deleted_at AS "deletedAt", updated_at AS "updatedAt",
       json_extract(payload_json, '$.branch') AS branch,
       json_extract(payload_json, '$.lineage.parentThreadId') AS "parentThreadId",
       json_extract(payload_json, '$.lineage.relationshipToParent') AS "relationshipToParent",
       json_extract(payload_json, '$.pullRequests') AS "pullRequestsJson",
       json_extract(payload_json, '$.linkedPullRequest') AS "linkedPullRequestJson"
     FROM orchestration_v2_projection_threads
-    WHERE deleted_at IS NULL
+    WHERE ${includeDeleted ? sql`1` : sql`deleted_at IS NULL`}
     ORDER BY created_at, thread_id
   `;
+  /** Every live thread, archived ones included, oldest first. */
+  const liveThreads = threadRows(false);
 
   /** Each active project's GitHub repository (a fork checkout's own), by project id. */
   const projectRepositories = projects.listShells().pipe(
@@ -304,7 +306,8 @@ const make = Effect.gen(function* () {
    * left out: they need a GitHub read per pull request, and the panel lists those pull requests.
    */
   const descendantLinks = Effect.fn("IssueLinks.descendantLinks")(function* (threadId: ThreadId) {
-    const descendants = descendantRowsOf(yield* liveThreads, threadId);
+    // Deleted threads still connect living descendants to their ancestors, as in Stop traversal.
+    const descendants = descendantRowsOf(yield* threadRows(true), threadId);
     if (descendants.length === 0) return [];
     const storedRows = yield* sql<StoredRow & { readonly threadId: string }>`
       SELECT thread_id AS "threadId", host, repository, number, url, source,

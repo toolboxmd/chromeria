@@ -270,6 +270,45 @@ describe("IssueLinks", () => {
     }).pipe(Effect.provide(services)),
   );
 
+  it.effect("rolls up active grandchildren through deleted children without their links", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* writeThread({
+        id: "deleted-child",
+        projectId: "project-web",
+        branch: "feat/41-deleted",
+        parent: { id: THREAD },
+      });
+      yield* writeThread({
+        id: "active-grandchild",
+        projectId: "project-api",
+        branch: "feat/7-worker",
+        parent: { id: "deleted-child", root: THREAD },
+      });
+      const links = yield* IssueLinks.IssueLinks;
+      for (const [threadId, number] of [
+        ["deleted-child", 42],
+        ["active-grandchild", 40],
+      ] as const) {
+        yield* links.link({
+          threadId: ThreadId.make(threadId),
+          target: { number },
+          source: "agent",
+        });
+      }
+      yield* deleteThread("deleted-child", "2026-09-02T00:00:00.000Z");
+
+      const rolledUp = yield* links.forThread(THREAD, { includeDescendants: true });
+      expect(
+        rolledUp.map((entry) => [`${entry.repository}#${entry.number}`, entry.linkedByThreadId]),
+      ).toEqual([
+        ["acme/web#28", undefined],
+        ["acme/api#40", "active-grandchild"],
+        ["acme/api#7", "active-grandchild"],
+      ]);
+    }).pipe(Effect.provide(services)),
+  );
+
   it.effect("rolls up only through unbroken spawned-thread links, never across a fork", () =>
     Effect.gen(function* () {
       yield* seed;
