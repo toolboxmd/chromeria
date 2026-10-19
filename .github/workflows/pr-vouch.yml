@@ -20,6 +20,9 @@ permissions:
 jobs:
   collect-targets:
     name: Collect PR targets
+    if: >-
+      github.event_name != 'issue_comment' ||
+      (github.event.issue.pull_request && contains(github.event.comment.body, '/recheck-vouch'))
     runs-on: ubuntu-24.04
     outputs:
       targets: ${{ steps.collect.outputs.targets }}
@@ -36,7 +39,8 @@ jobs:
 
             if (context.eventName === "issue_comment") {
               const issue = context.payload.issue;
-              const body = context.payload.comment?.body ?? "";
+              // Match the case-insensitive job gate.
+              const body = (context.payload.comment?.body ?? "").toLowerCase();
               if (!issue?.pull_request || !body.includes("/recheck-vouch")) {
                 core.setOutput("targets", "[]");
                 return;

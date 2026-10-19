@@ -346,13 +346,14 @@ jobs:
   # isolation that flag buys is preserved exactly. One file at a time keeps
   # about 1.5 cores busy, so 4 vCPU runners lose nothing against 8. The shards
   # split files by recorded duration (apps/server/src/testUtils/weightedShardSequencer.ts).
-  # The shards are the longest jobs, so they gate themselves instead of waiting
-  # ~15s for `changes`: a shard the change cannot affect stops after checkout.
+  # Gate before matrix expansion so unaffected changes allocate no shard runners.
   test_server:
     permissions:
       contents: read
       id-token: write
     name: Test Server ${{ matrix.shard }}
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.test_server != 'false' }}
     runs-on: ubuntu-24.04
     # Shards take 2-5 minutes. When the shared task cache throttles reads, each
     # failed fetch stalls vp for 15-90s, which pushed shards past 10 minutes.
@@ -362,23 +363,16 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
-      # Depth 2 brings the base commit the change is diffed against.
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          fetch-depth: 2
           sparse-checkout: |
             /*
             !/.repos/
             !/apps/mobile/modules/t3-terminal/Vendor/**/*.a
           sparse-checkout-cone-mode: false
 
-      - name: Detect affected jobs
-        id: changes
-        uses: ./.github/actions/ci-changes
-
       - name: Setup Vite+
-        if: steps.changes.outputs.test_server != 'false'
         uses: ./.github/actions/setup-ci-deps
         with:
           task-cache-read-token: ${{ secrets.T3_TASK_CACHE_READ_TOKEN }}
@@ -389,26 +383,22 @@ jobs:
       # Cache the pinned browser and skip apt unless shared libraries are missing.
       - name: Resolve Playwright version
         id: playwright_version
-        if: steps.changes.outputs.test_server != 'false'
         run: echo "version=$(node -p "require('./apps/server/node_modules/playwright-core/package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: Cache Chromium
         id: chromium_cache
-        if: steps.changes.outputs.test_server != 'false'
         uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-shell-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright_version.outputs.version }}
 
       - uses: ./.github/actions/setup-apt-mirrors
-        if: steps.changes.outputs.test_server != 'false'
 
       - name: Install Chromium for server browser integration tests
-        if: steps.changes.outputs.test_server != 'false' && steps.chromium_cache.outputs.cache-hit != 'true'
+        if: steps.chromium_cache.outputs.cache-hit != 'true'
         run: node apps/server/node_modules/playwright-core/cli.js install --only-shell chromium
 
       - name: Install missing Chromium system dependencies
-        if: steps.changes.outputs.test_server != 'false'
         run: |
           browser=$(find "$HOME/.cache/ms-playwright" -name chrome-headless-shell -type f -print -quit)
           test -n "$browser"
@@ -417,7 +407,6 @@ jobs:
           fi
 
       - name: Test
-        if: steps.changes.outputs.test_server != 'false'
         env:
           T3CODE_TRANSFER_BUDGET_REPORT_PATH: ${{ runner.temp }}/t3code-transfer-budget.md
           T3CODE_TRANSFER_BUDGET_RESULT_PATH: ${{ runner.temp }}/thread-transfer-result.json
