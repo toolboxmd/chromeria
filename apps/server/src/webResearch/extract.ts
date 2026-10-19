@@ -125,6 +125,23 @@ export const extract = (html: string, url: string) => {
   return { title: title ?? "", text, refresh, password, visibleText: compact(rendered), links };
 };
 
+// A heading or link, not prose. The word cap stops a heading from swallowing the page.
+const CHROME_TOKEN =
+  /\[[^\]\n]{1,256}\]\((?:https?:\/\/|mailto:|tel:)[^)\s]+\)|#{1,6}\s+[A-Za-z0-9][A-Za-z0-9'’:,.&-]*(?:\s+[A-Za-z0-9][A-Za-z0-9'’:,.&-]*){0,8}/
+    .source;
+// The instruction is the whole remainder. A longer sentence, or one beside real prose, does not match.
+const JAVASCRIPT_INSTRUCTION =
+  /(?:please\s+)?(?:you\s+(?:need|must)\s+to\s+)?enable\s+javascript(?:\s+to\s+[A-Za-z0-9][A-Za-z0-9'’,-]*(?:\s+[A-Za-z0-9][A-Za-z0-9'’,-]*){0,5})?[.!]?(?:\s+(?:javascript\s+is\s+(?:required|disabled)|this\s+(?:page|site|app)\s+requires\s+javascript)[.!]?)?/
+    .source;
+const INSTRUCTIONAL_JAVASCRIPT_SHELL = new RegExp(
+  `^(?:(?:${CHROME_TOKEN})\\s+)*(?:${JAVASCRIPT_INSTRUCTION})(?:\\s+(?:${CHROME_TOKEN}))*$`,
+  "i",
+);
+
+/** Navigation and headings can push a JavaScript-only instruction past the length threshold. */
+const instructionalJavascriptShell = (visibleText: string) =>
+  INSTRUCTIONAL_JAVASCRIPT_SHELL.test(visibleText);
+
 /** Classify the document itself, so a footer's login link is not mistaken for a wall. */
 export const classify = (
   page: ReturnType<typeof extract>,
@@ -173,5 +190,9 @@ export const classify = (
       ))
   )
     return "consent";
-  return page.visibleText.length < 80 && !page.text.includes("JSON-LD:") ? "thin" : "ok";
+  // Headings and navigation alone are not page content, so they do not keep an instruction readable.
+  return (page.visibleText.length < 80 || instructionalJavascriptShell(page.visibleText)) &&
+    !page.text.includes("JSON-LD:")
+    ? "thin"
+    : "ok";
 };
