@@ -136,7 +136,7 @@ describe("ColorList while a save is pending", () => {
 });
 
 describe("ColorList adding a Color", () => {
-  it("appends the picked Color and keeps existing rows mounted when the save lands", async () => {
+  it("saves the picked provider at its first model and keeps existing rows mounted when the save lands", async () => {
     const codex: ColorProviderChoice = {
       instanceId: first.instanceId,
       driverKind: ProviderDriverKind.make("codex"),
@@ -146,9 +146,11 @@ describe("ColorList adding a Color", () => {
     const list = harness([first, second], [codex]);
     await list.render();
     const [firstRow, secondRow] = rows();
+    // Picking a provider in the add row saves at once; there is no separate Add button.
     await act(() =>
-      container.querySelector<HTMLButtonElement>('[aria-label="Add Reviewer Color"]')!.click(),
+      container.querySelector<HTMLElement>('[aria-label="Add Reviewer Color"]')!.click(),
     );
+    await act(() => [...document.querySelectorAll<HTMLElement>('[role="option"]')][0]!.click());
     expect(list.save).toHaveBeenCalledWith([
       first,
       second,
