@@ -40,6 +40,7 @@ export function useLinkedPullRequestActions(input: {
   );
   const canEdit = canOperate && capabilities?.threadPullRequests === true;
   const canWatch = canOperate && capabilities?.threadPullRequestWatch === true;
+  const supportsPurpose = capabilities?.executionPurposeVersions?.includes(1) === true;
   const canStartWatch =
     canWatch &&
     thread !== null &&
@@ -156,12 +157,13 @@ export function useLinkedPullRequestActions(input: {
           createThreadPullRequestWatchAction({
             threadRef: { environmentId: thread.environmentId, threadId: thread.id },
             ownLinks: thread.pullRequests ?? [],
+            ...(supportsPurpose ? { purpose: { selection: thread.purposeSelection } } : {}),
             watch,
           })(link, link.watch === undefined),
         );
       else if (action === "unlink") setLinked(link, false);
     },
-    [run, setLinked, thread, watch],
+    [run, setLinked, supportsPurpose, thread, watch],
   );
 
   return useMemo(

@@ -445,6 +445,9 @@ function EnabledThreadPullRequestsPanel({
   const handleSetWatching = createThreadPullRequestWatchAction({
     threadRef,
     ownLinks: thread?.pullRequests ?? [],
+    ...(capabilities?.executionPurposeVersions?.includes(1) === true
+      ? { purpose: { selection: thread?.purposeSelection } }
+      : {}),
     watch,
   });
 

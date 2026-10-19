@@ -140,6 +140,38 @@ describe("thread outbox", () => {
       decodeQueuedThreadMessage(JSON.parse(JSON.stringify(encodeQueuedThreadMessage(message)))),
     ).toEqual(message);
   });
+  it("retains pinned purpose intent through durable reload and rejects a malformed new envelope", () => {
+    const base = queuedMessage({
+      messageId: "purpose-mobile",
+      createdAt: "2026-10-16T12:00:00.000Z",
+    });
+    for (const purposeIntent of [
+      {
+        version: 1,
+        intent: {
+          type: "reference",
+          reference: { host: "github.com", repository: "example/repo", kind: "issue", number: 11 },
+        },
+      },
+      { version: 1, intent: { type: "selection", expectedRevision: 7 } },
+      { version: 1, intent: { type: "target" } },
+    ] as const) {
+      const reloaded = decodeQueuedThreadMessage(
+        JSON.parse(JSON.stringify(encodeQueuedThreadMessage({ ...base, purposeIntent }))),
+      );
+      expect(reloaded.purposeIntent).toEqual(purposeIntent);
+    }
+    expect(
+      decodeQueuedThreadMessage(encodeQueuedThreadMessage(base)).purposeIntent,
+    ).toBeUndefined();
+    expect(() =>
+      decodeQueuedThreadMessage({
+        ...(encodeQueuedThreadMessage(base) as object),
+        purposeIntent: { version: 1 },
+      }),
+    ).toThrow();
+  });
+
   it("retains queue mode when a queued provider switch reloads from storage", () => {
     const message: QueuedThreadMessage = {
       ...queuedMessage({ messageId: "queued-switch", createdAt: "2026-09-17T09:00:00.000Z" }),

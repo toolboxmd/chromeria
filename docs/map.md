@@ -83,6 +83,8 @@ flowchart TD
     %% XM: #164 #302
     NR["Network routes"]
     %% NR: #292 #358 PR #498 PR #497
+    EP["Execution purpose"]
+    %% EP: #377 PR #388
     PRN["Paired session renewal"]
     %% PRN: #323 #336 PR #477 PR #504 PR #473
     WR["Agent web research"]
@@ -115,6 +117,9 @@ flowchart TD
     T3R --- NR
     T3R --- PRN
     T3M --- WR
+    T3S --- EP
+    EP --- DR
+    EP --- XM
 
     PZ --> PM --> WG
     PZ --> DR --> VT --> XM
