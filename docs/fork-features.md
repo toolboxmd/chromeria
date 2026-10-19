@@ -2681,7 +2681,10 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/issues/520",
     "https://github.com/toolboxmd/chromeria/issues/541"
   ],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/530"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/530",
+    "https://github.com/toolboxmd/chromeria/pull/545"
+  ],
   "newFiles": [
     "apps/desktop/src/preview/BrowserImport/ChromiumKeychainWorker.ts",
     "apps/desktop/src/preview/BrowserImport/ChromiumKeychainWorker.test.ts",

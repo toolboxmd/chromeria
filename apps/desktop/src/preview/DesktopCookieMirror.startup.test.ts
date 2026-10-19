@@ -67,6 +67,9 @@ import * as NetService from "@t3tools/shared/Net";
 import * as PreviewManager from "./Manager.ts";
 
 const { readKey } = vi.hoisted(() => ({ readKey: vi.fn() }));
+vi.mock("@clerk/electron", () => ({ createClerkBridge: vi.fn() }));
+vi.mock("@clerk/electron/storage", () => ({ storage: vi.fn() }));
+vi.mock("electron-updater", () => ({ autoUpdater: {} }));
 vi.mock("electron", () => ({ app: { on: vi.fn(), off: vi.fn(), whenReady: async () => {} } }));
 vi.mock("./ChromeCookieKey.ts", async (original) => {
   const module = await original<typeof import("./ChromeCookieKey.ts")>();
