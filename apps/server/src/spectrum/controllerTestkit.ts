@@ -65,6 +65,7 @@ const prism = Prism.layer.pipe(
   ),
 );
 export const base = Layer.mergeAll(
+  Settings.layerTest(),
   Layer.mock(BareLaunch.BareLaunch)({}),
   ProjectStore.layer.pipe(Layer.provide(database)),
   database,

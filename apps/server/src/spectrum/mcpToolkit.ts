@@ -1,6 +1,8 @@
 import { BareLaunchRequest } from "@t3tools/contracts";
 import * as McpRouting from "../mcp/McpRouting.ts";
 import {
+  SpectrumRelayRounds,
+  SpectrumTurnsPerColor,
   CommandId,
   NodeId,
   ThreadId,
@@ -25,7 +27,6 @@ import {
 } from "../mcp/threadAccess.ts";
 import * as Launch from "./LaunchService.ts";
 import { assertSameLink } from "../mcp/linkOrigin.ts";
-import { spectrumShape } from "./freeMode.ts";
 
 const Candidate = Schema.Struct({
   selection: Schema.optional(ModelSelection),
@@ -50,12 +51,13 @@ export const StartSpectrumInput = Schema.Struct({
   clientRequestId: Schema.optional(TrimmedNonEmptyString),
   question: TrimmedNonEmptyString,
   title: Schema.optional(TrimmedNonEmptyString),
-  colors: Schema.Array(Color).check(Schema.isMinLength(2), Schema.isMaxLength(8)),
-  mode: Schema.Literals(["council", "free"]),
+  colors: Schema.optional(Schema.Array(Color).check(Schema.isMinLength(2), Schema.isMaxLength(8))),
+  mode: Schema.optional(Schema.Literals(["council", "free"])),
   limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
-  moderator: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
-  turnsPerColor: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 12 }))),
   white: Schema.optional(TrimmedNonEmptyString),
+  relayRounds: Schema.optional(SpectrumRelayRounds),
+  turnsPerColor: Schema.optional(SpectrumTurnsPerColor),
+  moderator: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
 });
 export const StartSpectrumResult = Schema.Struct({
   threadId: ThreadId,
@@ -75,7 +77,7 @@ export const StartSpectrumResult = Schema.Struct({
 export const SpectrumToolkit = Toolkit.make(
   Tool.make("start_spectrum", {
     description:
-      "Open a visible provider-less Spectrum transcript with Drafter Colors chosen through Prism. Council runs independent answers, at least two relay barriers and White's synthesis. Free mode runs an opening round in Color order, then White (the moderator) picks each next speaker with a final line NEXT: <label> or DONE and writes the closing summary; the cap is turnsPerColor (default 3) times the Colors, or limit. white names White by label (default the first Color). All replies are relayed verbatim. Send normal messages to join at the next barrier, reopen to continue after the report finishes or is explicitly abandoned, and Stop to cancel owned Drafter work. limit is council relay rounds (default 2) or the free-mode cap on Color turns. A Color's fallbacks are tried in order only when its turn cannot start. Started by an agent from its own thread, the Spectrum is that thread's delegated task: taskId works with task_status (the report is its result) and task_cancel (Stop); the report message is the only wake.",
+      "Open a visible provider-less Spectrum transcript with Drafter Colors chosen through Prism. Council runs independent answers, at least two relay barriers and White's synthesis. Free mode opens in Color order, then White picks each next speaker with NEXT: <label> or DONE and writes the closing summary. All replies are relayed verbatim. Send normal messages to join at the next barrier, reopen to continue after the report finishes or is explicitly abandoned, and Stop to cancel owned Drafter work. Omitted colors, White, mode and limits use Spectrum settings for the caller’s project/environment. Configure default slots in Settings > Spectrum, then pass only question. Explicit colors replace all slots and inherit no fallbacks. Explicit colors ignore saved White: if white and moderator are omitted, the first explicit Color is White. white names a slot label; moderator is its legacy zero-based index. relayRounds is council relay rounds (minimum 2); turnsPerColor (1-12) times the number of Colors sets the free-mode cap on Color turns. Legacy limit overrides the current mode’s total limit. A Color's fallbacks are tried in order only when its turn cannot start. Started by an agent from its own thread, the Spectrum is that thread's delegated task: taskId works with task_status (the report is its result) and task_cancel (Stop); the report message is the only wake.",
     parameters: McpRouting.parameters(StartSpectrumInput),
     success: StartSpectrumResult,
     failure: OrchestratorMcpFailure,
@@ -106,9 +108,6 @@ export const layer = McpToolAccess.toLayer(SpectrumToolkit, {
             code: "thread_not_found",
             message: "The Spectrum caller was not found.",
           });
-        const shape = spectrumShape({ ...input, labels: input.colors.map((color) => color.label) });
-        if (typeof shape === "string")
-          return yield* new OrchestratorMcpFailure({ code: "invalid_request", message: shape });
         const request = input.clientRequestId ?? String(yield* newCommandId());
         const key = `spectrum:${encodeURIComponent(scope.requestNamespace)}:${encodeURIComponent(request)}`;
         const state = yield* launch
@@ -122,10 +121,19 @@ export const layer = McpToolAccess.toLayer(SpectrumToolkit, {
             ...(input.title === undefined ? {} : { title: input.title }),
             colors: input.colors,
             mode: input.mode,
-            limit: shape.limit,
-            moderator: shape.moderator,
+            limit: input.limit,
+            moderator: input.moderator,
+            white: input.white,
+            relayRounds: input.relayRounds,
+            turnsPerColor: input.turnsPerColor,
           })
-          .pipe(Effect.mapError(unavailable));
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "SpectrumStartValidationError"
+                ? new OrchestratorMcpFailure({ code: "invalid_request", message: error.message })
+                : unavailable(),
+            ),
+          );
         return {
           threadId: state.threadId,
           taskId: state.delegatedTaskId,

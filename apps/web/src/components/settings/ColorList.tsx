@@ -48,6 +48,7 @@ function ModelRow({
   onChange,
   onMove,
   onRemove,
+  minItems,
 }: {
   entry: DraftPreference;
   index: number;
@@ -58,6 +59,7 @@ function ModelRow({
   onChange: (color: Color) => void;
   onMove: (direction: -1 | 1) => void;
   onRemove: () => void;
+  minItems: number;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: entry.entryId,
@@ -124,7 +126,7 @@ function ModelRow({
         size="icon-sm"
         variant="ghost"
         aria-label={`Remove ${title} preference ${index + 1}`}
-        disabled={disabled}
+        disabled={disabled || count <= minItems}
         onClick={onRemove}
       >
         <TrashIcon />
@@ -142,6 +144,8 @@ export function ColorList({
   disabled,
   saving,
   save,
+  minItems = 0,
+  maxItems = Infinity,
 }: {
   title: string;
   saved: readonly Color[];
@@ -150,6 +154,8 @@ export function ColorList({
   disabled: boolean;
   saving: boolean;
   save: (models: readonly Color[]) => Promise<void>;
+  minItems?: number;
+  maxItems?: number;
 }) {
   const [draft, setDraft] = useState<readonly DraftPreference[]>(() =>
     saved.map(editablePreference),
@@ -203,6 +209,7 @@ export function ColorList({
                 entry={entry}
                 index={index}
                 count={draft.length}
+                minItems={minItems}
                 title={title}
                 providers={providers}
                 disabled={disabled}
@@ -232,7 +239,12 @@ export function ColorList({
           <Button
             size="sm"
             variant="outline"
-            disabled={disabled || saving || !findColorChoice(providers, addColor).model}
+            disabled={
+              disabled ||
+              saving ||
+              draft.length >= maxItems ||
+              !findColorChoice(providers, addColor).model
+            }
             onClick={() => {
               commit([...draft, editablePreference(addColor, nextPrismEntryId(draft))]);
               setAdding(null);

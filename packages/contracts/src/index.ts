@@ -79,3 +79,5 @@ export * from "./people.ts";
 export * from "./prism.ts";
 export * from "./wight.ts";
 export * from "./promachosHome.ts";
+
+export * from "./spectrumSettings.ts";

@@ -1,3 +1,4 @@
+import { SpectrumSettings, DEFAULT_SPECTRUM_SETTINGS } from "./spectrumSettings.ts";
 import { forkOpaqueSettingsFields } from "./forkSettings.ts";
 import { PrismProjectRoleKits, PrismRoleKits, PrismRoleKitsPatch } from "./prism.ts";
 import { EasDeviceHostConfigs, SimlockDeviceHostConfigs, SshDeviceHostConfigs } from "./device.ts";
@@ -1022,6 +1023,7 @@ export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "continueThreadsAfterServerUpdate",
   "responseStreamingMode",
   "prismRoles",
+  "spectrum",
 ] as const;
 export type ProjectScopedServerSettingKey = (typeof PROJECT_SCOPED_SERVER_SETTING_KEYS)[number];
 
@@ -1072,6 +1074,7 @@ export const ProjectSettingsOverrides = Schema.Struct({
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
   prismRoles: Schema.optionalKey(PrismProjectRoleKits),
+  spectrum: Schema.optionalKey(SpectrumSettings),
   providerInstances: Schema.optionalKey(
     Schema.Record(ProviderInstanceId, ProjectProviderInstanceOverride),
   ),
@@ -1167,6 +1170,9 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
   autoUpdateProviders: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  spectrum: SpectrumSettings.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SPECTRUM_SETTINGS)),
+  ),
   prismRoles: PrismRoleKits.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   worktreeCleanup: WorktreeCleanup.pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   storageCleanup: StorageCleanupSettings.pipe(
@@ -1525,6 +1531,7 @@ export const ServerSettingsPatch = Schema.Struct({
     }),
   ),
   prismRoles: Schema.optionalKey(PrismRoleKitsPatch),
+  spectrum: Schema.optionalKey(SpectrumSettings),
   wightModes: Schema.optionalKey(Schema.Record(ThreadId, Schema.NullOr(WightMode))),
   worktreeCleanup: Schema.optionalKey(
     Schema.NullOr(

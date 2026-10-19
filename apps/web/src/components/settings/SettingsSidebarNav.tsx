@@ -102,6 +102,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/devices": SmartphoneIcon,
   "/settings/prism": RouteIcon,
   "/settings/promachos": BotIcon,
+  "/settings/spectrum": PaletteIcon,
   "/settings/scheduled-tasks": CalendarClockIcon,
   "/settings/source-control": GitBranchIcon,
   "/settings/worktrees": FolderTreeIcon,

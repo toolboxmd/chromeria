@@ -107,16 +107,22 @@ when you stop using it in Chromeria 1.
 
 ## Spectrum conversations
 
-Ask your agent to start a Spectrum with a question and two to eight named
-Colors. Each Color is a Drafter selected through Prism, with an optional role
-or explicit model. A Color can name fallback models; Chromeria tries them in
-order only when that Color's turn cannot start, never after it started. One
-Color is White, the first unless the agent names another. **Council** collects
-independent answers, runs at least two relay rounds, then asks White to
-synthesize. **Free** lets each Color speak once in order; then White picks who
-speaks next after every turn, or ends the discussion, and writes a closing
-summary. Free mode allows three turns per Color unless the agent sets another
-number; at the limit, White summarizes.
+Set default slots, White, mode and limits in **Settings > Spectrum**, then ask
+your agent to start a Spectrum with just a question. Each slot has a unique label,
+a primary Color and optional fallbacks used only when that Color cannot start.
+Settings apply to the selected environment; a project override replaces the
+Spectrum defaults for that project, and resetting it restores inheritance.
+
+You can also supply explicit values when starting. Explicit slots replace the
+saved slots and have no fallbacks unless supplied. With explicit slots, White is
+the first Color unless you choose another. Saved White applies when you use the
+saved slots. A new environment starts without configured slots.
+
+**Council** collects independent answers, runs at least two relay rounds, then
+asks White to synthesize. **Free** lets each Color speak once in order; then
+White picks who speaks next after every turn, or ends the discussion, and writes
+a closing summary. The cap is the turns-per-Color preference times the number of
+Colors; at the cap, White summarizes.
 
 The Spectrum thread shows the full discussion. Send a message there to join at
 the next barrier. **Stop** cancels its owned Drafter work. After the report

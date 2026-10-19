@@ -26,6 +26,7 @@ export function makeState(overrides: Partial<SpectrumState> = {}): SpectrumState
     question: "What should we build?",
     mode: "council",
     limit: 2,
+    turnsPerColor: 3,
     moderator: 1,
     participants: [
       { threadId: ThreadId.make("blue"), label: "Blue", selection, fallbacks: [], attempted: [] },

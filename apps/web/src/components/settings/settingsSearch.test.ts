@@ -343,3 +343,13 @@ it("finds Promachos Colors in settings search with project scope", () => {
     scope: "project-defaults",
   });
 });
+
+it("finds Spectrum defaults from White and relay searches", () => {
+  for (const query of ["Spectrum", "White", "relay"]) {
+    expect(searchSettings(query)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ to: "/settings/spectrum", targetId: "spectrum-defaults" }),
+      ]),
+    );
+  }
+});

@@ -24,6 +24,7 @@ import * as Launch from "./LaunchService.ts";
 import * as Round from "./RoundService.ts";
 import * as Transcript from "./TranscriptService.ts";
 import * as Reports from "./ReportService.ts";
+import * as Settings from "../serverSettings.ts";
 import { base, input, setup } from "./controllerTestkit.ts";
 import { NOW } from "./testFixtures.ts";
 import type { SpectrumState } from "./state.ts";
@@ -148,11 +149,46 @@ const boot = Effect.gen(function* () {
   yield* initializeRecoveryHistory;
 });
 
-const register = (start: Launch.SpectrumStart) =>
+const register = (start: Launch.SpectrumStartRequest) =>
   Effect.gen(function* () {
     const state = yield* (yield* Launch.SpectrumLaunchService).register(start);
     return yield* resume(state.threadId);
   });
+
+it.effect("a question-only start uses configured White and cap throughout free moderation", () =>
+  Effect.gen(function* () {
+    yield* boot;
+    yield* (yield* Settings.ServerSettingsService).updateSettings({
+      spectrum: {
+        slots: ["Blue", "Red"].map((label) => ({ label, primary: selection, fallbacks: [] })),
+        white: "Red",
+        mode: "free",
+        relayRounds: 2,
+        turnsPerColor: 1,
+      },
+    });
+    let state = yield* register({
+      commandId: input.commandId,
+      threadId: input.threadId,
+      callerThreadId: input.callerThreadId,
+      callerRunId: input.callerRunId,
+      question: "Use the saved free discussion",
+    });
+    assert.strictEqual(state.limit, 2);
+    assert.strictEqual(state.turnsPerColor, 1);
+    assert.strictEqual(state.moderator, 1);
+    const spoken: string[] = [];
+    for (const text of ["Blue opens.", "Red opens.", "DONE", "Configured White's summary."]) {
+      const step = yield* answer(state, { text });
+      spoken.push(step.spoke);
+      if (step.spoke === "moderation:Red") assert.include(step.prompt, "turn 2 of 2");
+      state = step.next;
+    }
+    assert.deepStrictEqual(spoken, ["free:Blue", "free:Red", "moderation:Red", "summary:Red"]);
+    assert.strictEqual(state.status, "settled");
+    assert.include(state.report!.text, "Configured White's summary.");
+  }).pipe(Effect.provide(runtime)),
+);
 
 it.effect("White's NEXT decides the next speaker, including repeats, then DONE summarizes", () =>
   Effect.gen(function* () {
