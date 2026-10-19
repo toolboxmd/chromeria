@@ -4,16 +4,20 @@ import {
   CommandId,
   EventId,
   MessageId,
+  NodeId,
   ProviderDriverKind,
   ProviderInstanceId,
   RunId,
+  RuntimeRequestId,
   ScheduledTaskId,
   ThreadId,
   type OrchestrationV2Run,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Option from "effect/Option";
 import * as Events from "../orchestration-v2/EventSink.ts";
@@ -325,6 +329,69 @@ it.effect(
       assert.strictEqual(reopened.status, "active");
       assert.isNull(reopened.report);
     }).pipe(Effect.provide(runtime)),
+);
+
+it.effect("reopening a stopped council wakes a Drafter request suppressed by Stop", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    yield* initializeRecoveryHistory;
+    const state = yield* (yield* Launch.SpectrumLaunchService).register(input);
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const sink = yield* Events.EventSinkV2;
+    yield* orchestrator.dispatch({
+      type: "thread.stop",
+      threadId: state.threadId,
+      commandId: CommandId.make("drafter-request:stop"),
+    });
+    const retired = yield* read(state.threadId);
+    yield* (yield* Reports.SpectrumReportService).abandon(
+      state.threadId,
+      retired.report!.commandId,
+      "alice",
+    );
+    const drafter = retired.participants[0]!.threadId;
+    const requestId = RuntimeRequestId.make("drafter-request:approval");
+    // The listener wakes this request at once, while the Drafter is retired.
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("drafter-request:pending"),
+          type: "runtime-request.updated",
+          threadId: drafter,
+          occurredAt: NOW,
+          payload: {
+            id: requestId,
+            nodeId: NodeId.make("drafter-request:node"),
+            providerTurnId: null,
+            nativeRequestRef: null,
+            kind: "command",
+            status: "pending",
+            responseCapability: { type: "message" },
+            createdAt: NOW,
+            resolvedAt: null,
+          },
+        },
+      ],
+    });
+    const wakeCommandId = CommandId.make(
+      `command:child-request:${drafter}:${requestId}:${state.threadId}:0`,
+    );
+    const delivered = yield* sink.stream({ afterSequence: yield* sink.latestSequence() }).pipe(
+      Stream.filter(
+        (stored) => stored.commandId === wakeCommandId && stored.event.type === "message.updated",
+      ),
+      Stream.runHead,
+      Effect.forkChild,
+    );
+    yield* orchestrator.dispatch({
+      type: "thread.unsettle",
+      reason: "user",
+      threadId: state.threadId,
+      commandId: CommandId.make("drafter-request:reopen"),
+    });
+    assert.strictEqual((yield* read(state.threadId)).status, "active");
+    assert.isTrue(Option.isSome(yield* Fiber.join(delivered)));
+  }).pipe(Effect.provide(runtime)),
 );
 
 it.effect(
