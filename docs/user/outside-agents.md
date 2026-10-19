@@ -52,8 +52,9 @@ Then choose what the agent may do:
 To keep an unattended service connected, choose **Until revoked** instead of the
 30-day default. Its OAuth client must save and use refresh tokens, including the
 replacement refresh token returned by each renewal. It can renew without another
-approval, including after the environment restarts. Refresh one request at a time:
-reusing a replaced refresh token revokes the sign-in.
+approval, including after the environment restarts. Immediate retries of the last
+refresh return the same replacement for five seconds. Reusing an older token, or
+retrying after that window, revokes the sign-in.
 
 Enable **Limit this agent's access** to restrict it to an immutable project id
 and named operations: launch, send, read, interrupt and settle. The read operation

@@ -1,3 +1,4 @@
+import { refreshAuthorization } from "@modelcontextprotocol/sdk/client/auth.js";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   AuthStandardClientScopes,
@@ -79,7 +80,11 @@ const form = (body: Record<string, string>) => ({
 type Handler = (request: Request) => Effect.Effect<Response>;
 
 const withRoutes = <A, E>(
-  use: (handler: Handler, auth: EnvironmentAuth.EnvironmentAuth["Service"]) => Effect.Effect<A, E>,
+  use: (
+    handler: Handler,
+    auth: EnvironmentAuth.EnvironmentAuth["Service"],
+    fetchHandler: (request: Request) => Promise<Response>,
+  ) => Effect.Effect<A, E>,
 ) =>
   Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto;
@@ -94,7 +99,7 @@ const withRoutes = <A, E>(
         Effect.gen(function* () {
           const handler: Handler = (request) => Effect.promise(() => web.handler(request, context));
           yield* handler(at("/.well-known/oauth-authorization-server"));
-          return yield* use(handler, routerAuth!);
+          return yield* use(handler, routerAuth!, (request) => web.handler(request, context));
         }),
       (web) => Effect.promise(() => web.dispose()),
     );
@@ -571,7 +576,7 @@ it("matches loopback redirects on everything but the port, and https redirects e
 });
 
 it.live("issues a refresh token only when until-revoked was explicitly approved", () =>
-  withRoutes((handler, auth) =>
+  withRoutes((handler, auth, fetchHandler) =>
     Effect.gen(function* () {
       const clientId = yield* registeredClientId(handler);
       const params = authorizeParams(clientId);
@@ -602,18 +607,35 @@ it.live("issues a refresh token only when until-revoked was explicitly approved"
       const tokens = yield* json<{ access_token: string; refresh_token?: string }>(response);
       expect(tokens.refresh_token).toEqual(expect.any(String));
       expect((yield* auth.listSessions()).some((s) => s.client.label === "Claude Code")).toBe(true);
-      const refreshed = yield* handler(
-        at(
-          "/oauth/mcp/token",
-          form({
-            grant_type: "refresh_token",
-            client_id: clientId,
-            refresh_token: tokens.refresh_token!,
-          }),
-        ),
+      const sdkRefresh = () =>
+        refreshAuthorization(new URL(ORIGIN), {
+          metadata: {
+            issuer: ORIGIN,
+            authorization_endpoint: `${ORIGIN}/oauth/mcp/authorize`,
+            token_endpoint: `${ORIGIN}/oauth/mcp/token`,
+            response_types_supported: ["code"],
+            token_endpoint_auth_methods_supported: ["none"],
+          },
+          clientInformation: { client_id: clientId },
+          refreshToken: tokens.refresh_token!,
+          resource: new URL(`${ORIGIN}/mcp`),
+          fetchFn: async (input, init) => {
+            const request = new Request(input, init);
+            return fetchHandler(
+              at(new URL(request.url).pathname, {
+                method: request.method,
+                headers: Object.fromEntries(request.headers),
+                body: await request.text(),
+              }),
+            );
+          },
+        });
+      // The stock transport independently runs this SDK refresh path for concurrent 401s.
+      const [renewed, concurrent] = yield* Effect.promise(() =>
+        Promise.all([sdkRefresh(), sdkRefresh()]),
       );
-      expect(refreshed.status).toBe(200);
-      const renewed = yield* json<{ access_token: string; refresh_token: string }>(refreshed);
+      expect(renewed.refresh_token).toBe(concurrent.refresh_token);
+      expect(renewed.refresh_token).toEqual(expect.any(String));
       expect(renewed.refresh_token).not.toBe(tokens.refresh_token);
       const client = yield* auth.authenticateMcpClient(
         HttpServerRequest.fromWeb(
@@ -635,7 +657,7 @@ it.live("issues a refresh token only when until-revoked was explicitly approved"
           form({
             grant_type: "refresh_token",
             client_id: clientId,
-            refresh_token: renewed.refresh_token,
+            refresh_token: renewed.refresh_token!,
             scope: "access:write",
           }),
         ),

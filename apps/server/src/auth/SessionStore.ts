@@ -557,10 +557,19 @@ export const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const renewal = yield* SessionRenewal.SessionRenewal;
   const signingSecret = yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32);
-  yield* sql`CREATE TABLE IF NOT EXISTS auth_mcp_refresh (
-    session_id TEXT PRIMARY KEY REFERENCES auth_sessions(session_id),
-    token_hash TEXT NOT NULL
-  )`;
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      yield* sql`CREATE TABLE IF NOT EXISTS auth_mcp_refresh (
+      session_id TEXT PRIMARY KEY REFERENCES auth_sessions(session_id),
+      token_hash TEXT NOT NULL, previous_hash TEXT, previous_valid_until INTEGER
+    )`;
+      const columns = yield* sql<{ name: string }>`PRAGMA table_info(auth_mcp_refresh)`;
+      if (!columns.some((column) => column.name === "previous_hash"))
+        yield* sql`ALTER TABLE auth_mcp_refresh ADD COLUMN previous_hash TEXT`;
+      if (!columns.some((column) => column.name === "previous_valid_until"))
+        yield* sql`ALTER TABLE auth_mcp_refresh ADD COLUMN previous_valid_until INTEGER`;
+    }),
+  );
   const connectedSessionsRef = yield* Ref.make(new Map<AuthSessionId, number>());
   // Sessions with a running awaitInvalidation; each registers before its first row read.
   const watchedSessionsRef = yield* SubscriptionRef.make<ReadonlyMap<AuthSessionId, number>>(
@@ -986,7 +995,12 @@ export const make = Effect.gen(function* () {
   const decodeRefresh = Schema.decodeUnknownEffect(Schema.fromJsonString(RefreshClaims));
   const encodeRefresh = Schema.encodeEffect(Schema.fromJsonString(RefreshClaims));
   const signRefresh = (payload: string) => signPayload(`mcp-refresh.${payload}`, signingSecret);
-  const accessTokens = (claims: SessionClaims, clientId: string, resource: string) =>
+  const accessTokens = (
+    claims: SessionClaims,
+    clientId: string,
+    resource: string,
+    nextNonce?: string,
+  ) =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
       const expiresAt = DateTime.add(now, { hours: 1 });
@@ -998,9 +1012,11 @@ export const make = Effect.gen(function* () {
         Effect.map(base64UrlEncode),
         Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
       );
-      const nonce = yield* crypto
-        .randomUUIDv4()
-        .pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ cause })));
+      const nonce =
+        nextNonce ??
+        (yield* crypto
+          .randomUUIDv4()
+          .pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ cause }))));
       const refreshPayload = yield* encodeRefresh({ claims, clientId, resource, nonce }).pipe(
         Effect.map(base64UrlEncode),
         Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
@@ -1058,17 +1074,32 @@ export const make = Effect.gen(function* () {
         Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
       );
       yield* verify(`${authorityPayload}.${signPayload(authorityPayload, signingSecret)}`);
-      const result = yield* accessTokens(refresh.claims, clientId, resource);
+      // A concurrent SDK request or a lost response must get the same successor,
+      // without persisting the refresh secret. Only the immediate predecessor can retry.
+      const result = yield* accessTokens(
+        refresh.claims,
+        clientId,
+        resource,
+        signPayload(`mcp-refresh-nonce.${token}`, signingSecret),
+      );
+      const now = (yield* DateTime.now).epochMilliseconds;
       const updated =
-        yield* sql`UPDATE auth_mcp_refresh SET token_hash = ${tokenHash(result.refreshToken)}
+        yield* sql`UPDATE auth_mcp_refresh SET token_hash = ${tokenHash(result.refreshToken)},
+          previous_hash = ${tokenHash(token)}, previous_valid_until = ${now + 5_000}
         WHERE session_id = ${refresh.claims.sid} AND token_hash = ${tokenHash(token)} RETURNING session_id`.pipe(
           Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
         );
       if (updated.length !== 1) {
-        // A valid, bound token was already spent. Either bearer may be the thief,
-        // so cut off the shared authority and every access/refresh token it issued.
-        yield* revoke(refresh.claims.sid);
-        return yield* new MalformedSessionTokenError({});
+        const retry = yield* sql`SELECT session_id FROM auth_mcp_refresh
+          WHERE session_id = ${refresh.claims.sid} AND token_hash = ${tokenHash(result.refreshToken)}
+            AND previous_hash = ${tokenHash(token)} AND previous_valid_until > ${now}`.pipe(
+          Effect.mapError((cause) => new SessionCredentialIssueError({ cause })),
+        );
+        if (retry.length !== 1) {
+          // Valid bound authority reused after the retry window, or after another rotation.
+          yield* revoke(refresh.claims.sid);
+          return yield* new MalformedSessionTokenError({});
+        }
       }
       return { ...result, scopes: refresh.claims.scopes };
     });

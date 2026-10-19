@@ -1061,7 +1061,7 @@ it.effect("outside OAuth refresh authority survives closing and reopening its da
     }).pipe(Effect.provide(firstLayer), Effect.scoped);
     yield* TestClock.adjust(Duration.days(31));
     const reopened = yield* makeDiskSessionStoreLayer(baseDir);
-    yield* Effect.gen(function* () {
+    const rotated = yield* Effect.gen(function* () {
       const store = yield* SessionStore.SessionStore;
       const renewed = yield* store.refreshMcpOAuthToken(
         first.refreshToken,
@@ -1072,7 +1072,28 @@ it.effect("outside OAuth refresh authority survives closing and reopening its da
         runtimeModeCeiling: "approval-required",
         mcpLimits: { projectId: "wedding", operations: ["launch", "read"] },
       });
+      return renewed;
     }).pipe(Effect.provide(reopened), Effect.scoped);
+    yield* TestClock.adjust(Duration.seconds(4));
+    const reopenedAgain = yield* makeDiskSessionStoreLayer(baseDir);
+    yield* Effect.gen(function* () {
+      const store = yield* SessionStore.SessionStore;
+      const retry = yield* store.refreshMcpOAuthToken(
+        first.refreshToken,
+        "service",
+        "https://box/mcp",
+      );
+      expect(retry.refreshToken).toBe(rotated.refreshToken);
+      expect((yield* store.verify(retry.token)).runtimeModeCeiling).toBe("approval-required");
+      // Retrying did not slide the original five-second deadline.
+      yield* TestClock.adjust(Duration.seconds(1));
+      expect(
+        (yield* Effect.result(
+          store.refreshMcpOAuthToken(first.refreshToken, "service", "https://box/mcp"),
+        ))._tag,
+      ).toBe("Failure");
+      expect((yield* Effect.result(store.verify(retry.token)))._tag).toBe("Failure");
+    }).pipe(Effect.provide(reopenedAgain), Effect.scoped);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
@@ -1112,6 +1133,7 @@ it.effect("revokes outside OAuth authority when a rotated refresh token is reuse
       "https://box/mcp",
     );
     expect((yield* store.verify(current.token)).sessionId).toBe(issued.sessionId);
+    yield* TestClock.adjust(Duration.seconds(5));
     expect(
       (yield* Effect.result(
         store.refreshMcpOAuthToken(first.refreshToken, "service", "https://box/mcp"),
@@ -1129,31 +1151,41 @@ it.effect("revokes outside OAuth authority when a rotated refresh token is reuse
   }).pipe(Effect.provide(layerSessionStore().pipe(Layer.provide(NodeServices.layer)))),
 );
 
-it.effect("concurrent outside OAuth refreshes revoke the raced grant", () =>
+it.effect("concurrent outside OAuth refreshes return the same live successor", () =>
   Effect.gen(function* () {
     const store = yield* SessionStore.SessionStore;
     const issued = yield* store.issue({
       subject: "mcp-client",
       method: "bearer-access-token",
       ttl: Duration.days(36500),
+      mcpLimits: { projectId: ProjectId.make("wedding"), operations: ["read"] },
     });
     const first = yield* store.issueMcpOAuthTokens(issued.token, "service", "https://box/mcp");
     const results = yield* Effect.all(
       [
-        Effect.result(store.refreshMcpOAuthToken(first.refreshToken, "service", "https://box/mcp")),
-        Effect.result(store.refreshMcpOAuthToken(first.refreshToken, "service", "https://box/mcp")),
+        store.refreshMcpOAuthToken(first.refreshToken, "service", "https://box/mcp"),
+        store.refreshMcpOAuthToken(first.refreshToken, "service", "https://box/mcp"),
       ],
       { concurrency: "unbounded" },
     );
-    expect(results.filter((result) => result._tag === "Success")).toHaveLength(1);
-    const winner = results.find((result) => result._tag === "Success");
-    if (winner === undefined)
-      throw new Error("Expected one refresh to rotate before detecting reuse");
-    expect((yield* Effect.result(store.verify(winner.success.token)))._tag).toBe("Failure");
+    expect(results[0].refreshToken).toBe(results[1].refreshToken);
+    for (const result of results) {
+      expect(yield* store.verify(result.token)).toMatchObject({
+        sessionId: issued.sessionId,
+        mcpLimits: { projectId: "wedding", operations: ["read"] },
+      });
+    }
+    const next = yield* store.refreshMcpOAuthToken(
+      results[0].refreshToken,
+      "service",
+      "https://box/mcp",
+    );
+    // Even inside the grace period, a token older than the immediate predecessor is reuse.
     expect(
       (yield* Effect.result(
-        store.refreshMcpOAuthToken(winner.success.refreshToken, "service", "https://box/mcp"),
+        store.refreshMcpOAuthToken(first.refreshToken, "service", "https://box/mcp"),
       ))._tag,
     ).toBe("Failure");
+    expect((yield* Effect.result(store.verify(next.token)))._tag).toBe("Failure");
   }).pipe(Effect.provide(layerSessionStore().pipe(Layer.provide(NodeServices.layer)))),
 );
