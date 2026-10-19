@@ -13,7 +13,7 @@ import { clientModeCeiling } from "../mcp/McpInvocationContext.ts";
 import { readThread, unavailable, type Caller } from "../mcp/threadAccess.ts";
 
 /** Native subagent edges alone grant ancestor authority, including across projects. */
-export const isCallerAncestor = Effect.fn("childThreads.isCallerAncestor")(function* (
+const isCallerAncestor = Effect.fn("childThreads.isCallerAncestor")(function* (
   context: Caller,
   targetId: ThreadId,
 ) {
@@ -40,7 +40,7 @@ export const isCallerAncestor = Effect.fn("childThreads.isCallerAncestor")(funct
  * first say over its descendants' requests; after that the Promachos may
  * answer them for the user (toolboxmd/chromeria#532).
  */
-export const ANCESTOR_STALE_AFTER = Duration.minutes(30);
+const ANCESTOR_STALE_AFTER = Duration.minutes(30);
 
 type Target = Pick<OrchestrationV2ThreadShell, "lineage" | "delegatedFrom">;
 
