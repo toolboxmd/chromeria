@@ -31,7 +31,7 @@ identified by their embedded commit SHA; upstream package versions are unchanged
 There is no Chromeria desktop update feed.
 
 For the continuous macOS Chrome login mirror, set `chromeCookieKeyCommand` in
-`desktop-settings.json` in the desktop state directory before starting the app:
+`desktop-settings.json` in the desktop state directory:
 
 ```json
 {
@@ -41,19 +41,31 @@ For the continuous macOS Chrome login mirror, set `chromeCookieKeyCommand` in
 
 The command runs as argv without a shell. Its stdout must contain Chrome's Safe
 Storage secret, optionally followed by one newline. The app derives the existing
-macOS v10 key and caches the result only in memory, once per process. Remove the
+macOS v10 key and caches successful reads only in memory. Remove the
 setting to use Keychain. A configured command that fails or is invalid stops Chrome
-observation; it never falls back to Keychain. Restart the app after changing the
-command or repairing a failed key read. Ad-hoc signed builds lose Keychain's
+observation; it never falls back to Keychain. Failed reads retry with bounded
+backoff. Command changes take effect on the next scan, within about 30 seconds,
+and discard the cached key. Ad-hoc signed builds lose Keychain's
 "Always Allow" grant after rebuilds, so the command avoids repeated prompts.
+
+Remote pairings need the explicit **Mirror desktop browser logins** permission
+(`preview:mirror-cookies`) in Connections settings. Standard client scopes do not
+include it. Re-pair existing connections with that permission before live proof;
+the local desktop bootstrap can issue its separate, scoped main-process credential.
+Desktop main resolves destinations and parent credentials from its own backend
+pool and saved connection catalog, verifies the environment identity and scope,
+and keeps mirror grants out of the renderer. A client-supplied surface is never
+authorization. Relay credentials need the same explicit permission; a standard
+cloud-connect session alone does not grant it.
 
 Mirroring runs only while the desktop app runs. Desktop retains value-free managed
 identities and removal metadata; the server retains a profile catalog. Cookie values
 remain in browser profiles and process memory. Failures have fixed
-diagnostic codes. Google account sign-in is reported as `accounts.google.com`:
-`device-bound, not mirrored`; copied cookie attributes do not establish a portable
-site session. See [reuse browser logins](user/browser-import.md) for session-cookie
-shutdown behavior.
+diagnostic codes. Settings > Integrations > Browser reports each observed
+device-bound site as `device-bound, not mirrored`. Chrome's DBSC store supplies
+site identities only; the mirror never reads its credential protobufs or binding
+keys. Google credential cookies are also excluded on macOS. See
+[reuse browser logins](user/browser-import.md) for session-cookie behavior.
 
 The server uses `chromeria-v2.sqlite` in its userdata directory. When missing,
 upstream initialization seeds it from a read-only sibling `state.sqlite` and

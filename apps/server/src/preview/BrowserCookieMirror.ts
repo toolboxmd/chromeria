@@ -1,5 +1,4 @@
 import {
-  AuthAccessWriteScope,
   AuthCookieMirrorWriteScope,
   DEFAULT_PERSON,
   CookieMirrorError,
@@ -50,7 +49,6 @@ const make = Effect.gen(function* () {
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const environmentId = yield* environment.getEnvironmentId;
   const lock = yield* Semaphore.make(1);
-  const desktopSessions = new Set<string>();
   const parents = new Map<string, AuthSessionId>();
   let generation = 0;
   const owner = (sessionId: AuthSessionId) =>
@@ -62,25 +60,26 @@ const make = Effect.gen(function* () {
       if (
         !client ||
         (client.person ?? DEFAULT_PERSON) !== DEFAULT_PERSON ||
-        !(client.permissions ?? client.scopes).includes(AuthAccessWriteScope)
+        !(client.permissions ?? client.scopes).includes(AuthCookieMirrorWriteScope)
       )
         return yield* new CookieMirrorError({ reason: "forbidden" });
     });
   return BrowserCookieMirror.of({
-    enable: (session, origin) =>
+    enable: (session) =>
       Effect.gen(function* () {
         if (
-          origin.surface !== "desktop" ||
-          !session.scopes.includes(AuthAccessWriteScope) ||
+          !session.scopes.includes(AuthCookieMirrorWriteScope) ||
           session.subject === "mcp-client"
         )
           return yield* new CookieMirrorError({ reason: "forbidden" });
         yield* owner(session.sessionId);
-        desktopSessions.add(session.sessionId);
       }),
     grant: (session) =>
       Effect.gen(function* () {
-        if (!desktopSessions.has(session.sessionId))
+        if (
+          !session.scopes.includes(AuthCookieMirrorWriteScope) ||
+          session.subject === "mcp-client"
+        )
           return yield* new CookieMirrorError({ reason: "forbidden" });
         yield* owner(session.sessionId);
         const child = yield* sessions

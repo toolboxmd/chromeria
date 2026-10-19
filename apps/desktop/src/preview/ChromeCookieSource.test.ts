@@ -7,7 +7,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { readChromeCookieSnapshot } from "./ChromeCookieSource.ts";
+import { readChromeCookieSnapshot, readChromeDeviceBoundSites } from "./ChromeCookieSource.ts";
 
 const key = Buffer.from("0123456789abcdef");
 const encrypted = (host: string, value: string) => {
@@ -38,6 +38,21 @@ const schema = Effect.gen(function* () {
 });
 
 describe("Chrome snapshot observation", () => {
+  it.effect("reports each DBSC site without selecting its credential protobuf", () =>
+    Effect.gen(function* () {
+      const { database, layer } = yield* fixture;
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`create table dbsc_session_tbl (key text primary key, proto blob)`;
+        yield* sql`insert into dbsc_session_tbl values ('https://google.com', ${Buffer.from("synthetic-private-binding")}), ('https://work.example.test', ${Buffer.from("invalid-protobuf")})`;
+        expect((yield* readChromeDeviceBoundSites(database)).sort()).toEqual([
+          "google.com",
+          "work.example.test",
+        ]);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
   it.effect(
     "reads committed WAL rows while the source remains open, preserving full keys and attributes",
     () =>
@@ -47,7 +62,7 @@ describe("Chrome snapshot observation", () => {
           const sql = yield* SqlClient.SqlClient;
           yield* schema;
           yield* sql`insert into cookies values ('login.example.test', '__Host-session', '', ${encrypted("login.example.test", "synthetic-session")}, '/', 0, 1, 1, -1, '', 0, 0)`;
-          yield* sql`insert into cookies values ('.example.test', 'partitioned', '', ${encrypted(".example.test", "synthetic-partitioned")}, '/account', 13644473600000000, 1, 1, 0, 'https://top.test', 0, 1)`;
+          yield* sql`insert into cookies values ('.example.test', 'partitioned', '', ${encrypted(".example.test", "synthetic-partitioned")}, '/account', 13644473600123456, 1, 1, 0, 'https://top.test', 0, 1)`;
           expect(yield* fs.exists(`${database}-wal`)).toBe(true);
           const result = yield* readChromeCookieSnapshot(database, { cbcV10: key });
           expect(result.complete).toBe(true);
@@ -61,7 +76,7 @@ describe("Chrome snapshot observation", () => {
                 secure: true,
                 httpOnly: true,
                 sameSite: "no_restriction",
-                expires: 2_000_000_000,
+                expires: 2_000_000_000.123456,
                 partitionKey: { topLevelSite: "https://top.test", hasCrossSiteAncestor: false },
               },
               {

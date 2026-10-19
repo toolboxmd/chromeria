@@ -1,5 +1,9 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { authScopeResponse, AuthStandardClientScopes } from "@t3tools/contracts";
+import {
+  authScopeResponse,
+  AuthStandardClientScopes,
+  AuthCookieMirrorWriteScope,
+} from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -483,6 +487,47 @@ it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
     }).pipe(
       Effect.provide(layerEnvironmentAuth({ desktopBootstrapToken: "desktop-bootstrap-token" })),
     ),
+  );
+
+  it.effect(
+    "keeps the dedicated main mirror credential separate from renderer session rotation",
+    () =>
+      Effect.gen(function* () {
+        const auth = yield* EnvironmentAuth.EnvironmentAuth;
+        const renderer = yield* auth.exchangeBootstrapCredentialForAccessToken(
+          "desktop-bootstrap-token",
+          undefined,
+          requestMetadata,
+        );
+        const first = yield* auth.exchangeBootstrapCredentialForAccessToken(
+          "desktop-bootstrap-token",
+          [AuthCookieMirrorWriteScope],
+          requestMetadata,
+        );
+        const mirror = yield* auth.authenticateHttpRequest(makeBearerRequest(first.access_token));
+        expect(mirror.scopes).toEqual([AuthCookieMirrorWriteScope]);
+        expect(
+          (yield* auth.authenticateHttpRequest(makeBearerRequest(renderer.access_token))).scopes,
+        ).toEqual(AuthStandardClientScopes);
+        const second = yield* auth.exchangeBootstrapCredentialForAccessToken(
+          "desktop-bootstrap-token",
+          [AuthCookieMirrorWriteScope],
+          requestMetadata,
+        );
+        expect(
+          (yield* auth
+            .authenticateHttpRequest(makeBearerRequest(first.access_token))
+            .pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        expect(
+          (yield* auth.authenticateHttpRequest(makeBearerRequest(second.access_token))).scopes,
+        ).toEqual([AuthCookieMirrorWriteScope]);
+        expect(
+          (yield* auth.authenticateHttpRequest(makeBearerRequest(renderer.access_token))).scopes,
+        ).toEqual(AuthStandardClientScopes);
+      }).pipe(
+        Effect.provide(layerEnvironmentAuth({ desktopBootstrapToken: "desktop-bootstrap-token" })),
+      ),
   );
 
   it.effect("rotates desktop bearer sessions without accumulating authorized clients", () =>

@@ -8,6 +8,7 @@ import {
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import "../../index.css";
 
 const { listBrowserImportSources } = vi.hoisted(() => ({
   listBrowserImportSources: vi.fn().mockResolvedValue([]),
@@ -32,6 +33,7 @@ vi.mock(import("../../hooks/useSettings"), async (original) => ({
   useClientSettings: ((selector?: (settings: typeof DEFAULT_CLIENT_SETTINGS) => unknown) =>
     selector ? selector(DEFAULT_CLIENT_SETTINGS) : DEFAULT_CLIENT_SETTINGS) as never,
   useClientSettingsHydrated: () => true,
+  adoptDesktopBrowserProfiles: async () => undefined,
   usePrimarySettingsAvailable: () => true,
   usePrimarySettings: (() => DEFAULT_UNIFIED_SETTINGS) as never,
   useUpdatePrimarySettings: (() => vi.fn()) as never,
@@ -90,6 +92,34 @@ async function openSettings() {
 }
 
 describe("Integrations browser discovery", () => {
+  it("shows every device-bound site reported by desktop main in browser settings", async () => {
+    vi.stubGlobal("desktopBridge", undefined);
+    Object.defineProperty(window, "desktopBridge", {
+      configurable: true,
+      value: {
+        getClientSettings: async () => DEFAULT_CLIENT_SETTINGS,
+        setClientSettings: async () => undefined,
+        getConnectionCatalog: async () => null,
+        getLocalEnvironmentBootstraps: () => [],
+        cookieMirrorConnection: vi.fn(async () => ({
+          connected: false,
+          generation: 0,
+          profiles: [],
+          limitations: [
+            { host: "accounts.google.com", reason: "device-bound, not mirrored" },
+            { host: "work.example.test", reason: "device-bound, not mirrored" },
+          ],
+        })),
+      },
+    });
+    await openSettings();
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("accounts.google.com");
+      expect(container.textContent).toContain("work.example.test");
+      expect(container.textContent).toContain("device-bound, not mirrored");
+    });
+  });
+
   it("does not scan browser files when entering or revisiting settings", async () => {
     await openSettings();
     expect(listBrowserImportSources).not.toHaveBeenCalled();

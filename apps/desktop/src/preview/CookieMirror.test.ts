@@ -38,8 +38,8 @@ const store = (initial: ReadonlyArray<MirrorCookie> = []) => {
   } satisfies CookieMirrorStore;
   return { cookies, ...boundary };
 };
-const source = (mirror: CookieMirror, cookies: ReadonlyArray<MirrorCookie>, running = true) =>
-  mirror.observeChrome("chrome-default", profile, snapshot(cookies), running);
+const source = (mirror: CookieMirror, cookies: ReadonlyArray<MirrorCookie>) =>
+  mirror.observeChrome("chrome-default", profile, snapshot(cookies));
 const prepare = async (mirror: CookieMirror, environmentId = "env") => {
   for (const batch of mirror.snapshot(environmentId))
     await mirror.prepareDelivery(environmentId, batch.profile.id, batch.mutations);
@@ -48,16 +48,17 @@ const prepare = async (mirror: CookieMirror, environmentId = "env") => {
 describe("one-way mirror service seam", () => {
   it("adds, changes and removes cookies in all mapped partitions and preserves downstream-only cookies", async () => {
     const local = cookie("local", { name: "local" });
+    const persistent = cookie("initial", { expires: 2_000_000_000 });
     const first = store([local]);
     const second = store();
     const mirror = new CookieMirror();
     await mirror.addPartition("first", "env", profile, first);
     await mirror.addPartition("second", "other-env", profile, second);
-    await source(mirror, [cookie()]);
+    await source(mirror, [persistent]);
     await prepare(mirror);
-    expect([...first.cookies.values()]).toEqual([local, cookie()]);
-    expect([...second.cookies.values()]).toEqual([cookie()]);
-    await source(mirror, [cookie("changed")]);
+    expect([...first.cookies.values()]).toEqual([local, persistent]);
+    expect([...second.cookies.values()]).toEqual([persistent]);
+    await source(mirror, [{ ...persistent, value: "changed" }]);
     expect(second.cookies.get(cookieMirrorKey(cookie()))?.value).toBe("changed");
     await source(mirror, []);
     expect([...first.cookies.values()]).toEqual([local]);
@@ -110,7 +111,7 @@ describe("one-way mirror service seam", () => {
     expect(destination.apply).not.toHaveBeenCalled();
   });
 
-  it("keeps the baseline on failed reads and incomplete snapshots, while copying readable additions", async () => {
+  it("protects unreadable identities on partial reads while copying readable additions", async () => {
     const destination = store();
     const mirror = new CookieMirror();
     await mirror.addPartition("partition", "env", profile, destination);
@@ -119,43 +120,111 @@ describe("one-way mirror service seam", () => {
     destination.read.mockRejectedValueOnce(new Error("synthetic read failure"));
     await expect(mirror.observeDesktop("partition")).rejects.toThrow("synthetic read failure");
     const added = cookie("added", { name: "new" });
-    await mirror.observeChrome(
-      "chrome-default",
-      profile,
-      {
-        ...snapshot([added], false),
-        identities: [...snapshot([persistent]).identities, ...snapshot([added]).identities],
-      },
-      true,
-    );
+    await mirror.observeChrome("chrome-default", profile, {
+      ...snapshot([added], false),
+      identities: [...snapshot([persistent]).identities, ...snapshot([added]).identities],
+    });
     expect([...destination.cookies.values()]).toEqual([persistent, added]);
     expect(mirror.metadata().chrome[0]?.managed).toHaveLength(2);
     await source(mirror, [added]);
     expect([...destination.cookies.values()]).toEqual([added]);
   });
 
-  it("does not turn Chrome or desktop session shutdown into logout, but observes a running Chrome logout", async () => {
+  it("never removes vanished Chrome session cookies, including startup cleanup while Chrome holds its lock", async () => {
     const destination = store();
     let mirror = new CookieMirror();
     await mirror.addPartition("partition", "env", profile, destination);
     await source(mirror, [cookie()]);
     await prepare(mirror);
-    await source(mirror, [], false);
+    await source(mirror, []);
     expect([...destination.cookies.values()]).toEqual([cookie()]);
-    await source(mirror, [], true);
+    await source(mirror, []);
     expect([...destination.cookies.values()]).toEqual([cookie()]);
     await source(mirror, [cookie("signed-in-again")]);
-    await source(mirror, [], true);
-    expect(destination.cookies.size).toBe(0);
-    expect(mirror.snapshot("env")[0]?.mutations[0]?.type).toBe("remove");
+    await source(mirror, []);
+    expect([...destination.cookies.values()]).toEqual([cookie("signed-in-again")]);
+    expect(mirror.snapshot("env")[0]?.mutations.every((mutation) => mutation.type === "set")).toBe(
+      true,
+    );
     await source(mirror, [cookie()]);
     await prepare(mirror);
     const metadata = mirror.metadata();
     destination.cookies.clear();
     mirror = new CookieMirror({ metadata });
     await mirror.addPartition("partition", "env", profile, destination);
-    await source(mirror, [], true);
+    await source(mirror, []);
     expect(mirror.snapshot("env")[0]?.mutations).toEqual([]);
+  });
+
+  it("removes known absent identities while an unrelated row remains unreadable", async () => {
+    const unreadable = cookie("last-readable", { name: "unreadable", expires: 2_000_000_000 });
+    const removed = cookie("signed-out", { name: "removed", expires: 2_000_000_000 });
+    const downstream = cookie("local", { name: "downstream-only" });
+    const destination = store([downstream]);
+    const mirror = new CookieMirror();
+    await mirror.addPartition("partition", "env", profile, destination);
+    await source(mirror, [unreadable, removed]);
+    await prepare(mirror);
+    await mirror.observeChrome("chrome-default", profile, {
+      cookies: [],
+      identities: snapshot([unreadable]).identities,
+      complete: false,
+    });
+    expect([...destination.cookies.values()]).toEqual([downstream, unreadable]);
+    expect(mirror.snapshot("env")[0]?.mutations).toContainEqual({
+      type: "remove",
+      key: { name: "removed", domain: "login.example.test", path: "/account" },
+    });
+  });
+
+  it("does not forward a Chrome write again when CDP rounds fractional microsecond expiry", async () => {
+    const changed = vi.fn();
+    const destination = store();
+    const mirror = new CookieMirror({ changed });
+    await mirror.addPartition("partition", "env", profile, destination);
+    const chrome = cookie("fractional", { expires: 2_000_000_000.123456 });
+    changed.mockClear();
+    await source(mirror, [chrome]);
+    expect(changed).toHaveBeenCalledExactlyOnceWith("env");
+    destination.cookies.set(cookieMirrorKey(chrome), { ...chrome, expires: 2_000_000_000.123 });
+    changed.mockClear();
+    await mirror.observeDesktop("partition");
+    expect(changed).not.toHaveBeenCalled();
+  });
+
+  it("protects both unknown ancestor siblings without hiding absence at a different top-level site", async () => {
+    const first = cookie("first", {
+      expires: 2_000_000_000,
+      partitionKey: { topLevelSite: "https://top.test", hasCrossSiteAncestor: false },
+    });
+    const sibling = {
+      ...first,
+      value: "sibling",
+      partitionKey: { ...first.partitionKey!, hasCrossSiteAncestor: true },
+    };
+    const absent = {
+      ...first,
+      value: "absent",
+      partitionKey: { ...first.partitionKey!, topLevelSite: "https://other.test" },
+    };
+    const destination = store();
+    const mirror = new CookieMirror();
+    await mirror.addPartition("partition", "env", profile, destination);
+    await source(mirror, [first, sibling, absent]);
+    await mirror.observeChrome("chrome-default", profile, {
+      cookies: [],
+      identities: [],
+      complete: false,
+      unresolvedPartitions: [
+        {
+          domain: first.domain,
+          name: first.name,
+          path: first.path,
+          topLevelSite: "https://top.test",
+        },
+      ],
+    });
+    expect([...destination.cookies.values()]).toEqual([first, sibling]);
   });
 
   it("preserves an offline logout through a desktop restart using identities without values", async () => {
@@ -216,7 +285,7 @@ describe("one-way mirror service seam", () => {
       partitionKey: { topLevelSite: "https://top.example", hasCrossSiteAncestor: false },
     };
     await source(mirror, [cookie("personal"), partitioned, sibling]);
-    await mirror.observeChrome("chrome-work", work, snapshot([cookie("work")]), true);
+    await mirror.observeChrome("chrome-work", work, snapshot([cookie("work")]));
     await source(mirror, [cookie("personal"), sibling]);
     expect([...first.cookies.values()]).toEqual([cookie("personal"), sibling]);
     expect([...second.cookies.values()]).toEqual([cookie("work")]);

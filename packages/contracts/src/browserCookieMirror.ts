@@ -74,13 +74,11 @@ export const CookieMirrorConnectionInput = Schema.Union([
   Schema.Struct({
     action: Schema.Literal("connect"),
     environmentId: EnvironmentId,
-    httpBaseUrl: Schema.String,
-    headers: Schema.Struct({
-      authorization: Schema.String,
-      dpop: Schema.optionalKey(Schema.String),
-    }),
   }),
-  Schema.Struct({ action: Schema.Literal("status"), environmentId: EnvironmentId }),
+  Schema.Struct({
+    action: Schema.Literal("status"),
+    environmentId: Schema.optionalKey(EnvironmentId),
+  }),
   Schema.Struct({
     action: Schema.Literal("disconnect"),
     environmentId: EnvironmentId,

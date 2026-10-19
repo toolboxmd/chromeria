@@ -84,12 +84,11 @@ describe("desktop cookie mirror stream", () => {
     const first = await wire.next();
     expect(first.environmentId).toBe("env");
     expect(first.sequence).toBe(0);
-    await mirror.observeChrome(
-      "chrome",
-      profile,
-      { cookies: [{ ...cookie, value: "new" }], identities: [], complete: false },
-      true,
-    );
+    await mirror.observeChrome("chrome", profile, {
+      cookies: [{ ...cookie, value: "new" }],
+      identities: [],
+      complete: false,
+    });
     expect(wire.messages).toHaveLength(1);
     wire.receive({ type: "ack", sequence: 0 });
     const second = await wire.next();

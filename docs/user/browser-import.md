@@ -4,21 +4,28 @@ On macOS, Chromeria continuously mirrors Chrome's logins while the desktop app r
 including while Chrome is open. Chrome's Default profile uses Chromeria's default
 profile; other Chrome profiles get separate profiles. Names follow Chrome's labels.
 Guest, System and Incognito profiles are excluded.
+You can add or remove Chromeria profiles normally. Removing a discovered Chrome
+profile keeps it removed, including after restarting Chromeria.
 
 Changes reach each connected environment's browser through its matching desktop
 partition. Allow roughly a minute for Chrome to save a change and Chromeria to
 observe it. Logins made inside one environment's desktop partition stay with that
 environment. Cookies created only downstream survive unless the mirror has managed
 that same cookie identity.
+The paired desktop connection needs **Mirror desktop browser logins** permission
+in that environment's Connections settings. Existing connections may need pairing
+again with that permission.
 
 When the Mac app is off, environments retain the cookies they last received.
-Persistent-cookie removals catch up after reconnect or restart. A session cookie
-disappearing at Chrome shutdown, or while Chromeria was off, does not sign out
-downstream. An observed removal while both apps run does.
+Persistent-cookie removals catch up after reconnect or restart. A vanished Chrome
+session cookie never signs out downstream: Chrome can clear it during shutdown or
+startup while already holding its process lock. An expired or replaced cookie can
+still end a session according to the site's own rules.
 
 Some logins cannot move between devices. Google account sign-in on current macOS
-Chrome is reported per site as **device-bound, not mirrored**. Other sites may also
-require another sign-in. Cookie convergence alone does not prove a working login.
+Chrome and other observed device-bound sites appear in **Settings > Integrations >
+Browser** as **device-bound, not mirrored**. Sign in separately in each environment
+for those sites. Cookie convergence alone does not prove a working login.
 
 ## One-time imports
 

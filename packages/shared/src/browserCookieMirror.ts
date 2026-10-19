@@ -51,6 +51,8 @@ export interface CookieMirrorStore {
 }
 
 const sameSiteToCdp = { no_restriction: "None", lax: "Lax", strict: "Strict" } as const;
+// CDP's seconds round trip through Chromium's millisecond timestamp conversion.
+const expiryMillis = (expires: number) => Math.round(expires * 1000);
 
 export const cookieMirrorUrl = (cookie: CookieMirrorKey, secure: boolean) => {
   const host = cookie.domain.replace(/^\./, "");
@@ -86,7 +88,9 @@ export function cdpCookieMirrorStore(
                   : cookie.sameSite === "Strict"
                     ? "strict"
                     : "unspecified",
-            ...(!cookie.session && cookie.expires > 0 ? { expires: cookie.expires } : {}),
+            ...(!cookie.session && cookie.expires > 0
+              ? { expires: expiryMillis(cookie.expires) / 1000 }
+              : {}),
             ...(cookie.partitionKey ? { partitionKey: cookie.partitionKey } : {}),
           };
         });
@@ -115,7 +119,9 @@ export function cdpCookieMirrorStore(
                   ...(cookie.sameSite === "unspecified"
                     ? {}
                     : { sameSite: sameSiteToCdp[cookie.sameSite] }),
-                  ...(cookie.expires === undefined ? {} : { expires: cookie.expires }),
+                  ...(cookie.expires === undefined
+                    ? {}
+                    : { expires: expiryMillis(cookie.expires) / 1000 }),
                   ...(cookie.partitionKey === undefined
                     ? {}
                     : { partitionKey: cookie.partitionKey }),
@@ -137,7 +143,7 @@ const signature = (cookie: MirrorCookie) =>
     cookie.secure,
     cookie.httpOnly,
     cookie.sameSite,
-    cookie.expires ?? null,
+    cookie.expires === undefined ? null : expiryMillis(cookie.expires),
   ]);
 
 export function diffMirrorCookies(

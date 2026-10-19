@@ -39,7 +39,9 @@ app.whenReady().then(async () => {
     const cookie = { name: "__Host-login", value: "synthetic-session", domain: "login.example.test", path: "/", secure: true, httpOnly: true, sameSite: "unspecified" };
     const partitioned = { name: "partitioned", value: "synthetic-partition", domain: ".example.test", path: "/account", secure: true, httpOnly: true, sameSite: "no_restriction", expires: Math.floor(Date.now()/1000) + 86400, partitionKey: { topLevelSite: "https://top.test", hasCrossSiteAncestor: false } };
     const sibling = { ...partitioned, value: "synthetic-sibling", partitionKey: { topLevelSite: "https://top.test", hasCrossSiteAncestor: true } };
-    await store.apply([cookie, partitioned, sibling].map(cookie => ({ type: "set", cookie })));
+    const expiryBase = Math.floor(Date.now()/1000) + 86400;
+    const fractional = { ...cookie, name: "fractional", expires: expiryBase + 0.123456 };
+    await store.apply([cookie, partitioned, sibling, fractional].map(cookie => ({ type: "set", cookie })));
     stage = "ordinary-attributes";
     const ordinary = (await browserSession.cookies.get({ name: "__Host-login" }))[0];
     stage = "ordinary-present";
@@ -56,6 +58,8 @@ app.whenReady().then(async () => {
     stage = "cdp-attributes";
     assert.deepEqual(await session.defaultSession.cookies.get({}), []);
     assert.deepEqual(observed.find(item => item.name === "__Host-login"), cookie);
+    stage = "fractional-expiry";
+    assert.deepEqual(observed.find(item => item.name === "fractional"), { ...fractional, expires: expiryBase + 0.123 });
     assert.deepEqual(observed.filter(item => item.name === "partitioned").sort((a,b) => Number(a.partitionKey.hasCrossSiteAncestor)-Number(b.partitionKey.hasCrossSiteAncestor)), [partitioned, sibling]);
     await store.apply([{ type: "remove", key: { name: "partitioned", domain: ".example.test", path: "/account", partitionKey: partitioned.partitionKey } }]);
     stage = "exact-removal";

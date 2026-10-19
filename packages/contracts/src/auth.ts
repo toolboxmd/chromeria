@@ -71,9 +71,7 @@ export const AuthEnvironmentScopes = Schema.Array(AuthEnvironmentScope);
 export type AuthEnvironmentScopes = typeof AuthEnvironmentScopes.Type;
 
 export const AuthGrantScope = Schema.Literals(
-  AuthEnvironmentScope.literals.filter(
-    (scope) => scope !== AuthReviewWriteScope && scope !== AuthCookieMirrorWriteScope,
-  ),
+  AuthEnvironmentScope.literals.filter((scope) => scope !== AuthReviewWriteScope),
 );
 export type AuthGrantScope = typeof AuthGrantScope.Type;
 export const AuthGrantScopes = Schema.Array(AuthGrantScope);

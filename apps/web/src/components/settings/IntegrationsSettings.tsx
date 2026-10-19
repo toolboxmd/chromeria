@@ -4,6 +4,7 @@ import { APP_BASE_NAME } from "../../branding";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { DeviceHostsSettings } from "./DeviceHostsSettings";
+import { ChromeCookieMirrorStatus } from "./ChromeCookieMirrorStatus";
 import {
   AuthSettingsWriteScope,
   BrowserImportFailureReason,
@@ -1477,6 +1478,7 @@ export function IntegrationsSettingsPanel() {
   const previewDefaults = (
     <>
       <BrowserProfilesSetting disabled={previewDefaultsDisabled} />
+      {isElectron ? <ChromeCookieMirrorStatus /> : null}
       <BrowserViewportSetting disabled={previewDefaultsDisabled} />
       <BrowserZoomSetting disabled={previewDefaultsDisabled} />
       <BrowserAppearanceSetting disabled={previewDefaultsDisabled} />

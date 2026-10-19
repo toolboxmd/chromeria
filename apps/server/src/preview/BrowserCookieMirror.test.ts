@@ -47,7 +47,7 @@ const fixture = Effect.gen(function* () {
     sessionId: AuthSessionId.make("parent"),
     subject: "owner",
     method: "bearer-access-token",
-    scopes: [AuthAccessWriteScope, AuthPreviewOperateScope],
+    scopes: [AuthAccessWriteScope, AuthPreviewOperateScope, AuthCookieMirrorWriteScope],
   };
   const active = new Map<string, AuthClientSession>();
   const client = (session: AuthenticatedSession, person = "Luke"): AuthClientSession => ({
@@ -139,6 +139,19 @@ const fixture = Effect.gen(function* () {
 });
 
 describe("server cookie mirror authority and ordering", () => {
+  it.effect("rejects an ordinary owner credential even when it claims the desktop surface", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const ordinary = { ...f.parent, scopes: [AuthAccessWriteScope, AuthPreviewOperateScope] };
+      f.setScope(ordinary.scopes);
+      expect(
+        (yield* f.mirror.enable(ordinary, { surface: "desktop" }).pipe(Effect.result))._tag,
+      ).toBe("Failure");
+      expect((yield* f.mirror.grant(ordinary).pipe(Effect.result))._tag).toBe("Failure");
+      expect(f.applied).toEqual([]);
+    }),
+  );
+
   it.effect(
     "issues only a dedicated main-process grant and applies on the destination service",
     () =>
@@ -155,14 +168,14 @@ describe("server cookie mirror authority and ordering", () => {
   );
 
   it.effect(
-    "rejects web clients, an ordinary preview scope and a grant request without a desktop registration",
+    "uses credential authority regardless of claimed surface and rejects ordinary preview access",
     () =>
       Effect.gen(function* () {
         const f = yield* fixture;
         expect(
           (yield* f.mirror.enable(f.parent, { surface: "web" }).pipe(Effect.result))._tag,
-        ).toBe("Failure");
-        expect((yield* f.mirror.grant(f.parent).pipe(Effect.result))._tag).toBe("Failure");
+        ).toBe("Success");
+        expect((yield* f.mirror.grant(f.parent).pipe(Effect.result))._tag).toBe("Success");
         f.setScope([AuthPreviewOperateScope]);
         expect(
           (yield* f.mirror.enable(f.parent, { surface: "desktop" }).pipe(Effect.result))._tag,

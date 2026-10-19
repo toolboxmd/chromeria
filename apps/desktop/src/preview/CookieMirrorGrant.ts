@@ -11,14 +11,19 @@ import * as Schema from "effect/Schema";
 const decode = Schema.decodeUnknownSync(CookieMirrorGrant);
 
 export async function requestCookieMirrorGrant(
-  input: Extract<CookieMirrorConnectionInput, { readonly action: "connect" }>,
+  input: Pick<
+    Extract<CookieMirrorConnectionInput, { readonly action: "connect" }>,
+    "environmentId"
+  >,
+  resolve: (environmentId: string) => Promise<CookieMirrorDestination>,
 ): Promise<string> {
   try {
+    const destination = await resolve(input.environmentId);
     const response = await fetch(
-      environmentEndpointUrl(input.httpBaseUrl, COOKIE_MIRROR_GRANT_PATH),
+      environmentEndpointUrl(destination.httpBaseUrl, COOKIE_MIRROR_GRANT_PATH),
       {
         method: "POST",
-        headers: input.headers,
+        headers: destination.headers,
         redirect: "error",
         signal: AbortSignal.timeout(10_000),
       },
@@ -26,11 +31,16 @@ export async function requestCookieMirrorGrant(
     if (!response.ok) throw new Error("Grant rejected");
     const grant = decode(await response.json());
     if (grant.environmentId !== input.environmentId) throw new Error("Wrong environment");
-    const url = new URL(environmentEndpointUrl(input.httpBaseUrl, COOKIE_MIRROR_PATH));
+    const url = new URL(environmentEndpointUrl(destination.httpBaseUrl, COOKIE_MIRROR_PATH));
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     url.searchParams.set("wsTicket", grant.ticket);
     return url.toString();
   } catch {
     throw new Error("Could not authorize browser cookie mirroring.");
   }
+}
+
+export interface CookieMirrorDestination {
+  readonly httpBaseUrl: string;
+  readonly headers: { readonly authorization: string; readonly dpop?: string };
 }

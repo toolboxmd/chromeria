@@ -10,13 +10,25 @@ import {
   COOKIE_MIRROR_ENABLE_RPC,
   CookieMirrorBatch,
   CookieMirrorConnectionStatus,
+  CookieMirrorConnectionInput,
 } from "./browserCookieMirror.ts";
 import { clientRpcRequiredScopes } from "./clientRpcPermissions.ts";
 
 const decode = Schema.decodeUnknownOption(CookieMirrorBatch);
 const decodeStatus = Schema.decodeUnknownSync(CookieMirrorConnectionStatus);
+const decodeConnection = Schema.decodeUnknownSync(CookieMirrorConnectionInput);
 
 describe("cookie mirror contracts", () => {
+  it("accepts only an environment id from renderer connect IPC, stripping destinations and credentials", () => {
+    expect(
+      decodeConnection({
+        action: "connect",
+        environmentId: "env",
+        httpBaseUrl: "https://attacker.test",
+        headers: { authorization: "synthetic-renderer-token" },
+      }),
+    ).toEqual({ action: "connect", environmentId: "env" });
+  });
   it("excludes Incognito and requires a complete partition key including a false ancestor", () => {
     const batch = {
       environmentId: "env",
@@ -49,14 +61,16 @@ describe("cookie mirror contracts", () => {
     ).toBe("None");
   });
 
-  it("keeps the dedicated write scope out of standard and human-issued grants and guards desktop registration", () => {
+  it("requires an explicit dedicated credential, outside standard client grants", () => {
     expect(
       (AuthStandardClientScopes as ReadonlyArray<string>).includes(AuthCookieMirrorWriteScope),
     ).toBe(false);
     expect(
       (AuthGrantScope.literals as ReadonlyArray<string>).includes(AuthCookieMirrorWriteScope),
-    ).toBe(false);
-    expect(clientRpcRequiredScopes(COOKIE_MIRROR_ENABLE_RPC, {})).toEqual(["access:write"]);
+    ).toBe(true);
+    expect(clientRpcRequiredScopes(COOKIE_MIRROR_ENABLE_RPC, {})).toEqual([
+      AuthCookieMirrorWriteScope,
+    ]);
     expect(
       sessionGrantsScope(
         { authenticated: true, scopes: ["access:write", "orchestration:operate"] },

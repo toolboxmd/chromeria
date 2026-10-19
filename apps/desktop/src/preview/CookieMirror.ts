@@ -25,13 +25,15 @@ export interface ChromeCookieSnapshot {
   readonly cookies: ReadonlyArray<MirrorCookie>;
   readonly identities: ReadonlyArray<ManagedCookieKey>;
   readonly complete: boolean;
+  readonly unresolvedPartitions?: ReadonlyArray<
+    Pick<CookieMirrorKey, "name" | "domain" | "path"> & { readonly topLevelSite: string }
+  >;
 }
 interface ChromeState {
   readonly profileId: string;
   readonly managed: Map<string, ManagedCookieKey>;
   readonly removed: Map<string, CookieMirrorKey>;
   readonly cookies: Map<string, MirrorCookie>;
-  observed: boolean;
 }
 interface PartitionState {
   readonly id: string;
@@ -87,7 +89,6 @@ export class CookieMirror {
         managed: managedKeys(source.managed),
         removed: keys(source.removed),
         cookies: new Map(),
-        observed: false,
       });
     for (const partition of metadata.partitions)
       this.partitions.set(partition.id, this.restorePartition(partition));
@@ -269,12 +270,7 @@ export class CookieMirror {
       await this.save();
     });
   }
-  observeChrome(
-    sourceId: string,
-    profile: CookieMirrorProfile,
-    snapshot: ChromeCookieSnapshot,
-    running: boolean,
-  ) {
+  observeChrome(sourceId: string, profile: CookieMirrorProfile, snapshot: ChromeCookieSnapshot) {
     return this.serial(async () => {
       if (profile.id === "incognito") return [];
       const source = this.chrome.get(sourceId) ?? {
@@ -282,25 +278,32 @@ export class CookieMirror {
         managed: new Map<string, ManagedCookieKey>(),
         removed: new Map<string, CookieMirrorKey>(),
         cookies: new Map<string, MirrorCookie>(),
-        observed: false,
       };
       this.chrome.set(sourceId, source);
       const mutations: CookieMirrorMutation[] = diffMirrorCookies(
         source.cookies,
         snapshot.cookies,
       ).filter((mutation) => mutation.type === "set");
-      if (snapshot.complete) {
-        const present = new Set(snapshot.identities.map((item) => cookieMirrorKey(item.key)));
-        for (const [key, previous] of source.managed)
-          if (!present.has(key)) {
-            if (previous.persistent || (running && source.observed)) {
-              source.removed.set(key, previous.key);
-              mutations.push({ type: "remove", key: previous.key });
-            }
-            source.managed.delete(key);
-            source.cookies.delete(key);
+      const present = new Set(snapshot.identities.map((item) => cookieMirrorKey(item.key)));
+      for (const [key, previous] of source.managed) {
+        const unresolved =
+          previous.key.partitionKey &&
+          snapshot.unresolvedPartitions?.some(
+            (unknown) =>
+              unknown.name === previous.key.name &&
+              unknown.domain === previous.key.domain &&
+              unknown.path === previous.key.path &&
+              unknown.topLevelSite === previous.key.partitionKey?.topLevelSite,
+          );
+        if (!present.has(key) && !unresolved) {
+          // Chrome clears persisted sessions during startup after taking its lock.
+          if (previous.persistent) {
+            source.removed.set(key, previous.key);
+            mutations.push({ type: "remove", key: previous.key });
           }
-        source.observed = true;
+          source.managed.delete(key);
+          source.cookies.delete(key);
+        }
       }
       for (const cookie of snapshot.cookies) {
         const key = cookieMirrorKey(cookie);

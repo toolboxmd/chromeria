@@ -1,4 +1,8 @@
-import { resolveBrowserProfiles, type CookieMirrorProfile } from "@t3tools/contracts";
+import {
+  BROWSER_PROFILE_MAX_COUNT,
+  resolveBrowserProfiles,
+  type CookieMirrorProfile,
+} from "@t3tools/contracts";
 import { useEffect, useRef, useSyncExternalStore, use } from "react";
 import { useSyncExternalStoreWithSelector } from "use-sync-external-store/with-selector";
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
@@ -234,6 +238,7 @@ export async function persistClientSettingsUpdate(
     for (;;) {
       const current = getClientSettingsSnapshot();
       const next = update(current);
+      if (next === current) return current;
       await persist(next);
       if (getClientSettingsSnapshot() === current) {
         replaceClientSettingsSnapshot(next);
@@ -264,12 +269,35 @@ function splitPatch(patch: UnifiedSettingsPatch): {
   };
 }
 
-/** Main owns Chrome profile discovery; this notification contains profile metadata only. */
-export function adoptDesktopBrowserProfiles(profiles: ReadonlyArray<CookieMirrorProfile>): void {
-  const current = getClientSettingsSnapshot();
-  const browserProfiles = resolveBrowserProfiles(profiles);
-  if (JSON.stringify(current.browserProfiles) === JSON.stringify(browserProfiles)) return;
-  replaceClientSettingsSnapshot({ ...current, browserProfiles });
+/** Discovery proposes additions; handled ids keep a user's deletion durable. */
+export async function adoptDesktopBrowserProfiles(
+  profiles: ReadonlyArray<CookieMirrorProfile>,
+): Promise<void> {
+  await persistClientSettingsUpdate((current) => {
+    const handled = new Set(current.chromeBrowserProfileIds);
+    let browserProfiles = current.browserProfiles;
+    let changed = false;
+    for (const profile of profiles) {
+      const existing = resolveBrowserProfiles(browserProfiles).find((old) => old.id === profile.id);
+      if (!existing && handled.has(profile.id)) continue;
+      if (!existing && resolveBrowserProfiles(browserProfiles).length >= BROWSER_PROFILE_MAX_COUNT)
+        continue;
+      if (!handled.has(profile.id)) {
+        handled.add(profile.id);
+        changed = true;
+      }
+      if (existing?.name === profile.name) continue;
+      browserProfiles = existing
+        ? browserProfiles.some((old) => old.id === profile.id)
+          ? browserProfiles.map((old) => (old.id === profile.id ? profile : old))
+          : [...browserProfiles, profile]
+        : [...browserProfiles, profile];
+      changed = true;
+    }
+    return changed
+      ? { ...current, browserProfiles, chromeBrowserProfileIds: [...handled] }
+      : current;
+  });
 }
 
 export function getClientSettings(): ClientSettings {

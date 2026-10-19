@@ -30,7 +30,34 @@ const decodeVersion = Schema.decodeUnknownEffect(
 );
 const decodeCookies = Schema.decodeUnknownEffect(Schema.Array(MirrorCookie));
 
-/** Unreadable rows retain their identities and cannot advance a complete observation. */
+/** Chrome stores the site in the key; never select the credential protobuf. */
+export const readChromeDeviceBoundSites = Effect.fnUntraced(function* (source: string) {
+  return yield* Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql`select key from dbsc_session_tbl`.pipe(
+      Effect.flatMap(
+        Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ key: Schema.String }))),
+      ),
+    );
+    const sites = new Set<string>();
+    for (const row of rows) {
+      const site = yield* Effect.try(() => new URL(row.key));
+      if (
+        (site.protocol !== "https:" && site.protocol !== "http:") ||
+        site.username ||
+        site.password ||
+        site.pathname !== "/" ||
+        site.search ||
+        site.hash
+      )
+        return yield* new CookieMirrorError({ reason: "unavailable" });
+      sites.add(site.hostname);
+    }
+    return [...sites];
+  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: source, readonly: true })));
+});
+
+/** Unreadable rows protect their identities while unrelated absence stays observable. */
 export const readChromeCookieSnapshot = Effect.fnUntraced(function* (
   source: string,
   keys: ChromiumKeyMaterial,
@@ -47,17 +74,25 @@ export const readChromeCookieSnapshot = Effect.fnUntraced(function* (
     const hasPartitions = columns.some((column) => column.name === "top_frame_site_key");
     const rows = yield* sql
       .unsafe(`select host_key, name, value, encrypted_value, path,
-      expires_utc / 1000000.0 as expires_seconds, is_secure, is_httponly, samesite, is_persistent,
+      (expires_utc - 11644473600000000) / 1000000.0 as expires_seconds, is_secure, is_httponly, samesite, is_persistent,
       ${hasPartitions ? "top_frame_site_key" : "'' as top_frame_site_key"},
       ${hasAncestor ? "has_cross_site_ancestor" : "0 as has_cross_site_ancestor"} from cookies`)
       .pipe(Effect.flatMap(decodeRows));
     const cookies: MirrorCookie[] = [];
     const identities: ManagedCookieKey[] = [];
+    const unresolvedPartitions: NonNullable<
+      ChromeCookieSnapshot["unresolvedPartitions"]
+    >[number][] = [];
     let complete = true;
     for (const row of rows) {
-      // Older databases cannot describe the full partition key, so skip the
-      // entire observation rather than collapse two partitioned identities.
+      // Older databases cannot distinguish ancestor siblings; protect that family.
       if (row.top_frame_site_key !== "" && !hasAncestor) {
+        unresolvedPartitions.push({
+          domain: row.host_key,
+          name: row.name,
+          path: row.path,
+          topLevelSite: row.top_frame_site_key,
+        });
         complete = false;
         continue;
       }
@@ -92,7 +127,7 @@ export const readChromeCookieSnapshot = Effect.fnUntraced(function* (
         complete = false;
         continue;
       }
-      const expires = row.expires_seconds - 11_644_473_600;
+      const expires = row.expires_seconds;
       cookies.push({
         domain: row.host_key,
         name: row.name,
@@ -123,6 +158,7 @@ export const readChromeCookieSnapshot = Effect.fnUntraced(function* (
       cookies: yield* decodeCookies(cookies),
       identities,
       complete,
+      unresolvedPartitions,
     } satisfies ChromeCookieSnapshot;
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: snapshot, readonly: true })));
   return cookies;

@@ -164,7 +164,7 @@ const layerDesktopServerExposure = DesktopServerExposure.layer.pipe(
   Layer.provideMerge(layerDesktopFoundation),
 );
 
-const layerDesktopPreview = Layer.mergeAll(PreviewManager.layer, DesktopCookieMirror.layer).pipe(
+const layerDesktopPreview = PreviewManager.layer.pipe(
   Layer.provideMerge(DesktopBrowserHost.layer),
   // Merged rather than provided so the IPC handlers can reach the import
   // service alongside the manager; both sit on the same BrowserSession.
@@ -205,6 +205,12 @@ const layerDesktopLocalEnvironmentAuth = DesktopLocalEnvironmentAuth.layer.pipe(
   Layer.provideMerge(layerDesktopBackend),
 );
 
+const layerDesktopCookieMirror = DesktopCookieMirror.layer.pipe(
+  Layer.provideMerge(layerDesktopBackend),
+  Layer.provideMerge(layerDesktopSsh),
+  Layer.provideMerge(layerDesktopPreview),
+);
+
 const layerDesktopApplication = Layer.mergeAll(
   DesktopLifecycle.layer,
   layerDesktopAppActivation,
@@ -218,6 +224,7 @@ const layerDesktopApplication = Layer.mergeAll(
   Layer.provideMerge(DesktopUpdates.layer),
   Layer.provideMerge(layerDesktopWslBackend),
   Layer.provideMerge(layerDesktopLocalEnvironmentAuth),
+  Layer.provideMerge(layerDesktopCookieMirror),
 );
 
 // Clerk resolves userData before Electron is ready, so it gets the synchronous FileSystem.
