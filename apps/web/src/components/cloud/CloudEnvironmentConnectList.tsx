@@ -5,7 +5,10 @@ import {
   RelayConnectionTarget,
   orchestrationProtocolCompatibilityError,
 } from "@t3tools/client-runtime/connection";
-import { relayOfflineReasonMessage } from "@t3tools/client-runtime/relay";
+import {
+  isAddableRelayEnvironment,
+  relayOfflineReasonMessage,
+} from "@t3tools/client-runtime/relay";
 import {
   isAtomCommandInterrupted,
   settlePromise,
@@ -137,6 +140,7 @@ export function CloudEnvironmentConnectRows({
   }, [refreshRelayEnvironments, refreshWhileEmpty, onDiscoveryReady]);
 
   const connectEnvironment = async (environment: RelayClientEnvironmentRecord) => {
+    if (!isAddableRelayEnvironment(environment)) return false;
     if (
       discoveredCompatibilityError(
         environmentsState.environments.get(environment.environmentId)?.status,
@@ -186,20 +190,27 @@ export function CloudEnvironmentConnectRows({
     return false;
   };
 
-  // Omit machines saved over other routes; onboarding selection must not add a T3 Connect route.
-  const isVisibleEnvironment = (environmentId: EnvironmentId) =>
-    environmentId !== primaryEnvironmentId &&
-    (showSavedEnvironments || !savedById.has(environmentId)) &&
-    !(selection && savedWithoutRelay.has(environmentId));
+  // During onboarding selection a machine saved over another route already
+  // has its own row elsewhere, and selecting it must not add a T3 Connect
+  // route as a side effect, so it is left out here.
+  const isVisibleEnvironment = (environment: RelayClientEnvironmentRecord) => {
+    const environmentId = environment.environmentId;
+    return (
+      (savedById.has(environmentId) || isAddableRelayEnvironment(environment)) &&
+      environmentId !== primaryEnvironmentId &&
+      (showSavedEnvironments || !savedById.has(environmentId)) &&
+      !(selection && savedWithoutRelay.has(environmentId))
+    );
+  };
   const visibleEnvironments = [...environmentsState.environments.values()].filter(
-    ({ environment }) => isVisibleEnvironment(environment.environmentId),
+    ({ environment }) => isVisibleEnvironment(environment),
   );
   const selectNewComputers = useEffectEvent(
     (environments: typeof environmentsState.environments) => {
       const seen = selection?.autoSelectedComputers;
       if (!selection || !seen) return;
       for (const { environment, status, availability } of environments.values()) {
-        if (!isVisibleEnvironment(environment.environmentId)) continue;
+        if (!isVisibleEnvironment(environment)) continue;
         const id = environment.environmentId;
         if (availability === "checking") continue;
         if (

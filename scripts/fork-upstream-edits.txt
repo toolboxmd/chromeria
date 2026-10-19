@@ -475,3 +475,10 @@ apps/mobile/src/features/cloud/managedRelayState.ts
 apps/web/src/cloud/managedRelayState.ts
 packages/client-runtime/src/relay/managedRelayState.test.ts
 packages/client-runtime/src/relay/managedRelayState.ts
+
+# Supported manual T3 Connect offers (#361).
+apps/mobile/src/features/connection/environmentSections.test.ts
+apps/mobile/src/features/connection/environmentSections.ts
+apps/mobile/src/features/connection/useConnectionController.ts
+apps/web/src/components/cloud/CloudEnvironmentConnectList.tsx
+packages/client-runtime/src/relay/index.ts
