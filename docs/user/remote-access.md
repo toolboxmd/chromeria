@@ -219,16 +219,24 @@ For long pages, pass the returned `cacheId`, `cacheEnvironmentId` and
 reading the URL again. Outside MCP clients and links with read-only access
 cannot spend the research environment's request budget.
 
-When TinyFish is configured on the research environment, it can read public
-pages after local rendering fails, through a pinned zero-cost endpoint. Results
-identify TinyFish and the observed charge. Hosted pages have `cacheStorage:
-"memory"`: continue them on the same research server before `cacheExpiresAt`,
-at most 15 minutes. Buffers can be evicted sooner and are lost on restart; an
-expired continuation asks you to read the URL again. Persistent hosted caching
-remains disabled because provider retention permission is unresolved. Local
-pages keep their persistent cache. Requested and final hosted URLs are checked
-here; TinyFish owns networking inside its service, whose DNS and subresource
-isolation remain unverified.
+When a maintainer provisions `web-research-treg-token` in the research
+environment's server secret store, TinyFish can read public pages after an
+eligible local render failure, through a pinned zero-cost endpoint. Its bounded
+attempt must fit the active reader's remaining budget. A traversal keeps its
+30-second limit and returns the local typed status when there is too little
+time for hosted work. Root provider/budget errors stay explicit; a failed child
+reports `providerError` while preserving the root and prior children.
+
+Results identify TinyFish and the observed charge. Hosted pages have
+`cacheStorage: "memory"`: continue them on the same research server before
+`cacheExpiresAt`, at most 15 minutes. Buffers can be evicted sooner and are lost
+on restart; an expired continuation asks you to read the URL again. Reading the
+URL again repeats the local ladder rather than reusing a hosted buffer.
+Provider retention permission, including this temporary buffer, remains
+unresolved; persistent hosted caching stays disabled. Local pages keep their
+persistent cache. Requested and final hosted URLs are checked here; TinyFish
+owns networking inside its service, whose DNS and subresource isolation remain
+unverified.
 
 ## Browser on a remote environment
 

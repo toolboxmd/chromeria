@@ -20,6 +20,7 @@ import { extract } from "./extract.ts";
 
 export const TREG_SECRET_NAME = "web-research-treg-token";
 const ENDPOINT = "https://treg.to/call/tinyfish.web.fetch";
+const FETCH_TIMEOUT_MS = 20_000;
 const DAY_MS = 24 * 3600_000;
 const MAX_BYTES = 8 * 1024 * 1024;
 const Quota = Schema.Struct({
@@ -68,6 +69,7 @@ export class TinyFishProviderError extends Schema.TaggedError<TinyFishProviderEr
       "charge",
       "contract",
       "blocked_target",
+      "resolve",
     ]),
     httpStatus: Schema.NullOr(Schema.Int),
   },
@@ -80,7 +82,12 @@ export class TinyFishProviderError extends Schema.TaggedError<TinyFishProviderEr
 export class TinyFish extends Context.Service<
   TinyFish,
   {
-    readonly fetch: (input: { readonly url: URL; readonly sameOrigin?: string }) => Effect.Effect<
+    readonly fetch: (input: {
+      readonly url: URL;
+      readonly sameOrigin?: string;
+      // Latest deadline among active readers, rechecked before reserving quota.
+      readonly deadline?: () => number;
+    }) => Effect.Effect<
       | {
           readonly page: ReturnType<typeof extract>;
           readonly finalUrl: string;
@@ -131,44 +138,48 @@ const make = Effect.gen(function* () {
     yield* fs.rename(`${quotaPath}.tmp`, quotaPath);
     quota = value;
   });
-  const reserve = Effect.gen(function* () {
-    const now = yield* Clock.currentTimeMillis;
-    if (quota === undefined) {
-      const stored = yield* fs.readFileString(quotaPath).pipe(
-        Effect.catchIf(
-          (error) => error.reason._tag === "NotFound",
-          () => Effect.succeed('{"starts":[],"blockedUntil":0}'),
-        ),
-      );
-      quota = yield* decodeQuota(stored);
-    }
-    if (quota.blockedUntil > now)
-      return yield* new TinyFishBudgetError({
-        reason: "circuit",
-        retryAfterMs: quota.blockedUntil - now,
-      });
-    const starts = quota.starts.filter((at) => at > now - DAY_MS).toSorted((a, b) => a - b);
-    if (starts.length >= 1000)
-      return yield* new TinyFishBudgetError({
-        reason: "day",
-        retryAfterMs: starts[0]! + DAY_MS - now,
-      });
-    const minute = starts.filter((at) => at > now - 60_000);
-    if (minute.length >= 150)
-      return yield* new TinyFishBudgetError({
-        reason: "minute",
-        retryAfterMs: minute[0]! + 60_000 - now,
-      });
-    // Reserve before sending; cancelled or uncertain requests still consumed shared-key capacity.
-    yield* storeQuota({ starts: [...starts, now], blockedUntil: quota.blockedUntil });
-  }).pipe(
-    lock.withPermits(1),
-    Effect.mapError((error) =>
-      error._tag === "TinyFishBudgetError"
-        ? error
-        : new TinyFishProviderError({ reason: "quota_storage", httpStatus: null }),
-    ),
-  );
+  const reserve = (deadline: (() => number) | undefined) =>
+    Effect.gen(function* () {
+      if (quota === undefined) {
+        const stored = yield* fs.readFileString(quotaPath).pipe(
+          Effect.catchIf(
+            (error) => error.reason._tag === "NotFound",
+            () => Effect.succeed('{"starts":[],"blockedUntil":0}'),
+          ),
+        );
+        quota = yield* decodeQuota(stored);
+      }
+      const now = yield* Clock.currentTimeMillis;
+      // Admission uses the live subscribers' deadline after quota I/O and lock waiting.
+      if (deadline !== undefined && now + FETCH_TIMEOUT_MS >= deadline()) return false;
+      if (quota.blockedUntil > now)
+        return yield* new TinyFishBudgetError({
+          reason: "circuit",
+          retryAfterMs: quota.blockedUntil - now,
+        });
+      const starts = quota.starts.filter((at) => at > now - DAY_MS).toSorted((a, b) => a - b);
+      if (starts.length >= 1000)
+        return yield* new TinyFishBudgetError({
+          reason: "day",
+          retryAfterMs: starts[0]! + DAY_MS - now,
+        });
+      const minute = starts.filter((at) => at > now - 60_000);
+      if (minute.length >= 150)
+        return yield* new TinyFishBudgetError({
+          reason: "minute",
+          retryAfterMs: minute[0]! + 60_000 - now,
+        });
+      // Reserve before sending; cancelled or uncertain requests still consumed shared-key capacity.
+      yield* storeQuota({ starts: [...starts, now], blockedUntil: quota.blockedUntil });
+      return true;
+    }).pipe(
+      lock.withPermits(1),
+      Effect.mapError((error) =>
+        error._tag === "TinyFishBudgetError"
+          ? error
+          : new TinyFishProviderError({ reason: "quota_storage", httpStatus: null }),
+      ),
+    );
   const block = (until: number) =>
     lock
       .withPermits(1)(
@@ -191,16 +202,20 @@ const make = Effect.gen(function* () {
   const validate = Effect.fnUntraced(function* (url: URL) {
     yield* PublicHttp.validateDestination(url).pipe(
       Effect.mapError(
-        () => new TinyFishProviderError({ reason: "blocked_target", httpStatus: null }),
+        (error) =>
+          new TinyFishProviderError({
+            reason: error._tag === "PublicNetworkBlockedError" ? "blocked_target" : "resolve",
+            httpStatus: null,
+          }),
       ),
     );
   });
   const fetch = Effect.fn("TinyFish.fetch")(
-    function* (input: { readonly url: URL; readonly sameOrigin?: string }) {
-      const url = targetUrl(input.url.href, input.sameOrigin);
-      if (!url)
-        return yield* new TinyFishProviderError({ reason: "blocked_target", httpStatus: null });
-      yield* validate(url);
+    function* (input: {
+      readonly url: URL;
+      readonly sameOrigin?: string;
+      readonly deadline?: () => number;
+    }) {
       const secret = yield* secrets
         .get(TREG_SECRET_NAME)
         .pipe(
@@ -212,8 +227,17 @@ const make = Effect.gen(function* () {
       const token = new TextDecoder().decode(secret.value).trim();
       if (!/^[\x21-\x7e]{1,8192}$/.test(token))
         return yield* new TinyFishProviderError({ reason: "secret_unavailable", httpStatus: null });
+      if (
+        input.deadline !== undefined &&
+        (yield* Clock.currentTimeMillis) + FETCH_TIMEOUT_MS >= input.deadline()
+      )
+        return undefined;
+      const url = targetUrl(input.url.href, input.sameOrigin);
+      if (!url)
+        return yield* new TinyFishProviderError({ reason: "blocked_target", httpStatus: null });
+      yield* validate(url);
       const queuedAt = yield* Clock.currentTimeMillis;
-      yield* reserve;
+      if (!(yield* reserve(input.deadline))) return undefined;
       const delayMs = (yield* Clock.currentTimeMillis) - queuedAt;
       // Transport errors contain the authenticated request. Never retain them in domain errors.
       const response = yield* HttpClient.withScope(client)
@@ -319,7 +343,7 @@ const make = Effect.gen(function* () {
     ),
     // Lower-level transport spans can retain unsanitized failures containing the request.
     Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
-    Effect.timeout("20 seconds"),
+    Effect.timeout(FETCH_TIMEOUT_MS),
     Effect.catchTags({
       TimeoutError: () =>
         Effect.fail(new TinyFishProviderError({ reason: "timeout", httpStatus: null })),

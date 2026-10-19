@@ -20,6 +20,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import type * as HttpClientRequest from "effect/http/HttpClientRequest";
 import { McpSchema, McpServer } from "effect/ai";
+import { afterEach, vi } from "vite-plus/test";
 
 import * as Config from "../config.ts";
 import * as SecretStore from "../auth/ServerSecretStore.ts";
@@ -38,6 +39,10 @@ import * as WebResearch from "../webResearch/WebResearch.ts";
 import { HostedWebReadResult } from "../webResearch/ResearchHost.ts";
 import * as Invocation from "./McpInvocationContext.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
+
+const dns = vi.hoisted(() => ({ lookup: vi.fn() }));
+vi.mock("node:dns/promises", () => dns);
+afterEach(() => dns.lookup.mockReset());
 
 const ROOT = "https://93.184.216.34/";
 const TOKEN = "fixture-only-not-a-live-credential";
@@ -612,6 +617,283 @@ it.effect(
             p.endsWith(".gz"),
           ),
         ).toEqual([`${result.cacheId}.gz`]);
+      }).pipe(Effect.provide(f.layer));
+    }),
+);
+
+const rootWithTwoChildren =
+  "<h1>Venue</h1><p>Public information about our garden, restaurant and guest rooms is available on the following pages.</p><a href='/rooms'>Rooms</a><a href='/camere'>Camere</a>";
+const firstChild =
+  "<h1>Rooms</h1><p>The first child has complete public facts about the rooms, garden views and breakfast for guests.</p>";
+
+it.effect.each(["circuit", "http", "contract", "charge"] as const)(
+  "hosted %s child failures preserve the root and prior children with explicit errors",
+  (kind) =>
+    Effect.gen(function* () {
+      const f = yield* fixture({
+        http: (url) =>
+          Effect.succeed(
+            response(
+              url.pathname === "/"
+                ? rootWithTwoChildren
+                : url.pathname === "/rooms"
+                  ? firstChild
+                  : shell,
+            ),
+          ),
+        hosted: (r) =>
+          Effect.succeed(
+            HttpClientResponse.fromWeb(
+              r,
+              new Response(
+                JSON.stringify({
+                  results: [
+                    {
+                      url: `${ROOT}camere`,
+                      final_url: "https://1.1.1.1/private-origin",
+                      format: "html",
+                      text: article,
+                    },
+                  ],
+                  errors: [],
+                }),
+                {
+                  status: kind === "circuit" ? 429 : kind === "http" ? 503 : 200,
+                  headers: {
+                    "x-treg-cost-micro": kind === "charge" ? "1" : "0",
+                    "x-treg-call-id": "child-failure",
+                    "retry-after": "120",
+                  },
+                },
+              ),
+            ),
+          ),
+      });
+      yield* Effect.gen(function* () {
+        yield* setup;
+        const pending = yield* Effect.forkScoped(read({ url: ROOT }));
+        expect(yield* Queue.take(f.requests)).toBe(`${ROOT}robots.txt`);
+        yield* TestClock.adjust(3000);
+        expect(yield* Queue.take(f.requests)).toBe(ROOT);
+        yield* TestClock.adjust(3000);
+        expect(yield* Queue.take(f.requests)).toBe(`${ROOT}rooms`);
+        yield* TestClock.adjust(3000);
+        expect(yield* Queue.take(f.requests)).toBe(`${ROOT}camere`);
+        const result = yield* Fiber.join(pending);
+        expect(result.status).toBe("ok");
+        expect(result.text).toContain("# Venue");
+        expect(result.subpages).toHaveLength(2);
+        expect(result.subpages[0]?.text).toContain("The first child has complete public facts");
+        expect(result.subpages[1]).toMatchObject({
+          url: `${ROOT}camere`,
+          status: "provider_error",
+          text: "",
+          nextOffset: null,
+          providerError: {
+            provider: "tinyfish",
+            code: kind === "circuit" ? "research_budget_exceeded" : "provider_unavailable",
+          },
+          retryAfterMs: kind === "circuit" ? 120_000 : null,
+        });
+        expect(JSON.stringify(result.subpages[1])).toContain(kind === "circuit" ? "circuit" : kind);
+        expect(result.subpages[1]?.providerCall).toBeUndefined();
+        expect(JSON.stringify(result)).not.toContain(TOKEN);
+        expect(
+          yield* PageCache.PageCache.use((c) =>
+            c.get({ url: `${ROOT}camere`, sameOrigin: new URL(ROOT).origin }),
+          ),
+        ).toBeNull();
+        expect(
+          (yield* read({ cacheId: result.cacheId, cacheEnvironmentId: result.cacheEnvironmentId }))
+            .text,
+        ).toBe(result.text);
+        expect(f.order.filter((r) => r === "tinyfish")).toHaveLength(1);
+      }).pipe(Effect.provide(f.layer));
+    }),
+);
+
+it.effect("missing credentials preserve the local MCP status without hosted DNS admission", () =>
+  Effect.gen(function* () {
+    dns.lookup.mockRejectedValue(new Error("resolver unavailable"));
+    const url = "https://review502-nonexistent.invalid/";
+    const f = yield* fixture();
+    yield* Effect.gen(function* () {
+      yield* setup;
+      yield* SecretStore.ServerSecretStore.use((s) => s.remove(TinyFish.TREG_SECRET_NAME));
+      const pending = yield* Effect.forkScoped(read({ url, followSubpages: false }));
+      expect(yield* Queue.take(f.requests)).toBe(`${url}robots.txt`);
+      yield* TestClock.adjust(3000);
+      expect(yield* Queue.take(f.requests)).toBe(url);
+      const result = yield* Fiber.join(pending);
+      expect(result).toMatchObject({ status: "challenge", sourceRung: "render", text: "" });
+      expect(dns.lookup).not.toHaveBeenCalled();
+      expect(yield* Queue.size(f.providerRequests)).toBe(0);
+    }).pipe(Effect.provide(f.layer));
+  }),
+);
+
+it.effect.each(["alone", "longer subscriber cancelled"] as const)(
+  "declines hosted admission after a render timeout with insufficient traversal budget: %s",
+  (kind) =>
+    Effect.gen(function* () {
+      const rendering = yield* Deferred.make<void>();
+      const finished = yield* Deferred.make<void>();
+      const f = yield* fixture({
+        render: () => Deferred.succeed(rendering, undefined).pipe(Effect.andThen(Effect.never)),
+        hosted: () => Effect.never,
+      });
+      yield* Effect.gen(function* () {
+        yield* setup;
+        const pending = yield* Effect.forkScoped(
+          call({ url: ROOT }).pipe(Effect.tap(() => Deferred.succeed(finished, undefined))),
+        );
+        expect(yield* Queue.take(f.requests)).toBe(`${ROOT}robots.txt`);
+        yield* TestClock.adjust(3000);
+        expect(yield* Queue.take(f.requests)).toBe(ROOT);
+        yield* Deferred.await(rendering);
+        if (kind === "longer subscriber cancelled") {
+          expect(yield* Queue.take(f.cacheReads)).toBe(ROOT);
+          expect(yield* Queue.take(f.cacheReads)).toBe(ROOT);
+          const longer = yield* Effect.forkScoped(call({ url: ROOT, followSubpages: false }));
+          expect(yield* Queue.take(f.cacheReads)).toBe(ROOT);
+          yield* Effect.yieldNow;
+          yield* Fiber.interrupt(longer);
+        }
+        yield* TestClock.adjust(20_000);
+        const milestone = yield* Effect.raceFirst(
+          Deferred.await(finished).pipe(Effect.as("local result")),
+          Queue.take(f.providerRequests).pipe(Effect.as("hosted request")),
+        );
+        expect(milestone).toBe("local result");
+        const result = yield* Fiber.join(pending);
+        expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
+        expect(yield* decodeResult(result.structuredContent)).toMatchObject({
+          status: "timeout",
+          sourceRung: "render",
+          text: "",
+        });
+        expect(yield* Queue.size(f.providerRequests)).toBe(0);
+        const fs = yield* FileSystem.FileSystem;
+        const config = yield* Config.ServerConfig;
+        expect(yield* fs.exists(`${config.stateDir}/web-cache/tinyfish-quota.json`)).toBe(false);
+      }).pipe(Effect.provide(f.layer));
+    }),
+);
+
+it.effect(
+  "shared hosted work outlives one traversal deadline for an active single-page subscriber",
+  () =>
+    Effect.gen(function* () {
+      const rendering = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const longerFinished = yield* Deferred.make<void>();
+      let closed = 0;
+      const f = yield* fixture({
+        render: () => Deferred.succeed(rendering, undefined).pipe(Effect.andThen(Effect.never)),
+        hosted: (r) =>
+          Deferred.await(release).pipe(
+            Effect.as(hostedResponse(r)),
+            Effect.ensuring(
+              Effect.sync(() => {
+                closed++;
+              }),
+            ),
+          ),
+      });
+      yield* Effect.gen(function* () {
+        yield* setup;
+        const first = yield* Effect.forkScoped(call({ url: ROOT }));
+        expect(yield* Queue.take(f.requests)).toBe(`${ROOT}robots.txt`);
+        yield* TestClock.adjust(3000);
+        expect(yield* Queue.take(f.requests)).toBe(ROOT);
+        yield* Deferred.await(rendering);
+        expect(yield* Queue.take(f.cacheReads)).toBe(ROOT);
+        expect(yield* Queue.take(f.cacheReads)).toBe(ROOT);
+        const longer = yield* Effect.forkScoped(
+          call({ url: ROOT, followSubpages: false }).pipe(
+            Effect.tap(() => Deferred.succeed(longerFinished, undefined)),
+          ),
+        );
+        expect(yield* Queue.take(f.cacheReads)).toBe(ROOT);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(20_000);
+        expect(
+          yield* Effect.raceFirst(
+            Queue.take(f.providerRequests).pipe(Effect.as("hosted request")),
+            Deferred.await(longerFinished).pipe(Effect.as("local result")),
+          ),
+        ).toBe("hosted request");
+        yield* TestClock.adjust(7000);
+        const firstResult = yield* Fiber.join(first);
+        expect(firstResult.isError).toBe(true);
+        expect(JSON.stringify(firstResult.content)).toContain("research_budget_exceeded");
+        expect(closed).toBe(0);
+        // Model the review's eight-second hosted response without sleeping or polling.
+        yield* TestClock.adjust(1000);
+        yield* Deferred.succeed(release, undefined);
+        const result = yield* Fiber.join(longer);
+        expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
+        expect(yield* decodeResult(result.structuredContent)).toMatchObject({
+          status: "ok",
+          sourceRung: "tinyfish",
+        });
+        expect(f.order.filter((r) => r === "tinyfish")).toHaveLength(1);
+        expect(closed).toBe(1);
+        const fs = yield* FileSystem.FileSystem;
+        const config = yield* Config.ServerConfig;
+        expect(
+          JSON.parse(yield* fs.readFileString(`${config.stateDir}/web-cache/tinyfish-quota.json`))
+            .starts,
+        ).toHaveLength(1);
+      }).pipe(Effect.provide(f.layer));
+    }),
+);
+
+it.effect(
+  "a child render timeout keeps its root when the remaining budget cannot fit hosted work",
+  () =>
+    Effect.gen(function* () {
+      const rendering = yield* Deferred.make<void>();
+      const finished = yield* Deferred.make<void>();
+      const f = yield* fixture({
+        http: (url) =>
+          Effect.succeed(
+            response(
+              url.pathname === "/"
+                ? rootWithTwoChildren.replace("<a href='/rooms'>Rooms</a>", "")
+                : shell,
+            ),
+          ),
+        render: () => Deferred.succeed(rendering, undefined).pipe(Effect.andThen(Effect.never)),
+        hosted: () => Effect.never,
+      });
+      yield* Effect.gen(function* () {
+        yield* setup;
+        const pending = yield* Effect.forkScoped(
+          call({ url: ROOT }).pipe(Effect.tap(() => Deferred.succeed(finished, undefined))),
+        );
+        expect(yield* Queue.take(f.requests)).toBe(`${ROOT}robots.txt`);
+        yield* TestClock.adjust(3000);
+        expect(yield* Queue.take(f.requests)).toBe(ROOT);
+        yield* TestClock.adjust(3000);
+        expect(yield* Queue.take(f.requests)).toBe(`${ROOT}camere`);
+        yield* Deferred.await(rendering);
+        yield* TestClock.adjust(20_000);
+        expect(
+          yield* Effect.raceFirst(
+            Deferred.await(finished).pipe(Effect.as("local result")),
+            Queue.take(f.providerRequests).pipe(Effect.as("hosted request")),
+          ),
+        ).toBe("local result");
+        const result = yield* Fiber.join(pending);
+        expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
+        expect(yield* decodeResult(result.structuredContent)).toMatchObject({
+          status: "ok",
+          subpages: [{ url: `${ROOT}camere`, status: "timeout", text: "" }],
+        });
+        const fs = yield* FileSystem.FileSystem;
+        const config = yield* Config.ServerConfig;
+        expect(yield* fs.exists(`${config.stateDir}/web-cache/tinyfish-quota.json`)).toBe(false);
       }).pipe(Effect.provide(f.layer));
     }),
 );

@@ -6,6 +6,12 @@ const ProviderCall = Schema.Struct({
   chargedMicro: Schema.Literal(0),
 });
 
+const ProviderError = Schema.Struct({
+  provider: Schema.Literal("tinyfish"),
+  code: Schema.Literals(["research_budget_exceeded", "provider_unavailable"]),
+  message: Schema.String,
+});
+
 const Hash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
 const CacheId = Schema.String.check(Schema.isPattern(/^(?:tinyfish:)?[a-f0-9]{64}$/));
 
@@ -46,6 +52,7 @@ export const CachedPage = Schema.Struct({
   expiresAt: Schema.Number,
   sourceRung: Schema.Literals(["http", "render", "tinyfish"]),
   providerCall: Schema.optional(ProviderCall),
+  providerError: Schema.optional(ProviderError),
   status: PageStatus,
   httpStatus: Schema.NullOr(Schema.Int),
   title: Schema.String,
@@ -68,6 +75,7 @@ export const WebReadPage = Schema.Struct({
   cacheExpiresAt: Schema.String,
   sourceRung: Schema.Literals(["http", "render", "tinyfish"]),
   providerCall: Schema.optional(ProviderCall),
+  providerError: Schema.optional(ProviderError),
   status: PageStatus,
   httpStatus: Schema.NullOr(Schema.Int),
   title: Schema.String,

@@ -474,3 +474,63 @@ it.effect.each([200, 402, 429, 503])(
       }).pipe(Effect.provide(f.layer));
     }).pipe(Effect.provide(base)),
 );
+
+it.effect.each(["resolver failure", "private answer"] as const)(
+  "missing credentials skip hosted DNS even with a %s",
+  (kind) =>
+    Effect.gen(function* () {
+      if (kind === "resolver failure") dns.lookup.mockRejectedValue(new Error(TOKEN));
+      else dns.lookup.mockResolvedValue([{ address: "10.0.0.1", family: 4 }]);
+      const f = yield* fixture();
+      yield* Effect.gen(function* () {
+        expect(yield* fetch("https://research.example/")).toBeUndefined();
+        expect(dns.lookup).not.toHaveBeenCalled();
+        expect(f.requests).toHaveLength(0);
+        expect(yield* f.fs.exists(f.quotaFile)).toBe(false);
+      }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.provide(base)),
+);
+
+it.effect("resolver failures are distinct from blocked targets and drop unsafe DNS causes", () =>
+  Effect.gen(function* () {
+    dns.lookup.mockRejectedValue(new Error(TOKEN));
+    const f = yield* fixture();
+    yield* Effect.gen(function* () {
+      yield* f.provision;
+      const result = yield* Effect.result(fetch("https://research.example/"));
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "TinyFishProviderError", reason: "resolve", httpStatus: null },
+      });
+      expect(JSON.stringify(result)).not.toContain(TOKEN);
+      if (result._tag === "Failure") expect("cause" in result.failure).toBe(false);
+      expect(f.requests).toHaveLength(0);
+      expect(yield* f.fs.exists(f.quotaFile)).toBe(false);
+    }).pipe(Effect.provide(f.layer));
+  }).pipe(Effect.provide(base)),
+);
+
+it.effect("rechecks hosted deadline after DNS before reserving shared quota", () =>
+  Effect.gen(function* () {
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<ReadonlyArray<{ address: string; family: number }>>();
+    dns.lookup.mockImplementation(() => {
+      started.resolve();
+      return release.promise;
+    });
+    const url = "https://research.example/";
+    const f = yield* fixture((r) => Effect.succeed(reply(r, payload({ url, final_url: URL_ }))));
+    yield* Effect.gen(function* () {
+      yield* f.provision;
+      const pending = yield* Effect.forkScoped(
+        TinyFish.TinyFish.use((s) => s.fetch({ url: new URL(url), deadline: () => 25_000 })),
+      );
+      yield* Effect.promise(() => started.promise);
+      yield* TestClock.adjust(10_000);
+      release.resolve([{ address: "93.184.216.34", family: 4 }]);
+      expect(yield* Fiber.join(pending)).toBeUndefined();
+      expect(f.requests).toHaveLength(0);
+      expect(yield* f.fs.exists(f.quotaFile)).toBe(false);
+    }).pipe(Effect.provide(f.layer));
+  }).pipe(Effect.provide(base)),
+);

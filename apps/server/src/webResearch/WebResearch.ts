@@ -10,6 +10,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as HashMap from "effect/HashMap";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -141,6 +142,7 @@ class ReadFreshness extends Context.Service<
     readonly maxAgeHours: number | undefined;
     readonly requireLinks: boolean;
     readonly requestedAt: number;
+    readonly deadline: () => number;
   }
 >()("t3/webResearch/WebResearch/ReadFreshness") {}
 
@@ -322,8 +324,9 @@ const make = Effect.gen(function* () {
 
   const fetchPage = Effect.fnUntraced(function* (
     original: URL,
-    sameOrigin?: string,
-    maxAgeHours?: number,
+    sameOrigin: string | undefined,
+    maxAgeHours: number | undefined,
+    deadline: () => number,
   ) {
     const delay = yield* Ref.make(0);
     const budget = yield* Ref.make(30_000);
@@ -335,6 +338,7 @@ const make = Effect.gen(function* () {
     let sourceRung: CachedPage["sourceRung"] = "http";
     let renderAttempted = false;
     let providerCall: CachedPage["providerCall"];
+    let providerError: CachedPage["providerError"];
     const loadDocument = Effect.fnUntraced(
       function* (target: URL) {
         const url = parseUrl(target.href);
@@ -559,10 +563,37 @@ const make = Effect.gen(function* () {
         content.status,
       )
     ) {
-      const hosted = yield* tinyfish.fetch({
-        url: new URL(finalUrl),
-        ...(sameOrigin === undefined ? {} : { sameOrigin }),
-      });
+      const childFailure = (
+        error: TinyFish.TinyFishBudgetError | TinyFish.TinyFishProviderError,
+      ) => {
+        // A root failure stays explicit; an optional child must not discard prior pages.
+        if (sameOrigin === undefined) return Effect.fail(error);
+        cacheable = false;
+        providerError = {
+          provider: "tinyfish",
+          code:
+            error._tag === "TinyFishBudgetError"
+              ? "research_budget_exceeded"
+              : "provider_unavailable",
+          message: error.message,
+        };
+        httpStatus = error._tag === "TinyFishProviderError" ? error.httpStatus : null;
+        retryAfterMs = error._tag === "TinyFishBudgetError" ? error.retryAfterMs : null;
+        content = { status: "provider_error", title: "", text: "" };
+        return Effect.succeed(undefined);
+      };
+      const hosted = yield* tinyfish
+        .fetch({
+          url: new URL(finalUrl),
+          deadline,
+          ...(sameOrigin === undefined ? {} : { sameOrigin }),
+        })
+        .pipe(
+          Effect.catchTags({
+            TinyFishBudgetError: childFailure,
+            TinyFishProviderError: childFailure,
+          }),
+        );
       if (hosted !== undefined) {
         sourceRung = "tinyfish";
         finalUrl = hosted.finalUrl;
@@ -610,6 +641,7 @@ const make = Effect.gen(function* () {
         ),
       sourceRung: reusedTarget?.sourceRung ?? sourceRung,
       ...(providerCall === undefined ? {} : { providerCall }),
+      ...(providerError === undefined ? {} : { providerError }),
       ...content,
       httpStatus,
       contentHash,
@@ -642,17 +674,24 @@ const make = Effect.gen(function* () {
         isFresh(stored, intent.maxAgeHours === 0 ? undefined : intent.maxAgeHours, now)
       )
         return { page: stored, fromCache: true };
-      return { page: yield* fetchPage(url, key.sameOrigin, key.maxAgeHours), fromCache: false };
+      return {
+        page: yield* fetchPage(url, key.sameOrigin, key.maxAgeHours, intent.deadline),
+        fromCache: false,
+      };
     }),
     { capacity: Infinity, timeToLive: () => 0, requireServicesAt: "lookup" },
   );
 
+  // Deadlines belong to active subscribers, not the caller that first creates a shared flight.
+  // Cache still owns deduplication and interruption when the last subscriber leaves.
+  let flightDeadlines = HashMap.empty<PageRequest, Map<symbol, number>>();
   const loadPage = Effect.fnUntraced(function* (
     url: URL,
     options: {
       readonly maxAgeHours: number | undefined;
       readonly sameOrigin?: string;
       readonly requireLinks?: boolean;
+      readonly deadline?: number;
     },
   ) {
     let reused = true;
@@ -674,6 +713,19 @@ const make = Effect.gen(function* () {
       // Restricted redirects may reuse a target, so their freshness requirements must agree.
       maxAgeHours: options.sameOrigin === undefined ? undefined : options.maxAgeHours,
     });
+    let subscribers = Option.getOrUndefined(HashMap.get(flightDeadlines, key));
+    if (subscribers === undefined) {
+      subscribers = new Map();
+      flightDeadlines = HashMap.set(flightDeadlines, key, subscribers);
+    }
+    const activeDeadlines = subscribers;
+    const subscription = Symbol();
+    activeDeadlines.set(subscription, options.deadline ?? Infinity);
+    const deadline = () => {
+      let latest = 0;
+      for (const at of activeDeadlines.values()) latest = Math.max(latest, at);
+      return latest;
+    };
     const flight = yield* Effect.gen(function* () {
       const active = yield* Cache.getOption(flights, key);
       if (Option.isSome(active)) return active.value;
@@ -685,7 +737,14 @@ const make = Effect.gen(function* () {
         maxAgeHours: options.maxAgeHours,
         requireLinks: options.requireLinks ?? false,
         requestedAt: now,
+        deadline,
       }),
+      Effect.ensuring(
+        Effect.sync(() => {
+          activeDeadlines.delete(subscription);
+          if (activeDeadlines.size === 0) flightDeadlines = HashMap.remove(flightDeadlines, key);
+        }),
+      ),
     );
     reused ||= flight.fromCache;
     return { page: flight.page, reused, delayMs: flight.fromCache ? 0 : flight.page.delayMs };
@@ -707,6 +766,7 @@ const make = Effect.gen(function* () {
       cacheStorage: page.sourceRung === "tinyfish" ? "memory" : "persistent",
       cacheExpiresAt: DateTime.formatIso(DateTime.makeUnsafe(page.expiresAt)),
       ...(page.providerCall === undefined ? {} : { providerCall: page.providerCall }),
+      ...(page.providerError === undefined ? {} : { providerError: page.providerError }),
       status: page.status,
       httpStatus: page.httpStatus,
       title: page.title,
@@ -757,6 +817,7 @@ const make = Effect.gen(function* () {
       const loading = loadPage(url, {
         maxAgeHours: input.maxAgeHours,
         requireLinks: follow,
+        ...(follow ? { deadline: startedAt + READ_BUDGET_MS } : {}),
       });
       if (follow) {
         const loaded = yield* loading.pipe(Effect.timeoutOption(READ_BUDGET_MS));
@@ -811,6 +872,7 @@ const make = Effect.gen(function* () {
       const loaded = yield* loadPage(target, {
         maxAgeHours: input.maxAgeHours,
         sameOrigin: origin,
+        deadline: startedAt + READ_BUDGET_MS,
       }).pipe(Effect.timeoutOption(remainingMs));
       if (Option.isNone(loaded)) {
         reasons.add("time_budget");

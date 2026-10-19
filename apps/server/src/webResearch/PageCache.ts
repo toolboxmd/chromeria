@@ -20,6 +20,7 @@ const gunzip = NodeUtil.promisify(NodeZlib.gunzip);
 const decode = Schema.decodeUnknownEffect(Schema.fromJsonString(CachedPage));
 const encode = Schema.encodeEffect(Schema.fromJsonString(CachedPage));
 // JSON escapes control characters in both page text and the retained link labels.
+// This limits encoded payload bytes, not total live heap used by strings and link objects.
 const MAX_CACHE_JSON_BYTES = 64 * 1024 * 1024;
 
 export const HOSTED_CONTINUATION_TTL_MS = 15 * 60_000;
@@ -85,8 +86,8 @@ const make = Effect.gen(function* () {
     yield* sql`CREATE INDEX IF NOT EXISTS pages_final_url ON pages(final_url, indexed_at DESC)`;
   }).pipe(Effect.mapError((cause) => new PageCacheError({ operation: "open", cause })));
 
-  // Persistent hosted caching has no confirmed permission. Only bounded, short-lived continuation
-  // buffers exist in memory; hosted bodies never enter the SQLite index or compressed files.
+  // Provider retention permission, including these transient buffers, remains unresolved.
+  // Final admission needs that acceptance; hosted bodies never enter SQLite or compressed files.
   const continuations = new Map<string, { page: CachedPage; bytes: number }>();
   let continuationBytes = 0;
   const forget = (id: string) => {
