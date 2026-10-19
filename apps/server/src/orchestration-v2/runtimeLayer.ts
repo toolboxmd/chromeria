@@ -285,6 +285,7 @@ const layerAgentSessionImporterProvided = AgentSessionImporter.layer.pipe(
 );
 
 const layerThreadManagementProvided = ThreadManagementService.layerWithLegacyImporter.pipe(
+  Layer.provide(layerPrismRecoveryHooksProvided),
   Layer.provide(
     Layer.mergeAll(
       layerOrchestratorProvided,

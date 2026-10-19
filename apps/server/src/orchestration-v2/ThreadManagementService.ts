@@ -1,3 +1,4 @@
+import * as RecoveryHooks from "../prism/RecoveryHooks.ts";
 import { waitForRecovery, RecoveryWaitState } from "../peer/recoveryWait.ts";
 import type {
   OrchestrationV2SearchThreadInput,
@@ -481,6 +482,9 @@ export interface ThreadManagementServiceShape {
   readonly getThreadEventSequence: Orchestrator.OrchestratorV2["Service"]["getThreadEventSequence"];
   readonly recoverDelegatedTask: Orchestrator.OrchestratorV2["Service"]["recoverDelegatedTask"];
   readonly recordRestartCutDecline: Orchestrator.OrchestratorV2["Service"]["recordRestartCutDecline"];
+  readonly readRunRecovery: Context.Service.Shape<
+    typeof RecoveryHooks.RecoveryHooks
+  >["readRunRecovery"];
   readonly readRestartCutView: Orchestrator.OrchestratorV2["Service"]["readRestartCutView"];
   readonly delegatedTaskResultPending: Orchestrator.OrchestratorV2["Service"]["delegatedTaskResultPending"];
   readonly streamStoredEventsFrom: Orchestrator.OrchestratorV2["Service"]["streamStoredEventsFrom"];
@@ -591,6 +595,7 @@ function descendantNotice(
 const make = Effect.gen(function* () {
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const recoveryWait = yield* RecoveryWaitState;
+  const recoveryHooks = yield* RecoveryHooks.RecoveryHooks;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
   const layerScope = yield* Effect.scope;
@@ -1429,6 +1434,7 @@ const make = Effect.gen(function* () {
     getThreadEventSequence: orchestrator.getThreadEventSequence,
     recoverDelegatedTask: orchestrator.recoverDelegatedTask,
     recordRestartCutDecline: orchestrator.recordRestartCutDecline,
+    readRunRecovery: recoveryHooks.readRunRecovery,
     readRestartCutView: orchestrator.readRestartCutView,
     delegatedTaskResultPending: orchestrator.delegatedTaskResultPending,
     streamStoredEventsFrom: orchestrator.streamStoredEventsFrom,
