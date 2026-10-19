@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off - Models the native worker transport without touching Keychain.
+import * as NodeEvents from "node:events";
 import { describe, expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
@@ -20,9 +22,23 @@ import { LinuxBrowserSecretPath } from "./LinuxBrowserSecret.ts";
 
 const { getPassword } = vi.hoisted(() => ({ getPassword: vi.fn<() => string | null>() }));
 
-vi.mock("@napi-rs/keyring", () => ({
-  Entry: class {
-    getPassword = getPassword;
+vi.mock("node:worker_threads", () => ({
+  Worker: class extends NodeEvents.EventEmitter {
+    constructor() {
+      super();
+      queueMicrotask(() => {
+        try {
+          const secret = getPassword();
+          this.emit("message", secret ? { secret } : { reason: "keychainItemMissing" });
+        } catch {
+          this.emit("message", { reason: "needsKeychainApproval" });
+        }
+      });
+    }
+    unref() {}
+    async terminate() {
+      return 0;
+    }
   },
 }));
 
@@ -104,7 +120,7 @@ describe("macOS Chromium secrets", () => {
       });
       const error = yield* resolveChromiumKeys(request).pipe(Effect.flip);
       expect(error.reason).toBe("needsKeychainApproval");
-      expect(error.cause).toBe(denied);
+      expect(error.cause).toBeUndefined();
     }).pipe(Effect.provide(layerNoProcesses)),
   );
 });

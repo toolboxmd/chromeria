@@ -1,6 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off - `node:crypto` implements the
-// OSCrypt key derivation Chromium uses; Effect has no equivalent.
+// OSCrypt key derivation; workers isolate the blocking native Keychain binding.
 import * as NodeCrypto from "node:crypto";
+import * as NodePath from "node:path";
+import * as NodeWorkerThreads from "node:worker_threads";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
@@ -53,39 +55,50 @@ export const macChromiumKeyMaterial = (secret: string): ChromiumKeyMaterial => (
   cbcV10: derive(secret, MAC_KEY_ITERATIONS),
 });
 
-/**
- * Via the CLI the prompt says "security" and "Always Allow" grants trust to a
- * tool every process on the machine can invoke; in-process it names this app
- * and the grant belongs to it.
- *
- * Deliberately untimed: macOS answers this with a modal, and a timeout racing
- * the user means the prompt can be approved while nothing is left listening,
- * which reads as "approving did nothing".
- */
+const decodeKeychainReply = Schema.decodeUnknownResult(
+  Schema.Union([
+    Schema.Struct({ secret: Schema.NonEmptyString }),
+    Schema.Struct({ reason: ChromiumKeyFailure }),
+  ]),
+);
+
+// Keep the prompt associated with this app, while the native call waits on a
+// worker. Both one-off imports and the mirror must leave main free to start.
 const readKeychainSecret = Effect.fn("ChromiumKeys.readKeychainSecret")(function* (
   service: string,
   account: string,
 ) {
-  // Loading the macOS binding at startup can prevent other platforms from opening.
-  const Keyring = yield* Effect.tryPromise({
-    try: () => import("@napi-rs/keyring"),
-    catch: (cause) => new ChromiumKeyError({ reason: "keychainUnavailable", cause }),
+  return yield* Effect.callback<string, ChromiumKeyError>((resume) => {
+    let worker: NodeWorkerThreads.Worker;
+    try {
+      worker = new NodeWorkerThreads.Worker(
+        NodePath.join(__dirname, "preview", "BrowserImport", "ChromiumKeychainWorker.cjs"),
+        { workerData: { service, account } },
+      );
+    } catch {
+      resume(Effect.fail(new ChromiumKeyError({ reason: "keychainUnavailable" })));
+      return;
+    }
+    worker.once("message", (message: unknown) => {
+      const result = decodeKeychainReply(message);
+      if (result._tag === "Failure") {
+        resume(Effect.fail(new ChromiumKeyError({ reason: "readFailed" })));
+      } else if ("reason" in result.success) {
+        resume(Effect.fail(new ChromiumKeyError({ reason: result.success.reason })));
+      } else {
+        resume(Effect.succeed(result.success.secret));
+      }
+    });
+    worker.once("error", () =>
+      resume(Effect.fail(new ChromiumKeyError({ reason: "keychainUnavailable" }))),
+    );
+    worker.once("exit", () => resume(Effect.fail(new ChromiumKeyError({ reason: "readFailed" }))));
+    // A pending native prompt must not keep the app alive during shutdown.
+    worker.unref();
+    return Effect.sync(() => {
+      void worker.terminate();
+    });
   });
-  const secret = yield* Effect.try({
-    try: () => new Keyring.Entry(service, account).getPassword(),
-    catch: (cause) => {
-      const message = String((cause as { message?: unknown } | undefined)?.message ?? "");
-      const missing = /no (matching )?entry|not found/i.test(message);
-      return new ChromiumKeyError({
-        reason: missing ? "keychainItemMissing" : "needsKeychainApproval",
-        cause,
-      });
-    },
-  });
-  if (secret === null || secret === "") {
-    return yield* new ChromiumKeyError({ reason: "keychainItemMissing" });
-  }
-  return secret;
 });
 
 /** Exit codes distinguish missing keys, denied access, and unavailable keyrings without localized message parsing. */

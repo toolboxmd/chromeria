@@ -69,6 +69,7 @@
       "entry": [
         "gnome-extension/extension.js!",
         "src/electron/WindowsForegroundFocusWorker.ts!",
+        "src/preview/BrowserImport/ChromiumKeychainWorker.ts!",
         "src/snapShot/GlobalShiftShortcutWorker.ts!",
         "src/snapShot/RegionSnapShotWorker.ts!",
         "src/snapShot/SnapShotAccessibilityWorker.ts!",

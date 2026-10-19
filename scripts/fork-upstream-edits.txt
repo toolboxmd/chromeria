@@ -560,3 +560,9 @@ apps/web/src/components/auth/ConnectAgentSurface.tsx
 
 # Session research reads reuse the existing browser controller (#446)
 packages/contracts/src/previewAutomation.ts
+
+# Chrome source opt-in and nonblocking Keychain reads (#541, chrome-login-mirror)
+apps/desktop/src/preview/BrowserImport/ChromiumKeys.test.ts
+apps/desktop/vite.config.ts
+apps/desktop/src/preview/BrowserImport/ChromiumKeys.module.test.ts
+apps/desktop/scripts/main-process-bundle.test.mjs
