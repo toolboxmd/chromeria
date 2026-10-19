@@ -56,6 +56,7 @@ apps/server/src/orchestration-v2/ProviderContinuationService.test.ts
 apps/server/src/orchestration-v2/ProviderContinuationService.ts
 apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts
 apps/server/src/orchestration-v2/RuntimePolicy.test.ts
+apps/server/src/orchestration-v2/ThreadDeletion.ts
 apps/server/src/orchestration-v2/ThreadFork.execution.test.ts
 apps/server/src/orchestration-v2/ProviderSessionManager.test.ts
 apps/server/src/orchestration-v2/ProviderSessionManager.ts

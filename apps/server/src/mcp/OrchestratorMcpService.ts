@@ -2757,7 +2757,8 @@ const make = Effect.gen(function* () {
         (task) => task.id === input.taskId && task.origin === "app_owned",
       );
       const disposeCompletionDelivery =
-        parentTask?.completionDelivery?.state === "disposed"
+        parentTask?.completionDelivery?.state === "disposed" &&
+        parentTask.completionDelivery.disposedBy === undefined
           ? Effect.void
           : threadManagement
               .dispatch({

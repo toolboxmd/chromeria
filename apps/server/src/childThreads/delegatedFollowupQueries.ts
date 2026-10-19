@@ -151,7 +151,10 @@ export const pendingDelegatedChildQuery = (
     AND json_extract(child.payload_json, '$.archivedAt') IS NULL
     AND json_extract(task.payload_json, '$.origin') = 'app_owned'
     AND json_extract(task.payload_json, '$.result') IS NOT NULL
-    AND json_extract(task.payload_json, '$.completionDelivery.state') IS NOT 'disposed'
+    AND (
+      json_extract(task.payload_json, '$.completionDelivery.state') IS NOT 'disposed'
+      OR json_extract(task.payload_json, '$.completionDelivery.disposedBy') = 'stop'
+    )
     AND NOT EXISTS (
       SELECT 1 FROM orchestration_v2_projection_messages AS message
       WHERE message.message_id = json_extract(requested.payload_json, '$.userMessageId')

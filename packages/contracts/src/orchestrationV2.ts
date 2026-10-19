@@ -644,10 +644,20 @@ export const OrchestrationV2DelegatedCompletionTaskDeliveryState = Schema.Litera
 export type OrchestrationV2DelegatedCompletionTaskDeliveryState =
   typeof OrchestrationV2DelegatedCompletionTaskDeliveryState.Type;
 
-export const OrchestrationV2DelegatedCompletionTaskDelivery = Schema.Struct({
-  state: OrchestrationV2DelegatedCompletionTaskDeliveryState,
-  observedByRunId: Schema.NullOr(RunId),
-});
+export const OrchestrationV2DelegatedCompletionTaskDelivery = Schema.Union([
+  Schema.Struct({
+    state: Schema.Literals(["pending", "claimed", "acknowledged", "delivered"]),
+    observedByRunId: Schema.NullOr(RunId),
+  }),
+  Schema.Struct({
+    state: Schema.Literal("disposed"),
+    observedByRunId: Schema.NullOr(RunId),
+    // Fork (#214): a Stop of the delegating turn disposed it, so a later
+    // requested follow-up may wake the parent again. Absent means task_cancel,
+    // archive or deletion, which stay quiet.
+    disposedBy: Schema.optional(Schema.Literal("stop")),
+  }),
+]);
 export type OrchestrationV2DelegatedCompletionTaskDelivery =
   typeof OrchestrationV2DelegatedCompletionTaskDelivery.Type;
 
