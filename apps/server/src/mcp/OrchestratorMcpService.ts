@@ -1,3 +1,4 @@
+import { interactiveAuthority } from "../peer/PeerAuthorityRecord.ts";
 import {
   executionPurposeOf,
   executionPurposesEqual,
@@ -2225,7 +2226,8 @@ const make = Effect.gen(function* () {
       const identity = yield* RequestReceipts.CurrentRequest;
       if (
         identity === undefined ||
-        (scope.client?.linked === true && scope.authority?.envelope.requestOwner === undefined)
+        (scope.client?.linked === true &&
+          interactiveAuthority(scope.authority)?.envelope.requestOwner === undefined)
       )
         return undefined;
       if (scheduledTasks.mutationReceipt === undefined)

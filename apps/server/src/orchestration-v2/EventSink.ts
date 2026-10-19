@@ -1,3 +1,6 @@
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import { checkAutomationCommit } from "../scheduledTasks/DestinationAutomationAuthority.ts";
+import { PeerDispatchAuthority, PeerAcceptedAutomation } from "../peer/peerEffectAuthority.ts";
 import {
   initializePeerEffectAuthority,
   recordPeerEffectAuthority,
@@ -236,6 +239,7 @@ const layerBase: Layer.Layer<
   EventSinkV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const peerAuthority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
     yield* initializePeerEffectAuthority.pipe(Effect.orDie);
     const commandReceipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
     const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
@@ -787,6 +791,57 @@ const layerBase: Layer.Layer<
                 Effect.provideService(ProjectionStore.ProjectionStoreV2, projectionStore),
               );
           }
+          const dispatchOwner = yield* PeerDispatchAuthority;
+          const acceptedAutomation = yield* PeerAcceptedAutomation;
+          const executionCommit = input.effects.some((effect) =>
+            [
+              "provider-turn.start",
+              "provider-runtime.continue",
+              "provider-turn.steer",
+              "provider-turn.restart",
+              "runtime-request.respond",
+              "provider-thread.rollback",
+            ].includes(effect.request.type),
+          );
+          if (dispatchOwner !== undefined || acceptedAutomation !== undefined || executionCommit) {
+            const owners = [
+              ...(dispatchOwner === undefined ? [] : [dispatchOwner]),
+              ...(acceptedAutomation === undefined ? [] : [acceptedAutomation]),
+            ];
+            const threadIds = [
+              ...new Set([input.threadId, ...input.events.map((event) => event.threadId)]),
+            ];
+            const births = yield* sql<{
+              record_id: string;
+            }>`SELECT record_id FROM peer_thread_authority WHERE ${sql.in("thread_id", threadIds)}`;
+            owners.push(...births.map((row) => row.record_id));
+            const runIds = input.events.flatMap((event) => [
+              ...(event.runId == null ? [] : [event.runId]),
+              ...(event.type === "run.created"
+                ? [
+                    event.payload.restartContinuationOfRunId,
+                    event.payload.forkPrismContinuationSourceRunId,
+                  ].filter((id) => id !== undefined)
+                : []),
+            ]);
+            if (runIds.length !== 0) {
+              const runs = yield* sql<{
+                record_id: string;
+              }>`SELECT record_id FROM peer_run_authority WHERE ${sql.in("run_id", runIds)}`;
+              owners.push(...runs.map((row) => row.record_id));
+            }
+            yield* checkAutomationCommit(owners).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.mapError(
+                () =>
+                  new ForkCommitGuardRejected({
+                    threadId: input.threadId,
+                    kind: "invalid_transition",
+                  }),
+              ),
+            );
+          }
+
           const normalized = yield* normalizeEvents(input.events);
           let storedEvents = yield* eventStore.append({
             commandId: input.commandId,
@@ -872,7 +927,11 @@ const layerBase: Layer.Layer<
             if (result.enqueuedEffectCount > 0) {
               yield* effectOutbox.notifyAvailable(result.enqueuedEffectCount);
             }
-            if (result.committed) yield* publishStoredEvents(result.storedEvents);
+            if (result.committed) {
+              if ((input.forkPlans?.length ?? 0) !== 0 && Option.isSome(peerAuthority))
+                yield* peerAuthority.value.notifyAutomationChanges;
+              yield* publishStoredEvents(result.storedEvents);
+            }
           }),
       );
       // A stopped start may still commit what it did, which takes the publish

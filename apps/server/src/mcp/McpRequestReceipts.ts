@@ -1,3 +1,4 @@
+import { interactiveAuthority } from "../peer/PeerAuthorityRecord.ts";
 import { isSqlError } from "effect/sql/SqlError";
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import { sha256 } from "@noble/hashes/sha2";
@@ -438,7 +439,7 @@ export const ownedSqlMutation = <A, E, R>(perform: Effect.Effect<A, E, R>) =>
       identity === undefined ||
       Option.isNone(scope) ||
       (scope.value.client?.linked === true &&
-        scope.value.authority?.envelope.requestOwner === undefined)
+        interactiveAuthority(scope.value.authority)?.envelope.requestOwner === undefined)
     )
       return yield* perform;
     const receipts = yield* Effect.serviceOption(McpRequestReceipts);

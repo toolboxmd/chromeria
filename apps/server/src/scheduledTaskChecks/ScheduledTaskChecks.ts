@@ -1,3 +1,7 @@
+import * as Invocation from "../mcp/McpInvocationContext.ts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import { PeerDispatchAuthority } from "../peer/peerEffectAuthority.ts";
+import { requestDigest } from "../mcp/McpRequestReceipts.ts";
 import * as MutationReceipts from "../scheduledTasks/mutationReceipts.ts";
 import {
   isForkScheduledTaskSchedule,
@@ -53,8 +57,10 @@ import {
   outcomeCheckSummary,
   unfinishedRun,
   type CheckState,
+  type CheckedRun,
+  type RunSend,
 } from "./state.ts";
-import { ensureCheckSchema, listCheckStates } from "./store.ts";
+import { ensureCheckSchema, listCheckStates, bindCheckAutomation } from "./store.ts";
 
 /** The fork summaries an agent sees on a listed task. */
 export const forkSummaryFields = (task: ScheduledTask) => ({
@@ -137,10 +143,6 @@ class ScheduledTaskDeleteActor extends Context.Reference<ThreadId | null>(
   { defaultValue: () => null },
 ) {}
 
-/** A fork refusal as upstream's scheduled task error, so tool handlers report it unchanged. */
-const toToolError = (taskId: ScheduledTaskId) => (error: ScheduledTaskCheckError) =>
-  new ScheduledTaskError({ message: error.message, taskId });
-
 /** A transaction that cannot begin or commit is a defect, not a caller error. */
 const rethrowSql = <A, E, R>(effect: Effect.Effect<A, E | SqlError, R>) =>
   effect.pipe(Effect.catchIf(isSqlError, (error) => Effect.die(error)));
@@ -206,6 +208,7 @@ const checkError = (message: string) => (cause: unknown) =>
   });
 
 const makeEngine = Effect.gen(function* () {
+  const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
   const sql = yield* SqlClient.SqlClient;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const projects = yield* ProjectStore.ProjectStoreV2;
@@ -223,6 +226,81 @@ const makeEngine = Effect.gen(function* () {
 
   const shellOf = (threadId: ThreadId) =>
     projections.getThreadShell(threadId).pipe(Effect.mapError(checkError("Could not read thread")));
+
+  const dispatchCheckedSend = (taskId: ScheduledTaskId, run: CheckedRun, send: RunSend) =>
+    Effect.gen(function* () {
+      const payload = send.payload;
+      if (payload === undefined)
+        return yield* new ScheduledTaskCheckError({
+          message: "The recorded send lost its payload and cannot be repeated.",
+        });
+      const threadId = run.threadId!;
+      // Automatic sends are server messages: they never acknowledge a retirement.
+      const provenance = { createdBy: "system", creationSource: "server" } as const;
+      const launch = payload.launch;
+      const target = payload.linkOrigin === undefined ? null : yield* shellOf(threadId);
+      if (
+        payload.automationCertificateId === undefined &&
+        payload.linkOrigin !== undefined &&
+        target !== null &&
+        target.linkOrigin?.sessionId !== payload.linkOrigin.sessionId
+      )
+        return yield* new ScheduledTaskCheckError({
+          message: "A linked scheduled send may target only its own link's thread.",
+        });
+      if (launch !== null && (launch.bare !== undefined || (yield* shellOf(threadId)) === null)) {
+        const start = threadLaunch.launch({
+          purposeSource: payload.purposeSource,
+          commandId: send.commandId,
+          threadId,
+          ...launch,
+          ...(payload.bareReadGrant === undefined ? {} : { bareReadGrant: payload.bareReadGrant }),
+          ...(payload.linkOrigin === undefined ? {} : { linkOrigin: payload.linkOrigin }),
+          initialMessage: {
+            messageId: send.messageId,
+            scheduledTaskId: taskId,
+            text: payload.text,
+            attachments: [],
+          },
+          ...provenance,
+        });
+        yield* (
+          launch.bare === undefined
+            ? start
+            : threadLaunch.replayOrLaunch(
+                {
+                  commandId: send.commandId,
+                  purposeSource: payload.purposeSource,
+                  threadId,
+                  projectId: launch.projectId,
+                  ...(launch.bare === undefined ? {} : { bare: launch.bare }),
+                  runtimeMode: launch.runtimeMode,
+                  interactionMode: launch.interactionMode,
+                  createdBy: "agent",
+                  ...(payload.linkOrigin === undefined ? {} : { linkOrigin: payload.linkOrigin }),
+                  messageId: send.messageId,
+                },
+                start,
+              )
+        ).pipe(Effect.mapError(checkError("Could not start the scheduled thread")));
+        return;
+      }
+      yield* threads
+        .sendToThread({
+          purposeSource: payload.purposeSource,
+          projectId: payload.projectId,
+          commandId: send.commandId,
+          threadId,
+          messageId: send.messageId,
+          scheduledTaskId: taskId,
+          text: payload.text,
+          attachments: [],
+          // Never interrupt the thread; its stored model and effort are kept.
+          mode: "queue",
+          ...provenance,
+        })
+        .pipe(Effect.mapError(checkError("Could not send the scheduled message")));
+    });
 
   const runs = yield* makeCheckedRuns({
     changed: PubSub.publish(changes, undefined).pipe(Effect.asVoid),
@@ -322,99 +400,61 @@ const makeEngine = Effect.gen(function* () {
       }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
     dispatch: ({ taskId, run, send }) =>
       Effect.gen(function* () {
-        const payload = send.payload;
-        if (payload === undefined)
+        if (run.automationCertificateId === undefined)
+          return yield* dispatchCheckedSend(taskId, run, send);
+        if (send.payload?.automationCertificateId !== run.automationCertificateId)
           return yield* new ScheduledTaskCheckError({
-            message: "The recorded send lost its payload and cannot be repeated.",
+            message: "The stored send does not match its accepted automation run.",
           });
-        const threadId = run.threadId!;
-        // Automatic sends are server messages: they never acknowledge a retirement.
-        const provenance = { createdBy: "system", creationSource: "server" } as const;
-        const launch = payload.launch;
-        const target = payload.linkOrigin === undefined ? null : yield* shellOf(threadId);
-        if (
-          payload.linkOrigin !== undefined &&
-          target !== null &&
-          target.linkOrigin?.sessionId !== payload.linkOrigin.sessionId
-        )
+        if (Option.isNone(authority))
           return yield* new ScheduledTaskCheckError({
-            message: "A linked scheduled send may target only its own link's thread.",
+            message: "Native automation execution is unavailable.",
           });
-        if (launch !== null && (launch.bare !== undefined || (yield* shellOf(threadId)) === null)) {
-          const start = threadLaunch.launch({
-            purposeSource: payload.purposeSource,
-            commandId: send.commandId,
-            threadId,
-            ...launch,
-            ...(payload.bareReadGrant === undefined
-              ? {}
-              : { bareReadGrant: payload.bareReadGrant }),
-            ...(payload.linkOrigin === undefined ? {} : { linkOrigin: payload.linkOrigin }),
-            initialMessage: {
-              messageId: send.messageId,
-              scheduledTaskId: taskId,
-              text: payload.text,
-              attachments: [],
-            },
-            ...provenance,
-          });
-          yield* (
-            launch.bare === undefined
-              ? start
-              : threadLaunch.replayOrLaunch(
-                  {
-                    commandId: send.commandId,
-                    purposeSource: payload.purposeSource,
-                    threadId,
-                    projectId: launch.projectId,
-                    ...(launch.bare === undefined ? {} : { bare: launch.bare }),
-                    runtimeMode: launch.runtimeMode,
-                    interactionMode: launch.interactionMode,
-                    createdBy: "agent",
-                    ...(payload.linkOrigin === undefined ? {} : { linkOrigin: payload.linkOrigin }),
-                    messageId: send.messageId,
-                  },
-                  start,
-                )
-          ).pipe(Effect.mapError(checkError("Could not start the scheduled thread")));
-          return;
-        }
-        yield* threads
-          .sendToThread({
-            purposeSource: payload.purposeSource,
-            projectId: payload.projectId,
-            commandId: send.commandId,
-            threadId,
-            messageId: send.messageId,
-            scheduledTaskId: taskId,
-            text: payload.text,
-            attachments: [],
-            // Never interrupt the thread; its stored model and effort are kept.
-            mode: "queue",
-            ...provenance,
-          })
-          .pipe(Effect.mapError(checkError("Could not send the scheduled message")));
+        const record = yield* authority.value
+          .automationExecution(run.automationCertificateId, send.commandId)
+          .pipe(
+            Effect.mapError((cause) => new ScheduledTaskCheckError({ message: cause.message })),
+          );
+        return yield* dispatchCheckedSend(taskId, run, send).pipe(
+          Effect.provideService(PeerDispatchAuthority, record.id),
+        );
       }),
     runCheck: ({ command, cwd, taskId, runId, date }) =>
-      expandCheckCommand(command, { taskId, runId, date }).pipe(
-        Effect.flatMap((expanded) =>
-          processes
-            .run({
-              command: "/bin/sh",
-              args: ["-c", expanded],
-              cwd,
-              timeout: "30 seconds",
-              maxOutputBytes: CHECK_OUTPUT_BYTES,
-              outputMode: "truncate",
-              timeoutBehavior: "timedOutResult",
-            })
-            .pipe(Effect.mapError(checkError("Outcome check could not run"))),
-        ),
-        Effect.map((result) => ({
-          passed: result.code === 0 && !result.timedOut,
-          output: `${result.stdout}${result.stderr}${result.timedOut ? "\nOutcome check timed out." : ""}`,
-        })),
-      ),
+      Effect.gen(function* () {
+        if (runId.endsWith(":creation")) {
+          const scope = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+          if (Option.isSome(scope) && scope.value.authority !== undefined) {
+            if (Option.isNone(authority))
+              return yield* new ScheduledTaskCheckError({
+                message: "Live creation-check authority is unavailable.",
+              });
+            yield* authority.value
+              .checkInteractiveRecord(scope.value.authority.id)
+              .pipe(
+                Effect.mapError((cause) => new ScheduledTaskCheckError({ message: cause.message })),
+              );
+          }
+        }
+        return yield* expandCheckCommand(command, { taskId, runId, date }).pipe(
+          Effect.flatMap((expanded) =>
+            processes
+              .run({
+                command: "/bin/sh",
+                args: ["-c", expanded],
+                cwd,
+                timeout: "30 seconds",
+                maxOutputBytes: CHECK_OUTPUT_BYTES,
+                outputMode: "truncate",
+                timeoutBehavior: "timedOutResult",
+              })
+              .pipe(Effect.mapError(checkError("Outcome check could not run"))),
+          ),
+          Effect.map((result) => ({
+            passed: result.code === 0 && !result.timedOut,
+            output: `${result.stdout}${result.stderr}${result.timedOut ? "\nOutcome check timed out." : ""}`,
+          })),
+        );
+      }),
     start: ({ command, cwd, taskId, runId, date }) =>
       expandCheckCommand(command, { taskId, runId, date }).pipe(
         Effect.flatMap((expanded) =>
@@ -745,29 +785,34 @@ const checksLayer = Layer.effect(
                 ? yield* crypto.randomUUIDv4().pipe(Effect.orDie)
                 : `${scope.requestNamespace}:${fields.clientRequestId}`;
             const id = ScheduledTaskId.make(`scheduled-task:${key}`);
+            const prepare = withSql(
+              runs.prepareSave({
+                taskId: id,
+                projectId,
+                threadId: bindToCurrentThread && parent !== undefined ? parent.thread.id : null,
+                schedule: fields.schedule,
+                fields,
+                actor: parent?.thread.id ?? "agent",
+                actorThreadId: null,
+              }),
+            ).pipe(
+              Effect.map((commit) =>
+                withSql(commit).pipe(Effect.asVoid, Effect.mapError(toTaskError(id))),
+              ),
+              Effect.mapError(toTaskError(id)),
+            );
             return yield* runs.withTaskLock(
               id,
-              MutationReceipts.accept(
-                id,
-                sql.withTransaction(
-                  Effect.gen(function* () {
-                    yield* withSql(
-                      runs.saveUnlocked({
-                        taskId: id,
-                        projectId,
-                        threadId:
-                          bindToCurrentThread && parent !== undefined ? parent.thread.id : null,
-                        schedule: fields.schedule,
-                        fields,
-                        actor: parent?.thread.id ?? "agent",
-                        actorThreadId: null,
-                      }),
-                    ).pipe(Effect.mapError(toToolError(id)));
-                    return yield* save({ ...input, id });
-                  }),
-                ),
-                save({ ...input, id }),
-              ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+              save({ ...input, id }).pipe(
+                Effect.provideService(MutationReceipts.DefinitionExtension, {
+                  definition: fields,
+                  prepare,
+                  accepted: (certificateId) =>
+                    withSql(bindCheckAutomation(id, certificateId)).pipe(
+                      Effect.mapError(toTaskError(id)),
+                    ),
+                }),
+              ),
             );
           }).pipe(rethrowSql),
       update:
@@ -776,66 +821,75 @@ const checksLayer = Layer.effect(
           runs
             .withTaskLock(
               existing.id,
-              MutationReceipts.accept(
-                existing.id,
-                sql.withTransaction(
-                  Effect.gen(function* () {
-                    // Merge the caller's delta against current state under this same
-                    // task lock/transaction, never the handler's earlier projection.
-                    const current = (yield* inner.list()).tasks.find(
-                      (task) => task.id === existing.id,
-                    );
-                    if (current === undefined)
-                      return yield* new ScheduledTaskError({
-                        message: "Scheduled task not found.",
-                        taskId: existing.id,
-                      });
-                    if (
-                      fields.bindToCurrentThread === true &&
-                      existing.projectId !== current.projectId
-                    )
-                      return yield* new ScheduledTaskError({
-                        message: "The schedule project changed before rebinding.",
-                        taskId: current.id,
-                      });
-                    const boundThread =
-                      fields.bindToCurrentThread === undefined ? current.threadId : threadId;
-                    const updated: ScheduledTaskUpsertInput = {
-                      ...input,
-                      bare: fields.bare ?? current.bare,
-                      title: fields.title ?? current.title,
-                      prompt: fields.prompt ?? current.prompt,
-                      enabled: fields.enabled ?? current.enabled,
-                      schedule: fields.schedule ?? current.schedule,
+              Effect.gen(function* () {
+                const current = (yield* inner.list()).tasks.find((task) => task.id === existing.id);
+                if (current === undefined)
+                  return yield* new ScheduledTaskError({
+                    message: "Scheduled task not found.",
+                    taskId: existing.id,
+                  });
+                if (fields.bindToCurrentThread === true && existing.projectId !== current.projectId)
+                  return yield* new ScheduledTaskError({
+                    message: "The schedule project changed before rebinding.",
+                    taskId: current.id,
+                  });
+                const boundThread =
+                  fields.bindToCurrentThread === undefined ? current.threadId : threadId;
+                const updated: ScheduledTaskUpsertInput = {
+                  ...input,
+                  bare: fields.bare ?? current.bare,
+                  title: fields.title ?? current.title,
+                  prompt: fields.prompt ?? current.prompt,
+                  enabled: fields.enabled ?? current.enabled,
+                  schedule: fields.schedule ?? current.schedule,
+                  projectId: current.projectId,
+                  threadId: boundThread,
+                  workspaceStrategy:
+                    fields.bindToCurrentThread === undefined
+                      ? current.workspaceStrategy
+                      : input.workspaceStrategy,
+                  modelSelection: current.modelSelection,
+                  runtimeMode: current.runtimeMode,
+                  interactionMode: current.interactionMode,
+                  createdBy: current.createdBy,
+                  creationSource: current.creationSource,
+                  requireExisting: true,
+                };
+                const prepare = Effect.gen(function* () {
+                  const commit = yield* withSql(
+                    runs.prepareSave({
+                      taskId: current.id,
                       projectId: current.projectId,
                       threadId: boundThread,
-                      workspaceStrategy:
-                        fields.bindToCurrentThread === undefined
-                          ? current.workspaceStrategy
-                          : input.workspaceStrategy,
-                      modelSelection: current.modelSelection,
-                      runtimeMode: current.runtimeMode,
-                      interactionMode: current.interactionMode,
-                      createdBy: current.createdBy,
-                      creationSource: current.creationSource,
-                      requireExisting: true,
-                    };
-                    yield* withSql(
-                      runs.saveUnlocked({
+                      schedule: updated.schedule,
+                      fields,
+                      actor: parent?.thread.id ?? "agent",
+                      actorThreadId: parent?.thread.id ?? null,
+                    }),
+                  ).pipe(Effect.mapError(toTaskError(current.id)));
+                  return Effect.gen(function* () {
+                    const actual = (yield* inner.list()).tasks.find(
+                      (task) => task.id === existing.id,
+                    );
+                    if (requestDigest(actual) !== requestDigest(current))
+                      return yield* new ScheduledTaskError({
+                        message: "The schedule changed during live authorization.",
                         taskId: current.id,
-                        projectId: current.projectId,
-                        threadId: boundThread,
-                        schedule: updated.schedule,
-                        fields,
-                        actor: parent?.thread.id ?? "agent",
-                        actorThreadId: parent?.thread.id ?? null,
-                      }),
-                    ).pipe(Effect.mapError(toToolError(current.id)));
-                    return yield* save(updated);
+                      });
+                    yield* withSql(commit).pipe(Effect.mapError(toTaskError(current.id)));
+                  });
+                });
+                return yield* save(updated).pipe(
+                  Effect.provideService(MutationReceipts.DefinitionExtension, {
+                    definition: fields,
+                    prepare,
+                    accepted: (certificateId) =>
+                      withSql(bindCheckAutomation(current.id, certificateId)).pipe(
+                        Effect.mapError(toTaskError(current.id)),
+                      ),
                   }),
-                ),
-                save(input),
-              ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+                );
+              }),
             )
             .pipe(rethrowSql),
       delete:

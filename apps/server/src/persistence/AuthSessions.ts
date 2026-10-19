@@ -1,3 +1,6 @@
+import * as PeerLinkEvents from "../peer/PeerLinkEvents.ts";
+import { EnvironmentId } from "@t3tools/contracts";
+import { invalidateAutomationSessions } from "../scheduledTasks/DestinationAutomationAuthority.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -284,11 +287,28 @@ export const make = Effect.gen(function* () {
       `,
   });
 
+  const linkEvents = yield* Effect.serviceOption(PeerLinkEvents.PeerLinkEvents);
+  const wakeAutomationDisables = Effect.gen(function* () {
+    if (Option.isNone(linkEvents)) return;
+    const pending = yield* sql<{
+      next_environment_id: string;
+    }>`SELECT DISTINCT next_environment_id FROM fork_automation_obligations WHERE pending=1 AND ack_json IS NULL LIMIT 32`;
+    for (const row of pending)
+      yield* linkEvents.value.changed(EnvironmentId.make(row.next_environment_id));
+  }).pipe(Effect.ignoreCause({ log: true }));
+
   const revokeActiveSessionsForReplacement = SqlSchema.findAll({
     Request: CreateReplacingActiveAuthSessionInput,
     Result: Schema.Struct({ sessionId: AuthSessionId }),
     execute: ({ session, revokedAt, replaceSessionId }) =>
-      sql`
+      Effect.gen(function* () {
+        const retiring = yield* sql<{
+          session_id: string;
+        }>`SELECT session_id FROM auth_sessions WHERE ${replaceSessionId === undefined ? sql`subject=${session.subject}` : sql`session_id=${replaceSessionId}`} AND method=${session.method} AND revoked_at IS NULL AND expires_at>${revokedAt}`;
+        yield* invalidateAutomationSessions(retiring.map((row) => row.session_id)).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
+        return yield* sql`
         UPDATE auth_sessions
         SET revoked_at = ${revokedAt}
         WHERE ${
@@ -300,7 +320,8 @@ export const make = Effect.gen(function* () {
           AND revoked_at IS NULL
           AND expires_at > ${revokedAt}
         RETURNING session_id AS "sessionId"
-      `,
+      `;
+      }),
   });
 
   const listActiveSessionRows = SqlSchema.findAll({
@@ -358,26 +379,39 @@ export const make = Effect.gen(function* () {
     Request: RevokeAuthSessionInput,
     Result: Schema.Struct({ sessionId: AuthSessionId }),
     execute: ({ sessionId, revokedAt }) =>
-      sql`
+      Effect.gen(function* () {
+        yield* invalidateAutomationSessions([sessionId]).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
+        return yield* sql`
         UPDATE auth_sessions
         SET revoked_at = ${revokedAt}
         WHERE session_id = ${sessionId}
           AND revoked_at IS NULL
         RETURNING session_id AS "sessionId"
-      `,
+      `;
+      }),
   });
 
   const revokeOtherSessionRows = SqlSchema.findAll({
     Request: RevokeOtherAuthSessionsInput,
     Result: Schema.Struct({ sessionId: AuthSessionId }),
     execute: ({ currentSessionId, revokedAt }) =>
-      sql`
+      Effect.gen(function* () {
+        const retiring = yield* sql<{
+          session_id: string;
+        }>`SELECT session_id FROM auth_sessions WHERE session_id<>${currentSessionId} AND revoked_at IS NULL`;
+        yield* invalidateAutomationSessions(retiring.map((row) => row.session_id)).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
+        return yield* sql`
         UPDATE auth_sessions
         SET revoked_at = ${revokedAt}
         WHERE session_id <> ${currentSessionId}
           AND revoked_at IS NULL
         RETURNING session_id AS "sessionId"
-      `,
+      `;
+      }),
   });
 
   const create: AuthSessionRepository["Service"]["create"] = (input) =>
@@ -405,6 +439,7 @@ export const make = Effect.gen(function* () {
         ),
       )
       .pipe(
+        Effect.tap(() => wakeAutomationDisables),
         Effect.mapError(
           toPersistenceSqlOrDecodeError(
             "AuthSessionRepository.createReplacingActive:query",
@@ -477,7 +512,8 @@ export const make = Effect.gen(function* () {
     );
 
   const revoke: AuthSessionRepository["Service"]["revoke"] = (input) =>
-    revokeSessionRows(input).pipe(
+    sql.withTransaction(revokeSessionRows(input)).pipe(
+      Effect.tap(() => wakeAutomationDisables),
       Effect.mapError(
         toPersistenceSqlOrDecodeError(
           "AuthSessionRepository.revoke:query",
@@ -489,7 +525,8 @@ export const make = Effect.gen(function* () {
     );
 
   const revokeAllExcept: AuthSessionRepository["Service"]["revokeAllExcept"] = (input) =>
-    revokeOtherSessionRows(input).pipe(
+    sql.withTransaction(revokeOtherSessionRows(input)).pipe(
+      Effect.tap(() => wakeAutomationDisables),
       Effect.mapError(
         toPersistenceSqlOrDecodeError(
           "AuthSessionRepository.revokeAllExcept:query",

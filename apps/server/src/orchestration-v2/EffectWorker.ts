@@ -778,7 +778,7 @@ export const layerWithOptions = (
               "provider-thread.rollback",
             ].includes(effect.request.type)
               ? authority.value.checkEffect(effect.id, effect.threadId).pipe(
-                  Effect.asVoid,
+                  Effect.map((record) => record?.id),
                   Effect.mapError(
                     (cause) =>
                       new OrchestrationEffectExecutionError({
@@ -788,7 +788,7 @@ export const layerWithOptions = (
                       }),
                   ),
                 )
-              : Effect.void;
+              : Effect.succeed(undefined);
           const stopOwner =
             Option.isSome(authority) &&
             ["provider-turn.interrupt", "provider-session.detach", "delegated-tasks.stop"].includes(
@@ -807,12 +807,12 @@ export const layerWithOptions = (
               : Effect.succeed(undefined);
           const execution = authorized
             .pipe(
-              Effect.andThen(
+              Effect.flatMap((executionOwner) =>
                 stopOwner.pipe(
                   Effect.flatMap((owner) =>
                     executor
                       .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
-                      .pipe(Effect.provideService(PeerDispatchAuthority, owner)),
+                      .pipe(Effect.provideService(PeerDispatchAuthority, owner ?? executionOwner)),
                   ),
                 ),
               ),
