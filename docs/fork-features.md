@@ -2191,16 +2191,26 @@ sources and reasons.
   "purpose": "Learn usable T3 Connect fallback routes from the signed-in account while preserving direct routes and sign-out cleanup.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/292",
-    "https://github.com/toolboxmd/chromeria/issues/363"
+    "https://github.com/toolboxmd/chromeria/issues/363",
+    "https://github.com/toolboxmd/chromeria/issues/361"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/364",
-    "https://github.com/toolboxmd/chromeria/compare/main...fix/363-deregister-refresh-discovery"
+    "https://github.com/toolboxmd/chromeria/pull/498",
+    "https://github.com/toolboxmd/chromeria/pull/497"
   ],
-  "newFiles": [],
+  "newFiles": [
+    "packages/client-runtime/src/relay/eligibility.ts",
+    "packages/client-runtime/src/relay/eligibility.test.ts"
+  ],
   "upstreamFiles": [
     "apps/mobile/src/features/cloud/managedRelayState.ts",
+    "apps/mobile/src/features/connection/environmentSections.test.ts",
+    "apps/mobile/src/features/connection/environmentSections.ts",
+    "apps/mobile/src/features/connection/useConnectionController.ts",
     "apps/web/src/cloud/managedRelayState.ts",
+    "apps/web/src/components/cloud/CloudEnvironmentConnectList.tsx",
+    "packages/client-runtime/src/relay/index.ts",
     "packages/client-runtime/src/relay/managedRelayState.test.ts",
     "packages/client-runtime/src/relay/managedRelayState.ts",
     "apps/web/src/components/cloud/CloudEnvironmentConnectList.browser.test.tsx",
@@ -2212,8 +2222,16 @@ sources and reasons.
     "packages/client-runtime/src/relay/discovery.ts",
     "packages/client-runtime/src/state/threads-atoms.test.ts"
   ],
-  "sharedFiles": ["docs/user/remote-access.md"],
-  "keywords": ["listedSession", "reconcileRelayRoutes", "watchAccountRelayRoutes"]
+  "sharedFiles": [
+    "docs/user/remote-access.md",
+    "apps/web/src/components/settings/ConnectionsSettings.tsx"
+  ],
+  "keywords": [
+    "isAddableRelayEnvironment",
+    "listedSession",
+    "reconcileRelayRoutes",
+    "watchAccountRelayRoutes"
+  ]
 }
 ```
 
