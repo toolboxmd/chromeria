@@ -97,6 +97,7 @@ export const installChromeIdentity = (
         contents.off("did-fail-provisional-load", failed);
         contents.off("did-stop-loading", stopped);
         contents.off("devtools-opened", invalidated);
+        contents.off("render-process-gone", invalidated);
         contents.off("destroyed", destroyed);
         observed.delete(contents);
       };
@@ -105,6 +106,7 @@ export const installChromeIdentity = (
       contents.on("did-fail-provisional-load", failed);
       contents.on("did-stop-loading", stopped);
       contents.on("devtools-opened", invalidated);
+      contents.on("render-process-gone", invalidated);
       contents.on("destroyed", destroyed);
       controller = {
         start: async (url) => {

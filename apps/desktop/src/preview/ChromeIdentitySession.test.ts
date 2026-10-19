@@ -158,14 +158,52 @@ describe("preview main-frame identity lifecycle", () => {
     expect(test.configure).toHaveBeenLastCalledWith(test.contents, null);
   });
 
-  it("follows redirect destinations before resuming them", async () => {
-    const test = harness();
-    await test.request().completed;
+  it("clears UA and metadata before a listed HTTP redirect hop resumes and stays native at commit", async () => {
+    let finishClear = () => {};
+    const clearing = new Promise<void>((resolve) => {
+      finishClear = resolve;
+    });
+    let clearStarted = () => {};
+    const started = new Promise<void>((resolve) => {
+      clearStarted = resolve;
+    });
+    const test = harness(
+      vi.fn(async (_contents: WebContents, identity: ChromeIdentity | null) => {
+        if (identity === null) {
+          clearStarted();
+          await clearing;
+        }
+      }),
+    );
+    expect(await test.request("https://web.whatsapp.com/").completed).toEqual({ cancel: false });
+    expect(test.configure).toHaveBeenLastCalledWith(test.contents, chromeIdentity(native, host));
+    // The redirect is another main-frame request with the same id, without a listed commit.
     const redirect = test.request(ordinary);
-    await redirect.completed;
+    await started;
+    expect(redirect.resumed).not.toHaveBeenCalled();
     expect(test.configure).toHaveBeenLastCalledWith(test.contents, null);
+    finishClear();
+    expect(await redirect.completed).toEqual({ cancel: false });
     await test.commit(ordinary);
+    await test.emit("did-stop-loading");
+    expect(test.configure).toHaveBeenLastCalledWith(test.contents, null);
     expect(test.configure).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-applies the Chrome pair before a same-host reload after a renderer crash", async () => {
+    const test = harness();
+    await test.request(listed).completed;
+    await test.commit(listed);
+    test.configure.mockClear();
+    test.emit("render-process-gone", {}, { reason: "crashed", exitCode: 1 });
+    const reload = test.request(listed);
+    expect(reload.resumed).not.toHaveBeenCalled();
+    expect(await reload.completed).toEqual({ cancel: false });
+    expect(test.configure).toHaveBeenCalledExactlyOnceWith(
+      test.contents,
+      chromeIdentity(native, host),
+    );
+    await test.commit(listed);
   });
 
   it("does not switch iframes, workers or third-party headers", async () => {
