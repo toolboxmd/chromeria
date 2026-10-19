@@ -1,5 +1,8 @@
 import { RecoveryWaitSignals } from "../peer/recoveryWaitSignals.ts";
 import {
+  IsoDateTime,
+  type OrchestratorMcpThreadRun,
+  type OrchestrationV2Run,
   OrchestrationV2AppThreadJson,
   OrchestrationV2RunJson,
   OrchestrationV2TurnItemJson,
@@ -204,4 +207,56 @@ export const readRecoveryState = Effect.fn("Prism.readRecoveryState")(function* 
       },
     };
   return result;
+});
+
+/** Public read projection, without observing a failure or changing recovery policy. */
+export const readRunRecovery = Effect.fn("Prism.readRunRecovery")(function* (
+  run: OrchestrationV2Run,
+): Effect.fn.Return<
+  NonNullable<OrchestratorMcpThreadRun["recovery"]>,
+  SqlError,
+  SqlClient.SqlClient
+> {
+  if (
+    run.status !== "failed" &&
+    !(
+      run.forkPrismContinuationSourceRunId !== undefined &&
+      ["interrupted", "cancelled", "rolled_back"].includes(run.status)
+    )
+  )
+    return { state: "none" };
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const state = yield* readRecoveryState(run.id);
+      const successorRunId = state.admittedContinuations.find(
+        (entry) => entry.threadId === run.threadId,
+      )?.successorRunId;
+      if (successorRunId !== undefined) return { state: "continued_by" as const, successorRunId };
+      const decision = state.decision;
+      if (decision?.status === "decided" && decision.outcome === "retried")
+        return { state: "continued_by" as const, successorRunId: decision.successorRunId };
+      // Current persisted intent can re-enable a previously declined quota resume.
+      if (state.pendingRecovery?.reason === "reset") {
+        const rows = yield* sql<{ reset_at: string }>`SELECT
+        CASE WHEN json_extract(t.payload_json,'$.limitRecovery.runId')=${run.id}
+          THEN json_extract(t.payload_json,'$.limitRecovery.resetAt') ELSE json_extract(c.payload_json,'$.resetAt') END AS reset_at
+        FROM orchestration_v2_projection_threads t
+        LEFT JOIN fork_prism_recovery c ON c.thread_id=t.thread_id AND c.source_run_id=${run.id}
+        WHERE t.thread_id=${run.threadId}`;
+        const resetAt = rows[0]?.reset_at;
+        if (resetAt !== undefined && resetAt !== null && Number.isFinite(Date.parse(resetAt)))
+          return { state: "waiting_on_quota" as const, resetAt: IsoDateTime.make(resetAt) };
+      }
+      if (state.pendingRecovery?.reason === "retry")
+        return {
+          state: "recovery_scheduled" as const,
+          reason: "retry" as const,
+          expectedStartAt: null,
+        };
+      if (decision?.status === "decided")
+        return { state: "given_up" as const, reason: decision.reason };
+      return { state: "none" as const };
+    }),
+  );
 });

@@ -144,6 +144,7 @@ it("readThread prefers activity-run status over a newer cancelled queued run", a
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRunRecovery: () => Effect.succeed({ state: "none" }),
           readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
           getThreadRecords: (threadId) =>
@@ -271,6 +272,7 @@ it("taskStatus returns task.providerInstanceId rather than the driver kind", asy
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRunRecovery: () => Effect.succeed({ state: "none" }),
           readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getTimelinePage: () => Effect.succeed({ items: [], totalItems: 0, hasMore: false }),
           getThreadRecords: (threadId) => {
@@ -374,6 +376,7 @@ it("readThread and sendToThread reach threads in other projects", async () => {
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRunRecovery: () => Effect.succeed({ state: "none" }),
           readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) => {
             if (threadId === parentThreadId) return Effect.succeed(parentProjection);

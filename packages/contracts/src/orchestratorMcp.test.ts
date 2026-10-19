@@ -5,12 +5,32 @@ import {
   OrchestratorMcpDelegateTaskInput,
   OrchestratorMcpDelegateTaskResult,
   OrchestratorMcpRequestSecretInput,
+  OrchestratorMcpThreadRun,
 } from "./orchestratorMcp.ts";
 
 const decodeDelegateTaskInput = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
 const decodeDelegateTaskResult = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskResult);
+const decodeThreadRun = Schema.decodeUnknownSync(OrchestratorMcpThreadRun);
 
 describe("orchestrator MCP contracts", () => {
+  it("reads runs from older linked environments without inventing recovery facts", () => {
+    const olderRun = {
+      runId: "run:older-peer",
+      ordinal: 1,
+      status: "failed",
+      providerInstanceId: "codex",
+      model: "fixed",
+      requestedAt: "2026-10-08T10:00:00Z",
+      startedAt: null,
+      completedAt: "2026-10-08T10:01:00Z",
+    };
+    expect(decodeThreadRun(olderRun)).toEqual(olderRun);
+    expect(
+      decodeThreadRun({ ...olderRun, recovery: { state: "given_up", reason: "exhausted" } })
+        .recovery,
+    ).toEqual({ state: "given_up", reason: "exhausted" });
+  });
+
   it("accepts 1-5 uniquely named secret fields that can each be a file name", () => {
     const decode = Schema.decodeUnknownOption(OrchestratorMcpRequestSecretInput);
     const ask = (fields: ReadonlyArray<{ name: string; label: string }>) =>

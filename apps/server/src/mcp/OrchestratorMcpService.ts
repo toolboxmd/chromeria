@@ -956,10 +956,12 @@ function threadDetail(
 function threadRun(
   run: OrchestrationV2Run,
   cut: ReturnType<typeof restartCutView>,
+  recovery: OrchestratorMcpThreadRun["recovery"],
 ): OrchestratorMcpThreadRun {
   return {
     purpose: executionPurposeOf(run),
     runId: run.id,
+    recovery,
     ordinal: run.ordinal,
     status: run.status,
     providerInstanceId: run.modelSelection.instanceId,
@@ -3721,7 +3723,14 @@ const make = Effect.gen(function* () {
           (run) =>
             threadManagement.readRestartCutView(run, target.runs).pipe(
               Effect.mapError(threadManagementFailure),
-              Effect.map((cut) => threadRun(run, cut)),
+              Effect.flatMap((cut) =>
+                threadManagement.readRunRecovery(run).pipe(
+                  Effect.map((recovery) => threadRun(run, cut, recovery)),
+                  Effect.mapError(() =>
+                    failure("orchestration_error", "Unable to read run recovery."),
+                  ),
+                ),
+              ),
             ),
           { concurrency: 1 },
         ),
