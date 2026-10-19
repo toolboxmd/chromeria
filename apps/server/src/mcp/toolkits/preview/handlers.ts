@@ -30,7 +30,6 @@ import {
 } from "../../../attachmentStore.ts";
 import { resolveAttachmentRelativePath } from "../../../attachmentPaths.ts";
 import * as ServerConfig from "../../../config.ts";
-import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import { recordCredentialFill } from "../../../preview/CredentialAudit.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
@@ -232,47 +231,24 @@ const handlers = {
   preview_fill_credential: McpToolAccess.actsAsCaller((input) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
-      const threads = yield* ThreadManagementService.ThreadManagementService;
-      const audit = (outcome: { site?: string; tabId?: string; result: string }) =>
-        threads.getThreadShell(scope.thread.threadId).pipe(
-          Effect.orElseSucceed(() => null),
-          Effect.flatMap((shell) =>
-            recordCredentialFill({
-              environmentId: scope.environmentId,
-              threadId: scope.thread.threadId,
-              projectId: shell?.projectId ?? null,
-              providerInstanceId: scope.thread.providerInstanceId,
-              providerSessionId: scope.thread.providerSessionId,
-              item: input.item,
-              field: input.field,
-              site: outcome.site ?? null,
-              tabId: outcome.tabId ?? input.tabId ?? null,
-              result: outcome.result,
-            }),
-          ),
-        );
+      // The audit line takes nothing from the page: only the matched vault host.
+      const audit = (site: string | null, result: string) =>
+        recordCredentialFill({
+          environmentId: scope.environmentId,
+          threadId: scope.thread.threadId,
+          item: input.item,
+          field: input.field,
+          site,
+          result,
+        });
       return yield* invokeTargeted<PreviewAutomationFillCredentialResult>(
         "fillCredential",
         input,
         input.timeoutMs,
       ).pipe(
-        Effect.tap((result) =>
-          audit({
-            site: result.site,
-            ...(result.tabId === undefined ? {} : { tabId: result.tabId }),
-            result: "filled",
-          }),
-        ),
+        Effect.tap((result) => audit(result.site, "filled")),
         Effect.tapError((error) =>
-          audit(
-            error._tag === "PreviewCredentialError"
-              ? {
-                  ...(error.origin === undefined ? {} : { site: error.origin }),
-                  ...(error.tabId === undefined ? {} : { tabId: error.tabId }),
-                  result: error.reason,
-                }
-              : { result: error._tag },
-          ),
+          audit(null, error._tag === "PreviewCredentialError" ? error.reason : error._tag),
         ),
       );
     }),

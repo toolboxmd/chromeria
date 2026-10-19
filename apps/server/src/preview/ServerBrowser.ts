@@ -502,44 +502,43 @@ const make = Effect.gen(function* () {
   const pendingTabs = new Map<string, Promise<ServerTab>>();
 
   const closedPendingTabs = new Set<string>();
-  const adoptedPages = new Map<
-    string,
-    { readonly page: Page; readonly openerTabId: string; readonly login: string | null }
-  >();
+  const adoptedPages = new Map<string, { readonly page: Page; readonly openerTabId: string }>();
 
   /**
    * Logins outlive `ServerTab` objects: a desktop tab's page survives a detach and
    * returns as a new object. They are keyed by preview session and by CDP target,
-   * and end only with preview_end_login or when the session closes. Nothing else
-   * lifts one; `loginEpoch` counts each change so results can be checked again.
+   * and end only with preview_end_login or when the session closes; nothing else
+   * lifts one. Each login also marks its browser context, so every tab created
+   * there while it lasts, popup or not, starts in it. `loginEpoch` counts each
+   * change so results can be checked again as they leave.
    */
   const logins = new Map<string, string>();
   const tabTargets = new Map<string, string>();
-  // Logins of closed sessions, for popups that were still attaching when their
-  // opener closed.
-  const closedLogins = new Map<string, string>();
+  const loginContexts = new Map<string, BrowserContext>();
   let loginEpoch = 0;
   const sessionKey = (threadId: string, tabId: string) => `session:${tabKey(threadId, tabId)}`;
   const recordLogin = (tab: ServerTab, login: string) => {
     tab.quarantine = login;
-    logins.set(sessionKey(tab.threadId, tab.tabId), login);
+    const session = sessionKey(tab.threadId, tab.tabId);
+    logins.set(session, login);
+    loginContexts.set(session, tab.page.context());
     const target = tabTargets.get(tabKey(tab.threadId, tab.tabId));
     if (target !== undefined) logins.set(`target:${target}`, login);
     loginEpoch++;
   };
-  const unrecordLogin = (threadId: string, tabId: string) => {
-    const login = logins.get(sessionKey(threadId, tabId));
-    logins.delete(sessionKey(threadId, tabId));
+  // A closing tab's record stays until its session's close event, which the event
+  // mirror handles after any popup it was still creating.
+  const forgetLogin = (threadId: string, tabId: string) => {
+    const session = sessionKey(threadId, tabId);
+    logins.delete(session);
+    loginContexts.delete(session);
     const target = tabTargets.get(tabKey(threadId, tabId));
     if (target !== undefined) logins.delete(`target:${target}`);
-    return login;
-  };
-  const forgetLogin = (threadId: string, tabId: string, ended: boolean) => {
-    const login = unrecordLogin(threadId, tabId);
     tabTargets.delete(tabKey(threadId, tabId));
-    if (login === undefined || ended) return;
-    closedLogins.set(tabKey(threadId, tabId), login);
-    if (closedLogins.size > 64) closedLogins.delete(closedLogins.keys().next().value!);
+  };
+  const contextLogin = (context: BrowserContext) => {
+    for (const [session, owner] of loginContexts) if (owner === context) return logins.get(session);
+    return undefined;
   };
   const closedSessions = new Set<string>();
   let hostConnectionId: string | null = null;
@@ -842,16 +841,8 @@ const make = Effect.gen(function* () {
       networkEntries: [],
       actionTimeline: [],
       control,
-      // The same page or session keeps its login; a popup from a login joins it.
-      quarantine:
-        logins.get(sessionKey(snapshot.threadId, snapshot.tabId)) ??
-        (target === undefined ? undefined : logins.get(`target:${target}`)) ??
-        adopted?.login ??
-        (adopted === undefined
-          ? undefined
-          : (logins.get(sessionKey(snapshot.threadId, adopted.openerTabId)) ??
-            closedLogins.get(tabKey(snapshot.threadId, adopted.openerTabId)))) ??
-        null,
+      // Decided when the tab is published, below.
+      quarantine: null,
       isolatedContext,
       desktop: desktop === null ? null : { close: desktop.close },
       profileId: snapshot.profileId,
@@ -975,7 +966,15 @@ const make = Effect.gen(function* () {
     page.on("close", () => dropTab(tab, true));
     page.on("crash", () => dropTab(tab, true));
     if (target !== undefined) tabTargets.set(key, target);
-    if (tab.quarantine !== null) recordLogin(tab, tab.quarantine);
+    // Decided at publication, with nothing awaited before the tab joins `tabs`: a
+    // fill that began during setup has already marked the context, and one that
+    // begins later finds the tab in its group. The same page or session keeps its
+    // login, and any tab created in a context with a login starts in it.
+    const login =
+      logins.get(sessionKey(snapshot.threadId, snapshot.tabId)) ??
+      (target === undefined ? undefined : logins.get(`target:${target}`)) ??
+      contextLogin(page.context());
+    if (login !== undefined) recordLogin(tab, login);
     tabs.set(key, tab);
     reportLiveTabs();
     // A popup is already loading its own URL, and the desktop loads its tab's.
@@ -1260,14 +1259,12 @@ const make = Effect.gen(function* () {
   };
 
   const adoptPopup = async (opener: ServerTab, popup: Page) => {
-    // Taken as the browser reports the popup: the opener may close while it attaches.
-    const login = opener.quarantine;
     const agentId = opener.control.agentId;
     if (opener.closing || (agentId !== null && atTabLimit(agentId))) {
       await popup.close().catch(constVoid);
       return;
     }
-    const url = login ? "" : popup.url();
+    const url = opener.quarantine ? "" : popup.url();
 
     const controller = [...opener.viewers].find(
       (viewer) => viewer.id === opener.control.controller,
@@ -1285,7 +1282,6 @@ const make = Effect.gen(function* () {
           adoptedPages.set(tabKey(snapshot.threadId, snapshot.tabId), {
             page: popup,
             openerTabId: opener.tabId,
-            login: login ?? opener.quarantine,
           }),
       }),
     ).then(
@@ -1978,7 +1974,7 @@ const make = Effect.gen(function* () {
           manager.close({ threadId: member.threadId, tabId: member.tabId }).pipe(Effect.ignore),
         );
         dropTab(member, false);
-        forgetLogin(member.threadId, member.tabId, true);
+        forgetLogin(member.threadId, member.tabId);
       }
       return { closed: login.map((member) => member.tabId) };
     }
@@ -2080,9 +2076,9 @@ const make = Effect.gen(function* () {
   };
 
   /**
-   * Puts the tab's opener group in a login before reading the vault. A login only
-   * grows: a group already in one keeps it whatever this fill does, and a first fill
-   * lifts its new login only if it fails before the value enters the page.
+   * Puts the tab's opener group in a login as the fill starts, before the vault is
+   * read. Nothing lifts it again, not even a fill that fails before typing: the
+   * agent ends the login and retries in a new tab.
    */
   const fillInLogin = async (tab: ServerTab, input: PreviewAutomationFillCredentialInput) => {
     const recordingIn = (group: ReadonlyArray<ServerTab>) =>
@@ -2101,35 +2097,19 @@ const make = Effect.gen(function* () {
         recordLogin(member, login);
         report(member, { _tag: "Idle" });
       }
-    let typed = false;
-    try {
-      return await recordAction(tab, "fillCredential", () =>
-        fillCredential({
-          tabId: tab.tabId,
-          vault,
-          request: input,
-          revealOrigin: existing.length === 0,
-          locate: (locator) => ServerBrowserPage.targetLocator(tab.page, { locator })!,
-          beforeTyping: async () => {
-            const members = openerGroup(tab);
-            await Promise.allSettled(members.flatMap((member) => [...(running.get(member) ?? [])]));
-            if (recordingIn(members)) throw recordingRunning();
-            typed = true;
-          },
-        }),
-      );
-    } catch (cause) {
-      // Nothing was typed into a group that held nothing: the login never began.
-      if (!typed && existing.length === 0)
-        for (const member of tabs.values())
-          if (member.quarantine === login) {
-            member.quarantine = null;
-            unrecordLogin(member.threadId, member.tabId);
-            loginEpoch++;
-            void reportLoaded(member);
-          }
-      throw cause;
-    }
+    return recordAction(tab, "fillCredential", () =>
+      fillCredential({
+        tabId: tab.tabId,
+        vault,
+        request: input,
+        locate: (locator) => ServerBrowserPage.targetLocator(tab.page, { locator })!,
+        beforeTyping: async () => {
+          const members = openerGroup(tab);
+          await Promise.allSettled(members.flatMap((member) => [...(running.get(member) ?? [])]));
+          if (recordingIn(members)) throw recordingRunning();
+        },
+      }),
+    );
   };
 
   const runTabOperation = async (tab: ServerTab, request: PreviewAutomationRequest) => {
@@ -2332,7 +2312,7 @@ const make = Effect.gen(function* () {
       const key = tabKey(event.threadId, event.tabId);
       const tab = tabs.get(key);
       // A closed session is a closed page; a detached desktop page is not.
-      if (event.type === "closed") forgetLogin(event.threadId, event.tabId, false);
+      if (event.type === "closed") forgetLogin(event.threadId, event.tabId);
       if (event.type === "closed" && !tab && pendingTabs.has(key)) closedPendingTabs.add(key);
       if (!tab) return;
       if (event.type === "closed") {

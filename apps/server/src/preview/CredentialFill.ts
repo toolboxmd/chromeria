@@ -15,11 +15,11 @@ import { ServerBrowserOperationError } from "./ServerBrowserPage.ts";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const FILLABLE_INPUT_TYPES = new Set(["", "text", "email", "password", "tel", "number", "search"]);
 
-const refused = (reason: PreviewCredentialReason, origin?: string, tabId?: string) => {
+// Refusals carry a fixed reason and the tab, never page data such as its origin.
+const refused = (reason: PreviewCredentialReason, tabId?: string) => {
   const error = new PreviewCredentialError({ reason });
   return new ServerBrowserOperationError("PreviewCredentialError", error.message, {
     reason,
-    ...(origin === undefined ? {} : { origin }),
     ...(tabId === undefined ? {} : { tabId }),
   });
 };
@@ -72,13 +72,9 @@ export const matchingItemHost = (pageUrl: string, uris: ReadonlyArray<string>) =
     );
 };
 
-const vaultCall = async <A>(
-  effect: Effect.Effect<A, PreviewCredentialError>,
-  origin: string | undefined,
-  tabId: string,
-) => {
+const vaultCall = async <A>(effect: Effect.Effect<A, PreviewCredentialError>, tabId: string) => {
   const result = await Effect.runPromise(Effect.result(effect));
-  if (Result.isFailure(result)) throw refused(result.failure.reason, origin, tabId);
+  if (Result.isFailure(result)) throw refused(result.failure.reason, tabId);
   return result.success;
 };
 
@@ -105,16 +101,8 @@ export const fillCredential = async (input: {
    * fill has put nothing in the page, so the caller can lift its quarantine.
    */
   readonly beforeTyping?: () => Promise<void>;
-  /**
-   * Whether refusals may name the page's origin. Once a value is in the page or its
-   * group, the live origin is page data and can carry that value.
-   */
-  readonly revealOrigin: boolean;
 }): Promise<PreviewAutomationFillCredentialResult> => {
   const { request, tabId } = input;
-  let typing = false;
-  const named = (origin: string | undefined) =>
-    input.revealOrigin && !typing ? origin : undefined;
   const timeout = request.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const handle = await input.locate(request.locator).elementHandle({ timeout });
   if (handle === null)
@@ -137,35 +125,30 @@ export const fillCredential = async (input: {
       );
     }
     const frame = await handle.ownerFrame();
-    if (frame === null) throw refused("fillFailed", undefined, tabId);
+    if (frame === null) throw refused("fillFailed", tabId);
     const origin = originOf(frame);
-    if (!frame.url().startsWith("https:")) throw refused("insecureOrigin", named(origin), tabId);
-    const uris = await vaultCall(input.vault.uris(request.item), named(origin), tabId);
+    if (!frame.url().startsWith("https:")) throw refused("insecureOrigin", tabId);
+    const uris = await vaultCall(input.vault.uris(request.item), tabId);
     // The result names this vault host, never the live page.
     const site = matchingItemHost(frame.url(), uris);
-    if (site === undefined) throw refused("originMismatch", named(origin), tabId);
-    const value = await vaultCall(
-      input.vault.read(request.item, request.field),
-      named(origin),
-      tabId,
-    );
+    if (site === undefined) throw refused("originMismatch", tabId);
+    const value = await vaultCall(input.vault.read(request.item, request.field), tabId);
     // The page may have navigated or moved the input while the vault answered.
     if (frame.isDetached() || originOf(frame) !== origin || (await handle.ownerFrame()) !== frame)
-      throw refused("originMismatch", named(originOf(frame)), tabId);
+      throw refused("originMismatch", tabId);
     // The value is typed and dropped: nothing keeps it after this call.
     await input.beforeTyping?.();
-    typing = true;
     try {
       await handle.fill(value, { timeout });
     } catch {
       // Playwright's message and call log can quote the value.
-      throw refused("fillFailed", undefined, tabId);
+      throw refused("fillFailed", tabId);
     }
     const verified = await handle.inputValue({ timeout }).then(
       (shown) => shown === value,
       () => false,
     );
-    if (!verified) throw refused("fillFailed", undefined, tabId);
+    if (!verified) throw refused("fillFailed", tabId);
     return { filled: true, item: request.item, field: request.field, site, tabId };
   } finally {
     void handle.dispose().catch(() => undefined);

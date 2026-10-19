@@ -1927,12 +1927,12 @@ it.effect("a login holds every related tab until preview_end_login closes them",
       const manager = yield* Manager.PreviewManager;
       vaultValue = SENTINEL;
       fakeLoginInput(contexts[0]!.page);
-      // A opened B and B opened C before the fill; D opens from A after it.
+      // A opened B and B opened C before the fill. Popups opened after it join through
+      // their shared browser context, which CredentialLogin.integration.test.ts covers.
       const b = yield* openPopup(contexts[0]!.page, tabId);
       const c = yield* openPopup(b.popup.page, b.tabId);
       yield* fillPassword(broker, tabId);
-      const d = yield* openPopup(contexts[0]!.page, tabId);
-      for (const target of [b.tabId, c.tabId, d.tabId]) yield* expectReadsRefused(broker, target);
+      for (const target of [b.tabId, c.tabId]) yield* expectReadsRefused(broker, target);
 
       // Closing B, the tab between A and C, leaves C in the login.
       const events = yield* manager.subscribeEvents;
@@ -1947,7 +1947,7 @@ it.effect("a login holds every related tab until preview_end_login closes them",
         operation: "endLogin",
         input: {},
       });
-      expect([...ended.closed].toSorted()).toEqual([tabId, c.tabId, d.tabId].toSorted());
+      expect([...ended.closed].toSorted()).toEqual([tabId, c.tabId].toSorted());
       expect((yield* manager.list({ threadId: scope.thread.threadId })).sessions).toEqual([]);
 
       // A fresh tab is not in the login and reads normally.
@@ -2011,7 +2011,7 @@ it.effect("a recording cannot start in a related tab once a fill has begun", () 
   ).pipe(Effect.provide(layer)),
 );
 
-it.effect("a fill refused before typing leaves the tab readable", () =>
+it.effect("a fill refused before typing still leaves the tab in its login", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const { broker, tabId } = yield* ready;
@@ -2028,9 +2028,7 @@ it.effect("a fill refused before typing leaves the tab readable", () =>
         _tag: "PreviewCredentialError",
         reason: "vaultNotConfigured",
       });
-      expect(
-        yield* broker.invoke({ scope, tabId, operation: "evaluate", input: { expression: "1" } }),
-      ).toBe("evaluated");
+      yield* expectReadsRefused(broker, tabId);
     }),
   ).pipe(Effect.provide(layer)),
 );

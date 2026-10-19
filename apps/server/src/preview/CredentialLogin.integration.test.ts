@@ -58,6 +58,10 @@ const headlessShell = () => {
   return undefined;
 };
 const executable = headlessShell();
+// Like the repository's other real-browser tests, which launch Playwright without
+// Chrome's sandbox: CI's Ubuntu runner blocks the unprivileged user namespaces it
+// needs (AppArmor). This is the server's own operator opt-out.
+vi.stubEnv("T3CODE_SERVER_BROWSER_SANDBOX", "0");
 
 // Fake vault values that URL, form and HTML encodings all change.
 const PASSWORD = `LOGIN-Password+&=#?% 42<"'>`;
@@ -361,6 +365,101 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
   );
 
   it.live(
+    "a failed first fill keeps its group in the login after a related fill succeeds",
+    () =>
+      withBrowser(
+        Effect.gen(function* () {
+          const broker = yield* Broker.PreviewAutomationBroker;
+          const tabId = yield* openTab(broker);
+          const popupOpened = yield* nextOpened(tabId);
+          yield* invoke(broker)(tabId, "click", { locator: "#plain-popup" });
+          const popup = yield* popupOpened;
+          yield* invoke(broker)(popup, "evaluate", {
+            expression:
+              "document.body.insertAdjacentHTML('beforeend', '<input id=pw type=password>')",
+          });
+          const gate = Promise.withResolvers<void>();
+          const entered = Promise.withResolvers<void>();
+          vault.gate = gate.promise;
+          vault.entered = entered.resolve;
+          const first = yield* fillPassword(broker, tabId).pipe(Effect.flip, Effect.forkScoped);
+          yield* Effect.promise(() => entered.promise);
+          // The popup's own fill reads the vault without waiting, and succeeds.
+          vault.gate = undefined;
+          vault.entered = undefined;
+          expect((yield* fillPassword(broker, popup)).site).toBe("example.test");
+          vault.fail = true;
+          gate.resolve();
+          expect(yield* Fiber.join(first)).toMatchObject({ reason: "vaultUnavailable" });
+          yield* refusedRead(broker, tabId);
+          yield* refusedRead(broker, popup);
+          const status = yield* invoke(broker)<PreviewAutomationStatus>(popup, "status");
+          expect(status).toMatchObject({ title: null, loginInProgress: true });
+          expectNoSecret(status);
+        }),
+      ),
+    60_000,
+  );
+
+  it.live(
+    "a popup still being set up when a fill begins joins the login",
+    () =>
+      withBrowser(
+        Effect.gen(function* () {
+          const broker = yield* Broker.PreviewAutomationBroker;
+          const tabId = yield* openTab(broker);
+          const opener = pageAt("/");
+          const context = opener.context();
+          const attach = context.newCDPSession.bind(context);
+          const gate = Promise.withResolvers<void>();
+          const entered = Promise.withResolvers<void>();
+          let held = false;
+          // Hold the popup's setup after its session exists, before it is published.
+          vi.spyOn(context, "newCDPSession").mockImplementation(async (target) => {
+            const session = await attach(target);
+            if (target !== opener && "mainFrame" in target && !held) {
+              held = true;
+              const resize = target.setViewportSize.bind(target);
+              vi.spyOn(target, "setViewportSize").mockImplementation(async (size) => {
+                entered.resolve();
+                await gate.promise;
+                return resize(size);
+              });
+            }
+            return session;
+          });
+          const popupOpened = yield* nextOpened(tabId);
+          yield* invoke(broker)(tabId, "click", { locator: "#plain-popup" });
+          const popup = yield* popupOpened;
+          yield* Effect.promise(() => entered.promise);
+          yield* fillPassword(broker, tabId);
+          gate.resolve();
+          yield* refusedRead(broker, popup);
+        }),
+      ),
+    60_000,
+  );
+
+  it.live(
+    "a tab opened in the same profile during a login starts in it",
+    () =>
+      withBrowser(
+        Effect.gen(function* () {
+          const broker = yield* Broker.PreviewAutomationBroker;
+          const tabId = yield* openTab(broker);
+          yield* fillPassword(broker, tabId);
+          const other = yield* openTab(broker, "https://login.example.test/account");
+          yield* refusedRead(broker, other);
+          const ended = yield* invoke(broker)<{ closed: Array<string> }>(tabId, "endLogin");
+          expect([...ended.closed].toSorted()).toEqual([tabId, other].toSorted());
+          const fresh = yield* openTab(broker, "https://login.example.test/account");
+          expect(yield* invoke(broker)(fresh, "evaluate", { expression: "1" })).toBe(1);
+        }),
+      ),
+    60_000,
+  );
+
+  it.live(
     "a popup still attaching when its filled opener closes stays in the login",
     () =>
       withBrowser(
@@ -530,6 +629,88 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
         }),
       ).pipe(
         Effect.ensuring(Effect.sync(() => (vault.password = PASSWORD))),
+        Effect.provide(mcpLayer),
+      );
+    },
+    60_000,
+  );
+
+  it.live(
+    "an overlapping fill's refusal writes no page origin to the audit",
+    () => {
+      const mcpLayer = McpHttpServer.layerPreviewToolkit.pipe(
+        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
+        Layer.provideMerge(layer),
+      );
+      const client = McpSchema.McpServerClient.of({
+        clientId: 1,
+        clientCapabilities: {},
+        clientInfo: { name: "login-test", version: "1" },
+        protocolVersion: "2025-06-18",
+        initializePayload: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "login-test", version: "1" },
+        },
+        getClient: Effect.die("unused"),
+      });
+      vault.password = "login-secret-44";
+      return Effect.scoped(
+        Effect.gen(function* () {
+          yield* ServerBrowser.ServerBrowser;
+          yield* Effect.yieldNow;
+          const broker = yield* Broker.PreviewAutomationBroker;
+          const server = yield* McpServer.McpServer;
+          const tabId = yield* openTab(broker);
+          const opener = pageAt("/");
+          const popupOpened = yield* nextOpened(tabId);
+          yield* invoke(broker)(tabId, "click", { locator: "#plain-popup" });
+          const popup = yield* popupOpened;
+          // The popup's input sends its opener to a host named after the typed value.
+          yield* invoke(broker)(popup, "evaluate", {
+            expression:
+              "document.body.insertAdjacentHTML('beforeend', '<input id=pw>'); document.getElementById('pw').addEventListener('input', e => { opener.location.href = 'https://' + e.target.value + '.example.test/' })",
+          });
+          const gate = Promise.withResolvers<void>();
+          const entered = Promise.withResolvers<void>();
+          vault.gate = gate.promise;
+          vault.entered = entered.resolve;
+          const first = yield* server
+            .callTool({
+              name: "preview_fill_credential",
+              arguments: { tabId, item: "Example", field: "username", locator: "#user" },
+            })
+            .pipe(
+              Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+              Effect.provideService(McpSchema.McpServerClient, client),
+              Effect.forkScoped,
+            );
+          yield* Effect.promise(() => entered.promise);
+          vault.gate = undefined;
+          vault.entered = undefined;
+          yield* fillPassword(broker, popup);
+          yield* Effect.promise(() => opener.waitForURL("https://login-secret-44.example.test/"));
+          gate.resolve();
+          const result = yield* Fiber.join(first);
+          expect(result.isError).toBe(true);
+          expect(JSON.stringify(result)).not.toContain("login-secret-44");
+          const config = yield* ServerConfig.ServerConfig;
+          const fileSystem = yield* FileSystem.FileSystem;
+          const audit = yield* fileSystem.readFileString(
+            NodePath.join(config.stateDir, CREDENTIAL_AUDIT_FILE),
+          );
+          expect(audit).toContain('"result":"originMismatch"');
+          expect(audit).not.toContain("login-secret-44");
+        }),
+      ).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            vault.password = PASSWORD;
+            vault.gate = undefined;
+            vault.entered = undefined;
+          }),
+        ),
         Effect.provide(mcpLayer),
       );
     },

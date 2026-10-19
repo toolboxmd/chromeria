@@ -9,19 +9,17 @@ import * as ServerConfig from "../config.ts";
 
 export const CREDENTIAL_AUDIT_FILE = "credential-fills.jsonl";
 
-/** One line per fill attempt, so the user can see which agent logged in where. Never a value. */
+/**
+ * One line per fill attempt, so the user can see which agent logged in where. It
+ * holds no value and no page data: the site is the vault host the page matched.
+ */
 const CredentialAuditLine = Schema.Struct({
   time: Schema.String,
   environmentId: Schema.String,
   threadId: Schema.String,
-  projectId: Schema.NullOr(Schema.String),
-  providerInstanceId: Schema.String,
-  providerSessionId: Schema.String,
   item: Schema.String,
   field: PreviewCredentialField,
-  /** The matched vault host, or the page origin of a refusal before any value was typed. */
   site: Schema.NullOr(Schema.String),
-  tabId: Schema.NullOr(Schema.String),
   /** `filled`, a PreviewCredentialError reason, or another error's tag. */
   result: Schema.String,
 });

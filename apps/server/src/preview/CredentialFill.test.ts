@@ -172,7 +172,6 @@ describe("fillCredential in a real browser", () => {
   let typing: Array<string>;
   const fill = (field: PreviewCredentialField, locator: string, item = "Example") =>
     fillCredential({
-      revealOrigin: true,
       tabId: "tab-1",
       vault,
       request: { item, field, locator, timeoutMs: 5_000 },
@@ -264,7 +263,6 @@ describe("fillCredential in a real browser", () => {
     expect(error.tag).toBe("PreviewCredentialError");
     expect(error.detail).toEqual({
       reason: "originMismatch",
-      origin: "https://idp.other.test",
       tabId: "tab-1",
     });
     expect(vaultCalls).toEqual(["uris:Example"]);
@@ -282,10 +280,7 @@ describe("fillCredential in a real browser", () => {
   it("refuses http pages before touching the vault", async () => {
     await page.goto("http://plain.example.test/login");
     const error = await refused(fill("password", "#pw"));
-    expect(error.detail).toMatchObject({
-      reason: "insecureOrigin",
-      origin: "http://plain.example.test",
-    });
+    expect(error.detail).toEqual({ reason: "insecureOrigin", tabId: "tab-1" });
     expect(vaultCalls).toEqual([]);
   });
 
@@ -304,7 +299,6 @@ describe("fillCredential in a real browser", () => {
   it("passes vault refusals through with their reason", async () => {
     const error = await refused(
       fillCredential({
-        revealOrigin: true,
         tabId: "tab-1",
         vault: {
           ...vault,
@@ -317,24 +311,9 @@ describe("fillCredential in a real browser", () => {
     expect(error.detail).toMatchObject({ reason: "vaultLocked" });
   });
 
-  it("names no origin in a refusal once the login holds a value", async () => {
-    itemUris = ["shopify.com"];
-    const error = await refused(
-      fillCredential({
-        revealOrigin: false,
-        tabId: "tab-1",
-        vault,
-        request: { item: "Example", field: "password", locator: "#pw" },
-        locate: (selector) => ServerBrowserPage.targetLocator(page, { locator: selector })!,
-      }),
-    );
-    expect(error.detail).toEqual({ reason: "originMismatch", tabId: "tab-1" });
-  });
-
   it("types nothing when the caller refuses just before typing", async () => {
     const error = await refused(
       fillCredential({
-        revealOrigin: true,
         tabId: "tab-1",
         vault,
         request: { item: "Example", field: "password", locator: "#pw" },
@@ -417,7 +396,6 @@ describe("fillCredential in a real browser", () => {
               });
             return Effect.promise(() =>
               fillCredential({
-                revealOrigin: true,
                 tabId: "tab-1",
                 vault,
                 request: request.input as PreviewAutomationFillCredentialInput,
@@ -481,20 +459,29 @@ describe("fillCredential in a real browser", () => {
             {
               environmentId,
               threadId: invocation.thread.threadId,
-              providerInstanceId: "codex",
               item: "Example",
               field: "password",
               site: "example.test",
-              tabId: "tab-1",
               result: "filled",
             },
             {
               item: "Example",
               field: "username",
-              site: "https://login.example.test",
+              site: null,
               result: "originMismatch",
             },
           ]);
+          // Only these fields: nothing from the page or the agent's session.
+          for (const line of lines)
+            expect(Object.keys(line).toSorted()).toEqual([
+              "environmentId",
+              "field",
+              "item",
+              "result",
+              "site",
+              "threadId",
+              "time",
+            ]);
           expect(((yield* fileSystem.stat(auditPath)).mode & 0o777).toString(8)).toBe("600");
         }),
       ).pipe(Effect.provide(layer)),

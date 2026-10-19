@@ -77,8 +77,9 @@ A fill happens only on an https page whose host is one of the item's URIs or a s
 one. For example, `shopify.com` covers `admin.shopify.com`, but not `evilshopify.com`. Inside an
 iframe, the iframe's own origin must match.
 
-A fill starts a login. Until it ends, nothing in that tab or in the tabs linked to it by opener,
-including popups opened later, can be read: no snapshots, screenshots, page text, scripts,
+A fill starts a login, even if the fill then fails. Until it ends, nothing in that tab, in the
+tabs linked to it by opener, or in any tab opened in the same browser profile meanwhile can be
+read: no snapshots, screenshots, page text, scripts,
 recordings, console or network entries, downloads, URLs or titles. Chromeria shows those tabs as
 **Login in progress**. The agent can still fill, click and type by locator, press keys and wait
 for an element, URL or text. The agent ends the login with `preview_end_login`, which closes those
@@ -88,8 +89,8 @@ yourself also ends it. A desktop tab whose connection drops and returns stays in
 You still see the page in the live view.
 
 Each attempt appends a line to `credential-fills.jsonl` in the `userdata` directory. The line
-records the time, thread, project, provider, item, field, the vault site that matched, the tab and
-the outcome, but never the value or the page's address.
+records the time, environment, thread, item, field, the vault site that matched and the outcome,
+but never the value or anything from the page.
 
 This keeps values out of agent transcripts and logs, and stops fills on the wrong site. It does
 not stop an agent with shell access from running `rbw` itself, or the agent using the signed-in

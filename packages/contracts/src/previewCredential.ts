@@ -122,7 +122,6 @@ export class PreviewCredentialError extends Schema.TaggedError<PreviewCredential
   "PreviewCredentialError",
   {
     reason: PreviewCredentialReason,
-    origin: Schema.optional(Schema.String),
     tabId: Schema.optional(PreviewTabId),
   },
 ) {
