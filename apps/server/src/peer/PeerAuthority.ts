@@ -1255,14 +1255,13 @@ const make = Effect.gen(function* () {
         yield* requireClient(clientSession.sessionId, clientSession.readOnly);
         return "client";
       }
-      const actor: PendingActor =
+      const actor: PendingActor | undefined =
         scope.client?.linked === true && scope.authority !== undefined
           ? yield* actorForRecord(scope.authority)
           : scope.thread !== undefined
             ? { type: "thread", environmentId: here, threadId: scope.thread.threadId }
-            : yield* denied(
-                "Only a verified ancestor or authenticated client may answer a request.",
-              );
+            : undefined;
+      if (actor === undefined) return undefined;
       if (actor.type === "client") return "client";
       if (actor.environmentId === here && actor.threadId === target) return undefined;
       return (yield* ancestor(actor, target)) ? "ancestor" : undefined;
