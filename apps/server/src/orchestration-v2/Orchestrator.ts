@@ -8518,11 +8518,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return;
       }
       const { groupCancel: _released, ...rest } = task;
-      // The marker may have quieted a result that ended meanwhile; it owes its wake now.
+      // A result that ended under the mark, quieted or still held for the group,
+      // owes its wake now.
       const suppressed =
         isTerminalDelegatedTaskStatus(task.status) &&
-        task.completionDelivery?.state === "disposed" &&
-        task.completionDelivery.disposedBy === undefined;
+        (task.completionDelivery === undefined ||
+          (task.completionDelivery.state === "disposed" &&
+            task.completionDelivery.disposedBy === undefined));
       const { completionDelivery: _quieted, ...unquieted } = rest;
       const updatedTask: OrchestrationV2Subagent = {
         ...(suppressed ? unquieted : rest),
@@ -11495,18 +11497,62 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   )(function* (input: Omit<Parameters<typeof planDelegatedCompletionDelivery>[0], "siblingIds">) {
     // A member a group cancel gave up ends quietly, whenever it ends.
     if (input.updatedTask.groupCancel !== undefined) {
-      return {
-        task:
-          input.updatedTask.completionDelivery === undefined
-            ? {
-                ...input.updatedTask,
-                completionDelivery: { state: "disposed" as const, observedByRunId: null },
-              }
-            : input.updatedTask,
+      const quieted =
+        input.updatedTask.completionDelivery === undefined
+          ? {
+              ...input.updatedTask,
+              completionDelivery: { state: "disposed" as const, observedByRunId: null },
+            }
+          : input.updatedTask;
+      const quiet = {
+        task: quieted,
         parentRun: undefined,
         message: undefined,
         offer: false,
-        siblings: [],
+        siblings: [] as ReadonlyArray<OrchestrationV2Subagent>,
+      };
+      // Members released from the cancel that already ended are held for the
+      // group. When this was the last member running, they owe the group's wake.
+      const others =
+        input.updatedTask.runGroupId === undefined
+          ? []
+          : runGroupMembers(input.parentProjection.subagents, input.updatedTask.runGroupId).filter(
+              (member) => member.id !== input.updatedTask.id,
+            );
+      const held = others.filter(
+        (member) =>
+          member.groupCancel === undefined &&
+          member.completionDelivery === undefined &&
+          isTerminalDelegatedTaskStatus(member.status),
+      );
+      const [first, ...rest] = held;
+      if (
+        first === undefined ||
+        !isTerminalDelegatedTaskStatus(input.updatedTask.status) ||
+        others.some((member) => !isTerminalDelegatedTaskStatus(member.status))
+      )
+        return quiet;
+      const plan = yield* planDelegatedCompletionDelivery({
+        ...input,
+        parentProjection: {
+          ...input.parentProjection,
+          subagents: input.parentProjection.subagents.map((task) =>
+            task.id === quieted.id ? quieted : task,
+          ),
+        },
+        task: first,
+        updatedTask: first,
+        siblingIds: rest.map((task) => task.id),
+      });
+      const delivery = plan.task.completionDelivery;
+      if (plan.task === first || delivery === undefined) return quiet;
+      return {
+        ...plan,
+        task: quieted,
+        siblings: [
+          plan.task,
+          ...rest.map((task) => ({ ...task, completionDelivery: delivery, updatedAt: input.now })),
+        ],
       };
     }
     const group = runGroupWake(input.parentProjection.subagents, input.updatedTask);

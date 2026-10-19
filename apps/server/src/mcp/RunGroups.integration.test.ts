@@ -839,6 +839,57 @@ describe("Run groups", () => {
     }),
   );
 
+  it.live("a refused member that already ended wakes the parent once the last member stops", () =>
+    withParent(
+      roastRun([codexColor, claudeColor], 2),
+      (_turn, instanceId) =>
+        Effect.succeed<TurnOutcome>(instanceId === claude ? "complete" : "hang"),
+      ({ orchestrator, invoke, offers, drain }) =>
+        Effect.gen(function* () {
+          const started = yield* group(
+            yield* invoke("delegate_task", { task: "Attack this plan.", prismRole: "roast" }),
+          );
+          const [running, refused] = started.tasks;
+          yield* waitForProjection(
+            orchestrator,
+            parentThreadId,
+            (projection) => subagent(projection, refused!.taskId)?.status === "completed",
+          );
+          // task_cancel's steps in this order: the mark, the refused member's
+          // release while its sibling still runs, then the sibling's stop.
+          const groupCancelId = CommandId.make("command:run-group:refused-ended");
+          yield* orchestrator.dispatch({
+            type: "delegated_task.group-cancel",
+            commandId: groupCancelId,
+            parentThreadId,
+            groupId: started.groupId,
+          });
+          yield* orchestrator.dispatch({
+            type: "delegated_task.group-cancel.release",
+            commandId: CommandId.make("command:run-group:refused-ended-release"),
+            parentThreadId,
+            taskId: refused!.taskId,
+            groupCancelId,
+          });
+          yield* drain;
+          expect(yield* Ref.get(offers)).toHaveLength(0);
+          yield* orchestrator.dispatch({
+            type: "thread.stop",
+            commandId: CommandId.make("command:run-group:refused-ended-stop"),
+            threadId: running!.childThreadId!,
+          });
+          const woken = yield* waitForProjection(orchestrator, parentThreadId, (projection) =>
+            ["cancelled", "interrupted"].includes(
+              subagent(projection, running!.taskId)?.status ?? "",
+            ),
+          );
+          yield* drain;
+          expect(subagent(woken, refused!.taskId)?.completionDelivery?.state).not.toBe("disposed");
+          expect(yield* Ref.get(offers)).toHaveLength(1);
+        }),
+    ),
+  );
+
   it.live("a single task stopped by the user still wakes the parent", () =>
     withParent(
       roastRun([codexColor, claudeColor], 2),

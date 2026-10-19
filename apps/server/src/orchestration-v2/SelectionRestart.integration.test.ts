@@ -533,8 +533,11 @@ it.live.each(["unchanged", "messageId", "mode", "legacy"] as const)(
           // The replay records nothing new and reports the first dispatch's sequence and events.
           assert.equal(replay.dispatch.sequence, accepted.dispatch.sequence);
           assert.deepEqual(replay.dispatch.storedEvents, originalEvents);
-          if (changedField !== "messageId")
-            assert.deepEqual(replay.dispatch.admittedRun, accepted.dispatch.admittedRun);
+          // A changed message id names no stored message, so it admits no run.
+          assert.deepEqual(
+            replay.dispatch.admittedRun,
+            changedField === "messageId" ? undefined : accepted.dispatch.admittedRun,
+          );
           assert.deepEqual(replay.message, accepted.message);
           assert.equal(replay.delivery, accepted.delivery);
           assert.equal(replay.run.id, accepted.run.id);
