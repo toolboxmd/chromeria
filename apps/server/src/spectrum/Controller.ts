@@ -4,6 +4,7 @@ import {
   RunId,
   ThreadId,
   type OrchestrationV2Command,
+  type OrchestrationV2DomainEvent,
   type SpectrumTranscriptAppend,
 } from "@t3tools/contracts";
 import { ThreadCommandExecutor } from "../orchestration-v2/ThreadCommandExecutor.ts";
@@ -30,6 +31,15 @@ import * as Rounds from "./RoundService.ts";
 import * as Transcript from "./TranscriptService.ts";
 import { spectrumPlan } from "./spectrumPlan.ts";
 import { lifecycleEvents, lifecyclePlan } from "./lifecycle.ts";
+import {
+  acceptFreeReply,
+  failedSummaryText,
+  isWhiteCall,
+  retryWhiteCall,
+  stoppedText,
+} from "./freeMode.ts";
+import { spectrumTaskUpdate } from "./delegatedTask.ts";
+import { makeInitialReport } from "./reportPolicy.ts";
 import { readSpectrum } from "./store.ts";
 import type { SpectrumState } from "./state.ts";
 
@@ -65,6 +75,7 @@ const make = Effect.gen(function* () {
     next: SpectrumState,
     key: string,
     plans: ReadonlyArray<ForkCommitPlan> = [],
+    events: ReadonlyArray<OrchestrationV2DomainEvent> = [],
   ) {
     const now = yield* DateTime.now;
     const thread = yield* projections.getThread(old.threadId);
@@ -74,7 +85,7 @@ const make = Effect.gen(function* () {
       threadId: old.threadId,
       commandType: "spectrum.controller",
       acceptedAt: now,
-      events: lifecycle,
+      events: [...lifecycle, ...events],
       effects: [],
       forkPlans: [
         ...plans,
@@ -114,9 +125,11 @@ const make = Effect.gen(function* () {
     yield* transcript.dispatch(state.threadId, command.commandId);
     return yield* read(state.threadId);
   });
+  /** Retires and settles the report in one commit, so a restart never finds a retired Spectrum without one. */
   const cancelOwned = Effect.fn("SpectrumController.cancelOwned")(function* (
     state: SpectrumState,
     key: string,
+    report: { readonly text: string; readonly outcome: "failed" | "cancelled" },
     plans: ReadonlyArray<ForkCommitPlan> = [],
   ) {
     // Lineage-only Colors are not delegated task rows. Enumerate their full owned lineage explicitly.
@@ -134,8 +147,7 @@ const make = Effect.gen(function* () {
         ? { ...identity, type: "queued-run.cancel" }
         : { ...identity, type: "run.interrupt", holdQueue: false, reason: "Spectrum stopped" };
     });
-    return yield* save(
-      state,
+    const next = makeInitialReport(
       {
         ...state,
         generation,
@@ -144,9 +156,16 @@ const make = Effect.gen(function* () {
         round: null,
         outbox: commands,
       },
-      key,
-      plans,
+      report.text,
+      true,
     );
+    const task = yield* spectrumTaskUpdate(
+      next,
+      { status: report.outcome, result: report.text },
+      key,
+      yield* DateTime.now,
+    ).pipe(Effect.provideService(Projections.ProjectionStoreV2, projections));
+    return yield* save(state, next, key, plans, task);
   });
   const ownedWorkDrained = Effect.fn("SpectrumController.ownedWorkDrained")(function* (
     id: ThreadId,
@@ -235,6 +254,13 @@ const make = Effect.gen(function* () {
     }
     return state;
   });
+  const discussion = Effect.fn("SpectrumController.discussion")(function* (state: SpectrumState) {
+    const records = yield* projections.getThreadRecords(state.threadId, ["messages"]);
+    return records.messages
+      .filter((message) => state.transcript.includes(message.id) && message.role === "assistant")
+      .map((message) => message.text)
+      .join("\n\n");
+  });
   const pump = Effect.fn("SpectrumController.resume")(function* (id: ThreadId) {
     let state = yield* read(id);
     const shell = yield* projections.getThread(id);
@@ -249,8 +275,10 @@ const make = Effect.gen(function* () {
       Effect.provideService(Projections.ProjectionStoreV2, projections),
     );
     if (state.status === "active" && (retirement.retired || !retirement.complete)) {
-      state = yield* cancelOwned(state, `spectrum:${id}:${state.generation}:retirement`);
-      yield* reports.settle(id, "Spectrum stopped.", "cancelled");
+      state = yield* cancelOwned(state, `spectrum:${id}:${state.generation}:retirement`, {
+        text: stoppedText(state),
+        outcome: "cancelled",
+      });
     }
     for (let step = 0; step < 128; step++) {
       if (state.status === "retired") state = yield* reconcileRetired(state);
@@ -307,18 +335,47 @@ const make = Effect.gen(function* () {
           recoveryPending: false,
         });
         if (reply.type === "failed") {
+          const white = state.mode === "free" && isWhiteCall(state.round);
+          const retry = white ? retryWhiteCall(state) : null;
+          if (retry !== null) {
+            // An empty reply list closes this call's barrier; the retry is the next round.
+            state = yield* save(
+              state,
+              {
+                ...state,
+                revision: state.revision + 1,
+                free: retry,
+                round: {
+                  ...linked,
+                  slots: linked.slots.map((current) =>
+                    current.commandId === slot.commandId ? { ...current, replyIds: [] } : current,
+                  ),
+                },
+              },
+              `${slot.commandId}:retry`,
+              [completion],
+            );
+            accepted = true;
+            break;
+          }
+          const text = white
+            ? failedSummaryText(reply.reason, yield* discussion(state))
+            : `Spectrum could not finish: ${reply.reason}.`;
           state = yield* cancelOwned(
             state,
             `spectrum:${id}:${state.generation}:failed:${slot.commandId}`,
+            { text, outcome: "failed" },
             [completion],
           );
-          yield* reports.settle(id, `Spectrum could not finish: ${reply.reason}.`, "failed");
           return yield* drain(id);
         }
         if (reply.type !== "accepted") continue;
         const key = `${slot.commandId}:reply`;
         const revision = state.revision + 1;
         const label = state.participants.find((color) => color.threadId === slot.threadId)!.label;
+        const text = reply.messages.map((message) => message.text).join("\n\n");
+        const free = state.mode === "free" ? acceptFreeReply(state, state.round.phase, text) : null;
+        const said = free === null ? text : free.transcript;
         const command: SpectrumTranscriptAppend = {
           type: "spectrum.transcript.append",
           commandId: CommandId.make(key),
@@ -327,11 +384,17 @@ const make = Effect.gen(function* () {
           revision,
           messageId: MessageId.make(key),
           role: "assistant",
-          text: `[${label}]\n${reply.messages.map((message) => message.text).join("\n\n")}`,
+          text: `[${label}]\n${said}`,
         };
         state = yield* save(
           state,
-          { ...state, revision, round: reply.round, outbox: [command] },
+          {
+            ...state,
+            revision,
+            round: reply.round,
+            outbox: said === null ? [] : [command],
+            ...(free === null ? {} : { free: free.free }),
+          },
           `${key}:enqueue`,
           [completion],
         );
@@ -345,14 +408,7 @@ const make = Effect.gen(function* () {
           yield* rounds.prepare(id);
           continue;
         }
-        const records = yield* projections.getThreadRecords(id, ["messages"]);
-        const text = records.messages
-          .filter(
-            (message) => state.transcript.includes(message.id) && message.role === "assistant",
-          )
-          .map((message) => message.text)
-          .join("\n\n");
-        yield* reports.settle(id, `Spectrum completed.\n\n${text}`);
+        yield* reports.settle(id, `Spectrum completed.\n\n${yield* discussion(state)}`);
         return yield* drain(id);
       }
       return state;
