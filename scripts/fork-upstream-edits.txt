@@ -5,6 +5,8 @@ apps/server/src/os-jank.test.ts
 packages/shared/src/shell.test.ts
 packages/shared/src/shell.ts
 .github/workflows/ci.yml
+.github/workflows/pr-size.yml
+.github/workflows/pr-vouch.yml
 .github/workflows/mobile-fingerprint-check.yml
 AGENTS.md
 apps/desktop/package.json
