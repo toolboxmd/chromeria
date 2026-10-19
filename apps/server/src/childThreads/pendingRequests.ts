@@ -1,6 +1,15 @@
-import { OrchestratorMcpFailure, type ThreadId } from "@t3tools/contracts";
+import {
+  OrchestratorMcpFailure,
+  type OrchestrationV2RequestAnsweredBy,
+  type OrchestrationV2ThreadShell,
+  type RuntimeRequestId,
+  type ThreadId,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 
+import { clientModeCeiling } from "../mcp/McpInvocationContext.ts";
 import { readThread, unavailable, type Caller } from "../mcp/threadAccess.ts";
 
 /** Native subagent edges alone grant ancestor authority, including across projects. */
@@ -26,9 +35,86 @@ export const isCallerAncestor = Effect.fn("childThreads.isCallerAncestor")(funct
   return false;
 });
 
+/**
+ * An ancestor with running work, or with any activity this recently, keeps
+ * first say over its descendants' requests; after that the Promachos may
+ * answer them for the user (toolboxmd/chromeria#532).
+ */
+export const ANCESTOR_STALE_AFTER = Duration.minutes(30);
+
+type Target = Pick<OrchestrationV2ThreadShell, "lineage" | "delegatedFrom">;
+
+const ancestorHasFirstSay = Effect.fn("childThreads.ancestorHasFirstSay")(function* (
+  context: Caller,
+  target: Target,
+) {
+  // A parent in another environment answers through its own link (toolboxmd/chromeria#369).
+  if (target.delegatedFrom !== undefined) return true;
+  const staleBefore =
+    DateTime.toEpochMillis(yield* DateTime.now) - Duration.toMillis(ANCESTOR_STALE_AFTER);
+  const seen = new Set<ThreadId>();
+  let lineage = target.lineage;
+  while (lineage.relationshipToParent === "subagent" && lineage.parentThreadId !== null) {
+    if (seen.has(lineage.parentThreadId)) return false;
+    seen.add(lineage.parentThreadId);
+    const parent = yield* context.threads
+      .getThreadShell(lineage.parentThreadId)
+      .pipe(Effect.mapError(unavailable));
+    // A deleted parent breaks the chain: nothing above it is an ancestor any more.
+    if (parent === null || parent.deletedAt !== null) return false;
+    if (
+      parent.delegatedFrom !== undefined ||
+      parent.activeRunId !== null ||
+      DateTime.toEpochMillis(parent.updatedAt) > staleBefore
+    )
+      return true;
+    lineage = parent.lineage;
+  }
+  return false;
+});
+
+/** A linked environment's Promachos, when the link may act as the user here. */
+const linkedPromachos = (context: Caller): OrchestrationV2RequestAnsweredBy | undefined => {
+  const client = context.scope.client;
+  if (context.caller !== undefined || client?.linked !== true) return undefined;
+  if (client.promachosThreadId === undefined) return undefined;
+  // Only a full-access link may change the user's own work here, as in `linkOrigin.ts`.
+  const ceiling = clientModeCeiling(client);
+  if (ceiling.runtimeMode !== "full-access" || ceiling.interactionMode !== "default")
+    return undefined;
+  return { kind: "promachos", threadId: client.promachosThreadId, via: client.label };
+};
+
+/**
+ * Who answers when the caller responds to `target`'s request: the thread
+ * itself or a client outside any thread (questions only), an ancestor, or
+ * the Promachos for the user once no ancestor has first say. Undefined
+ * means the caller may not answer.
+ */
+export type RequestAnswerer =
+  | { readonly kind: "own" }
+  | { readonly kind: "ancestor" }
+  | { readonly kind: "promachos"; readonly answeredBy: OrchestrationV2RequestAnsweredBy };
+
+export const requestAnswerer = Effect.fn("childThreads.requestAnswerer")(function* (
+  context: Caller,
+  target: Target & { readonly id: ThreadId },
+) {
+  const caller = context.caller;
+  if (caller !== undefined && caller.id === target.id) return { kind: "own" } as const;
+  if (yield* isCallerAncestor(context, target.id)) return { kind: "ancestor" } as const;
+  const promachos: OrchestrationV2RequestAnsweredBy | undefined =
+    caller?.prismRole === "promachos"
+      ? { kind: "promachos", threadId: caller.id }
+      : linkedPromachos(context);
+  if (promachos !== undefined && !(yield* ancestorHasFirstSay(context, target)))
+    return { kind: "promachos", answeredBy: promachos } as const;
+  return caller === undefined ? ({ kind: "own" } as const) : undefined;
+});
+
 export const readPendingRequest = Effect.fn("childThreads.readPendingRequest")(function* (input: {
   threadId?: ThreadId | undefined;
-  requestId: import("@t3tools/contracts").RuntimeRequestId;
+  requestId: RuntimeRequestId;
 }) {
   const context = yield* readThread(input.threadId, ["runtimeRequests", "turnItems"]);
   const request = context.projection.runtimeRequests.find(
@@ -49,14 +135,13 @@ export const readPendingRequest = Effect.fn("childThreads.readPendingRequest")(f
       message: "The pending approval or user-input request was not found.",
     });
   }
-  if (
-    item.type === "approval_request" &&
-    !(yield* isCallerAncestor(context, context.projection.thread.id))
-  ) {
+  const answerer = yield* requestAnswerer(context, context.projection.thread);
+  if (item.type === "approval_request" && (answerer === undefined || answerer.kind === "own")) {
     return yield* new OrchestratorMcpFailure({
       code: "capability_denied",
-      message: "Only an ancestor thread may answer a descendant approval.",
+      message:
+        "Only an ancestor thread, or the Promachos once no ancestor is active, may answer a descendant approval.",
     });
   }
-  return { ...context, request, item };
+  return { ...context, request, item, answerer };
 });

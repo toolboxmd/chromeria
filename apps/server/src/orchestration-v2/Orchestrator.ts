@@ -2544,6 +2544,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? {}
         : { bare: { ...command.bare, nativeHomeOwnerThreadId: command.threadId } }),
       ...(command.owner === undefined ? {} : { owner: command.owner }),
+      ...(command.prismRole === undefined ? {} : { prismRole: command.prismRole }),
       createdBy: command.createdBy,
       creationSource: command.creationSource,
       id: command.threadId,
@@ -8853,6 +8854,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         resolvedAt: now,
         ...(command.decision === undefined ? {} : { decision: command.decision }),
         ...(command.answers === undefined ? {} : { answers: command.answers }),
+        ...(command.answeredBy === undefined ? {} : { answeredBy: command.answeredBy }),
       };
       const emitEvent = emit(events, command);
       const requestNode = context.node;
@@ -8926,6 +8928,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   },
                 }
               : {}),
+            ...(command.answeredBy === undefined ? {} : { answeredBy: command.answeredBy }),
             status: resolvedNodeStatus,
             completedAt: now,
             updatedAt: now,

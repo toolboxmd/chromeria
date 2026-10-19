@@ -273,6 +273,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 creationSource: "mcp",
                 // Fork: an agent's thread belongs to its caller's owner (toolboxmd/chromeria#170).
                 ...(caller === undefined ? {} : { owner: threadOwner(caller) }),
+                ...(input.prismRole === "promachos" ? { prismRole: "promachos" as const } : {}),
                 ...(linkOrigin === undefined ? {} : { linkOrigin }),
                 // Kept only alongside linkOrigin: thread.create drops it otherwise.
                 ...(input.delegatedFrom === undefined

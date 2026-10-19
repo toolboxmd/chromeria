@@ -90,6 +90,8 @@ export function registerPromachosLaunchTests<E>({
           prismRole: "promachos" as const,
         };
         const first = yield* launches.launch(yield* promachos.prepare(input));
+        // The thread records its role, so the Promachos can answer requests (toolboxmd/chromeria#532).
+        expect(first.projection.thread.prismRole).toBe("promachos");
         expect(first.projection.thread.modelSelection).toEqual({
           ...modelSelection,
           options: [{ id: "reasoningEffort", value: "high" }],

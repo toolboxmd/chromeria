@@ -42,6 +42,11 @@ export interface McpClientCaller {
    * another environment passing on the limits of the agent it calls for.
    */
   readonly narrowedTo?: ClientModes | undefined;
+  /**
+   * The Promachos thread in the linked environment this call answers for
+   * (`T3-Promachos-Thread`), set only on a peer link (toolboxmd/chromeria#532).
+   */
+  readonly promachosThreadId?: ThreadId | undefined;
 }
 
 /**
@@ -53,6 +58,7 @@ export interface McpClientCaller {
  * `clientModeCeiling`), so a client gains nothing by sending a broad one.
  */
 export const MODE_LIMIT_HEADER = "t3-mode-limit";
+export const PROMACHOS_THREAD_HEADER = "t3-promachos-thread";
 
 export interface ClientModes {
   readonly runtimeMode: RuntimeMode;
