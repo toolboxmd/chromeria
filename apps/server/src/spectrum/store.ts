@@ -37,6 +37,10 @@ export const ensureSpectrumSchema = Effect.gen(function* () {
     payload_json TEXT NOT NULL
   )`;
   yield* sql`CREATE INDEX IF NOT EXISTS fork_spectra_caller ON fork_spectra(caller_thread_id, scheduler_run_id)`;
+  // Version 2 advances on events (#404), so the version 1 event cursor is dropped once.
+  yield* sql`UPDATE fork_spectra
+    SET payload_json = json_set(json_remove(payload_json, '$.cursor'), '$.version', 2)
+    WHERE json_extract(payload_json, '$.version') = 1`;
 });
 
 export const readSpectrum = Effect.fn("Spectrum.read")(function* (threadId: ThreadId) {
@@ -83,7 +87,6 @@ export const checkSpectrumMutation = Effect.fn("Spectrum.checkMutation")(functio
   const next = mutation.state;
   if (
     next.revision !== current.revision + 1 ||
-    next.cursor < current.cursor ||
     next.callerThreadId !== current.callerThreadId ||
     next.callerRunId !== current.callerRunId ||
     next.scheduledTaskId !== current.scheduledTaskId ||

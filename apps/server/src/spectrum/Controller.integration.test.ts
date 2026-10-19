@@ -704,7 +704,6 @@ it.effect(
         (yield* projections.getThreadShell(state.threadId))!.forkSpectrumRunning,
         false,
       );
-      assert.isAbove(current.cursor, 0);
       const transcript = yield* projections.getThreadRecords(state.threadId, ["messages", "runs"]);
       assert.deepStrictEqual(transcript.runs, []);
       assert.isTrue(
