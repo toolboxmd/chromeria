@@ -44,6 +44,7 @@ import {
   ThreadPullRequestLinkSource,
 } from "./threadPullRequest.ts";
 import { hasOnlyPairedSurrogates } from "./threadMetadataMcp.ts";
+import { SecretRequestField, SecretRequestFieldName } from "./secretRequest.ts";
 import { ThreadTitleRegeneration } from "./threadTitle.ts";
 import {
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
@@ -846,10 +847,25 @@ export const OrchestratorMcpRequestSecretInput = Schema.Struct({
   reason: TrimmedNonEmptyString.annotate({
     description: "What it is for and where to get it.",
   }),
-  placeholder: Schema.optional(TrimmedNonEmptyString),
+  placeholder: Schema.optional(TrimmedNonEmptyString).annotate({
+    description: "Input hint. Single-field requests only; each entry in fields has its own.",
+  }),
+  fields: Schema.optional(
+    Schema.Array(SecretRequestField).check(
+      Schema.isMinLength(1),
+      Schema.isMaxLength(5),
+      Schema.makeFilter(
+        (fields) => new Set(fields.map((field) => field.name)).size === fields.length,
+        { expected: "fields with unique names" },
+      ),
+    ),
+  ).annotate({
+    description:
+      "Several values on one card, e.g. [{name:'client_id', label:'Client ID'}, {name:'client_secret', label:'Client secret'}]. 1-5 unique lowercase [a-z0-9_-] names; they key files. Omit for one value.",
+  }),
   delivery: Schema.optional(Schema.Literals(["secretRef", "file"])).annotate({
     description:
-      'secretRef (default) for a T3 tool. file for a shell CLI: read the path in your command, e.g. TOKEN="$(cat <file>)" wrangler whoami.',
+      "Files are always written. file also returns the single value's path as file; secretRef (default) needs nothing extra.",
   }),
   timeoutMs: Schema.optional(
     Schema.Int.check(Schema.isBetween({ minimum: 1_000, maximum: 60 * 60 * 1_000 })),
@@ -863,15 +879,16 @@ export type OrchestratorMcpRequestSecretInput = typeof OrchestratorMcpRequestSec
 export const OrchestratorMcpRequestSecretResult = Schema.Union([
   Schema.Struct({
     status: Schema.Literal("saved"),
-    secretRef: SecretRef.annotate({
-      description: "One-use. Pass to a tool that accepts a secretRef. You never see the value.",
-    }),
-  }),
-  Schema.Struct({
-    status: Schema.Literal("saved").annotate({ description: "file holds the value." }),
-    file: Schema.String.annotate({
+    files: Schema.Record(SecretRequestFieldName, TrimmedNonEmptyString).annotate({
       description:
-        "Owner-only file with the value. Read it inside commands and never print it. Deleted after 24 hours.",
+        "Private file per field name ('secret' without fields) holding exactly that value. Read it inside commands, never print it, and delete it when done. Expires after 24 hours.",
+    }),
+    file: Schema.optional(TrimmedNonEmptyString).annotate({
+      description: "With delivery file on a single-field request: files.secret.",
+    }),
+    secretRef: Schema.optional(SecretRef).annotate({
+      description:
+        "Single-field requests only. One-use; pass to a tool that accepts a secretRef (schedule_task's signature.secretRef).",
     }),
   }),
   Schema.Struct({

@@ -81,6 +81,7 @@ import {
   threadOwner,
   admitDelegateRole,
   PRISM_DELEGATE_ROLE_ERROR,
+  SECRET_REQUEST_SINGLE_FIELD_NAME,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue } from "@t3tools/shared/model";
 import { runGroupMembers } from "../orchestration-v2/RunGroups.ts";
@@ -2575,6 +2576,18 @@ const make = Effect.gen(function* () {
     ),
     requestSecret: Effect.fn("OrchestratorMcpService.requestSecret")(function* (scope, input) {
       const { scope: threadScope, parent } = yield* loadThreadCaller(scope, "request_secret");
+      if (input.fields !== undefined && input.placeholder !== undefined) {
+        return yield* failure(
+          "invalid_request",
+          "placeholder is for single-field requests; give each entry in fields its own.",
+        );
+      }
+      if (input.fields !== undefined && input.delivery === "file") {
+        return yield* failure(
+          "invalid_request",
+          'delivery "file" returns one path; with fields, read each path from files.',
+        );
+      }
       const threadId = threadScope.thread.threadId;
       const run = ThreadManagementService.latestActiveRun(parent);
       if (
@@ -2610,6 +2623,7 @@ const make = Effect.gen(function* () {
             reason: input.reason,
             ...(input.placeholder === undefined ? {} : { placeholder: input.placeholder }),
             ...(input.delivery === "file" ? { delivery: "file" as const } : {}),
+            ...(input.fields === undefined ? {} : { fields: input.fields }),
             secretStatus,
           })
           .pipe(
@@ -2688,20 +2702,19 @@ const make = Effect.gen(function* () {
       yield* Effect.annotateCurrentSpan({ "secret_request.status": status });
       yield* Metrics.increment(Metrics.secretRequestsTotal, { status });
       if (status !== "saved") return { status };
-      if (input.delivery === "file") {
-        const file = yield* secretRequests
-          .saveToFile({ threadId, turnItemId })
-          .pipe(Effect.mapError((error) => failure("orchestration_error", error.message)));
-        return { status, file };
-      }
-      const secretRef = yield* secretRequests.savedRef({ threadId: threadId, turnItemId });
-      if (Option.isNone(secretRef)) {
+      // Saved means the files were written before the card said so; none
+      // left means a storage fault, or the agent already used and deleted them.
+      const saved = yield* secretRequests.saved({ threadId: threadId, turnItemId });
+      if (Option.isNone(saved)) {
         return yield* failure(
           "orchestration_error",
           "The user saved the secret, but it could not be read. Ask again with a new clientRequestId.",
         );
       }
-      return { status, secretRef: secretRef.value };
+      // Upstream's `delivery: "file"` shape: the one field's path as `file`.
+      const file =
+        input.delivery === "file" ? saved.value.files[SECRET_REQUEST_SINGLE_FIELD_NAME] : undefined;
+      return { status, ...saved.value, ...(file === undefined ? {} : { file }) };
     }),
 
     capabilities: Effect.fn("OrchestratorMcpService.capabilities")(function* (scope, input = {}) {

@@ -933,6 +933,11 @@ describe("orchestrator MCP toolkit", () => {
             SecretRequests.layer.pipe(
               Layer.provide(layerMemorySecretStore),
               Layer.provide(layerOrchestration),
+              Layer.provide(
+                ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-secret-requests-" }).pipe(
+                  Layer.provide(NodeServices.layer),
+                ),
+              ),
             ),
           ),
           Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),

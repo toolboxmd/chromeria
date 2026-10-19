@@ -2,9 +2,11 @@ import { pipe } from "effect/Function";
 import {
   SECRET_REQUEST_DEFAULT_PLACEHOLDER,
   secretRequestAnswerInput,
+  secretRequestComplete,
   secretRequestDisplay,
   secretRequestFailureMessage,
-  secretRequestPrivacyNote,
+  SECRET_REQUEST_PRIVACY_NOTE,
+  secretRequestFields,
   type SecretRequestItem,
 } from "@t3tools/client-runtime/secret-request";
 import {
@@ -64,14 +66,19 @@ function PendingSecretRequestForm(props: {
     reportFailure: false,
     reportDefect: false,
   });
-  const [secret, setSecret] = useState("");
+  const fields = secretRequestFields(item);
+  const fieldId = (index: number) => `${inputId}-${index}`;
+  const [values, setValues] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const complete = secretRequestComplete(item, values);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Enter and click can both submit before a render.
   const inFlight = useRef(false);
 
   const send = async (
-    reply: { readonly type: "save"; readonly secret: string } | { readonly type: "decline" },
+    reply:
+      | { readonly type: "save"; readonly values: ReadonlyMap<string, string> }
+      | { readonly type: "decline" },
   ) => {
     const input = secretRequestAnswerInput(item, reply);
     if (input === null || inFlight.current) return;
@@ -83,7 +90,7 @@ function PendingSecretRequestForm(props: {
       setSubmitting(false);
     });
     if (result._tag === "Success") {
-      setSecret("");
+      setValues(new Map());
       return;
     }
     if (!isAtomCommandInterrupted(result)) {
@@ -93,7 +100,7 @@ function PendingSecretRequestForm(props: {
 
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    void send({ type: "save", secret });
+    void send({ type: "save", values });
   };
 
   return (
@@ -105,38 +112,58 @@ function PendingSecretRequestForm(props: {
       onPointerDown={(event) => {
         if (!(event.target instanceof HTMLElement)) return;
         if (event.target.closest("input, button, a")) return;
-        document.getElementById(inputId)?.focus();
+        document.getElementById(fieldId(0))?.focus();
       }}
     >
       <div className="flex min-w-0 flex-col gap-1">
-        <label htmlFor={inputId} className="text-sm font-medium text-foreground">
-          {item.label}
-        </label>
+        {/* With several fields, each input carries its own label. */}
+        {item.fields === undefined ? (
+          <label htmlFor={fieldId(0)} className="text-sm font-medium text-foreground">
+            {item.label}
+          </label>
+        ) : (
+          <p className="text-sm font-medium text-foreground">{item.label}</p>
+        )}
         {item.reason.trim() ? <p className="text-sm text-muted-foreground">{item.reason}</p> : null}
       </div>
-      <div className="flex min-w-0 items-center gap-2">
-        <div className="min-w-0 flex-1">
-          <Input
-            id={inputId}
-            // Password fields prompt to save credentials; this secret is not a login.
-            type="text"
-            className="[-webkit-text-security:disc]"
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck={false}
-            data-1p-ignore
-            data-lpignore="true"
-            data-bwignore
-            placeholder={item.placeholder ?? SECRET_REQUEST_DEFAULT_PLACEHOLDER}
-            value={secret}
-            disabled={submitting}
-            aria-invalid={error !== null || undefined}
-            aria-describedby={error !== null ? `${privacyId} ${errorId}` : privacyId}
-            onChange={(event) => setSecret(event.currentTarget.value)}
-          />
+      <div className="flex min-w-0 items-end gap-2">
+        <div className="flex min-w-0 flex-1 flex-col gap-2">
+          {fields.map((field, index) => (
+            <div key={field.name} className="flex min-w-0 flex-col gap-1">
+              {/* A single field is titled by the card itself. */}
+              {item.fields === undefined ? null : (
+                <label htmlFor={fieldId(index)} className="text-xs text-muted-foreground">
+                  {field.label}
+                </label>
+              )}
+              <Input
+                id={fieldId(index)}
+                // Masked text rather than a password field: browsers offer to
+                // save any submitted password, and this is not a login.
+                type="text"
+                className="[-webkit-text-security:disc]"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                // Password managers otherwise offer to save or fill this field.
+                data-1p-ignore
+                data-lpignore="true"
+                data-bwignore
+                placeholder={field.placeholder ?? SECRET_REQUEST_DEFAULT_PLACEHOLDER}
+                value={values.get(field.name) ?? ""}
+                disabled={submitting}
+                aria-invalid={error !== null || undefined}
+                aria-describedby={error !== null ? `${privacyId} ${errorId}` : privacyId}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setValues((current) => new Map(current).set(field.name, value));
+                }}
+              />
+            </div>
+          ))}
         </div>
-        <Button type="submit" disabled={submitting || secret.trim().length === 0}>
+        <Button type="submit" disabled={submitting || !complete}>
           Save securely
         </Button>
       </div>
@@ -151,7 +178,7 @@ function PendingSecretRequestForm(props: {
           className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"
         >
           <ShieldCheckIcon className="size-3.5 shrink-0" aria-hidden />
-          {secretRequestPrivacyNote(item)}
+          {SECRET_REQUEST_PRIVACY_NOTE}
         </p>
         <Button
           type="button"

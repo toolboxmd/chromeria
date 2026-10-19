@@ -196,8 +196,8 @@ const DeleteScheduledTaskTool = Tool.make("delete_scheduled_task", {
 
 const RequestSecretTool = Tool.make("request_secret", {
   description:
-    'Ask the user to enter a secret in a private card and wait. You never see the value. Returns a one-use `secretRef` for a tool that accepts it, or with `delivery: "file"` a private file path to read inside a shell command. Asked how to provide a secret: call this now, do not explain instead.',
-  parameters: OrchestratorMcpRequestSecretInput,
+    "Ask the user to enter ANY secret (token, API key, password, login, signing secret) in a private card and wait. Use `fields` for several values on one card. You never see the value: `files` maps each field ('secret' without fields) to a private file. Read it inside commands, e.g. TOKEN=\"$(cat <path>)\" cmd or stdin, never print it, and delete the files when done; they expire after 24 hours. A single-field request also returns a one-use `secretRef` for a tool that accepts one. Asked how to provide a secret: call this now, do not explain instead.",
+  parameters: McpRouting.parameters(OrchestratorMcpRequestSecretInput),
   success: OrchestratorMcpRequestSecretResult,
   failure: OrchestratorMcpFailure,
   failureMode: "return",

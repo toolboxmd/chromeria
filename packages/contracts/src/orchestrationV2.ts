@@ -14,6 +14,7 @@ import {
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import { withRecordIdTable } from "./orchestrationV2IdTable.ts";
 import * as DateTime from "effect/DateTime";
+import { SecretRequestField } from "./secretRequest.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
@@ -1735,6 +1736,8 @@ const OrchestrationV2SecretRequestFields = {
   reason: Schema.String,
   placeholder: Schema.optional(Schema.String),
   delivery: Schema.optional(OrchestrationV2SecretRequestDelivery),
+  /** Absent for a single-field request, which asks for `label` alone. */
+  fields: Schema.optional(Schema.Array(SecretRequestField)),
   secretStatus: OrchestrationV2SecretRequestStatus,
 } as const;
 
@@ -3807,6 +3810,7 @@ const OrchestrationV2InternalCommand = Schema.Union([
     reason: Schema.String,
     placeholder: Schema.optional(Schema.String),
     delivery: Schema.optional(OrchestrationV2SecretRequestDelivery),
+    fields: Schema.optional(Schema.Array(SecretRequestField)),
     secretStatus: OrchestrationV2SecretRequestStatus,
   }),
   /**

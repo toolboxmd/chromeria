@@ -2,9 +2,11 @@ import { pipe } from "effect/Function";
 import {
   SECRET_REQUEST_DEFAULT_PLACEHOLDER,
   secretRequestAnswerInput,
+  secretRequestComplete,
   secretRequestDisplay,
   secretRequestFailureMessage,
-  secretRequestPrivacyNote,
+  SECRET_REQUEST_PRIVACY_NOTE,
+  secretRequestFields,
   type SecretRequestItem,
 } from "@t3tools/client-runtime/secret-request";
 import {
@@ -69,14 +71,18 @@ function PendingSecretRequestForm(props: {
     reportFailure: false,
     reportDefect: false,
   });
-  const [secret, setSecret] = useState("");
+  const fields = secretRequestFields(item);
+  const [values, setValues] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const complete = secretRequestComplete(item, values);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Submit then a tap can both run before a re-render; this guard is synchronous.
   const inFlight = useRef(false);
 
   const send = async (
-    reply: { readonly type: "save"; readonly secret: string } | { readonly type: "decline" },
+    reply:
+      | { readonly type: "save"; readonly values: ReadonlyMap<string, string> }
+      | { readonly type: "decline" },
   ) => {
     const input = secretRequestAnswerInput(item, reply);
     if (input === null || inFlight.current) return;
@@ -88,7 +94,7 @@ function PendingSecretRequestForm(props: {
       setSubmitting(false);
     });
     if (result._tag === "Success") {
-      setSecret("");
+      setValues(new Map());
       return;
     }
     if (!isAtomCommandInterrupted(result)) {
@@ -104,22 +110,32 @@ function PendingSecretRequestForm(props: {
           <Text className="font-sans text-sm leading-5 text-foreground-muted">{item.reason}</Text>
         ) : null}
       </View>
-      <TextInput
-        accessibilityLabel={item.label}
-        placeholder={item.placeholder ?? SECRET_REQUEST_DEFAULT_PLACEHOLDER}
-        value={secret}
-        onChangeText={setSecret}
-        editable={!submitting}
-        secureTextEntry
-        autoCorrect={false}
-        autoCapitalize="none"
-        autoComplete="off"
-        textContentType="none"
-        importantForAutofill="no"
-        spellCheck={false}
-        returnKeyType="done"
-        onSubmitEditing={() => void send({ type: "save", secret })}
-      />
+      {fields.map((field) => (
+        <View key={field.name} className="gap-1">
+          {/* A single field is titled by the card itself. */}
+          {item.fields === undefined ? null : (
+            <Text className="font-sans text-xs text-foreground-muted">{field.label}</Text>
+          )}
+          <TextInput
+            accessibilityLabel={field.label}
+            placeholder={field.placeholder ?? SECRET_REQUEST_DEFAULT_PLACEHOLDER}
+            value={values.get(field.name) ?? ""}
+            onChangeText={(value) =>
+              setValues((current) => new Map(current).set(field.name, value))
+            }
+            editable={!submitting}
+            secureTextEntry
+            autoCorrect={false}
+            autoCapitalize="none"
+            autoComplete="off"
+            textContentType="none"
+            importantForAutofill="no"
+            spellCheck={false}
+            returnKeyType="done"
+            onSubmitEditing={() => void send({ type: "save", values })}
+          />
+        </View>
+      ))}
       {error !== null ? (
         <Text
           accessibilityRole="alert"
@@ -133,8 +149,8 @@ function PendingSecretRequestForm(props: {
         label="Save securely"
         tone="primary"
         fullWidth
-        disabled={submitting || secret.trim().length === 0}
-        onPress={() => void send({ type: "save", secret })}
+        disabled={submitting || !complete}
+        onPress={() => void send({ type: "save", values })}
       />
       <View className="flex-row items-center justify-between gap-2">
         <View className="flex-1 flex-row items-center gap-1.5">
@@ -145,7 +161,7 @@ function PendingSecretRequestForm(props: {
             type="monochrome"
           />
           <Text className="flex-1 font-sans text-xs text-foreground-muted">
-            {secretRequestPrivacyNote(item)}
+            {SECRET_REQUEST_PRIVACY_NOTE}
           </Text>
         </View>
         <Button
