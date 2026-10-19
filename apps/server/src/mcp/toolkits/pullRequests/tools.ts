@@ -1,4 +1,10 @@
 import {
+  ExecutionPurposeDelivery,
+  PurposeDeliveryIntent,
+  SavedPurposeIntent,
+} from "@t3tools/contracts";
+import * as McpRouting from "../../McpRouting.ts";
+import {
   McpCapabilityUnavailableError,
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
@@ -218,6 +224,7 @@ export const CHILD_PULL_REQUEST_REPORT_NEXT =
 
 export const LinkPullRequestResult = Schema.Struct({
   ...PullRequestIdentity,
+  purposeDelivery: Schema.optional(PurposeDeliveryIntent),
   alreadyLinked: Schema.Boolean,
   next: Schema.optional(Schema.String),
 });
@@ -259,6 +266,7 @@ export const ThreadPullRequestEntry = Schema.Struct({
 export type ThreadPullRequestEntry = typeof ThreadPullRequestEntry.Type;
 
 export const ListThreadPullRequestsResult = Schema.Struct({
+  purposeDeliveries: Schema.optional(Schema.Array(ExecutionPurposeDelivery)),
   pullRequests: Schema.Array(ThreadPullRequestEntry),
   chains: Schema.Array(
     Schema.Struct({
@@ -271,8 +279,14 @@ export const ListThreadPullRequestsResult = Schema.Struct({
 export type ListThreadPullRequestsResult = typeof ListThreadPullRequestsResult.Type;
 
 const LinkPullRequestTool = Tool.make("link_pull_request", {
-  description: "Link a PR to this thread. T3 shows its status and settles the thread on merge.",
-  parameters: PullRequestTargetInput,
+  description:
+    "Link a PR to this thread. T3 shows its status and settles the thread on merge. Optional `purposeDelivery` records the exact Issue or PR outcome this PR delivers, including work before the PR existed; it never changes execution ownership, and omitting it records navigation only. Relinking succeeds and can add a delivery declaration.",
+  parameters: McpRouting.parameters(
+    Schema.Struct({
+      ...PullRequestTargetInput.fields,
+      purposeDelivery: Schema.optional(PurposeDeliveryIntent),
+    }),
+  ),
   success: LinkPullRequestResult,
   failure: PullRequestToolError,
   dependencies,
@@ -317,7 +331,12 @@ const ListThreadPullRequestsTool = Tool.make("list_thread_pull_requests", {
 const WatchPullRequestTool = Tool.make("watch_pull_request", {
   description:
     "Watch an open PR for this thread, linking it first if needed. T3 wakes you on failed checks, passed required checks, new comments or reviews, or conflicts. Handle old comments first. Only later ones wake you. After this call, end your turn. The watch stays on after each wake, so do not call this again on a wake. A wake is not a merge decision. Check readiness yourself.",
-  parameters: PullRequestTargetInput,
+  parameters: McpRouting.parameters(
+    PullRequestTargetInput.mapFields((fields) => ({
+      ...fields,
+      purposeIntent: Schema.optional(SavedPurposeIntent),
+    })),
+  ),
   success: WatchPullRequestResult,
   failure: PullRequestToolError,
   dependencies,

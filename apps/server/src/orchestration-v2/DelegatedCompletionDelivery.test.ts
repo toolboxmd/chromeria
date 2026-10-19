@@ -1887,11 +1887,13 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
           // Native follow-ups reuse the task; only fork delivery ownership advances.
           const {
             completionDelivery: _firstDelivery,
+            completionSource: _firstCompletionSource,
             updatedAt: _firstUpdatedAt,
             ...firstResult
           } = original;
           const {
             completionDelivery: _delivery,
+            completionSource: _latestCompletionSource,
             updatedAt: _updatedAt,
             ...stableResult
           } = followup;

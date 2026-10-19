@@ -8223,6 +8223,292 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       ),
     );
   });
+
+  it.effect.each([false, true])(
+    "rejects duplicate child starts across A/B parent runs and requires an exact resume call (observed=$0)",
+    (observedResume) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const firstDone = yield* Deferred.make<void>();
+          const resumed = yield* Deferred.make<void>();
+          const secondTurn = "native-parent-resume-turn";
+          const secondPrompt = "Resume the child.";
+          const purposeA = {
+            version: 1,
+            scope: {
+              type: "single",
+              reference: {
+                host: "github.com",
+                repository: "example/repo",
+                kind: "issue",
+                number: 11,
+              },
+            },
+            provenance: { type: "declared" },
+          } as const;
+          const purposeB = {
+            ...purposeA,
+            scope: { ...purposeA.scope, reference: { ...purposeA.scope.reference, number: 12 } },
+          } as const;
+          const entries = [...resumeSubagentTranscript.entries];
+          const resumeIndex = entries.findIndex(
+            (e) => e.type === "emit_inbound" && e.label === `turn/started/${RESUME_CHILD_TURN_2}`,
+          );
+          const suffix = entries.splice(resumeIndex);
+          for (const entry of codexReplayPreamble({
+            nativeThreadId: RESUME_NATIVE_THREAD,
+            nativeTurnId: secondTurn,
+            prompt: secondPrompt,
+          }).slice(-3)) {
+            entries.push(
+              entry.type === "expect_outbound" || entry.type === "emit_inbound"
+                ? {
+                    ...entry,
+                    frame:
+                      Predicate.isObject(entry.frame) && "id" in entry.frame
+                        ? { ...entry.frame, id: 4 }
+                        : entry.frame,
+                  }
+                : entry,
+            );
+          }
+          if (observedResume)
+            entries.push({
+              type: "emit_inbound",
+              label: "exact-resume-call-b",
+              frame: {
+                method: "item/completed",
+                params: {
+                  threadId: RESUME_NATIVE_THREAD,
+                  turnId: secondTurn,
+                  item: {
+                    type: "collabAgentToolCall",
+                    id: "native-resume-call-b",
+                    tool: "sendInput",
+                    status: "completed",
+                    senderThreadId: RESUME_NATIVE_THREAD,
+                    receiverThreadIds: [RESUME_CHILD_THREAD],
+                    agentsStates: { [RESUME_CHILD_THREAD]: { status: "running", message: null } },
+                  },
+                },
+              },
+            });
+          entries.push(childTurnStarted(RESUME_CHILD_TURN_1));
+          entries.push(...suffix);
+          const harness = yield* makeCodexReplayHarness(
+            makeCodexReplayTranscript({
+              scenario: "codex-cross-run-resume",
+              entries,
+            }),
+            (event) =>
+              event.type === "turn.terminal"
+                ? Deferred.succeed(firstDone, undefined)
+                : event.type === "subagent.updated" &&
+                    event.subagent.runId === "run-cross-run-second"
+                  ? Deferred.succeed(resumed, undefined)
+                  : Effect.void,
+          );
+          const now = yield* DateTime.now;
+          yield* harness.runtime.startTurn({
+            ...makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("cross-run-first"),
+              text: RESUME_PROMPT,
+            }),
+            purpose: purposeA,
+          });
+          yield* TestClock.adjust("100 millis");
+          yield* Deferred.await(firstDone);
+          yield* harness.runtime.startTurn({
+            ...makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("cross-run-second"),
+              text: secondPrompt,
+            }),
+            runOrdinal: 2,
+            providerTurnOrdinal: 2,
+            purpose: purposeB,
+          });
+          yield* TestClock.adjust("30 seconds");
+          yield* Deferred.await(resumed);
+          const row = harness
+            .subagentUpdates()
+            .find((e) => e.subagent.runId === "run-cross-run-second")?.subagent;
+          assert.equal(row?.status, "running");
+          assert.equal(row?.parentNodeId, "node-cross-run-second");
+          assert.isNull(row?.completedAt);
+          assert.isNotNull(row?.startedAt);
+          assert.equal(DateTime.toEpochMillis(row!.startedAt!), 1782622470000);
+          assert.deepEqual(row?.nativeSegments?.[0]?.purpose.scope, purposeA.scope);
+          assert.deepEqual(row?.nativeSegments?.[0]?.boundary, {
+            state: "native_turns",
+            nativeTurnIds: [RESUME_CHILD_TURN_1],
+          });
+          assert.equal(row?.nativeSegments?.length, observedResume ? 2 : 1);
+          if (observedResume) {
+            assert.deepEqual(row?.nativeSegments?.[1]?.purpose.scope, purposeB.scope);
+            assert.deepEqual(row?.nativeSegments?.[1]?.source, {
+              type: "app_run",
+              threadId: harness.threadId,
+              runId: RunId.make("run-cross-run-second"),
+            });
+            assert.equal(row?.nativeSegments?.[1]?.boundary.state, "unresolved");
+            assert.equal(row?.nativeSegments?.[1]?.usageFinality, "unreconciled");
+          }
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
+
+  it.effect(
+    "projects a post-settle background command completion and requests a continuation",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const backgroundEnded = yield* Deferred.make<void>();
+          const backgroundDropped = yield* Deferred.make<void>();
+          const harness = yield* makeCodexReplayHarness(backgroundExecTranscript, (event) =>
+            Effect.gen(function* () {
+              if (event.type !== "provider_thread.updated") return;
+              for (const operation of event.providerThread.nativeOperations ?? []) {
+                if (operation.nativeOperationId !== BG_COMMAND_ITEM) continue;
+                if (operation.status === "ended")
+                  yield* Deferred.succeed(backgroundEnded, undefined);
+                if (operation.wakeDispositions.includes("dropped_disabled"))
+                  yield* Deferred.succeed(backgroundDropped, undefined);
+              }
+            }),
+          );
+          const now = yield* DateTime.now;
+
+          const turnInput: ProviderAdapter.ProviderAdapterV2TurnInput = {
+            ...makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("attempt-codex-bg-wake"),
+              text: BG_PROMPT,
+            }),
+            purpose: {
+              version: 1,
+              scope: {
+                type: "single",
+                reference: {
+                  host: "github.com",
+                  repository: "acme/work",
+                  kind: "issue",
+                  number: 1,
+                },
+              },
+              provenance: { type: "declared" },
+            },
+          };
+          yield* harness.runtime.startTurn(turnInput);
+          yield* awaitUntil(() => harness.terminalEvents().length === 1, "root turn terminal");
+          assert.equal(harness.terminalEvents()[0]?.status, "completed");
+          assert.isTrue(yield* harness.hasPendingBackgroundWork);
+          assert.isTrue(
+            yield* harness.runtime.hasPendingBackgroundWorkForThread!(harness.providerThread),
+          );
+          assert.lengthOf(harness.continuationRequests, 0);
+          const terminalIndex = harness.events.findIndex((event) => event.type === "turn.terminal");
+
+          yield* TestClock.adjust("30 seconds");
+          yield* awaitUntil(
+            () => harness.continuationRequests.length === 1,
+            "continuation request",
+          );
+          yield* Deferred.await(backgroundEnded);
+          const request = harness.continuationRequests[0];
+          const operation = harness.events
+            .flatMap((event) =>
+              event.type === "provider_thread.updated"
+                ? (event.providerThread.nativeOperations ?? [])
+                : [],
+            )
+            .findLast(
+              (operation) =>
+                operation.nativeOperationId === BG_COMMAND_ITEM && operation.status === "ended",
+            );
+          if (operation === undefined) return yield* Effect.die("Missing ended native operation.");
+          assert.deepEqual(operation?.source, {
+            type: "app_run",
+            threadId: harness.threadId,
+            runId: turnInput.runId,
+          });
+          assert.deepEqual(operation?.purpose, turnInput.purpose);
+          assert.deepEqual(operation?.boundary, {
+            state: "native_turns",
+            nativeTurnIds: [BG_NATIVE_TURN],
+          });
+          assert.equal(operation?.status, "ended");
+          assert.equal(operation?.usageFinality, "unreconciled");
+          assert.deepEqual(operation.noticeIds, [BG_COMMAND_ITEM]);
+          assert.deepEqual(request?.nativeCauses, [
+            { operationId: operation.id, purpose: operation.purpose },
+          ]);
+          if (request?.recordDisposition === undefined)
+            return yield* Effect.die("Missing native continuation disposition recorder.");
+          yield* request.recordDisposition("dropped_disabled");
+          yield* Deferred.await(backgroundDropped);
+          assert.isTrue(
+            harness.events.some(
+              (event) =>
+                event.type === "provider_thread.updated" &&
+                event.providerThread.nativeOperations?.some(
+                  (record) =>
+                    record.id === operation.id &&
+                    record.wakeDispositions.includes("dropped_disabled") &&
+                    record.purpose.scope.type === "single" &&
+                    record.purpose.scope.reference.number === 1,
+                ),
+            ),
+          );
+          assert.equal(request?.threadId, harness.threadId);
+          assert.equal(request?.providerThreadId, harness.providerThread.id);
+          assert.equal(request?.driver, CodexAdapterV2.CODEX_DRIVER_KIND);
+          assert.deepEqual(request?.notification, {
+            source: { kind: "command" },
+            outcome: "completed",
+            summary: `Command "${BG_COMMAND}" finished (exit 0)`,
+            detail: BG_COMMAND,
+          });
+          assert.equal(
+            request?.detail,
+            `Background command completed (exit 0): ${BG_COMMAND}\n\n` +
+              "Output tail:\nCODEX_BG_WAKE_DONE",
+          );
+
+          const lateCommandUpdateIndex = () =>
+            harness.events.findIndex(
+              (event, index) =>
+                index > terminalIndex &&
+                event.type === "turn_item.updated" &&
+                event.turnItem.type === "command_execution" &&
+                event.turnItem.status === "completed" &&
+                event.turnItem.output === "CODEX_BG_WAKE_DONE\n" &&
+                event.turnItem.exitCode === 0,
+            );
+          yield* awaitUntil(
+            () => lateCommandUpdateIndex() > terminalIndex,
+            "post-settle command projection",
+          );
+          assert.lengthOf(harness.terminalEvents(), 1);
+          assert.isFalse(yield* harness.hasPendingBackgroundWork);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
 });
 
 // These schedules run the production adapter and serial stdio client. Only the

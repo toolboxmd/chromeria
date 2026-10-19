@@ -80,7 +80,10 @@ export function withCreationProvenance(
       const { linkOrigin: _linkOrigin, delegatedFrom: _delegatedFrom, ...rest } = command;
       return { ...rest, ...provenance };
     }
-    case "message.dispatch":
+    case "message.dispatch": {
+      const { senderThreadId: _sender, scheduledTaskId: _schedule, ...message } = command;
+      return { ...message, ...provenance };
+    }
     case "thread.fork":
     case "thread.merge_back":
     case "delegated_task.request":
@@ -113,6 +116,8 @@ function existingThreadIdsForCommand(
     case "delegated_task.request":
     case "delegated_task.group.request":
     case "delegated_task.wake-policy":
+    case "delegated_task.group-cancel":
+    case "delegated_task.group-cancel.release":
     case "delegated_task.completion-delivery.acknowledge":
     case "delegated_task.completion-delivery.dispose":
     case "delegated_task.remote.request":
@@ -134,6 +139,8 @@ export type ThreadManagementTerminalRunStatus = Extract<
 >;
 
 export interface ThreadManagementSendInput {
+  readonly purposeIntent?: import("@t3tools/contracts").PurposeIntent | undefined;
+  readonly purposeSource?: import("@t3tools/contracts").ExecutionPurpose | undefined;
   readonly projectId: ProjectId;
   readonly commandId: CommandId;
   readonly threadId: ThreadId;
@@ -970,6 +977,9 @@ const make = Effect.gen(function* () {
 
     const dispatched = yield* dispatch({
       type: "message.dispatch",
+      ...(input.purposeIntent === undefined ? {} : { purposeIntent: input.purposeIntent }),
+      ...(input.purposeSource === undefined ? {} : { purposeSource: input.purposeSource }),
+      ...(notice !== undefined || input.mode === "queue" ? {} : { deliveryIntent: input.mode }),
       commandId: input.commandId,
       threadId: input.threadId,
       messageId: input.messageId,

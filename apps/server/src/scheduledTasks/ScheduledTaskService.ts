@@ -1,3 +1,5 @@
+import { SavedPurposeIntent, type ExecutionPurpose } from "@t3tools/contracts";
+import * as PurposeAdmission from "../orchestration-v2/ExecutionPurpose.ts";
 import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import type { BareReadGrant } from "../orchestration-v2/bareReadGrant.ts";
 import { decodeScheduledBare, encodeScheduledBare, readScheduledBare } from "./bareState.ts";
@@ -175,6 +177,10 @@ const decodeLinkOriginJson = Schema.decodeUnknownEffect(
 
 const decodeTask = Schema.decodeUnknownEffect(ScheduledTask);
 const decodeTaskId = Schema.decodeUnknownOption(ScheduledTaskId);
+const decodePurposeIntentJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(SavedPurposeIntent),
+);
+const encodePurposeIntentJson = Schema.encodeSync(Schema.fromJsonString(SavedPurposeIntent));
 const decodeScheduleJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ScheduledTask.fields.schedule),
 );
@@ -197,6 +203,7 @@ interface ScheduledTaskRow {
   readonly prompt: string;
   readonly enabled: number;
   readonly schedule_json: string;
+  readonly purpose_intent_json: string | null;
   readonly project_id: string;
   readonly thread_id: string | null;
   readonly workspace_strategy_json: string;
@@ -347,6 +354,9 @@ const decodeRow = Effect.fnUntraced(
       prompt: row.prompt,
       enabled: row.enabled === 1,
       schedule,
+      ...(row.purpose_intent_json == null
+        ? {}
+        : { purposeIntent: yield* decodePurposeIntentJson(row.purpose_intent_json) }),
       projectId: row.project_id,
       threadId: row.thread_id,
       workspaceStrategy,
@@ -458,6 +468,7 @@ export const layer = Layer.effect(
         prompt,
         enabled,
         schedule_json,
+        purpose_intent_json,
         project_id,
         thread_id,
         workspace_strategy_json,
@@ -497,6 +508,7 @@ export const layer = Layer.effect(
         prompt,
         enabled,
         schedule_json,
+        purpose_intent_json,
         project_id,
         thread_id,
         workspace_strategy_json,
@@ -575,6 +587,7 @@ export const layer = Layer.effect(
           prompt,
           enabled,
           schedule_json,
+        purpose_intent_json,
           project_id,
           thread_id,
           workspace_strategy_json,
@@ -601,6 +614,7 @@ export const layer = Layer.effect(
           ${task.prompt},
           ${task.enabled ? 1 : 0},
           ${JSON.stringify(task.schedule)},
+          ${task.purposeIntent === undefined ? null : encodePurposeIntentJson(task.purposeIntent)},
           ${task.projectId},
           ${task.threadId},
           ${JSON.stringify(task.workspaceStrategy)},
@@ -629,6 +643,7 @@ export const layer = Layer.effect(
           prompt = excluded.prompt,
           enabled = excluded.enabled,
           schedule_json = excluded.schedule_json,
+          purpose_intent_json = excluded.purpose_intent_json,
           project_id = excluded.project_id,
           thread_id = excluded.thread_id,
           workspace_strategy_json = excluded.workspace_strategy_json,
@@ -901,6 +916,17 @@ export const layer = Layer.effect(
                   }),
                 ),
               );
+        const resolvedPurpose = yield* PurposeAdmission.resolvePurposeIntent({
+          intent: active.purposeIntent,
+        });
+        const purposeSource: ExecutionPurpose =
+          active.purposeIntent === undefined
+            ? resolvedPurpose.purpose
+            : {
+                version: 1,
+                scope: resolvedPurpose.purpose.scope,
+                provenance: { type: "schedule", scheduledTaskId: active.id },
+              };
         const result =
           active.threadId === null
             ? yield* Effect.exit(
@@ -909,6 +935,7 @@ export const layer = Layer.effect(
                   threadLaunch.launch,
                 )({
                     commandId,
+                    purposeSource,
                     ...(active.bare === undefined
                       ? {}
                       : {
@@ -944,6 +971,7 @@ export const layer = Layer.effect(
                 )({
                     projectId: active.projectId,
                     commandId,
+                    purposeSource,
                     threadId: ThreadId.make(active.threadId),
                     messageId,
                     scheduledTaskId: active.id,
@@ -1144,6 +1172,11 @@ export const layer = Layer.effect(
     const upsert: ScheduledTaskService["Service"]["upsert"] = Effect.fn(
       "ScheduledTaskService.upsert",
     )(function* (input, options) {
+      if (input.purposeIntent === undefined) {
+        return yield* taskError(
+          "Choose an Issue, PR or deliberately unscoped purpose before saving this schedule.",
+        );
+      }
       const now = yield* localNow;
       const uuid =
         input.commandId === undefined
@@ -1275,6 +1308,7 @@ export const layer = Layer.effect(
         existingTask.enabled === input.enabled &&
         isSameSchedule(existingTask.schedule, schedule);
       const task: ScheduledTask = {
+        purposeIntent: input.purposeIntent,
         ...(bare === undefined ? {} : { bare }),
         id,
         title: input.title,
@@ -1311,6 +1345,11 @@ export const layer = Layer.effect(
     )(function* (input) {
       const existing = yield* loadTask(input.id);
       if (existing.enabled === input.enabled) return { task: existing };
+      if (input.enabled && existing.purposeIntent === undefined)
+        return yield* taskError(
+          "Choose an Issue, PR or deliberately unscoped purpose before enabling this legacy schedule.",
+          { taskId: input.id },
+        );
       const now = yield* localNow;
       const next = nextRunAt({ enabled: input.enabled, schedule: existing.schedule }, now);
       // RETURNING so a task deleted between the load and this UPDATE is a

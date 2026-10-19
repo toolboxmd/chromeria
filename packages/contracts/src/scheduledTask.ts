@@ -1,4 +1,5 @@
 import { BareLaunchRequest } from "./bareLaunch.ts";
+import { SavedPurposeIntent } from "./executionPurpose.ts";
 import * as Schema from "effect/Schema";
 
 import {
@@ -200,6 +201,7 @@ export const ScheduledTaskWebhookEndpoint = Schema.Struct({
 export type ScheduledTaskWebhookEndpoint = typeof ScheduledTaskWebhookEndpoint.Type;
 
 export const ScheduledTask = Schema.Struct({
+  purposeIntent: Schema.optional(SavedPurposeIntent),
   bare: Schema.optional(BareLaunchRequest),
   id: ScheduledTaskId,
   title: TrimmedNonEmptyString,
@@ -236,6 +238,7 @@ export const ScheduledTaskListResult = Schema.Struct({
 export type ScheduledTaskListResult = typeof ScheduledTaskListResult.Type;
 
 export const ScheduledTaskUpsertInput = Schema.Struct({
+  purposeIntent: Schema.optional(SavedPurposeIntent),
   bare: Schema.optional(BareLaunchRequest),
   id: Schema.optional(ScheduledTaskId),
   requireExisting: Schema.optional(Schema.Boolean).annotate({

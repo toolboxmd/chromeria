@@ -15,6 +15,8 @@ import { AppBar } from "../../components/ui/AppBar";
 import { ThreadId } from "@t3tools/contracts";
 
 import * as Dialog from "../../components/ui/Dialog";
+import { ExecutionPurposePicker } from "./ExecutionPurposePicker";
+import { savedPurposeIntentForScope, type ExecutionPurposeScope } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
@@ -393,6 +395,27 @@ export function NewTaskDraftScreen(props: {
     props.incomingShareId,
     requestedInitialProjectAvailable,
   ]);
+  const [purposeScope, setPurposeScope] = useState<ExecutionPurposeScope>(() => {
+    const intent = flow.editingPendingTask?.purposeIntent?.intent;
+    return intent?.type === "reference"
+      ? { type: "single", reference: intent.reference }
+      : { type: "unscoped", reason: "deliberate" };
+  });
+  const pendingPurposeId = flow.editingPendingTask?.messageId ?? null;
+  const [purposeDraftSourceId, setPurposeDraftSourceId] = useState(pendingPurposeId);
+  if (purposeDraftSourceId !== pendingPurposeId) {
+    setPurposeDraftSourceId(pendingPurposeId);
+    const intent = flow.editingPendingTask?.purposeIntent?.intent;
+    setPurposeScope(
+      intent?.type === "reference"
+        ? { type: "single", reference: intent.reference }
+        : { type: "unscoped", reason: "deliberate" },
+    );
+  }
+  const supportsExecutionPurpose =
+    selectedEnvironmentServerConfig?.environment.capabilities.executionPurposeVersions?.includes(
+      1,
+    ) === true;
 
   const lastInitialProjectRefRef = useRef(props.initialProjectRef);
   const initialPickerRef = useRef<"open" | "dismissed" | null>(null);
@@ -647,7 +670,14 @@ export function NewTaskDraftScreen(props: {
     }
     // Persist locally before clearing or leaving the draft; server setup runs on the thread.
     flow.setSubmitting(true);
-    const queued = await settlePromise(() => enqueueThreadOutboxMessage(message));
+    const queued = await settlePromise(() =>
+      enqueueThreadOutboxMessage({
+        ...message,
+        ...(supportsExecutionPurpose
+          ? { purposeIntent: savedPurposeIntentForScope(purposeScope) }
+          : {}),
+      }),
+    );
     flow.setSubmitting(false);
     if (AsyncResult.isFailure(queued)) {
       const error = squashAtomCommandFailure(queued);
@@ -899,6 +929,13 @@ export function NewTaskDraftScreen(props: {
           content: heroViewport,
           controls: (
             <View className="pb-1">
+              {supportsExecutionPurpose ? (
+                <ExecutionPurposePicker
+                  scope={purposeScope}
+                  onChange={setPurposeScope}
+                  disabled={isComposerInteractionLocked}
+                />
+              ) : null}
               {projectClone && projectClone.phase !== "done" && selectedProject ? (
                 <View className="px-1 pb-2">
                   <ProjectCloneBanner

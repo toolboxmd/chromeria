@@ -1,5 +1,6 @@
 import { useComposerAttachmentActions } from "./use-composer-attachment-actions";
 import * as Dialog from "../components/ui/Dialog";
+import { purposeSelectionOf } from "@t3tools/contracts";
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import { readEnvironmentScope } from "./session";
 import { useAtomValue } from "@effect/atom-react";
@@ -647,12 +648,26 @@ export function useThreadComposerState() {
         ? null
         : followUpAction === "queue"
           ? "queue"
-          : "auto";
+          : "steer";
 
     const metadata = makeQueuedMessageMetadata();
     const messageId = MessageId.make(metadata.messageId);
     clearThreadComposerError(threadKey);
     const enqueuePromise = enqueueThreadOutboxMessage({
+      ...(serverConfig?.environment.capabilities.executionPurposeVersions?.includes(1) !== true
+        ? {}
+        : {
+            purposeIntent: {
+              version: 1,
+              intent:
+                followUpAction === "steer"
+                  ? { type: "target" }
+                  : {
+                      type: "selection",
+                      expectedRevision: purposeSelectionOf(selectedThreadShell).revision,
+                    },
+            },
+          }),
       environmentId: selectedThreadShell.environmentId,
       threadId: selectedThreadShell.id,
       messageId,

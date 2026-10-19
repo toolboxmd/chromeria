@@ -1,3 +1,4 @@
+import { executionPurposeOf } from "@t3tools/contracts";
 import { CommandId, MessageId, type OrchestrationV2AppThread } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -126,6 +127,11 @@ const make = Effect.gen(function* () {
         const text = notice(stale, now);
         const title = child.thread.title.split("\n")[0]?.trim().slice(0, 80) || "Child";
         yield* threads.dispatch({
+          purposeSource: {
+            version: 1,
+            scope: executionPurposeOf(run).scope,
+            provenance: { type: "source_run", threadId: child.thread.id, runId: run.id },
+          },
           type: "message.dispatch",
           commandId: CommandId.make(key),
           messageId: MessageId.make(key),

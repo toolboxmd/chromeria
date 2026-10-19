@@ -672,6 +672,10 @@ it.effect("a caller cannot rewrite a scheduled task that runs above its own mode
               Effect.succeed({
                 task: { ...(scheduledTask(input.id ?? "task-auto", "auto") as object), ...input },
               } as never),
+            setEnabled: (input) =>
+              Effect.succeed({
+                task: { ...(scheduledTask(input.id, "auto") as object), enabled: input.enabled },
+              } as never),
           }),
         ),
         Layer.provide(Layer.mock(ProjectService.ProjectService)({})),

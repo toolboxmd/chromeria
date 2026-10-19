@@ -1,3 +1,5 @@
+import { savedPurposeIntentForScope } from "@t3tools/contracts";
+import { ExecutionPurposeControl } from "../chat/ExecutionPurposeControl";
 import { useAtomValue } from "@effect/atom-react";
 import { connectionStatusTitle } from "@t3tools/client-runtime/connection";
 import { AsyncResult } from "effect/reactivity";
@@ -128,6 +130,7 @@ const WORKSPACE_MODE_LABELS: Record<WorkspaceMode, string> = {
 };
 
 const EMPTY_DRAFT: DraftState = {
+  purposeScope: { type: "unscoped", reason: "deliberate" },
   editingId: null,
   title: "",
   prompt: "",
@@ -1191,6 +1194,16 @@ function ScheduledTaskEditorForm({
       tasksQuery.data === null
     )
       return;
+    if (
+      draft.purposeScope?.type === "unscoped" &&
+      draft.purposeScope.reason === "legacy_no_intent"
+    ) {
+      reportFailure(
+        "Choose this task's purpose",
+        "Select an Issue or PR, or clear the purpose to choose unscoped work.",
+      );
+      return;
+    }
     const selection = activeSelection;
     if (
       !draft.title.trim() ||
@@ -1249,6 +1262,9 @@ function ScheduledTaskEditorForm({
               startFromOrigin: draft.startFromOrigin,
             };
     const input: ScheduledTaskUpsertInput = {
+      purposeIntent: savedPurposeIntentForScope(
+        draft.purposeScope ?? { type: "unscoped", reason: "deliberate" },
+      ),
       ...(draft.editingId ? { id: draft.editingId as ScheduledTaskId, requireExisting: true } : {}),
       title: draft.title.trim(),
       prompt: draft.prompt.trim(),
@@ -1458,6 +1474,15 @@ function ScheduledTaskEditorForm({
             </Field>
           ) : null}
 
+          <ExecutionPurposeControl
+            scope={draft.purposeScope ?? { type: "unscoped", reason: "deliberate" }}
+            runs={[]}
+            disabled={saving || !canOperate}
+            onChange={async (scope) => {
+              setDraft((current) => ({ ...current, purposeScope: scope }));
+              return true;
+            }}
+          />
           <Field label="Prompt" htmlFor="scheduled-task-prompt">
             <Textarea
               id="scheduled-task-prompt"

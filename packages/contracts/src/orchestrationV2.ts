@@ -1,5 +1,16 @@
+import { NativeInputEvidence, NativeExecutionSegment } from "./nativeExecution.ts";
 import { BareLaunchRequest, ThreadBare, BareReceipt } from "./bareLaunch.ts";
 import { PrismLane, StoredPrismRole } from "./prism.ts";
+import {
+  ExecutionPurpose,
+  ExecutionPurposeDelivery,
+  ExecutionPurposeScope,
+  PurposeDeliveryIntent,
+  PurposeIntent,
+  PurposeSelection,
+  RemotePurposeContinuation,
+  SavedPurposeIntent,
+} from "./executionPurpose.ts";
 import { OrchestrationMessageContext } from "./composerContext.ts";
 import { withRecordIdTable } from "./orchestrationV2IdTable.ts";
 import * as DateTime from "effect/DateTime";
@@ -137,6 +148,7 @@ export const OrchestrationV2DelegatedFrom = Schema.Struct({
   environmentId: EnvironmentId,
   threadId: ThreadId,
   title: Schema.String,
+  purposeLaunch: Schema.optional(RemotePurposeContinuation),
 });
 export type OrchestrationV2DelegatedFrom = typeof OrchestrationV2DelegatedFrom.Type;
 
@@ -373,6 +385,26 @@ export const OrchestrationV2IdentityCapabilities = Schema.Struct({
 export type OrchestrationV2IdentityCapabilities = typeof OrchestrationV2IdentityCapabilities.Type;
 
 export const OrchestrationV2ProviderCapabilities = Schema.Struct({
+  /** Absence means the source predates the native-purpose evidence contract. */
+  purposeEvidence: Schema.optional(
+    Schema.Struct({
+      version: Schema.Literal(1),
+      nativeInputs: Schema.Literals([
+        "native_turn",
+        "input_echo",
+        "admitted_message",
+        "unsupported",
+      ]),
+      childSegments: Schema.Literals([
+        "initial_turn_only",
+        "initial_input_only",
+        "causes_only",
+        "unsupported",
+      ]),
+      backgroundInventory: Schema.Literals(["observed_causes", "unsupported"]),
+      nativeUsageFinality: Schema.Literals(["main_agent_only", "unavailable"]),
+    }),
+  ),
   sessions: OrchestrationV2SessionCapabilities,
   threads: OrchestrationV2ThreadCapabilities,
   turns: OrchestrationV2TurnCapabilities,
@@ -436,6 +468,8 @@ const LenientThreadOpens = Schema.NullOr(OrchestrationV2ThreadOpens).pipe(
 );
 
 export const OrchestrationV2AppThread = Schema.Struct({
+  purposeSelection: Schema.optional(PurposeSelection),
+  purposeDeliveries: Schema.optional(Schema.Array(ExecutionPurposeDelivery)),
   bare: Schema.optional(ThreadBare),
   ...OrchestrationV2CreationFields,
   // Fork: thread people (toolboxmd/chromeria#170). Unset owner is the default person.
@@ -665,6 +699,16 @@ export const OrchestrationV2DelegatedCompletionDelivery = Schema.Struct({
   generation: PositiveInt,
   messageId: MessageId,
   taskIds: Schema.Array(NodeId),
+  /** Exact completed executions reserved by this delivery, before wake admission. */
+  purposeCauses: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        taskId: NodeId,
+        runId: RunId,
+        purpose: ExecutionPurpose,
+      }),
+    ),
+  ),
 });
 export type OrchestrationV2DelegatedCompletionDelivery =
   typeof OrchestrationV2DelegatedCompletionDelivery.Type;
@@ -717,6 +761,8 @@ export type OrchestrationV2ThreadLaunchWorkspaceStrategy =
 export const ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE = "workspace_preparation_failed";
 
 export const OrchestrationV2Run = Schema.Struct({
+  /** Absent only on historical runs; it means legacy unscoped, never thread ownership. */
+  purpose: Schema.optional(ExecutionPurpose),
   id: RunId,
   threadId: ThreadId,
   ordinal: PositiveInt,
@@ -972,6 +1018,11 @@ export const OrchestrationV2RemoteTaskChild = Schema.Struct({
 export type OrchestrationV2RemoteTaskChild = typeof OrchestrationV2RemoteTaskChild.Type;
 
 export const OrchestrationV2Subagent = Schema.Struct({
+  nativeSegments: Schema.optional(Schema.Array(NativeExecutionSegment)),
+  purpose: Schema.optional(ExecutionPurpose),
+  purposeIntent: Schema.optional(PurposeIntent),
+  /** Latest completed child run, independent of the original delegated job's purpose. */
+  completionSource: Schema.optional(Schema.Struct({ runId: RunId, purpose: ExecutionPurpose })),
   id: NodeId,
   threadId: ThreadId,
   runId: Schema.NullOr(RunId),
@@ -996,6 +1047,13 @@ export const OrchestrationV2Subagent = Schema.Struct({
    * after every member is terminal.
    */
   runGroupId: Schema.optional(NodeId),
+  /**
+   * Fork (#377): the whole-group `task_cancel` that gives up this member's
+   * wake. It is recorded for every member before any is stopped, so a member
+   * ending in any order stays quiet; a member whose stop is refused has it
+   * cleared and wakes the parent normally.
+   */
+  groupCancel: Schema.optional(Schema.Struct({ commandId: CommandId })),
   status: Schema.Literals([
     "idle",
     "pending",
@@ -1170,6 +1228,7 @@ export const OrchestrationV2ProviderGoal = Schema.Struct({
 export type OrchestrationV2ProviderGoal = typeof OrchestrationV2ProviderGoal.Type;
 
 export const OrchestrationV2ProviderThread = Schema.Struct({
+  nativeOperations: Schema.optional(Schema.Array(NativeExecutionSegment)),
   id: ProviderThreadId,
   driver: ProviderDriverKind,
   providerInstanceId: ProviderInstanceId,
@@ -1264,6 +1323,7 @@ export const OrchestrationV2ContextHandoff = Schema.Struct({
 export type OrchestrationV2ContextHandoff = typeof OrchestrationV2ContextHandoff.Type;
 
 export const OrchestrationV2ProviderTurn = Schema.Struct({
+  nativeInputs: Schema.optional(Schema.Array(NativeInputEvidence)),
   id: ProviderTurnId,
   providerThreadId: ProviderThreadId,
   nodeId: NodeId,
@@ -1387,6 +1447,7 @@ export const OrchestrationV2IdleCompaction = Schema.Literals(["beforeCacheExpire
 export type OrchestrationV2IdleCompaction = typeof OrchestrationV2IdleCompaction.Type;
 
 export const OrchestrationV2ConversationMessage = Schema.Struct({
+  purposeIntent: Schema.optional(PurposeIntent),
   notification: Schema.optional(OrchestrationV2Notification),
   ...OrchestrationV2CreationFields,
   scheduledTaskId: Schema.optional(ScheduledTaskId),
@@ -2151,6 +2212,8 @@ export type OrchestrationV2LatestVisibleMessageSummary =
   typeof OrchestrationV2LatestVisibleMessageSummary.Type;
 
 export const OrchestrationV2ThreadShell = Schema.Struct({
+  purposeSelection: Schema.optional(PurposeSelection),
+  purposeDeliveries: Schema.optional(Schema.Array(ExecutionPurposeDelivery)),
   forkSpectrumRunning: Schema.optional(Schema.Boolean),
   ...OrchestrationV2CreationFields,
   // Fork: thread people (toolboxmd/chromeria#170). Unset owner is the default person.
@@ -3171,6 +3234,9 @@ export const OrchestrationV2Command = Schema.Union([
     limitRecovery: Schema.optional(Schema.NullOr(OrchestrationV2LimitRecoveryUpdate)),
     /** Link (object) or unlink (null) a pull request; absent leaves it unchanged. */
     linkedPullRequest: Schema.optional(Schema.NullOr(ThreadLinkedPullRequest)),
+    purposeSelection: Schema.optional(
+      Schema.Struct({ expectedRevision: NonNegativeInt, scope: ExecutionPurposeScope }),
+    ),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.pull-request.link"),
@@ -3180,6 +3246,7 @@ export const OrchestrationV2Command = Schema.Union([
     url: TrimmedNonEmptyString,
     source: ThreadPullRequestLinkSource,
     repositoryWebUrl: Schema.optional(TrimmedNonEmptyString),
+    purposeDelivery: Schema.optional(PurposeDeliveryIntent),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.pull-request.unlink"),
@@ -3197,6 +3264,7 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("thread.pull-request.watch"),
+    purposeIntent: Schema.optional(SavedPurposeIntent),
     commandId: CommandId,
     threadId: ThreadId,
     ...ThreadPullRequestKey.fields,
@@ -3259,6 +3327,7 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("message.dispatch"),
+    purposeIntent: Schema.optional(PurposeIntent),
     notification: Schema.optional(OrchestrationV2Notification),
     /** Sends this pending guest message; the server uses the guest's text, not `text`. */
     guestMessageId: Schema.optional(GuestMessageId),
@@ -3439,6 +3508,7 @@ export const OrchestrationV2Command = Schema.Union([
   }),
   Schema.Struct({
     type: Schema.Literal("delegated_task.request"),
+    purposeIntent: Schema.optional(PurposeIntent),
     bare: Schema.optional(ThreadBare),
     projectId: Schema.optional(ProjectId),
     ...OrchestrationV2CreationFields,
@@ -3522,6 +3592,21 @@ const OrchestrationV2InternalCommand = Schema.Union([
     text: Schema.String,
     attachments: Schema.optional(Schema.Array(ChatAttachment)),
   }),
+  /** Marks every member of a Run group as given up by one group cancel. */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.group-cancel"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    groupId: NodeId,
+  }),
+  /** Clears one member's group cancel after its stop was refused. */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.group-cancel.release"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    groupCancelId: CommandId,
+  }),
   Schema.Struct({
     type: Schema.Literal("thread.pull-request-watch.sync"),
     commandId: CommandId,
@@ -3547,6 +3632,7 @@ const OrchestrationV2InternalCommand = Schema.Union([
    */
   Schema.Struct({
     type: Schema.Literal("delegated_task.remote.request"),
+    purposeIntent: Schema.optional(PurposeIntent),
     commandId: CommandId,
     parentThreadId: ThreadId,
     parentRunId: RunId,
@@ -3718,6 +3804,10 @@ export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalComma
 export type OrchestrationV2ServerCommand =
   | Exclude<OrchestrationV2Command, { readonly type: "message.dispatch" }>
   | (Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }> & {
+      /** Resolved only by an authenticated launch or causal producer, never by client RPC. */
+      readonly purposeSource?: ExecutionPurpose;
+      /** The original app-owned handoff, resolved before run creation. */
+      readonly purposeDelegatedTaskId?: NodeId;
       /** Server-only Wight compare-and-start identity, absent from the wire schema. */
       readonly wightAdmission?: {
         readonly latestRunId: RunId | null;
@@ -3785,6 +3875,7 @@ export const OrchestrationV2ArchivedShellSnapshot = Schema.Struct({
 export type OrchestrationV2ArchivedShellSnapshot = typeof OrchestrationV2ArchivedShellSnapshot.Type;
 
 export const OrchestrationV2ThreadLaunchInput = Schema.Struct({
+  purposeIntent: Schema.optional(PurposeIntent),
   bare: Schema.optional(BareLaunchRequest),
   prismRole: Schema.optional(Schema.Literal("promachos")),
   commandId: CommandId,
@@ -3820,6 +3911,7 @@ export type OrchestrationV2ThreadLaunchResult = typeof OrchestrationV2ThreadLaun
 
 export const OrchestrationV2DispatchCommandResult = Schema.Struct({
   sequence: NonNegativeInt,
+  admittedRun: Schema.optional(Schema.Struct({ runId: RunId, purpose: ExecutionPurpose })),
 });
 export type OrchestrationV2DispatchCommandResult = typeof OrchestrationV2DispatchCommandResult.Type;
 

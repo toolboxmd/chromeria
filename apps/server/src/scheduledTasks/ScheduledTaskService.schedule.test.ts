@@ -34,6 +34,7 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
     yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const input = yield* decodeUpsertInput({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         id: "scheduled-task:edit-after-delete",
         title: "Review",
         prompt: "Review the open pull requests.",
@@ -46,7 +47,12 @@ it.effect("rejects a stale form save after deletion while preserving explicit-id
         interactionMode: "default",
       });
       const created = yield* service.upsert(input);
-      const edit = yield* decodeUpsertInput({ ...input, requireExisting: true, title: "Edited" });
+      const edit = yield* decodeUpsertInput({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
+        ...input,
+        requireExisting: true,
+        title: "Edited",
+      });
       expect((yield* service.upsert(edit)).task.title).toBe("Edited");
       yield* service.delete({ id: created.task.id });
 
@@ -88,6 +94,7 @@ it.effect("preserves a due run when a save only pads the scheduled hour", () =>
     yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const input = yield* decodeUpsertInput({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         commandId: "schedule-time-format",
         title: "Morning review",
         prompt: "Review the open pull requests.",
@@ -106,6 +113,7 @@ it.effect("preserves a due run when a save only pads the scheduled hour", () =>
 
       yield* TestClock.setTime(DateTime.toEpochMillis(dueAt) + 1_000);
       const update = yield* decodeUpsertInput({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         ...input,
         id: created.task.id,
         schedule: { type: "fixed_time", timeOfDay: "09:00" },

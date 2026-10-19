@@ -60,6 +60,7 @@ it.effect(
       const dependencies = Layer.mergeAll(ports, BareLaunch.layer.pipe(Layer.provide(ports)));
       const layer = Layer.fresh(ScheduledTasks.layer).pipe(Layer.provide(dependencies));
       const input = yield* Schema.decodeUnknownEffect(ScheduledTaskUpsertInput)({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         id: "scheduled-task:bare",
         title: "Bare",
         prompt: "Do just this.",

@@ -1,4 +1,13 @@
+import { executionPurposesEqual } from "@t3tools/contracts";
 import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
+import {
+  type PurposeIntent,
+  type ExecutionPurpose,
+  executionPurposeOf,
+  purposeIntentsEqual,
+  purposeScopesEqual,
+} from "@t3tools/contracts";
+import * as ExecutionPurposeAdmission from "./ExecutionPurpose.ts";
 import type { BareReadGrant } from "./bareReadGrant.ts";
 import * as BareLaunch from "./BareLaunch.ts";
 import { type BareLaunchRequest } from "@t3tools/contracts";
@@ -82,6 +91,9 @@ export interface ThreadLaunchInitialMessage {
 }
 
 export interface ThreadLaunchInput {
+  readonly purposeIntent?: PurposeIntent | undefined;
+  readonly purposeSource?: ExecutionPurpose | undefined;
+  readonly purposeParentRun?: { readonly threadId: ThreadId; readonly runId: RunId } | undefined;
   readonly bare?: BareLaunchRequest | undefined;
   readonly bareReadGrant?: BareReadGrant | undefined;
   readonly commandId: CommandId;
@@ -148,6 +160,10 @@ type ThreadLaunchReplayInput = Pick<
   | "createdBy"
   | "linkOrigin"
   | "bare"
+  | "purposeIntent"
+  | "purposeSource"
+  | "purposeParentRun"
+  | "delegatedFrom"
 > & { readonly messageId?: MessageId };
 
 const isBareLaunchError = Schema.is(BareLaunchError);
@@ -305,6 +321,24 @@ const make = Effect.gen(function* () {
       return yield* mapError(input, "resolve-project", threadId)("Project identity changed.");
     if (projection.thread.linkOrigin?.sessionId !== input.linkOrigin?.sessionId)
       return yield* mapError(input, "create-thread", threadId)("Launch link origin changed.");
+    const recordedLaunch = projection.thread.delegatedFrom?.purposeLaunch;
+    const requestedLaunch = input.delegatedFrom?.purposeLaunch;
+    if (
+      (recordedLaunch === undefined) !== (requestedLaunch === undefined) ||
+      (recordedLaunch !== undefined &&
+        requestedLaunch !== undefined &&
+        (recordedLaunch.environmentId !== requestedLaunch.environmentId ||
+          recordedLaunch.threadId !== requestedLaunch.threadId ||
+          recordedLaunch.runId !== requestedLaunch.runId ||
+          recordedLaunch.launchId !== requestedLaunch.launchId ||
+          !executionPurposesEqual(recordedLaunch.purpose, requestedLaunch.purpose)))
+    ) {
+      return yield* mapError(
+        input,
+        "read-receipt",
+        threadId,
+      )(new ExecutionPurposeAdmission.PurposeAdmissionError({ reason: "remote_launch_mismatch" }));
+    }
     if (
       input.createdBy === "agent" &&
       exceededDispatchModeLimit(input, projection.thread) !== undefined
@@ -322,6 +356,39 @@ const make = Effect.gen(function* () {
       // A create alone is not an accepted initial message. Resume its normal intake.
       if (Option.isNone(messageReceipt)) return yield* launch;
       const run = projection.runs.find((candidate) => candidate.userMessageId === input.messageId);
+      const message = projection.messages.find((candidate) => candidate.id === input.messageId);
+      if (!purposeIntentsEqual(message?.purposeIntent, input.purposeIntent)) {
+        return yield* mapError(
+          input,
+          "read-receipt",
+          threadId,
+        )(new ExecutionPurposeAdmission.PurposeAdmissionError({ reason: "intent_reused" }));
+      }
+      let source = input.purposeSource;
+      if (input.purposeIntent?.intent.type === "inherit" && input.purposeParentRun !== undefined) {
+        const parent = yield* threads
+          .getThreadRecords(input.purposeParentRun.threadId, ["runs"])
+          .pipe(Effect.mapError(mapError(input, "read-receipt", threadId)));
+        const parentRun = parent.runs.find(
+          (candidate) => candidate.id === input.purposeParentRun?.runId,
+        );
+        if (parentRun === undefined)
+          return yield* mapError(
+            input,
+            "read-receipt",
+            threadId,
+          )(new ExecutionPurposeAdmission.PurposeAdmissionError({ reason: "intent_reused" }));
+        source = executionPurposeOf(parentRun);
+      }
+      if (
+        source !== undefined &&
+        (run === undefined || !purposeScopesEqual(source.scope, executionPurposeOf(run).scope))
+      )
+        return yield* mapError(
+          input,
+          "read-receipt",
+          threadId,
+        )(new ExecutionPurposeAdmission.PurposeAdmissionError({ reason: "intent_reused" }));
       if (
         messageReceipt.value.status !== "accepted" ||
         messageReceipt.value.commandType !== "message.dispatch" ||
@@ -940,6 +1007,72 @@ const make = Effect.gen(function* () {
         )("Reusing an existing thread requires a thread id.");
       }
 
+      let purposeSource: ExecutionPurpose | undefined = input.purposeSource;
+      const remotePurpose = input.delegatedFrom?.purposeLaunch;
+      if (remotePurpose !== undefined) {
+        if (
+          input.linkOrigin === undefined ||
+          remotePurpose.environmentId !== input.delegatedFrom?.environmentId ||
+          remotePurpose.threadId !== input.delegatedFrom.threadId
+        ) {
+          return yield* mapError(
+            input,
+            "dispatch-message",
+          )(
+            new ExecutionPurposeAdmission.PurposeAdmissionError({
+              reason: "remote_launch_mismatch",
+            }),
+          );
+        }
+        purposeSource = {
+          version: 1,
+          scope: remotePurpose.purpose.scope,
+          provenance: {
+            type: "remote_launch",
+            environmentId: remotePurpose.environmentId,
+            threadId: remotePurpose.threadId,
+            runId: remotePurpose.runId,
+            launchId: remotePurpose.launchId,
+          },
+        };
+      } else if (
+        input.purposeIntent?.intent.type === "inherit" &&
+        input.purposeParentRun !== undefined
+      ) {
+        const source = input.purposeParentRun;
+        const parent = yield* threads
+          .getThreadRecords(source.threadId, ["runs"])
+          .pipe(Effect.mapError(mapError(input, "dispatch-message")));
+        const run = parent.runs.find((candidate) => candidate.id === source.runId);
+        if (run === undefined) {
+          return yield* mapError(
+            input,
+            "dispatch-message",
+          )(
+            new ExecutionPurposeAdmission.PurposeAdmissionError({
+              reason: "inherit_source_missing",
+            }),
+          );
+        }
+        purposeSource = {
+          version: 1,
+          scope: executionPurposeOf(run).scope,
+          provenance: {
+            type: "parent_run",
+            threadId: source.threadId,
+            runId: source.runId,
+          },
+        };
+      }
+
+      if (input.purposeIntent?.intent.type === "inherit" && purposeSource === undefined) {
+        return yield* mapError(
+          input,
+          "dispatch-message",
+        )(
+          new ExecutionPurposeAdmission.PurposeAdmissionError({ reason: "inherit_source_missing" }),
+        );
+      }
       const launchReceipt = yield* readReceipt(input, input.commandId);
       yield* threads.assertProviderInstanceEnabled({
         projectId: input.projectId,
@@ -1147,6 +1280,8 @@ const make = Effect.gen(function* () {
           const dispatched = yield* threads
             .dispatch({
               type: "message.dispatch",
+              ...(input.purposeIntent === undefined ? {} : { purposeIntent: input.purposeIntent }),
+              ...(purposeSource === undefined ? {} : { purposeSource }),
               commandId: messageCommandId,
               threadId,
               messageId,

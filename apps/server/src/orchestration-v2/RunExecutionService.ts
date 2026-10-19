@@ -1,3 +1,4 @@
+import { executionPurposeOf } from "@t3tools/contracts";
 import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
 import { bareNoticeMessage } from "@t3tools/provider-core/server/bareLaunch";
 import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
@@ -1859,6 +1860,7 @@ export const layer: Layer.Layer<
                 text: entry.text,
               }));
         const turnInput = {
+          purpose: executionPurposeOf(input.run),
           appThread: input.appThread,
           threadId: input.run.threadId,
           runId: input.run.id,

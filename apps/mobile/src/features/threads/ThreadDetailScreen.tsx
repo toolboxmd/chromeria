@@ -8,6 +8,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult, Atom } from "effect/reactivity";
 import * as Dialog from "../../components/ui/Dialog";
+import { ThreadExecutionPurposeControl } from "./ThreadExecutionPurposeControl";
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
 import { createThreadVisitTracker } from "@t3tools/client-runtime/state/thread-visits";
@@ -1571,6 +1572,16 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
                     </View>
                   ) : (
                     <>
+                      {!props.draftMode &&
+                      props.serverConfig?.environment.capabilities.executionPurposeVersions?.includes(
+                        1,
+                      ) === true ? (
+                        <ThreadExecutionPurposeControl
+                          thread={props.selectedThread}
+                          threadRef={props.selectedThreadDetailRef}
+                          disabled={!props.canOperateThread}
+                        />
+                      ) : null}
                       <ThreadComposer
                         isDraft={Boolean(props.draftMode)}
                         canOperateThread={props.canOperateThread}

@@ -274,25 +274,35 @@ describe("V2 environment commands", () => {
         ["steer", "start_immediately"],
         ["restart", "start_immediately"],
       ] as const) {
-        yield* startThreadTurn({
-          commandId: CommandId.make(`command-${mode}`),
-          threadId: v2ThreadId,
-          message: {
-            messageId: MessageId.make(`message-${mode}`),
-            role: "user",
-            text: mode,
-            attachments: [],
-          },
-          runtimeMode: "full-access",
-          interactionMode: "default",
-          dispatchMode: mode,
-        }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+        for (const creationSource of ["web", "mobile"] as const) {
+          const purposeIntent =
+            mode === "steer" || mode === "restart"
+              ? ({ version: 1, intent: { type: "target" } } as const)
+              : ({ version: 1, intent: { type: "selection", expectedRevision: 7 } } as const);
+          yield* startThreadTurn({
+            commandId: CommandId.make(`command-${creationSource}-${mode}`),
+            creationSource,
+            purposeIntent,
+            threadId: v2ThreadId,
+            message: {
+              messageId: MessageId.make(`message-${mode}`),
+              role: "user",
+              text: mode,
+              attachments: [],
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            dispatchMode: mode,
+          }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
 
-        expect(commands.at(-1)).toMatchObject({
-          type: "message.dispatch",
-          dispatchMode: { type: expectedType },
-          ...(mode === "queue" ? {} : { deliveryIntent: mode }),
-        });
+          expect(commands.at(-1)).toMatchObject({
+            type: "message.dispatch",
+            creationSource,
+            purposeIntent,
+            dispatchMode: { type: expectedType },
+            ...(mode === "queue" ? {} : { deliveryIntent: mode }),
+          });
+        }
       }
       expect(projectionRequests).toEqual([]);
     }).pipe(Effect.provide(layerTestCrypto)),

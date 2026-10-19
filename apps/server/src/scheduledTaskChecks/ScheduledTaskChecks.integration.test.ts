@@ -341,6 +341,7 @@ it.effect(
         const input = {
           id: ScheduledTaskId.make("scheduled-task:bare-grant"),
           title: "Bare grant",
+          purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
           prompt: "Read the named file",
           enabled: false,
           projectId,
@@ -1002,6 +1003,7 @@ it.effect(
         yield* writeCheckState(null, checkState(id));
         const service = yield* ScheduledTaskService.ScheduledTaskService;
         const input = {
+          purposeIntent: { version: 1, intent: { type: "unscoped" } } as const,
           id,
           title: "Checked work",
           prompt: "Do the scheduled work",
@@ -1623,6 +1625,7 @@ it.effect(
             service.upsert,
           )({
             title: "Nightly backup",
+            purposeIntent: { version: 1, intent: { type: "unscoped" } },
             prompt: "Nightly backup",
             enabled: false,
             projectId,
@@ -1689,6 +1692,7 @@ it.effect(
             service.upsert,
           )({
             title: "Nightly work",
+            purposeIntent: { version: 1, intent: { type: "unscoped" } },
             prompt,
             enabled: false,
             projectId,

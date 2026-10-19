@@ -374,6 +374,7 @@ it.effect.each(
             )
           : null;
       const { task } = yield* tasks.upsert({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         id: ScheduledTaskId.make("scheduled-task:attribution"),
         title: "Daily audit",
         prompt: "Audit performance and crashes.",
@@ -1578,6 +1579,85 @@ it.effect(
   },
 );
 
+it.effect("launch receipt replay refuses inheritance from a different-purpose parent run", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const parents = [];
+    for (const number of [11, 12]) {
+      const parent = yield* launches.launch({
+        ...launchInput({
+          command: `purpose-parent-${number}`,
+          thread: `purpose-parent-${number}`,
+          message: "Parent fixture",
+        }),
+        purposeIntent: {
+          version: 1,
+          intent: {
+            type: "reference",
+            reference: { host: "github.com", repository: "example/repo", kind: "issue", number },
+          },
+        },
+      });
+      parents.push({ threadId: parent.threadId, runId: parent.projection.runs[0]!.id });
+    }
+    const input = {
+      ...launchInput({
+        command: "purpose-child-replay",
+        thread: "purpose-child-replay",
+        message: "Child fixture",
+      }),
+      purposeIntent: { version: 1, intent: { type: "inherit" } } as const,
+      purposeParentRun: parents[0]!,
+    };
+    const first = yield* launches.launch(input);
+    const identity = { ...input, messageId: input.initialMessage!.messageId };
+    const replay = yield* launches.replayOrLaunch(
+      identity,
+      Effect.die("A receipt must bypass new execution"),
+    );
+    assert.deepEqual(replay.projection.runs[0]?.purpose, first.projection.runs[0]?.purpose);
+    const error = yield* launches
+      .replayOrLaunch(
+        { ...identity, purposeParentRun: parents[1]! },
+        Effect.die("A changed source must be rejected before execution"),
+      )
+      .pipe(Effect.flip);
+    assert.equal(error._tag, "ThreadLaunchError");
+    assert.include(String(error.cause), "purpose intent");
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("a launch inheriting a deliberately unscoped parent run keeps that exact scope", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const parent = yield* launches.launch({
+      ...launchInput({
+        command: "purpose-unscoped-parent",
+        thread: "purpose-unscoped-parent",
+        message: "Parent fixture",
+      }),
+      purposeIntent: { version: 1, intent: { type: "unscoped" } },
+    });
+    const parentRun = { threadId: parent.threadId, runId: parent.projection.runs[0]!.id };
+    const child = yield* launches.launch({
+      ...launchInput({
+        command: "purpose-unscoped-child",
+        thread: "purpose-unscoped-child",
+        message: "Child fixture",
+      }),
+      purposeIntent: { version: 1, intent: { type: "inherit" } },
+      purposeParentRun: parentRun,
+    });
+    assert.deepEqual(child.projection.runs[0]?.purpose, {
+      version: 1,
+      scope: { type: "unscoped", reason: "deliberate" },
+      provenance: { type: "parent_run", ...parentRun },
+    });
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it.effect("an agent's launch never starts work above the modes it asks for", () => {
   const harness = makeHarness();
   return Effect.gen(function* () {
@@ -2779,6 +2859,7 @@ it.effect(
       };
       const tools = yield* OrchestratorMcp.OrchestratorMcpService;
       const created = yield* tools.scheduleTask(scope, {
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         projectId,
         prompt: "Do linked work",
         enabled: false,
@@ -2793,6 +2874,7 @@ it.effect(
       assert.deepStrictEqual(stored.linkOrigin, origin);
       const { linkOrigin: _origin, ...form } = stored;
       const edited = yield* tasks.upsert({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         ...form,
         requireExisting: true,
         title: "UI edit without ownership fields",

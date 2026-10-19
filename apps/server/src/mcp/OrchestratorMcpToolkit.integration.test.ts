@@ -1260,15 +1260,21 @@ describe("orchestrator MCP toolkit", () => {
           )!;
           const {
             completionDelivery: _firstDelivery,
+            completionSource: _firstCompletionSource,
             updatedAt: _firstUpdatedAt,
             ...firstResult
           } = originalTask;
           const {
             completionDelivery: _delivery,
+            completionSource: _completionSource,
             updatedAt: _updatedAt,
             ...stableResult
           } = finishedTask;
           expect(stableResult).toEqual(firstResult);
+          expect(finishedTask.completionSource).toEqual({
+            runId: queuedFollowup.runId,
+            purpose: finalProjection.runs.find((run) => run.id === queuedFollowup.runId)?.purpose,
+          });
           expect(
             finishedParent.subagents.filter(
               (task) => task.childThreadId === delegated.childThreadId,

@@ -266,11 +266,38 @@ describe("pull request toolkit handlers", () => {
     }),
   );
 
+  it.effect("an already linked PR can declare a purpose without using the thread selection", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ thread: makeThread([makeLink(123)]) });
+      const purpose = {
+        host: "GitHub.com",
+        repository: "Other/Outcome",
+        kind: "issue" as const,
+        number: 11,
+      };
+      const result = yield* harness.call("link_pull_request", {
+        url: "https://github.com/t3tools/t3code/pull/123",
+        purposeDelivery: { version: 1, purpose },
+      });
+      expect(result).toMatchObject({
+        alreadyLinked: true,
+        purposeDelivery: {
+          version: 1,
+          purpose: { ...purpose, host: "github.com", repository: "other/outcome" },
+        },
+      });
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        { type: "thread.pull-request.link", purposeDelivery: { version: 1, purpose } },
+      ]);
+    }),
+  );
+
   it.effect("watching an unlinked pull request links it first", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
       const result = yield* harness.call("watch_pull_request", {
         url: "https://github.com/t3tools/t3code/pull/9",
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
       });
       expect(result).toMatchObject({ number: 9, watching: false, wasWatching: false });
       expect(yield* Ref.get(harness.commands)).toMatchObject([
@@ -278,6 +305,7 @@ describe("pull request toolkit handlers", () => {
           type: "thread.pull-request.watch",
           number: 9,
           watching: true,
+          purposeIntent: { version: 1, intent: { type: "unscoped" } } as const,
           link: { url: "https://github.com/t3tools/t3code/pull/9", source: "agent" },
         },
       ]);
@@ -326,9 +354,18 @@ describe("pull request toolkit handlers", () => {
           { ...closed, snapshot: closed.snapshot && { ...closed.snapshot, state: "closed" } },
         ]),
       });
-      yield* harness.call("watch_pull_request", { repository: "t3tools/t3code", number: 1 });
+      yield* harness.call("watch_pull_request", {
+        repository: "t3tools/t3code",
+        number: 1,
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
+      });
       expect(yield* Ref.get(harness.commands)).toMatchObject([
-        { type: "thread.pull-request.watch", number: 1, watching: true },
+        {
+          type: "thread.pull-request.watch",
+          number: 1,
+          watching: true,
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
+        },
       ]);
     }),
   );

@@ -1,4 +1,5 @@
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
+import { executionPurposeOf, executionPurposeWarnings } from "@t3tools/contracts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as Prism from "../../../prism/PrismService.ts";
 import { ProviderAdapterRegistryV2 } from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -144,6 +145,11 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
               runtimeMode,
               interactionMode,
               createdBy: "agent",
+              purposeIntent: input.purposeIntent,
+              ...(caller?.activeRunId == null
+                ? {}
+                : { purposeParentRun: { threadId: caller.id, runId: caller.activeRunId } }),
+              ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),
               ...(input.bare === undefined ? {} : { bare: input.bare }),
               ...(linkOrigin === undefined ? {} : { linkOrigin }),
               ...(input.message === undefined && attachments.length === 0 ? {} : { messageId }),
@@ -272,6 +278,10 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 }
               }
               return yield* ThreadMessageIntake.launchThread({
+                purposeIntent: input.purposeIntent,
+                ...(caller?.activeRunId == null
+                  ? {}
+                  : { purposeParentRun: { threadId: caller.id, runId: caller.activeRunId } }),
                 commandId,
                 threadId,
                 ...(input.bare === undefined
@@ -337,6 +347,12 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           projectId: thread.projectId,
           modelSelection: run?.modelSelection ?? thread.modelSelection,
           runId: run?.id ?? null,
+          ...(run === undefined
+            ? {}
+            : {
+                purpose: executionPurposeOf(run),
+                warnings: executionPurposeWarnings(executionPurposeOf(run)),
+              }),
           status: run?.status ?? null,
         };
       }).pipe(Effect.provide(Prism.layer)),

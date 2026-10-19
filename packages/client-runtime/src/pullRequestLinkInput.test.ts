@@ -296,6 +296,60 @@ describe("createThreadPullRequestWatchAction", () => {
   });
 
   it.each([
+    {
+      selection: {
+        revision: 3,
+        scope: {
+          type: "single",
+          reference: { host: "github.com", repository: "acme/web", kind: "issue", number: 7 },
+        },
+      },
+      purposeIntent: {
+        version: 1,
+        intent: {
+          type: "reference",
+          reference: { host: "github.com", repository: "acme/web", kind: "issue", number: 7 },
+        },
+      },
+    },
+    { selection: undefined, purposeIntent: { version: 1, intent: { type: "unscoped" } } },
+  ] as const)(
+    "saves the thread's purpose choice on a new watch: $purposeIntent.intent.type",
+    async ({ selection, purposeIntent }) => {
+      const watch = vi.fn(() => Promise.resolve());
+      const onSetWatching = createThreadPullRequestWatchAction({
+        threadRef,
+        ownLinks: [reference],
+        purpose: { selection },
+        watch,
+      });
+      await onSetWatching(reference, true);
+      await onSetWatching(reference, false);
+      expect(watch).toHaveBeenNthCalledWith(1, {
+        environmentId: "parent-environment",
+        input: {
+          threadId: "parent",
+          host: "github.com",
+          repository: "acme/web",
+          number: 42,
+          watching: true,
+          purposeIntent,
+        },
+      });
+      expect(watch).toHaveBeenNthCalledWith(2, {
+        environmentId: "parent-environment",
+        input: {
+          threadId: "parent",
+          host: "github.com",
+          repository: "acme/web",
+          number: 42,
+          watching: false,
+        },
+      });
+    },
+  );
+
+  it.each([
     { watching: true, ownLinks: [reference] },
     { watching: false, ownLinks: [] },
   ])(

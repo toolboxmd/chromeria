@@ -1,3 +1,4 @@
+import { executionPurposeOf } from "@t3tools/contracts";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   MessageId,
@@ -401,6 +402,7 @@ export const layer: Layer.Layer<
           }
           yield* loaded.session.value
             .steerTurn({
+              purpose: executionPurposeOf(run),
               threadId: input.threadId,
               runId: run.id,
               providerThread: loaded.providerThread,

@@ -1,3 +1,4 @@
+import { LEGACY_EXECUTION_PURPOSE, purposeScopeOfSavedIntent } from "@t3tools/contracts";
 import { readScheduledBare } from "../scheduledTasks/bareState.ts";
 import {
   CommandId,
@@ -310,6 +311,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
         kind,
         createdAt: iso(now),
         payload: {
+          purposeSource: run.purpose ?? LEGACY_EXECUTION_PURPOSE,
           ...(bareAuthority === undefined ? {} : { bareReadGrant: bareAuthority.readGrant }),
           ...(task.bare === undefined ? {} : { bare: task.bare }),
           ...(task.linkOrigin === undefined ? {} : { linkOrigin: task.linkOrigin }),
@@ -492,6 +494,14 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
     );
 
   const newRun = (state: CheckState, task: ScheduledTask, slot: string): CheckedRun => ({
+    purpose:
+      task.purposeIntent === undefined
+        ? LEGACY_EXECUTION_PURPOSE
+        : {
+            version: 1,
+            scope: purposeScopeOfSavedIntent(task.purposeIntent),
+            provenance: { type: "schedule", scheduledTaskId: task.id },
+          },
     id: `${task.id}:${slot}`,
     slot,
     checkVersion: state.kind === "agent" ? activeCheck(state).version : null,

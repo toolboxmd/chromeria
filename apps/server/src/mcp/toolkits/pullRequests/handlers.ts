@@ -1,5 +1,6 @@
 import {
   CommandId,
+  normalizeTrackingReference,
   type OrchestrationProjectShell,
   type OrchestrationV2ThreadShell,
   type SourceControlProviderKind,
@@ -147,10 +148,13 @@ function entryOf(
 }
 
 export function listThreadPullRequests(
-  thread: Pick<OrchestrationV2ThreadShell, "pullRequests">,
+  thread: Pick<OrchestrationV2ThreadShell, "pullRequests" | "purposeDeliveries">,
 ): ListThreadPullRequestsResult {
   const chains = resolveThreadPullRequestChains(thread.pullRequests ?? []);
   return {
+    ...(thread.purposeDeliveries === undefined
+      ? {}
+      : { purposeDeliveries: thread.purposeDeliveries }),
     pullRequests: visibleThreadPullRequests(thread.pullRequests ?? []).map((link) =>
       entryOf(link, chains),
     ),
@@ -261,7 +265,9 @@ const make = Effect.gen(function* () {
         : Effect.fail(new Failure({ cause }));
 
   const setWatching = Effect.fn("PullRequestsToolkit.setWatching")(function* (
-    input: PullRequestTargetInput,
+    input: PullRequestTargetInput & {
+      readonly purposeIntent?: import("@t3tools/contracts").SavedPurposeIntent | undefined;
+    },
     watching: boolean,
   ) {
     const thread = yield* requireThread(PullRequestWatchFailedError, input.threadId);
@@ -281,6 +287,7 @@ const make = Effect.gen(function* () {
     yield* engine
       .dispatch({
         type: "thread.pull-request.watch",
+        ...(input.purposeIntent === undefined ? {} : { purposeIntent: input.purposeIntent }),
         commandId: yield* commandId("mcp-pr-watch", thread.id),
         threadId: thread.id,
         host: target.host,
@@ -371,7 +378,8 @@ const make = Effect.gen(function* () {
         const existing = threadPullRequestsOf(thread).find((link) =>
           threadPullRequestKeysEqual(link, target),
         );
-        if (existing && existing.source !== "stack-dismissed")
+        const wasLinked = existing !== undefined && existing.source !== "stack-dismissed";
+        if (wasLinked && input.purposeDelivery === undefined)
           return { ...target, alreadyLinked: true, ...next };
         const alreadyLinked = yield* engine
           .dispatch({
@@ -383,13 +391,27 @@ const make = Effect.gen(function* () {
             number: target.number,
             url: target.url,
             source: "agent",
+            ...(input.purposeDelivery === undefined
+              ? {}
+              : { purposeDelivery: input.purposeDelivery }),
           })
           .pipe(
-            Effect.as(false),
-
+            Effect.as(wasLinked),
             Effect.catchCause(dispatchFailure(PullRequestLinkFailedError)),
           );
-        return { ...target, alreadyLinked, ...next };
+        return {
+          ...target,
+          ...next,
+          alreadyLinked,
+          ...(input.purposeDelivery === undefined
+            ? {}
+            : {
+                purposeDelivery: {
+                  version: 1 as const,
+                  purpose: normalizeTrackingReference(input.purposeDelivery.purpose),
+                },
+              }),
+        };
       }),
     ),
     unlink_pull_request: writesThread((input) =>

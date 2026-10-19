@@ -121,6 +121,7 @@ type LaunchInput = ThreadLaunchService.ThreadLaunchInput;
 
 const webhookTaskInput = (overrides: Record<string, unknown> = {}) =>
   decodeUpsertInput({
+    purposeIntent: { version: 1, intent: { type: "unscoped" } },
     id: "scheduled-task:hook",
     title: "Review PRs",
     prompt: "Review this PR: {{body.pull_request.url}}",

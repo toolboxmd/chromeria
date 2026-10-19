@@ -679,6 +679,241 @@ describe("Run groups", () => {
     ),
   );
 
+  it.live("a member that refuses the group cancel keeps its result's wake", () =>
+    Effect.gen(function* () {
+      const refusedDone = yield* Deferred.make<void>();
+      yield* withParent(
+        roastRun([codexColor, claudeColor], 2),
+        (_turn, instanceId) =>
+          instanceId === claude
+            ? Deferred.await(refusedDone).pipe(Effect.as<TurnOutcome>("complete"))
+            : Effect.succeed<TurnOutcome>("hang"),
+        ({ orchestrator, invoke, offers, drain }) =>
+          Effect.gen(function* () {
+            const started = yield* group(
+              yield* invoke("delegate_task", { task: "Attack this plan.", prismRole: "roast" }),
+            );
+            const [stoppable, refusing] = started.tasks;
+            // The parent drops below full access; only the stoppable member follows it,
+            // so cancelling the refusing member would raise the parent's modes.
+            for (const [threadId, index] of [
+              [parentThreadId, 0],
+              [stoppable!.childThreadId!, 1],
+            ] as const) {
+              yield* orchestrator.dispatch({
+                type: "thread.runtime-mode.set",
+                commandId: CommandId.make(`command:run-group:lower-mode:${index}`),
+                threadId,
+                runtimeMode: "approval-required",
+              });
+            }
+            const cancelled = yield* invoke("task_cancel", { taskId: started.groupId });
+            expect(cancelled.isError).toBe(true);
+            yield* waitForProjection(
+              orchestrator,
+              parentThreadId,
+              (projection) =>
+                subagent(projection, stoppable!.taskId)?.completionDelivery?.state === "disposed",
+            );
+            yield* Deferred.succeed(refusedDone, undefined);
+            const woken = yield* waitForProjection(
+              orchestrator,
+              parentThreadId,
+              (projection) => subagent(projection, refusing!.taskId)?.status === "completed",
+            );
+            yield* drain;
+            expect(subagent(woken, refusing!.taskId)?.completionDelivery?.state).not.toBe(
+              "disposed",
+            );
+            expect(yield* Ref.get(offers)).toHaveLength(1);
+          }),
+      );
+    }),
+  );
+
+  it.live("a refused member that the user later stops still wakes the parent", () =>
+    withParent(
+      roastRun([codexColor, claudeColor], 2),
+      () => Effect.succeed<TurnOutcome>("hang"),
+      ({ orchestrator, invoke, offers, drain }) =>
+        Effect.gen(function* () {
+          const started = yield* group(
+            yield* invoke("delegate_task", { task: "Attack this plan.", prismRole: "roast" }),
+          );
+          const [stoppable, refusing] = started.tasks;
+          for (const [threadId, index] of [
+            [parentThreadId, 0],
+            [stoppable!.childThreadId!, 1],
+          ] as const) {
+            yield* orchestrator.dispatch({
+              type: "thread.runtime-mode.set",
+              commandId: CommandId.make(`command:run-group:stop-later-mode:${index}`),
+              threadId,
+              runtimeMode: "approval-required",
+            });
+          }
+          expect((yield* invoke("task_cancel", { taskId: started.groupId })).isError).toBe(true);
+          yield* waitForProjection(
+            orchestrator,
+            parentThreadId,
+            (projection) =>
+              subagent(projection, stoppable!.taskId)?.completionDelivery?.state === "disposed",
+          );
+          // The user presses Stop on the refused member's own thread.
+          yield* orchestrator.dispatch({
+            type: "thread.stop",
+            commandId: CommandId.make("command:run-group:user-stop"),
+            threadId: refusing!.childThreadId!,
+          });
+          yield* waitForProjection(orchestrator, parentThreadId, (projection) =>
+            ["cancelled", "interrupted"].includes(
+              subagent(projection, refusing!.taskId)?.status ?? "",
+            ),
+          );
+          yield* drain;
+          expect(yield* Ref.get(offers)).toHaveLength(1);
+        }),
+    ),
+  );
+
+  it.live("a member already finished when the group is cancelled stays quiet", () =>
+    withParent(
+      roastRun([codexColor, claudeColor], 2),
+      (_turn, instanceId) =>
+        Effect.succeed<TurnOutcome>(instanceId === claude ? "complete" : "hang"),
+      ({ orchestrator, invoke, offers, drain }) =>
+        Effect.gen(function* () {
+          const started = yield* group(
+            yield* invoke("delegate_task", { task: "Attack this plan.", prismRole: "roast" }),
+          );
+          const [running, finished] = started.tasks;
+          // The finished member is held for the group; the running one comes first in the loop.
+          yield* waitForProjection(
+            orchestrator,
+            parentThreadId,
+            (projection) => subagent(projection, finished!.taskId)?.status === "completed",
+          );
+          expect((yield* invoke("task_cancel", { taskId: started.groupId })).isError).toBe(false);
+          const stopped = yield* waitForProjection(orchestrator, parentThreadId, (projection) =>
+            ["cancelled", "interrupted"].includes(
+              subagent(projection, running!.taskId)?.status ?? "",
+            ),
+          );
+          yield* drain;
+          expect(subagent(stopped, finished!.taskId)?.completionDelivery?.state).toBe("disposed");
+          expect(yield* Ref.get(offers)).toHaveLength(0);
+        }),
+    ),
+  );
+
+  it.live("members ending after the group cancel is recorded never wake the parent", () =>
+    Effect.gen(function* () {
+      const membersDone = yield* Deferred.make<void>();
+      yield* withParent(
+        roastRun([codexColor, claudeColor], 2),
+        () => Deferred.await(membersDone).pipe(Effect.as<TurnOutcome>("complete")),
+        ({ orchestrator, invoke, offers, drain }) =>
+          Effect.gen(function* () {
+            const started = yield* group(
+              yield* invoke("delegate_task", { task: "Attack this plan.", prismRole: "roast" }),
+            );
+            // Recorded before any member is stopped or disposed, as task_cancel does.
+            yield* orchestrator.dispatch({
+              type: "delegated_task.group-cancel",
+              commandId: CommandId.make("command:run-group:cancel-recorded"),
+              parentThreadId,
+              groupId: started.groupId,
+            });
+            yield* Deferred.succeed(membersDone, undefined);
+            const ended = yield* waitForProjection(orchestrator, parentThreadId, (projection) =>
+              started.tasks.every(
+                (task) => subagent(projection, task.taskId)?.status === "completed",
+              ),
+            );
+            yield* drain;
+            for (const task of started.tasks)
+              expect(subagent(ended, task.taskId)?.completionDelivery?.state).toBe("disposed");
+            expect(yield* Ref.get(offers)).toHaveLength(0);
+          }),
+      );
+    }),
+  );
+
+  it.live("a refused member that already ended wakes the parent once the last member stops", () =>
+    withParent(
+      roastRun([codexColor, claudeColor], 2),
+      (_turn, instanceId) =>
+        Effect.succeed<TurnOutcome>(instanceId === claude ? "complete" : "hang"),
+      ({ orchestrator, invoke, offers, drain }) =>
+        Effect.gen(function* () {
+          const started = yield* group(
+            yield* invoke("delegate_task", { task: "Attack this plan.", prismRole: "roast" }),
+          );
+          const [running, refused] = started.tasks;
+          yield* waitForProjection(
+            orchestrator,
+            parentThreadId,
+            (projection) => subagent(projection, refused!.taskId)?.status === "completed",
+          );
+          // task_cancel's steps in this order: the mark, the refused member's
+          // release while its sibling still runs, then the sibling's stop.
+          const groupCancelId = CommandId.make("command:run-group:refused-ended");
+          yield* orchestrator.dispatch({
+            type: "delegated_task.group-cancel",
+            commandId: groupCancelId,
+            parentThreadId,
+            groupId: started.groupId,
+          });
+          yield* orchestrator.dispatch({
+            type: "delegated_task.group-cancel.release",
+            commandId: CommandId.make("command:run-group:refused-ended-release"),
+            parentThreadId,
+            taskId: refused!.taskId,
+            groupCancelId,
+          });
+          yield* drain;
+          expect(yield* Ref.get(offers)).toHaveLength(0);
+          yield* orchestrator.dispatch({
+            type: "thread.stop",
+            commandId: CommandId.make("command:run-group:refused-ended-stop"),
+            threadId: running!.childThreadId!,
+          });
+          const woken = yield* waitForProjection(orchestrator, parentThreadId, (projection) =>
+            ["cancelled", "interrupted"].includes(
+              subagent(projection, running!.taskId)?.status ?? "",
+            ),
+          );
+          yield* drain;
+          expect(subagent(woken, refused!.taskId)?.completionDelivery?.state).not.toBe("disposed");
+          expect(yield* Ref.get(offers)).toHaveLength(1);
+        }),
+    ),
+  );
+
+  it.live("a single task stopped by the user still wakes the parent", () =>
+    withParent(
+      roastRun([codexColor, claudeColor], 2),
+      () => Effect.succeed<TurnOutcome>("hang"),
+      ({ orchestrator, invoke, offers, drain }) =>
+        Effect.gen(function* () {
+          const task = yield* decodeTask(
+            (yield* invoke("delegate_task", { task: "Review it.", role: "review" }))
+              .structuredContent,
+          ).pipe(Effect.orDie);
+          yield* orchestrator.dispatch({
+            type: "thread.stop",
+            commandId: CommandId.make("command:run-group:single-user-stop"),
+            threadId: task.childThreadId!,
+          });
+          yield* waitForProjection(orchestrator, parentThreadId, (projection) =>
+            ["cancelled", "interrupted"].includes(subagent(projection, task.taskId)?.status ?? ""),
+          );
+          yield* drain;
+          expect(yield* Ref.get(offers)).toHaveLength(1);
+        }),
+    ),
+  );
+
   it.live("a member's nested work keeps the group open until it is terminal", () =>
     Effect.gen(function* () {
       const codexTurnDone = yield* Deferred.make<void>();
@@ -819,10 +1054,11 @@ describe("Run groups", () => {
           ).toBe(claude);
           // Reviewer keeps Run 1: the result is exactly today's single-task shape.
           const single = yield* invoke("delegate_task", { task: "Review it.", role: "review" });
-          // `remoteChild` is present only for a task in a linked environment.
+          // `remoteChild` is present only for a task in a linked environment, and
+          // `latestTerminalPurpose` only once a later run has ended.
           expect(Object.keys(single.structuredContent ?? {}).toSorted()).toEqual(
             Object.keys(OrchestratorMcpDelegateTaskResult.fields)
-              .filter((key) => key !== "remoteChild")
+              .filter((key) => key !== "remoteChild" && key !== "latestTerminalPurpose")
               .toSorted(),
           );
         }),

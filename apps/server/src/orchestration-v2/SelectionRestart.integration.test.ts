@@ -490,10 +490,14 @@ it.live("retries a failed selection restart session open before completing", () 
                         ? { mode: "auto" as const }
                         : {}),
                   });
-                  assert.deepEqual(replay.dispatch, {
-                    sequence: accepted.dispatch.sequence,
-                    storedEvents: originalEvents,
-                  });
+                  // The replay records nothing new and reports the first dispatch's sequence and events.
+                  assert.equal(replay.dispatch.sequence, accepted.dispatch.sequence);
+                  assert.deepEqual(replay.dispatch.storedEvents, originalEvents);
+                  // A changed message id names no stored message, so it admits no run.
+                  assert.deepEqual(
+                    replay.dispatch.admittedRun,
+                    changedField === "messageId" ? undefined : accepted.dispatch.admittedRun,
+                  );
                   assert.deepEqual(replay.message, accepted.message);
                   assert.equal(replay.delivery, accepted.delivery);
                   assert.equal(replay.run.id, accepted.run.id);

@@ -49,6 +49,25 @@ in a new thread's model picker to add or remove them. A regular click returns to
 single model. Choose a base branch and send. Each selection starts a separate thread
 and worktree while you stay in the new thread composer. This requires a Git project.
 
+## Track an Issue or PR outcome
+
+Choose **Purpose** above the composer on web, desktop or mobile and paste a
+GitHub Issue or PR URL. The same reference can track work across several
+threads. **Clear purpose** chooses unscoped work. Expand Purpose to see the
+purpose recorded for each run.
+
+Changing the selection affects subsequent ordinary messages. If A is running
+and you select B, **Send** queues a separate B run. **Steer** and **Restart**
+continue the running purpose and leave the selection unchanged. A message
+already queued keeps the purpose admitted when it was sent.
+
+A parent's continuation of its original delegated work keeps that launch's
+purpose. Your own follow-up in the child follows its visible selection while
+the original parent still receives the result. When linking a PR, an agent can
+declare the outcome it delivers. Linking or unlinking a PR never reassigns
+runs. Legacy callers and saved schedules without a purpose
+remain visibly unscoped; choose a purpose before editing a legacy schedule.
+
 ## Keep a thread working with Wight mode
 
 On web or desktop, open Wight mode in a thread's chat header and turn it on.
@@ -273,9 +292,9 @@ layouts with an inspector, its thread opens beside the parent. Maximize it to
 fill the screen; close the full-screen view to return to the parent and inspector.
 Stop on a thread also stops the subagents it delegated to.
 
-Subagent threads started by the agent can't take messages; message the parent
-thread instead. When such a subagent needs an approval or an answer, the parent
-thread asks for it.
+Threads belonging to a harness's native subagents can't take direct messages;
+message their parent instead. App-owned delegated child threads accept
+follow-ups. When a child needs an approval or an answer, its parent asks for it.
 
 Expand a tool call in the conversation to see its full command and output.
 Summaries shorten shell wrappers and can still describe the latest call after it

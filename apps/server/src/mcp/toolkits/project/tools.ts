@@ -1,4 +1,4 @@
-import { BareLaunchRequest } from "@t3tools/contracts";
+import { BareLaunchRequest, PurposeIntent, ExecutionPurpose } from "@t3tools/contracts";
 import * as McpRouting from "../../McpRouting.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import { ProviderAdapterRegistryV2 } from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -161,6 +161,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
     /** Set by a linked environment launching its agent's delegated task here; ignored otherwise. */
     delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+    purposeIntent: Schema.optional(PurposeIntent),
   }),
   success: Schema.Struct({
     threadId: ThreadId,
@@ -168,6 +169,8 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     projectId: ProjectId,
     modelSelection: ModelSelection,
     runId: Schema.NullOr(RunId),
+    purpose: Schema.optional(ExecutionPurpose),
+    warnings: Schema.optional(Schema.Array(Schema.String)),
     status: Schema.NullOr(OrchestrationV2RunStatus),
   }),
   dependencies: [

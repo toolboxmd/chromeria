@@ -390,6 +390,7 @@ const watch = (threadId: ThreadId, number: number) =>
       threadId,
       ...pullRequest(number),
       watching: true,
+      purposeIntent: { version: 1, intent: { type: "unscoped" } } as const,
       link: { url: `https://github.com/pingdotgg/t3code/pull/${number}`, source: "agent" },
     });
   });
@@ -1858,6 +1859,7 @@ it.effect("a run Stop reached cannot delegate or start a watch, even after it en
       yield* orchestrator.dispatch({
         type: "thread.pull-request.watch",
         commandId: CommandId.make(`manual-watch:${watching}`),
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         threadId,
         ...pullRequest(4),
         watching,

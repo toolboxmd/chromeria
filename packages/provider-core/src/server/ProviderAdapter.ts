@@ -1,3 +1,4 @@
+import type { ExecutionPurpose } from "@t3tools/contracts";
 import { ThreadBare, type BareSupport } from "@t3tools/contracts";
 import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
@@ -421,6 +422,7 @@ export interface ProviderAdapterV2EnsureThreadInput {
 }
 
 export interface ProviderAdapterV2TurnInput {
+  readonly purpose?: ExecutionPurpose;
   readonly appThread: OrchestrationV2AppThread;
   readonly threadId: ThreadId;
   readonly runId: RunId;
@@ -438,6 +440,7 @@ export interface ProviderAdapterV2TurnInput {
 }
 
 export interface ProviderAdapterV2SteerInput {
+  readonly purpose?: ExecutionPurpose;
   readonly threadId: ThreadId;
   readonly runId: RunId;
   readonly providerThread: OrchestrationV2ProviderThread;

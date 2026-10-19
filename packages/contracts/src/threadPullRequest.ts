@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { SavedPurposeIntent } from "./executionPurpose.ts";
 
 import {
   IsoDateTime,
@@ -80,6 +81,7 @@ export const ThreadPullRequestKey = Schema.Struct({
 export type ThreadPullRequestKey = typeof ThreadPullRequestKey.Type;
 
 export const ThreadPullRequestWatch = Schema.Struct({
+  purposeIntent: Schema.optional(SavedPurposeIntent),
   startedAt: IsoDateTime,
   headSha: Schema.NullOr(TrimmedNonEmptyString),
   failedChecks: Schema.Array(TrimmedNonEmptyString),

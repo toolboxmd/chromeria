@@ -9,6 +9,7 @@ import {
   ProviderInstanceId,
   ProviderThreadId,
   ProviderTurnId,
+  RunId,
   RunAttemptId,
   ThreadId,
   TurnItemId,
@@ -17,6 +18,7 @@ import {
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
   type OrchestrationV2DomainEvent,
+  executionPurposeOf,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -217,6 +219,10 @@ it.effect.each(
           const sink = yield* EventSink.EventSinkV2;
           const current = yield* orchestrator.getThreadProjection(threadId);
           const parentRun = current.runs.find((run) => run.id === first.runId)!;
+          const completionSource = {
+            runId: RunId.make("run:mailbox-child"),
+            purpose: executionPurposeOf(parentRun),
+          };
           const now = yield* DateTime.now;
           yield* sink.write({
             events: [
@@ -231,7 +237,12 @@ it.effect.each(
                   delegatedCompletion: {
                     disposition: "open",
                     nextGeneration: 2,
-                    delivery: { generation: 1, messageId, taskIds: [taskId] },
+                    delivery: {
+                      generation: 1,
+                      messageId,
+                      taskIds: [taskId],
+                      purposeCauses: [{ taskId, ...completionSource }],
+                    },
                   },
                 },
               },
@@ -259,6 +270,7 @@ it.effect.each(
                   model: null,
                   completionWake: timing === "settled only" ? "settled_only" : "always",
                   completionDelivery: { state: "claimed", observedByRunId: null },
+                  completionSource,
                   status: "completed",
                   result: "done",
                   startedAt: now,

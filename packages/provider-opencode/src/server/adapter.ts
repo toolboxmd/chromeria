@@ -1,3 +1,4 @@
+import { executionPurposeOf, type NativeExecutionSegment } from "@t3tools/contracts";
 import * as Path from "effect/Path";
 import * as FileSystem from "effect/FileSystem";
 import {
@@ -120,6 +121,13 @@ const makeOpenCodeMessageId = Effect.fnUntraced(function* (
 
 // OpenCode has no turn object; correlate by initiating user message and settle on session idle.
 const OpenCodeProviderCapabilitiesV2 = {
+  purposeEvidence: {
+    version: 1,
+    nativeInputs: "admitted_message",
+    childSegments: "initial_input_only",
+    backgroundInventory: "unsupported",
+    nativeUsageFinality: "main_agent_only",
+  },
   sessions: {
     // The directory-bound client/server is not safe for cross-thread pooling.
     supportsMultipleProviderThreadsPerSession: false,
@@ -268,6 +276,7 @@ function accumulateOpenCodeStepUsage(
 }
 
 interface ActiveOpenCodeTurn {
+  readonly nativeExecutionCause: Pick<NativeExecutionSegment, "source" | "purpose">;
   readonly usage: OpenCodeTurnTokenUsageAccumulator;
   readonly isRoot: boolean;
   readonly threadId: ThreadId;
@@ -288,6 +297,7 @@ interface ActiveOpenCodeTurn {
   readonly providerTurn: OrchestrationV2ProviderTurn;
   nextItemOrdinal: number;
   nativeUserMessageId: string | null;
+  readonly observedPromptMessageIds: Set<string>;
   admissionMessageId: string | null;
   interrupted: boolean;
   finalized: boolean;
@@ -363,6 +373,7 @@ export const reconcileOpenCodePromptAdmissionStatus = Effect.fn(
 });
 
 interface OpenCodeSubagentContext {
+  nativeSegments: ReadonlyArray<NativeExecutionSegment>;
   readonly nativeItemId: string;
   readonly nodeId: OrchestrationV2Subagent["id"];
   readonly parentState: OpenCodeThreadState;
@@ -1404,6 +1415,12 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
         ) => {
           const providerTurn: OrchestrationV2ProviderTurn = {
             ...turn.providerTurn,
+            nativeInputs: [...turn.observedPromptMessageIds].map((nativeId) => ({
+              version: 1 as const,
+              kind: "message" as const,
+              nativeId,
+              validation: "opencode_admitted_message" as const,
+            })),
             nativeTurnRef:
               turn.nativeUserMessageId === null
                 ? turn.providerTurn.nativeTurnRef
@@ -1565,6 +1582,18 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           });
         });
 
+        const openCodeNativeCause = (
+          turn: ActiveOpenCodeTurn,
+        ): Pick<NativeExecutionSegment, "source" | "purpose"> => turn.nativeExecutionCause;
+        const unknownOpenCodeCause = (): Pick<NativeExecutionSegment, "source" | "purpose"> => ({
+          source: { type: "unresolved", reason: "opencode_child_resume_boundary_missing" },
+          purpose: {
+            version: 1,
+            scope: { type: "unscoped", reason: "unknown_cause" },
+            provenance: { type: "native_operation", operationIds: [] },
+          },
+        });
+
         const emitSubagentProjection = Effect.fnUntraced(function* (
           context: OpenCodeSubagentContext,
           completedAt: DateTime.Utc | null,
@@ -1578,6 +1607,9 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             nativeItemId: context.nativeItemId,
           });
           const subagent: OrchestrationV2Subagent = {
+            nativeSegments: context.nativeSegments.map((segment) =>
+              completedAt === null ? segment : { ...segment, status: "ended" },
+            ),
             id: nodeId,
             threadId: turn.threadId,
             runId: turn.runId,
@@ -1686,6 +1718,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           if (context?.taskState.type === "ended") return;
           if (context === undefined) {
             context = {
+              nativeSegments: [],
               nativeItemId: part.id,
               nodeId,
               parentState: state,
@@ -1714,6 +1747,29 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           context.model = toolModel(part) ?? context.model;
           const childSessionId = taskSessionId(part);
           if (childSessionId !== null && context.childSessionId === null) {
+            const reused = subagentsByChildSessionId.has(childSessionId);
+            context.nativeSegments = [
+              {
+                version: 1,
+                id: `${state.nativeSessionId}:${childSessionId}:${part.id}`,
+                nativeSessionId: state.nativeSessionId,
+                nativeOperationId: part.id,
+                nativeChildId: childSessionId,
+                kind: reused ? "resume" : "start",
+                ...openCodeNativeCause(turn),
+                boundary: {
+                  state: "unresolved",
+                  reason: reused
+                    ? "opencode_child_resume_boundary_missing"
+                    : "awaiting_initial_native_child_input",
+                },
+                status: "running",
+                usageFinality: "unreconciled",
+                noticeIds: [],
+                wakeDispositions: [],
+                observedAt: DateTime.formatIso(now),
+              },
+            ];
             context.childSessionId = childSessionId;
             context.childThreadId = idAllocator.derive.threadFromProviderThread({
               driver: OPENCODE_PROVIDER,
@@ -2608,7 +2664,24 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             driver: OPENCODE_PROVIDER,
             nativeTurnId: message.id,
           });
+          const segment = state.parentSubagent.nativeSegments[0];
+          const initialSegment =
+            state.nextChildTurnOrdinal === 1 && segment?.kind === "start" ? segment : undefined;
+          if (initialSegment !== undefined) {
+            state.parentSubagent.nativeSegments = [
+              { ...initialSegment, boundary: { state: "native_input", nativeInputId: message.id } },
+            ];
+            yield* emitSubagentProjection(state.parentSubagent, null);
+          }
           const providerTurn: OrchestrationV2ProviderTurn = {
+            nativeInputs: [
+              {
+                version: 1,
+                kind: "message",
+                nativeId: message.id,
+                validation: "opencode_admitted_message",
+              },
+            ],
             id: providerTurnId,
             providerThreadId: state.providerThread.id,
             nodeId: rootNodeId,
@@ -2620,6 +2693,18 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             completedAt: null,
           };
           const turn: ActiveOpenCodeTurn = {
+            nativeExecutionCause:
+              initialSegment === undefined
+                ? unknownOpenCodeCause()
+                : {
+                    source: {
+                      type: "native_segment",
+                      threadId: state.parentSubagent.parentTurn.threadId,
+                      subagentId: state.parentSubagent.nodeId,
+                      segmentId: initialSegment.id,
+                    },
+                    purpose: initialSegment.purpose,
+                  },
             isRoot: false,
             threadId: state.appThread.id,
             runId: null,
@@ -2639,6 +2724,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             providerTurn,
             nextItemOrdinal: 1,
             nativeUserMessageId: message.id,
+            observedPromptMessageIds: new Set([message.id]),
             admissionMessageId: null,
             interrupted: [...interruptions.values()].some((interruption) => {
               const abort = interruption.abortedSessions.get(state.nativeSessionId);
@@ -2820,7 +2906,11 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           const matchesAdmission =
             turn !== null &&
             (turn.admissionMessageId === null || turn.admissionMessageId === message.id);
-          if (turn !== null && matchesAdmission) turn.usage.promptMessageIds.add(message.id);
+          if (turn !== null && matchesAdmission) {
+            turn.usage.promptMessageIds.add(message.id);
+            turn.observedPromptMessageIds.add(message.id);
+            yield* emitProviderTurn(state, turn, "running", null);
+          }
           if (turn !== null && matchesAdmission && turn.nativeUserMessageId === null) {
             turn.nativeUserMessageId = message.id;
             yield* emitProviderTurn(state, turn, "running", null);
@@ -3653,6 +3743,10 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 });
               }
               const turn: ActiveOpenCodeTurn = {
+                nativeExecutionCause: {
+                  source: { type: "app_run", threadId: turnInput.threadId, runId: turnInput.runId },
+                  purpose: executionPurposeOf(turnInput),
+                },
                 isRoot: true,
                 threadId: turnInput.threadId,
                 runId: turnInput.runId,
@@ -3672,6 +3766,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 providerTurn,
                 nextItemOrdinal: turnInput.providerTurnOrdinal * 100 + 1,
                 nativeUserMessageId: null,
+                observedPromptMessageIds: new Set(),
                 admissionMessageId,
                 interrupted: false,
                 finalized: false,

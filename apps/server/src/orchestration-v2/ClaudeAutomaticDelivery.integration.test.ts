@@ -1548,6 +1548,7 @@ it.effect.each([
             const { task } = yield* service.upsert(
               yield* decodeScheduledTask({
                 title: "Status check",
+                purposeIntent: { version: 1, intent: { type: "unscoped" } },
                 prompt: "Check the four tasks.",
                 enabled: true,
                 schedule: { type: "interval", everyMs: 60_000 },

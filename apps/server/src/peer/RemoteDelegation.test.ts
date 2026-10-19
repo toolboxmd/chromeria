@@ -26,6 +26,9 @@ import {
   ProviderThreadId,
   type Project,
   type RepositoryIdentity,
+  type ExecutionPurpose,
+  LEGACY_EXECUTION_PURPOSE,
+  OrchestratorMcpThreadSendResult,
   RunId,
   ThreadId,
   TurnItemId,
@@ -35,6 +38,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -73,6 +77,7 @@ import * as SourceControlRepositoryService from "../sourceControl/SourceControlR
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
+import * as PeerMcpClient from "./PeerMcpClient.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
 import * as RemoteDelegation from "./RemoteDelegation.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
@@ -757,7 +762,10 @@ const parentScope: McpInvocationContext.McpInvocationScope = {
 };
 
 /** The laptop's parent thread, mid-turn when its agent delegates. */
-const seedParent = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>) =>
+const seedParent = (
+  laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
+  purpose?: ExecutionPurpose,
+) =>
   Effect.gen(function* () {
     const now = yield* DateTime.now;
     const providerThreadId = ProviderThreadId.make("provider-thread:laptop-parent");
@@ -854,6 +862,7 @@ const seedParent = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>) =>
             completedAt: null,
             checkpointId: null,
             contextHandoffId: null,
+            ...(purpose === undefined ? {} : { purpose }),
           },
         },
       ],
@@ -889,6 +898,272 @@ const delegateToBox = (
         };
       }),
     );
+
+it.effect.each([false, true])(
+  "delivered remote purpose survives a B chip and validates its origin launch (delayed attach=$0)",
+  (delayedAttach) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const referenceA = {
+          host: "github.com",
+          repository: "example/repo",
+          kind: "issue",
+          number: 11,
+        } as const;
+        const scopeB = { type: "single", reference: { ...referenceA, number: 12 } } as const;
+        const thread = yield* makeBoxThread;
+        yield* Ref.set(thread.holdLaunch, delayedAttach);
+        const actual = yield* makeRealBox;
+        const b = yield* servePeer(box, boxToolkitLayer(thread, actual));
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers, linking);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a, {
+          version: 1,
+          scope: { type: "unscoped", reason: "deliberate" },
+          provenance: { type: "declared" },
+        });
+        const launching = yield* a
+          .call("delegate_task", {
+            task: "Purpose fixture in an isolated peer.",
+            target: {
+              environmentId: box.environmentId,
+              providerInstanceId: instanceId,
+              model: "gpt-5.4",
+            },
+            purposeIntent: { version: 1, intent: { type: "reference", reference: referenceA } },
+            mode: "async",
+            clientRequestId: "remote-purpose",
+          })
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(thread.launchAccepted);
+        if (delayedAttach) {
+          const parent = yield* a.orchestrator.getThreadProjection(parentThreadId);
+          const now = yield* DateTime.now;
+          yield* a.sink.write({
+            events: [
+              {
+                id: EventId.make("remote-purpose-parent-ended"),
+                type: "run.updated",
+                threadId: parentThreadId,
+                occurredAt: now,
+                payload: { ...parent.runs[0]!, status: "completed", completedAt: now },
+              },
+            ],
+          });
+          yield* Deferred.succeed(thread.releaseLaunch, undefined);
+        }
+        const launched = yield* Fiber.join(launching);
+        expect(launched.isError, JSON.stringify(launched.content)).toBe(false);
+        const childId = (yield* Ref.get(thread.launched))!;
+        const child = yield* actual.threads.getThreadProjection(childId);
+        const original = child.runs[0]!;
+        expect(original.purpose?.scope).toEqual({ type: "single", reference: referenceA });
+        const evidence = child.thread.delegatedFrom?.purposeLaunch;
+        expect(evidence).toMatchObject({
+          environmentId: laptop.environmentId,
+          threadId: parentThreadId,
+          runId: parentRunId,
+        });
+        expect(child.thread.lineage.parentThreadId).toBeNull();
+        const now = yield* DateTime.now;
+        yield* actual.sink.write({
+          events: [
+            {
+              id: EventId.make("remote-purpose-child-stopped"),
+              type: "run.updated",
+              threadId: childId,
+              occurredAt: now,
+              payload: { ...original, status: "completed", completedAt: now },
+            },
+          ],
+        });
+        yield* actual.threads.dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make("remote-purpose-chip-b"),
+          threadId: childId,
+          purposeSelection: { expectedRevision: 1, scope: scopeB },
+        });
+        if (delayedAttach) {
+          // A later live parent run acts through the same authorized origin. The
+          // original ended run is retained solely as launch evidence.
+          yield* a.orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("remote-purpose-parent-resume"),
+            threadId: parentThreadId,
+            messageId: MessageId.make("remote-purpose-parent-resume"),
+            text: "Continue handling delegated work.",
+            attachments: [],
+            createdBy: "user",
+            creationSource: "web",
+            dispatchMode: { type: "start_immediately" },
+            purposeIntent: { version: 1, intent: { type: "unscoped" } },
+          });
+        }
+        const send = {
+          environmentId: box.environmentId,
+          threadId: childId,
+          message: "Continue the original delegated job.",
+          clientRequestId: "remote-purpose-continue",
+        };
+        const continued = yield* a.call("t3_thread_send", send);
+        expect(continued.isError, JSON.stringify(continued.content)).toBe(false);
+        const result = continued.structuredContent as { runId: RunId; purpose: unknown };
+        expect(result.purpose).toMatchObject({
+          scope: { type: "single", reference: referenceA },
+          provenance: { type: "remote_launch" },
+        });
+        const retried = yield* a.call("t3_thread_send", send);
+        expect(retried.isError).toBe(false);
+        expect(retried.structuredContent).toMatchObject({ runId: result.runId });
+        const before = yield* actual.threads.getThreadProjection(childId);
+        expect(before.runs).toHaveLength(2);
+        expect(before.thread.purposeSelection).toEqual({ revision: 2, scope: scopeB });
+        expect(before.runs[1]?.purpose?.scope).toEqual({ type: "single", reference: referenceA });
+        const explicit = yield* a.call("t3_thread_send", {
+          ...send,
+          clientRequestId: "remote-purpose-inherit",
+          purposeIntent: { version: 1, intent: { type: "inherit" } },
+        });
+        expect(explicit.isError, JSON.stringify(explicit.content)).toBe(false);
+        expect(explicit.structuredContent).toMatchObject({
+          purpose: { scope: { type: "single", reference: referenceA } },
+        });
+        const beforeTamper = yield* actual.threads.getThreadProjection(childId);
+        const peers = Context.get(linking, PeerMcpClient.PeerMcpClient);
+        for (const [index, forged] of [
+          { ...evidence!, environmentId: box.environmentId },
+          { ...evidence!, launchId: "another-launch" },
+          { ...evidence!, purpose: { ...evidence!.purpose, scope: scopeB } },
+        ].entries()) {
+          const error = yield* peers
+            .call({
+              environmentId: box.environmentId,
+              tool: "t3_thread_send",
+              success: OrchestratorMcpThreadSendResult,
+              arguments: {
+                threadId: childId,
+                message: "Forged continuation",
+                clientRequestId: `forged-${index}`,
+                delegatedContinuation: forged,
+              },
+              limits: { runtimeMode: "full-access", interactionMode: "default" },
+            })
+            .pipe(Effect.flip);
+          expect(error.code).toBe("invalid_request");
+        }
+        const forgedAtOrigin = yield* a.call("t3_thread_send", {
+          ...send,
+          clientRequestId: "forged-at-origin",
+          delegatedContinuation: evidence,
+        });
+        expect(forgedAtOrigin.isError).toBe(true);
+        const after = yield* actual.threads.getThreadProjection(childId);
+        expect(after.runs).toEqual(beforeTamper.runs);
+        expect(after.messages).toEqual(beforeTamper.messages);
+        if (!delayedAttach) {
+          const { purposeLaunch: _purposeLaunch, ...legacyOrigin } = after.thread.delegatedFrom!;
+          yield* actual.sink.write({
+            events: [
+              {
+                id: EventId.make("remote-purpose-legacy-launch"),
+                type: "thread.metadata-updated",
+                threadId: childId,
+                occurredAt: now,
+                payload: { ...after.thread, delegatedFrom: legacyOrigin },
+              },
+            ],
+          });
+          const missing = yield* a.call("t3_thread_send", {
+            ...send,
+            clientRequestId: "legacy-launch-has-no-purpose-proof",
+          });
+          expect(missing.isError).toBe(true);
+          expect(JSON.stringify(missing.content)).toContain("remote purpose launch");
+          expect((yield* actual.threads.getThreadProjection(childId)).runs).toEqual(after.runs);
+        }
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect.each(["omitted", "inherit"] as const)(
+  "a remote child of an unscoped parent launched with $0 intent starts and continues",
+  (launchIntent) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const actual = yield* makeRealBox;
+        const b = yield* servePeer(box, boxToolkitLayer(thread, actual));
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers, linking);
+        yield* linkTo(a.links, b, "full-access");
+        const deliberate = { type: "unscoped", reason: "deliberate" } as const;
+        yield* seedParent(a, { version: 1, scope: deliberate, provenance: { type: "declared" } });
+        const launched = yield* a.call("delegate_task", {
+          task: "Unscoped purpose fixture in an isolated peer.",
+          target: {
+            environmentId: box.environmentId,
+            providerInstanceId: instanceId,
+            model: "gpt-5.4",
+          },
+          ...(launchIntent === "inherit"
+            ? { purposeIntent: { version: 1, intent: { type: "inherit" } } }
+            : {}),
+          mode: "async",
+          clientRequestId: `remote-unscoped-${launchIntent}`,
+        });
+        expect(launched.isError, JSON.stringify(launched.content)).toBe(false);
+        const childId = (yield* Ref.get(thread.launched))!;
+        const child = yield* actual.threads.getThreadProjection(childId);
+        const original = child.runs[0]!;
+        const expectedScope =
+          launchIntent === "inherit"
+            ? deliberate
+            : { type: "unscoped", reason: "legacy_no_intent" };
+        expect(original.purpose?.scope ?? LEGACY_EXECUTION_PURPOSE.scope).toEqual(expectedScope);
+        if (launchIntent === "inherit") {
+          expect(child.thread.delegatedFrom?.purposeLaunch?.purpose).toEqual({
+            version: 1,
+            scope: deliberate,
+            provenance: { type: "parent_run", threadId: parentThreadId, runId: parentRunId },
+          });
+        } else {
+          expect(child.thread.delegatedFrom?.purposeLaunch).toBeUndefined();
+        }
+        const now = yield* DateTime.now;
+        yield* actual.sink.write({
+          events: [
+            {
+              id: EventId.make(`remote-unscoped-${launchIntent}-stopped`),
+              type: "run.updated",
+              threadId: childId,
+              occurredAt: now,
+              payload: { ...original, status: "completed", completedAt: now },
+            },
+          ],
+        });
+        const continued = yield* a.call("t3_thread_send", {
+          environmentId: box.environmentId,
+          threadId: childId,
+          message: "Continue the delegated job.",
+          clientRequestId: `remote-unscoped-${launchIntent}-continue`,
+        });
+        expect(continued.isError, JSON.stringify(continued.content)).toBe(false);
+        expect(
+          (continued.structuredContent as { purpose: { scope: unknown } }).purpose.scope,
+        ).toEqual(expectedScope);
+        expect((yield* actual.threads.getThreadProjection(childId)).runs).toHaveLength(2);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
 
 /** Waits until the task here has the result its thread there ended with. */
 const taskResult = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>, taskId: NodeId) =>

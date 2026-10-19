@@ -1,3 +1,4 @@
+import type { PurposeIntent } from "@t3tools/contracts";
 import {
   type ChatAttachment,
   CommandId,
@@ -126,8 +127,15 @@ export function resolveMessageDispatchIntent(
   requestedMode: MessageDispatchMode,
   deliveryIntent?: "auto" | "steer" | "restart",
   requester?: SteeringRequester,
+  purposeIntent?: PurposeIntent,
 ): MessageDispatchMode {
-  const mode = resolveDeliveryIntent(projection, requestedMode, deliveryIntent, requester);
+  const mode = resolveDeliveryIntent(
+    projection,
+    requestedMode,
+    deliveryIntent,
+    requester,
+    purposeIntent,
+  );
   if (mode.type !== "steer_active") return mode;
   // Compaction and sign-out cannot accept steers; queue follow-ups.
   const target = projection.runs.find((run) => run.id === mode.targetRunId);
@@ -142,6 +150,7 @@ function resolveDeliveryIntent(
   requestedMode: MessageDispatchMode,
   deliveryIntent?: "auto" | "steer" | "restart",
   requester?: SteeringRequester,
+  purposeIntent?: PurposeIntent,
 ): MessageDispatchMode {
   if (deliveryIntent === undefined) {
     if (
@@ -163,7 +172,8 @@ function resolveDeliveryIntent(
   if (
     requester !== undefined &&
     isPersonSteering(requester) &&
-    (deliveryIntent === "steer" || isMobileSteer(requester, deliveryIntent))
+    (deliveryIntent === "steer" ||
+      (purposeIntent === undefined && isMobileSteer(requester, deliveryIntent)))
   ) {
     const targetId =
       requestedMode.type === "steer_active" ? requestedMode.targetRunId : activeRun.id;
@@ -208,6 +218,16 @@ function resolveDeliveryIntent(
   const capabilities = providerSession?.capabilities.turns;
   if (
     capabilities?.supportsActiveSteering === true &&
+    capabilities.activeSteeringInterruptsTools !== true
+  ) {
+    return { type: "steer_active", targetRunId: activeRun.id };
+  }
+  // Thread sends already request routine steering on restart-capable harnesses.
+  // Keep that delivery after purpose resolution, using the current locked target,
+  // and queue like a legacy thread send when steering would cancel running tools.
+  if (
+    requestedMode.type === "steer_active" &&
+    capabilities?.supportsSteeringByInterruptRestart === true &&
     capabilities.activeSteeringInterruptsTools !== true
   ) {
     return { type: "steer_active", targetRunId: activeRun.id };

@@ -4291,6 +4291,347 @@ describe("ClaudeAdapterV2 background wake turns", () => {
   );
 
   // regression: #15475 MCP title arriving after the tool starts must survive to completion
+  it.effect(
+    "retains A start and B resume causes without treating the original parent tool id as a response boundary",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          const now = yield* DateTime.now;
+          const purposeA = {
+            version: 1,
+            scope: {
+              type: "single",
+              reference: {
+                host: "github.com",
+                repository: "example/repo",
+                kind: "issue",
+                number: 11,
+              },
+            },
+            provenance: { type: "declared" },
+          } as const;
+          const purposeB = {
+            ...purposeA,
+            scope: { ...purposeA.scope, reference: { ...purposeA.scope.reference, number: 12 } },
+          } as const;
+          const call = (id: string, name: string, uuid: string) =>
+            claudeSdkFrame({
+              type: "assistant",
+              parent_tool_use_id: null,
+              uuid,
+              session_id: WAKE_NATIVE_SESSION,
+              message: {
+                id: `msg_${uuid}`,
+                role: "assistant",
+                type: "message",
+                model: "claude-sonnet-4-6",
+                content: [
+                  {
+                    type: "tool_use",
+                    id,
+                    name,
+                    input:
+                      name === "Agent"
+                        ? { prompt: "isolated native fixture", run_in_background: true }
+                        : { to: "purpose-native-child", message: "continue" },
+                  },
+                ],
+              },
+            });
+          const started = (toolUseId: string, uuid: string) =>
+            claudeSdkFrame({
+              type: "system",
+              subtype: "task_started",
+              task_id: "purpose-native-child",
+              tool_use_id: toolUseId,
+              task_type: "local_agent",
+              is_backgrounded: true,
+              description: "fixture child",
+              prompt: "fixture",
+              uuid,
+              session_id: WAKE_NATIVE_SESSION,
+            });
+          const ended = (toolUseId: string, uuid: string) =>
+            claudeSdkFrame({
+              type: "system",
+              subtype: "task_notification",
+              task_id: "purpose-native-child",
+              tool_use_id: toolUseId,
+              status: "completed",
+              output_file: "/tmp/purpose-native-fixture",
+              summary: "fixture ended",
+              uuid,
+              session_id: WAKE_NATIVE_SESSION,
+            });
+          yield* harness.runtime.startTurn({
+            ...makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("purpose-native-a"),
+              text: "fixture A",
+              attachments: [],
+            }),
+            purpose: purposeA,
+          });
+          const agentCall = call(
+            "purpose-native-launch",
+            "Agent",
+            "00000000-0000-4000-8000-000000001001",
+          );
+          yield* harness.offerAndWait(
+            claudeSdkFrame({ ...agentCall, user_message_uuid: harness.promptUuid(0) }),
+          );
+          yield* harness.offerAndWait(
+            started("purpose-native-launch", "00000000-0000-4000-8000-000000001002"),
+          );
+          yield* harness.offerAndWait(
+            ended("purpose-native-launch", "00000000-0000-4000-8000-000000001003"),
+          );
+          yield* harness.offerAndWait(
+            makeResultFrame({ uuid: "00000000-0000-4000-8000-000000001004", result: "A ended" }),
+          );
+          yield* Queue.take(harness.terminalReceipts);
+          yield* harness.runtime.startTurn({
+            ...makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("purpose-native-b"),
+              providerTurnOrdinal: 2,
+              text: "fixture B",
+              attachments: [],
+            }),
+            purpose: purposeB,
+          });
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              ...call(
+                "purpose-native-resume",
+                "SendMessage",
+                "00000000-0000-4000-8000-000000001005",
+              ),
+              user_message_uuid: harness.promptUuid(1),
+            }),
+          );
+          yield* harness.offerAndWait(
+            started("purpose-native-resume", "00000000-0000-4000-8000-000000001006"),
+          );
+          // Reused child frames retain A's parent_tool_use_id. They prove no B response boundary.
+          for (const frame of makeSubagentAssistantFrames({
+            parentToolUseId: "purpose-native-launch",
+            uuid: "00000000-0000-4000-8000-000000001007",
+            text: "fixture resumed response",
+            bashToolUseId: "purpose-native-child-command",
+          }))
+            yield* harness.offerAndWait(frame);
+          yield* harness.offerAndWait(
+            ended("purpose-native-resume", "00000000-0000-4000-8000-000000001008"),
+          );
+          const task = harness.events.findLast((event) => event.type === "subagent.updated");
+          assert.equal(task?.type, "subagent.updated");
+          if (task?.type !== "subagent.updated") return;
+          assert.deepEqual(
+            task.subagent.nativeSegments?.map((segment) => [
+              segment.kind,
+              segment.nativeOperationId,
+              segment.purpose.scope,
+              segment.boundary.state,
+              segment.usageFinality,
+            ]),
+            [
+              ["start", "purpose-native-launch", purposeA.scope, "unresolved", "unreconciled"],
+              ["resume", "purpose-native-resume", purposeB.scope, "unresolved", "unreconciled"],
+            ],
+          );
+          assert.equal(task.subagent.nativeSegments?.[1]?.source.type, "app_run");
+          yield* harness.offerAndWait(
+            makeResultFrame({ uuid: "00000000-0000-4000-8000-000000001009", result: "B ended" }),
+          );
+          yield* Queue.take(harness.terminalReceipts);
+          const turns = harness.events.filter((event) => event.type === "provider_turn.updated");
+          assert.isTrue(
+            turns.some(
+              (event) =>
+                event.type === "provider_turn.updated" &&
+                event.providerTurn.nativeInputs?.some(
+                  (input) =>
+                    input.validation === "claude_prompt_echo" &&
+                    input.nativeId === harness.promptUuid(0),
+                ),
+            ),
+          );
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
+
+  it.effect(
+    "retains A background evidence consumed during B after duplicate notices and an empty roster",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          const now = yield* DateTime.now;
+          const purposeA = {
+            version: 1,
+            scope: {
+              type: "single",
+              reference: {
+                host: "github.com",
+                repository: "example/repo",
+                kind: "issue",
+                number: 11,
+              },
+            },
+            provenance: { type: "declared" },
+          } as const;
+          const purposeB = {
+            ...purposeA,
+            scope: { ...purposeA.scope, reference: { ...purposeA.scope.reference, number: 12 } },
+          } as const;
+          let sequence = 2000;
+          const uuid = () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, "0")}`;
+          const inputA = {
+            ...makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("background-purpose-a"),
+              text: "A fixture",
+              attachments: [],
+            }),
+            purpose: purposeA,
+          };
+          yield* harness.runtime.startTurn(inputA);
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              type: "assistant",
+              parent_tool_use_id: null,
+              uuid: uuid(),
+              session_id: WAKE_NATIVE_SESSION,
+              user_message_uuid: harness.promptUuid(0),
+              message: {
+                id: "msg_background_purpose_a",
+                role: "assistant",
+                type: "message",
+                model: "claude-sonnet-4-6",
+                content: [
+                  {
+                    type: "tool_use",
+                    id: "background-call-a",
+                    name: "Bash",
+                    input: { command: "isolated fixture", run_in_background: true },
+                  },
+                ],
+              },
+            }),
+          );
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              type: "system",
+              subtype: "task_started",
+              task_id: "background-a",
+              tool_use_id: "background-call-a",
+              task_type: "local_bash",
+              is_backgrounded: true,
+              description: "A fixture",
+              uuid: uuid(),
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+          yield* harness.offerAndWait(makeResultFrame({ uuid: uuid(), result: "A root ended" }));
+          yield* Queue.take(harness.terminalReceipts);
+          const inputB = {
+            ...makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("background-purpose-b"),
+              providerTurnOrdinal: 2,
+              text: "B fixture",
+              attachments: [],
+            }),
+            purpose: purposeB,
+          };
+          yield* harness.runtime.startTurn(inputB);
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              type: "assistant",
+              parent_tool_use_id: null,
+              uuid: uuid(),
+              session_id: WAKE_NATIVE_SESSION,
+              user_message_uuid: harness.promptUuid(1),
+              message: {
+                id: "msg_background_purpose_b",
+                role: "assistant",
+                type: "message",
+                model: "claude-sonnet-4-6",
+                content: [{ type: "text", text: "B is active" }],
+              },
+            }),
+          );
+          const notice = claudeSdkFrame({
+            type: "system",
+            subtype: "task_notification",
+            task_id: "background-a",
+            tool_use_id: "background-call-a",
+            status: "completed",
+            output_file: "/tmp/isolated-purpose-fixture",
+            summary: "A ended during B",
+            uuid: uuid(),
+            session_id: WAKE_NATIVE_SESSION,
+          });
+          yield* harness.offerAndWait(notice);
+          yield* harness.offerAndWait(notice);
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              type: "system",
+              subtype: "background_tasks_changed",
+              tasks: [],
+              uuid: uuid(),
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+          const latest = harness.events.findLast(
+            (event) => event.type === "provider_thread.updated",
+          );
+          assert.equal(latest?.type, "provider_thread.updated");
+          if (latest?.type !== "provider_thread.updated") return;
+          const operation = latest.providerThread.nativeOperations?.find(
+            (entry) => entry.nativeChildId === "background-a",
+          );
+          assert.deepEqual(operation?.purpose, purposeA);
+          assert.deepEqual(operation?.source, {
+            type: "app_run",
+            threadId: harness.threadId,
+            runId: inputA.runId,
+          });
+          assert.equal(operation?.status, "ended");
+          assert.equal(operation?.boundary.state, "unresolved");
+          assert.equal(operation?.usageFinality, "unreconciled");
+          assert.lengthOf(operation?.noticeIds ?? [], 1);
+          assert.include(operation?.wakeDispositions ?? [], "consumed_in_active");
+          assert.isEmpty(harness.continuationRequests);
+          const turnB = harness.events.findLast((event) => event.type === "provider_turn.updated");
+          assert.equal(turnB?.type, "provider_turn.updated");
+          if (turnB?.type === "provider_turn.updated")
+            assert.deepEqual(
+              turnB.providerTurn.nativeInputs?.map((input) => input.nativeId),
+              [harness.promptUuid(1)],
+            );
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
+
   it.effect.each([
     { extraPlugins: [], expectedStatus: "observed_retained" },
     { extraPlugins: ["unknown-plugin"], expectedStatus: "observed_unexpected" },
