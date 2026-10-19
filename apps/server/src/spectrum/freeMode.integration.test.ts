@@ -395,3 +395,104 @@ it.effect("Stop during a free discussion settles with an explicit failed-summary
     assert.strictEqual(stopped.report!.text, "Spectrum stopped before White's summary.");
   }).pipe(Effect.provide(runtime)),
 );
+
+it.effect("a twice-failed White call keeps its failed-summary report across a crash", () =>
+  Effect.gen(function* () {
+    yield* boot;
+    let state = yield* register(free(["White", "Red"], 4));
+    for (const outcome of [
+      { text: "White opens." },
+      { text: "Red opens." },
+      { failed: true as const },
+    ])
+      state = (yield* answer(state, outcome)).next;
+    const { run } = yield* currentRun(state);
+    yield* end(run, { failed: true });
+    // The process dies after the controller's commits and before any later report step.
+    const real = yield* Reports.SpectrumReportService;
+    const crashed = yield* resume(state.threadId).pipe(
+      Effect.provideService(Reports.SpectrumReportService, {
+        ...real,
+        settle: () => Effect.die("crash before settle"),
+        deliver: () => Effect.die("crash before deliver"),
+      }),
+      Effect.exit,
+    );
+    // Whatever the crash interrupted, retirement never persists without its report.
+    const persisted = Option.getOrThrow(yield* readSpectrum(state.threadId));
+    assert.strictEqual(persisted.status, "retired", String(crashed._tag));
+    assert.match(persisted.report!.text, /^Spectrum ended without White's summary/);
+    const restarted = yield* resume(state.threadId);
+    assert.strictEqual(restarted.status, "retired");
+    assert.match(restarted.report!.text, /^Spectrum ended without White's summary/);
+    const caller = yield* (yield* Projection.ProjectionStoreV2).getThreadRecords(
+      input.callerThreadId,
+      ["messages"],
+    );
+    // A retired report waits for owned effects to drain; it stays owed until it is sent.
+    assert.isTrue(
+      caller.messages.some((message) => message.id === restarted.report!.messageId) ||
+        restarted.outbox.some((command) => command.commandId === restarted.report!.commandId),
+    );
+  }).pipe(Effect.provide(runtime)),
+);
+
+it.effect("a Color's own NEXT or DONE line is discussion text, not a control line", () =>
+  Effect.gen(function* () {
+    yield* boot;
+    let state = yield* register(free(["White", "Red", "Green"], 9));
+    const spoken: string[] = [];
+    for (const text of [
+      "White opens.",
+      "Red opens.\nDONE",
+      "Green opens.\nNEXT: Red",
+      "NEXT: Green",
+      "Green, please.\nNEXT: Red",
+    ]) {
+      const step = yield* answer(state, { text });
+      spoken.push(step.spoke);
+      state = step.next;
+    }
+    assert.deepStrictEqual(spoken, [
+      "free:White",
+      "free:Red",
+      "free:Green",
+      "moderation:White",
+      "free:Green",
+    ]);
+    // Only White's moderation steers: Green's own NEXT line led back to White, not to Red.
+    assert.strictEqual(state.round!.phase, "moderation");
+    const transcript = yield* transcriptTexts(state.threadId);
+    assert.includeMembers(transcript, [
+      "[Red]\nRed opens.\nDONE",
+      "[Green]\nGreen opens.\nNEXT: Red",
+    ]);
+  }).pipe(Effect.provide(runtime)),
+);
+
+it.effect("Stop during a moderation call cancels it and settles failed-summary", () =>
+  Effect.gen(function* () {
+    yield* boot;
+    let state = yield* register(free(["White", "Red"], 4));
+    for (const text of ["White opens.", "Red opens."])
+      state = (yield* answer(state, { text })).next;
+    assert.strictEqual(state.round!.phase, "moderation");
+    const { run } = yield* currentRun(state);
+    yield* (yield* Orchestrator.OrchestratorV2).dispatch({
+      type: "thread.stop",
+      threadId: state.threadId,
+      commandId: CommandId.make("free:stop:moderation"),
+    });
+    const stopped = Option.getOrThrow(yield* readSpectrum(state.threadId));
+    assert.strictEqual(stopped.status, "retired");
+    assert.isNull(stopped.round);
+    assert.strictEqual(stopped.report!.text, "Spectrum stopped before White's summary.");
+    assert.isTrue(
+      stopped.outbox.some(
+        (command) =>
+          (command.type === "run.interrupt" || command.type === "queued-run.cancel") &&
+          command.runId === run.id,
+      ),
+    );
+  }).pipe(Effect.provide(runtime)),
+);
