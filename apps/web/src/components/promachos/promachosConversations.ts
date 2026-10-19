@@ -1,3 +1,4 @@
+import { isThreadVisibleInNavigation } from "@t3tools/client-runtime/state/models";
 import type {
   EnvironmentProject,
   EnvironmentThreadShell,
@@ -57,15 +58,11 @@ export function promachosConversations<
     | "latestUserMessageAt"
     | "updatedAt"
     | "lineage"
+    | "delegatedFrom"
   >,
 >(threads: ReadonlyArray<T>, homeRefs: ReadonlyArray<ScopedProjectRef>): T[] {
   return threads
-    .filter(
-      (thread) =>
-        isInPromachosHome(thread, homeRefs) &&
-        thread.archivedAt === null &&
-        thread.lineage.relationshipToParent !== "subagent",
-    )
+    .filter((thread) => isInPromachosHome(thread, homeRefs) && isThreadVisibleInNavigation(thread))
     .toSorted(
       (left, right) =>
         firstValidTimestampMs(right.latestUserMessageAt, right.updatedAt) -

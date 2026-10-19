@@ -1,4 +1,7 @@
-import { presentThreadShell } from "@t3tools/client-runtime/state/models";
+import {
+  isThreadVisibleInNavigation,
+  presentThreadShell,
+} from "@t3tools/client-runtime/state/models";
 import * as DateTime from "effect/DateTime";
 import { planPinnedMove } from "@t3tools/client-runtime/state/thread-sort";
 import {
@@ -1676,6 +1679,88 @@ describe("cross-section thread drops", () => {
       ),
     ).toEqual({ pin: false, unpin: false, unsettle: false, unsnooze: false });
   });
+});
+
+it("finds destination children offline in qualified search and hides them again on clear", () => {
+  const destination = EnvironmentId.make("destination");
+  const otherDestination = EnvironmentId.make("other-destination");
+  const projectId = ProjectId.make("destination-project");
+  const id = ThreadId.make("same-id");
+  const raw = makeRawThreadShell({
+    id,
+    projectId,
+    title: "Remote audit",
+    delegatedFrom: {
+      environmentId: EnvironmentId.make("offline-parent"),
+      threadId: ThreadId.make("real-parent"),
+      title: "Real parent",
+    },
+  });
+  const child = presentThreadShell(destination, raw);
+  const otherChild = presentThreadShell(otherDestination, raw);
+  const linked = presentThreadShell(
+    destination,
+    makeRawThreadShell({
+      id: ThreadId.make("linked"),
+      projectId,
+      title: "Linked work",
+      linkOrigin: { sessionId: "link", label: "Other machine" },
+    }),
+  );
+  const fork = presentThreadShell(destination, {
+    ...raw,
+    id: ThreadId.make("fork"),
+    title: "Fork work",
+    lineage: {
+      parentThreadId: id,
+      rootThreadId: raw.lineage.rootThreadId,
+      relationshipToParent: "fork",
+    },
+    forkedFrom: { type: "run", threadId: id, runId: RunId.make("source-run") },
+  });
+  const all = [
+    child,
+    otherChild,
+    linked,
+    fork,
+    { ...child, id: ThreadId.make("archived"), archivedAt: NOW },
+    {
+      ...child,
+      id: ThreadId.make("local-child"),
+      delegatedFrom: undefined,
+      lineage: { ...child.lineage, relationshipToParent: "subagent" as const },
+    },
+    { ...child, id: ThreadId.make("other-project"), projectId: ProjectId.make("other-project") },
+  ];
+  const layout = (searchQuery: string, matchedThreadKeys?: ReadonlySet<string>) =>
+    buildThreadListV2Items({
+      threads: all.filter((thread) => isThreadVisibleInNavigation(thread, searchQuery)),
+      environmentId: null,
+      projectRefs: [{ environmentId: destination, projectId }],
+      searchQuery,
+      matchedThreadKeys,
+      now: NOW,
+    }).items.map((item) => item.thread);
+  expect(layout("").map((thread) => thread.id)).toEqual([fork.id, linked.id]);
+  expect(layout("Remote audit")).toEqual([child]);
+  expect(layout("Fork work")).toEqual([fork]);
+  expect(fork.delegatedFrom).toBe(raw.delegatedFrom);
+  expect(
+    layout(
+      "contents",
+      new Set([threadSearchMatchKey({ environmentId: destination, threadId: id })]),
+    ),
+  ).toEqual([child]);
+  expect(
+    layout(
+      "contents",
+      new Set([threadSearchMatchKey({ environmentId: otherDestination, threadId: id })]),
+    ),
+  ).toEqual([]);
+  expect(layout("   ").map((thread) => thread.id)).toEqual([fork.id, linked.id]);
+  expect(child.delegatedFrom).toBe(raw.delegatedFrom);
+  expect(child.lineage.parentThreadId).toBeNull();
+  expect(all).toHaveLength(7);
 });
 
 it("excludes subagents from navigation, search and ordering while retaining user forks", () => {

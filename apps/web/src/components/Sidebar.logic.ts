@@ -1,4 +1,7 @@
-import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
+import {
+  isThreadVisibleInNavigation,
+  resolveThreadWorkingStartedAt,
+} from "@t3tools/client-runtime/state/models";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import * as React from "react";
@@ -530,20 +533,24 @@ export function buildMultiSelectThreadContextMenuItems(input: {
   ];
 }
 
-export function isSidebarSubagentThread(thread: Pick<SidebarThreadSummary, "lineage">): boolean {
-  return thread.lineage.relationshipToParent === "subagent";
+export function isSidebarSubagentThread(
+  thread: Pick<SidebarThreadSummary, "lineage" | "delegatedFrom">,
+): boolean {
+  return (
+    thread.lineage.relationshipToParent === "subagent" ||
+    (thread.delegatedFrom !== undefined && thread.lineage.relationshipToParent !== "fork")
+  );
 }
 
 export function filterSidebarV2VisibleThreads<
-  T extends Pick<SidebarThreadSummary, "archivedAt" | "lineage"> & {
+  T extends Pick<SidebarThreadSummary, "archivedAt" | "lineage" | "delegatedFrom"> & {
     environmentId: string;
     projectId: string;
   },
->(threads: readonly T[], scopedProjectKeys: ReadonlySet<string> | null): T[] {
+>(threads: readonly T[], scopedProjectKeys: ReadonlySet<string> | null, searchQuery = ""): T[] {
   return threads.filter(
     (thread) =>
-      thread.archivedAt === null &&
-      !isSidebarSubagentThread(thread) &&
+      isThreadVisibleInNavigation(thread, searchQuery) &&
       (scopedProjectKeys === null ||
         scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
   );
