@@ -2466,20 +2466,20 @@ sources and reasons.
 ```json
 {
   "id": "preview-chrome-identity",
-  "purpose": "Present desktop preview sessions as Chrome while retaining native Chromium client hints and host browser capabilities.",
+  "purpose": "Apply a paired Chrome UA and client-hint override only to listed desktop preview sites, retaining native identity elsewhere.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/460"],
-  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...fix/460-preview-chrome-identity"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/470"],
   "newFiles": [
     "apps/desktop/src/preview/ChromeUserAgent.ts",
-    "apps/desktop/src/preview/ChromeUserAgent.test.ts"
+    "apps/desktop/src/preview/ChromeUserAgent.test.ts",
+    "apps/desktop/src/preview/ChromeIdentitySession.ts",
+    "apps/desktop/src/preview/ChromeIdentitySession.test.ts"
   ],
   "upstreamFiles": [
-    "apps/desktop/src/preview/BrowserSession.ts",
-    "apps/desktop/src/preview/BrowserSession.test.ts",
-    "apps/desktop/src/preview/WebviewPreferences.ts",
-    "apps/desktop/src/preview/WebviewPreferences.test.ts"
+    "apps/desktop/src/preview/Manager.ts",
+    "apps/desktop/src/preview/Manager.test.ts"
   ],
   "sharedFiles": [],
-  "keywords": ["preview user agent", "ChromeUserAgent", "AutomationControlled"]
+  "keywords": ["preview user agent", "ChromeUserAgent", "ChromeIdentitySession"]
 }
 ```

@@ -20,14 +20,19 @@ function parseWebPreferences(input: string): Record<string, unknown> {
 describe("PREVIEW_WEBVIEW_PREFERENCES", () => {
   const parsed = parseWebPreferences(PREVIEW_WEBVIEW_PREFERENCES);
 
-  it("uses canonical JS-boolean string literals for security preferences", () => {
-    for (const key of ["contextIsolation", "nodeIntegration", "sandbox", "plugins"]) {
-      expect(parsed[key]).toMatch(/^(true|false)$/);
-    }
+  it("contains exactly the three security-critical keys", () => {
+    expect(Object.keys(parsed).toSorted()).toEqual(
+      ["contextIsolation", "nodeIntegration", "sandbox"].toSorted(),
+    );
   });
 
-  it("disables the Blink automation marker only in preview guests", () => {
-    expect(parsed["disableBlinkFeatures"]).toBe("AutomationControlled");
+  it("uses canonical JS-boolean string literals (not yes/no, on/off, 1/0)", () => {
+    // `value="no"` is a TRUTHY string when assigned to webPreferences.X — so
+    // `contextIsolation="no"` would silently leave isolation ENABLED. Lock
+    // the values to `"true"` / `"false"` so the parser does the right thing.
+    for (const value of Object.values(parsed)) {
+      expect(value).toMatch(/^(true|false)$/);
+    }
   });
 
   it("disables context isolation (so react-grab can see the page's React DevTools hook)", () => {
@@ -40,10 +45,6 @@ describe("PREVIEW_WEBVIEW_PREFERENCES", () => {
 
   it("disables nodeIntegration (defense in depth — page never gets Node)", () => {
     expect(parsed["nodeIntegration"]).toBe("false");
-  });
-
-  it("enables native plugins for Chrome-compatible PDF and MIME support", () => {
-    expect(parsed["plugins"]).toBe("true");
   });
 
   it("contains no whitespace (Electron's parser does not trim)", () => {

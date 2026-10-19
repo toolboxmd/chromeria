@@ -504,7 +504,5 @@ packages/client-runtime/src/pullRequestLinkInput.ts
 apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts
 
 # Desktop preview Chrome identity (#460)
-apps/desktop/src/preview/BrowserSession.ts
-apps/desktop/src/preview/BrowserSession.test.ts
-apps/desktop/src/preview/WebviewPreferences.ts
-apps/desktop/src/preview/WebviewPreferences.test.ts
+apps/desktop/src/preview/Manager.ts
+apps/desktop/src/preview/Manager.test.ts

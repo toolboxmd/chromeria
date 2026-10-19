@@ -226,7 +226,15 @@ const {
   fromId: vi.fn<(_id?: number) => Electron.WebContents | null>((_id?: number) => null),
   getFocusedWebContents: vi.fn(() => null),
   mkdir: vi.fn((_path: string) => undefined),
-  previewSession: { on: vi.fn() },
+  previewSession: {
+    on: vi.fn(),
+    getUserAgent: () =>
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chromeria/0.1.0 Chrome/152.0.7977.130 Electron/44.4.5 Safari/537.36",
+    webRequest: {
+      onBeforeRequest: vi.fn<Electron.WebRequest["onBeforeRequest"]>(),
+      onBeforeSendHeaders: vi.fn<Electron.WebRequest["onBeforeSendHeaders"]>(),
+    },
+  },
   showItemInFolder: vi.fn(),
   webviewSend: vi.fn(),
   writeFile: vi.fn((_path: string, _data: Uint8Array) => undefined),
@@ -273,6 +281,7 @@ const layerEnvironment = Layer.succeed(
   DesktopEnvironment.DesktopEnvironment,
   DesktopEnvironment.DesktopEnvironment.of({
     browserArtifactsDir: "/tmp/t3/dev/browser-artifacts",
+    processArch: "x64",
     dirname: "/tmp/t3/desktop",
     path: {
       join: (...parts: ReadonlyArray<string>) => parts.join("/"),
@@ -593,6 +602,8 @@ describe("PreviewManager", () => {
     getFocusedWebContents.mockReturnValue(null);
     mkdir.mockClear();
     previewSession.on.mockClear();
+    previewSession.webRequest.onBeforeRequest.mockClear();
+    previewSession.webRequest.onBeforeSendHeaders.mockClear();
     writeFile.mockClear();
     showItemInFolder.mockClear();
     clipboardItemConstructor.mockClear();
@@ -600,6 +611,70 @@ describe("PreviewManager", () => {
     createFromPath.mockClear();
     webviewSend.mockClear();
   });
+
+  effectIt.effect(
+    "sets and clears the paired site identity through the shared preview debugger",
+    () =>
+      withManager((manager) =>
+        Effect.gen(function* () {
+          yield* manager.getBrowserSession("profile");
+          yield* manager.getBrowserSession("profile");
+          expect(previewSession.webRequest.onBeforeRequest).toHaveBeenCalledOnce();
+          const request = previewSession.webRequest.onBeforeRequest.mock.calls[0]?.[0];
+          if (typeof request !== "function")
+            return yield* Effect.die("Missing preview request policy");
+          const debuggee = {
+            isAttached: () => false,
+            attach: vi.fn(),
+            detach: vi.fn(),
+            on: vi.fn(),
+            off: vi.fn(),
+            sendCommand: vi.fn(async () => undefined),
+          };
+          const contents = {
+            id: 42,
+            isDestroyed: () => false,
+            isDevToolsOpened: () => false,
+            debugger: debuggee,
+          } as unknown as Electron.WebContents;
+          const navigate = (url: string) =>
+            Effect.promise(
+              () =>
+                new Promise<Electron.CallbackResponse>((resolve) => {
+                  request(
+                    {
+                      id: 1,
+                      url,
+                      method: "GET",
+                      webContents: contents,
+                      resourceType: "mainFrame",
+                      referrer: "",
+                      timestamp: 0,
+                      uploadData: [],
+                    },
+                    resolve,
+                  );
+                }),
+            );
+          expect(yield* navigate("https://web.whatsapp.com/")).toEqual({ cancel: false });
+          expect(debuggee.sendCommand).toHaveBeenCalledWith(
+            "Emulation.setUserAgentOverride",
+            expect.objectContaining({
+              userAgent: expect.stringContaining("Chrome/152.0.0.0 Safari/537.36"),
+              userAgentMetadata: expect.objectContaining({
+                brands: expect.arrayContaining([{ brand: "Google Chrome", version: "152" }]),
+                fullVersion: "152.0.7977.130",
+              }),
+            }),
+          );
+          expect(yield* navigate("https://dash.cloudflare.com/login")).toEqual({ cancel: false });
+          expect(debuggee.sendCommand).toHaveBeenLastCalledWith("Emulation.setUserAgentOverride", {
+            userAgent: "",
+          });
+          expect(debuggee.attach).toHaveBeenCalledOnce();
+        }),
+      ),
+  );
 
   effectIt.effect("opens a target=_blank link as a new tab without navigating the opener", () =>
     withManager((manager) =>

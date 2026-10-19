@@ -59,10 +59,7 @@ describe("BrowserSession", () => {
       const browserSession = {
         clearCache: vi.fn(() => Promise.resolve()),
         clearStorageData: vi.fn(() => Promise.resolve()),
-        getUserAgent: vi.fn(
-          () =>
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) t3code/0.0.27 Chrome/146.0.7680.216 Electron/41.5.0 Safari/537.36",
-        ),
+        getUserAgent: vi.fn(() => "Mozilla/5.0 Electron/41.5.0 t3code/0.0.27"),
         setPermissionRequestHandler: vi.fn(),
         setPermissionCheckHandler: vi.fn(),
         setUserAgent: vi.fn(),
@@ -121,7 +118,10 @@ describe("BrowserSession", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("gives preview guests a Chrome UA with the native Chromium version", () =>
+  // A rewritten session UA — any variant, even ones that keep the Electron
+  // token — makes Cloudflare Turnstile loop with error 600010 (#5002), so the
+  // guest must end up with Electron's native User-Agent.
+  it.effect("keeps the guest's effective User-Agent equal to Electron's native one", () =>
     Effect.gen(function* () {
       // Electron's real UA shape: app token, then Chrome, then Electron, then
       // Safari — the token order and casing matter to any strip regex.
@@ -145,19 +145,12 @@ describe("BrowserSession", () => {
       });
 
       const browserSessions = yield* BrowserSession.BrowserSession;
-      for (const persistent of [true, false]) {
-        for (const namespace of [undefined, "profile"] as const) {
-          const browserSession = yield* browserSessions.getSession(
-            "scope-a",
-            persistent,
-            namespace,
-          );
-          assert.strictEqual(
-            browserSession.getUserAgent(),
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.7680.216 Safari/537.36",
-          );
-        }
-      }
+      const partition = yield* browserSessions.getPartition("scope-a");
+      yield* browserSessions.getSession("scope-a");
+
+      const browserSession = sessions.get(partition);
+      assert.isDefined(browserSession);
+      assert.strictEqual(browserSession.getUserAgent(), nativeUserAgent);
     }).pipe(Effect.provide(layer)),
   );
 
