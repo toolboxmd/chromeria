@@ -37,14 +37,16 @@ own repo with its direction, its Library and its tasks. Shown as Area in the UI.
 _Avoid_: business, space, workspace, domain
 
 **Library**:
-A Satrapy's skills, playbooks, tools and other durable knowledge, served from
-the flat `library/` folder in its repo.
+A project's `library/` folder of ContextMD template items: agent-only knowledge
+(facts, procedures, tools) and short entries that point to human-facing files in
+`docs/` ("Read docs/adr/0003.md in full").
+`docs/`, `GLOSSARY.md` and `docs/adr` are not part of the Library and stay where
+they are: human-facing, free form, no template.
 _Avoid_: shared folder
 
 **Great Library**:
-Skills, playbooks, tools and other knowledge used by two or more Satrapies,
-kept once as flat entries in the Promachos home's `library/` folder and
-available to every Satrapy.
+The library shared between projects, plus personal knowledge outside any project,
+kept in the user's private home repository.
 _Avoid_: shared layer, global skills
 
 **Wight mode**:
