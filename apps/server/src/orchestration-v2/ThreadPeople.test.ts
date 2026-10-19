@@ -54,7 +54,7 @@ const layerTest = Layer.mergeAll(
 let commandCount = 0;
 const nextCommandId = () => CommandId.make(`people-${++commandCount}`);
 
-const createThread = (threadId: ThreadId, owner?: string) =>
+const createThread = (threadId: ThreadId, owner?: string, prismRole?: "promachos") =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     yield* orchestrator.dispatch({
@@ -71,6 +71,7 @@ const createThread = (threadId: ThreadId, owner?: string) =>
       createdBy: "user",
       creationSource: "web",
       ...(owner === undefined ? {} : { owner }),
+      ...(prismRole === undefined ? {} : { prismRole }),
     });
   });
 
@@ -161,7 +162,7 @@ it.effect("a fork belongs to the forking person and starts unshared", () =>
     const sourceThreadId = ThreadId.make("thread:fork-source");
     const providerThreadId = ProviderThreadId.make("provider-thread:fork-source");
     const runId = RunId.make("run:fork-source");
-    yield* createThread(sourceThreadId, "Luke");
+    yield* createThread(sourceThreadId, "Luke", "promachos");
     yield* sharing(sourceThreadId, { type: "thread.share", coOwner: "Pauli", actor: "Luke" });
     yield* eventSink.write({
       events: [
@@ -238,6 +239,11 @@ it.effect("a fork belongs to the forking person and starts unshared", () =>
       coOwners: [],
     });
     assert.deepEqual(yield* people(sourceThreadId), { owner: "Luke", coOwners: ["Pauli"] });
+    // Fork: forking the Promachos does not make another one (toolboxmd/chromeria#532).
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    assert.equal((yield* projections.getThreadShell(sourceThreadId))?.prismRole, "promachos");
+    const fork = yield* projections.getThreadShell(ThreadId.make("thread:fork-pauli"));
+    assert.isUndefined(fork?.prismRole);
   }).pipe(Effect.provide(layerTest)),
 );
 

@@ -515,3 +515,5 @@ packages/provider-core/src/server/ProviderContinuationRequests.ts
 packages/provider-muse/src/server/adapter.ts
 packages/provider-pi/src/server/adapter.ts
 apps/server/src/mcp/toolkits/pullRequests/handlers.test.ts
+apps/mobile/src/lib/threadActivity.ts
+apps/web/src/session-logic.ts

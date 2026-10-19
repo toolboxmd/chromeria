@@ -42,7 +42,7 @@ flowchart TD
     VT["Visible T3 threads"]
     %% VT: #10
     PM["Promachos bubbles and persona"]
-    %% PM: #116 #400 PR #499
+    %% PM: #116 #400 PR #499 #532
     WG["Wight mode"]
     %% WG: #117
     BL["Bare launch and receipts"]
